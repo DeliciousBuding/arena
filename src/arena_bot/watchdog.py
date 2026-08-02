@@ -75,7 +75,7 @@ class Watchdog:
             if self._unit_positions.get(uid) == u["pos"]:
                 self._unit_stall[uid] = self._unit_stall.get(uid, 0) + 1
             else:
-                self._unit_stall[uid] = 0
+                self._unit_stall[uid] = 1  # 新位置/首次观察：计数 1
             self._unit_positions[uid] = u["pos"]
             if self._unit_stall[uid] >= self.stall_ticks:
                 self._raise_alarm(
@@ -90,10 +90,11 @@ class Watchdog:
         # 3. 经济停滞（资源未满且不增长）
         if resources is not None and resource_capacity is not None:
             if resources < resource_capacity:
-                if self._last_resources is not None and resources == self._last_resources:
+                if (self._last_resources is not None
+                        and resources == self._last_resources):
                     self._resource_stall += 1
                 else:
-                    self._resource_stall = 0
+                    self._resource_stall = 1  # 变化/首次观察：计数 1
                 if self._resource_stall >= self.stall_ticks:
                     self._raise_alarm(
                         "ECONOMY_STALL",

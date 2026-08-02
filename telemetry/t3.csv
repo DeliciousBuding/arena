@@ -22,3 +22,7 @@ tick,phase,resources,resource_capacity,population,workers,vanguards,rangers,core
 38568,early_expansion,3,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,"deposit:1,patrol:1"
 38569,early_expansion,4,10,2,2,0,0,5,5,0,0,0,1,0,0,0,0,1,0,patrol:2
 38570,early_expansion,4,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,patrol:2
+38571,early_expansion,4,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,patrol:2
+38572,early_expansion,4,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,patrol:2
+38573,early_expansion,4,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,patrol:2
+38574,early_expansion,4,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,patrol:2
