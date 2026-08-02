@@ -7,6 +7,7 @@
  */
 
 import type { Plan, TickState } from "../domain/model.ts";
+import type { LeaseSubmission } from "./decision-lease.ts";
 
 export type DecisionSource = "agent" | "hybrid" | "safety" | "emergency";
 
@@ -46,9 +47,13 @@ export type AgentRunResult =
   | { readonly outcome: "error"; readonly message: string };
 
 /** Agent runtime 端口：coordinator 只依赖此接口（Pi 实现细节在 infrastructure 层）。
- *  3E：reportViolation 是 coordinator 检测到契约违规（如 runId 不一致）时的上报口，
+ *  GPT 审核：bindCandidateSink 是正式契约（非可选 duck typing）——runtime 忘记实现
+ *  时编译直接失败；sink 返回结构化结果（LeaseSubmission），工具能反馈给模型。
+ *  reportViolation 是 coordinator 检测到契约违规（如 runId 不一致）时的上报口，
  *  runtime 应据此标记 unhealthy（Pi：进入 rotation；Fake：记录 violationLog）。 */
 export interface AgentDecisionRuntime {
+  /** 候选投递口绑定（coordinator 构造时调用，此后 sink 固定）。 */
+  bindCandidateSink(sink: CandidateSink): void;
   startDecision(request: AgentDecisionRequest): AgentRunHandle;
   health(): AgentRuntimeHealth;
   reportViolation?(reason: string): void;
@@ -73,6 +78,11 @@ export interface CandidateEnvelope {
   readonly reason: string;
   readonly confidence: number | null;
 }
+
+/** 候选投递口（GPT 审核契约）：返回结构化提交结果——arena_plan 工具
+ *  需要把 accepted / deadline_exceeded / tick_mismatch 等准确反馈给模型。
+ *  LeaseSubmission 定义在 decision-lease.ts（runId 精确索引的裁决结果）。 */
+export type CandidateSink = (envelope: CandidateEnvelope) => LeaseSubmission;
 
 /** Deadline 预算（单调时钟 performance.now()；测试注入 FakeClock）。
  *  边界语义：now >= deadline 即过期。 */

@@ -22,13 +22,14 @@ import { createDeadlineBudget, type DeadlineConfig } from "./deadline-budget.ts"
 import type { Clock } from "./clock.ts";
 import { DecisionLease } from "./decision-lease.ts";
 import { LeaseRegistry } from "./lease-registry.ts";
-import { PlanArbiter } from "./plan-arbiter.ts";
+import { PlanArbiter, type ArbitrateResult } from "./plan-arbiter.ts";
 import type {
   AgentDecisionRequest,
   AgentDecisionRuntime,
   AgentRunHandle,
   AgentRunResult,
   CandidateEnvelope,
+  CandidateSink,
   DecisionContext,
   DecisionResult,
 } from "./decision-types.ts";
@@ -49,11 +50,8 @@ export interface DecisionCoordinatorOptions {
   readonly onRunSettled?: (info: { readonly runId: string; readonly result: AgentRunResult }) => void;
 }
 
-/** runtime 候选投递口（FakeAgentRuntime 等 testing 工具实现；Pi runtime 集成时对齐）。
- *  3E：runId 已随 AgentDecisionRequest 单源下发，setRunIdFor 侧通道删除。 */
-interface SinkSettable {
-  setSink?(sink: (envelope: CandidateEnvelope) => void): void;
-}
+/** runtime 候选投递口：契约正式化（GPT 审核）——AgentDecisionRuntime.bindCandidateSink
+ *  是必选方法，不再用 duck typing 可选探测；sink 返回结构化 LeaseSubmission。 */
 
 const DEFAULT_SLEEP_UNTIL = (deadlineMs: number): Promise<void> =>
   new Promise((resolve) => {
@@ -77,8 +75,9 @@ export class DecisionCoordinator {
   private readonly sleepUntil: (deadlineMs: number, clock: Clock) => Promise<void>;
   private readonly onRunSettled: DecisionCoordinatorOptions["onRunSettled"];
 
-  /** 候选投递口（公开：Agent runtime / 测试经此投递，模拟 arena_plan 工具调用）。 */
-  readonly sink: (envelope: CandidateEnvelope) => void;
+  /** 候选投递口（公开：Agent runtime / 测试经此投递，模拟 arena_plan 工具调用）。
+   *  返回 registry.submit 的结构化结果（accepted / 具体拒绝 code）——工具反馈给模型用。 */
+  readonly sink: CandidateSink;
 
   constructor(options: DecisionCoordinatorOptions) {
     this.runtime = options.runtime;
@@ -92,13 +91,11 @@ export class DecisionCoordinator {
     this.arbiter = options.arbiter ?? new PlanArbiter();
     this.sleepUntil = options.sleepUntil ?? DEFAULT_SLEEP_UNTIL;
     this.onRunSettled = options.onRunSettled;
-    // 候选投递口：Agent runtime 经此投递（模拟 arena_plan 工具调用路径）
-    this.sink = (envelope) => {
-      // runId 精确索引：旧 run 的迟到调用命中旧 Lease（已终结 → 拒绝），永不漏到新 Tick
-      this.registry.submit(envelope.runId, envelope);
-    };
-    const settable = this.runtime as AgentDecisionRuntime & SinkSettable;
-    settable.setSink?.(this.sink);
+    // 候选投递口：runId 精确索引——旧 run 的迟到调用命中旧 Lease（已终结 → 拒绝），
+    // 永不漏到新 Tick；结构化结果原样返回（LeaseSubmission）。
+    this.sink = (envelope) => this.registry.submit(envelope.runId, envelope);
+    // 契约绑定（GPT 审核）：bindCandidateSink 是必选方法，runtime 忘记实现时编译失败
+    this.runtime.bindCandidateSink(this.sink);
   }
 
   /** 每 Tick 决策：永远在 selection deadline 前 resolve（启动失败/runId 违规则立即）。 */
@@ -156,12 +153,16 @@ export class DecisionCoordinator {
         // 3E-1：handle 必须携带 coordinator 分配的 runId；不一致 = 契约违规
         startupError = `run_id_mismatch: expected ${runId}, got ${handle.runId}`;
         handle.abort(startupError);
-        handle = null;
         this.runtime.reportViolation?.(startupError);
       }
     } catch (exc) {
       startupError = exc instanceof Error ? exc.message : String(exc);
       handle = null;
+    }
+    // GPT 审核：每个有效 handle 恰好观察一次 settle（runId 错误被 abort 的 handle 也观察）；
+    // 后续所有路径不再重复绑定，settle 状态统一经 onRunSettled telemetry 上报。
+    if (handle !== null) {
+      this.observeSettle(runId, handle);
     }
 
     if (startupError !== null) {
@@ -200,25 +201,48 @@ export class DecisionCoordinator {
     if (candidate !== null && safetyError === null) {
       // 5) 候选路径：arbiter 合成（合法 Agent > Safety 补齐 > 无动作）
       this.registry.select(runId);
-      const arbitration = this.arbiter.arbitrate({
-        tick,
-        state,
-        safetyPlan,
-        agentCandidate: candidate.plan,
-      });
-      let candidatePlan = arbitration.plan;
-      repairCount = arbitration.repairCount;
-      // 语义校验 + repair（并入选择过程，selectionLatency 覆盖完整固定流程）
-      const validation = validatePlan(state, candidatePlan);
-      if (!validation.valid && validation.plan !== candidatePlan) {
-        candidatePlan = validation.plan;
-        repairCount += validation.issues.length;
+      let candidatePlan: Plan;
+      let arbitration: ArbitrateResult | null = null;
+      let pipelineError: string | null = null;
+      try {
+        // GPT 审核：arbitration/validator 意外抛错时不得整体 reject——
+        // coordinator 永远返回合法计划（除非进程本身崩溃）。
+        arbitration = this.arbiter.arbitrate({
+          tick,
+          state,
+          safetyPlan,
+          agentCandidate: candidate.plan,
+        });
+        candidatePlan = arbitration.plan;
+        repairCount = arbitration.repairCount;
+        // 语义校验 + repair（并入选择过程，selectionLatency 覆盖完整固定流程）
+        const validation = validatePlan(state, candidatePlan);
+        if (!validation.valid && validation.plan !== candidatePlan) {
+          candidatePlan = validation.plan;
+          repairCount += validation.issues.length;
+        }
+      } catch (exc) {
+        pipelineError = exc instanceof Error ? exc.message : String(exc);
+        candidatePlan = safetyPlan;
       }
-      // 3E-3：selection deadline 真正落地——固定时刻超限则弃候选，用已准备好的 SafetyPlan
-      if (this.clock.now() >= budget.selectionDeadline) {
+      if (pipelineError !== null || arbitration === null) {
+        // 候选管道异常/无仲裁结果 → 弃候选，固定预计算的 SafetyPlan（deadlineOutcome=error）
+        source = "safety";
+        plan = safetyPlan;
+        deadlineOutcome = "error";
+        if (pipelineError !== null) {
+          this.runtime.reportViolation?.(`candidate_pipeline_error: ${pipelineError}`);
+        }
+      } else if (this.clock.now() >= budget.selectionDeadline) {
+        // 3E-3：selection deadline 真正落地——固定时刻超限则弃候选，用已准备好的 SafetyPlan；
+        // GPT 审核：已放弃 Agent 结果 → 发出 abort，避免模型继续生成/追加工具调用
         source = "safety";
         plan = safetyPlan;
         deadlineOutcome = "selection_timeout";
+        if (handle !== null) {
+          abortRequested = true;
+          handle.abort("selection_timeout");
+        }
       } else {
         source = arbitration.source;
         plan = candidatePlan;
@@ -228,7 +252,8 @@ export class DecisionCoordinator {
         deadlineOutcome = "candidate";
       }
     } else {
-      // 6) soft deadline 路径：先 expire → 固定 Safety → 后台 abort（不 await）
+      // 6) soft deadline 路径：先 expire → 固定 Safety → 后台 abort（不 await；
+      //    settle 观察已在步骤 3 统一绑定一次）
       this.registry.expire(runId);
       this.registry.select(runId); // expired → selected（终结 run）
       source = safetyError !== null ? "emergency" : "safety";
@@ -237,7 +262,6 @@ export class DecisionCoordinator {
       if (handle !== null) {
         abortRequested = true;
         handle.abort(safetyError !== null ? "safety_error" : "soft_deadline");
-        this.observeSettle(runId, handle);
       }
     }
 

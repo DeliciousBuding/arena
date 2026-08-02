@@ -38,7 +38,7 @@ test("零回归：100 tick fixture 上 coordinator（never-settles）计划 == S
   for (const segment of manifest.segments) {
     // coordinator 侧：FakeClock + never-settles runtime + FakeClock 驱动 sleepUntil
     const clock = new FakeClock();
-    const runtime = new FakeAgentRuntime({ sink: () => {}, mode: "never-settles", clock });
+    const runtime = new FakeAgentRuntime({ sink: () => ({ accepted: false, code: "lease_not_found", message: "unused" }), mode: "never-settles", clock });
     const registry = new LeaseRegistry();
     const planner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG);
     const coordinator = new DecisionCoordinator({

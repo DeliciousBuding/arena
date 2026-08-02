@@ -75,7 +75,10 @@ function makeRuntime(
   options: Partial<FakeAgentRuntimeOptions> = {},
 ): { runtime: FakeAgentRuntime; envelopes: CandidateEnvelope[] } {
   const envelopes: CandidateEnvelope[] = [];
-  const runtime = new FakeAgentRuntime({ sink: (envelope) => envelopes.push(envelope), mode, ...options });
+  const runtime = new FakeAgentRuntime({ sink: (envelope) => {
+    envelopes.push(envelope);
+    return { accepted: false, code: "lease_not_found", message: "observed" };
+  }, mode, ...options });
   return { runtime, envelopes };
 }
 

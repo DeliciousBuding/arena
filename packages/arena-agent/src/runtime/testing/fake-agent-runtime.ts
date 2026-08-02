@@ -14,6 +14,7 @@
  */
 
 import { emptyPlan, type Plan } from "../../domain/model.ts";
+import type { LeaseSubmission } from "../decision-lease.ts";
 import {
   type AgentDecisionRequest,
   type AgentDecisionRuntime,
@@ -21,6 +22,7 @@ import {
   type AgentRunHandle,
   type AgentRunResult,
   type CandidateEnvelope,
+  type CandidateSink,
 } from "../decision-types.ts";
 
 // ---------- 微型确定性时钟（无真实 timer） ----------
@@ -102,8 +104,8 @@ export type FakeRuntimeModeSelector =
   | ((request: AgentDecisionRequest) => FakeRuntimeMode);
 
 export interface FakeAgentRuntimeOptions {
-  /** 候选投递口（coordinator 会把 sink 接到 LeaseRegistry.submit）。 */
-  readonly sink: (envelope: CandidateEnvelope) => void;
+  /** 候选投递口（DecisionCoordinator 构造时经 bindCandidateSink 接入 LeaseRegistry.submit）。 */
+  readonly sink: CandidateSink;
   /** 每个 run 的行为：静态模式，或按请求动态选择（coordinator 逐 tick 控制用）。 */
   readonly mode: FakeRuntimeModeSelector;
   /** 共享时钟（缺省自建，经 runtime.clock 读取）。 */
@@ -189,7 +191,7 @@ export class FakeAgentRuntime implements AgentDecisionRuntime {
   readonly abortLog: Array<{ readonly runId: string; readonly reason: string }> = [];
 
   private options: FakeAgentRuntimeOptions;
-  private sinkImpl: (envelope: CandidateEnvelope) => void;
+  private sinkImpl: CandidateSink;
   private active: FakeRun | null = null;
   private closedFlag = false;
 
@@ -199,8 +201,9 @@ export class FakeAgentRuntime implements AgentDecisionRuntime {
     this.sinkImpl = options.sink;
   }
 
-  /** 候选投递口（DecisionCoordinator 构造时接入 LeaseRegistry.submit）。 */
-  setSink(sink: (envelope: CandidateEnvelope) => void): void {
+  /** 候选投递口（GPT 审核契约：必选方法；DecisionCoordinator 构造时绑定 registry.submit）。
+   *  返回结构化 LeaseSubmission——工具/测试能拿到 accepted 或具体拒绝 code。 */
+  bindCandidateSink(sink: CandidateSink): void {
     this.sinkImpl = sink;
   }
 

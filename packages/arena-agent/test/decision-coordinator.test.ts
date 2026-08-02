@@ -83,7 +83,7 @@ function makeState(tick: number): TickState {
 function makeHarness(mode: FakeRuntimeMode, plan?: Plan): Harness {
   const clock = new FakeClock();
   const runtime = new FakeAgentRuntime({
-    sink: () => {},
+    sink: () => ({ accepted: false, code: "lease_not_found", message: "unused" }),
     mode,
     clock,
     ...(plan !== undefined ? { plan } : {}),
@@ -158,7 +158,7 @@ test("4. 候选在 deadline 前 1ms 到达 → 可接受", async () => {
 
 test("5. 候选恰好在 deadline 到达 → 拒绝（Lease now>=deadline 即过期）", async () => {
   const clock = new FakeClock();
-  const runtime = new FakeAgentRuntime({ sink: () => {}, mode: "never-settles", clock });
+  const runtime = new FakeAgentRuntime({ sink: () => ({ accepted: false, code: "lease_not_found", message: "unused" }), mode: "never-settles", clock });
   const registry = new LeaseRegistry();
   const coordinator = new DecisionCoordinator({
     runtime,
@@ -187,7 +187,7 @@ test("5. 候选恰好在 deadline 到达 → 拒绝（Lease now>=deadline 即过
 test("6. Agent 在 deadline 后提交 → stale rejection", async () => {
   const clock = new FakeClock();
   const runtime = new FakeAgentRuntime({
-    sink: () => {},
+    sink: () => ({ accepted: false, code: "lease_not_found", message: "unused" }),
     mode: "delayed-valid",
     clock,
     delayMs: 150, // 提交在 soft(100) 之后
@@ -321,7 +321,7 @@ test("14. 最终计划必过 validator（即使 Safety 被 repair 仍标 safety�
 
 test("15. SafetyPlanner 抛异常 → emergency", async () => {
   const clock = new FakeClock();
-  const runtime = new FakeAgentRuntime({ sink: () => {}, mode: "never-settles", clock });
+  const runtime = new FakeAgentRuntime({ sink: () => ({ accepted: false, code: "lease_not_found", message: "unused" }), mode: "never-settles", clock });
   const brokenPlanner = {
     decide: () => {
       throw new Error("planner exploded");
@@ -349,7 +349,7 @@ test("15. SafetyPlanner 抛异常 → emergency", async () => {
 
 test("16. 1000 模拟 Tick：registry 有界 + 全部 settle", async () => {
   const clock = new FakeClock();
-  const runtime = new FakeAgentRuntime({ sink: () => {}, mode: "immediate-valid", clock });
+  const runtime = new FakeAgentRuntime({ sink: () => ({ accepted: false, code: "lease_not_found", message: "unused" }), mode: "immediate-valid", clock });
   const registry = new LeaseRegistry();
   const coordinator = new DecisionCoordinator({
     runtime,
@@ -377,7 +377,7 @@ test("16. 1000 模拟 Tick：registry 有界 + 全部 settle", async () => {
 test("17. handle.runId ≠ request.runId → 立即 abort + Safety + violation（不等 deadline）", async () => {
   const clock = new FakeClock();
   const runtime = new FakeAgentRuntime({
-    sink: () => {},
+    sink: () => ({ accepted: false, code: "lease_not_found", message: "unused" }),
     mode: "never-settles",
     clock,
     handleRunId: () => "rogue-run",
@@ -428,7 +428,7 @@ test("18. 上一 run active → startDecision 抛错 → 立即 Safety（不等 
 test("19. 选择过程超过 selection deadline → 弃候选，用已准备好的 SafetyPlan", async () => {
   const clock = new FakeClock();
   const runtime = new FakeAgentRuntime({
-    sink: () => {},
+    sink: () => ({ accepted: false, code: "lease_not_found", message: "unused" }),
     mode: "delayed-valid",
     clock,
     plan: agentPlan(100, { u1: { type: "MOVE", direction: "UP" } }),
@@ -465,7 +465,7 @@ test("19. 选择过程超过 selection deadline → 弃候选，用已准备好�
 
 test("20. run 最终 settle 经 onRunSettled telemetry 上报（不阻塞决策路径）", async () => {
   const clock = new FakeClock();
-  const runtime = new FakeAgentRuntime({ sink: () => {}, mode: "submits-after-abort", clock });
+  const runtime = new FakeAgentRuntime({ sink: () => ({ accepted: false, code: "lease_not_found", message: "unused" }), mode: "submits-after-abort", clock });
   const settledEvents: Array<{ runId: string; result: AgentRunResult }> = [];
   const coordinator = new DecisionCoordinator({
     runtime,
