@@ -14,10 +14,10 @@ if TYPE_CHECKING:
 
 # 方向轮盘：按 (i + base) % 4 旋转，确定性错开多 Worker 巡逻方向
 _DIRECTIONS = (Direction.RIGHT, Direction.DOWN, Direction.LEFT, Direction.UP)
-_DIRECTION_DELTA = {
-    Direction.RIGHT: (1, 0), Direction.DOWN: (0, 1),
-    Direction.LEFT: (-1, 0), Direction.UP: (0, -1),
-}
+
+
+def _direction_delta(d: Direction) -> "Position":
+    return d.delta  # 官方实现：UP=(0,-1) DOWN=(0,1) LEFT=(-1,0) RIGHT=(1,0)
 
 
 def manhattan(a: "Position", b: "Position") -> int:
@@ -87,7 +87,7 @@ def explore_target(pos: "Position", home: "Position", beacon_pos: "Position",
     else:
         base = 1 if dy >= 0 else 3      # DOWN 或 UP
     d = _DIRECTIONS[(base + index) % 4]
-    delta = _DIRECTION_DELTA[d]
+    delta = _direction_delta(d)
     return (home[0] + delta[0] * radius, home[1] + delta[1] * radius)
 
 

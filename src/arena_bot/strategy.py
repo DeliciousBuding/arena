@@ -98,7 +98,8 @@ def _apply_action(obj, action: Action) -> None:
     elif kind == "SWEEP":
         obj.sweep(action.direction)
     elif kind == "SHOOT":
-        obj.shoot(action.target_id, action.expected_cell)
+        # SDK 签名：shoot(target, *, expected_cell=None) —— expected_cell 仅关键字
+        obj.shoot(action.target_id, expected_cell=action.expected_cell)
     elif kind == "SPAWN":
         obj.spawn(action.unit_type)
     elif kind == "WAIT":
