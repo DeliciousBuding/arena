@@ -1,4 +1,4 @@
-# CLAUDE.md — Arena Hero 游戏接管项目
+# AGENTS.md — Arena Hero 游戏接管项目
 
 最后更新：2026-08-02
 
