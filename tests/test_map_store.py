@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 from arena_hero import BeaconStatus, CoreState, Direction, UnitType
@@ -85,6 +86,38 @@ def test_concurrent_writers_no_lock(tmp_path):
     # 主线程连接实时看到双方数据（无锁冲突）
     assert len(ms1.obstacles()) == 20
     ms1.close()
+
+
+def test_multiprocess_concurrent_write(tmp_path):
+    """多进程并发写（4 租户同时启动场景）：BEGIN IMMEDIATE + 重试，无 locked。"""
+    import subprocess
+    import sys
+    db = tmp_path / "m.db"
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "from pathlib import Path\n"
+        "from arena_bot.map_store import MapStore\n"
+        "ms = MapStore(Path(%r))\n"
+        "pid = int(sys.argv[1])\n"
+        "for i in range(20):\n"
+        "    ms.record({(i, pid * 50000 + i)}, sys.argv[1], 1)\n"
+        "    ms.record({(i, pid * 50000 + 25000 + i)}, sys.argv[1], 1)\n"
+        "ms.close()\n"
+        "print('ok')\n"
+    ) % (str(Path(__file__).resolve().parents[1]), str(db))
+    procs = [subprocess.Popen(
+        [sys.executable, "-c", code, str(i)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for i in range(1, 5)]
+    for p in procs:
+        out, err = p.communicate(timeout=60)
+        assert p.returncode == 0, f"进程失败: {err}"
+        assert "ok" in out
+    # 全部落盘：4 进程 × 20 tick × 2 格 = 160
+    ms = MapStore(db)
+    assert len(ms.obstacles()) == 160
+    assert ms.stats()["revision"] == 160
+    ms.close()
 
 
 def test_stats_chunks(tmp_path):

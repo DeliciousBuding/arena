@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 CHUNK_SIZE = 32  # 规则：地图按 32x32 chunk 生成
@@ -35,20 +36,8 @@ class MapStore:
         self._conn = sqlite3.connect(path, timeout=10.0, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS obstacles ("
-            "x INT NOT NULL, y INT NOT NULL, observer TEXT, seen_tick INT, "
-            "PRIMARY KEY (x, y))")
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS allies ("
-            "username TEXT PRIMARY KEY, observer TEXT, seen_tick INT)")
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS map_meta ("
-            "key TEXT PRIMARY KEY, value INT NOT NULL)")
-        self._conn.execute(
-            "INSERT OR IGNORE INTO map_meta (key, value) VALUES (?, 0)",
-            (_REVISION_KEY,))
-        self._conn.commit()
+        # 建表用显式写事务 + 重试：4 租户同时启动并发 DDL 会 database is locked
+        self._setup_schema()
         # 内存缓存 + 增量游标（rowid > last_* 的行还没加载）
         self._obstacles: set[tuple[int, int]] = set()
         self._allies: set[str] = set()
@@ -56,6 +45,32 @@ class MapStore:
         self._last_ally_rowid = 0
         self._last_revision = -1
         self._refresh()
+
+    def _setup_schema(self) -> None:
+        for attempt in range(5):
+            try:
+                with self._lock:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    self._conn.execute(
+                        "CREATE TABLE IF NOT EXISTS obstacles ("
+                        "x INT NOT NULL, y INT NOT NULL, observer TEXT, "
+                        "seen_tick INT, PRIMARY KEY (x, y))")
+                    self._conn.execute(
+                        "CREATE TABLE IF NOT EXISTS allies ("
+                        "username TEXT PRIMARY KEY, observer TEXT, seen_tick INT)")
+                    self._conn.execute(
+                        "CREATE TABLE IF NOT EXISTS map_meta ("
+                        "key TEXT PRIMARY KEY, value INT NOT NULL)")
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO map_meta (key, value) VALUES (?, 0)",
+                        (_REVISION_KEY,))
+                    self._conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() and attempt < 4:
+                    time.sleep(0.2 * (attempt + 1))
+                    continue
+                raise
 
     # ---- 跨进程一致性 ----
 
@@ -86,11 +101,34 @@ class MapStore:
             self._allies.add(username)
             self._last_ally_rowid = rowid
 
-    def _bump_revision(self) -> None:
-        self._conn.execute(
-            "INSERT INTO map_meta (key, value) VALUES (?, 1) "
-            "ON CONFLICT(key) DO UPDATE SET value = value + 1",
-            (_REVISION_KEY,))
+    def _write(self, stmts):
+        """显式写事务（BEGIN IMMEDIATE）+ 重试：多进程并发写安全。
+
+        stmts: [(sql, params, many)]——many=True 用 executemany（多行插入）。
+        4 租户同时写时 WAL 单写者——busy_timeout 兜底 + 有限重试。
+        """
+        for attempt in range(5):
+            try:
+                with self._lock:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    first_cur = None
+                    for sql, p, many in stmts:
+                        cur = (self._conn.executemany(sql, p) if many
+                               else self._conn.execute(sql, p))
+                        if first_cur is None:
+                            first_cur = cur  # 首个（INSERT OR IGNORE）的 rowcount 是实际插入数
+                    self._conn.commit()
+                return first_cur
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() and attempt < 4:
+                    try:
+                        self._conn.rollback()
+                    except Exception:
+                        pass
+                    time.sleep(0.2 * (attempt + 1))
+                    continue
+                raise
+        return None  # 不可达（重试耗尽已 raise）
 
     # ---- 写入 ----
 
@@ -99,29 +137,35 @@ class MapStore:
         with self._lock:
             if not cells:
                 return 0
-            cur = self._conn.executemany(
-                "INSERT OR IGNORE INTO obstacles (x, y, observer, seen_tick) "
-                "VALUES (?, ?, ?, ?)",
-                [(x, y, observer, tick) for x, y in cells])
-            inserted = cur.rowcount  # OR IGNORE 下 = 实际插入行数（并发安全）
+            cur = self._write(
+                [
+                    ("INSERT OR IGNORE INTO obstacles (x, y, observer, seen_tick) "
+                     "VALUES (?, ?, ?, ?)",
+                     [(x, y, observer, tick) for x, y in cells], True),
+                    ("INSERT INTO map_meta (key, value) VALUES (?, 1) "
+                     "ON CONFLICT(key) DO UPDATE SET value = value + 1",
+                     (_REVISION_KEY,), False),
+                ],
+            )
+            inserted = cur.rowcount if cur is not None else 0
             if inserted > 0:
-                self._conn.commit()
-                self._bump_revision()
-                self._conn.commit()
                 self._load_incremental()  # 本进程立即看到（含 rowid 游标推进）
             return inserted
 
     def register_ally(self, username: str, observer: str, tick: int) -> bool:
         """注册盟友（我方账号的 Core username）。返回是否新增。"""
         with self._lock:
-            cur = self._conn.execute(
-                "INSERT OR IGNORE INTO allies (username, observer, seen_tick) "
-                "VALUES (?, ?, ?)", (username, observer, tick))
-            if cur.rowcount == 0:
+            cur = self._write(
+                [
+                    ("INSERT OR IGNORE INTO allies (username, observer, seen_tick) "
+                     "VALUES (?, ?, ?)", (username, observer, tick), False),
+                    ("INSERT INTO map_meta (key, value) VALUES (?, 1) "
+                     "ON CONFLICT(key) DO UPDATE SET value = value + 1",
+                     (_REVISION_KEY,), False),
+                ],
+            )
+            if cur is None or cur.rowcount == 0:
                 return False
-            self._conn.commit()
-            self._bump_revision()
-            self._conn.commit()
             self._load_incremental()
             return True
 
