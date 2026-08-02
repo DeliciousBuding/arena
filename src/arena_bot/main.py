@@ -128,8 +128,10 @@ def play(api_key: str, config: TacticConfig,
     log.info("arena-bot 启动（SDK 0.2.6 / 规则 v0.10）租户=%s", tenant.name if tenant else "solo")
 
     map_store = MapStore(MAP_STORE_PATH)  # 共享地图：4 账号协同测绘
-    log.info("共享地图加载：%s（%d 障碍格 / %d chunk）",
-             map_store.path, *map_store.stats().values())
+    _ms = map_store.stats()
+    log.info("共享地图加载：%s（%d 障碍格 / %d chunk / %d 盟友 / rev %d）",
+             map_store.path, _ms["obstacles_known"], _ms["chunks_explored"],
+             _ms["allies"], _ms["revision"])
 
     world = World(map_store)
     phase = PhaseMachine(config)
