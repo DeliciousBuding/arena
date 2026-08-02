@@ -4,9 +4,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { MapStore } from "../src/map-store.ts";
+
+/** 子进程 cwd 必须指向本仓库（勿硬编码别的仓库路径）。 */
+const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function freshDb(): string {
   const dir = mkdtempSync(join(tmpdir(), "mapstore-"));
@@ -126,7 +130,7 @@ test("多进程并发写：子进程同时写不同障碍无锁冲突", async ()
         ms.close();
       `;
       const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
-        cwd: "PROJECT_ROOT/arena/packages/arena-agent",
+        cwd: PKG_ROOT,
       });
       child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`child exit ${code}`))));
       child.on("error", reject);
