@@ -6,6 +6,13 @@
   - 坏 JSON fail-fast：数据集绝不包含未通过完整性校验的文件。
   - 源数据损坏显式留档（stderr + manifest.bad_files），绝不静默跳过。
   - 同输入重复构建产物字节一致（脱敏确定性 + JSON 保序 dump）。
+  - 输出按连续 tick 分组为 segments（每 segment 内部严格连续，禁止跨 gap 延续），
+    相邻 segment 之间的缺口写 gaps（契约 v1.0.1，见 docs/differential-record-v1.md）。
+  - decision_config 单源注入 manifest（两端不得各自读默认值）；config_hash 按
+    decision_config 的 canonical JSON 计算。
+  - 构建完成后自校验（stdlib 断言）：segments 覆盖全部 tick 且内部连续、inputs
+    sha256 与脱敏文件实测一致、config_hash 与 canonical JSON 一致、bad_files 与
+    全量扫描一致；任一断言失败 exit 1（不产出任何产物）。
 
 窗口选择语义：
   - --window N（默认 100）：优先取第一个 N 个连续 tick 且全部通过校验的窗口；
@@ -17,6 +24,7 @@
   uv run python scripts/differential/fixture_builder.py \
       --source runs/<run_id>/raw-state --dataset <id> --tenant auto \
       --out fixtures/differential/<dataset> [--map-mode disabled]
+      [--config-json '{"worker_target": 8, ...}']
 """
 
 from __future__ import annotations
@@ -35,7 +43,13 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.differential.fixture_model import MAP_MODES, DatasetManifest
+from scripts.differential.fixture_model import (
+    DEFAULT_DECISION_CONFIG,
+    MAP_MODES,
+    DatasetManifest,
+    canonical_json,
+    config_hash_of,
+)
 
 TENANTS = ("auto", "t1", "t2", "t3", "t4")
 
@@ -49,6 +63,7 @@ ACCOUNT_NAMES = ("deliciousbuding", "delicious23333", "delicious233", "delicious
 LOCAL_PATHS = ("D:/", "C:/", "D:\\", "C:\\")
 
 TICK_RE = re.compile(r"^(\d+)\.json$")
+SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class FixtureBuildError(Exception):
@@ -168,13 +183,35 @@ def select_window(valid_ticks: list[int], window: int, hard: bool) -> tuple[list
     return longest, f"窗口 [{longest[0]}..{longest[-1]}] 共 {len(longest)} ticks（降级）"
 
 
-def compute_gaps(ticks: list[int]) -> list[int]:
-    """source 跨度 [min, max] 内缺失的 tick 号（非连续缺口，显式进 manifest）。"""
-    if len(ticks) < 2:
-        return []
-    lo, hi = ticks[0], ticks[-1]
-    present = set(ticks)
-    return [t for t in range(lo, hi + 1) if t not in present]
+# ---------------------------------------------------------------- segments / gaps（契约 v1.0.1）
+
+def compute_segments(ticks: list[int], tenant_id: str) -> list[dict[str, Any]]:
+    """把升序 tick 列表按连续段分组为 segments（每段内部严格连续，禁止跨 gap 延续）。
+
+    segment_id 形如 "<tenant_id>-<seq>"（如 t1-001），与 record 的 segment_id 对齐。
+    """
+    runs: list[list[int]] = []
+    for t in ticks:
+        if runs and t == runs[-1][-1] + 1:
+            runs[-1].append(t)
+        else:
+            runs.append([t])
+    return [
+        {"segment_id": f"{tenant_id}-{i:03d}", "ticks": run}
+        for i, run in enumerate(runs, start=1)
+    ]
+
+
+def compute_gap_entries(segments: list[dict[str, Any]]) -> list[dict[str, int]]:
+    """相邻 segment 之间的缺口 -> [{after, before, missing_count}]。
+
+    missing_count = before - after - 1；无相邻 pair 时返回 []。
+    """
+    gaps: list[dict[str, int]] = []
+    for a, b in zip(segments, segments[1:]):
+        after, before = a["ticks"][-1], b["ticks"][0]
+        gaps.append({"after": after, "before": before, "missing_count": before - after - 1})
+    return gaps
 
 
 # ---------------------------------------------------------------- 脱敏（确定性）
@@ -211,7 +248,55 @@ def relative_source(source: Path) -> str:
 
 
 def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+    """脱敏后文件内容的 sha256，统一 "sha256:<64hex>" 前缀（契约 v1.0.1 规则 9）。"""
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+# ---------------------------------------------------------------- 构建后自校验（fail-fast）
+
+def self_check(
+    manifest: DatasetManifest,
+    payloads: dict[int, bytes],
+    chosen: list[int],
+    bad_ticks: list[int],
+) -> None:
+    """构建完成后自校验（stdlib 断言；任一失败 → FixtureBuildError → exit 1）。
+
+    断言项：
+      1. segments 覆盖全部选中 tick，且每 segment 内部严格连续；
+      2. inputs[tick].sha256 与脱敏文件实测一致（前缀格式 + 逐字节 sha256 + size）；
+      3. config_hash 与 decision_config 的 canonical JSON 一致；
+      4. bad_files 与全量扫描一致。
+    """
+    flat = [t for seg in manifest.segments for t in seg["ticks"]]
+    if flat != chosen:
+        raise FixtureBuildError(f"自校验失败: segments 未覆盖全部选中 tick（{len(flat)} != {len(chosen)}）")
+    for seg in manifest.segments:
+        ticks = seg["ticks"]
+        if any(b != a + 1 for a, b in zip(ticks, ticks[1:])):
+            raise FixtureBuildError(f"自校验失败: segment {seg['segment_id']} 内部不连续: {ticks}")
+
+    for tick in chosen:
+        info = manifest.inputs[str(tick)]
+        if not SHA256_RE.fullmatch(info["sha256"]):
+            raise FixtureBuildError(f"自校验失败: inputs[{tick}].sha256 前缀格式非法: {info['sha256']!r}")
+        if info["sha256"] != sha256_bytes(payloads[tick]):
+            raise FixtureBuildError(f"自校验失败: inputs[{tick}].sha256 与脱敏文件实测不一致")
+        if info["size"] != len(payloads[tick]):
+            raise FixtureBuildError(
+                f"自校验失败: inputs[{tick}].size {info['size']} != 实测 {len(payloads[tick])}"
+            )
+
+    expected_hash = config_hash_of(manifest.decision_config)
+    if manifest.config_hash != expected_hash:
+        raise FixtureBuildError(
+            f"自校验失败: config_hash {manifest.config_hash} != canonical JSON 实测 {expected_hash}"
+        )
+    if manifest.bad_files != bad_ticks:
+        raise FixtureBuildError(f"自校验失败: bad_files 与全量扫描不一致: {manifest.bad_files}")
+
+    print(f"自校验通过: {len(manifest.segments)} segments / {len(flat)} ticks / "
+          f"config_hash={manifest.config_hash}")
 
 
 # ---------------------------------------------------------------- 主流程
@@ -223,10 +308,12 @@ def run(
     map_mode: str,
     window: int,
     hard_window: bool,
+    decision_config: dict[str, Any] | None = None,
 ) -> tuple[DatasetManifest, dict[int, bytes]]:
     """执行一次构建，返回 (manifest, payloads)。
 
     payloads: tick -> 脱敏后字节（sha256 与之逐字节一致，写盘由调用方完成）。
+    decision_config: 决策配置单源（默认契约中立配置 DEFAULT_DECISION_CONFIG）。
     任何 FixtureBuildError 都不会产出产物（fail-fast）。
     """
     src_dir, tenant_id = resolve_tenant_dir(source, tenant)
@@ -245,8 +332,9 @@ def run(
     if not good_ordered:
         raise FixtureBuildError("所有 tick 文件均未通过完整性校验，无法构建")
     chosen, note = select_window(good_ordered, window, hard=hard_window)
-    gaps = compute_gaps(ordered)
     bad_ticks = [t for t, _p, _r in errors]
+
+    config = dict(decision_config) if decision_config is not None else dict(DEFAULT_DECISION_CONFIG)
 
     inputs: dict[str, dict[str, Any]] = {}
     payloads: dict[int, bytes] = {}
@@ -256,18 +344,25 @@ def run(
         payloads[tick] = data
         inputs[str(tick)] = {"sha256": sha256_bytes(data), "size": len(data)}
 
+    segments = compute_segments(chosen, tenant_id)
     manifest = DatasetManifest(
         dataset_id=dataset,
         source=relative_source(src_dir),
         tenant_id=tenant_id,
-        ticks=chosen,
-        gaps=gaps,
+        segments=segments,
+        gaps=compute_gap_entries(segments),
         inputs=inputs,
+        decision_config=config,
+        config_hash=config_hash_of(config),
         map_mode=map_mode,
         bad_files=bad_ticks,
     )
     print(note)
-    print(f"缺口(gaps): {gaps}（{len(gaps)} 个）  坏文件(bad_files): {len(bad_ticks)} 个 → 已写入 manifest")
+    print(f"segments: {[(s['segment_id'], len(s['ticks'])) for s in manifest.segments]}  "
+          f"gaps: {manifest.gaps}（{len(manifest.gaps)} 个）  "
+          f"坏文件(bad_files): {len(bad_ticks)} 个 → 已写入 manifest")
+
+    self_check(manifest, payloads, chosen, bad_ticks)
     return manifest, payloads
 
 
@@ -287,10 +382,22 @@ def main(argv: list[str] | None = None) -> None:
                         help="期望连续 tick 窗口大小（默认 100）。与 --exact 配合时是硬约束")
     parser.add_argument("--exact", action="store_true",
                         help="窗口大小是硬约束：--window 无法满足则 exit 1（默认允许降级为最长连续干净窗口）")
+    parser.add_argument("--config-json", default=None,
+                        help="decision_config 单源（JSON 对象字符串）；缺省注入契约中立默认配置")
     args = parser.parse_args(argv)
 
     if args.window <= 0:
         parser.error("--window 必须 >= 1")
+
+    decision_config: dict[str, Any] | None = None
+    if args.config_json is not None:
+        try:
+            parsed = json.loads(args.config_json)
+        except json.JSONDecodeError as exc:
+            parser.error(f"--config-json 不是合法 JSON: {exc}")
+        if not isinstance(parsed, dict):
+            parser.error("--config-json 必须是 JSON 对象（dict）")
+        decision_config = parsed
 
     try:
         manifest, payloads = run(
@@ -300,6 +407,7 @@ def main(argv: list[str] | None = None) -> None:
             map_mode=args.map_mode,
             window=args.window,
             hard_window=args.exact,
+            decision_config=decision_config,
         )
     except FixtureBuildError as exc:
         print(f"构建失败（不产出任何产物）: {exc}", file=sys.stderr)
@@ -311,9 +419,11 @@ def main(argv: list[str] | None = None) -> None:
         (out_dir / f"{tick}.json").write_bytes(data)
     (out_dir / "manifest.json").write_bytes(manifest.to_json().encode("utf-8"))
 
-    print(f"完成: {len(manifest.ticks)} 个脱敏 tick + manifest.json → {out_dir}")
+    print(f"完成: {len(manifest.segments)} segments / {sum(len(s['ticks']) for s in manifest.segments)} "
+          f"个脱敏 tick + manifest.json → {out_dir}")
     print(f"dataset={manifest.dataset_id} source={manifest.source} tenant={manifest.tenant_id} "
-          f"map_mode={manifest.map_mode} protocol_version={manifest.protocol_version}")
+          f"map_mode={manifest.map_mode} protocol_version={manifest.protocol_version} "
+          f"config_hash={manifest.config_hash}")
 
 
 if __name__ == "__main__":
