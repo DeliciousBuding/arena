@@ -83,7 +83,9 @@ const DEFAULT_TICK = 0;
  * 工厂函数：自动填 processRunId/tenantId/tick 默认值，并对结果立即做 schema 校验
  * （缺必填字段即抛错，fail-fast——校验失败绝不静默）。
  */
-export function runtimeTrace(partial: Partial<RuntimeTraceRecord>): RuntimeTraceRecord {
+export function runtimeTrace(
+  partial: Omit<RuntimeTraceRecord, "processRunId" | "tenantId" | "tick">,
+): RuntimeTraceRecord {
   const record: RuntimeTraceRecord = {
     processRunId: DEFAULT_PROCESS_RUN_ID,
     tenantId: DEFAULT_TENANT_ID,
@@ -94,7 +96,9 @@ export function runtimeTrace(partial: Partial<RuntimeTraceRecord>): RuntimeTrace
   return record;
 }
 
-export function decisionTrace(partial: Partial<DecisionTraceRecord>): DecisionTraceRecord {
+export function decisionTrace(
+  partial: Omit<DecisionTraceRecord, "processRunId" | "tenantId" | "tick">,
+): DecisionTraceRecord {
   const record: DecisionTraceRecord = {
     processRunId: DEFAULT_PROCESS_RUN_ID,
     tenantId: DEFAULT_TENANT_ID,
@@ -105,7 +109,9 @@ export function decisionTrace(partial: Partial<DecisionTraceRecord>): DecisionTr
   return record;
 }
 
-export function outcomeTrace(partial: Partial<OutcomeTraceRecord>): OutcomeTraceRecord {
+export function outcomeTrace(
+  partial: Omit<OutcomeTraceRecord, "processRunId" | "tenantId" | "tick">,
+): OutcomeTraceRecord {
   const record: OutcomeTraceRecord = {
     processRunId: DEFAULT_PROCESS_RUN_ID,
     tenantId: DEFAULT_TENANT_ID,
