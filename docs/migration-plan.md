@@ -30,9 +30,12 @@
 
 ## 2. 已完成基线
 
-- arena-hero-ts：协议实现、网络生命周期硬化、36 项测试；
-- MapStore TS：WAL、跨进程增量同步、有效 mutation revision；
+- arena-hero-ts：协议实现、网络生命周期硬化、47 项测试（含 Turn.replace 注入）；
+- MapStore TS：WAL、跨进程增量同步、有效 mutation revision（busy_timeout 前置 WAL pragma，并发首开锁修复）；
 - W0：AgentSession customTools、abort、waitForIdle、abort 后复用机制已验证；
+- W1：TypeBox wire schema 单源 + contracts/generated 契约产物 + Golden Replay（真实 fixture 解析）；
+- TS 编排层最小闭环：runtime/loop.ts（reduceTurn → DecisionLease → decide/safety → validatePlan → planToCommandPlan → Turn.replace → submit），21 测试；
+- shadow 验证：真实 raw-state（tick 40073-40088）全链路 replay 11/11 通过，只观察不提交（scripts/shadow-run.ts）；
 - run-scoped 目录与 manifest；
 - Python raw-state dump，仅用于 Golden Replay 素材；
 - TS 领域层第一版：规范化 TickState、World、PhaseMachine、导航、SafetyPlanner、PlanValidator、StateHash、DecisionLease。
