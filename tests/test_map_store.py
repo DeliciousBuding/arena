@@ -37,6 +37,56 @@ def test_cross_instance_shared(tmp_path):
     ms3.close()
 
 
+def test_live_cross_process_visibility(tmp_path):
+    """P0-1 核心：进程不重启，实时看到另一实例的新写入（revision 增量）。"""
+    db = tmp_path / "m.db"
+    ms1 = MapStore(db)
+    ms1.record({(1, 1)}, "t1", 1)
+    ms2 = MapStore(db)  # ms2 启动后 ms1 持续运行
+    assert ms2.obstacles() == frozenset({(1, 1)})
+    # ms2 写入 → ms1 无需重启即看到
+    ms2.record({(50, 50), (51, 51)}, "t2", 2)
+    assert ms1.obstacles() == frozenset({(1, 1), (50, 50), (51, 51)})
+    # 盟友同样实时
+    ms2.register_ally("buding", "t2", 2)
+    assert ms1.allies() == frozenset({"buding"})
+    # revision 单调递增
+    r1 = ms1.stats()["revision"]
+    ms2.record({(60, 60)}, "t2", 3)
+    assert ms1.stats()["revision"] > r1
+    ms1.close()
+    ms2.close()
+
+
+def test_concurrent_writers_no_lock(tmp_path):
+    """两实例并发写不同障碍：busy_timeout 下无 database locked，全部落盘。
+
+    模拟两个租户进程：各 writer 线程用自己创建的连接（SQLite 连接线程亲和，
+    生产中是每进程一个连接，无跨线程问题）。
+    """
+    import threading
+    db = tmp_path / "m.db"
+    ms1 = MapStore(db)  # 主线程连接，最后用于验证可见性
+    results = {}
+
+    def writer(name, cells):
+        ms = MapStore(db)  # 本线程专用连接（模拟独立进程）
+        try:
+            results[name] = ms.record(cells, name, 1)
+        except Exception as exc:  # noqa: BLE001
+            results[name] = f"ERROR: {exc}"
+        finally:
+            ms.close()
+
+    t1 = threading.Thread(target=writer, args=("t1", {(i, i) for i in range(10)}))
+    t2 = threading.Thread(target=writer, args=("t2", {(i, i + 100) for i in range(10)}))
+    t1.start(); t2.start(); t1.join(); t2.join()
+    assert "ERROR" not in str(results.values())
+    # 主线程连接实时看到双方数据（无锁冲突）
+    assert len(ms1.obstacles()) == 20
+    ms1.close()
+
+
 def test_stats_chunks(tmp_path):
     ms = MapStore(tmp_path / "m.db")
     ms.record({(5, 5), (100, 100)}, "t1", 1)  # (5,5) chunk(0,0); (100,100) chunk(3,3)
