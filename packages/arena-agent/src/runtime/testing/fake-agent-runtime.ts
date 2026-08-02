@@ -122,8 +122,9 @@ export interface FakeAgentRuntimeOptions {
   readonly wrongStateHash?: string;
   /** throws 模式的错误信息（缺省 "fake runtime error"）。 */
   readonly failMessage?: string;
-  /** runId 生成（缺省 "fake-run-N" 单调递增）。 */
-  readonly runIdFor?: (request: AgentDecisionRequest) => string;
+  /** 3E 故障注入：startDecision 返回的 handle 使用的 runId（缺省 request.runId 单源）。
+   *  仅测试证明 runId 不一致违规时使用。 */
+  readonly handleRunId?: (request: AgentDecisionRequest) => string;
 }
 
 // ---------- run 内部状态 ----------
@@ -190,7 +191,6 @@ export class FakeAgentRuntime implements AgentDecisionRuntime {
   private options: FakeAgentRuntimeOptions;
   private sinkImpl: (envelope: CandidateEnvelope) => void;
   private active: FakeRun | null = null;
-  private runSeq = 0;
   private closedFlag = false;
 
   constructor(options: FakeAgentRuntimeOptions) {
@@ -204,9 +204,12 @@ export class FakeAgentRuntime implements AgentDecisionRuntime {
     this.sinkImpl = sink;
   }
 
-  /** runId 生成器（DecisionCoordinator 注入，保证 lease runId 与候选 runId 一致）。 */
-  setRunIdFor(fn: (request: AgentDecisionRequest) => string): void {
-    this.options = { ...this.options, runIdFor: fn };
+  /** 3E：契约违规上报（coordinator 检测 runId 不一致时调用）→ 记录并标记不健康。 */
+  readonly violationLog: string[] = [];
+  private violated = false;
+  reportViolation(reason: string): void {
+    this.violationLog.push(reason);
+    this.violated = true;
   }
 
   get activeRunId(): string | null {
@@ -220,7 +223,12 @@ export class FakeAgentRuntime implements AgentDecisionRuntime {
     if (this.active !== null) {
       throw new Error(`overlapping run: ${this.active.runId} is not settled`);
     }
-    const run = new FakeRun(this.nextRunId(request), request, this.resolveMode(request));
+    // 3E-1：handle.runId 默认严格等于 request.runId（单源）；handleRunId 仅故障注入用
+    const run = new FakeRun(
+      this.options.handleRunId !== undefined ? this.options.handleRunId(request) : request.runId,
+      request,
+      this.resolveMode(request),
+    );
     this.active = run;
     this.arm(run);
     return {
@@ -235,6 +243,13 @@ export class FakeAgentRuntime implements AgentDecisionRuntime {
   health(): AgentRuntimeHealth {
     if (this.closedFlag) {
       return { ready: false, activeRunId: null, reason: "closed" };
+    }
+    if (this.violated) {
+      return {
+        ready: false,
+        activeRunId: this.active?.runId ?? null,
+        reason: `violation: ${this.violationLog[this.violationLog.length - 1]}`,
+      };
     }
     return { ready: true, activeRunId: this.active?.runId ?? null };
   }
@@ -252,11 +267,6 @@ export class FakeAgentRuntime implements AgentDecisionRuntime {
   private resolveMode(request: AgentDecisionRequest): FakeRuntimeMode {
     const mode = this.options.mode;
     return typeof mode === "function" ? mode(request) : mode;
-  }
-
-  private nextRunId(request: AgentDecisionRequest): string {
-    this.runSeq += 1;
-    return this.options.runIdFor !== undefined ? this.options.runIdFor(request) : `fake-run-${this.runSeq}`;
   }
 
   private planFor(request: AgentDecisionRequest): Plan {
@@ -349,7 +359,7 @@ export class FakeAgentRuntime implements AgentDecisionRuntime {
     const request = run.request;
     const envelope: CandidateEnvelope = {
       protocolVersion: "1",
-      runId: run.runId,
+      runId: request.runId, // 3E-1 单源：候选携带 coordinator 分配的 runId（工具参数来源）
       tenantId: request.tenantId,
       tick: request.tick,
       stateHash: request.stateHash,

@@ -15,9 +15,10 @@ import { validatePlan } from "../src/domain/plan-validator.ts";
 import type { Plan, TickState } from "../src/domain/model.ts";
 import { DecisionCoordinator } from "../src/runtime/decision-coordinator.ts";
 import { LeaseRegistry } from "../src/runtime/lease-registry.ts";
+import { PlanArbiter } from "../src/runtime/plan-arbiter.ts";
 import { FakeAgentRuntime, FakeClock, type FakeRuntimeMode } from "../src/runtime/testing/fake-agent-runtime.ts";
 import { emptyPlan } from "../src/domain/model.ts";
-import type { CandidateEnvelope } from "../src/runtime/decision-types.ts";
+import type { AgentRunResult, CandidateEnvelope } from "../src/runtime/decision-types.ts";
 
 const MIN_STATE: PlayerState = {
   status: "ACTIVE",
@@ -369,4 +370,121 @@ test("16. 1000 模拟 Tick：registry 有界 + 全部 settle", async () => {
   const stats = registry.stats();
   assert.ok(stats.total <= 1100, `registry 有界（实际 ${stats.total}）`);
   assert.equal(runtime.settleLog.length, 1000); // 全部 settle
+});
+
+// ---------- 17-20：3E 勘误（runId 单源 / 启动失败立即 Safety / selection deadline / settle telemetry） ----------
+
+test("17. handle.runId ≠ request.runId → 立即 abort + Safety + violation（不等 deadline）", async () => {
+  const clock = new FakeClock();
+  const runtime = new FakeAgentRuntime({
+    sink: () => {},
+    mode: "never-settles",
+    clock,
+    handleRunId: () => "rogue-run",
+  });
+  const coordinator = new DecisionCoordinator({
+    runtime,
+    planner: new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
+    registry: new LeaseRegistry(),
+    clock,
+    budgetConfig: BUDGET,
+    tenantId: "t1",
+    rulesVersion: "v0.11",
+    configHash: "test",
+    sleepUntil: (d, c) =>
+      new Promise<void>((r) => (c as FakeClock).setTimeout(() => r(), Math.max(0, d - c.now()))),
+  });
+  let resolved = false;
+  const pending = coordinator.decide(makeState(100)).then((r) => {
+    resolved = true;
+    return r;
+  });
+  const result = await pending; // 不 advance：startDecision 返回后同步检测
+  assert.equal(resolved, true);
+  assert.equal(result.source, "safety");
+  assert.equal(result.deadlineOutcome, "error");
+  assert.ok(runtime.violationLog.some((v) => v.includes("run_id_mismatch")));
+  assert.ok(runtime.abortLog.some((a) => a.reason.includes("run_id_mismatch")));
+  assert.equal(runtime.health().ready, false); // runtime 标记 unhealthy
+});
+
+test("18. 上一 run active → startDecision 抛错 → 立即 Safety（不等 soft deadline）", async () => {
+  const h = makeHarness("never-settles");
+  const r1 = h.coordinator.decide(h.state);
+  h.clock.advance(100);
+  await r1; // tick 100 → safety，run 仍 active（never-settles）
+  let resolved = false;
+  const p2 = h.coordinator.decide(makeState(101)).then((r) => {
+    resolved = true;
+    return r;
+  });
+  const r2 = await p2; // 不 advance：startDecision 抛错 → 立即返回
+  assert.equal(resolved, true);
+  assert.equal(r2.source, "safety");
+  assert.equal(r2.deadlineOutcome, "error");
+  assert.equal(r2.tick, 101);
+});
+
+test("19. 选择过程超过 selection deadline → 弃候选，用已准备好的 SafetyPlan", async () => {
+  const clock = new FakeClock();
+  const runtime = new FakeAgentRuntime({
+    sink: () => {},
+    mode: "delayed-valid",
+    clock,
+    plan: agentPlan(100, { u1: { type: "MOVE", direction: "UP" } }),
+  });
+  const realArbiter = new PlanArbiter();
+  // 注入慢 arbiter：arbitrate 期间推进时钟越过 selection deadline(200)
+  const slowArbiter = {
+    arbitrate: (input: Parameters<PlanArbiter["arbitrate"]>[0]) => {
+      clock.advance(250);
+      return realArbiter.arbitrate(input);
+    },
+    emergencyPlan: (s: TickState) => realArbiter.emergencyPlan(s),
+  } as unknown as PlanArbiter;
+  const coordinator = new DecisionCoordinator({
+    runtime,
+    planner: new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
+    registry: new LeaseRegistry(),
+    clock,
+    budgetConfig: BUDGET,
+    tenantId: "t1",
+    rulesVersion: "v0.11",
+    configHash: "test",
+    arbiter: slowArbiter,
+    sleepUntil: (d, c) =>
+      new Promise<void>((r) => (c as FakeClock).setTimeout(() => r(), Math.max(0, d - c.now()))),
+  });
+  const pending = coordinator.decide(makeState(100));
+  clock.advance(100); // 候选 50ms 投递（accepted）；raceCandidate 在 soft(100) 取回候选
+  const result = await pending; // 慢 arbiter 已把时钟推到 350（> selection 200）
+  assert.equal(result.source, "safety"); // 候选被弃，SafetyPlan 固定
+  assert.equal(result.deadlineOutcome, "selection_timeout");
+  assert.ok(result.selectionLatencyMs >= BUDGET.selectionMs);
+});
+
+test("20. run 最终 settle 经 onRunSettled telemetry 上报（不阻塞决策路径）", async () => {
+  const clock = new FakeClock();
+  const runtime = new FakeAgentRuntime({ sink: () => {}, mode: "submits-after-abort", clock });
+  const settledEvents: Array<{ runId: string; result: AgentRunResult }> = [];
+  const coordinator = new DecisionCoordinator({
+    runtime,
+    planner: new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
+    registry: new LeaseRegistry(),
+    clock,
+    budgetConfig: BUDGET,
+    tenantId: "t1",
+    rulesVersion: "v0.11",
+    configHash: "test",
+    sleepUntil: (d, c) =>
+      new Promise<void>((r) => (c as FakeClock).setTimeout(() => r(), Math.max(0, d - c.now()))),
+    onRunSettled: (info) => settledEvents.push(info),
+  });
+  const pending = coordinator.decide(makeState(100));
+  clock.advance(100); // soft → abort → submits-after-abort 提交并 settle
+  const result = await pending;
+  assert.equal(result.source, "safety");
+  assert.equal(result.abortRequested, true);
+  await new Promise((r) => setTimeout(r, 0)); // 微任务 flush（后台观察）
+  assert.ok(settledEvents.some((e) => e.runId === "t1-100-0" && e.result.outcome === "settled"));
 });

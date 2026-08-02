@@ -27,6 +27,7 @@ import type {
   AgentDecisionRequest,
   AgentDecisionRuntime,
   AgentRunHandle,
+  AgentRunResult,
   CandidateEnvelope,
   DecisionContext,
   DecisionResult,
@@ -44,12 +45,14 @@ export interface DecisionCoordinatorOptions {
   readonly arbiter?: PlanArbiter;
   /** 等待到截止时刻的可注入实现（测试用 FakeClock 驱动，默认 setTimeout）。 */
   readonly sleepUntil?: (deadlineMs: number, clock: Clock) => Promise<void>;
+  /** 3E：run 最终 settle 状态经此 telemetry 上报（不异步修改已返回的结果）。 */
+  readonly onRunSettled?: (info: { readonly runId: string; readonly result: AgentRunResult }) => void;
 }
 
-/** runtime 候选投递口（FakeAgentRuntime 等 testing 工具实现；Pi runtime 集成时对齐）。 */
+/** runtime 候选投递口（FakeAgentRuntime 等 testing 工具实现；Pi runtime 集成时对齐）。
+ *  3E：runId 已随 AgentDecisionRequest 单源下发，setRunIdFor 侧通道删除。 */
 interface SinkSettable {
   setSink?(sink: (envelope: CandidateEnvelope) => void): void;
-  setRunIdFor?(fn: (request: AgentDecisionRequest) => string): void;
 }
 
 const DEFAULT_SLEEP_UNTIL = (deadlineMs: number): Promise<void> =>
@@ -72,6 +75,7 @@ export class DecisionCoordinator {
   private readonly configHash: string;
   private readonly arbiter: PlanArbiter;
   private readonly sleepUntil: (deadlineMs: number, clock: Clock) => Promise<void>;
+  private readonly onRunSettled: DecisionCoordinatorOptions["onRunSettled"];
 
   /** 候选投递口（公开：Agent runtime / 测试经此投递，模拟 arena_plan 工具调用）。 */
   readonly sink: (envelope: CandidateEnvelope) => void;
@@ -87,6 +91,7 @@ export class DecisionCoordinator {
     this.configHash = options.configHash;
     this.arbiter = options.arbiter ?? new PlanArbiter();
     this.sleepUntil = options.sleepUntil ?? DEFAULT_SLEEP_UNTIL;
+    this.onRunSettled = options.onRunSettled;
     // 候选投递口：Agent runtime 经此投递（模拟 arena_plan 工具调用路径）
     this.sink = (envelope) => {
       // runId 精确索引：旧 run 的迟到调用命中旧 Lease（已终结 → 拒绝），永不漏到新 Tick
@@ -94,13 +99,9 @@ export class DecisionCoordinator {
     };
     const settable = this.runtime as AgentDecisionRuntime & SinkSettable;
     settable.setSink?.(this.sink);
-    // runId 同源：runtime 生成的 runId 必须与 lease runId 一致（候选经 runId 命中 lease）
-    settable.setRunIdFor?.((request) =>
-      `${this.tenantId}-${request.tick}-${request.context.receivedAtMonotonic}`,
-    );
   }
 
-  /** 每 Tick 决策：永远在 selection deadline 前 resolve。 */
+  /** 每 Tick 决策：永远在 selection deadline 前 resolve（启动失败/runId 违规则立即）。 */
   async decide(state: TickState): Promise<DecisionResult> {
     const t0 = this.clock.now();
     const budget = createDeadlineBudget(t0, this.budgetConfig);
@@ -115,6 +116,8 @@ export class DecisionCoordinator {
       configHash: this.configHash,
       receivedAtMonotonic: t0,
     };
+    // 3E-1：runId 由 coordinator 唯一分配（单源），注册 Lease 后随 request 下发
+    const runId = `${this.tenantId}-${tick}-${t0}`;
 
     // 1) Safety 预计算（立即，不等待 Agent）
     let safetyPlan: Plan;
@@ -127,7 +130,6 @@ export class DecisionCoordinator {
     }
 
     // 2) Lease 注册（runId 精确索引；deadline = soft deadline，Lease 内部校验）
-    const runId = `${this.tenantId}-${tick}-${t0}`;
     const lease = new DecisionLease({
       runId,
       tick,
@@ -137,10 +139,12 @@ export class DecisionCoordinator {
     });
     this.registry.register(lease);
 
-    // 3) 启动 Agent run（异常 → 无 handle，走 safety）
+    // 3) 启动 Agent run（3E-2：启动失败/违规 → 立即 Safety，不等 soft deadline）
     let handle: AgentRunHandle | null = null;
+    let startupError: string | null = null;
     try {
       const request: AgentDecisionRequest = {
+        runId,
         tenantId: this.tenantId,
         tick,
         state,
@@ -148,14 +152,41 @@ export class DecisionCoordinator {
         context,
       };
       handle = this.runtime.startDecision(request);
-    } catch {
+      if (handle.runId !== runId) {
+        // 3E-1：handle 必须携带 coordinator 分配的 runId；不一致 = 契约违规
+        startupError = `run_id_mismatch: expected ${runId}, got ${handle.runId}`;
+        handle.abort(startupError);
+        handle = null;
+        this.runtime.reportViolation?.(startupError);
+      }
+    } catch (exc) {
+      startupError = exc instanceof Error ? exc.message : String(exc);
       handle = null;
+    }
+
+    if (startupError !== null) {
+      // 立即终结 lease → 固定 SafetyPlan → 返回（error），不等 soft deadline
+      this.registry.expire(runId);
+      this.registry.select(runId);
+      return {
+        tick,
+        source: safetyError !== null ? "emergency" : "safety",
+        plan: safetyPlan,
+        agentActionCount: 0,
+        safetyReplacementCount: 0,
+        invalidAgentActionCount: 0,
+        repairCount: 0,
+        deadlineOutcome: "error",
+        agentLatencyMs: null,
+        selectionLatencyMs: this.clock.now() - t0,
+        abortRequested: false,
+      };
     }
 
     // 4) 等待：Lease accepted（候选经 sink → registry 校验）或 soft deadline
     const candidate = await this.raceCandidate(runId, budget.agentSoftDeadline);
-    const selectionAt = this.clock.now();
-    const agentLatency = handle !== null ? selectionAt - t0 : null;
+    const candidateAt = this.clock.now();
+    const agentLatency = handle !== null ? candidateAt - t0 : null;
 
     let source: DecisionResult["source"];
     let plan: Plan;
@@ -164,7 +195,7 @@ export class DecisionCoordinator {
     let invalidAgentActionCount = 0;
     let repairCount = 0;
     let abortRequested = false;
-    let abortSettled = false;
+    let deadlineOutcome: DecisionResult["deadlineOutcome"];
 
     if (candidate !== null && safetyError === null) {
       // 5) 候选路径：arbiter 合成（合法 Agent > Safety 补齐 > 无动作）
@@ -175,36 +206,48 @@ export class DecisionCoordinator {
         safetyPlan,
         agentCandidate: candidate.plan,
       });
-      source = arbitration.source;
-      plan = arbitration.plan;
-      agentActionCount = arbitration.agentActionCount;
-      safetyReplacementCount = arbitration.safetyReplacementCount;
-      invalidAgentActionCount = arbitration.invalidAgentActionCount;
+      let candidatePlan = arbitration.plan;
       repairCount = arbitration.repairCount;
+      // 语义校验 + repair（并入选择过程，selectionLatency 覆盖完整固定流程）
+      const validation = validatePlan(state, candidatePlan);
+      if (!validation.valid && validation.plan !== candidatePlan) {
+        candidatePlan = validation.plan;
+        repairCount += validation.issues.length;
+      }
+      // 3E-3：selection deadline 真正落地——固定时刻超限则弃候选，用已准备好的 SafetyPlan
+      if (this.clock.now() >= budget.selectionDeadline) {
+        source = "safety";
+        plan = safetyPlan;
+        deadlineOutcome = "selection_timeout";
+      } else {
+        source = arbitration.source;
+        plan = candidatePlan;
+        agentActionCount = arbitration.agentActionCount;
+        safetyReplacementCount = arbitration.safetyReplacementCount;
+        invalidAgentActionCount = arbitration.invalidAgentActionCount;
+        deadlineOutcome = "candidate";
+      }
     } else {
       // 6) soft deadline 路径：先 expire → 固定 Safety → 后台 abort（不 await）
       this.registry.expire(runId);
       this.registry.select(runId); // expired → selected（终结 run）
       source = safetyError !== null ? "emergency" : "safety";
       plan = safetyPlan;
+      deadlineOutcome = "soft_deadline";
       if (handle !== null) {
         abortRequested = true;
         handle.abort(safetyError !== null ? "safety_error" : "soft_deadline");
-        void handle.settled
-          .then(() => {
-            abortSettled = true;
-          })
-          .catch(() => {
-            abortSettled = true;
-          });
+        this.observeSettle(runId, handle);
       }
     }
 
-    // 7) 最终兜底校验（arbiter 已保证；此处修复并计数）
-    const validation = validatePlan(state, plan);
-    if (!validation.valid && validation.plan !== plan) {
-      plan = validation.plan;
-      repairCount += validation.issues.length;
+    // 7) 兜底校验：safety/emergency/selection_timeout 路径（候选路径已并入 5）
+    if (deadlineOutcome !== "candidate") {
+      const validation = validatePlan(state, plan);
+      if (!validation.valid && validation.plan !== plan) {
+        plan = validation.plan;
+        repairCount += validation.issues.length;
+      }
     }
 
     return {
@@ -215,12 +258,23 @@ export class DecisionCoordinator {
       safetyReplacementCount,
       invalidAgentActionCount,
       repairCount,
-      deadlineOutcome: candidate !== null ? "candidate" : "soft_deadline",
+      deadlineOutcome,
       agentLatencyMs: agentLatency,
-      selectionLatencyMs: selectionAt - t0,
+      selectionLatencyMs: this.clock.now() - t0,
       abortRequested,
-      abortSettled,
     };
+  }
+
+  /** 后台观察 run 最终 settle：telemetry 上报，不阻塞决策路径、不异步修改已返回结果（3E）。 */
+  private observeSettle(runId: string, handle: AgentRunHandle): void {
+    void handle.settled
+      .then((result) => this.onRunSettled?.({ runId, result }))
+      .catch((error) => {
+        this.onRunSettled?.({
+          runId,
+          result: { outcome: "error", message: error instanceof Error ? error.message : String(error) },
+        });
+      });
   }
 
   /** 等待：Lease accepted（候选）或 soft deadline 到期（null）。

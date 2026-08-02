@@ -60,6 +60,7 @@ function request(tick: number, options: Partial<AgentDecisionRequest> = {}): Age
     receivedAtMonotonic: 0,
   };
   return {
+    runId: `tenant-1-${tick}-0`, // 3E-1 单源：request 必须携带 coordinator 分配的 runId
     tenantId: "tenant-1",
     tick,
     state,

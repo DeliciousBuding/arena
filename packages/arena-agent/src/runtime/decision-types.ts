@@ -21,8 +21,11 @@ export interface DecisionContext {
   readonly receivedAtMonotonic: number;
 }
 
-/** 决策请求：coordinator → runtime。不携带 deadline（runtime 不负责游戏截止）。 */
+/** 决策请求：coordinator → runtime。不携带 deadline（runtime 不负责游戏截止）。
+ *  3E：runId 由 coordinator 唯一分配并显式携带；runtime 不得自行生成，
+ *  返回的 handle.runId 必须严格等于 request.runId（不一致 → 契约违规）。 */
 export interface AgentDecisionRequest {
+  readonly runId: string;
   readonly tenantId: string;
   readonly tick: number;
   readonly state: TickState;
@@ -42,10 +45,13 @@ export type AgentRunResult =
   | { readonly outcome: "settled" }
   | { readonly outcome: "error"; readonly message: string };
 
-/** Agent runtime 端口：coordinator 只依赖此接口（Pi 实现细节在 infrastructure 层）。 */
+/** Agent runtime 端口：coordinator 只依赖此接口（Pi 实现细节在 infrastructure 层）。
+ *  3E：reportViolation 是 coordinator 检测到契约违规（如 runId 不一致）时的上报口，
+ *  runtime 应据此标记 unhealthy（Pi：进入 rotation；Fake：记录 violationLog）。 */
 export interface AgentDecisionRuntime {
   startDecision(request: AgentDecisionRequest): AgentRunHandle;
   health(): AgentRuntimeHealth;
+  reportViolation?(reason: string): void;
   close(): Promise<void>;
 }
 
@@ -91,9 +97,10 @@ export interface DecisionResult {
   readonly safetyReplacementCount: number;
   readonly invalidAgentActionCount: number;
   readonly repairCount: number;
-  readonly deadlineOutcome: "candidate" | "soft_deadline" | "error";
+  readonly deadlineOutcome: "candidate" | "soft_deadline" | "selection_timeout" | "error";
+  /** Agent 候选到达延迟（raceCandidate 返回时刻 - t0；无 handle/无候选为 null）。 */
   readonly agentLatencyMs: number | null;
+  /** 最终计划固定延迟（selectionLatencyMs = 计划固定时刻 - t0，覆盖 arbitration+repair）。 */
   readonly selectionLatencyMs: number;
   readonly abortRequested: boolean;
-  readonly abortSettled: boolean;
 }
