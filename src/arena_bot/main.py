@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from arena_hero import ArenaHeroClient, APIError, UnitType
 
@@ -193,80 +194,86 @@ def play(api_key: str, config: TacticConfig,
                 set_current_tick(turn.tick)
                 state = TickState.from_turn(turn)
                 state_holder["state"] = state
+                # W3 差分回放素材：raw state 落盘（每 tick 一 JSON，含完整对象/事件）
+                if config.raw_state_dir:
+                    raw_dir = Path(config.raw_state_dir)
+                    raw_dir.mkdir(parents=True, exist_ok=True)
+                    (raw_dir / f"{state.tick}.json").write_text(
+                        turn.state.model_dump_json(), encoding="utf-8")
 
-            # 事件 → world（采集成功/失败、单位状态）
-            harvest_failed = {ev.position for ev in state.events
-                              if ev.event_type == "HARVEST_FAILED" and ev.position}
-            world.observe(state.tick, state.obstacle_cells, state.resource_cells,
-                          state.visible_enemies, harvest_failed,
-                          observer=tenant.name if tenant else "solo")
-            # 结盟：注册自己的 Core username（其他租户看到后不攻击）
-            if state.core_view is not None and map_store.register_ally(
-                    state.core_view.owner_username,
-                    tenant.name if tenant else "solo", state.tick):
-                log.info("盟友注册：@%s（%s）",
-                         state.core_view.owner_username,
-                         tenant.name if tenant else "solo")
-            for ev in state.events:
-                if ev.event_type == "HARVEST_SUCCEEDED" and ev.position:
-                    world.mark_harvested(ev.position, state.tick)
+                # 事件 → world（采集成功/失败、单位状态）
+                harvest_failed = {ev.position for ev in state.events
+                                  if ev.event_type == "HARVEST_FAILED" and ev.position}
+                world.observe(state.tick, state.obstacle_cells, state.resource_cells,
+                              state.visible_enemies, harvest_failed,
+                              observer=tenant.name if tenant else "solo")
+                # 结盟：注册自己的 Core username（其他租户看到后不攻击）
+                if state.core_view is not None and map_store.register_ally(
+                        state.core_view.owner_username,
+                        tenant.name if tenant else "solo", state.tick):
+                    log.info("盟友注册：@%s（%s）",
+                             state.core_view.owner_username,
+                             tenant.name if tenant else "solo")
+                for ev in state.events:
+                    if ev.event_type == "HARVEST_SUCCEEDED" and ev.position:
+                        world.mark_harvested(ev.position, state.tick)
 
-            # 阶段机：威胁 = 距 Core ≤ 阈值的可见敌人数
-            enemy_near = 0
-            if state.core is not None:
-                enemy_near = sum(
-                    1 for e in state.visible_enemies
-                    if abs(e.position[0] - state.core.position[0])
-                    + abs(e.position[1] - state.core.position[1])
-                    <= config.threat_enemy_dist)
-            phase.update(state.population, state.resources, enemy_near)
+                # 阶段机：威胁 = 距 Core ≤ 阈值的可见敌人数
+                enemy_near = 0
+                if state.core is not None:
+                    enemy_near = sum(
+                        1 for e in state.visible_enemies
+                        if abs(e.position[0] - state.core.position[0])
+                        + abs(e.position[1] - state.core.position[1])
+                        <= config.threat_enemy_dist)
+                phase.update(state.population, state.resources, enemy_near)
 
-            if state_holder["paused"]:
-                log.info("tick %d 暂停中（不提交）", state.tick)
-                _record_tick(telemetry, state, phase, "paused")
-                continue
+                if state_holder["paused"]:
+                    log.info("tick %d 暂停中（不提交）", state.tick)
+                    _record_tick(telemetry, state, phase, "paused")
+                    continue
 
-            plan = strategy.decide(state)
-            # intents 存 str key（snapshot 按 str(u.id) 查询）
-            state_holder["intents"] = {str(k): v for k, v in plan.intents.items()}
-            empty_plan = not plan.actions and plan.core_action is None
-            # watchdog：观察停滞（空计划/单位卡死/经济停滞）
-            watchdog.observe(
-                tick=state.tick, empty_plan=empty_plan,
-                units=[{"id": str(u.id), "pos": tuple(u.position),
-                        "intent": plan.intents.get(u.id)}
-                       for u in state.units],
-                resources=state.resources, resource_capacity=state.resource_capacity)
-            if empty_plan:
-                # 全单位无动作（等效 WAIT）：跳过提交，避免 UI 显示"空计划"
-                log.debug("tick %d 无任何动作，跳过提交", state.tick)
-                _record_tick(telemetry, state, phase, "empty",
-                             intents=dict(plan.intents))
-                continue
-            apply_plan(turn, plan)
-            try:
-                accepted = state.submit()
-            except APIError as exc:
-                if exc.status_code == 409:  # TICK_MISMATCH：决策超窗口，本 tick 作废
-                    log.warning("tick %d 提交 TICK_MISMATCH（决策超 15s 窗口），跳过",
-                                state.tick)
-                    _record_tick(telemetry, state, phase, "tick_mismatch",
+                plan = strategy.decide(state)
+                # intents 存 str key（snapshot 按 str(u.id) 查询）
+                state_holder["intents"] = {str(k): v for k, v in plan.intents.items()}
+                empty_plan = not plan.actions and plan.core_action is None
+                # watchdog：观察停滞（空计划/单位卡死/经济停滞）
+                watchdog.observe(
+                    tick=state.tick, empty_plan=empty_plan,
+                    units=[{"id": str(u.id), "pos": tuple(u.position),
+                            "intent": plan.intents.get(u.id)}
+                           for u in state.units],
+                    resources=state.resources, resource_capacity=state.resource_capacity)
+                if empty_plan:
+                    # 全单位无动作（等效 WAIT）：跳过提交，避免 UI 显示"空计划"
+                    log.debug("tick %d 无任何动作，跳过提交", state.tick)
+                    _record_tick(telemetry, state, phase, "empty",
                                  intents=dict(plan.intents))
                     continue
-                _record_tick(telemetry, state, phase, "error",
-                             intents=dict(plan.intents), error=str(exc))
-                raise
+                apply_plan(turn, plan)
+                try:
+                    accepted = state.submit()
+                except APIError as exc:
+                    if exc.status_code == 409:  # TICK_MISMATCH：决策超窗口，本 tick 作废
+                        log.warning("tick %d 提交 TICK_MISMATCH（决策超 15s 窗口），跳过",
+                                    state.tick)
+                        _record_tick(telemetry, state, phase, "tick_mismatch",
+                                     intents=dict(plan.intents))
+                        continue
+                    _record_tick(telemetry, state, phase, "error",
+                                 intents=dict(plan.intents), error=str(exc))
+                    raise
 
-            _record_tick(telemetry, state, phase, "submitted",
-                         accepted=accepted.accepted,
-                         intents=dict(plan.intents))
+                _record_tick(telemetry, state, phase, "submitted",
+                             accepted=accepted.accepted,
+                             intents=dict(plan.intents))
 
-            log.info(
-                "tick %d accepted=%s phase=%s res=%d/%d pop=%d w=%d vg=%d rg=%d enemies=%d",
-                state.tick, accepted.accepted, phase.phase.value,
-                state.resources, state.resource_capacity, state.population,
-                len(state.workers), len(state.vanguards), len(state.rangers),
-                len(state.visible_enemies))
+                log.info(
+                    "tick %d accepted=%s phase=%s res=%d/%d pop=%d w=%d vg=%d rg=%d enemies=%d",
+                    state.tick, accepted.accepted, phase.phase.value,
+                    state.resources, state.resource_capacity, state.population,
+                    len(state.workers), len(state.vanguards), len(state.rangers),
+                    len(state.visible_enemies))
     finally:
         # P0-5 优雅退出：无论正常/异常/指令停机，资源全部释放
         if debug is not None:

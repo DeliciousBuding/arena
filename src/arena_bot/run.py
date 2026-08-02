@@ -122,6 +122,10 @@ def main() -> int:
     tenants: list[TenantProcess] = []
     for t in exp["tenants"]:
         params_spec = ",".join(f"{k}={v}" for k, v in t.get("params", {}).items())
+        # W3 差分回放素材：raw state 落盘到 run 目录
+        raw_state_dir = run_dir / "raw-state"
+        params_spec = f"{params_spec},raw_state_dir={raw_state_dir.as_posix()}" if params_spec \
+            else f"raw_state_dir={raw_state_dir.as_posix()}"
         cmd = ["uv", "run", "python", "-m", "arena_bot.tenant",
                "--tenant", str(t["api_key_index"]),
                "--strategy", t.get("strategy", "balance"),

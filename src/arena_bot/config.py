@@ -51,6 +51,9 @@ class TacticConfig:
     # 自诊断 watchdog（卡死/停滞告警）
     watchdog_stall_ticks: int = 20  # 连续 N tick 无进展视为停滞（约 5 分钟）
 
+    # W3 差分回放素材：raw state 落盘（每 tick 一个 JSON，含完整 objects/events）
+    raw_state_dir: str = ""         # 空 = 不存；非空 = 每 tick 写 <dir>/<tick>.json
+
     # LLM 决策后端（pi RPC 长驻，兼容原 pi 设计）
     llm_pi_cli: str = "pi-dev/packages/coding-agent/dist/cli.js"  # 相对项目根
     llm_model: str = "newapi/deepseek-v4-flash"
