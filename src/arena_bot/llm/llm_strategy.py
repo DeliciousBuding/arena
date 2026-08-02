@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from ..config import TacticConfig
 from ..strategy import Plan, Strategy
 from .backend import LLMBackend, PiRpcBackend
-from .parser import parse_llm_plan
+from .parser import parse_tool_plan
 
 if TYPE_CHECKING:
     from ..core.state import TickState
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("arena_bot.llm")
 
-RULES = """你是 Arena Hero 游戏的战术指挥官，每 Tick 根据局势输出下一 Tick 的行动计划。
+RULES = """你是 Arena Hero 游戏的战术指挥官，每 Tick 必须使用 arena_plan 工具提交下一 Tick 的行动计划。
 
 规则约束:
 - Worker 采集资源后回家交付; cargo 满时优先回家; 无可见资源回家待命
@@ -37,20 +37,10 @@ RULES = """你是 Arena Hero 游戏的战术指挥官，每 Tick 根据局势输
 - 结盟: @delicious233 @buding @delicious23333 @deliciousbuding 是我们的账号,
   它们和它们的 Core 不是敌人, 绝不攻击
 
-输出契约: 只输出一个 JSON 对象, 不要输出其他内容:
-{
-  "actions": [
-    {"unit": "<单位完整ID>", "kind": "MOVE", "direction": "RIGHT"},
-    {"unit": "<单位完整ID>", "kind": "HARVEST"},
-    {"unit": "<单位完整ID>", "kind": "SHOOT", "target_id": "<敌人ID>", "expected_cell": [x, y]}
-  ],
-  "core": {"kind": "SPAWN", "unit_type": "WORKER"},
-  "reason": "一句话理由"
-}
-kind 可选: MOVE/SWEEP(需 direction: UP/DOWN/LEFT/RIGHT), HARVEST/DEPOSIT/HEAL/
-PICKUP_BEACON/DROP_BEACON/SELF_DESTRUCT/WAIT, SHOOT(需 target_id+expected_cell)
-core 可选: SPAWN(需 unit_type: WORKER/VANGUARD/RANGER)/HEAL/REPAIR_SHIELD/WAIT, 或 null
-无法决定就输出空 actions: {"actions": [], "core": null, "reason": "..."}"""
+输出要求:
+- 只调用 arena_plan 工具提交计划, 不要调用任何其他工具
+- 无法决定时提交空 actions
+- 提交后立即结束, 不要输出多余内容"""
 
 
 def state_to_prompt(state: "TickState", first: bool = False) -> str:
@@ -101,18 +91,25 @@ class LLMStrategy(Strategy):
         prompt = state_to_prompt(state, first=self._first)
         self._first = False
         try:
-            text = self.backend.ask(prompt, f"tick-{state.tick}",
-                                    timeout=self.config.llm_timeout)
+            result = self.backend.ask(prompt, f"tick-{state.tick}",
+                                      timeout=self.config.llm_timeout)
         except (TimeoutError, RuntimeError, OSError) as exc:
             log.warning("tick %d LLM 调用失败（%s），回退确定性策略", state.tick, exc)
             return self.fallback.decide(state)
-        plan = parse_llm_plan(text, state)
-        if plan is None:
-            log.warning("tick %d LLM 输出解析失败（%.200s），回退确定性策略",
-                        state.tick, text.replace("\n", " "))
+        # 主路径：原生 tool calling（arena_plan）
+        tool = result.tool("arena_plan")
+        if tool is not None:
+            plan = parse_tool_plan(tool.input, state)
+            if plan is not None:
+                plan.intents = {str(k): f"llm:{v}"
+                                for k, v in plan.intents.items()}
+                return plan
+            log.warning("tick %d arena_plan 参数校验失败（%r），回退确定性策略",
+                        state.tick, tool.input)
             return self.fallback.decide(state)
-        plan.intents = {str(k): f"llm:{v}" for k, v in plan.intents.items()}
-        return plan
+        log.warning("tick %d LLM 未调用 arena_plan（%.200s），回退确定性策略",
+                    state.tick, result.text.replace("\n", " "))
+        return self.fallback.decide(state)
 
     def close(self) -> None:
         self.backend.close()

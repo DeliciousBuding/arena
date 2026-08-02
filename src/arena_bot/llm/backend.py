@@ -11,19 +11,65 @@ import queue
 import subprocess
 import threading
 import time
-from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
+
+
+@dataclass
+class ToolCall:
+    """模型原生 tool_use 调用。"""
+    name: str
+    input: dict
+
+
+@dataclass
+class AskResult:
+    """一次决策询问的结果：文本 + 工具调用（原生 tool calling）。"""
+    text: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
+
+    def tool(self, name: str) -> "ToolCall | None":
+        for tc in self.tool_calls:
+            if tc.name == name:
+                return tc
+        return None
 
 
 class LLMBackend(Protocol):
     """LLM 决策调用协议（策略层依赖的唯一接口）。"""
 
-    def ask(self, message: str, request_id: str, timeout: float) -> str:
-        """发送决策请求，返回决策文本。超时抛 TimeoutError。"""
+    def ask(self, message: str, request_id: str, timeout: float) -> AskResult:
+        """发送决策请求，返回决策结果。超时抛 TimeoutError。"""
 
     def close(self) -> None:
         """释放后端资源（进程/连接）。"""
+
+
+def _extract_result(message: dict) -> AskResult:
+    """从 turn_end.message 提取文本与 tool_use（Anthropic 风格 content blocks）。
+
+    message 结构：{text: [blocks]} 或 {content: [blocks]}；
+    block：{type:"text", text} / {type:"tool_use", name, input} / str。
+    """
+    blocks = message.get("text")
+    if blocks is None:
+        blocks = message.get("content")
+    if not isinstance(blocks, list):
+        return AskResult(text=str(blocks) if blocks is not None else "")
+    texts, tools = [], []
+    for block in blocks:
+        if isinstance(block, str):
+            texts.append(block)
+        elif isinstance(block, dict):
+            if block.get("type") == "text":
+                texts.append(str(block.get("text", "")))
+            elif block.get("type") == "tool_use":
+                raw = block.get("input") or {}
+                tools.append(ToolCall(
+                    name=str(block.get("name", "")),
+                    input=raw if isinstance(raw, dict) else {}))
+    return AskResult(text="".join(texts), tool_calls=tools)
 
 
 class PiRpcBackend(LLMBackend):
@@ -88,20 +134,19 @@ class PiRpcBackend(LLMBackend):
             if ev.get("type") == "response" and ev.get("id") == "hs":
                 return ev.get("success") is True
 
-    def ask(self, message: str, request_id: str, timeout: float = 90.0) -> str:
-        """发 prompt，等 agent_settled，返回决策文本。"""
+    def ask(self, message: str, request_id: str, timeout: float = 90.0) -> AskResult:
+        """发 prompt，等 agent_settled，返回决策结果（文本 + 原生 tool_use）。"""
         self._send({"id": request_id, "type": "prompt", "message": message})
-        last_text = ""
+        last = AskResult(text="")
         while True:
             ev = self._read_event(timeout)
             if ev is None:
                 raise TimeoutError(f"{request_id}: 等待事件超时")
             t = ev.get("type")
             if t == "turn_end":
-                m = ev.get("message") or {}
-                last_text = m.get("text") or m.get("content") or ""
+                last = _extract_result(ev.get("message") or {})
             elif t == "agent_settled":
-                return last_text
+                return last
 
     def close(self) -> None:
         try:

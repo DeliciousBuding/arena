@@ -45,18 +45,20 @@ def _extract_json(text: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
-def parse_llm_plan(text: str, state: "TickState") -> "Plan | None":
-    """LLM 输出 → 严格校验的 Plan；任何不合法 → None（回退确定性策略）。"""
-    obj = _extract_json(text)
-    if obj is None:
-        return None
+def parse_tool_plan(tool_input: dict, state: "TickState") -> "Plan | None":
+    """原生 tool_use input → 严格校验的 Plan；任何不合法 → None（回退确定性）。
 
+    input 结构由 arena_plan 工具 schema 约束（pi 原生 tool calling），
+    但仍需游戏侧校验：单位归属/重复/动作白名单/枚举/坐标。
+    """
+    if not isinstance(tool_input, dict):
+        return None
     plan = Plan(tick=state.tick)
-    units_by_id = {str(u.id): u for u in state.units}      # str → 单位
+    units_by_id = {str(u.id): u for u in state.units}
     id_prefix = {str(u.id)[:8]: u for u in state.units}
     seen: set = set()
 
-    raw_actions = obj.get("actions")
+    raw_actions = tool_input.get("actions")
     if not isinstance(raw_actions, list):
         return None
     for item in raw_actions:
@@ -74,7 +76,7 @@ def parse_llm_plan(text: str, state: "TickState") -> "Plan | None":
         plan.set(action)
         seen.add(uid)
 
-    core = obj.get("core")
+    core = tool_input.get("core")
     if core is not None:
         if not isinstance(core, dict) or state.core is None:
             return None
@@ -94,6 +96,14 @@ def parse_llm_plan(text: str, state: "TickState") -> "Plan | None":
             plan.core_action = Action(state.core.id, "WAIT")
         plan.intents["core"] = f"llm_{kind.lower()}"
     return plan
+
+
+def parse_llm_plan(text: str, state: "TickState") -> "Plan | None":
+    """（兼容/降级路径）LLM 自由文本 JSON → Plan。工具调用为主路径。"""
+    obj = _extract_json(text)
+    if obj is None:
+        return None
+    return parse_tool_plan(obj, state)
 
 
 def _resolve_unit(raw, units_by_id, id_prefix):
