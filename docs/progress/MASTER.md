@@ -1,0 +1,66 @@
+# MASTER.md — Arena Hero 重构进度主控
+
+最后更新：2026-08-02 16:30
+
+**任务**：把 arena 从单文件战术脚本重构为 uv 管理的规范工程（状态机决策 + 日志 + 环境记忆 + HTTP 调试介入）。
+
+**跟踪模式**：LOCAL_ONLY（无 git remote，无 GitHub 依赖）
+
+## 文档链接
+
+- 分析：`docs/analysis/`（project-overview / module-inventory / risk-assessment）
+- 计划：`docs/plan/`（task-breakdown / dependency-graph / milestones）
+- 进度：本文件 + `docs/progress/phase-*.md`
+
+## 治理面解析
+
+| 面 | 解析结果 |
+|---|---|
+| 指令面 | `CLAUDE.md`（Phase 5 E3 更新） |
+| Memory 面 | 不新建——本项目无 native memory，以 CLAUDE.md + docs/ 为唯一知识面 |
+| 秘钥 | `.env` gitignore，永不入仓 |
+
+## 阶段总览
+
+- [ ] Phase A: 工程基座 (0/3 tasks) — `docs/progress/phase-a-baseline.md`
+- [ ] Phase B: 核心库 (0/3 tasks) — `docs/progress/phase-b-core.md`
+- [ ] Phase C: 决策内核 (0/2 tasks) — `docs/progress/phase-c-decision.md`
+- [ ] Phase D: 状态机+调试 (0/3 tasks) — `docs/progress/phase-d-stateful-debug.md`
+- [ ] Phase E: 集成切换 (0/4 tasks) — `docs/progress/phase-e-switchover.md`
+
+## 任务 → 批次映射
+
+| 任务 | 批次 | 提交批次说明 |
+|---|---|---|
+| A1-A3 | Batch 1 | 基座：pyproject + 包结构 + pytest 配置 |
+| B1-B3 | Batch 2 | 核心：日志 + 记忆 + 状态适配 |
+| C1-C2 | Batch 3 | 决策 I：策略接口 + Balance 迁移 |
+| C3-C4, D1 | Batch 4 | 状态机 + 调试端点 |
+| D2, E1-E3 | Batch 5 | 集成、验证、切换、归档 |
+
+## Current Status
+
+- 正在：Phase A 任务 A1（pyproject.toml + uv 初始化）
+- 线上：旧 tactic.py 继续后台运行（b5j5ardxo），切换前不停
+
+## Next Steps
+
+1. A1: `uv init` 迁移 → pyproject.toml 钉死 arena-hero 0.2.6
+2. A2: src/arena_bot 包 + config.py
+3. A3: pytest rootdir 配置
+
+## Adaptive Control State
+
+| 里程碑 | drift_score | 阈值(标注/重规划/重范围) | 状态 |
+|---|---|---|---|
+| M1 基座 | 0 | 0.6 / 1.2 / 1.8 | 正常 |
+| M2 核心库 | 0 | 0.6 / 1.2 / 1.8 | 正常 |
+| M3 决策无回归 | 0 | 0.4 / 0.8 / 1.2 | 正常 |
+| M4 可调试运行 | 0 | 0.6 / 1.2 / 1.8 | 正常 |
+| M5 线上切换 | 0 | 0.8 / 1.6 / 2.4 | 正常 |
+
+## Task Telemetry Log
+
+| 任务 | 实际工作量 | S.U.P.E.R | 未计划依赖 | 备注 |
+|---|---|---|---|---|
+| （执行中填写） | | | | |
