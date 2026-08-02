@@ -64,3 +64,43 @@
 
 4 个只读研究 agent 并行（策略/pi 对接/bug 审计/架构评估），结论回来后并入本文档。
 场外支援（ChatGPT Web）通过两个 private 仓库审阅：github.com/DeliciousBuding/arena + /pi。
+
+## 七、P0-4/P0-A 完成 + TS 迁移启动（19:50）
+
+### P0-4 全 Tick 遥测（fcd236e）
+- telemetry.py 重写为 append-only JSONL；main.py `_record_tick` 接入全部分支
+  （submitted/paused/empty/tick_mismatch/error）；evaluate.py 读 t*.jsonl 并新增 outcome 列
+- 修 evaluate `events_total` 恒为 0 的真实 bug（`num()` 吞掉 dict）
+- 旧实验还在写 CSV——JSONL 在下次重启后生效
+
+### P0-A revision 只在有效 mutation 时递增（2bb9de5）
+- `_write(bump_revision)`：同一事务内 INSERT OR IGNORE 的 rowcount>0 才 bump
+- 验收：同批障碍重复 100 次 revision 不变；重复盟友不变；写入后校准本地快照
+- 顺手移除 arena_map 的 resources 假能力（MapStore 不持久化资源格）——
+  contracts/TS schema/Python 三处同步，协议 1.0 enum 收敛为 stats/obstacles/allies
+
+### TS 迁移决策（用户拍板）
+- **SDK 不重写**：fork 上游 arena-hero/arena-hero-python → DeliciousBuding/arena-hero-ts
+  （public，Apache-2.0；上游 Python 保留可 merge，TS 实现独立包）
+- **编排层重写 TS**：pi-coding-agent 直接嵌入（createAgentSession 是官方 SDK API），
+  RPC 桥消失、schema 单源、原生 abort
+- 完整方案与工作包：docs/migration-plan.md
+
+### arena-hero-ts SDK 完成（7af2818）
+- 2045 行完整移植（enums/types/actions/protocol/client/turn），16 测试全绿
+- encodePlan 与 Python sort_keys 交叉验证逐字节 MATCH
+- 真机只读验证：WS 1.16s → tick 39555 → Turn 解析（4 workers/core=deliciousbuding）✓
+- 关键坑：Node 内置 WebSocket 不支持自定义 header → 唯一运行时依赖 `ws`
+
+### MapStore TS 移植完成
+- packages/arena-agent/src/map-store.ts（node:sqlite 同步 API，无 RLock）
+- 完整继承 Python 语义：WAL/BEGIN IMMEDIATE+重试/revision 游标/P0-A
+- 8 测试全绿（含 4 子进程并发写 160 cells）
+
+### 测试基线
+- Python 135 全绿；arena-hero-ts 16 全绿；arena-agent(MapStore) 8 全绿
+
+### 待办（迁移顺序见 migration-plan.md §5）
+- [ ] spike-embed 验证结果（createAgentSession 嵌入/abort）→ W4 决策桥
+- [ ] W1-W6 编排层移植（TickState/策略/遥测/决策桥/supervisor/schema 单源）
+- [ ] 4 租户实验重启到 JSONL 遥测

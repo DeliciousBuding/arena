@@ -21,17 +21,21 @@ experiments/*.yaml ──▶ run.py（调度器：按实验定义 spawn 租户�
         ├─ balance 兜底（LLM 超时/失败 → 确定性策略）
         ├─ Debug API（/state /command /map/query，外部控制）
         ├─ Watchdog（4 类停滞告警 → alerts/*.jsonl）
-        └─ Telemetry（CSV：tick/资源/人口/决策来源）
+        └─ Telemetry（JSONL：全 Tick 遥测，outcome=submitted/paused/empty/tick_mismatch/error）
               │
         mapstore/arena_map.db（SQLite WAL，4 进程共享测绘：障碍/盟友）
 ```
+
+> **TS 迁移进行中**：SDK 已 fork 为 TS 版（DeliciousBuding/arena-hero-ts，public），
+> 编排层将重写为 TS 并直接嵌入 pi-coding-agent（RPC 桥消失）。当前 Python 版继续
+> 稳定运行 4 租户 burn-in。方案见 [docs/migration-plan.md](docs/migration-plan.md)。
 
 ## 快速开始
 
 ```bash
 uv sync                          # 装依赖（arena-hero 0.2.6）
 # 秘钥：.env 设 ARENA_HERO_API_KEY_1..4（gitignore，永不入仓）
-uv run pytest tests/ -q          # 128 例无凭据决策测试
+uv run pytest tests/ -q          # 135 例无凭据决策测试
 uv run python -m arena_bot.run --experiment exp-llm-4   # 4 账号 LLM 并发实验
 curl http://127.0.0.1:8123/state # 调试端点：t1 状态快照（8123-8126 各租户）
 ```

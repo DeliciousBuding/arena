@@ -1,0 +1,24 @@
+{
+  "name": "@arena/arena-agent",
+  "version": "0.1.0",
+  "description": "Arena Hero 编排层（决策层）：游戏循环、共享地图、策略、遥测、supervisor。TS 版，直接嵌入 pi-coding-agent。",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@arena/arena-hero-ts": "file:../../../arena-hero-ts/packages/arena-hero-ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^24.0.0"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
