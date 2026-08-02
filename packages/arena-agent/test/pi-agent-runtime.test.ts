@@ -40,9 +40,26 @@ interface StubBehavior {
   abort?: () => Promise<void>;
 }
 
-function makeStubSession(behavior: StubBehavior = {}): AgentSession {
+interface Deferred {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+function makeDeferred(): Deferred {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function makeStubSession(behavior: StubBehavior, control: Deferred, deferredPrompt: boolean): AgentSession {
   return {
-    prompt: behavior.prompt ?? (async () => {}),
+    // 缺省 prompt 立即 resolve（原行为）；deferredPrompt 显式启用时才挂起（P0-2 竞态测试用）
+    prompt: behavior.prompt ?? (deferredPrompt ? () => control.promise : async () => {}),
     abort: behavior.abort ?? (async () => {}),
     waitForIdle: async () => {},
     getToolDefinition: () => undefined,
@@ -89,18 +106,25 @@ function makeRequest(overrides: Partial<AgentDecisionRequest> = {}): AgentDecisi
 interface Harness {
   runtime: PiAgentRuntime;
   sessions: AgentSession[];
+  promptControls: Deferred[];
   envelopes: CandidateEnvelope[];
   telemetry: PiRuntimeTelemetry[];
   close: () => Promise<void>;
 }
 
-async function makeHarness(behavior: StubBehavior = {}): Promise<Harness> {
+async function makeHarness(
+  behavior: StubBehavior = {},
+  options: { deferredPrompt?: boolean } = {},
+): Promise<Harness> {
   const sessions: AgentSession[] = [];
+  const promptControls: Deferred[] = [];
   const envelopes: CandidateEnvelope[] = [];
   const telemetry: PiRuntimeTelemetry[] = [];
   const createSession = async (): Promise<unknown> => {
-    const session = makeStubSession(behavior);
+    const control = makeDeferred();
+    const session = makeStubSession(behavior, control, options.deferredPrompt ?? false);
     sessions.push(session);
+    promptControls.push(control);
     return { session, extensionsResult: {} };
   };
   const runtime = await PiAgentRuntime.create({
@@ -123,6 +147,7 @@ async function makeHarness(behavior: StubBehavior = {}): Promise<Harness> {
   return {
     runtime,
     sessions,
+    promptControls,
     envelopes,
     telemetry,
     close: () => runtime.close(),
@@ -273,4 +298,59 @@ test("11. 无 listener/timer 泄漏：close 后无遗留 telemetry 事件", asyn
   await h.close();
   await new Promise((r) => setTimeout(r, 100));
   assert.equal(h.telemetry.length, before, "close 后不得再有事件（timer 泄漏检测）");
+});
+
+// ---------- P0-2：跨 generation 竞态与 health 严格化 ----------
+
+test("P0-2. 旧 generation 迟到 reject → 不影响新 generation 的 health/counters", async () => {
+  const h = await makeHarness({}, { deferredPrompt: true }); // prompt 可控 deferred
+  const handle = h.runtime.startDecision(makeRequest());
+  handle.abort("soft_deadline"); // session1 hang → idle timeout → rotate（generation 1）
+  await waitForTelemetry(h, "rotated");
+  assert.equal(h.sessions.length, 2, "rotate 必须重建 session");
+  const unhealthyBefore = h.telemetry.filter((t) => t.type === "unhealthy").length;
+  // 旧 session 的 prompt 迟到 reject（新 session 已就绪之后）
+  h.promptControls[0].reject(new Error("late error from old session"));
+  await new Promise((r) => setTimeout(r, 20));
+  const unhealthyAfter = h.telemetry.filter((t) => t.type === "unhealthy").length;
+  assert.equal(unhealthyAfter, unhealthyBefore, "旧 generation 迟到 reject 不得触发新 unhealthy");
+  assert.equal(h.runtime.health().ready, true, "新 generation 保持 ready");
+  await h.close();
+});
+
+test("P0-2. 旧 generation 迟到 resolve → 不重置新 generation 错误计数", async () => {
+  const h = await makeHarness({
+    prompt: () => Promise.reject(new Error("provider down")),
+  });
+  const handle1 = h.runtime.startDecision(makeRequest());
+  await handle1.settled;
+  const handle2 = h.runtime.startDecision(makeRequest({ runId: "local:t1:101:1", tick: 101 }));
+  await handle2.settled;
+  await waitForTelemetry(h, "rotated");
+  assert.equal(h.sessions.length, 2);
+  const unhealthyCount = h.telemetry.filter((t) => t.type === "unhealthy").length;
+  assert.equal(unhealthyCount, 1, "只有一次 unhealthy（阈值 2 触发）");
+  await h.close();
+});
+
+test("P0-2. close 与 rotate 并发 → 不复活（initialize 完成后 state 保持 closed）", async () => {
+  const h = await makeHarness({}, { deferredPrompt: true });
+  const handle = h.runtime.startDecision(makeRequest());
+  handle.abort("soft_deadline"); // hang → idle timeout(50ms) → rotate 开始
+  await new Promise((r) => setTimeout(r, 60)); // rotate 进行中（initialize 挂起在 createSession spy）
+  await h.close(); // close 置 closing + epoch++
+  await new Promise((r) => setTimeout(r, 50)); // rotate 的 initialize 完成
+  assert.equal(h.runtime.health().ready, false, "close 后不得复活");
+  assert.equal(h.runtime.health().reason, "closed");
+  await h.close(); // 幂等
+});
+
+test("P0-2. health 严格化：running 时 ready=false", async () => {
+  const h = await makeHarness({}, { deferredPrompt: true });
+  h.runtime.startDecision(makeRequest());
+  assert.deepEqual(h.runtime.health(), { ready: false, activeRunId: "local:t1:100:0", reason: "running" });
+  h.promptControls[0].resolve();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(h.runtime.health(), { ready: true, activeRunId: null });
+  await h.close();
 });

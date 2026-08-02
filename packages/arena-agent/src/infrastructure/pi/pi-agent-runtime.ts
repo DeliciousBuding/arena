@@ -80,6 +80,8 @@ export interface PiAgentRuntimeOptions {
 
 interface ActiveRun {
   readonly runId: string;
+  /** P0-2：创建时的 generation——旧 generation 迟到回调不得影响新 session 状态。 */
+  readonly generation: number;
   readonly ctx: ToolContext;
   readonly settled: Promise<AgentRunResult>;
   resolveSettled: (result: AgentRunResult) => void;
@@ -101,6 +103,9 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
   private active: ActiveRun | null = null;
   private generation = 0;
   private consecutiveErrors = 0;
+  /** P0-2：生命周期纪元——每次 rotate/close 递增；initialize 仅当纪元匹配才置 ready。 */
+  private lifecycleEpoch = 0;
+  private closing = false;
   private abortTimers = new Set<ReturnType<typeof setTimeout>>();
 
   private constructor(options: PiAgentRuntimeOptions) {
@@ -122,9 +127,15 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
   }
 
   private async initialize(): Promise<void> {
+    const epoch = ++this.lifecycleEpoch; // P0-2：本纪元（rotate/close 会递增使旧 initialize 失效）
     this.state = "initializing";
     this.artifacts = await this.factory.createSession(this.options.tenantId);
-    this.state = "ready";
+    // 关闭后复活的竞态守卫：仅当纪元未变且未在关闭中才可置 ready
+    if (epoch === this.lifecycleEpoch && !this.closing) {
+      this.state = "ready";
+    } else {
+      this.state = this.closing ? "closed" : "unhealthy";
+    }
   }
 
   // ---------- AgentDecisionRuntime 端口 ----------
@@ -168,6 +179,7 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     });
     const run: ActiveRun = {
       runId: request.runId,
+      generation: this.generation,
       ctx,
       settled,
       resolveSettled,
@@ -196,13 +208,23 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     };
 
     // prompt() 是主 settle 信号（GPT 裁决 2）
+    // P0-2：旧 generation 迟到回调只允许 settle 旧 handle，不得影响当前 generation 的
+    // consecutiveErrors / health（旧 session 的 Prompt 在新 session 已就绪后才结束）。
     void this.sessionPrompt(promptText)
       .then(() => {
+        if (run.generation !== this.generation || this.closing) {
+          settleOnce({ outcome: "settled" });
+          return;
+        }
         this.consecutiveErrors = 0;
         settleOnce({ outcome: "settled" });
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
+        if (run.generation !== this.generation || this.closing) {
+          settleOnce({ outcome: "error", message });
+          return;
+        }
         this.consecutiveErrors += 1;
         this.onTelemetry("prompt_error", run.runId, message);
         settleOnce({ outcome: "error", message });
@@ -220,8 +242,10 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
   }
 
   health(): AgentRuntimeHealth {
-    if (this.state === "ready" || this.state === "running" || this.state === "aborting") {
-      return { ready: true, activeRunId: this.active?.runId ?? null };
+    // P0-2：ready 严格等于 state==="ready"（running/aborting 不算 ready——
+    // doctor/supervisor 不会误判可启动新 run）
+    if (this.state === "ready") {
+      return { ready: true, activeRunId: null };
     }
     return { ready: false, activeRunId: this.active?.runId ?? null, reason: this.state };
   }
@@ -237,6 +261,8 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     if (this.state === "closed") {
       return;
     }
+    this.closing = true;
+    this.lifecycleEpoch += 1; // P0-2：使进行中的 initialize 失效（防关闭后复活）
     if (this.active !== null && !this.active.aborted) {
       this.abortRun(this.active, "runtime_close");
     }
@@ -279,7 +305,12 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
   private async abortAndSettle(run: ActiveRun, reason: string): Promise<void> {
     const timer = setTimeout(() => {
       this.abortTimers.delete(timer);
-      if (this.active === run && run.settledResult === null) {
+      // P0-2：旧 generation 的 abort 超时不得触发 rotate（新 session 已就绪）
+      if (
+        this.active === run &&
+        run.generation === this.generation &&
+        run.settledResult === null
+      ) {
         this.markUnhealthy(`abort_idle_timeout: ${reason}`);
         void this.rotate();
       }
@@ -315,6 +346,7 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     if (this.state === "rotating" || this.state === "closed") {
       return;
     }
+    this.lifecycleEpoch += 1; // P0-2：旧 initialize/回调全部失效
     this.state = "rotating";
     this.slot.forceClear(); // 4D-pre：rotation 强制清空残留上下文
     this.active = null; // 旧 run 作废（hang 无法 settle 时不再引用）
