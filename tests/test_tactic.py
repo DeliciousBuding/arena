@@ -164,7 +164,47 @@ def test_worker_explores_toward_beacon_when_no_resources():
                     beacon_pos=(10, 0), beacon_status=BeaconStatus.GROUND)
     decide_actions(turn)
     assert actions_of(w) == ["move"]
-    assert w.actions[0][1][0] is Direction.RIGHT  # 朝 Beacon 方向巡逻
+    assert w.actions[0][1][0] is Direction.RIGHT  # 巡逻主方向朝向 Beacon 轴
+
+
+def test_worker_returns_home_beyond_explore_radius():
+    core = core_at((0, 0))
+    w = FakeUnit((15, 0), UnitType.WORKER, 2)  # 距 Core 15 > EXPLORE_RADIUS 12
+    turn = FakeTurn(core=core, units=[w], resources=2,
+                    beacon_pos=(10, 0), beacon_status=BeaconStatus.GROUND)
+    decide_actions(turn)
+    assert actions_of(w) == ["move"]
+    assert w.actions[0][1][0] is Direction.LEFT  # 回头朝家走
+
+
+def test_multiple_workers_patrol_different_directions():
+    core = core_at((0, 0))
+    # Beacon 在正东 → base 方向 RIGHT；2 个 Worker 依次取 RIGHT / DOWN
+    w1 = FakeUnit((0, 0), UnitType.WORKER, 2, uid=uuid.UUID(int=1))
+    w2 = FakeUnit((0, 0), UnitType.WORKER, 2, uid=uuid.UUID(int=2))
+    turn = FakeTurn(core=core, units=[w1, w2], resources=2,
+                    beacon_pos=(10, 0), beacon_status=BeaconStatus.GROUND)
+    decide_actions(turn)
+    assert w1.actions[0][1][0] is Direction.RIGHT  # index 0 → 主方向
+    assert w2.actions[0][1][0] is Direction.DOWN   # index 1 → 顺时针一格
+
+
+def test_early_spawn_worker_with_low_resources():
+    # 早期（<10 资源）只留 1：res=6 即可造第 2 个 Worker（5+1）
+    core = core_at((0, 0))
+    w = FakeUnit((0, 0), UnitType.WORKER, 2)
+    turn = FakeTurn(core=core, units=[w], resources=6)
+    decide_actions(turn)
+    assert core.actions == [("spawn", UnitType.WORKER)]
+
+
+def test_low_resources_blocks_spawn():
+    # res=5 连 5+1 都不够：不 spawn
+    core = core_at((0, 0))
+    w = FakeUnit((0, 0), UnitType.WORKER, 2)
+    turn = FakeTurn(core=core, units=[w], resources=5)
+    decide_actions(turn)
+    assert core.actions == []
 
 
 # ---------- 恢复 ----------
@@ -358,11 +398,12 @@ def test_respawning_no_core_no_crash():
 
 
 def test_all_units_wait_when_nothing_to_do():
+    # 空手 Worker 在家也会出门巡逻（巡逻目标在半径圆周上）
     core = core_at((0, 0))
     w = FakeUnit((0, 0), UnitType.WORKER, 2)
     turn = FakeTurn(core=core, units=[w], resources=2)
     decide_actions(turn)
-    assert actions_of(w) == []
+    assert actions_of(w) == ["move"]
     assert core.actions == []
 
 

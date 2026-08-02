@@ -18,12 +18,20 @@ from arena_hero import ArenaHeroClient, BeaconStatus, CoreState, Direction, Unit
 WORKER_COST = 5
 VANGUARD_COST = 10
 RANGER_COST = 12
-RESERVE = 3          # spawn 后必须保留的应急资源（heal/维修）
-WORKER_TARGET = 8    # 经济目标 Worker 数，之后开始造兵
-POP_CEILING = 20     # 人口上限：tier 0 (0-19) 无 upkeep，留 1 格缓冲
-HEAL_THRESHOLD = 2   # 战斗中允许保留的血量阈值（低于此值且能到家则优先回家治疗）
+RESERVE_WEALTHY = 3   # 资源充足时 spawn 后保留的应急资源
+RESERVE_EARLY = 1     # 早期（<10 资源）只留 1，尽快铺 Worker 经济
+WORKER_TARGET = 8     # 经济目标 Worker 数，之后开始造兵
+POP_CEILING = 20      # 人口上限：tier 0 (0-19) 无 upkeep，留 1 格缓冲
+EXPLORE_RADIUS = 12   # 巡逻半径：空 Worker 在家周围巡逻，不远离 Core
 
 UNIT_MAX_HP = {UnitType.WORKER: 2, UnitType.VANGUARD: 4, UnitType.RANGER: 2}
+
+# 方向轮盘：按 (i + base) % 4 旋转，确定性错开多 Worker 巡逻方向
+_DIRECTIONS = (Direction.RIGHT, Direction.DOWN, Direction.LEFT, Direction.UP)
+_DIRECTION_DELTA = {
+    Direction.RIGHT: (1, 0), Direction.DOWN: (0, 1),
+    Direction.LEFT: (-1, 0), Direction.UP: (0, -1),
+}
 
 
 def manhattan(a, b) -> int:
@@ -79,6 +87,23 @@ def _step_toward(pos, target, obstacle_cells) -> Optional[Direction]:
     return None
 
 
+def _explore_target(pos, home, beacon_pos, index: int, radius: int):
+    """巡逻目标：以 Core 为圆心、半径 radius 的圆周上一点。
+
+    主方向取 Beacon 相对 Core 的轴向，再按 Worker 序号旋转轮盘错开，
+    避免多 Worker 扎堆同方向。确定性：固定方向序 + 固定序号。
+    """
+    dx = beacon_pos[0] - home[0]
+    dy = beacon_pos[1] - home[1]
+    if abs(dx) >= abs(dy):
+        base = 0 if dx >= 0 else 2      # RIGHT 或 LEFT
+    else:
+        base = 1 if dy >= 0 else 3      # DOWN 或 UP
+    d = _DIRECTIONS[(base + index) % 4]
+    delta = _DIRECTION_DELTA[d]
+    return (home[0] + delta[0] * radius, home[1] + delta[1] * radius)
+
+
 def _nearest(targets, pos):
     """按 (距离, x, y) 确定性选取最近目标，避免迭代顺序抖动。"""
     return min(targets, key=lambda t: (manhattan(pos, t), t[0], t[1]))
@@ -97,6 +122,10 @@ def decide_actions(turn) -> None:
     # 我方是否已持 Beacon（对照 carrier_id 与本单位 UUID）
     unit_ids = {u.id for u in turn.units}
     i_carry = beacon.carrier_id is not None and beacon.carrier_id in unit_ids
+
+    # Worker 序号（UUID 排序）用于巡逻方向错开
+    worker_index = {u.id: i for i, u in enumerate(
+        sorted(turn.workers, key=lambda u: u.id))}
 
     def target_enemy(pos, radius):
         """视野 radius 内最近的敌人（确定性）。"""
@@ -133,12 +162,18 @@ def decide_actions(turn) -> None:
             if pos in resource_cells:
                 unit.harvest()
                 continue
-            # 朝最近可见资源格走；无可见资源则朝 Beacon 方向巡逻
-            # （Beacon 坐标永远公开；空手时纵深探索，拿到 cargo 即优先回家）
+            # 空手：朝最近可见资源格走；无可见资源则在家半径内巡逻
+            # （采到 cargo 后优先回家；离 Core 超半径则回头，不走丢）
             if resource_cells:
                 target = _nearest(resource_cells, pos)
+            elif home is not None:
+                if manhattan(pos, home) > EXPLORE_RADIUS:
+                    target = home
+                else:
+                    target = _explore_target(
+                        pos, home, beacon.position, worker_index[unit.id], EXPLORE_RADIUS)
             else:
-                target = turn.beacon.position
+                target = beacon.position  # 无 Core：朝 Beacon 方向探索
             if target != pos:
                 d = _step_toward(pos, target, obstacle)
                 if d is not None:
@@ -218,7 +253,9 @@ def decide_actions(turn) -> None:
             unit_type, cost = UnitType.VANGUARD, VANGUARD_COST
         else:
             unit_type, cost = UnitType.RANGER, RANGER_COST
-        if turn.resources >= cost + RESERVE:
+        # 早期资源少：激进扩张优先（只留 1 应急）；富足后留 3
+        reserve = RESERVE_WEALTHY if turn.resources >= 10 else RESERVE_EARLY
+        if turn.resources >= cost + reserve:
             core.spawn(unit_type)
 
 
