@@ -18,15 +18,18 @@ export const DEFAULT_MEMORY_CAPACITY = 20;
 export const DEFAULT_STRATEGY_GOAL =
   "最大化长期 Core 资源获取效率：先满足安全约束，再最小化 ticks_to_redemption_target，再最大化 core_resource_gain_per_100_ticks";
 
-export type StrategyMemorySource = "agent" | "safety";
+/** 决策来源（对齐 decision-types 的 DecisionSource；GPT 审核：含 hybrid/emergency）。 */
+export type StrategyMemorySource = "agent" | "hybrid" | "safety" | "emergency";
 
-/** 计划结果摘要（每次决策后由 agent/safety 记录；tick 单调递增）。 */
+/** 计划结果摘要（每次决策后由 agent/safety 记录；tick 严格单调递增，不允许倒序/重复）。
+ *  coreResourceDelta 语义（GPT 审核）：Core 余额变化，包含 spawn/heal 等主动消费——
+ *  负值可能是"投资造 Worker"而非效率恶化，模型不得据此误判。 */
 export interface StrategyMemoryEntry {
   readonly tick: number;
   readonly source: StrategyMemorySource;
   readonly planSummary: string;
   readonly outcome?: string;
-  readonly resourcesGain?: number;
+  readonly coreResourceDelta?: number;
 }
 
 export interface StrategyMemoryOptions {
@@ -42,6 +45,7 @@ export class StrategyMemory {
   private readonly buffer: Array<StrategyMemoryEntry | null>;
   private head = 0; // 下一个写入位置（环形）
   private count = 0; // 有效条数（<= capacity）
+  private lastTick: number | null = null; // 单调约束：tick 必须严格递增（GPT 审核）
 
   constructor(options: StrategyMemoryOptions = {}) {
     const capacity = options.capacity ?? DEFAULT_MEMORY_CAPACITY;
@@ -57,9 +61,15 @@ export class StrategyMemory {
     this.buffer = new Array<StrategyMemoryEntry | null>(capacity).fill(null);
   }
 
-  /** 记录一条计划结果摘要；超出容量时自动淘汰最旧一条。 */
+  /** 记录一条计划结果摘要；tick 必须严格大于上一条（倒序/重复拒绝）；超出容量时自动淘汰最旧一条。 */
   record(entry: StrategyMemoryEntry): void {
     validateEntry(entry);
+    if (this.lastTick !== null && entry.tick <= this.lastTick) {
+      throw new RangeError(
+        `StrategyMemory tick 必须严格递增：已有 T${this.lastTick}，收到 T${entry.tick}（倒序/重复拒绝）`,
+      );
+    }
+    this.lastTick = entry.tick;
     this.buffer[this.head] = entry;
     this.head = (this.head + 1) % this.capacity;
     if (this.count < this.capacity) {
@@ -71,6 +81,7 @@ export class StrategyMemory {
     this.buffer.fill(null);
     this.head = 0;
     this.count = 0;
+    this.lastTick = null;
   }
 
   /** 按插入顺序返回全部条目（最多 capacity 条；快照给 snapshot 使用）。 */
@@ -96,10 +107,10 @@ export class StrategyMemory {
       lines.push(formatEntryLine(entry));
     }
     const gainSum = entries.reduce(
-      (sum, e) => (e.resourcesGain === undefined ? sum : sum + e.resourcesGain),
+      (sum, e) => (e.coreResourceDelta === undefined ? sum : sum + e.coreResourceDelta),
       0,
     );
-    lines.push(`效率趋势: 累计资源收益 ${formatSigned(gainSum)} (最近 ${entries.length} 条)`);
+    lines.push(`效率趋势: 累计 Core 余额变化 ${formatSigned(gainSum)} (最近 ${entries.length} 条)`);
     const safetyCount = entries.filter((e) => e.source === "safety").length;
     const pct = entries.length === 0 ? 0 : Math.round((safetyCount / entries.length) * 100);
     lines.push(`失败模式: safety 兜底 ${safetyCount}/${entries.length} (${pct}%)`);
@@ -115,9 +126,9 @@ function validateEntry(entry: StrategyMemoryEntry): void {
       `StrategyMemoryEntry.tick must be a non-negative integer, got ${entry.tick}`,
     );
   }
-  if (entry.source !== "agent" && entry.source !== "safety") {
+  if (entry.source !== "agent" && entry.source !== "hybrid" && entry.source !== "safety" && entry.source !== "emergency") {
     throw new TypeError(
-      `StrategyMemoryEntry.source must be "agent" or "safety", got ${String(entry.source)}`,
+      `StrategyMemoryEntry.source 必须为 agent/hybrid/safety/emergency 之一，got ${String(entry.source)}`,
     );
   }
   if (typeof entry.planSummary !== "string" || entry.planSummary.trim().length === 0) {
@@ -126,9 +137,9 @@ function validateEntry(entry: StrategyMemoryEntry): void {
   if (entry.outcome !== undefined && (typeof entry.outcome !== "string" || entry.outcome.trim().length === 0)) {
     throw new TypeError("StrategyMemoryEntry.outcome must be a non-empty string when present");
   }
-  if (entry.resourcesGain !== undefined && !Number.isFinite(entry.resourcesGain)) {
+  if (entry.coreResourceDelta !== undefined && !Number.isFinite(entry.coreResourceDelta)) {
     throw new RangeError(
-      `StrategyMemoryEntry.resourcesGain must be finite when present, got ${entry.resourcesGain}`,
+      `StrategyMemoryEntry.coreResourceDelta must be finite when present, got ${entry.coreResourceDelta}`,
     );
   }
 }
@@ -139,8 +150,8 @@ function formatEntryLine(entry: StrategyMemoryEntry): string {
   if (entry.outcome !== undefined) {
     parts.push(`结果: ${flatten(entry.outcome)}`);
   }
-  if (entry.resourcesGain !== undefined) {
-    parts.push(`收益: ${formatSigned(entry.resourcesGain)}`);
+  if (entry.coreResourceDelta !== undefined) {
+    parts.push(`Core余额变化: ${formatSigned(entry.coreResourceDelta)}`);
   }
   return parts.join(" | ");
 }

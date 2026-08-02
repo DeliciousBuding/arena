@@ -78,7 +78,7 @@ function sectionText(prompt: string, index: number): string {
   return prompt.slice(start + PROMPT_SECTION_TITLES[index].length, end);
 }
 
-const ENTRY_LINE = /^- T\d+ \[(?:agent|safety)\]/gm;
+const ENTRY_LINE = /^- T\d+ \[(?:agent|hybrid|safety|emergency)\]/gm;
 
 function countEntries(text: string): number {
   return (text.match(ENTRY_LINE) ?? []).length;
@@ -138,20 +138,20 @@ test("memory 段：空 memory 无摘要行；3 条 entry 恰好 3 行摘要 + �
   const memory = new StrategyMemory();
   const emptySnapshot = memory.snapshot();
   assert.equal(countEntries(emptySnapshot), 0, "空 memory 不得有摘要行");
-  assert.match(emptySnapshot, /效率趋势: 累计资源收益 \+0 \(最近 0 条\)/);
+  assert.match(emptySnapshot, /效率趋势: 累计 Core 余额变化 \+0 \(最近 0 条\)/);
   assert.match(emptySnapshot, /失败模式: safety 兜底 0\/0 \(0%\)/);
 
-  memory.record({ tick: 1, source: "agent", planSummary: "派遣 worker 采集", outcome: "采集成功", resourcesGain: 2 });
+  memory.record({ tick: 1, source: "agent", planSummary: "派遣 worker 采集", outcome: "采集成功", coreResourceDelta: 2 });
   memory.record({ tick: 2, source: "agent", planSummary: "继续采集" });
-  memory.record({ tick: 3, source: "safety", planSummary: "空计划兜底", outcome: "safety 接管", resourcesGain: 3 });
+  memory.record({ tick: 3, source: "safety", planSummary: "空计划兜底", outcome: "safety 接管", coreResourceDelta: 3 });
 
   const prompt = buildDecisionPrompt(makeInput(makeState(100), memory, "t1-100-0"));
   const section4 = sectionText(prompt, 3);
   assert.equal(countEntries(section4), 3, "恰好 3 行摘要");
-  assert.match(section4, /^- T1 \[agent\] 派遣 worker 采集 \| 结果: 采集成功 \| 收益: \+2$/m);
+  assert.match(section4, /^- T1 \[agent\] 派遣 worker 采集 \| 结果: 采集成功 \| Core余额变化: \+2$/m);
   assert.match(section4, /^- T2 \[agent\] 继续采集$/m);
-  assert.match(section4, /^- T3 \[safety\] 空计划兜底 \| 结果: safety 接管 \| 收益: \+3$/m);
-  assert.match(section4, /效率趋势: 累计资源收益 \+5 \(最近 3 条\)/);
+  assert.match(section4, /^- T3 \[safety\] 空计划兜底 \| 结果: safety 接管 \| Core余额变化: \+3$/m);
+  assert.match(section4, /效率趋势: 累计 Core 余额变化 \+5 \(最近 3 条\)/);
   assert.match(section4, /失败模式: safety 兜底 1\/3 \(33%\)/);
 });
 
@@ -174,7 +174,7 @@ test("memory 有界：灌 30 条 → snapshot 只含最近 20 条", () => {
 
 test("deterministic：同输入两次构建，字符串逐字节相等", () => {
   const memory = new StrategyMemory();
-  memory.record({ tick: 1, source: "agent", planSummary: "采集", resourcesGain: 2 });
+  memory.record({ tick: 1, source: "agent", planSummary: "采集", coreResourceDelta: 2 });
   const units = [makeUnit("u-1", { position: [1, 2] }), makeUnit("u-2", { unitType: "RANGER", position: [3, 4] })];
   const input = makeInput(makeState(42, units), memory, "t1-42-7");
   assert.equal(buildDecisionPrompt(input), buildDecisionPrompt(input));
@@ -189,6 +189,7 @@ test("规则段含全部硬规则关键词", () => {
   const section5 = sectionText(prompt, 4);
   for (const keyword of [
     "arena_plan",
+    "arena_map",
     "Safety",
     "保守",
     "第 3 段",
@@ -234,4 +235,26 @@ test("长状态不炸：30 个单位 → prompt 可构建且含全部 30 个 UUI
     assert.ok(prompt.includes(u.id), `长状态必须含 ${u.id}`);
   }
   assert.match(sectionText(prompt, 2), /controlled units \(30\):/);
+});
+
+test("GPT 审核：tick 严格单调——倒序/重复拒绝，clear 后重置", () => {
+  const memory = new StrategyMemory();
+  memory.record({ tick: 1, source: "agent", planSummary: "采集" });
+  assert.throws(() => memory.record({ tick: 1, source: "safety", planSummary: "重复" }), RangeError);
+  assert.throws(() => memory.record({ tick: 0, source: "safety", planSummary: "倒序" }), RangeError);
+  memory.record({ tick: 2, source: "safety", planSummary: "正常递增" });
+  assert.equal(memory.readAll().length, 2);
+  memory.clear();
+  memory.record({ tick: 5, source: "agent", planSummary: "clear 后重置" });
+  assert.equal(memory.readAll().length, 1);
+});
+
+test("GPT 审核：hybrid/emergency 来源可记录且进入快照", () => {
+  const memory = new StrategyMemory();
+  memory.record({ tick: 1, source: "hybrid", planSummary: "合成计划", coreResourceDelta: -3 });
+  memory.record({ tick: 2, source: "emergency", planSummary: "紧急兜底" });
+  const snap = memory.snapshot();
+  assert.match(snap, /\[hybrid\]/);
+  assert.match(snap, /\[emergency\]/);
+  assert.match(snap, /Core余额变化: -3/);
 });

@@ -159,10 +159,10 @@ function renderRunRules(runId: string, tick: number, stateHash: string): string 
     `硬性约束（违反即视为本轮无效）：\n` +
     `1. 本 Prompt 第 3 段的当前 Tick 状态覆盖会话里所有旧 Tick 的瞬时事实` +
     `（单位 UUID、位置、HP、cargo、资源、人口）。\n` +
-    `2. 每 Tick 必须且只能调用一次 arena_plan 工具提交计划；不得调用任何其他工具。\n` +
-    `3. 禁止把计划写在普通文本中代替工具调用；普通文本中的计划内容一律不被采纳。\n` +
-    `4. 禁止使用旧 Tick 的单位 UUID、位置、HP、cargo——一切以本 Prompt 第 3 段的当前数据为准。\n` +
-    `5. 无把握时提交保守计划（空 actions 也可）；最终计划仍由 Safety/Arbiter 裁决，不要为不确定性冒险。\n` +
-    `6. 不要输出普通文本计划之外的内容；调用 arena_plan 后立即结束本轮。`
+    `2. 每 Tick 必须且只能调用一次 arena_plan 工具提交计划；调用后立即结束本轮。\n` +
+    `3. 允许在 arena_plan 之前调用 arena_map 查询地图（0 到多次），但不得调用任何其他工具。\n` +
+    `4. 禁止把计划写在普通文本中代替工具调用；普通文本中的计划内容一律不被采纳。\n` +
+    `5. 禁止使用旧 Tick 的单位 UUID、位置、HP、cargo——一切以本 Prompt 第 3 段的当前数据为准。\n` +
+    `6. 无把握时提交保守计划（空 actions 也可）；最终计划仍由 Safety/Arbiter 裁决，不要为不确定性冒险。`
   );
 }
