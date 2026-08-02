@@ -87,33 +87,77 @@ def rules_for(config: "TacticConfig") -> str:
     return RULES_VARIANTS.get(config.llm_rules, RULES_VARIANTS["standard"])
 
 
+_EVENT_SHORT = {
+    "HARVEST_SUCCEEDED": "采✓",
+    "DEPOSIT_SUCCEEDED": "交✓",
+    "UNIT_MOVE_SUCCEEDED": "移✓",
+    "UNIT_HEAL_SUCCEEDED": "治✓",
+    "CORE_HEAL_SUCCEEDED": "疗✓",
+    "UNIT_DAMAGED": "伤",
+    "UPKEEP_DEFICIT": "粮缺",
+    "CORE_RESOURCES_CAPTURED": "库被夺",
+    "WORKER_CARGO_DROPPED": "货落",
+}
+
+
+def _events_summary(events) -> str:
+    """上轮执行结果 → 一行摘要（决策闭环：agent 看到自己的计划效果）。"""
+    if not events:
+        return ""
+    counts: dict[str, int] = {}
+    harvest_fails: list = []
+    for ev in events:
+        t = getattr(ev, "event_type", "")
+        counts[t] = counts.get(t, 0) + 1
+        if t == "HARVEST_FAILED" and getattr(ev, "position", None):
+            harvest_fails.append(tuple(ev.position))
+    parts = []
+    for t, n in counts.items():
+        short = _EVENT_SHORT.get(t)
+        if short is None:
+            continue  # 未知事件不显示（保持输出稳定）
+        parts.append(f"{short}×{n}")
+    if harvest_fails:
+        parts.append(f"采✗{sorted(harvest_fails)[:4]}")
+    return "结果 " + " ".join(parts) if parts else ""
+
+
 def state_to_prompt(state: "TickState", first: bool = False,
                     rules: str | None = None) -> str:
     """Tick 状态 → 决策 prompt（首 Tick 含完整规则，之后仅增量）。
 
     增量只发局势，不发规则 → prompt 前缀逐 Tick 稳定 → DeepSeek context cache
     命中（实测 94-98%），token 成本和时间都大幅下降。
-    rules=None 时用默认 standard（首 Tick 才需要）。
+    状态符号化（固定字段序，比自然语言省 token 且更稳定）+ 上轮结果反馈
+    （决策闭环）。rules=None 时用默认 standard（首 Tick 才需要）。
     """
     lines = [(rules if rules is not None else RULES), ""] if first else [""]
     core = state.core
+    core_pos = f"({core.position[0]},{core.position[1]})" if core else "无"
     lines.append(
-        f"Tick {state.tick} | 资源 {state.resources}/{state.resource_capacity} "
-        f"| 人口 {state.population} | Core@{core.position if core else '无'}"
-        f" hp={core.view.hp if core else '-'} shield={core.view.shield if core else '-'}")
-    lines.append(f"可见敌人 {len(state.visible_enemies)}:")
-    for e in sorted(state.visible_enemies, key=lambda x: x.id):
-        owner = getattr(e, "owner_username", "")
-        lines.append(f"- {e.kind} {e.id} pos={e.position}"
-                     f"{f' owner={owner}' if owner else ''}")
-    lines.append(f"可见资源格 {len(state.resource_cells)}: "
-                 f"{sorted(state.resource_cells)[:12]}")
-    lines.append("我方单位:")
+        f"T{state.tick} R{state.resources}/{state.resource_capacity} "
+        f"P{state.population} | Core{core_pos}"
+        f" h{core.view.hp if core else '-'}s{core.view.shield if core else '-'}")
+    if state.visible_enemies:
+        lines.append("敌:")
+        for e in sorted(state.visible_enemies, key=lambda x: x.id):
+            owner = getattr(e, "owner_username", "")
+            lines.append(
+                f"- {e.kind[0]} {str(e.id)[:8]}({e.position[0]},{e.position[1]})"
+                f"{f'@{owner}' if owner else ''}")
+    if state.resource_cells:
+        lines.append(f"资 {sorted(state.resource_cells)[:12]}")
+    lines.append("我:")
     for u in sorted(state.units, key=lambda x: x.id):
         cargo = getattr(u, "cargo", None)
-        lines.append(
-            f"- {u.unit_type.value} {u.id} pos={u.position} hp={u.hp}"
-            f"{f' cargo={cargo}' if cargo is not None else ''}")
+        line = (f"- {u.unit_type.value[0]} {u.id}({u.position[0]},{u.position[1]})"
+                f"h{u.hp}")
+        if cargo is not None:
+            line += f"c{cargo}"
+        lines.append(line)
+    summary = _events_summary(state.events)
+    if summary:
+        lines.append(summary)
     lines.append("")
     lines.append("请调用 arena_plan 工具提交下一 Tick 计划:")
     return "\n".join(lines)
@@ -126,14 +170,16 @@ class LLMStrategy(Strategy):
 
     def __init__(self, config: TacticConfig, world: "World",
                  backend: "LLMBackend | None" = None,
-                 fallback: "Strategy | None" = None) -> None:
+                 fallback: "Strategy | None" = None,
+                 map_url: str | None = None) -> None:
         super().__init__(config, world)
         if backend is None:
             backend = PiRpcBackend(
                 pi_cli=config.llm_pi_cli, model=config.llm_model,
                 session_dir=config.llm_session_dir,
                 startup_timeout=config.llm_startup_timeout,
-                arena_tools=config.llm_arena_tools)
+                arena_tools=config.llm_arena_tools,
+                arena_map_url=map_url)
         self.backend = backend
         self.fallback = fallback if fallback is not None else _balance(config, world)
         self._rules = rules_for(config)  # RULES 变体（standard/aggressive/economic）

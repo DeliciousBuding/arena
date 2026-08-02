@@ -10,7 +10,7 @@ from arena_hero import BeaconStatus, CoreState, Direction, UnitType
 from arena_bot.config import TacticConfig
 from arena_bot.core.state import TickState
 from arena_bot.llm.backend import AskResult, LLMBackend, ToolCall, _extract_result
-from arena_bot.llm.llm_strategy import LLMStrategy, state_to_prompt
+from arena_bot.llm.llm_strategy import LLMStrategy, _events_summary, state_to_prompt
 from arena_bot.llm.parser import parse_llm_plan, parse_tool_plan
 from arena_bot.world import World
 
@@ -339,8 +339,34 @@ def test_prompt_first_includes_rules_then_incremental():
     later = state_to_prompt(st, first=False)
     assert "规则约束" in first       # 首 Tick 有完整规则
     assert "规则约束" not in later   # 之后增量（缓存前缀稳定）
-    assert "tick-42" not in first and "Tick 42" in first
+    assert "T42" in first            # 符号化状态行
     assert str(w.id) in later        # 单位全量 ID 供 LLM 引用
+    assert "W " in later             # 单位类型符号（WORKER→W）
+
+
+def test_prompt_includes_result_feedback():
+    """上轮结果反馈：采集成功/失败 → 决策闭环。"""
+    from types import SimpleNamespace
+    ev_ok = SimpleNamespace(event_type="HARVEST_SUCCEEDED", position=(4, 5))
+    ev_bad = SimpleNamespace(event_type="HARVEST_FAILED", position=(8, 2))
+    ev_move = SimpleNamespace(event_type="UNIT_MOVE_SUCCEEDED", position=(6, 5))
+    st = make_state(units=[])
+    prompt = state_to_prompt(st, first=False)
+    st2 = make_state(units=[])
+    st2 = TickState(
+        tick=st2.tick, resources=st2.resources,
+        resource_capacity=st2.resource_capacity, resource_space=st2.resource_space,
+        core=st2.core, core_view=st2.core_view, units=st2.units,
+        workers=st2.workers, vanguards=st2.vanguards, rangers=st2.rangers,
+        visible_enemies=st2.visible_enemies, resource_cells=st2.resource_cells,
+        obstacle_cells=st2.obstacle_cells, beacon=st2.beacon,
+        events=(ev_ok, ev_bad, ev_move))
+    prompt2 = state_to_prompt(st2, first=False)
+    summary_line = "结果 采✓×1 移✓×1 采✗[(8, 2)]"
+    assert prompt == prompt2.replace(summary_line + "\n", "")
+    assert "采✓×1" in prompt2 and "移✓×1" in prompt2
+    assert "采✗[(8, 2)]" in prompt2     # 失败带位置（纠错信号）
+    assert _events_summary(()) == ""    # 无事件不输出
 
 
 def test_rules_variants_distinct_and_configurable():
