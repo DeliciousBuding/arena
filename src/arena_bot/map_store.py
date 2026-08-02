@@ -9,11 +9,15 @@
   变了则用 SQLite 隐式 rowid 做增量游标（rowid > last_seen_id）拉新行
 - 不依赖重启传播：t2 写入 → revision+1 → t1 下次读取自动看到
 - PRAGMA busy_timeout 防并发写锁冲突
+
+线程安全（P0-1 补充）：DebugServer（ThreadingHTTPServer）的请求线程
+会跨线程查询——check_same_thread=False + 互斥锁串行化所有访问。
 """
 
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 CHUNK_SIZE = 32  # 规则：地图按 32x32 chunk 生成
@@ -25,7 +29,10 @@ class MapStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(path, timeout=10.0)
+        # check_same_thread=False：DebugServer 的请求线程会跨线程查询
+        # （ThreadingHTTPServer），用可重入锁串行化保证安全
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(path, timeout=10.0, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute(
@@ -89,55 +96,60 @@ class MapStore:
 
     def record(self, cells, observer: str, tick: int) -> int:
         """落盘新观察到的障碍格（INSERT OR IGNORE 去重）。返回实际新增数量。"""
-        if not cells:
-            return 0
-        cur = self._conn.executemany(
-            "INSERT OR IGNORE INTO obstacles (x, y, observer, seen_tick) "
-            "VALUES (?, ?, ?, ?)",
-            [(x, y, observer, tick) for x, y in cells])
-        inserted = cur.rowcount  # OR IGNORE 下 = 实际插入行数（并发安全）
-        if inserted > 0:
-            self._conn.commit()
-            self._bump_revision()
-            self._conn.commit()
-            self._load_incremental()  # 本进程立即看到（含 rowid 游标推进）
-        return inserted
+        with self._lock:
+            if not cells:
+                return 0
+            cur = self._conn.executemany(
+                "INSERT OR IGNORE INTO obstacles (x, y, observer, seen_tick) "
+                "VALUES (?, ?, ?, ?)",
+                [(x, y, observer, tick) for x, y in cells])
+            inserted = cur.rowcount  # OR IGNORE 下 = 实际插入行数（并发安全）
+            if inserted > 0:
+                self._conn.commit()
+                self._bump_revision()
+                self._conn.commit()
+                self._load_incremental()  # 本进程立即看到（含 rowid 游标推进）
+            return inserted
 
     def register_ally(self, username: str, observer: str, tick: int) -> bool:
         """注册盟友（我方账号的 Core username）。返回是否新增。"""
-        cur = self._conn.execute(
-            "INSERT OR IGNORE INTO allies (username, observer, seen_tick) "
-            "VALUES (?, ?, ?)", (username, observer, tick))
-        if cur.rowcount == 0:
-            return False
-        self._conn.commit()
-        self._bump_revision()
-        self._conn.commit()
-        self._load_incremental()
-        return True
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO allies (username, observer, seen_tick) "
+                "VALUES (?, ?, ?)", (username, observer, tick))
+            if cur.rowcount == 0:
+                return False
+            self._conn.commit()
+            self._bump_revision()
+            self._conn.commit()
+            self._load_incremental()
+            return True
 
     # ---- 读取（都先 refresh，实时含其他进程的新数据） ----
 
     def obstacles(self) -> frozenset[tuple[int, int]]:
         """全量已知障碍（含其他进程刚写入的）。"""
-        self._refresh()
-        return frozenset(self._obstacles)
+        with self._lock:
+            self._refresh()
+            return frozenset(self._obstacles)
 
     def allies(self) -> frozenset[str]:
         """已注册的盟友 username 集合（跨租户实时共享）。"""
-        self._refresh()
-        return frozenset(self._allies)
+        with self._lock:
+            self._refresh()
+            return frozenset(self._allies)
 
     def stats(self) -> dict:
-        self._refresh()
-        chunks = {(x // CHUNK_SIZE, y // CHUNK_SIZE)
-                  for x, y in self._obstacles}
-        return {
-            "obstacles_known": len(self._obstacles),
-            "chunks_explored": len(chunks),
-            "allies": len(self._allies),
-            "revision": self._last_revision,
-        }
+        with self._lock:
+            self._refresh()
+            chunks = {(x // CHUNK_SIZE, y // CHUNK_SIZE)
+                      for x, y in self._obstacles}
+            return {
+                "obstacles_known": len(self._obstacles),
+                "chunks_explored": len(chunks),
+                "allies": len(self._allies),
+                "revision": self._last_revision,
+            }
 
     def query(self, kind: str, bounds=None, limit: int = 200) -> dict:
         """只读查询（供 debug API / LLM arena_map 工具）。
@@ -146,24 +158,26 @@ class MapStore:
         bounds: (x1, y1, x2, y2) 可选范围过滤（障碍/资源）
         obstacles 最多返回 limit 条（按行列序），超限带 truncated 标记。
         """
-        self._refresh()
-        if kind == "stats":
-            return self.stats()
-        if kind == "obstacles":
-            rows = sorted(self._obstacles)  # (x, y) 有序
-            if bounds:
-                x1, y1, x2, y2 = bounds
-                rows = [(x, y) for x, y in rows
-                        if x1 <= x <= x2 and y1 <= y <= y2]
-            truncated = len(rows) > limit
-            return {"cells": rows[:limit], "count": len(rows),
-                    "truncated": truncated}
-        if kind == "resources":
-            # 资源格目前不持久化（world 每 Tick 视野内重算），返回空结构
-            return {"cells": [], "count": 0, "note": "资源格不持久化，见视野"}
-        if kind == "allies":
-            return {"usernames": sorted(self._allies)}
-        return {"error": f"未知查询: {kind!r}"}
+        with self._lock:
+            self._refresh()
+            if kind == "stats":
+                return self.stats()
+            if kind == "obstacles":
+                rows = sorted(self._obstacles)  # (x, y) 有序
+                if bounds:
+                    x1, y1, x2, y2 = bounds
+                    rows = [(x, y) for x, y in rows
+                            if x1 <= x <= x2 and y1 <= y <= y2]
+                truncated = len(rows) > limit
+                return {"cells": rows[:limit], "count": len(rows),
+                        "truncated": truncated}
+            if kind == "resources":
+                # 资源格目前不持久化（world 每 Tick 视野内重算），返回空结构
+                return {"cells": [], "count": 0, "note": "资源格不持久化，见视野"}
+            if kind == "allies":
+                return {"usernames": sorted(self._allies)}
+            return {"error": f"未知查询: {kind!r}"}
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
