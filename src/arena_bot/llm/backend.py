@@ -19,9 +19,11 @@ from typing import Protocol
 
 @dataclass
 class ToolCall:
-    """模型原生 tool_use 调用。"""
+    """模型原生 tool_use 调用。call_id 用于跨事件去重（turn_end 与
+    tool_execution_start 可能重复报告同一调用）。"""
     name: str
     input: dict
+    call_id: str = ""
 
 
 @dataclass
@@ -36,6 +38,14 @@ class AskResult:
             if tc.name == name:
                 return tc
         return None
+
+    def merge_tool_calls(self, calls: list["ToolCall"]) -> None:
+        """合并工具调用（增量累积，按 call_id 去重）——turn_end 与
+        tool_execution_start 报告同一调用时不重复。"""
+        for tc in calls:
+            if any(existing.call_id == tc.call_id for existing in self.tool_calls):
+                continue
+            self.tool_calls.append(tc)
 
 
 class LLMBackend(Protocol):
@@ -76,7 +86,8 @@ def _extract_result(message: dict) -> AskResult:
                     raw = block.get("input") or {}
                 tools.append(ToolCall(
                     name=str(block.get("name", "")),
-                    input=raw if isinstance(raw, dict) else {}))
+                    input=raw if isinstance(raw, dict) else {},
+                    call_id=str(block.get("id", ""))))
     return AskResult(text="".join(texts), thinking="".join(think),
                      tool_calls=tools)
 
@@ -98,6 +109,14 @@ class PiRpcBackend(LLMBackend):
             self.cmd.append("--arena-tools")
         if arena_map_url:
             self.cmd += ["--arena-map-url", arena_map_url]
+        # 会话纪元：进程重启/超时隔离后 +1；策略层据此重发完整规则
+        self.session_epoch = 0
+        self._start_process()
+        if not self.handshake(timeout=startup_timeout):
+            raise RuntimeError(f"pi RPC 握手失败: {self._stderr_tail()}")
+
+    def _start_process(self) -> None:
+        """启动子进程 + 事件队列 + stdout/stderr 消费线程。"""
         self.proc = subprocess.Popen(
             self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8",
@@ -105,8 +124,19 @@ class PiRpcBackend(LLMBackend):
         )
         self.events: queue.Queue = queue.Queue()
         threading.Thread(target=self._read_loop, daemon=True).start()
-        if not self.handshake(timeout=startup_timeout):
-            raise RuntimeError(f"pi RPC 握手失败: {self._stderr_tail()}")
+        # stderr 持续消费（防管道塞满卡死子进程），丢弃内容仅记尾段
+        self._stderr_tail_buf: list[str] = []
+        threading.Thread(target=self._drain_stderr, daemon=True).start()
+
+    def _drain_stderr(self) -> None:
+        assert self.proc.stderr is not None
+        for line in self.proc.stderr:
+            line = line.strip()
+            if not line:
+                continue
+            self._stderr_tail_buf.append(line)
+            if len(self._stderr_tail_buf) > 40:  # 只保留尾 40 行供诊断
+                self._stderr_tail_buf.pop(0)
 
     def _read_loop(self) -> None:
         assert self.proc.stdout is not None
@@ -125,7 +155,7 @@ class PiRpcBackend(LLMBackend):
         try:
             return self.proc.stderr.read(limit)
         except Exception:
-            return ""
+            return "".join(self._stderr_tail_buf)[-limit:]
 
     def _send(self, obj: dict) -> None:
         assert self.proc.stdin is not None
@@ -148,20 +178,33 @@ class PiRpcBackend(LLMBackend):
             if ev.get("type") == "response" and ev.get("id") == "hs":
                 return ev.get("success") is True
 
+    def _restart(self, reason: str) -> None:
+        """进程重建（P0-2/P0-3）：超时隔离/崩溃自愈统一走这里。
+
+        终止旧进程 → 清空事件队列（旧 tick 的迟到事件不会串到新会话）→
+        新进程 + 握手 → session_epoch += 1（策略层据此重发完整规则）。
+        """
+        log = logging.getLogger("arena_bot.llm")
+        log.warning("pi RPC 重建（%s），epoch %d → %d", reason,
+                    self.session_epoch, self.session_epoch + 1)
+        try:
+            self.proc.terminate()
+            self.proc.wait(timeout=5)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+        self.session_epoch += 1
+        self._start_process()
+        if not self.handshake(timeout=30.0):
+            raise RuntimeError("pi RPC 重建后握手失败")
+
     def _ensure_alive(self) -> None:
         """进程自愈：崩溃后自动重启 + 重新握手（长驻可靠性）。"""
         if self.proc.poll() is None:
             return
-        log = logging.getLogger("arena_bot.llm")
-        log.warning("pi RPC 进程退出（rc=%s），自动重启", self.proc.returncode)
-        self.proc = subprocess.Popen(
-            self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, encoding="utf-8",
-            errors="replace", bufsize=1)
-        self.events = queue.Queue()
-        threading.Thread(target=self._read_loop, daemon=True).start()
-        if not self.handshake(timeout=30.0):
-            raise RuntimeError("pi RPC 重启后握手失败")
+        self._restart(f"进程退出 rc={self.proc.returncode}")
 
     def ask(self, message: str, request_id: str, timeout: float = 90.0) -> AskResult:
         """发 prompt，等 agent_settled，返回决策结果。
@@ -170,8 +213,9 @@ class PiRpcBackend(LLMBackend):
         - tool_execution_start：工具调用（含结构化 args，决策主输出）
         - turn_end：最终 assistant 消息（text/thinking，渲染用）
 
-        timeout 是决策总预算：从发送到 agent_settled 的硬上限，
-        到点即抛 TimeoutError（策略层回退确定性，保证 15s 游戏窗口纪律）。
+        timeout 是决策总预算：从发送到 agent_settled 的硬上限。
+        超时即隔离：重启 RPC 进程 + 清空队列（迟到的旧 tick 事件无法串到
+        下一 Tick）+ epoch+1（策略层重发规则），然后抛 TimeoutError。
         """
         self._ensure_alive()
         self._send({"id": request_id, "type": "prompt", "message": message})
@@ -180,18 +224,24 @@ class PiRpcBackend(LLMBackend):
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                self._restart(f"{request_id} 决策总预算 {timeout:.0f}s 耗尽")
                 raise TimeoutError(f"{request_id}: 决策总预算 {timeout:.0f}s 耗尽")
             ev = self._read_event(remaining)
             if ev is None:
+                self._restart(f"{request_id} 等待事件超时")
                 raise TimeoutError(f"{request_id}: 等待事件超时")
             t = ev.get("type")
             if t == "tool_execution_start":
                 args = ev.get("args") or {}
-                last.tool_calls.append(ToolCall(
+                last.merge_tool_calls([ToolCall(
                     name=str(ev.get("toolName", "")),
-                    input=args if isinstance(args, dict) else {}))
+                    input=args if isinstance(args, dict) else {},
+                    call_id=str(ev.get("toolCallId", "")))])
             elif t == "turn_end":
-                last = _extract_result(ev.get("message") or {})
+                extracted = _extract_result(ev.get("message") or {})
+                last.text = extracted.text
+                last.thinking = extracted.thinking
+                last.merge_tool_calls(extracted.tool_calls)
             elif t == "agent_settled":
                 return last
 

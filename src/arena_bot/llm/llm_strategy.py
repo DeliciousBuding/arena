@@ -184,7 +184,7 @@ class LLMStrategy(Strategy):
         self.backend = backend
         self.fallback = fallback if fallback is not None else _balance(config, world)
         self._rules = rules_for(config)  # RULES 变体（standard/aggressive/economic）
-        self._first = True
+        self._bootstrap_epoch = -1       # 已发完整规则的会话纪元（P0-3）
         # 决策统计（snapshot/telemetry 可观测）
         self.stats = {
             "calls": 0, "tool_ok": 0, "text_ok": 0, "fallback": 0,
@@ -192,8 +192,12 @@ class LLMStrategy(Strategy):
         }
 
     def decide(self, state: "TickState") -> Plan:
-        prompt = state_to_prompt(state, first=self._first, rules=self._rules)
-        self._first = False
+        # bootstrap 判定按会话纪元：首次 / backend 重启（epoch+1）都要重发完整规则
+        epoch = getattr(self.backend, "session_epoch", 0)
+        first = self._bootstrap_epoch != epoch
+        if first:
+            self._bootstrap_epoch = epoch
+        prompt = state_to_prompt(state, first=first, rules=self._rules)
         self.stats["calls"] += 1
 
         result, latency = self._ask_with_retry(state, prompt)

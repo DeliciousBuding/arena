@@ -47,6 +47,7 @@ class FakeBackend:
         self.fail_first = fail_first  # 前 N 次调用抛错（瞬态失败语义），之后正常
         self.calls: list[tuple[str, int]] = []
         self.closed = False
+        self.session_epoch = 0  # 模拟会话纪元（backend 重启时 +1）
 
     def ask(self, message: str, request_id: str, timeout: float) -> AskResult:
         self.calls.append((request_id, len(message)))
@@ -330,6 +331,31 @@ def test_llm_strategy_close_releases_backend():
     strat = LLMStrategy(TacticConfig(), World(), backend=backend)
     strat.close()
     assert backend.closed is True
+
+
+def test_merge_tool_calls_dedup():
+    """P0-2: turn_end 与 tool_execution_start 报告同一调用时不重复累积。"""
+    res = AskResult(text="")
+    res.merge_tool_calls([ToolCall("arena_plan", {"actions": []}, call_id="c1")])
+    res.merge_tool_calls([ToolCall("arena_plan", {"actions": []}, call_id="c1")])
+    res.merge_tool_calls([ToolCall("arena_map", {"query": "stats"}, call_id="c2")])
+    assert len(res.tool_calls) == 2
+    assert res.tool("arena_map") is not None
+
+
+def test_bootstrap_resends_rules_after_epoch_change():
+    """P0-3: backend 重启（epoch+1）后自动重发完整规则。"""
+    w = FakeUnit((5, 5), UnitType.WORKER)
+    st = make_state(units=[w], resources=8)
+    backend = FakeBackend()
+    strat = LLMStrategy(TacticConfig(llm_retries=0), World(), backend=backend)
+    strat.decide(st)                     # 首决策：完整规则
+    full_len = backend.calls[0][1]
+    strat.decide(st)                     # 增量（无规则，前缀缓存命中）
+    assert backend.calls[1][1] < full_len
+    backend.session_epoch = 1            # 模拟 backend 重启
+    strat.decide(st)                     # 重发完整规则
+    assert backend.calls[2][1] == full_len
 
 
 def test_prompt_first_includes_rules_then_incremental():
