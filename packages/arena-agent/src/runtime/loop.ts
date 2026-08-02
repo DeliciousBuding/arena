@@ -60,7 +60,12 @@ export function planToCommandPlan(plan: Plan): CommandPlan {
 
 export interface TickOutcome {
   readonly tick: number;
+  /** 最终来源（repair 只提升 agent 计划；safety 计划被修复仍记 safety）。 */
   readonly source: DecisionSource;
+  /** 决策最初来源（agent / safety），repair 前的值。 */
+  readonly originalSource: DecisionSource;
+  /** validator 报告的 issue 数（修复/警告）。 */
+  readonly repairCount: number;
   readonly plan: Plan;
   readonly accepted: boolean;
   readonly leaseCode?: string;
@@ -138,17 +143,21 @@ export async function handleTurn(
     source = "safety";
   }
 
-  // 3) 语义校验 + repair
+  // 3) 语义校验 + repair（repair 只提升 agent 来源；safety 被修复仍记 safety，见 GPT R2）
   let plan = candidate.plan;
   const validation = validatePlan(state, plan);
+  const repairCount = validation.issues.length;
   if (!validation.valid && validation.plan !== plan) {
     plan = validation.plan;
-    source = "repaired-agent";
+    if (source === "agent") {
+      source = "repaired-agent";
+    }
   }
+  const originalSource = source === "repaired-agent" ? "agent" : source;
 
   // 4) shadow：只观察不提交
   if (options.shadow) {
-    return { tick: state.tick, source, plan, accepted: false };
+    return { tick: state.tick, source, originalSource, repairCount, plan, accepted: false };
   }
 
   // 5) 决策计划注入 Turn 并提交（走 SDK 原提交通道：重试/幂等）
@@ -156,11 +165,13 @@ export async function handleTurn(
     const wirePlan = planToCommandPlan(plan);
     turn.replace(wirePlan);
     const accepted = await turn.submit();
-    return { tick: state.tick, source, plan, accepted: accepted.accepted };
+    return { tick: state.tick, source, originalSource, repairCount, plan, accepted: accepted.accepted };
   } catch (exc) {
     return {
       tick: state.tick,
       source,
+      originalSource,
+      repairCount,
       plan,
       accepted: false,
       error: exc instanceof Error ? exc.message : String(exc),

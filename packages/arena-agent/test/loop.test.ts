@@ -131,3 +131,24 @@ test("handleTurn 提交失败：error 字段带出", async () => {
   assert.equal(outcome.accepted, false);
   assert.equal(outcome.error, "boom");
 });
+
+test("handleTurn R2：agent 计划被 repair → repaired-agent + 计数；safety 不受影响", async () => {
+  // agent 计划含未知单位 → validator 修复 → source 提升为 repaired-agent
+  const turn = makeTurn(async () => ({ accepted: true, tick: 100 }));
+  const decide = async (_state: TickState, lease: DecisionLease): Promise<DecisionCandidate> => ({
+    protocolVersion: "1" as const,
+    tick: 100,
+    stateHash: lease.stateHash,
+    plan: {
+      tick: 100,
+      unitActions: { ghost: { type: "MOVE", direction: "UP" } }, // 不存在的单位
+      coreAction: null,
+      intents: {},
+    },
+    reason: "test",
+  });
+  const outcome = await handleTurn(turn, new SafetyPlanner(DEFAULT_SAFETY_CONFIG), { decide }, 8000);
+  assert.equal(outcome.source, "repaired-agent");
+  assert.equal(outcome.originalSource, "agent");
+  assert.ok(outcome.repairCount >= 1);
+});
