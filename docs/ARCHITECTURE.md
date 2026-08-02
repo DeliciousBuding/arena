@@ -11,6 +11,7 @@ strategy.py      决策抽象：Strategy 基类 + Plan 纯数据 + apply_plan �
 strategies/      策略实现（balance = 默认）
 phase_machine.py 全局阶段状态机（EARLY_EXPANSION/BALANCED/MILITARY）
 world.py         环境记忆（障碍永久/资源三态/敌人跟踪/失败格冷却/单位意图）
+map_store.py     共享地图测绘（SQLite WAL，4 账号协同探索）
 core/
   state.py       Turn 适配层（TickState：决策层不碰 SDK 细节）
   nav.py         确定性导航（曼哈顿/直线遮挡/步进/巡逻目标）
@@ -63,6 +64,13 @@ PATROL ⇄ GO_HARVEST（跨 Tick 目标记忆）→ cargo>0 → RETURN → DEPOS
 - 仅绑 127.0.0.1，本地单用户
 - pause = 观察模式（不提交计划，AGENT 槽空 = WAIT）；resume 恢复
 - set_param 运行时改参数（config.with_param，frozen 不可变保证）
+
+## 共享地图（map_store）
+
+- 障碍是永久地形（规则）→ 4 个租户的观察实时落盘 SQLite（WAL 多进程安全）
+- 任一租户查询全量已知障碍：巡逻/回家直接绕开其他账号测绘过的区域
+- `GET /map` 查看测绘统计（障碍格数/chunk 数）；数据在 `mapstore/`（gitignore）
+- 这是"经验建图"（官方种子不可逆，但地图内容可从观察合法重建）的第一层
 
 ## 日志（logging_util）
 
