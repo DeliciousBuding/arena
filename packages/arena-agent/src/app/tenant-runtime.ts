@@ -33,7 +33,8 @@ import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
 import type { AgentDecisionRuntime, DecisionModeName, DecisionResult, SubmissionModeName } from "../runtime/decision-types.ts";
 import { JsonlWriter } from "../telemetry/jsonl-writer.ts";
-import { decisionTrace, outcomeTrace, planHashOf, runtimeTrace } from "../telemetry/decision-trace.ts";
+import { planHashOf } from "../telemetry/decision-trace.ts";
+import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
 
 export const RULES_VERSION = "v0.11";
 
@@ -209,44 +210,48 @@ export async function runTenant(
     const onTick = (outcome: TickOutcome): void => {
       const decision = outcome.decision;
       if (decision !== undefined) {
-        // runtime trace + decision trace（三流以 runId 关联）
-        runtimeWriter.write(
-          runtimeTrace({
-            runId: decision.runId,
-            tick: outcome.tick,
-            deadlineOutcome: decision.deadlineOutcome,
-            agentLatencyMs: decision.agentLatencyMs,
-            selectionLatencyMs: decision.selectionLatencyMs,
-            abortRequested: decision.abortRequested,
-            rotationGeneration: runtimeGeneration,
-            submitResult: outcome.accepted ? "accepted" : submissionMode === "live" ? "rejected" : "not_submitted",
-            leaseRejectionCode: outcome.leaseCode,
-          }),
-        );
-        decisionWriter.write(
-          decisionTrace({
-            runId: decision.runId,
-            tick: outcome.tick,
-            decisionSource: outcome.source,
-            agentActionCount: decision.agentActionCount,
-            safetyReplacementCount: decision.safetyReplacementCount,
-            invalidAgentActionCount: decision.invalidAgentActionCount,
-            repairCount: decision.repairCount,
-            planHash: planHashOf(outcome.plan),
-          }),
-        );
+        // runtime trace + decision trace（三流以 runId 关联；直接构造 record——
+        // 工厂默认值（unknown）是危险默认，生产路径显式传全字段，validate 由 JsonlWriter 执行）
+        const runtimeRecord: RuntimeTraceRecord = {
+          processRunId,
+          tenantId: config.tenantId,
+          runId: decision.runId,
+          tick: outcome.tick,
+          deadlineOutcome: decision.deadlineOutcome,
+          agentLatencyMs: decision.agentLatencyMs,
+          selectionLatencyMs: decision.selectionLatencyMs,
+          abortRequested: decision.abortRequested,
+          rotationGeneration: runtimeGeneration,
+          submitResult: outcome.accepted ? "accepted" : submissionMode === "live" ? "rejected" : "not_submitted",
+          leaseRejectionCode: outcome.leaseCode,
+        };
+        runtimeWriter.write(runtimeRecord);
+        const decisionRecord: DecisionTraceRecord = {
+          processRunId,
+          tenantId: config.tenantId,
+          runId: decision.runId,
+          tick: outcome.tick,
+          decisionSource: outcome.source,
+          agentActionCount: decision.agentActionCount,
+          safetyReplacementCount: decision.safetyReplacementCount,
+          invalidAgentActionCount: decision.invalidAgentActionCount,
+          repairCount: decision.repairCount,
+          planHash: planHashOf(outcome.plan),
+        };
+        decisionWriter.write(decisionRecord);
       }
       // outcome trace：t-1 决策时资源 → t 决策时资源（提交执行后的净变化）
       if (holder.prev !== null) {
-        outcomeWriter.write(
-          outcomeTrace({
-            tick: outcome.tick,
-            coreResourcesBefore: holder.prev.resources,
-            coreResourcesAfter: outcome.state.resources,
-            coreResourceDelta: outcome.state.resources - holder.prev.resources,
-            events: outcome.state.events.map((e) => e.eventType),
-          }),
-        );
+        const outcomeRecord: OutcomeTraceRecord = {
+          processRunId,
+          tenantId: config.tenantId,
+          tick: outcome.tick,
+          coreResourcesBefore: holder.prev.resources,
+          coreResourcesAfter: outcome.state.resources,
+          coreResourceDelta: outcome.state.resources - holder.prev.resources,
+          events: outcome.state.events.map((e) => e.eventType),
+        };
+        outcomeWriter.write(outcomeRecord);
       }
       holder.prev = { tick: outcome.tick, resources: outcome.state.resources };
     };
