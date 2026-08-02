@@ -145,6 +145,12 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 > DecisionCoordinator（Safety 预计算 → deadline race → expire 先于 abort → 后台 settle）。
 > 16 暗卷全过；零回归门槛：100 tick fixture 上 coordinator（never-settles）计划 ==
 > SafetyPlanner 100/100。完成闸门五项全绿（check/test/schema:check/replay:check/pytest）。
+>
+> 3E 勘误（2026-08-03，真实 Adapter 前）：`AgentDecisionRequest` 显式携带 runId（coordinator
+> 唯一分配，handle 不一致 → 立即 Safety + reportViolation）；startDecision 抛错立即返回
+> （deadlineOutcome=error，不等 soft deadline）；selection deadline 落地（arbitration+repair
+> 后取 selectedAt，超限弃候选 → selection_timeout）；abortSettled 移除，settle 经 onRunSettled
+> telemetry 上报。暗卷 17-20 补齐（共 20 暗卷 + 零回归全绿）。
 > 下一步：切片 4 真实 Pi Adapter（消灭 Python RPC 桥）。
 
 ### 切片 4 — 真实 Pi Adapter（4-5 天）
