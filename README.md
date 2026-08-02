@@ -28,7 +28,8 @@ experiments/*.yaml ──▶ run.py（调度器：按实验定义 spawn 租户�
 
 > **TS 迁移进行中**：SDK 已 fork 为 TS 版（DeliciousBuding/arena-hero-ts，public），
 > 编排层将重写为 TS 并直接嵌入 pi-coding-agent（RPC 桥消失）。当前 Python 版继续
-> 稳定运行 4 租户 burn-in。方案见 [docs/migration-plan.md](docs/migration-plan.md)。
+> 稳定运行 4 租户 burn-in（数据收集，供 TS 侧差分验证）。方案见 [docs/migration-plan.md](docs/migration-plan.md)，
+> 迁移进度：W0 嵌入闸门 ✅ · W1 wire schema+Golden Replay ✅ · TS 编排层最小闭环（loop）✅ · W4 决策桥 → W6 删 Python。
 
 ## 快速开始
 
@@ -52,7 +53,7 @@ curl http://127.0.0.1:8123/state # 调试端点：t1 状态快照（8123-8126 �
 | `src/arena_bot/map_store.py` | 共享地图（SQLite WAL）：障碍/盟友，4 进程协同测绘 |
 | `src/arena_bot/debug_api.py` | 外部控制：/state /command /map/query |
 | `src/arena_bot/watchdog.py` | 停滞告警（卡死/循环/经济停滞） |
-| `src/arena_bot/telemetry.py` | 遥测 CSV + evaluate.py 报告 |
+| `src/arena_bot/telemetry.py` | 遥测 JSONL（每 Tick，runs/<run_id>/telemetry/）+ evaluate.py 报告 |
 | `experiments/*.yaml` | 实验定义（租户/策略/参数覆盖） |
 | `docs/` | 权威文档：规则/交接/架构/目标 |
 | `scripts/pi_rpc_bridge.py` | LLM 桥离线验证（不烧游戏） |
@@ -74,8 +75,9 @@ curl http://127.0.0.1:8123/state # 调试端点：t1 状态快照（8123-8126 �
 
 ## 相关仓库
 
-- 本仓库：arena（主工作区，4 账号自动游玩）
-- pi 二开：独立 private 仓库（arena-llm-bridge 分支，LLM agent 框架侧改动）
+- 本仓库：arena（主工作区，4 账号自动游玩；Python 运行时退役中）
+- arena-hero-ts：TS SDK（wire schema 单源，追官方 Python SDK 上游）
+- arena-pr-verify：TS 编排层（arena-agent，PR 验证工作区）
 
 ## 文档索引
 

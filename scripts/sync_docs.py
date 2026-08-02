@@ -15,7 +15,8 @@ SKILL_REFERENCES = ROOT / ".agents" / "skills" / "arena-hero" / "references"
 DOCS = ROOT / "docs"
 
 # references 中不需要进项目 docs 的（内部使用/生成源）
-SKIP = {"openapi.yaml", "asyncapi.yaml"}
+# game-rules.md 是本项目手工维护的规则单源（v0.11），不可被 skill bundle（v0.10）覆盖
+SKIP = {"openapi.yaml", "asyncapi.yaml", "game-rules.md"}
 
 
 def main() -> None:

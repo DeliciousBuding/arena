@@ -1,4 +1,8 @@
-# Arena Bot 架构
+# Arena Bot 架构（Python 版，退役中）
+
+> ⚠️ **本文件描述 Python 运行时架构，仅作退役参考**。当前主线是 TS 编排层
+> （arena-agent：domain/ + runtime/loop.ts），Python 侧只跑数据收集。
+> 迁移方案见 [migration-plan.md](migration-plan.md)。
 
 最后更新：2026-08-02（重构后）
 
