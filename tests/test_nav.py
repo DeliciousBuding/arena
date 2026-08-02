@@ -47,5 +47,6 @@ def test_explore_target_radius_and_rotation():
 
 
 def test_nearest_deterministic_tiebreak():
-    assert nearest([(2, 0), (0, 2), (10, 10)], (0, 0)) == (2, 0)  # 同距取 x 小
+    # 同距离时 x 小优先（key=(dist, x, y)）
+    assert nearest([(2, 0), (0, 2), (10, 10)], (0, 0)) == (0, 2)
     assert nearest([(5, 5)], (0, 0)) == (5, 5)
