@@ -32,7 +32,8 @@ if TYPE_CHECKING:
 log = logging.getLogger("arena_bot.llm")
 
 _RULES_COMMON = """输出要求:
-- 只调用 arena_plan 工具提交计划, 不要调用任何其他工具
+- 每 Tick 调用 arena_plan 工具提交计划; 需要回忆已探索区域/障碍分布/盟友名单时, 可先调用 arena_map 查询（不要每 Tick 都查）
+- 不要调用任何其他工具
 - 无法决定时提交空 actions
 - 提交后立即结束, 不要输出多余内容"""
 
