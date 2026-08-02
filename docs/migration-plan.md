@@ -125,6 +125,14 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 - 关键内容：离线回放框架（现有 scripts/shadow-run.ts 为 TS 单侧）；Python 侧回放；按 state / memory / intent / plan 四维比较，差异分类并修复。
 - 验收变化：差分报告零未解释差异；Golden Replay 纳入 CI，禁止回归。
 
+> ✅ **已完成（2026-08-03）**：契约 v1.0.1 + 机器 Schema（contracts/differential/）+ fixture
+> burnin-20260802-a（100 tick 连续 segment，manifest 驱动，config 单源注入）+
+> E1/E2 回放器（scripts/replay_py.py / packages/arena-agent/scripts/replay-ts.ts）+
+> E3 差分比较器（scripts/diff_replay.py + 白名单）。实测 100 tick：**STATE_CLEAN ·
+> 未解释差异 0 条 · plan 内容差异 0/100**（memory/units 差异为已解释设计差异：
+> TS 清理死亡单位记忆 vs Python 保留，进白名单）。CI 新增 W3 replay job（npm run replay:check
+> + 报告 artifact）。Python 策略层自此正式冻结，不再参与新功能。
+
 ### 切片 3 — W4 决策核心，不接真实 Provider（4-5 天）
 
 - 目标：决策核心（DecisionLease + hedged decision + abort）用 mock provider 完整实现并验证，不依赖 pi。
