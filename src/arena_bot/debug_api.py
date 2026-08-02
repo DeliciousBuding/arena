@@ -48,6 +48,8 @@ def handle_request(method: str, path: str, body: bytes | None,
             return 200, snapshot()
         if path == "/strategies":
             return 200, {"strategies": snapshot().get("strategies", {})}
+        if path == "/map":
+            return 200, {"map": snapshot().get("map", {})}
         return 404, {"error": "not found"}
     if method == "POST":
         if path != "/command":

@@ -1,0 +1,59 @@
+"""共享地图存储：跨租户的障碍测绘（SQLite WAL，多进程安全）。
+
+4 个账号并行巡逻 → 各租户观察实时落盘 → 任一租户可查询全量已知障碍。
+障碍是永久地形（规则 v0.10），看过不会变 → 地图只增不改、不删。
+协同价值：A 账号探索过的区域，B 账号的巡逻直接绕开已知障碍。
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+CHUNK_SIZE = 32  # 规则：地图按 32x32 chunk 生成
+
+
+class MapStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(path)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS obstacles ("
+            "x INT NOT NULL, y INT NOT NULL, observer TEXT, seen_tick INT, "
+            "PRIMARY KEY (x, y))")
+        self._obstacles: set[tuple[int, int]] = set()
+        self._load()
+
+    def _load(self) -> None:
+        for x, y in self._conn.execute("SELECT x, y FROM obstacles"):
+            self._obstacles.add((x, y))
+
+    def record(self, cells, observer: str, tick: int) -> int:
+        """落盘新观察到的障碍格（去重）。返回新增数量。"""
+        new = [(x, y, observer, tick) for x, y in cells
+               if (x, y) not in self._obstacles]
+        if not new:
+            return 0
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO obstacles (x, y, observer, seen_tick) "
+            "VALUES (?, ?, ?, ?)", new)
+        self._conn.commit()
+        self._obstacles.update((x, y) for x, y, *_ in new)
+        return len(new)
+
+    def obstacles(self) -> frozenset[tuple[int, int]]:
+        """全量已知障碍（含本进程加载前其他租户记录的）。"""
+        return frozenset(self._obstacles)
+
+    def stats(self) -> dict:
+        chunks = {(x // CHUNK_SIZE, y // CHUNK_SIZE)
+                  for x, y in self._obstacles}
+        return {
+            "obstacles_known": len(self._obstacles),
+            "chunks_explored": len(chunks),
+        }
+
+    def close(self) -> None:
+        self._conn.close()

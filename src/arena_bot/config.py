@@ -12,6 +12,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_PATH = PROJECT_ROOT / ".env"
+MAP_STORE_PATH = PROJECT_ROOT / "mapstore" / "arena_map.db"
 
 # 规则常量（对应 v0.10 契约，勿凭记忆改动）
 WORKER_COST = 5

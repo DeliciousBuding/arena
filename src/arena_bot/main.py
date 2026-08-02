@@ -15,10 +15,12 @@ import sys
 
 from arena_hero import ArenaHeroClient, UnitType
 
-from .config import PROJECT_ROOT, TacticConfig, TenantConfig, load_api_key
+from .config import (MAP_STORE_PATH, PROJECT_ROOT, TacticConfig, TenantConfig,
+                     load_api_key)
 from .core.state import TickState
 from .debug_api import DebugServer
 from .logging_util import get_logger, set_current_tick, setup_logging
+from .map_store import MapStore
 from .phase_machine import GamePhase, PhaseMachine
 from .strategies import create_strategy
 from .strategy import apply_plan
@@ -103,6 +105,8 @@ def build_snapshot(cfg: TacticConfig, phase: PhaseMachine, world: World,
                 "worker_target": cfg.worker_target,
                 "pop_ceiling": cfg.pop_ceiling,
             },
+            "map": (world.map_store.stats()
+                    if world.map_store is not None else None),
         }
         if watchdog is not None:
             body["alarms"] = [
@@ -123,7 +127,11 @@ def play(api_key: str, config: TacticConfig,
         setup_logging()
     log.info("arena-bot 启动（SDK 0.2.6 / 规则 v0.10）租户=%s", tenant.name if tenant else "solo")
 
-    world = World()
+    map_store = MapStore(MAP_STORE_PATH)  # 共享地图：4 账号协同测绘
+    log.info("共享地图加载：%s（%d 障碍格 / %d chunk）",
+             map_store.path, *map_store.stats().values())
+
+    world = World(map_store)
     phase = PhaseMachine(config)
     strategy = create_strategy(tenant.strategy_name if tenant else "balance",
                                config, world)
@@ -157,7 +165,8 @@ def play(api_key: str, config: TacticConfig,
             harvest_failed = {ev.position for ev in state.events
                               if ev.event_type == "HARVEST_FAILED" and ev.position}
             world.observe(state.tick, state.obstacle_cells, state.resource_cells,
-                          state.visible_enemies, harvest_failed)
+                          state.visible_enemies, harvest_failed,
+                          observer=tenant.name if tenant else "solo")
             for ev in state.events:
                 if ev.event_type == "HARVEST_SUCCEEDED" and ev.position:
                     world.mark_harvested(ev.position, state.tick)
@@ -216,6 +225,7 @@ def play(api_key: str, config: TacticConfig,
 
     if telemetry is not None:
         telemetry.close()
+    map_store.close()
 
 
 def main() -> None:

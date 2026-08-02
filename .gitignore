@@ -12,3 +12,4 @@ logs/
 
 # 外部克隆的 skill 仓库（独立版本管理）
 .agents/
+mapstore/

@@ -30,7 +30,10 @@ class BalanceStrategy(Strategy):
         core = state.core
         home = state.home
         core_normal = state.core_normal
+        # 障碍 = 当前可见 ∪ 共享地图已知（永久地形，跨租户测绘合并）
         obstacle = state.obstacle_cells
+        if self.world.map_store is not None:
+            obstacle = obstacle | self.world.map_store.obstacles()
         resource_cells = set(state.resource_cells)
         enemies = sorted(state.visible_enemies, key=lambda e: e.id)
         beacon = state.beacon

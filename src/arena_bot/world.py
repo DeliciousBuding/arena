@@ -19,6 +19,8 @@ from .core.unit_state import UnitStateTracker
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from .map_store import MapStore
+
     Position = tuple[int, int]
 
 
@@ -47,7 +49,7 @@ class EnemyMemory:
 class World:
     """跨 Tick 记忆容器。observe(turn) 每次 Turn 更新。"""
 
-    def __init__(self) -> None:
+    def __init__(self, map_store: "MapStore | None" = None) -> None:
         self.obstacle_memory: set[Position] = set()
         self.resource_memory: dict[Position, ResourceMemory] = {}
         self.enemy_memory: dict[UUID, EnemyMemory] = {}
@@ -56,18 +58,22 @@ class World:
         self.current_resource_cells: frozenset[Position] = frozenset()
         self.current_enemy_count: int = 0
         self.unit_states = UnitStateTracker()  # 单元意图状态机记忆
+        self.map_store = map_store  # 共享地图（跨租户测绘）
 
     def observe(self, tick: int,
                 obstacle_cells: frozenset[Position],
                 resource_cells: frozenset[Position],
                 visible_enemies: tuple,  # UnitView | CoreView
-                harvest_failed_cells: set[Position] = frozenset()) -> None:
+                harvest_failed_cells: set[Position] = frozenset(),
+                observer: str = "unknown") -> None:
         """用当前 Turn 的可见数据更新记忆。"""
         self.tick = tick
         self.current_resource_cells = resource_cells
 
-        # 障碍：永久地形，只增不减
+        # 障碍：永久地形，只增不减；同步到共享地图（跨租户测绘）
         self.obstacle_memory.update(obstacle_cells)
+        if self.map_store is not None:
+            self.map_store.record(obstacle_cells, observer, tick)
 
         # 资源：当前可见 → VISIBLE；曾见的 → STALE
         seen = set()
