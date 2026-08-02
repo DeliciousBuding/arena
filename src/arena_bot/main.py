@@ -164,7 +164,12 @@ def play(api_key: str, config: TacticConfig,
                 continue
 
             plan = strategy.decide(state)
-            state_holder["intents"] = dict(plan.intents)
+            # intents 存 str key（snapshot 按 str(u.id) 查询）
+            state_holder["intents"] = {str(k): v for k, v in plan.intents.items()}
+            if not plan.actions and plan.core_action is None:
+                # 全单位无动作（等效 WAIT）：跳过提交，避免 UI 显示"空计划"
+                log.debug("tick %d 无任何动作，跳过提交", state.tick)
+                continue
             apply_plan(turn, plan)
             accepted = state.submit()
 

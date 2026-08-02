@@ -1,0 +1,11 @@
+tick,phase,resources,resource_capacity,population,workers,vanguards,rangers,core_hp,core_shield,enemies_visible,HARVEST_SUCCEEDED,HARVEST_FAILED,DEPOSIT_SUCCEEDED,DEPOSIT_FAILED,UNIT_HEAL_SUCCEEDED,CORE_HEAL_SUCCEEDED,UNIT_SELF_DESTRUCTED,UNIT_MOVE_SUCCEEDED,combat_events,intents
+38548,early_expansion,5,10,1,1,0,0,5,5,0,0,0,0,0,0,0,0,0,0,-
+38549,early_expansion,5,10,1,1,0,0,5,5,0,0,0,0,0,0,0,0,0,0,-
+38550,early_expansion,5,10,1,1,0,0,5,5,0,0,0,0,0,0,0,0,0,0,-
+38551,early_expansion,5,10,1,1,0,0,5,5,0,0,0,0,0,0,0,0,0,0,-
+38552,early_expansion,5,10,1,1,0,0,5,5,0,0,0,0,0,0,0,0,0,0,-
+38553,early_expansion,5,10,1,1,0,0,5,5,0,0,0,0,0,0,0,0,0,0,-
+38554,early_expansion,5,10,1,1,0,0,5,5,0,0,0,0,0,0,0,0,0,0,-
+38555,early_expansion,5,10,1,1,0,0,5,5,0,0,0,0,0,0,0,0,0,0,-
+38556,early_expansion,5,10,1,1,0,0,5,5,0,0,0,0,0,0,0,0,0,0,-
+38557,early_expansion,5,10,1,1,0,0,5,5,0,0,0,0,0,0,0,0,0,0,-

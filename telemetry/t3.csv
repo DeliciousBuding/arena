@@ -1,0 +1,11 @@
+tick,phase,resources,resource_capacity,population,workers,vanguards,rangers,core_hp,core_shield,enemies_visible,HARVEST_SUCCEEDED,HARVEST_FAILED,DEPOSIT_SUCCEEDED,DEPOSIT_FAILED,UNIT_HEAL_SUCCEEDED,CORE_HEAL_SUCCEEDED,UNIT_SELF_DESTRUCTED,UNIT_MOVE_SUCCEEDED,combat_events,intents
+38548,early_expansion,1,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,"deposit:1,patrol:1"
+38549,early_expansion,2,10,2,2,0,0,5,5,0,0,0,1,0,0,0,0,1,0,patrol:2
+38550,early_expansion,2,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,patrol:2
+38551,early_expansion,2,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,patrol:2
+38552,early_expansion,2,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,go_harvest:2
+38553,early_expansion,2,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,go_harvest:2
+38554,early_expansion,2,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,go_harvest:2
+38555,early_expansion,2,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,"go_harvest:1,harvest:1"
+38556,early_expansion,2,10,2,2,0,0,5,5,0,1,0,0,0,0,0,0,1,0,"patrol:1,return_home:1"
+38557,early_expansion,2,10,2,2,0,0,5,5,0,0,0,0,0,0,0,0,2,0,"go_harvest:1,return_home:1"

@@ -103,6 +103,21 @@ def test_accumulate_still_expands_before_target():
     assert plan.core_action.unit_type is UnitType.WORKER
 
 
+def test_worker_on_patrol_point_rotates_direction():
+    """Worker 恰好在巡逻圆周点上 → 旋转到下一方向继续巡逻（防卡死空计划）。"""
+    world = World()
+    strat = BalanceStrategy(TacticConfig().with_params({"explore_radius": 8}),
+                            world)
+    core = FakeCore((0, 0))
+    # beacon 在正东 → base RIGHT；index 0 巡逻点 = (8, 0)，Worker 正站在上面
+    w = FakeUnit((8, 0), UnitType.WORKER, 2)
+    st = make_state(core=core, units=[w], beacon_pos=(10, 0))
+    plan = strat.decide(st)
+    a = plan.actions.get(w.id)
+    assert a is not None and a.kind == "MOVE"  # 不卡死，有动作
+    assert plan.intents.get(w.id) == "patrol"
+
+
 def test_accumulate_disabled_by_default():
     """accumulate_target=0（默认）：原行为不受影响。"""
     world = World()

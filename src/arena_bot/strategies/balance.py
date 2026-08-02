@@ -172,6 +172,12 @@ class BalanceStrategy(Strategy):
                               if state.beacon is not None else home)
                 target = explore_target(pos, home, beacon_pos,
                                         index, self.config.explore_radius)
+                if target == pos:
+                    # 已站在当前方向巡逻点 → 旋转到下一方向（绕圈巡逻，
+                    # 避免目标==当前位置导致永久卡死提交空计划）
+                    target = explore_target(pos, home, beacon_pos,
+                                            (index + 1) % 4,
+                                            self.config.explore_radius)
         else:
             beacon_pos = (state.beacon.position
                           if state.beacon is not None else (0, 0))
