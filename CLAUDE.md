@@ -5,7 +5,7 @@
 用官方 Python SDK 自动游玩 Arena Hero 的独立工作区（uv 管理）。规则契约 **v0.11**（2026-08-02 changelog），SDK **arena-hero 0.2.6**。
 
 > **TS 迁移进行中**：主线是把 Python 运行时退役，改由 TS 编排层（arena-agent）直接嵌入 pi-coding-agent。
-> - TS SDK：`DeliciousBuding/arena-hero-ts`（public，追官方 Python SDK 上游）
+> - TS SDK：本仓库 `packages/arena-hero-ts/`（wire schema 单源；原 public fork 已合并入仓，追上游镜像在 `reference/arena-hero-python/`）
 > - TS 编排层：本仓库 `packages/arena-agent/`（domain/ + runtime/loop.ts 最小闭环，已合并进 main）
 > - Python 版继续跑 4 租户 burn-in 收集数据（供 TS 差分验证），不再加新功能
 > - 迁移方案与进度：`docs/migration-plan.md`（W0 嵌入闸门 ✅ · W1 wire schema+Golden Replay ✅ · 最小闭环 ✅ · W4 决策桥 → W6 删 Python）
@@ -34,6 +34,8 @@
 | `src/arena_bot/telemetry.py` | 遥测 JSONL（runs/<run_id>/telemetry/）+ evaluate.py 报告 |
 | `tests/` | 135 例无凭据测试（Fake TickState，零网络） |
 | `packages/arena-agent/` | TS 编排层（domain/ + runtime/loop.ts + strategies/，TS 迁移主线） |
+| `packages/arena-hero-ts/` | TS SDK（wire schema 单源 + client/turn + contracts/ 契约产物） |
+| `reference/arena-hero-python/` | 官方 Python SDK 源码镜像（追上游对照，sync-log.md） |
 | `experiments/*.yaml` | 实验定义（租户/策略/参数覆盖） |
 | `runs/<run_id>/` | 每实验运行产物：manifest.json + telemetry/ + raw-state/ |
 | `.env` | API key（**已 gitignore，永不入仓**） |

@@ -12,11 +12,10 @@
     "test": "tsx --test \"test/*.test.ts\""
   },
   "dependencies": {
-    "@arena/arena-hero-ts": "github:DeliciousBuding/arena-hero-ts#ef38adb"
+    "@arena/arena-hero-ts": "*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "@types/ws": "^8.5.12",
     "tsx": "^4.23.4",
     "typescript": "^5.5.0"
   },

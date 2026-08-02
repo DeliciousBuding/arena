@@ -46,14 +46,12 @@
 
 每次开发前比较：
 
-- `arena/main`；
-- `arena-hero-ts/main`；
+- `arena/main`（含 TS SDK `packages/arena-hero-ts/`，2026-08-02 起 monorepo 单仓）；
 - `pi/arena-llm-bridge`。
 
 发现 Agent 新提交时先同步再继续，避免重复实现。当前基线：
 
-- arena `2d65398`：raw-state + burn-in 修复；
-- arena-hero-ts `9633409`：TypeBox 前置；
+- arena `61442e4`：monorepo 合并（TS SDK + 编排层 + 文档清理）；
 - pi `da0203a`。
 
 ### C1 — 契约与 Golden Replay
@@ -127,6 +125,6 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 
 - Provider stream 必须响应 AbortSignal；DecisionLease 是必须保留的第二道隔离；
 - node:sqlite 同步 API 不能留在主 event loop；
-- arena-hero-ts 当前是嵌套 package，需补 clean-clone 可安装方案；
+- ~~arena-hero-ts 嵌套 package 需 clean-clone 安装~~（2026-08-02 monorepo 合并后 npm workspace 直接解析，无 pin）；
 - raw-state 只能进入 gitignored run 目录，fixture 必须脱敏；
 - Pi fork 只保留通用、可上游化修复。

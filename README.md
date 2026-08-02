@@ -26,17 +26,29 @@ experiments/*.yaml ──▶ run.py（调度器：按实验定义 spawn 租户�
         mapstore/arena_map.db（SQLite WAL，4 进程共享测绘：障碍/盟友）
 ```
 
-> **TS 迁移进行中**：SDK 已 fork 为 TS 版（DeliciousBuding/arena-hero-ts，public），
-> 编排层将重写为 TS 并直接嵌入 pi-coding-agent（RPC 桥消失）。当前 Python 版继续
-> 稳定运行 4 租户 burn-in（数据收集，供 TS 侧差分验证）。方案见 [docs/migration-plan.md](docs/migration-plan.md)，
+> **TS 迁移进行中**：Python 运行时将退役，改由 TS 编排层直接嵌入 pi-coding-agent（RPC 桥消失）。
+> 当前 Python 版继续跑 4 租户 burn-in（数据收集，供 TS 侧差分验证）。
+> 方案见 [docs/migration-plan.md](docs/migration-plan.md)，
 > 迁移进度：W0 嵌入闸门 ✅ · W1 wire schema+Golden Replay ✅ · TS 编排层最小闭环（loop）✅ · W4 决策桥 → W6 删 Python。
+
+**单仓 monorepo 结构**（2026-08-02 合并自原 arena-hero-ts 仓库）：
+
+```
+packages/arena-hero-ts/  ← TS SDK（wire schema 单源 + client/turn + contracts/ 契约产物）
+packages/arena-agent/    ← TS 编排层（domain/ + runtime/loop.ts + strategies/）
+reference/arena-hero-python/ ← 官方 Python SDK 源码镜像（追上游对照用，见 sync-log.md）
+src/arena_bot/           ← Python 运行时（退役中，burn-in 数据收集）
+```
 
 ## 快速开始
 
 ```bash
-uv sync                          # 装依赖（arena-hero 0.2.6）
+uv sync                          # 装 Python 依赖（arena-hero 0.2.6）
+npm install                      # 装 TS 依赖（workspaces：SDK + 编排层一次装齐）
 # 秘钥：.env 设 ARENA_HERO_API_KEY_1..4（gitignore，永不入仓）
 uv run pytest tests/ -q          # 135 例无凭据决策测试
+cd packages/arena-agent && npx tsx --test "test/*.test.ts"   # TS 编排层 21 例
+cd packages/arena-hero-ts && node --experimental-transform-types --test "test/*.test.ts"  # SDK 48 例
 uv run python -m arena_bot.run --experiment exp-llm-4   # 4 账号 LLM 并发实验
 curl http://127.0.0.1:8123/state # 调试端点：t1 状态快照（8123-8126 各租户）
 ```
@@ -75,10 +87,9 @@ curl http://127.0.0.1:8123/state # 调试端点：t1 状态快照（8123-8126 �
 
 ## 相关仓库
 
-- 本仓库：arena（主工作区，4 账号自动游玩；Python 运行时退役中）
-- arena-hero-ts：TS SDK（wire schema 单源，追官方 Python SDK 上游）
-
-> TS 编排层（arena-agent：domain/ + runtime/loop.ts + strategies/）已合并进本仓库 `packages/arena-agent/`。
+- 本仓库：arena（单仓 monorepo：Python 运行时退役中 + TS SDK + TS 编排层）
+- pi 二开：独立 private 仓库（arena-llm-bridge 分支，LLM agent 框架侧改动）
+- ~~arena-hero-ts~~：已合并进本仓库（2026-08-02），原 public 仓库冻结保留历史
 
 ## 文档索引
 

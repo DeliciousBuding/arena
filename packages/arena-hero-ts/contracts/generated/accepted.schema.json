@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "required": [
+    "accepted",
+    "tick",
+    "source",
+    "received_at"
+  ],
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "const": true
+    },
+    "tick": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source": {
+      "enum": [
+        "AGENT",
+        "MANUAL"
+      ]
+    },
+    "received_at": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

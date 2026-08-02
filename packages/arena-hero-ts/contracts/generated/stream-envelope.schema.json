@@ -1,0 +1,461 @@
+{
+  "anyOf": [
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "tick"
+        },
+        "data": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "state"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "status",
+            "resources",
+            "population",
+            "population_tier",
+            "upkeep_next_tick",
+            "champion_beacon",
+            "objects",
+            "events"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "ACTIVE",
+                "RESPAWNING"
+              ]
+            },
+            "respawn_at_tick": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "resources": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "population": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "population_tier": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "upkeep_next_tick": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "champion_beacon": {
+              "type": "object",
+              "required": [
+                "position"
+              ],
+              "properties": {
+                "position": {
+                  "type": "array",
+                  "additionalItems": false,
+                  "items": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ],
+                  "minItems": 2,
+                  "description": "网格坐标 [x, y]（有限整数）"
+                },
+                "status": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "GROUND",
+                        "CARRIED"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "carrier_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "objects": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "positions"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "const": "OBSTACLE"
+                          },
+                          {
+                            "type": "string",
+                            "const": "RESOURCE"
+                          }
+                        ]
+                      },
+                      "positions": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "additionalItems": false,
+                          "items": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "integer"
+                            }
+                          ],
+                          "minItems": 2,
+                          "description": "网格坐标 [x, y]（有限整数）"
+                        },
+                        "minItems": 1
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "id",
+                      "controlled",
+                      "owner_username",
+                      "position",
+                      "hp",
+                      "shield",
+                      "state"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "CORE"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "controlled": {
+                        "type": "boolean"
+                      },
+                      "owner_username": {
+                        "type": "string",
+                        "minLength": 3,
+                        "maxLength": 24,
+                        "pattern": "^[a-z0-9_]+$"
+                      },
+                      "position": {
+                        "type": "array",
+                        "additionalItems": false,
+                        "items": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "integer"
+                          }
+                        ],
+                        "minItems": 2,
+                        "description": "网格坐标 [x, y]（有限整数）"
+                      },
+                      "hp": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "shield": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "state": {
+                        "enum": [
+                          "NORMAL",
+                          "MOVING"
+                        ]
+                      },
+                      "move_direction": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "UP",
+                              "DOWN",
+                              "LEFT",
+                              "RIGHT"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "move_progress": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "move_required_ticks": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "destination": {
+                        "anyOf": [
+                          {
+                            "type": "array",
+                            "additionalItems": false,
+                            "items": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "integer"
+                              }
+                            ],
+                            "minItems": 2,
+                            "description": "网格坐标 [x, y]（有限整数）"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "id",
+                      "controlled",
+                      "position",
+                      "hp",
+                      "unit_type"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "UNIT"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "controlled": {
+                        "type": "boolean"
+                      },
+                      "position": {
+                        "type": "array",
+                        "additionalItems": false,
+                        "items": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "integer"
+                          }
+                        ],
+                        "minItems": 2,
+                        "description": "网格坐标 [x, y]（有限整数）"
+                      },
+                      "hp": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "unit_type": {
+                        "enum": [
+                          "WORKER",
+                          "VANGUARD",
+                          "RANGER"
+                        ]
+                      },
+                      "cargo": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ],
+                "discriminator": "kind"
+              }
+            },
+            "events": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "event_id",
+                  "tick",
+                  "event_type"
+                ],
+                "properties": {
+                  "event_id": {
+                    "type": "string"
+                  },
+                  "tick": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "event_type": {
+                    "type": "string"
+                  },
+                  "reason_code": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "actor_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "target_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "position": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "additionalItems": false,
+                        "items": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "integer"
+                          }
+                        ],
+                        "minItems": 2,
+                        "description": "网格坐标 [x, y]（有限整数）"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "values": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^.*$": {}
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "received"
+        },
+        "data": {}
+      },
+      "additionalProperties": false
+    }
+  ],
+  "discriminator": "type"
+}

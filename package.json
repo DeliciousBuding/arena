@@ -1,0 +1,12 @@
+{
+  "name": "arena",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Arena Hero 单仓：Python 运行时（退役中）+ TS SDK + TS 编排层",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

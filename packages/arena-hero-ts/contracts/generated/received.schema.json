@@ -1,0 +1,331 @@
+{
+  "type": "object",
+  "required": [
+    "tick",
+    "source",
+    "received_at",
+    "plan"
+  ],
+  "properties": {
+    "tick": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source": {
+      "enum": [
+        "AGENT",
+        "MANUAL"
+      ]
+    },
+    "received_at": {
+      "type": "string"
+    },
+    "plan": {
+      "type": "object",
+      "required": [
+        "tick",
+        "unit_actions"
+      ],
+      "properties": {
+        "tick": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "unit_actions": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "WAIT"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "direction"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "MOVE"
+                    },
+                    "direction": {
+                      "enum": [
+                        "UP",
+                        "DOWN",
+                        "LEFT",
+                        "RIGHT"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "HARVEST"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "DEPOSIT"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "direction"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "SWEEP"
+                    },
+                    "direction": {
+                      "enum": [
+                        "UP",
+                        "DOWN",
+                        "LEFT",
+                        "RIGHT"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "target_id",
+                    "expected_cell"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "SHOOT"
+                    },
+                    "target_id": {
+                      "type": "string"
+                    },
+                    "expected_cell": {
+                      "type": "array",
+                      "additionalItems": false,
+                      "items": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ],
+                      "minItems": 2,
+                      "description": "网格坐标 [x, y]（有限整数）"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "PICKUP_BEACON"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "DROP_BEACON"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "SELF_DESTRUCT"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "HEAL"
+                    }
+                  }
+                }
+              ],
+              "discriminator": "type"
+            }
+          }
+        },
+        "core_action": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "WAIT"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "unit_type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "SPAWN"
+                    },
+                    "unit_type": {
+                      "enum": [
+                        "WORKER",
+                        "VANGUARD",
+                        "RANGER"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "REPAIR_SHIELD"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "direction"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "START_MOVE"
+                    },
+                    "direction": {
+                      "enum": [
+                        "UP",
+                        "DOWN",
+                        "LEFT",
+                        "RIGHT"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "CANCEL_MOVE"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "PICKUP_BEACON"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "DROP_BEACON"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "HEAL"
+                    }
+                  }
+                }
+              ],
+              "discriminator": "type"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
