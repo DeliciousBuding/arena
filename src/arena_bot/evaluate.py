@@ -2,6 +2,7 @@
 
     uv run python -m arena_bot.evaluate                # 全部 telemetry/*.jsonl
     uv run python -m arena_bot.evaluate --experiment exp-accumulate
+    uv run python -m arena_bot.evaluate --run runs/run-XXXX/   # run-scoped 目录
 
 报告指标（markdown 表）：
 - 覆盖 tick 数、末资源/末人口（攒了多少）
@@ -106,11 +107,14 @@ def analyze(path: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment", default=None, help="仅报告标题")
+    parser.add_argument("--run", default=None,
+                        help="run-scoped 目录（runs/<run_id>/），只评估该 run 的 telemetry")
     args = parser.parse_args()
 
-    files = sorted(TELEMETRY_DIR.glob("t*.jsonl")) if TELEMETRY_DIR.is_dir() else []
+    telemetry_dir = PROJECT_ROOT / "runs" / args.run / "telemetry" if args.run else TELEMETRY_DIR
+    files = sorted(telemetry_dir.glob("t*.jsonl")) if telemetry_dir.is_dir() else []
     if not files:
-        print(f"无遥测数据（{TELEMETRY_DIR}/t*.jsonl）。先运行调度器。")
+        print(f"无遥测数据（{telemetry_dir}/t*.jsonl）。先运行调度器。")
         return 1
 
     title = args.experiment or "全部"

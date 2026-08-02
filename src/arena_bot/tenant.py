@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from .config import TacticConfig, TenantConfig, load_tenant_keys
 from .main import play
@@ -49,6 +50,8 @@ def main() -> None:
                         help="策略注册表名字（默认 balance）")
     parser.add_argument("--params", default=None,
                         help="参数覆盖：explore_radius=5,worker_target=12")
+    parser.add_argument("--run-dir", default=None,
+                        help="run-scoped 目录（runs/<run_id>/），telemetry 写入其下")
     args = parser.parse_args()
 
     keys = load_tenant_keys()
@@ -61,7 +64,8 @@ def main() -> None:
     tenant = TenantConfig(index=args.tenant, name=f"t{args.tenant + 1}",
                           api_key=keys[args.tenant],
                           strategy_name=args.strategy,
-                          params=parse_params(args.params))
+                          params=parse_params(args.params),
+                          run_dir=Path(args.run_dir) if args.run_dir else None)
     try:
         play(tenant.api_key, cfg, tenant)
     except KeyboardInterrupt:

@@ -12,7 +12,7 @@
     "test": "node --test \"test/*.test.ts\""
   },
   "dependencies": {
-    "@arena/arena-hero-ts": "file:../../../arena-hero-ts/packages/arena-hero-ts"
+    "@arena/arena-hero-ts": "git+https://github.com/DeliciousBuding/arena-hero-ts.git#e11a105"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

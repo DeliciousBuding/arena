@@ -63,6 +63,32 @@ pi-coding-agent 本身是**嵌入库设计**（`createAgentSession()` 公开 SDK
 - 8 测试全过（含 4 子进程并发写 160 cells 无锁冲突）
 - 进程内单线程 → 无 RLock（node 同步 API 天然串行）
 
+### 4.4 W0 闸门：AgentSession 嵌入机制验证（6/6 测试通过）
+
+`packages/arena-agent/scripts/embed-spike.test.ts`（运行于 pi-dev worktree 上下文，
+workspace 依赖可解析；fake streamFn 零网络）：
+- ✅ customTools 注册 + allowlist（tools:["arena_plan"] 无内置泄漏）
+- ✅ prompt → arena_plan 工具调用 → 参数捕获 → 工具执行 → 第二轮完成
+- ✅ 挂起 run → session.abort() → waitForIdle
+- ✅ abort 后同 session 再次 prompt（复用，历史保留）
+- ✅ 迟到 tool call 隔离（abort 丢弃未完成 run）
+- ✅ session persistence（SessionManager 记录消息）
+
+**关键机制发现**：runLoop 的 `for await` 迭代流时不查 signal——abort 中断
+依赖 streamFn 监听 signal 并结束流（真实 provider 如此）。W4 决策桥若自写
+streamFn 必须实现 abort 监听。
+
+### 4.5 SDK 网络层硬化（36 测试通过）
+
+close 1008 终止、持久 error handler、握手 abort/超时、binary 拒绝、
+perMessageDeflate:false、wire 数值校验、20 项 mock server 集成测试。
+
+### 4.6 run-scoped 布局 + 端口映射修复
+
+- runs/<run_id>/{manifest.json, telemetry/, logs/}；manifest 记录 arena/pi SHA
+- run.py 按 api_key_index 映射端口（TenantProcess，不靠列表索引）
+- arena-agent 依赖 pin git SHA（e11a105）
+
 ### 4.3 Python 侧稳定（继续运行 4 租户 burn-in）
 
 - P0-4 全 Tick 遥测 JSONL（outcome 分布：submitted/paused/empty/tick_mismatch/error）
@@ -71,11 +97,11 @@ pi-coding-agent 本身是**嵌入库设计**（`createAgentSession()` 公开 SDK
 
 ## 5. 待做工作包（迁移顺序）
 
-> 依赖：SDK（✅）→ 编排层核心 → 决策桥（依赖 spike-embed 结果）→ supervisor
+> 依赖：SDK（✅）→ W0 嵌入验证（✅）→ 编排层核心 → 决策桥 → supervisor
 
 | # | 包 | 内容 | 依赖 | 验收 |
 |---|-----|------|------|------|
-| W1 | TickState + 游戏循环 | `turn` 事件 → TickState 类型（TS 版 core/state）→ phase machine | SDK | `node --test`；对照 Python 135 测试语义 |
+| W1 | 契约 + Golden Replay | TypeBox 为源生成 JSON Schema；raw WS fixture；Python/TS 状态对照 | SDK | 协议测试 + fixture 对照 |
 | W2 | 策略（balance/aggressive/economic） | 状态机移植（worker 状态机、巡逻、目标记忆） | W1 | 单测；与 Python 策略输出对照 |
 | W3 | Telemetry + DebugServer | JSONL 遥测 + node http 调试端点（/state /command /map/query） | W1 | 单测；curl 端点 |
 | W4 | LLM 决策桥（核心） | createAgentSession 嵌入；每 tick 一次 prompt；soft deadline → `session.abort()`；hedged safety plan | spike-embed 结果 + W1/W2 | 嵌入 demo 跑通；abort 复用 session |
@@ -87,8 +113,8 @@ pi-coding-agent 本身是**嵌入库设计**（`createAgentSession()` 公开 SDK
 1. **SDK 协议面耦合**：上游 changelog（v0.11 upkeep 等）→ fork 内手动同步 TS 实现；
    上游 Python 保留可 merge，冲突面隔离在 `src/`
 2. **Node 内置 WebSocket 无 header 支持**：认证必须 `ws` 包（已处理）
-3. **spike-embed 验证中**：createAgentSession 的嵌入/abort 行为是 W4 前提
-   （若 abort 语义不符，W4 降级为 RPC 桥 + abort 命令）
+3. **abort 语义已验证**（W0 6/6）：abort 依赖 streamFn 监听 signal 结束流；
+   W4 决策桥按此设计，无需降级
 4. **burn-in 期间双轨**：Python 版继续跑实验直到 TS 编排层通过真机观察
 5. **15s 决策窗口**：deadline 预算（ask(timeout)）在 TS async 下保持硬截止
 
@@ -96,4 +122,6 @@ pi-coding-agent 本身是**嵌入库设计**（`createAgentSession()` 公开 SDK
 
 - 4 租户 burn-in 运行中（exp-llm-4：t1 economic / t2 aggressive / t3/t4 standard）
 - 共享地图 revision 已稳定（P0-A 生效）
-- Python 测试 135 全绿；arena-hero-ts 16 全绿；arena-agent MapStore 8 全绿
+- Python 测试 135 全绿；arena-hero-ts 36 全绿（含 20 mock 集成）；arena-agent MapStore 8 全绿
+- **W0 闸门通过**：AgentSession 嵌入 + abort 复用已验证 → W4 决策桥架构可行
+- 待做：W1 契约 + Golden Replay → W2 State/Safety → W4 决策桥

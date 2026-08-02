@@ -94,6 +94,7 @@ class TenantConfig:
     strategy_name: str = "balance"  # 策略注册表名字
     params: dict = field(default_factory=dict)  # 实验参数覆盖
     base_port: int = 8123           # 调试端口 = base_port + index
+    run_dir: Path | None = None     # run-scoped 目录（runs/<run_id>/）；None=旧 telemetry/ 兼容
 
     @property
     def debug_port(self) -> int:
@@ -105,7 +106,10 @@ class TenantConfig:
 
     @property
     def telemetry_path(self) -> Path:
-        return PROJECT_ROOT / "telemetry" / f"{self.name}.csv"
+        # run-scoped：runs/<run_id>/telemetry/tN.jsonl；无 run_dir 时旧路径（.csv 兼容废弃）
+        if self.run_dir is not None:
+            return self.run_dir / "telemetry" / f"{self.name}.jsonl"
+        return PROJECT_ROOT / "telemetry" / f"{self.name}.jsonl"
 
 
 def load_api_key() -> str:

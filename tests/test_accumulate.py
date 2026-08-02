@@ -168,9 +168,14 @@ def test_tenant_config_derived_paths(tmp_path, monkeypatch):
     tenant = TenantConfig(index=0, name="t1", api_key="k")
     assert tenant.debug_port == 8123
     assert tenant.log_dir.name == "tenant-t1"
-    assert tenant.telemetry_path.name == "t1.csv"
+    assert tenant.telemetry_path.name == "t1.jsonl"  # P0-4 JSONL
+    assert tenant.run_dir is None
     t2 = TenantConfig(index=1, name="t2", api_key="k2")
     assert t2.debug_port == 8124  # 端口偏移
+    # run-scoped：telemetry 指向 runs/<run_id>/telemetry/
+    scoped = TenantConfig(index=0, name="t1", api_key="k",
+                          run_dir=tmp_path / "run-001")
+    assert scoped.telemetry_path == tmp_path / "run-001" / "telemetry" / "t1.jsonl"
 
 
 def test_tenant_keys_from_env(monkeypatch, tmp_path):
