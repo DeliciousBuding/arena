@@ -171,7 +171,7 @@ def test_worker_returns_home_beyond_explore_radius():
     core = core_at((0, 0))
     w = FakeUnit((10, 0), UnitType.WORKER, 2)  # 距 Core 10 > EXPLORE_RADIUS 8
     turn = FakeTurn(core=core, units=[w], resources=2,
-                    beacon_pos=(10, 0), beacon_status=BeaconStatus.GROUND)
+                    beacon_pos=(9, 0), beacon_status=BeaconStatus.GROUND)
     decide_actions(turn)
     assert actions_of(w) == ["move"]
     assert w.actions[0][1][0] is Direction.LEFT  # 回头朝家走
