@@ -6,14 +6,14 @@
 
 ## 任务
 
-- [ ] B1: `logging_util.py` 轮转日志 + stdout 双写
+- [x] B1: `logging_util.py` 轮转日志 + stdout 双写
   - 验收：logs/arena.log 生成；格式 `[tick][level] msg`；tick 上下文关联；大小轮转保留 5 份
   - 测试：日志格式/轮转单测
-- [ ] B2: `world.py` 环境记忆（障碍永久 / 资源状态表 / 敌人跟踪，stale 标记）
-  - 验收：跨 Tick Fake 序列测试正确更新；决策永远优先当前 Turn 可见数据；HARVEST_FAILED 更新资源状态
+- [x] B2: `world.py` 环境记忆（障碍永久 / 资源状态表 / 敌人跟踪，stale 标记）
+  - 验收：跨 Tick Fake 序列测试正确更新；决策永远优先当前 Turn 可见数据；HARVEST_FAILED 更新资源状态 —— **通过（VISIBLE/STALE/HARVESTED 三态 + 敌人 age）**
   - 测试：记忆更新单测
-- [ ] B3: `core/state.py` Turn 适配层
-  - 验收：类型化封装 + 索引预计算（单位/敌人/资源）；决策层不直接依赖 SDK 细节
+- [x] B3: `core/state.py` Turn 适配层
+  - 验收：类型化封装 + 索引预计算（单位/敌人/资源）；决策层不直接依赖 SDK 细节 —— **通过（from_turn + core_normal/home/population）**
   - 测试：适配层单测
 
 ## Notes
