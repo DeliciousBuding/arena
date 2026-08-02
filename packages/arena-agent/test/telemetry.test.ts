@@ -21,7 +21,8 @@ import {
 } from "../src/telemetry/decision-trace.ts";
 import { JsonlWriter, sanitizeText, sanitizeValue } from "../src/telemetry/jsonl-writer.ts";
 
-const RT: Omit<RuntimeTraceRecord, "processRunId" | "tenantId" | "tick"> = {
+const RT: Omit<RuntimeTraceRecord, "processRunId" | "tenantId"> = {
+  tick: 1000,
   runId: "run-1",
   deadlineOutcome: "candidate",
   agentLatencyMs: 100,
@@ -31,7 +32,8 @@ const RT: Omit<RuntimeTraceRecord, "processRunId" | "tenantId" | "tick"> = {
   submitResult: "accepted",
 };
 
-const DT: Omit<DecisionTraceRecord, "processRunId" | "tenantId" | "tick"> = {
+const DT: Omit<DecisionTraceRecord, "processRunId" | "tenantId"> = {
+  tick: 1000,
   runId: "run-1",
   decisionSource: "hybrid",
   agentActionCount: 2,
@@ -41,7 +43,8 @@ const DT: Omit<DecisionTraceRecord, "processRunId" | "tenantId" | "tick"> = {
   planHash: "sha256:abc",
 };
 
-const OT: Omit<OutcomeTraceRecord, "processRunId" | "tenantId" | "tick"> = {
+const OT: Omit<OutcomeTraceRecord, "processRunId" | "tenantId"> = {
+  tick: 1000,
   coreResourcesBefore: 5,
   coreResourcesAfter: 7,
   coreResourceDelta: 2,
@@ -56,7 +59,7 @@ test("runtimeTrace 字段齐全且默认值生效", () => {
   const record = runtimeTrace(RT);
   assert.equal(record.processRunId, "unknown");
   assert.equal(record.tenantId, "unknown");
-  assert.equal(record.tick, 0);
+  assert.equal(record.tick, 1000);
   assert.equal(record.deadlineOutcome, "candidate");
   assert.equal(record.submitResult, "accepted");
 });
@@ -138,4 +141,16 @@ test("递归脱敏：嵌套对象与数组内的凭据也被替换", () => {
   const sanitized = sanitizeValue(nested) as typeof nested;
   assert.ok(!JSON.stringify(sanitized).includes("abcdefghijklmnop"), "嵌套凭据必须脱敏");
   assert.equal(sanitized.ok, "tick=5");
+});
+
+test("脱敏不误伤 UUID runId（遥测关联键）", () => {
+  const uuid = "123e4567-e89b-42d3-a456-426614174000";
+  assert.equal(sanitizeText(uuid), uuid, "UUID 含连字符，不是疑似凭据");
+  const runId = "123e4567-e89b-42d3-a456-426614174000:t1:1000:0";
+  assert.equal(sanitizeText(runId), runId, "runId（UUID:租户:tick:seq）必须原样保留");
+});
+
+test("≥32 位纯字母数字串仍脱敏（密钥形如无连字符长串）", () => {
+  const secret = "abcdefghijklmnopqrstuvwxyzABCDEFG"; // 33 位无连字符
+  assert.equal(sanitizeText(secret), "[REDACTED]");
 });

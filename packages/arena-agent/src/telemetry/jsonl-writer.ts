@@ -20,7 +20,8 @@ const SECRET_PATTERNS: Array<RegExp> = [
   /Bearer\s+[A-Za-z0-9._~+/=-]+/gi,
   /(authorization|api[-_]?key|token|cookie|secret|password)\s*[:=]\s*["']?[^\s"'",}]+/gi,
   /ARENA_HERO_API_KEY(?:_\d+)?=\S+/g,
-  /[A-Za-z0-9_-]{32,}/g, // 任意 ≥32 位疑似凭据串（长随机 token）
+  // 任意 ≥32 位疑似凭据串（纯字母数字；不含连字符——UUID runId 是遥测关联键，不得误伤）
+  /[A-Za-z0-9]{32,}/g,
 ];
 
 function redactText(text: string): string {

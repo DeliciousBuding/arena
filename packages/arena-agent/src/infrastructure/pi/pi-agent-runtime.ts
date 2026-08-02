@@ -66,8 +66,8 @@ export interface PiAgentRuntimeOptions {
     readonly memory: StrategyMemory;
     readonly runId: string;
   }) => string;
-  /** 每 run 地图冻结快照提供者（缺省 null = 地图不可用）。 */
-  readonly mapSnapshotProvider?: () => MapSnapshot | null;
+  /** 每 run 地图冻结快照构建（request.state 驱动，本 Tick 冻结；缺省 null = 地图不可用）。 */
+  readonly mapSnapshotBuilder?: (state: AgentDecisionRequest["state"]) => MapSnapshot | null;
   /** 战略记忆（缺省自建）。 */
   readonly memory?: StrategyMemory;
   /** abort 后等待 settle 的超时（缺省 15000ms），超时 → unhealthy → rotate。 */
@@ -159,7 +159,7 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
       tick: request.tick,
       stateHash: request.stateHash,
       controlledUnits: new Set<string>(request.state.units.map((u) => u.id)),
-      mapSnapshot: this.options.mapSnapshotProvider?.() ?? null,
+      mapSnapshot: this.options.mapSnapshotBuilder?.(request.state) ?? null,
       sink: this.sink ?? (() => {
         throw new Error("candidate sink not bound");
       }),

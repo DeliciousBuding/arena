@@ -9,7 +9,10 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "tsx --test \"test/*.test.ts\""
+    "test": "tsx --test \"test/*.test.ts\"",
+    "arena:doctor": "tsx src/cli/run-tenant.ts --doctor",
+    "arena:shadow": "tsx src/cli/run-tenant.ts",
+    "arena:live": "tsx src/cli/run-tenant.ts --live"
   },
   "dependencies": {
     "@arena/arena-hero-ts": "*",

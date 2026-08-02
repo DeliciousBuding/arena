@@ -73,6 +73,10 @@ export interface TickOutcome {
   readonly accepted: boolean;
   readonly leaseCode?: string;
   readonly error?: string;
+  /** 决策时点 state（outcome trace 资源对比用；loop 始终持有，透传零成本）。 */
+  readonly state: TickState;
+  /** coordinator 路径的完整 DecisionResult（遥测三流素材；旧 bridge 无）。 */
+  readonly decision?: import("./decision-types.ts").DecisionResult;
 }
 
 export interface TenantLoopOptions {
@@ -129,6 +133,8 @@ export async function handleTurn(
         repairCount: result.repairCount,
         plan: result.execution.plan,
         accepted: false,
+        state,
+        decision: result,
       };
     }
     try {
@@ -142,6 +148,8 @@ export async function handleTurn(
         repairCount: result.repairCount,
         plan: result.execution.plan,
         accepted: accepted.accepted,
+        state,
+        decision: result,
       };
     } catch (exc) {
       return {
@@ -152,6 +160,8 @@ export async function handleTurn(
         plan: result.execution.plan,
         accepted: false,
         error: exc instanceof Error ? exc.message : String(exc),
+        state,
+        decision: result,
       };
     }
   }
@@ -210,7 +220,7 @@ export async function handleTurn(
 
   // 4) 只观察不提交（P0-1：submissionMode=disabled）
   if (!live) {
-    return { tick: state.tick, source, originalSource, repairCount, plan, accepted: false };
+    return { tick: state.tick, source, originalSource, repairCount, plan, accepted: false, state };
   }
 
   // 5) 决策计划注入 Turn 并提交（走 SDK 原提交通道：重试/幂等）
@@ -218,7 +228,7 @@ export async function handleTurn(
     const wirePlan = planToCommandPlan(plan);
     turn.replace(wirePlan);
     const accepted = await turn.submit();
-    return { tick: state.tick, source, originalSource, repairCount, plan, accepted: accepted.accepted };
+    return { tick: state.tick, source, originalSource, repairCount, plan, accepted: accepted.accepted, state };
   } catch (exc) {
     return {
       tick: state.tick,
@@ -228,6 +238,7 @@ export async function handleTurn(
       plan,
       accepted: false,
       error: exc instanceof Error ? exc.message : String(exc),
+      state,
     };
   }
 }

@@ -80,29 +80,27 @@ const DEFAULT_TENANT_ID = "unknown";
 const DEFAULT_TICK = 0;
 
 /**
- * 工厂函数：自动填 processRunId/tenantId/tick 默认值，并对结果立即做 schema 校验
- * （缺必填字段即抛错，fail-fast——校验失败绝不静默）。
+ * 工厂函数：自动填 processRunId/tenantId 默认值，tick 由调用方显式传（遥测关联键，
+ * 默认 0 是危险默认）；结果立即做 schema 校验（缺必填字段即抛错，fail-fast）。
  */
 export function runtimeTrace(
-  partial: Omit<RuntimeTraceRecord, "processRunId" | "tenantId" | "tick">,
+  partial: Omit<RuntimeTraceRecord, "processRunId" | "tenantId">,
 ): RuntimeTraceRecord {
   const record: RuntimeTraceRecord = {
     processRunId: DEFAULT_PROCESS_RUN_ID,
     tenantId: DEFAULT_TENANT_ID,
-    tick: DEFAULT_TICK,
-    ...partial,
+    ...partial, // tick 由调用方必填（DEFAULT_TICK 不再作默认——遥测关联键不可猜）
   };
   validateTraceRecord(record);
   return record;
 }
 
 export function decisionTrace(
-  partial: Omit<DecisionTraceRecord, "processRunId" | "tenantId" | "tick">,
+  partial: Omit<DecisionTraceRecord, "processRunId" | "tenantId">,
 ): DecisionTraceRecord {
   const record: DecisionTraceRecord = {
     processRunId: DEFAULT_PROCESS_RUN_ID,
     tenantId: DEFAULT_TENANT_ID,
-    tick: DEFAULT_TICK,
     ...partial,
   };
   validateTraceRecord(record);
@@ -110,12 +108,11 @@ export function decisionTrace(
 }
 
 export function outcomeTrace(
-  partial: Omit<OutcomeTraceRecord, "processRunId" | "tenantId" | "tick">,
+  partial: Omit<OutcomeTraceRecord, "processRunId" | "tenantId">,
 ): OutcomeTraceRecord {
   const record: OutcomeTraceRecord = {
     processRunId: DEFAULT_PROCESS_RUN_ID,
     tenantId: DEFAULT_TENANT_ID,
-    tick: DEFAULT_TICK,
     ...partial,
   };
   validateTraceRecord(record);

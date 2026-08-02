@@ -153,6 +153,7 @@ export class DecisionCoordinator {
         repairCount = validation.issues.length;
       }
       return {
+        runId,
         tick,
         execution: { source: safetyError !== null ? "emergency" : "safety", plan },
         agentActionCount: 0,
@@ -210,6 +211,7 @@ export class DecisionCoordinator {
       this.registry.expire(runId);
       this.registry.select(runId);
       return {
+        runId,
         tick,
         execution: { source: safetyError !== null ? "emergency" : "safety", plan: safetyPlan },
         agentActionCount: 0,
@@ -329,6 +331,7 @@ export class DecisionCoordinator {
     }
 
     return {
+      runId,
       tick,
       execution,
       observation,

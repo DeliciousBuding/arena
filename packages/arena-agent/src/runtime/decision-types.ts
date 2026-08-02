@@ -123,6 +123,8 @@ export interface DecisionObservation {
  *  P0-1：execution（实际执行）与 observation（Agent 候选评估）分离——模式判断错误
  *  不会让 Agent 意外获得执行权。 */
 export interface DecisionResult {
+  /** 3.2 单源 runId（遥测三流关联键；loop 层透传给 TickOutcome）。 */
+  readonly runId: string;
   readonly tick: number;
   readonly execution: DecisionExecution;
   readonly observation?: DecisionObservation;
