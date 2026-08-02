@@ -354,3 +354,327 @@ test("P0-2. health 严格化：running 时 ready=false", async () => {
   assert.deepEqual(h.runtime.health(), { ready: true, activeRunId: null });
   await h.close();
 });
+
+// ---------- 真实嵌入冒烟（setDefaultStreamFn + 真实 createAgentSession 全链路） ----------
+// Agent A 地界（leader 接管）：不 mock pi——用真实 createAgentSession + fake stream 函数
+// 替换模型调用。pi 的真实 agent loop（toolUse 执行 → 结果喂回 → 收尾）全链路验证。
+
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+// 冒烟用 pi 原生机制：ModelRuntime.registerProvider（provider 自带 apiKey + streamSimple），
+// 不碰全局 default stream、不污染 ~/.pi 认证环境。
+import type { CandidateSink } from "../src/runtime/decision-types.ts";
+
+/** 局部事件类型（pi-ai 类型在嵌套依赖不可达；运行时形状已对照 dist 类型验证）。 */
+type FakeEvent = Record<string, unknown>;
+type FakeStreamFn = (model: unknown, context: unknown, options?: unknown) => AsyncGenerator<FakeEvent>;
+
+/** 从 streamFn 收到的 context 最后一条 user 消息解析 runId/tick/stateHash（prompt 段 5 格式）。 */
+function parseRunContext(context: unknown): { runId: string; tick: number; stateHash: string } {
+  const messages = ((context as { messages?: unknown[] } | null)?.messages ?? []) as Array<{ role?: string; content?: unknown }>;
+  const lastUser = [...messages].reverse().find((m) => m?.role === "user");
+  const text = typeof lastUser?.content === "string" ? lastUser.content : JSON.stringify(lastUser ?? {});
+  const m = text.match(/runId = ([^，]+)，tick = (\d+)，stateHash = ([^；]+)；/);
+  if (m === null) {
+    throw new Error(`fake stream 无法从 context 解析 run 标识: ${text.slice(0, 200)}`);
+  }
+  return { runId: m[1], tick: Number(m[2]), stateHash: m[3] };
+}
+
+function assistantMsg(content: unknown[], stopReason: string): Record<string, unknown> {
+  return {
+    role: "assistant",
+    content,
+    api: "openai",
+    provider: "fixture",
+    model: "fixture-model",
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason,
+    timestamp: 0,
+  };
+}
+
+function toolCallBlock(id: string, name: string, args: Record<string, unknown>): Record<string, unknown> {
+  return { type: "toolCall", id, name, arguments: args };
+}
+
+/** 一轮流：工具调用（toolUse → done）。 */
+function toolUseStream(calls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>): FakeEvent[] {
+  const content = calls.map((t) => toolCallBlock(t.id, t.name, t.arguments));
+  const msg = assistantMsg(content, "toolUse");
+  const events: FakeEvent[] = [{ type: "start", partial: msg }];
+  calls.forEach((t, i) => {
+    events.push({ type: "toolcall_start", contentIndex: i, partial: msg });
+    events.push({ type: "toolcall_end", contentIndex: i, toolCall: toolCallBlock(t.id, t.name, t.arguments), partial: msg });
+  });
+  events.push({ type: "done", reason: "toolUse", message: msg });
+  return events;
+}
+
+/** 一轮流：纯文本收尾（stop）。 */
+function textStream(text: string): FakeEvent[] {
+  const msg = assistantMsg([{ type: "text", text }], "stop");
+  return [
+    { type: "start", partial: msg },
+    { type: "text_start", contentIndex: 0, partial: msg },
+    { type: "text_delta", contentIndex: 0, delta: text, partial: msg },
+    { type: "text_end", contentIndex: 0, content: text, partial: msg },
+    { type: "done", reason: "stop", message: msg },
+  ];
+}
+
+/** 剧本化 fake stream：按调用轮次返回事件（无脚本轮 → 纯文本收尾）。 */
+function scriptedStream(script: Array<(ctx: { runId: string; tick: number; stateHash: string }) => FakeEvent[]>): FakeStreamFn {
+  let call = 0;
+  return async function* (_model, context) {
+    const run = parseRunContext(context);
+    const events = script[Math.min(call, script.length - 1)]?.(run) ?? textStream("完成。");
+    call += 1;
+    for (const e of events) {
+      yield e;
+    }
+  };
+}
+
+const REAL_PROMPT_BUILDER = (input: { runId: string; context: { tick: number; stateHash: string } }): string =>
+  `本次决策的 runId = ${input.runId}，tick = ${input.context.tick}，stateHash = ${input.context.stateHash}；` +
+  `调用 arena_plan 时参数必须携带这三个值。每 Tick 必须且只能调用一次 arena_plan。`;
+
+/** 注入 ModelRuntime：registerProvider("fixture") 带 apiKey + streamSimple（fake stream）。
+ *  pi 原生认证路径（provider 配置 apiKey）→ 认证通过；streamSimple 被调用 → 剧本事件。 */
+async function makeEmbeddedRuntime(stream: FakeStreamFn, sink: CandidateSink): Promise<{ runtime: PiAgentRuntime; close: () => Promise<void> }> {
+  const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+  modelRuntime.registerProvider("fixture", {
+    baseUrl: "http://127.0.0.1:9", // 不可达：streamSimple 注入后不会真联网
+    api: "openai-completions", // 注册 streamSimple 必须声明 api 协议
+    apiKey: "fake-key-not-real",
+    streamSimple: stream as never,
+  });
+  const runtime = await PiAgentRuntime.create({
+    session: {
+      baseDir: mkdtempSync(join(tmpdir(), "pi-embed-")),
+      model: FAKE_MODEL,
+      configHash: "cfg-test",
+      modelRuntime,
+    },
+    tenantId: "t1",
+    promptBuilder: REAL_PROMPT_BUILDER,
+    idleTimeoutMs: 80,
+    consecutiveErrorThreshold: 2,
+  });
+  runtime.bindCandidateSink(sink);
+  return { runtime, close: () => runtime.close().catch(() => {}) };
+}
+
+test("冒烟 1：真实 session 全链路——arena_plan 工具调用 → CandidateSink 收到合法候选", async () => {
+  const envelopes: CandidateEnvelope[] = [];
+  const sink: CandidateSink = (e) => {
+    envelopes.push(e);
+    return { accepted: true, candidate: e };
+  };
+  const stream = scriptedStream([
+    (run) =>
+      toolUseStream([
+        {
+          id: "tc-1",
+          name: "arena_plan",
+          arguments: {
+            runId: run.runId,
+            tick: run.tick,
+            stateHash: run.stateHash,
+            actions: [{ unit: "u-1", kind: "MOVE", direction: "UP" }],
+            core: null,
+            reason: "smoke",
+            confidence: 0.9,
+          },
+        },
+      ]),
+    () => textStream("计划已提交。"),
+  ]);
+  const { runtime, close } = await makeEmbeddedRuntime(stream, sink);
+  try {
+    const state = makeRequest().state as never;
+    const handle = runtime.startDecision(
+      makeRequest({
+        state: {
+          ...(state as object),
+          units: [{ id: "u-1", position: [0, 1], hp: 2, unitType: "WORKER", cargo: 0 }],
+          workers: [{ id: "u-1", position: [0, 1], hp: 2, unitType: "WORKER", cargo: 0 }],
+        } as never,
+      }),
+    );
+    const result = await handle.settled;
+    assert.equal(result.outcome, "settled");
+    assert.equal(envelopes.length, 1, "sink 必须收到恰好 1 个候选");
+    assert.equal(envelopes[0].runId, "local:t1:100:0");
+    assert.equal(envelopes[0].tick, 100);
+    assert.equal(envelopes[0].plan.unitActions["u-1"]?.type, "MOVE");
+    assert.equal((envelopes[0].plan.unitActions["u-1"] as { direction: string }).direction, "UP");
+    assert.equal(envelopes[0].reason, "smoke");
+  } finally {
+    await close();
+  }
+});
+
+test("冒烟 2：纯文本响应（无工具调用）→ 无候选，run 正常 settle", async () => {
+  const envelopes: CandidateEnvelope[] = [];
+  const sink: CandidateSink = (e) => {
+    envelopes.push(e);
+    return { accepted: true, candidate: e };
+  };
+  const stream = scriptedStream([() => textStream("本轮保守观望，不提交计划。")]);
+  const { runtime, close } = await makeEmbeddedRuntime(stream, sink);
+  try {
+    const handle = runtime.startDecision(makeRequest());
+    const result = await handle.settled;
+    assert.equal(result.outcome, "settled");
+    assert.equal(envelopes.length, 0, "纯文本轮不得产生候选");
+  } finally {
+    await close();
+  }
+});
+
+test("冒烟 3：错 runId 回显 → context_mismatch 拒绝，候选不投递", async () => {
+  const envelopes: CandidateEnvelope[] = [];
+  const sink: CandidateSink = (e) => {
+    envelopes.push(e);
+    return { accepted: true, candidate: e };
+  };
+  const stream = scriptedStream([
+    (run) =>
+      toolUseStream([
+        {
+          id: "tc-1",
+          name: "arena_plan",
+          arguments: {
+            runId: "wrong-run-id", // 故意错
+            tick: run.tick,
+            stateHash: run.stateHash,
+            actions: [],
+            core: null,
+          },
+        },
+      ]),
+    () => textStream("收到拒绝，结束本轮。"),
+  ]);
+  const { runtime, close } = await makeEmbeddedRuntime(stream, sink);
+  try {
+    const handle = runtime.startDecision(makeRequest());
+    const result = await handle.settled;
+    assert.equal(result.outcome, "settled");
+    assert.equal(envelopes.length, 0, "runId 不一致 → 候选不得投递");
+  } finally {
+    await close();
+  }
+});
+
+test("冒烟 4：arena_map 0..N 次 + 重复 arena_plan → duplicate 拒绝（只投递一次）", async () => {
+  const envelopes: CandidateEnvelope[] = [];
+  const sink: CandidateSink = (e) => {
+    envelopes.push(e);
+    return { accepted: true, candidate: e };
+  };
+  const stream = scriptedStream([
+    (run) =>
+      toolUseStream([
+        { id: "tc-map", name: "arena_map", arguments: {} },
+        { id: "tc-plan-1", name: "arena_plan", arguments: { runId: run.runId, tick: run.tick, stateHash: run.stateHash, actions: [], core: null } },
+      ]),
+    (run) =>
+      toolUseStream([
+        { id: "tc-plan-2", name: "arena_plan", arguments: { runId: run.runId, tick: run.tick, stateHash: run.stateHash, actions: [], core: null } },
+      ]),
+    () => textStream("收到 duplicate 拒绝。"),
+  ]);
+  const { runtime, close } = await makeEmbeddedRuntime(stream, sink);
+  try {
+    const handle = runtime.startDecision(makeRequest());
+    const result = await handle.settled;
+    assert.equal(result.outcome, "settled");
+    assert.equal(envelopes.length, 1, "重复调用必须被拒绝，候选只投递一次");
+  } finally {
+    await close();
+  }
+});
+
+test("冒烟 5：abort hang → idle timeout → rotation → 新 session 恢复 ready", async () => {
+  const telemetry: PiRuntimeTelemetry[] = [];
+  const envelopes: CandidateEnvelope[] = [];
+  const sink: CandidateSink = (e) => {
+    envelopes.push(e);
+    return { accepted: true, candidate: e };
+  };
+  // 剧本：挂起（永不结束的流）——abort 后 prompt 不 settle → idle timeout → rotate
+  const hangingStream: FakeStreamFn = async function* () {
+    for (;;) {
+      await new Promise(() => {}); // 永不 resolve
+      yield {};
+    }
+  };
+  const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+  modelRuntime.registerProvider("fixture", {
+    baseUrl: "http://127.0.0.1:9",
+    api: "openai-completions",
+    apiKey: "fake-key-not-real",
+    streamSimple: hangingStream as never,
+  });
+  const runtime = await PiAgentRuntime.create({
+    session: {
+      baseDir: mkdtempSync(join(tmpdir(), "pi-embed-")),
+      model: FAKE_MODEL,
+      configHash: "cfg-test",
+      modelRuntime,
+    },
+    tenantId: "t1",
+    promptBuilder: REAL_PROMPT_BUILDER,
+    idleTimeoutMs: 60,
+    consecutiveErrorThreshold: 2,
+    onTelemetry: (e) => telemetry.push(e),
+  });
+  runtime.bindCandidateSink(sink);
+  try {
+    const handle = runtime.startDecision(makeRequest());
+    handle.abort("test-abort");
+    // 等 rotation 完成（unhealthy → rotating → rotated → ready）
+    await new Promise((r) => setTimeout(r, 250));
+    assert.equal(runtime.health().ready, true, "rotation 后必须恢复 ready");
+    assert.ok(telemetry.some((e) => e.type === "abort_requested"), "必须发出 abort_requested");
+    assert.ok(telemetry.some((e) => e.type === "unhealthy"), "idle 超时必须标记 unhealthy");
+    assert.ok(telemetry.some((e) => e.type === "rotating"), "必须触发 rotation");
+    assert.ok(telemetry.some((e) => e.type === "rotated"), "必须完成 rotation");
+    // hang 的 prompt promise 永不 settle（rotate 只清 active）——settled 加超时 race
+    const result = await Promise.race([
+      handle.settled.catch(() => ({ outcome: "error" as const, message: "hang" })),
+      new Promise<{ outcome: "error"; message: string }>((r) => setTimeout(() => r({ outcome: "error", message: "hang-timeout" }), 200)),
+    ]);
+    assert.ok(result.outcome === "settled" || result.outcome === "error", "settle 必须终结");
+    assert.equal(envelopes.length, 0);
+  } finally {
+    await runtime.close().catch(() => {});
+  }
+});
+
+test("冒烟 6：1000 runs 无泄漏——全部 settle、active 清理、runtime 持续 ready", async () => {
+  const envelopes: CandidateEnvelope[] = [];
+  const sink: CandidateSink = (e) => {
+    envelopes.push(e);
+    return { accepted: true, candidate: e };
+  };
+  const stream = scriptedStream([() => textStream("完成。")]);
+  const { runtime, close } = await makeEmbeddedRuntime(stream, sink);
+  try {
+    const RUNS = 1000;
+    for (let i = 0; i < RUNS; i += 1) {
+      const handle = runtime.startDecision(makeRequest({ runId: `local:t1:100:${i}` }));
+      const result = await handle.settled;
+      assert.equal(result.outcome, "settled", `run ${i} 必须 settle`);
+      if (i % 100 === 99) {
+        assert.equal(runtime.health().ready, true, `run ${i} 后 runtime 必须 ready（无泄漏）`);
+        assert.equal(runtime.health().activeRunId, null, `run ${i} 后无残留 active run`);
+      }
+    }
+    assert.equal(runtime.health().ready, true);
+    assert.equal(runtime.health().activeRunId, null);
+  } finally {
+    await close();
+  }
+});

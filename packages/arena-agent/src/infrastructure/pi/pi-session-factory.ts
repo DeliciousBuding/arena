@@ -77,7 +77,12 @@ export class PiSessionFactory {
         ? SessionManager.create(cwdDir, this.options.sessionDir ?? sessionDir)
         : SessionManager.inMemory(cwdDir);
 
-    const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+    const modelRuntime =
+      this.options.modelRuntime ??
+      (await ModelRuntime.create({
+        allowModelNetwork: false,
+        ...(this.options.authPath !== undefined ? { authPath: this.options.authPath } : {}),
+      }));
     const { modelId, provider } = modelMeta(this.options.model);
 
     const call = this.options.createSession ?? createAgentSession;

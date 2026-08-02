@@ -11,6 +11,7 @@
 import type {
   AgentSession,
   createAgentSession,
+  ModelRuntime,
   ResourceLoader,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -37,6 +38,12 @@ export interface PiSessionFactoryOptions {
   readonly sessionMode?: PiSessionMode;
   /** 会话目录（仅 persistent 模式；缺省 baseDir/sessions/<tenantId>）。 */
   readonly sessionDir?: string;
+  /** ModelRuntime 认证文件（缺省 pi 全局 ~/.pi/agent/auth.json）。
+   *  测试注入临时 auth.json；生产用真实凭据环境。 */
+  readonly authPath?: string;
+  /** ModelRuntime 注入（缺省自建离线 runtime；测试用 registerProvider 的 fake provider——
+   *  pi 原生机制：provider 自带 apiKey + streamSimple，不依赖全局 default stream）。 */
+  readonly modelRuntime?: ModelRuntime;
   /** 资源加载器（缺省不注入——pi 内部用 DefaultResourceLoader 按 cwd/agentDir 创建）。 */
   readonly resourceLoader?: ResourceLoader;
   /** 配置 hash（决策配置的 canonical JSON sha256，run manifest 素材）。 */

@@ -353,7 +353,12 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     this.generation += 1;
     this.onTelemetry("rotating", undefined, undefined, undefined, this.generation);
     try {
-      await this.artifacts?.close();
+      // 超时保护：hang 的 prompt 会让 session.abort() 永不返回（真实冒烟暴露）——
+      // rotation 必须推进（新 session 就绪），旧 session 泄漏可接受（已作废）
+      await Promise.race([
+        this.artifacts?.close(),
+        new Promise((resolve) => setTimeout(resolve, 100)),
+      ]);
       await this.initialize();
       this.consecutiveErrors = 0;
       this.onTelemetry("rotated", undefined, undefined, undefined, this.generation);
