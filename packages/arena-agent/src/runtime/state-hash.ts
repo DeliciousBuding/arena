@@ -19,8 +19,8 @@ export function hashTickState(state: TickState): string {
     enemies: [...state.visibleEnemies]
       .map((enemy) => ({ ...enemy, position: [...enemy.position] }))
       .sort((a, b) => a.id.localeCompare(b.id)),
-    resources: [...state.resourceCells].sort(),
-    obstacles: [...state.obstacleCells].sort(),
+    resourceCells: [...state.resourceCells].sort(),
+    obstacleCells: [...state.obstacleCells].sort(),
     beacon: state.beacon,
     events: [...state.events]
       .map((event) => ({ ...event, values: sortRecord(event.values) }))
