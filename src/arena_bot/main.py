@@ -169,6 +169,22 @@ def play(api_key: str, config: TacticConfig,
 
         telemetry = Telemetry(tenant.telemetry_path) if tenant is not None else None
 
+        def _record_tick(tel, st, ph, outcome, **extra) -> None:
+            """全 Tick 遥测：每个观察到的 tick 必写一行（P0-4）。"""
+            if tel is None:
+                return
+            tel.record(
+                tick=st.tick, outcome=outcome, phase=ph.phase.value,
+                resources=st.resources,
+                resource_capacity=st.resource_capacity,
+                population=st.population,
+                workers=len(st.workers), vanguards=len(st.vanguards),
+                rangers=len(st.rangers),
+                core_hp=st.core_view.hp if st.core_view else None,
+                core_shield=st.core_view.shield if st.core_view else None,
+                enemies_visible=len(st.visible_enemies),
+                events=st.events, **extra)
+
         with ArenaHeroClient(api_key=api_key) as game:
             for turn in game.turns():
                 if state_holder.get("shutdown"):
@@ -207,6 +223,7 @@ def play(api_key: str, config: TacticConfig,
 
             if state_holder["paused"]:
                 log.info("tick %d 暂停中（不提交）", state.tick)
+                _record_tick(telemetry, state, phase, "paused")
                 continue
 
             plan = strategy.decide(state)
@@ -223,6 +240,8 @@ def play(api_key: str, config: TacticConfig,
             if empty_plan:
                 # 全单位无动作（等效 WAIT）：跳过提交，避免 UI 显示"空计划"
                 log.debug("tick %d 无任何动作，跳过提交", state.tick)
+                _record_tick(telemetry, state, phase, "empty",
+                             intents=dict(plan.intents))
                 continue
             apply_plan(turn, plan)
             try:
@@ -231,21 +250,16 @@ def play(api_key: str, config: TacticConfig,
                 if exc.status_code == 409:  # TICK_MISMATCH：决策超窗口，本 tick 作废
                     log.warning("tick %d 提交 TICK_MISMATCH（决策超 15s 窗口），跳过",
                                 state.tick)
+                    _record_tick(telemetry, state, phase, "tick_mismatch",
+                                 intents=dict(plan.intents))
                     continue
+                _record_tick(telemetry, state, phase, "error",
+                             intents=dict(plan.intents), error=str(exc))
                 raise
 
-            if telemetry is not None:
-                telemetry.record(
-                    tick=state.tick, phase=phase.phase.value,
-                    resources=state.resources,
-                    resource_capacity=state.resource_capacity,
-                    population=state.population,
-                    workers=len(state.workers), vanguards=len(state.vanguards),
-                    rangers=len(state.rangers),
-                    core_hp=state.core_view.hp if state.core_view else None,
-                    core_shield=state.core_view.shield if state.core_view else None,
-                    enemies_visible=len(state.visible_enemies),
-                    events=state.events, intents=dict(plan.intents))
+            _record_tick(telemetry, state, phase, "submitted",
+                         accepted=accepted.accepted,
+                         intents=dict(plan.intents))
 
             log.info(
                 "tick %d accepted=%s phase=%s res=%d/%d pop=%d w=%d vg=%d rg=%d enemies=%d",

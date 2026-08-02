@@ -1,6 +1,6 @@
-"""评估：读 telemetry/t*.csv → 对比报告（产出/效率/事件汇总）。
+"""评估：读 telemetry/t*.jsonl → 对比报告（产出/效率/事件/outcome 汇总）。
 
-    uv run python -m arena_bot.evaluate                # 全部 telemetry/*.csv
+    uv run python -m arena_bot.evaluate                # 全部 telemetry/*.jsonl
     uv run python -m arena_bot.evaluate --experiment exp-accumulate
 
 报告指标（markdown 表）：
@@ -9,12 +9,13 @@
 - 到达人口 4（容量 30）/8（容量 50）的 tick
 - 采集/交付/战斗事件累计
 - 最近 200 tick 的意图分布 top（看策略实际在干嘛）
+- outcome 分布（submitted/paused/empty/tick_mismatch/error——失败 tick 不再静默）
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
+import json
 import sys
 from pathlib import Path
 
@@ -40,16 +41,21 @@ def _slope(points: list[tuple[int, int]]) -> float:
 def analyze(path: Path) -> dict:
     rows = []
     with path.open(encoding="utf-8") as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            rows.append(row)
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
     if not rows:
         return {"file": path.name, "rows": 0}
 
     def num(row, key, default=0):
         try:
-            return int(row[key] or 0)
-        except (ValueError, KeyError):
+            return int(row.get(key) or default)
+        except (ValueError, TypeError):
             return default
 
     ticks = [num(r, "tick") for r in rows]
@@ -64,12 +70,17 @@ def analyze(path: Path) -> dict:
     last_all = list(zip(ticks, resources))
     intent_counts: dict[str, int] = {}
     for r in rows[-200:]:
-        for item in (r.get("intents") or "-").split(","):
-            if item == "-" or not item:
-                continue
-            key, _, n = item.partition(":")
+        for key, n in (r.get("intents") or {}).items():
             intent_counts[key] = intent_counts.get(key, 0) + int(n or 0)
     top_intents = sorted(intent_counts.items(), key=lambda kv: -kv[1])[:4]
+
+    def events_total(name):
+        total = 0
+        for r in rows:
+            ev = r.get("events")
+            if isinstance(ev, dict):
+                total += int(ev.get(name) or 0)
+        return total
 
     return {
         "file": path.name,
@@ -81,11 +92,14 @@ def analyze(path: Path) -> dict:
         "slope_all": _slope(last_all),
         "reach_pop4": reach_pop4,
         "reach_pop8": reach_pop8,
-        "harvest_ok": sum(num(r, "HARVEST_SUCCEEDED") for r in rows),
-        "harvest_fail": sum(num(r, "HARVEST_FAILED") for r in rows),
-        "deposit_ok": sum(num(r, "DEPOSIT_SUCCEEDED") for r in rows),
+        "harvest_ok": events_total("HARVEST_SUCCEEDED"),
+        "harvest_fail": events_total("HARVEST_FAILED"),
+        "deposit_ok": events_total("DEPOSIT_SUCCEEDED"),
         "combat": sum(num(r, "combat_events") for r in rows),
         "intents": top_intents,
+        "outcomes": {k: sum(1 for r in rows if r.get("outcome") == k)
+                     for k in ("submitted", "paused", "empty",
+                               "tick_mismatch", "error")},
     }
 
 
@@ -94,28 +108,30 @@ def main() -> int:
     parser.add_argument("--experiment", default=None, help="仅报告标题")
     args = parser.parse_args()
 
-    files = sorted(TELEMETRY_DIR.glob("t*.csv")) if TELEMETRY_DIR.is_dir() else []
+    files = sorted(TELEMETRY_DIR.glob("t*.jsonl")) if TELEMETRY_DIR.is_dir() else []
     if not files:
-        print(f"无遥测数据（{TELEMETRY_DIR}/t*.csv）。先运行调度器。")
+        print(f"无遥测数据（{TELEMETRY_DIR}/t*.jsonl）。先运行调度器。")
         return 1
 
     title = args.experiment or "全部"
     print(f"# 实验评估：{title}\n")
     print("| 租户 | tick 范围 | 末资源 | 末人口 | 增速(近200) | 增速(全程) | "
-          "达pop4 | 达pop8 | 采集✓ | 采集✗ | 交付✓ | 战斗 | 最近意图 |")
-    print("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+          "达pop4 | 达pop8 | 采集✓ | 采集✗ | 交付✓ | 战斗 | outcome | 最近意图 |")
+    print("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for f in files:
         r = analyze(f)
         if r.get("rows", 0) == 0:
-            print(f"| {r['file']} | 空 | | | | | | | | | | | |")
+            print(f"| {r['file']} | 空 | | | | | | | | | | | | |")
             continue
         intent_s = " ".join(f"{k}:{v}" for k, v in r["intents"])
+        out_s = " ".join(f"{k}:{v}" for k, v in r["outcomes"].items() if v)
         print(f"| {r['file']} | {r['ticks']} | {r['res_end']} | {r['pop_end']} "
               f"| {r['slope']:.3f} | {r['slope_all']:.3f} "
               f"| {r['reach_pop4'] or '-'} | {r['reach_pop8'] or '-'} "
               f"| {r['harvest_ok']} | {r['harvest_fail']} | {r['deposit_ok']} "
-              f"| {r['combat']} | {intent_s or '-'} |")
-    print("\n说明：增速=资源/线性斜率(单位/tick)；达pop4/8=容量到30/50的tick；采集✗高=资源竞争激烈")
+              f"| {r['combat']} | {out_s or '-'} | {intent_s or '-'} |")
+    print("\n说明：增速=资源/线性斜率(单位/tick)；达pop4/8=容量到30/50的tick；采集✗高=资源竞争激烈；"
+          "outcome=tick 结果分布（失败不再静默）")
     return 0
 
 

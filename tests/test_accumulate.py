@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import csv
+import json
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -191,37 +191,39 @@ def test_tenant_keys_fallback_single(monkeypatch, tmp_path):
 
 # ---------- 遥测采样 ----------
 
-def test_telemetry_records_and_csv_shape(tmp_path):
-    path = tmp_path / "t1.csv"
+def test_telemetry_records_and_jsonl_shape(tmp_path):
+    path = tmp_path / "t1.jsonl"
     with Telemetry(path) as tele:
-        tele.record(tick=1, phase="early_expansion", resources=5,
-                    resource_capacity=10, population=1, workers=1,
-                    vanguards=0, rangers=0, core_hp=5, core_shield=5,
-                    enemies_visible=0, events=(), intents={})
+        tele.record(tick=1, outcome="submitted", phase="early_expansion",
+                    resources=5, resource_capacity=10, population=1,
+                    workers=1, vanguards=0, rangers=0, core_hp=5,
+                    core_shield=5, enemies_visible=0, events=(), intents={})
         ev = SimpleNamespace(event_type="HARVEST_SUCCEEDED")
-        tele.record(tick=2, phase="early_expansion", resources=6,
-                    resource_capacity=10, population=1, workers=1,
-                    vanguards=0, rangers=0, core_hp=5, core_shield=5,
-                    enemies_visible=0, events=(ev,),
+        tele.record(tick=2, outcome="submitted", phase="early_expansion",
+                    resources=6, resource_capacity=10, population=1,
+                    workers=1, vanguards=0, rangers=0, core_hp=5,
+                    core_shield=5, enemies_visible=0, events=(ev,),
                     intents={"core": "harvest"})
         # record 后立即落盘（不依赖 close）
         assert path.read_text(encoding="utf-8").count("\n") >= 2
     with path.open(encoding="utf-8") as fh:
-        rows = list(csv.DictReader(fh))
+        rows = [json.loads(line) for line in fh if line.strip()]
     assert len(rows) == 2
-    assert rows[1]["HARVEST_SUCCEEDED"] == "1"
-    assert rows[1]["resources"] == "6"
-    assert "harvest:1" in rows[1]["intents"]
+    assert rows[1]["events"]["HARVEST_SUCCEEDED"] == 1
+    assert rows[1]["resources"] == 6
+    assert rows[1]["outcome"] == "submitted"
+    assert "harvest" in rows[1]["intents"]
 
 
 def test_telemetry_combat_counter(tmp_path):
-    path = tmp_path / "t2.csv"
+    path = tmp_path / "t2.jsonl"
     with Telemetry(path) as tele:
         ev = SimpleNamespace(event_type="CORE_DESTROYED")
-        tele.record(tick=1, phase="military", resources=0,
-                    resource_capacity=10, population=0, workers=0,
-                    vanguards=0, rangers=0, core_hp=None, core_shield=None,
-                    enemies_visible=2, events=(ev,), intents={})
+        tele.record(tick=1, outcome="submitted", phase="military",
+                    resources=0, resource_capacity=10, population=0,
+                    workers=0, vanguards=0, rangers=0, core_hp=None,
+                    core_shield=None, enemies_visible=2, events=(ev,),
+                    intents={})
     with path.open(encoding="utf-8") as fh:
-        rows = list(csv.DictReader(fh))
-    assert rows[0]["combat_events"] == "1"
+        rows = [json.loads(line) for line in fh if line.strip()]
+    assert rows[0]["combat_events"] == 1

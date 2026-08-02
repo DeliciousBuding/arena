@@ -1,16 +1,16 @@
-"""遥测：每 Tick 指标采样 → CSV（按租户分文件）。
+"""遥测：每 Tick 指标采样 → JSONL（append-only，按租户分文件）。
 
-实验对比的基础：没有这层，策略优劣无从衡量。
-采样列设计为评估脚本的最小充分集：
-- 状态：资源/容量/人口/单位组成/Core HP/盾/可见敌人数/阶段
-- 事件计数：采集成功/失败、交付、治疗、战斗事件（本 Tick 增量）
-- 意图分布：各意图标签计数（看策略在干嘛）
+P0-4 修复：每个观察到的 Tick 必写一行（含 outcome），paused/空计划/
+409/异常不再静默丢失；append 模式不覆盖历史；每行是完整 JSON 对象，
+evaluate 报告从 JSONL 派生。
+
+outcome 取值：submitted / paused / empty / tick_mismatch / error
 """
 
 from __future__ import annotations
 
-import csv
-from collections import Counter
+import json
+import time
 from pathlib import Path
 
 # 计入遥测的事件类型（事件名是字符串，新增事件不破坏兼容）
@@ -22,47 +22,46 @@ EVENT_COUNTERS = (
 COMBAT_EVENTS = ("UNIT_DESTROYED", "CORE_DESTROYED", "CORE_RESPAWNED",
                  "CORE_RESOURCES_CAPTURED", "UNIT_HEAL_FAILED")
 
-HEADER = (
-    "tick", "phase", "resources", "resource_capacity", "population",
-    "workers", "vanguards", "rangers", "core_hp", "core_shield",
-    "enemies_visible",
-    *EVENT_COUNTERS, "combat_events",
-    "intents",
-)
-
 
 class Telemetry:
-    """按租户写 CSV。record() 每 Tick 调用一次。"""
+    """按租户写 JSONL。record() 每 Tick 必调用一次（含失败分支）。"""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = path.open("w", newline="", encoding="utf-8")
-        self._writer = csv.writer(self._file)
-        self._writer.writerow(HEADER)
+        self._file = path.open("a", encoding="utf-8")  # append：不覆盖历史
 
-    def record(self, *, tick: int, phase: str, resources: int,
-               resource_capacity: int, population: int, workers: int,
-               vanguards: int, rangers: int, core_hp: int | None,
-               core_shield: int | None, enemies_visible: int,
-               events: tuple, intents: dict) -> None:
-        """采样一帧。events 为当前 Tick 的 ResolutionEvent 序列。"""
+    def record(self, *, tick: int, outcome: str, phase: str = "",
+               resources=None, resource_capacity=None, population=None,
+               workers: int = 0, vanguards: int = 0, rangers: int = 0,
+               core_hp=None, core_shield=None, enemies_visible: int = 0,
+               events: tuple = (), intents=None, **extra) -> None:
+        """采样一帧。outcome 标记本 tick 结果（submitted/empty/paused/...）。"""
+        from collections import Counter
         ev = Counter(getattr(e, "event_type", "") for e in events)
-        combat = sum(ev.get(name, 0) for name in COMBAT_EVENTS)
-        intent_counts = Counter(intents.values())
-        intent_repr = ",".join(f"{k}:{v}" for k, v in
-                               sorted(intent_counts.items())) or "-"
-        self._writer.writerow((
-            tick, phase, resources, resource_capacity, population,
-            workers, vanguards, rangers,
-            core_hp if core_hp is not None else "",
-            core_shield if core_shield is not None else "",
-            enemies_visible,
-            *(ev.get(name, 0) for name in EVENT_COUNTERS),
-            combat, intent_repr,
-        ))
-        # 立即落盘：遥测必须可实时观察（评估/监控依赖文件内容）
-        self._file.flush()
+        row = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "tick": tick,
+            "outcome": outcome,
+            "phase": phase,
+            "resources": resources,
+            "resource_capacity": resource_capacity,
+            "population": population,
+            "workers": workers,
+            "vanguards": vanguards,
+            "rangers": rangers,
+            "core_hp": core_hp,
+            "core_shield": core_shield,
+            "enemies_visible": enemies_visible,
+            "events": {name: ev.get(name, 0) for name in EVENT_COUNTERS},
+            "combat_events": sum(ev.get(name, 0) for name in COMBAT_EVENTS),
+        }
+        if intents:
+            intent_counts = Counter(intents.values())
+            row["intents"] = {k: v for k, v in sorted(intent_counts.items())}
+        row.update(extra)
+        self._file.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        self._file.flush()  # 立即落盘：遥测必须可实时观察
 
     def close(self) -> None:
         if not self._file.closed:
