@@ -157,6 +157,16 @@ def test_worker_fully_boxed_in_waits():
     assert actions_of(w) == []  # 四向全堵：等待
 
 
+def test_worker_explores_toward_beacon_when_no_resources():
+    core = core_at((0, 0))
+    w = FakeUnit((0, 0), UnitType.WORKER, 2)
+    turn = FakeTurn(core=core, units=[w], resources=2,
+                    beacon_pos=(10, 0), beacon_status=BeaconStatus.GROUND)
+    decide_actions(turn)
+    assert actions_of(w) == ["move"]
+    assert w.actions[0][1][0] is Direction.RIGHT  # 朝 Beacon 方向巡逻
+
+
 # ---------- 恢复 ----------
 
 def test_damaged_unit_heals_at_core():

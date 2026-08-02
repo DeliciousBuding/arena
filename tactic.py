@@ -133,13 +133,12 @@ def decide_actions(turn) -> None:
             if pos in resource_cells:
                 unit.harvest()
                 continue
-            # 朝最近可见资源格走；无资源则回家待命
+            # 朝最近可见资源格走；无可见资源则朝 Beacon 方向巡逻
+            # （Beacon 坐标永远公开；空手时纵深探索，拿到 cargo 即优先回家）
             if resource_cells:
                 target = _nearest(resource_cells, pos)
-            elif home is not None:
-                target = home
             else:
-                continue  # 无 Core 且无资源：原地等待
+                target = turn.beacon.position
             if target != pos:
                 d = _step_toward(pos, target, obstacle)
                 if d is not None:
@@ -248,7 +247,6 @@ def play(api_key: str) -> None:
             )
             for ev in turn.events:
                 print(f"  event: {ev.event_type} reason={ev.reason_code} pos={ev.position}")
-
 
 def main() -> None:
     api_key = load_api_key()

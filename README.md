@@ -21,6 +21,10 @@ python -m pytest tests/ -q   # 无凭据决策测试
 
 秘钥只存于 `.env`（已 gitignore），永不入仓。
 
+## 文档
+
+离线权威文档在 `docs/`（规则 v0.10 / SDK 0.2.6，2026-08-02 与线上核对）：`docs/game-rules.md` 全量规则、`docs/reference-numbers.md` 数值速查、`docs/sdk-reference.md` SDK 参考。索引见 `docs/README.md`，`scripts/sync_docs.py` 可重新同步。
+
 ## 战术策略（平衡型）
 
 - Worker 采集 → 回家交付；cargo 满时优先回家；无可见资源回家待命
