@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arena.local/contracts/differential/record-v1.schema.json",
+  "title": "differential_record_v1",
+  "description": "Differential Record v1 单行（JSONL 一行一条）。W3 差分回放：E1/E2 输出、E3 输入。规范见 docs/differential-record-v1.md。",
+  "type": "object",
+  "required": [
+    "protocol_version", "dataset_id", "tenant_id", "segment_id", "tick",
+    "input_sha256", "config_hash", "map_snapshot_hash",
+    "state", "phase", "memory", "intents", "plan", "map_mode"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": { "const": 1 },
+    "dataset_id": { "type": "string" },
+    "tenant_id": { "type": "string" },
+    "segment_id": { "type": "string" },
+    "tick": { "type": "integer", "minimum": 0 },
+    "input_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "config_hash": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      ]
+    },
+    "map_snapshot_hash": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      ]
+    },
+    "map_mode": { "enum": ["disabled", "frozen", "controlled"] },
+    "state": {
+      "type": "object",
+      "required": [
+        "resources", "population", "resource_capacity", "resource_space",
+        "core", "units", "enemies", "resource_cells", "obstacle_cells", "beacon"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "resources": { "type": "integer", "minimum": 0 },
+        "population": { "type": "integer", "minimum": 0 },
+        "resource_capacity": { "type": "integer", "minimum": 0 },
+        "resource_space": { "type": "integer", "minimum": 0 },
+        "core": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["id", "position", "hp", "shield", "state"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string" },
+                "position": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+                "hp": { "type": "integer", "minimum": 0 },
+                "shield": { "type": "integer", "minimum": 0 },
+                "state": { "type": "string" }
+              }
+            }
+          ]
+        },
+        "units": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "position", "hp", "cargo", "unit_type"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "position": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+              "hp": { "type": "integer", "minimum": 0 },
+              "cargo": { "type": "integer", "minimum": 0 },
+              "unit_type": { "type": "string" }
+            }
+          }
+        },
+        "enemies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "position", "unit_type"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "position": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+              "unit_type": { "type": "string" }
+            }
+          }
+        },
+        "resource_cells": { "type": "array", "items": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 } },
+        "obstacle_cells": { "type": "array", "items": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 } },
+        "beacon": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["position", "status", "carrier_id"],
+              "additionalProperties": false,
+              "properties": {
+                "position": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+                "status": { "oneOf": [{ "type": "null" }, { "type": "string" }] },
+                "carrier_id": { "oneOf": [{ "type": "null" }, { "type": "string" }] }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "phase": { "type": "string" },
+    "memory": {
+      "type": "object",
+      "required": ["resources", "enemies", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "resources": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["state", "first_seen_tick"],
+            "additionalProperties": false,
+            "properties": {
+              "state": { "type": "string" },
+              "first_seen_tick": { "type": "integer" }
+            }
+          }
+        },
+        "enemies": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["last_seen_tick", "position"],
+            "additionalProperties": false,
+            "properties": {
+              "last_seen_tick": { "type": "integer" },
+              "position": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 }
+            }
+          }
+        },
+        "units": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["mode"],
+            "additionalProperties": false,
+            "properties": {
+              "mode": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "intents": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "plan": {
+      "type": "object",
+      "required": ["unit_actions", "core_action"],
+      "additionalProperties": false,
+      "properties": {
+        "unit_actions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["type"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "type": "string" },
+              "direction": { "type": "string" },
+              "target_id": { "type": "string" },
+              "expected_cell": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+              "unit_type": { "type": "string" }
+            }
+          }
+        },
+        "core_action": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["type"],
+              "additionalProperties": false,
+              "properties": {
+                "type": { "type": "string" },
+                "unit_type": { "type": "string" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
