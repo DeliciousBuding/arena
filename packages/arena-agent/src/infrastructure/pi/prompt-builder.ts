@@ -160,7 +160,8 @@ function renderRunRules(runId: string, tick: number, stateHash: string): string 
     `1. 本 Prompt 第 3 段的当前 Tick 状态覆盖会话里所有旧 Tick 的瞬时事实` +
     `（单位 UUID、位置、HP、cargo、资源、人口）。\n` +
     `2. 每 Tick 必须且只能调用一次 arena_plan 工具提交计划；调用后立即结束本轮。\n` +
-    `3. 允许在 arena_plan 之前调用 arena_map 查询地图（0 到多次），但不得调用任何其他工具。\n` +
+    `3. 地图快照已内嵌于第 3 段（资源/障碍/敌我单位齐全）——本 Tick 无需调用 arena_map` +
+    `（调用不增加信息，只会拖延决策）；除 arena_plan 外不得调用任何其他工具。\n` +
     `4. 禁止把计划写在普通文本中代替工具调用；普通文本中的计划内容一律不被采纳。\n` +
     `5. 禁止使用旧 Tick 的单位 UUID、位置、HP、cargo——一切以本 Prompt 第 3 段的当前数据为准。\n` +
     `6. 无把握时提交保守计划（空 actions 也可）；最终计划仍由 Safety/Arbiter 裁决，不要为不确定性冒险。`

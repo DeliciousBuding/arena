@@ -16,8 +16,8 @@
 
 import { ArenaHeroClient } from "@arena/arena-hero-ts";
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { mkdirSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 
 import { loadRuntimeConfig, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
@@ -33,6 +33,7 @@ import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
 import type { AgentDecisionRuntime, DecisionModeName, DecisionResult, SubmissionModeName } from "../runtime/decision-types.ts";
 import { JsonlWriter } from "../telemetry/jsonl-writer.ts";
+import { sanitizeValue } from "../telemetry/jsonl-writer.ts";
 import { planHashOf } from "../telemetry/decision-trace.ts";
 import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
 
@@ -174,11 +175,24 @@ export async function runTenant(
       new ArenaHeroClient({ apiKey: readEnvToken(config.arenaTokenEnv) });
 
     // 5) Agent runtime：safety 模式用 no-op 占位（coordinator 短路不调用，Pi 认证不阻断 Canary）；
-    //    其他模式真实 Pi 或测试注入 fake；rotationGeneration 经 onTelemetry 透传
+    //    其他模式真实 Pi 或测试注入 fake；rotationGeneration 经 onTelemetry 透传；
+    //    Pi 事件流落盘 pi.jsonl（agent-shadow 门槛评估：prompt 错误率/rotation 率的观测源）
     let runtimeGeneration = 0;
+    // Pi 事件流（pi.jsonl）：agent-shadow 门槛评估的观测源（prompt 错误率/rotation 率）。
+    // 不走 JsonlWriter（TraceRecord schema 不承载 Pi 事件）——独立 append + 脱敏，IO 失败不阻塞。
+    const piEventsPath = join(dirs.telemetryDir, "pi.jsonl");
     const onRuntimeTelemetry = (event: PiRuntimeTelemetry): void => {
       if (event.generation !== undefined) {
         runtimeGeneration = event.generation;
+      }
+      try {
+        appendFileSync(
+          piEventsPath,
+          `${JSON.stringify(sanitizeValue({ at: new Date().toISOString(), type: event.type, reason: event.reason ?? event.message ?? "" }))}\n`,
+          "utf-8",
+        );
+      } catch {
+        // IO 失败不阻塞决策路径
       }
     };
     const runtime =
