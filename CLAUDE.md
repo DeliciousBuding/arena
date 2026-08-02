@@ -33,7 +33,7 @@
 | `src/arena_bot/watchdog.py` | 停滞告警（alerts/*.jsonl） |
 | `src/arena_bot/telemetry.py` | 遥测 JSONL（runs/<run_id>/telemetry/）+ evaluate.py 报告 |
 | `tests/` | 135 例无凭据测试（Fake TickState，零网络） |
-| `packages/arena-agent/` | TS 编排层副本（同步自 arena-pr-verify，供本地验证） |
+| `packages/arena-agent/` | TS 编排层（domain/ + runtime/loop.ts + strategies/，TS 迁移主线） |
 | `experiments/*.yaml` | 实验定义（租户/策略/参数覆盖） |
 | `runs/<run_id>/` | 每实验运行产物：manifest.json + telemetry/ + raw-state/ |
 | `.env` | API key（**已 gitignore，永不入仓**） |
