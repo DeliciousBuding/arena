@@ -2,7 +2,7 @@
 
 最后更新：2026-08-02
 
-用官方 Python SDK 自动游玩 Arena Hero 的独立工作区（uv 管理）。规则契约 **v0.10**，SDK **arena-hero 0.2.6**（2026-08-02 与上游 commit ad6fc27/4a29585 核对一致）。
+用官方 Python SDK 自动游玩 Arena Hero 的独立工作区（uv 管理）。规则契约 **v0.11**（2026-08-02 changelog），SDK **arena-hero 0.2.6**。
 
 ## 项目目标（GOAL）
 
@@ -11,7 +11,8 @@
 - 容量 = `max(10, 人口×5)`：攒 30 需人口≥4，攒 50 需人口≥8 —— **先扩人口再积累**
 - 兑换需 Core 内资源 ≥ 价格，兑换动作用户在网页手动做，bot 攒到阈值提示
 - **其他玩家会来攻打**：Core 被摧毁时库存归最高伤害者——资源越多越要守备（`guard_resources`/`guard_force`）
-- 限流结论（`docs/LIMITS.md`）：3 账号并行安全，唯一硬规则是**每账号同时只跑一个提交方**
+- 限流结论（`docs/LIMITS.md`）：4 账号并行安全，唯一硬规则是**每账号同时只跑一个提交方**
+- 4 账号：delicious233 / buding / delicious23333 / deliciousbuding（互为盟友，绝不互攻）
 
 ## 结构速查
 

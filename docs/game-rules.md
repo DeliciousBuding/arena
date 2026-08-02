@@ -1,10 +1,12 @@
-# Arena Hero v0.10 game rules
+# Arena Hero v0.11 game rules
 
 This is the complete gameplay contract bundled with the Arena Hero skill. Read
 the whole file before writing a tactic or controlling a live Turn.
 
-This contract was reviewed against Arena Hero server revision
-`5a3bcdf5fbc75574938dc35acf48b12145b37582` on 2 August 2026.
+This contract was reviewed against the rules changelog
+(`docs/reference/changelog.md`, arena-hero-doc repo) on 2 August 2026.
+**规则变更源：https://github.com/arena-hero/arena-hero-doc/blob/main/docs/reference/changelog.md
+——检查日期 2026-08-02（v0.11 已合入）；规则更新时同步检查 `balance.py` / LLM RULES prompt 适配。**
 If a live server reports newer or incompatible rules, stop rule-dependent play
 and update this bundle instead of mixing versions.
 
@@ -415,8 +417,16 @@ uses the remaining population. A newly spawned Unit starts paying on the next
 Tick; a Unit killed later in the Tick has already paid for this one.
 
 If resources cannot cover upkeep, inventory becomes zero and each missing
-resource deals 1 Core damage, shield first. If this destroys the Core, its fleet
-and locked actions are removed before any later phase.
+resource deals 1 HP damage to "excess units" instead of the Core (v0.11):
+the 19 units nearest to the current Core are protected; the remaining units
+take the damage from farthest to nearest by Manhattan distance, ties broken by
+UUID order, damage concentrated in that order. Upkeep damage resolves before
+movement and combat. A Worker's cargo and a carried Beacon drop normally, and
+enemies gain no destruction participation. Units that survive damaged may still
+act that Tick and can heal afterwards. Events: `UPKEEP_PAID` reports
+due/paid/deficit; `UNIT_DAMAGED`/`UPKEEP_DEFICIT` report affected units,
+damage, and HP. (v0.10 and earlier: missing upkeep damaged the Core, shield
+first.)
 
 ## Units and actions
 

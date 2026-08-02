@@ -76,5 +76,30 @@ class MapStore:
             "chunks_explored": len(chunks),
         }
 
+    def query(self, kind: str, bounds=None, limit: int = 200) -> dict:
+        """只读查询（供 debug API / LLM arena_map 工具）。
+
+        kind: stats / obstacles / resources / allies
+        bounds: (x1, y1, x2, y2) 可选范围过滤（障碍/资源）
+        obstacles 最多返回 limit 条（按行列序），超限带 truncated 标记。
+        """
+        if kind == "stats":
+            return self.stats()
+        if kind == "obstacles":
+            rows = sorted(self._obstacles)  # (x, y) 有序
+            if bounds:
+                x1, y1, x2, y2 = bounds
+                rows = [(x, y) for x, y in rows
+                        if x1 <= x <= x2 and y1 <= y <= y2]
+            truncated = len(rows) > limit
+            return {"cells": rows[:limit], "count": len(rows),
+                    "truncated": truncated}
+        if kind == "resources":
+            # 资源格目前不持久化（world 每 Tick 视野内重算），返回空结构
+            return {"cells": [], "count": 0, "note": "资源格不持久化，见视野"}
+        if kind == "allies":
+            return {"usernames": sorted(self._allies)}
+        return {"error": f"未知查询: {kind!r}"}
+
     def close(self) -> None:
         self._conn.close()

@@ -133,8 +133,12 @@ def play(api_key: str, config: TacticConfig,
 
     world = World(map_store)
     phase = PhaseMachine(config)
+    # LLM 策略需要 arena_map 工具后端（本租户 debug API 的 /map/query）
+    strategy_kwargs = {}
+    if (tenant is not None and tenant.strategy_name == "llm"):
+        strategy_kwargs["map_url"] = f"http://127.0.0.1:{tenant.debug_port}"
     strategy = create_strategy(tenant.strategy_name if tenant else "balance",
-                               config, world)
+                               config, world, **strategy_kwargs)
     state_holder: dict = {"paused": False}
 
     watchdog = Watchdog(
@@ -149,6 +153,7 @@ def play(api_key: str, config: TacticConfig,
         host, port,
         build_snapshot(config, phase, world, state_holder, watchdog),
         build_command_handler(config, phase, strategy, world, state_holder),
+        map_store=map_store,
     )
     debug.start()
     log.info("调试端点 http://%s:%s（GET /state /strategies，POST /command）", host, port)

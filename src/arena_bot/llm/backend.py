@@ -90,11 +90,14 @@ class PiRpcBackend(LLMBackend):
     """
 
     def __init__(self, pi_cli: Path, model: str, session_dir: Path,
-                 startup_timeout: float = 30.0, arena_tools: bool = False) -> None:
+                 startup_timeout: float = 30.0, arena_tools: bool = False,
+                 arena_map_url: str | None = None) -> None:
         self.cmd = ["node", str(pi_cli), "--mode", "rpc", "--model", model,
                     "--session-dir", str(session_dir)]
         if arena_tools:
             self.cmd.append("--arena-tools")
+        if arena_map_url:
+            self.cmd += ["--arena-map-url", arena_map_url]
         self.proc = subprocess.Popen(
             self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8",
