@@ -11,7 +11,8 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / "legacy"))  # 旧 tactic.py 已迁入 legacy/
 
 from arena_hero import BeaconStatus, CoreState, Direction, UnitType
 
@@ -20,7 +21,7 @@ from arena_bot.core.state import TickState
 from arena_bot.strategies import BalanceStrategy
 from arena_bot.world import World
 
-from tactic import decide_actions  # 旧决策（legacy，Batch 5 前保留在根目录）
+from tactic import decide_actions  # 旧决策（legacy）
 
 
 class FakeUnit:
