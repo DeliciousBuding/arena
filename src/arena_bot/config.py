@@ -52,7 +52,7 @@ class TacticConfig:
     watchdog_stall_ticks: int = 20  # 连续 N tick 无进展视为停滞（约 5 分钟）
 
     # W3 差分回放素材：raw state 落盘（每 tick 一个 JSON，含完整 objects/events）
-    raw_state_dir: str = ""         # 空 = 不存；非空 = 每 tick 写 <dir>/<tick>.json
+    raw_state_dir: str = ""         # 空 = 不存；非空 = 每 tick 原子写：租户模式 <dir>/<tenant_name>/<tick>.json（main.py 按 tenant.name 分目录，多租户互不覆盖）；单账号 <dir>/<tick>.json
 
     # LLM 决策后端（pi RPC 长驻，兼容原 pi 设计）
     llm_pi_cli: str = "pi-dev/packages/coding-agent/dist/cli.js"  # 相对项目根

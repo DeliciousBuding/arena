@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -30,6 +31,28 @@ from .watchdog import Watchdog
 from .world import World
 
 log = get_logger("main")
+
+
+def write_raw_state(raw_dir: str | Path, tick: int, payload: str,
+                    tenant_name: str | None = None) -> Path:
+    """原子落盘 raw state 快照（W3 差分回放素材）。
+
+    布局：租户模式（tenant_name 非空）写 <raw_dir>/<tenant_name>/<tick>.json，
+    进程级目录隔离——多租户同 tick 不再共写同名文件（此前并发拼接/截断污染）。
+    单账号模式（tenant_name=None，旧兼容）直接写 <raw_dir>/<tick>.json。
+
+    原子写：先写 <tick>.json.tmp 再 os.replace()——跨进程并发时读取方
+    永远看不到半截文件。旧路径（<raw_dir>/<tick>.json）已有文件不动，
+    新写入一律走租户子目录。返回最终文件路径。
+    """
+    base = Path(raw_dir)
+    target_dir = base / tenant_name if tenant_name else base
+    target_dir.mkdir(parents=True, exist_ok=True)
+    final_path = target_dir / f"{tick}.json"
+    tmp_path = target_dir / f"{tick}.json.tmp"
+    tmp_path.write_text(payload, encoding="utf-8")
+    os.replace(tmp_path, final_path)
+    return final_path
 
 
 def build_command_handler(cfg: TacticConfig, phase: PhaseMachine,
@@ -194,12 +217,13 @@ def play(api_key: str, config: TacticConfig,
                 set_current_tick(turn.tick)
                 state = TickState.from_turn(turn)
                 state_holder["state"] = state
-                # W3 差分回放素材：raw state 落盘（每 tick 一 JSON，含完整对象/事件）
+                # W3 差分回放素材：raw state 落盘（每 tick 一 JSON，含完整对象/事件；
+                # 租户模式按 tenant.name 分目录 + 原子写，杜绝多租户并发写坏）
                 if config.raw_state_dir:
-                    raw_dir = Path(config.raw_state_dir)
-                    raw_dir.mkdir(parents=True, exist_ok=True)
-                    (raw_dir / f"{state.tick}.json").write_text(
-                        turn.state.model_dump_json(), encoding="utf-8")
+                    write_raw_state(config.raw_state_dir, state.tick,
+                                    turn.state.model_dump_json(),
+                                    tenant_name=tenant.name
+                                    if tenant is not None else None)
 
                 # 事件 → world（采集成功/失败、单位状态）
                 harvest_failed = {ev.position for ev in state.events
