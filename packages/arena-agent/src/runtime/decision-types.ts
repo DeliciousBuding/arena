@@ -18,6 +18,12 @@ export type DecisionSource = "agent" | "hybrid" | "safety" | "emergency" | "repa
 export type DecisionModeName = "safety" | "deterministic" | "agent-shadow" | "hybrid";
 export type SubmissionModeName = "disabled" | "live";
 
+/** 确定性 planner 端口（SafetyPlanner 与 DeterministicPlanner 可互换注入——P0-1：
+ *  deterministic 模式 = coordinator 短路 + planner 注入，coordinator 不感知差异）。 */
+export interface PlanProvider {
+  decide(input: { readonly state: TickState }): Plan;
+}
+
 /** 决策上下文：不可变，一次决策全程共享（R9：World 必须在 Tick 开始时快照化）。 */
 export interface DecisionContext {
   readonly tenantId: string;

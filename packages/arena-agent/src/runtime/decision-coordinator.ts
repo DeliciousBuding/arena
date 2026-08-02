@@ -35,11 +35,13 @@ import type {
   DecisionModeName,
   DecisionObservation,
   DecisionResult,
+  PlanProvider,
 } from "./decision-types.ts";
 
 export interface DecisionCoordinatorOptions {
   readonly runtime: AgentDecisionRuntime;
-  readonly planner: SafetyPlanner;
+  /** 确定性 planner（SafetyPlanner/DeterministicPlanner 可互换——P0-1 planner 注入）。 */
+  readonly planner: PlanProvider;
   readonly registry: LeaseRegistry;
   readonly clock: Clock;
   readonly budgetConfig: DeadlineConfig;
@@ -72,7 +74,7 @@ const POLL_STEP_MS = 10;
 
 export class DecisionCoordinator {
   private readonly runtime: AgentDecisionRuntime;
-  private readonly planner: SafetyPlanner;
+  private readonly planner: PlanProvider;
   private readonly registry: LeaseRegistry;
   private readonly clock: Clock;
   private readonly budgetConfig: DeadlineConfig;

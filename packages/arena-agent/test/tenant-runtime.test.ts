@@ -280,7 +280,7 @@ test("runTenant：锁冲突（他人活锁）→ 直接失败，不降级", asyn
   }
 });
 
-test("runTenant：decisionMode=deterministic → 明确拒绝（未验收前禁止半个实现）", async () => {
+test("runTenant：deterministic+live → 明确拒绝（影子观察达标前禁止 live）", async () => {
   const base = mkdtempSync(join(tmpdir(), "tenant-run-"));
   const configPath = writeConfig(makeConfig(base));
   const old = process.env.ARENA_HERO_API_KEY_T_TEST;
@@ -291,9 +291,36 @@ test("runTenant：decisionMode=deterministic → 明确拒绝（未验收前禁�
         runtime: new SyncCandidateRuntime(),
         client: makeFakeClient() as never,
         decisionMode: "deterministic",
+        submissionMode: "live",
       }),
-      /未启用/,
+      /暂禁 live/,
     );
+  } finally {
+    if (old === undefined) {
+      delete process.env.ARENA_HERO_API_KEY_T_TEST;
+    } else {
+      process.env.ARENA_HERO_API_KEY_T_TEST = old;
+    }
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("runTenant：deterministic+shadow → 允许（DeterministicPlanner 注入，离线决策）", async () => {
+  const base = mkdtempSync(join(tmpdir(), "tenant-run-"));
+  const configPath = writeConfig(makeConfig(base));
+  const old = process.env.ARENA_HERO_API_KEY_T_TEST;
+  process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
+  try {
+    const result = await runTenant(configPath, "PROJECT_ROOT/arena", {
+      runtime: new SyncCandidateRuntime(),
+      client: makeFakeClient() as never,
+      decisionMode: "deterministic",
+    });
+    assert.equal(result.decisionMode, "deterministic");
+    assert.equal(result.submissionMode, "disabled");
+    // decision trace：source 仍 safety（deterministic 走 coordinator 短路语义）
+    const decisionLines = readFileSync(result.telemetryPaths.decision, "utf-8").trim().split("\n").filter((l) => l.length > 0);
+    assert.equal(decisionLines.length, 3);
   } finally {
     if (old === undefined) {
       delete process.env.ARENA_HERO_API_KEY_T_TEST;

@@ -27,6 +27,7 @@ import { DecisionCoordinator } from "../runtime/decision-coordinator.ts";
 import { LeaseRegistry } from "../runtime/lease-registry.ts";
 import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG } from "../strategies/safety-planner.ts";
+import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
 import { buildDecisionPrompt } from "../infrastructure/pi/prompt-builder.ts";
 import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
@@ -119,11 +120,11 @@ export async function runTenant(
 ): Promise<TenantRunResult> {
   const config = loadRuntimeConfig(configPath);
   const decisionMode = options.decisionMode ?? config.decisionMode;
-  if (decisionMode === "deterministic") {
-    // leader 契约：deterministic 是 D 验收（fixture/离线）后的里程碑，拆分前禁止"半个实现"上真机
-    throw new Error("decisionMode=deterministic 未启用：WorkerTaskPlanner 集成在 ResourcePlanner 验收后（leader 契约）");
+  if (decisionMode === "deterministic" && submissionModeOf(options, config) === "live") {
+    // leader 契约：deterministic 先影子观察（决策质量/唯一性验证），影子达标前禁止 live
+    throw new Error("decisionMode=deterministic 暂禁 live：先影子观察达标（候选计划质量/validatePlan），再开闸");
   }
-  const submissionMode = options.submissionMode ?? (config.submitEnabled ? "live" : "disabled");
+  const submissionMode = submissionModeOf(options, config);
   const deadlines = resolveDeadlines(config);
 
   const processRunId = newProcessRunId();
@@ -174,8 +175,8 @@ export async function runTenant(
       options.client ??
       new ArenaHeroClient({ apiKey: readEnvToken(config.arenaTokenEnv) });
 
-    // 5) Agent runtime：safety 模式用 no-op 占位（coordinator 短路不调用，Pi 认证不阻断 Canary）；
-    //    其他模式真实 Pi 或测试注入 fake；rotationGeneration 经 onTelemetry 透传；
+    // 5) Agent runtime：safety/deterministic 模式用 no-op 占位（coordinator 短路不调用，
+    //    Pi 认证不阻断 Canary）；其他模式真实 Pi 或测试注入 fake；rotationGeneration 经 onTelemetry 透传；
     //    Pi 事件流落盘 pi.jsonl（agent-shadow 门槛评估：prompt 错误率/rotation 率的观测源）
     let runtimeGeneration = 0;
     // Pi 事件流（pi.jsonl）：agent-shadow 门槛评估的观测源（prompt 错误率/rotation 率）。
@@ -195,15 +196,17 @@ export async function runTenant(
         // IO 失败不阻塞决策路径
       }
     };
+    const noAgent = decisionMode === "safety" || decisionMode === "deterministic";
     const runtime =
-      decisionMode === "safety" && options.runtime === undefined
+      noAgent && options.runtime === undefined
         ? new NoopAgentRuntime()
         : (options.runtime ?? (await createPiRuntime(config, dirs.piBaseDir, onRuntimeTelemetry)));
 
-    // 6) coordinator（P0-1：decisionMode 传递；deterministic 由 planner 注入，见入口守卫）
+    // 6) coordinator（P0-1：decisionMode 传递；deterministic = planner 注入 DeterministicPlanner，
+    //    coordinator 短路语义同 safety——不启动 Agent）
     const coordinator = new DecisionCoordinator({
       runtime,
-      planner: new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
+      planner: decisionMode === "deterministic" ? new DeterministicPlanner() : new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
       registry: new LeaseRegistry(),
       clock: { now: () => performance.now() },
       budgetConfig: deadlines,
@@ -211,7 +214,7 @@ export async function runTenant(
       rulesVersion: RULES_VERSION,
       configHash: manifest.configHash,
       processRunId,
-      decisionMode,
+      decisionMode: decisionMode === "deterministic" ? "safety" : decisionMode,
       onRunSettled: (info) => {
         // runtime trace 的 settle 补充事件（不阻塞决策路径）
         void info;
@@ -321,6 +324,11 @@ export async function runTenant(
     await releaseLock();
     throw error;
   }
+}
+
+/** 提交模式解析（options 覆盖 config.submitEnabled）。 */
+function submissionModeOf(options: TenantRunOptions, config: TenantRuntimeConfig): SubmissionModeName {
+  return options.submissionMode ?? (config.submitEnabled ? "live" : "disabled");
 }
 
 /** 读取 token env（密钥不落盘；缺失抛错——Canary 前 doctor 会先报）。 */
