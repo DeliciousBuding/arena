@@ -6,13 +6,13 @@
 
 ## 任务
 
-- [ ] D2: `main.py` 集成（连接 + 决策 + 日志 + 调试端点 + 优雅退出 + 阶段机挂载）
+- [x] D2: `main.py` 集成（连接 + 决策 + 日志 + 调试端点 + 优雅退出 + 阶段机挂载）
   - 验收：无凭据 dry-run 决策链可跑；Ctrl-C 优雅退出；端点在运行中可查
-- [ ] E1: 全量验证 — `uv run pytest` + 新旧决策对比
+- [x] E1: 全量验证 — `uv run pytest` + 新旧决策对比
   - 验收：同一合成 Turn 新旧输出一致（对比脚本）；全部测试绿
-- [ ] E2: 线上切换 — 停旧进程 → uv 起新入口 → 观察
+- [x] E2: 线上切换 — 停旧进程 → uv 起新入口 → 观察
   - 验收：新进程 accepted=True 连续稳定 ≥30 tick；日志正常轮转
-- [ ] E3: 文档收尾 — CLAUDE.md/README 更新 + 架构文档 + docs/archives/ 归档
+- [x] E3: 文档收尾 — CLAUDE.md/README 更新 + 架构文档 + docs/archives/ 归档
   - 验收：文档与代码一致；analysis/plan/ 归档可追溯
 
 ## Notes

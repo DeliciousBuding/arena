@@ -1,4 +1,4 @@
-# MASTER.md — Arena Hero 重构进度主控
+# MASTER.md — Arena Hero 重构进度主控（已归档 2026-08-02，重构完成）
 
 最后更新：2026-08-02 16:30
 
@@ -23,10 +23,10 @@
 ## 阶段总览
 
 - [x] Phase A: 工程基座 (3/3 tasks) — `docs/progress/phase-a-baseline.md`
-- [ ] Phase B: 核心库 (0/3 tasks) — `docs/progress/phase-b-core.md`
-- [ ] Phase C: 决策内核 (0/2 tasks) — `docs/progress/phase-c-decision.md`
-- [ ] Phase D: 状态机+调试 (0/3 tasks) — `docs/progress/phase-d-stateful-debug.md`
-- [ ] Phase E: 集成切换 (0/4 tasks) — `docs/progress/phase-e-switchover.md`
+- [x] Phase B: 核心库 (3/3 tasks) — `docs/progress/phase-b-core.md`
+- [x] Phase C: 决策内核 (2/2 tasks) — `docs/progress/phase-c-decision.md`
+- [x] Phase D: 状态机+调试 (3/3 tasks) — `docs/progress/phase-d-stateful-debug.md`
+- [x] Phase E: 集成切换 (4/4 tasks) — `docs/progress/phase-e-switchover.md`
 
 ## 任务 → 批次映射
 
