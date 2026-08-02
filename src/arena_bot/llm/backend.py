@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import subprocess
 import threading
@@ -101,14 +102,19 @@ class PiRpcBackend(LLMBackend):
     """
 
     def __init__(self, pi_cli: Path, model: str, session_dir: Path,
-                 startup_timeout: float = 30.0, arena_tools: bool = False,
-                 arena_map_url: str | None = None) -> None:
+                 startup_timeout: float = 30.0,
+                 arena_extension: "Path | None" = None,
+                 map_url: str | None = None) -> None:
         self.cmd = ["node", str(pi_cli), "--mode", "rpc", "--model", model,
-                    "--session-dir", str(session_dir)]
-        if arena_tools:
-            self.cmd.append("--arena-tools")
-        if arena_map_url:
-            self.cmd += ["--arena-map-url", arena_map_url]
+                    "--session-dir", str(session_dir),
+                    # 原生 extension 加载 pi-arena（工具白名单 + 禁内置）
+                    "--no-builtin-tools",
+                    "--tools", "arena_map,arena_plan"]
+        if arena_extension is not None:
+            self.cmd += ["--extension", str(arena_extension)]
+        self._env = dict(os.environ)
+        if map_url:
+            self._env["ARENA_MAP_URL"] = map_url  # pi-arena extension 读此配置
         # 会话纪元：进程重启/超时隔离后 +1；策略层据此重发完整规则
         self.session_epoch = 0
         self._start_process()
@@ -120,7 +126,7 @@ class PiRpcBackend(LLMBackend):
         self.proc = subprocess.Popen(
             self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8",
-            errors="replace", bufsize=1,
+            errors="replace", bufsize=1, env=self._env,
         )
         self.events: queue.Queue = queue.Queue()
         threading.Thread(target=self._read_loop, daemon=True).start()

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arena.local/contracts/world-query.schema.json",
+  "title": "arena_map",
+  "description": "Arena 共享地图查询的单一事实来源（SSOT）。TS 工具 schema 与 Python /map/query 端点以此为准（协议版本 1.0）。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query"],
+  "properties": {
+    "query": {
+      "type": "string",
+      "enum": ["stats", "obstacles", "resources", "allies"],
+      "description": "stats=地图统计；obstacles=已知障碍格；resources=已知资源格；allies=盟友名单"
+    },
+    "bounds": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "type": "number" },
+      "description": "[x1,y1,x2,y2] 可选范围过滤，省略返回全部（最多 200 格）"
+    }
+  }
+}

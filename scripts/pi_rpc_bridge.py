@@ -51,8 +51,8 @@ def main() -> int:
     ap.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
     ap.add_argument("--pi", type=Path, default=DEFAULT_PI_CLI)
     ap.add_argument("--model", default="newapi/deepseek-v4-flash")
-    ap.add_argument("--arena-tools", action="store_true",
-                    help="pi 唯一工具模式（arena_plan tool calling）")
+    ap.add_argument("--extension", type=Path, default=None,
+                    help="pi-arena extension 路径（默认用 config.llm_pi_extension）")
     args = ap.parse_args()
 
     if not args.pi.exists():
@@ -62,9 +62,14 @@ def main() -> int:
     base = json.loads(args.snapshot.read_text(encoding="utf-8"))
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
+    from arena_bot.config import TacticConfig
+    extension = (args.extension
+                 if args.extension is not None
+                 else PROJECT_ROOT / TacticConfig().llm_pi_extension)
+
     print(f"[桥接] 启动 pi RPC: {' '.join(PiRpcBackend(args.pi, args.model, SESSION_DIR).cmd)}")
     bridge = PiRpcBackend(args.pi, args.model, SESSION_DIR,
-                          arena_tools=args.arena_tools)
+                          arena_extension=extension)
     try:
         print("[桥接] RPC 就绪，开始逐 Tick 决策\n")
         report = []

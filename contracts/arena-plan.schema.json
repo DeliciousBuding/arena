@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arena.local/contracts/arena-plan.schema.json",
+  "title": "arena_plan",
+  "description": "Arena Hero 行动计划的单一事实来源（SSOT）。TS 工具 schema 与 Python parser 均以此为准（协议版本 1.0）。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["actions"],
+  "properties": {
+    "actions": {
+      "type": "array",
+      "description": "每个受控单位的动作（每单位最多一条）",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["unit", "kind"],
+        "properties": {
+          "unit": { "type": "string", "description": "单位完整 UUID（来自状态中的单位列表）" },
+          "kind": {
+            "type": "string",
+            "enum": ["MOVE", "SWEEP", "SHOOT", "HARVEST", "DEPOSIT", "HEAL", "PICKUP_BEACON", "DROP_BEACON", "SELF_DESTRUCT", "WAIT"]
+          },
+          "direction": { "type": "string", "enum": ["UP", "DOWN", "LEFT", "RIGHT"], "description": "方向（MOVE/SWEEP 必需）" },
+          "target_id": { "type": "string", "description": "射击目标 UUID（SHOOT 用）" },
+          "expected_cell": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" } }
+        }
+      }
+    },
+    "core": {
+      "anyOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "SPAWN" }, "unit_type": { "type": "string", "enum": ["WORKER", "VANGUARD", "RANGER"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "HEAL" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "REPAIR_SHIELD" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "WAIT" } } },
+        { "type": "null" }
+      ],
+      "description": "Core 动作（可选，null 表示不动）"
+    },
+    "reason": { "type": "string", "description": "一句话决策理由" }
+  }
+}

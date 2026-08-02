@@ -179,8 +179,8 @@ class LLMStrategy(Strategy):
                 pi_cli=config.llm_pi_cli, model=config.llm_model,
                 session_dir=config.llm_session_dir,
                 startup_timeout=config.llm_startup_timeout,
-                arena_tools=config.llm_arena_tools,
-                arena_map_url=map_url)
+                arena_extension=config.llm_pi_extension,
+                map_url=map_url)
         self.backend = backend
         self.fallback = fallback if fallback is not None else _balance(config, world)
         self._rules = rules_for(config)  # RULES 变体（standard/aggressive/economic）
