@@ -30,7 +30,7 @@
 
 ## 2. 已完成基线
 
-- arena-hero-ts：协议实现、网络生命周期硬化、47 项测试（含 Turn.replace 注入）；
+- arena-hero-ts：协议实现、网络生命周期硬化、48 项测试（含 Turn.replace 注入；数量以 scripts/gen-status.py 实测为准）；
 - MapStore TS：WAL、跨进程增量同步、有效 mutation revision（busy_timeout 前置 WAL pragma，并发首开锁修复）；
 - W0：AgentSession customTools、abort、waitForIdle、abort 后复用机制已验证；
 - W1：TypeBox wire schema 单源 + contracts/generated 契约产物 + Golden Replay（真实 fixture 解析）；
@@ -51,7 +51,7 @@
 
 发现 Agent 新提交时先同步再继续，避免重复实现。当前基线：
 
-- arena `61442e4`：monorepo 合并（TS SDK + 编排层 + 文档清理）；
+- arena `7387bf7`（main HEAD，2026-08-02）：monorepo 合并（`8ec7f41`）后的最新提交，source 分类修正（GPT R2）；
 - pi `da0203a`。
 
 ### C1 — 契约与 Golden Replay
@@ -109,7 +109,47 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 
 最终保留的 Python 内容仅限无法替代的离线研究脚本；运行链中不得存在 Python。
 
-## 4. 合并闸门
+## 4. 架构评审切片计划（2026-08-02）
+
+> 2026-08-02 架构评审（GPT）按依赖与风险重新排序的 6 片执行计划，取代原 C0-C5 顺序（原切片内容仍有效，按其重新归组）。评审全文由管理者另行落档：`docs/architecture-review-gpt-2026-08-02.md`。本表为摘要级切片。
+
+### 切片 1 — 可复现构建和 CI（2-3 天）
+
+- 目标：消除 R1（测试数 / commit SHA 手工维护漂移），仓库状态可自动复现。
+- 关键内容：`scripts/gen-status.py` 生成权威 `docs/generated/status.md`（本切片已落地）；CI 接入 SDK / 编排层测试与 contracts 契约零漂移检查（原待裁决问题 6「TS 无 CI」）。
+- 验收变化：测试数与 commit SHA 单一权威来源；CI 全绿，不再有手工维护数字。
+
+### 切片 2 — W3 Sequence Differential Replay（3-4 天）
+
+- 目标：同一 raw-state fixture 分别走 Python 决策链与 TS 决策链，逐 Tick 差分对比，消灭未解释语义差异。
+- 关键内容：离线回放框架（现有 scripts/shadow-run.ts 为 TS 单侧）；Python 侧回放；按 state / memory / intent / plan 四维比较，差异分类并修复。
+- 验收变化：差分报告零未解释差异；Golden Replay 纳入 CI，禁止回归。
+
+### 切片 3 — W4 决策核心，不接真实 Provider（4-5 天）
+
+- 目标：决策核心（DecisionLease + hedged decision + abort）用 mock provider 完整实现并验证，不依赖 pi。
+- 关键内容：`DecisionLease(runId, tick, stateHash, deadline)` 三重校验；soft deadline 前接受合法候选，否则 lease 过期 + `session.abort()` 提交 SafetyPlan；迟到调用一律拒绝；abort 后会话复用。
+- 验收变化：stale / late plan 永不执行（fault injection 测试证明）；abort / 复用闭环测试全绿。
+
+### 切片 4 — 真实 Pi Adapter（4-5 天）
+
+- 目标：决策核心接真实 pi `createAgentSession`，消灭 Python RPC 桥。
+- 关键内容：仅注册 `arena_map` / `arena_plan` 两个 custom tools，builtin 全禁用；每 Tick 决策桥接线，模型经 pi 框架（deepseek-v4-flash）调用；先在 shadow 模式只观察不提交。
+- 验收变化：真实 LLM 逐 Tick 决策在 shadow 下稳定运行；Python RPC 桥从决策链移除。
+
+### 切片 5 — 运行与运维层（4-5 天）
+
+- 目标：补齐原 W5 supervisor 与运维闭环（对应 Python debug API / 看门狗 / 遥测的 TS 对应物）。
+- 关键内容：supervisor 管理 4 个租户进程；append-only 全 Tick JSONL；readiness / health / debug API；process-tree 优雅关闭与孤儿检测；run manifest 固定 arena / SDK / Pi SHA、schema hash、模型与配置；MapStore 走 worker 线程，node:sqlite 不阻塞主 event loop。
+- 验收变化：四租户并行稳定运行；停止后无孤儿进程；遥测 / 调试端点可用；manifest 可复现运行环境。
+
+### 切片 6 — 真机切换与 Python 删除（5-7 天）
+
+- 目标：按序切换真机，删除 Python 运行时。
+- 关键内容：切换顺序 TS shadow → 单租户 TS deterministic → 单租户 TS + Pi → 四租户 TS；删除 Python runtime、RPC bridge、重复 parser/schema 与正式入口，仅保留无法替代的离线研究脚本。
+- 验收变化：运行链零 Python；正式启动路径不再引用 Python；每步切换有回退预案。
+
+## 5. 合并闸门
 
 - clean clone 可安装；
 - SDK、arena-agent、Pi compatibility 测试全绿；
@@ -121,7 +161,7 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 - 停止后无孤儿进程；
 - 正式启动路径不再引用 Python。
 
-## 5. 已知风险
+## 6. 已知风险
 
 - Provider stream 必须响应 AbortSignal；DecisionLease 是必须保留的第二道隔离；
 - node:sqlite 同步 API 不能留在主 event loop；
