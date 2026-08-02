@@ -83,6 +83,25 @@ export class PiSessionFactory {
         allowModelNetwork: false,
         ...(this.options.authPath !== undefined ? { authPath: this.options.authPath } : {}),
       }));
+
+    // 完整模型解析：调用方模型常缺 baseUrl/compat（手工构造），pi 的 stream 内部
+    // 依赖 model.baseUrl（openai-completions 的 URL 检测）——从 modelRuntime 按
+    // provider+id 解析 models.json 合成模型（带 baseUrl/compat）；找不到回退调用方模型
+    //（测试的 fake provider 走此回退）。诊断依据：真实 newapi 流在缺 baseUrl 时
+    // 报 "Cannot read properties of undefined (reading 'includes')"。
+    let model = this.options.model;
+    try {
+      const modelMeta = this.options.model as { provider?: string; id?: string };
+      const resolved =
+        modelMeta.provider !== undefined && modelMeta.id !== undefined
+          ? modelRuntime.getModel(modelMeta.provider, modelMeta.id)
+          : undefined;
+      if (resolved !== undefined) {
+        model = resolved;
+      }
+    } catch {
+      // 解析失败回退调用方模型（保持可运行）
+    }
     const { modelId, provider } = modelMeta(this.options.model);
 
     const call = this.options.createSession ?? createAgentSession;
@@ -90,7 +109,7 @@ export class PiSessionFactory {
       cwd: cwdDir,
       agentDir,
       modelRuntime,
-      model: this.options.model,
+      model, // 解析后的完整模型（baseUrl/compat 齐全）；解析失败时回退调用方模型
       thinkingLevel: this.options.thinkingLevel,
       // GPT 审核：builtin 全禁用 + 白名单只留两个 Arena 工具
       noTools: "all",
