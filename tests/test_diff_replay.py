@@ -67,7 +67,7 @@ def test_state_diff_exit_1(tmp_path):
     write_jsonl(b, [bad])
     proc = run(a, b)
     assert proc.returncode == 1
-    assert "STATE_DIFFS" in proc.stdout
+    assert "DIFFS: hard=1" in proc.stdout
     assert "state/units/u1/hp" in proc.stdout
 
 
@@ -84,17 +84,73 @@ def test_plan_type_diff_categorized(tmp_path):
 
 
 def test_whitelist_suppresses_soft_diff(tmp_path):
-    """白名单内类别 → 未解释 0 → exit 0。"""
+    """白名单规则内（category+path+difference 全匹配）→ 未解释 0 → exit 0。"""
     a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
     wl = tmp_path / "wl.json"
     bad = json.loads(json.dumps(RECORD))
     bad["plan"]["unit_actions"]["u1"]["type"] = "HARVEST"
     write_jsonl(a, [RECORD])
     write_jsonl(b, [bad])
-    wl.write_text(json.dumps({"plan_action_type": "测试白名单"}), encoding="utf-8")
+    wl.write_text(json.dumps({"rules": [
+        {"category": "plan_action_type", "path_pattern": "^plan/unit_actions/u1/type$",
+         "difference": "value_mismatch", "reason": "测试白名单"},
+    ]}), encoding="utf-8")
     proc = run(a, b, wl)
     assert proc.returncode == 0
     assert "未解释差异 0 条" in proc.stdout
+
+
+def test_whitelist_rule_mismatch_fails(tmp_path):
+    """白名单规则只匹配指定路径——同类别其他路径的差异仍必须失败。"""
+    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    wl = tmp_path / "wl.json"
+    bad = json.loads(json.dumps(RECORD))
+    bad["plan"]["unit_actions"]["u1"]["type"] = "HARVEST"  # 路径 u1，规则写 u2
+    write_jsonl(a, [RECORD])
+    write_jsonl(b, [bad])
+    wl.write_text(json.dumps({"rules": [
+        {"category": "plan_action_type", "path_pattern": "^plan/unit_actions/u2/type$",
+         "difference": "value_mismatch", "reason": "路径不匹配"},
+    ]}), encoding="utf-8")
+    proc = run(a, b, wl)
+    assert proc.returncode == 1
+    assert "[plan_action_type]" in proc.stdout
+
+
+def test_metadata_mismatch_hard_error(tmp_path):
+    """input_sha256 不一致 → record_metadata 硬错误 → exit 1（白名单不可覆盖）。"""
+    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    bad = json.loads(json.dumps(RECORD))
+    bad["input_sha256"] = "sha256:" + "f" * 64
+    write_jsonl(a, [RECORD])
+    write_jsonl(b, [bad])
+    proc = run(a, b)
+    assert proc.returncode == 1
+    assert "[record_metadata]" in proc.stdout
+
+
+def test_duplicate_key_fail_fast(tmp_path):
+    """重复复合键 → fail-fast（SystemExit）。"""
+    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    dup = json.loads(json.dumps(RECORD))
+    dup["tick"] = 100  # 与第一条同键
+    write_jsonl(a, [RECORD, dup])
+    write_jsonl(b, [RECORD])
+    proc = run(a, b)
+    assert proc.returncode == 1
+    assert "重复 record 键" in proc.stderr
+
+
+def test_invalid_record_schema_rejected(tmp_path):
+    """缺字段的 record → schema 校验失败 → fail-fast。"""
+    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    bad = json.loads(json.dumps(RECORD))
+    del bad["state"]["beacon"]  # 违反 schema（state.beacon required）
+    write_jsonl(a, [RECORD])
+    write_jsonl(b, [bad])
+    proc = run(a, b)
+    assert proc.returncode == 1
+    assert "schema 校验失败" in proc.stderr
 
 
 def test_missing_tick_reported(tmp_path):
