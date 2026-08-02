@@ -26,8 +26,8 @@ if TYPE_CHECKING:
 log = logging.getLogger("arena_bot.strategy")
 
 ActionKind = Literal[
-    "MOVE", "HARVEST", "DEPOSIT", "HEAL", "PICKUP_BEACON", "DROP_BEACON",
-    "SELF_DESTRUCT", "SWEEP", "SHOOT", "WAIT",
+    "MOVE", "HARVEST", "DEPOSIT", "HEAL", "REPAIR_SHIELD", "SPAWN",
+    "PICKUP_BEACON", "DROP_BEACON", "SELF_DESTRUCT", "SWEEP", "SHOOT", "WAIT",
 ]
 
 
@@ -89,6 +89,10 @@ def _apply_action(obj, action: Action) -> None:
         obj.deposit()
     elif kind == "HEAL":
         obj.heal()
+    elif kind == "REPAIR_SHIELD":
+        obj.repair_shield()
+    elif kind == "SPAWN":
+        obj.spawn(action.unit_type)
     elif kind == "PICKUP_BEACON":
         obj.pickup_beacon()
     elif kind == "DROP_BEACON":
@@ -100,8 +104,6 @@ def _apply_action(obj, action: Action) -> None:
     elif kind == "SHOOT":
         # SDK 签名：shoot(target, *, expected_cell=None) —— expected_cell 仅关键字
         obj.shoot(action.target_id, expected_cell=action.expected_cell)
-    elif kind == "SPAWN":
-        obj.spawn(action.unit_type)
     elif kind == "WAIT":
         obj.wait()
     else:  # pragma: no cover

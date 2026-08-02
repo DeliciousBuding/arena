@@ -20,6 +20,7 @@ class Recorder:
     def harvest(self): self.calls.append(("harvest", (), {}))
     def deposit(self): self.calls.append(("deposit", (), {}))
     def heal(self): self.calls.append(("heal", (), {}))
+    def repair_shield(self): self.calls.append(("repair_shield", (), {}))
     def pickup_beacon(self): self.calls.append(("pickup_beacon", (), {}))
     def drop_beacon(self): self.calls.append(("drop_beacon", (), {}))
     def self_destruct(self): self.calls.append(("self_destruct", (), {}))
@@ -61,6 +62,21 @@ def test_apply_full_plan():
     plan.core_action = Action(uuid.uuid4(), "SPAWN", unit_type=UnitType.WORKER)
     apply_plan(turn, plan)
     assert unit.calls == [("move", (), {"d": Direction.UP})]
+    assert core.calls == [("spawn", (), {"t": UnitType.WORKER})]
+
+
+def test_apply_repair_shield_and_spawn():
+    """REPAIR_SHIELD / SPAWN 动作必须可应用（平衡策略会产出）。"""
+    uid = uuid.uuid4()
+    core = Recorder()
+    turn = FakeTurn({}, core=core)
+    plan = Plan(tick=1)
+    plan.core_action = Action(uuid.uuid4(), "REPAIR_SHIELD")
+    apply_plan(turn, plan)
+    assert core.calls == [("repair_shield", (), {})]
+    core.calls.clear()
+    plan.core_action = Action(uuid.uuid4(), "SPAWN", unit_type=UnitType.WORKER)
+    apply_plan(turn, plan)
     assert core.calls == [("spawn", (), {"t": UnitType.WORKER})]
 
 

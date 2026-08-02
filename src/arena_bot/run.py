@@ -80,7 +80,8 @@ def main() -> int:
                 break
             dead = [p for p in procs if p.poll() is not None]
             if dead:
-                print(f"有租户进程退出: {[p.pid for p in dead]}（rc={p.returncode}）")
+                detail = ", ".join(f"pid={p.pid} rc={p.returncode}" for p in dead)
+                print(f"有租户进程退出: {detail}")
                 for p in dead:
                     procs.remove(p)
                 if not procs:
