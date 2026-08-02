@@ -23,6 +23,38 @@ def test_record_dedup(tmp_path):
     ms.close()
 
 
+def test_revision_stable_on_duplicate_records(tmp_path):
+    """P0-A：重复记录同一批障碍 revision 不递增（只有有效 mutation 才 bump）。
+
+    模拟四租户静态站立反复观察已知障碍：revision 必须保持稳定，
+    否则增量缓存被空刷新打穿。
+    """
+    ms = MapStore(tmp_path / "m.db")
+    known = {(1, 1), (2, 2), (3, 3)}
+    assert ms.record(known, "t1", 1) == 3
+    r1 = ms.stats()["revision"]
+    for i in range(100):  # 重复观察同一批 100 次
+        assert ms.record(known, "t1", i + 2) == 0
+    assert ms.stats()["revision"] == r1  # 无新增 → revision 不变
+    # 新增一格 → revision 恰好 +1
+    assert ms.record({(4, 4)}, "t1", 102) == 1
+    assert ms.stats()["revision"] == r1 + 1
+    ms.close()
+
+
+def test_revision_stable_on_duplicate_ally(tmp_path):
+    """P0-A：重复注册同一盟友 revision 不递增。"""
+    ms = MapStore(tmp_path / "m.db")
+    assert ms.register_ally("buding", "t1", 1) is True
+    r1 = ms.stats()["revision"]
+    for i in range(10):
+        assert ms.register_ally("buding", "t1", i + 2) is False
+    assert ms.stats()["revision"] == r1
+    assert ms.register_ally("delicious", "t1", 11) is True
+    assert ms.stats()["revision"] == r1 + 1
+    ms.close()
+
+
 def test_cross_instance_shared(tmp_path):
     """两个 MapStore 实例（模拟两个租户进程）共享同一 DB。"""
     db = tmp_path / "m.db"

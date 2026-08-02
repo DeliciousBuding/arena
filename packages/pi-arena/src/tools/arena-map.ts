@@ -26,12 +26,10 @@ const arenaMapSchema = Type.Object(
 			[
 				Type.Literal("stats"),
 				Type.Literal("obstacles"),
-				Type.Literal("resources"),
 				Type.Literal("allies"),
 			],
 			{
-				description:
-					"stats=地图统计；obstacles=已知障碍格；resources=已知资源格；allies=盟友名单",
+				description: "stats=地图统计；obstacles=已知障碍格；allies=盟友名单",
 			},
 		),
 		bounds: Type.Optional(
@@ -62,7 +60,7 @@ export function createArenaMapToolDefinition(
 		name: "arena_map",
 		label: "arena_map",
 		description:
-			"查询 Arena Hero 共享地图（各账号共同测绘的已知障碍/盟友，以及资源格）。" +
+			"查询 Arena Hero 共享地图（各账号共同测绘的已知障碍/盟友）。" +
 			"返回 JSON：stats 给统计；obstacles 给已知障碍格坐标列表；allies 给我们账号名单。",
 		promptSnippet: "查询共享地图（障碍/盟友/统计）",
 		promptGuidelines: [

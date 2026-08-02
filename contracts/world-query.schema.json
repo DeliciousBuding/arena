@@ -9,8 +9,8 @@
   "properties": {
     "query": {
       "type": "string",
-      "enum": ["stats", "obstacles", "resources", "allies"],
-      "description": "stats=地图统计；obstacles=已知障碍格；resources=已知资源格；allies=盟友名单"
+      "enum": ["stats", "obstacles", "allies"],
+      "description": "stats=地图统计；obstacles=已知障碍格；allies=盟友名单"
     },
     "bounds": {
       "type": "array",

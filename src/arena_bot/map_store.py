@@ -101,10 +101,13 @@ class MapStore:
             self._allies.add(username)
             self._last_ally_rowid = rowid
 
-    def _write(self, stmts):
+    def _write(self, stmts, *, bump_revision: bool = False):
         """显式写事务（BEGIN IMMEDIATE）+ 重试：多进程并发写安全。
 
         stmts: [(sql, params, many)]——many=True 用 executemany（多行插入）。
+        bump_revision=True：同一事务内，仅当首条 INSERT 实际插入行数 > 0
+        （INSERT OR IGNORE 的 rowcount 不含被忽略的重复行）才递增 revision
+        ——避免"每 Tick 重复观察已知障碍导致 revision 空转"（P0-A）。
         4 租户同时写时 WAL 单写者——busy_timeout 兜底 + 有限重试。
         """
         for attempt in range(5):
@@ -117,6 +120,12 @@ class MapStore:
                                else self._conn.execute(sql, p))
                         if first_cur is None:
                             first_cur = cur  # 首个（INSERT OR IGNORE）的 rowcount 是实际插入数
+                    inserted = first_cur.rowcount if first_cur is not None else 0
+                    if bump_revision and inserted > 0:
+                        self._conn.execute(
+                            "INSERT INTO map_meta (key, value) VALUES (?, 1) "
+                            "ON CONFLICT(key) DO UPDATE SET value = value + 1",
+                            (_REVISION_KEY,))
                     self._conn.commit()
                 return first_cur
             except sqlite3.OperationalError as exc:
@@ -133,7 +142,11 @@ class MapStore:
     # ---- 写入 ----
 
     def record(self, cells, observer: str, tick: int) -> int:
-        """落盘新观察到的障碍格（INSERT OR IGNORE 去重）。返回实际新增数量。"""
+        """落盘新观察到的障碍格（INSERT OR IGNORE 去重）。返回实际新增数量。
+
+        P0-A：全部是重复障碍时 revision 不递增——revision 反映
+        有效 world mutation 数，而不是观察/调用次数。
+        """
         with self._lock:
             if not cells:
                 return 0
@@ -142,14 +155,13 @@ class MapStore:
                     ("INSERT OR IGNORE INTO obstacles (x, y, observer, seen_tick) "
                      "VALUES (?, ?, ?, ?)",
                      [(x, y, observer, tick) for x, y in cells], True),
-                    ("INSERT INTO map_meta (key, value) VALUES (?, 1) "
-                     "ON CONFLICT(key) DO UPDATE SET value = value + 1",
-                     (_REVISION_KEY,), False),
                 ],
+                bump_revision=True,
             )
             inserted = cur.rowcount if cur is not None else 0
             if inserted > 0:
                 self._load_incremental()  # 本进程立即看到（含 rowid 游标推进）
+                self._last_revision = self._revision()  # 校准本地快照
             return inserted
 
     def register_ally(self, username: str, observer: str, tick: int) -> bool:
@@ -159,14 +171,13 @@ class MapStore:
                 [
                     ("INSERT OR IGNORE INTO allies (username, observer, seen_tick) "
                      "VALUES (?, ?, ?)", (username, observer, tick), False),
-                    ("INSERT INTO map_meta (key, value) VALUES (?, 1) "
-                     "ON CONFLICT(key) DO UPDATE SET value = value + 1",
-                     (_REVISION_KEY,), False),
                 ],
+                bump_revision=True,
             )
             if cur is None or cur.rowcount == 0:
                 return False
             self._load_incremental()
+            self._last_revision = self._revision()
             return True
 
     # ---- 读取（都先 refresh，实时含其他进程的新数据） ----
@@ -216,7 +227,7 @@ class MapStore:
                 return {"cells": rows[:limit], "count": len(rows),
                         "truncated": truncated}
             if kind == "resources":
-                # 资源格目前不持久化（world 每 Tick 视野内重算），返回空结构
+                # 资源格不持久化（world 每 Tick 视野内重算）——v1.0 已从协议移除
                 return {"cells": [], "count": 0, "note": "资源格不持久化，见视野"}
             if kind == "allies":
                 return {"usernames": sorted(self._allies)}
