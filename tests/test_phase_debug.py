@@ -208,4 +208,4 @@ def test_post_command_bad_json():
 
 
 def test_command_whitelist():
-    assert set(COMMANDS) == {"pause", "resume", "set_param", "set_phase"}
+    assert set(COMMANDS) == {"pause", "resume", "set_param", "set_phase", "shutdown"}
