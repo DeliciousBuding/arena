@@ -32,6 +32,43 @@ export function stepToward(from: Position, target: Position): Direction {
   return dy > 0 ? "DOWN" : "UP";
 }
 
+/** position + direction → 下一步格（边界不校验——调用方用 obstacles 判定）。 */
+function stepCell(position: Position, direction: Direction): Position {
+  switch (direction) {
+    case "UP":
+      return [position[0], position[1] - 1];
+    case "DOWN":
+      return [position[0], position[1] + 1];
+    case "LEFT":
+      return [position[0] - 1, position[1]];
+    case "RIGHT":
+      return [position[0] + 1, position[1]];
+  }
+}
+
+/** 障碍感知一步：首选方向被挡 → 依次尝试纯 x / 纯 y 轴；全挡返回 null（调用方 WAIT）。
+ *  修正依据：t2 真机观察 repair 率 48.5%（blocked_move 系统性）——骨架不避障导致。 */
+export function stepTowardAvoiding(from: Position, target: Position, obstacles: ReadonlySet<string>): Direction | null {
+  const cellKey = (p: Position): string => `${p[0]},${p[1]}`;
+  const preferred = stepToward(from, target);
+  const candidates = [preferred];
+  // 另一轴方向（先纯 x 后纯 y——与 stepToward 的优先级一致）
+  const altX = stepToward(from, [target[0], from[1]]);
+  const altY = stepToward(from, [from[0], target[1]]);
+  if (altX !== preferred) {
+    candidates.push(altX);
+  }
+  if (altY !== preferred && altY !== altX) {
+    candidates.push(altY);
+  }
+  for (const direction of candidates) {
+    if (!obstacles.has(cellKey(stepCell(from, direction)))) {
+      return direction;
+    }
+  }
+  return null;
+}
+
 export class DeterministicPlanner implements PlanProvider {
   private readonly planner: WorkerTaskPlanner;
   private previousAssignments: readonly Assignment[] = [];
@@ -82,7 +119,8 @@ export class DeterministicPlanner implements PlanProvider {
         if (unit.position[0] === core[0] && unit.position[1] === core[1]) {
           return task.type === "DEPOSIT" ? { type: "DEPOSIT" } : { type: "WAIT" };
         }
-        return { type: "MOVE", direction: stepToward(unit.position, core) };
+        const direction = stepTowardAvoiding(unit.position, core, snapshot.obstacleCells);
+        return direction === null ? { type: "WAIT" } : { type: "MOVE", direction };
       }
       case "GO_RESOURCE": {
         const target = task.target;
@@ -92,7 +130,8 @@ export class DeterministicPlanner implements PlanProvider {
         if (unit.position[0] === target[0] && unit.position[1] === target[1]) {
           return { type: "HARVEST" }; // 已到位（plan 快照滞后边界）
         }
-        return { type: "MOVE", direction: stepToward(unit.position, target) };
+        const direction = stepTowardAvoiding(unit.position, target, snapshot.obstacleCells);
+        return direction === null ? { type: "WAIT" } : { type: "MOVE", direction };
       }
       default:
         return { type: "WAIT" };

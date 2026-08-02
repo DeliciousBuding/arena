@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 
 import { Turn, type PlayerState } from "@arena/arena-hero-ts";
 
-import { DeterministicPlanner, stepToward } from "../src/planning/deterministic-planner.ts";
+import { DeterministicPlanner, stepToward, stepTowardAvoiding } from "../src/planning/deterministic-planner.ts";
 import { reduceTurn, type TurnLike } from "../src/domain/state-reducer.ts";
 import { validatePlan } from "../src/domain/plan-validator.ts";
 import type { TickState } from "../src/domain/model.ts";
@@ -120,4 +120,26 @@ test("DeterministicPlanner：sticky——上一 Tick 分配缓存（防抖动）
   // 两次分配应一致（sticky 加成不改变分配但保证确定性）
   assert.equal(p1.unitActions["w1"]?.type, p2.unitActions["w1"]?.type);
   assert.equal(p1.unitActions["w2"]?.type, p2.unitActions["w2"]?.type);
+});
+
+test("stepTowardAvoiding：首选方向被障碍挡 → 另一轴；全挡 → null", () => {
+  // 目标在右侧，但右侧是障碍 → 纯 x 被挡 → 纯 y（从 [3,0] 到 [3,0] 纯 y = UP）
+  const obstacles = new Set(["4,0"]);
+  const dir = stepTowardAvoiding([3, 0], [6, 0], obstacles);
+  assert.equal(dir, "UP");
+  // 上/下/右全挡 → null
+  const blocked = new Set(["4,0", "3,1", "3,-1"]);
+  assert.equal(stepTowardAvoiding([3, 0], [6, 0], blocked), null);
+});
+
+test("DeterministicPlanner：障碍避让——MOVE 不再被挡（blocked_move 修复）", () => {
+  const state = makeState(100, [core(), unit("w1", 1, 0), unit("w2", 2, 0)]);
+  const withCells: TickState = { ...state, resourceCells: new Set(["5,0"]), obstacleCells: new Set(["4,0"]) };
+  const planner = new DeterministicPlanner();
+  const plan = planner.decide({ state: withCells });
+  const validation = validatePlan(withCells, plan);
+  // 无障碍冲突（目标格 5,0 可达——避开 4,0 障碍）
+  assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+  const w1 = plan.unitActions["w1"] as { type: string; direction?: string };
+  assert.ok(w1.type === "MOVE" || w1.type === "WAIT", "被挡时允许 WAIT（validator 语义）");
 });
