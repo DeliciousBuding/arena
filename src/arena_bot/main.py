@@ -232,6 +232,7 @@ def play(api_key: str, config: TacticConfig,
 
     if telemetry is not None:
         telemetry.close()
+    strategy.close()  # 释放策略资源（LLM backend 进程等）
     map_store.close()
 
 

@@ -69,6 +69,9 @@ class Strategy(ABC):
     def decide(self, state: "TickState") -> Plan:
         """读取当前 Tick 状态，返回完整计划。不修改任何外部状态。"""
 
+    def close(self) -> None:
+        """释放策略持有的资源（如 LLM backend 进程）。默认无操作。"""
+
 
 def apply_plan(turn: "Turn", plan: Plan) -> None:
     """把 Plan 应用到 SDK Turn（queue 动作），然后由调用方 submit。"""

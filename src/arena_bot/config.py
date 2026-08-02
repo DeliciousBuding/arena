@@ -51,6 +51,13 @@ class TacticConfig:
     # 自诊断 watchdog（卡死/停滞告警）
     watchdog_stall_ticks: int = 20  # 连续 N tick 无进展视为停滞（约 5 分钟）
 
+    # LLM 决策后端（pi RPC 长驻，兼容原 pi 设计）
+    llm_pi_cli: str = "pi-dev/packages/coding-agent/dist/cli.js"  # 相对项目根
+    llm_model: str = "newapi/deepseek-v4-flash"
+    llm_timeout: float = 60.0       # 单 Tick 决策超时（窗口 15 秒内需留提交余量）
+    llm_startup_timeout: float = 30.0
+    llm_session_dir: str = "logs/pi_rpc_sessions"  # 会话落盘（缓存前缀稳定）
+
     # 调试端点
     debug_host: str = "127.0.0.1"
     debug_port: int = 8123
