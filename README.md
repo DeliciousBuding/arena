@@ -77,7 +77,8 @@ curl http://127.0.0.1:8123/state # 调试端点：t1 状态快照（8123-8126 �
 
 - 本仓库：arena（主工作区，4 账号自动游玩；Python 运行时退役中）
 - arena-hero-ts：TS SDK（wire schema 单源，追官方 Python SDK 上游）
-- arena-pr-verify：TS 编排层（arena-agent，PR 验证工作区）
+
+> TS 编排层（arena-agent：domain/ + runtime/loop.ts + strategies/）已合并进本仓库 `packages/arena-agent/`。
 
 ## 文档索引
 

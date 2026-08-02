@@ -6,7 +6,7 @@
 
 > **TS 迁移进行中**：主线是把 Python 运行时退役，改由 TS 编排层（arena-agent）直接嵌入 pi-coding-agent。
 > - TS SDK：`DeliciousBuding/arena-hero-ts`（public，追官方 Python SDK 上游）
-> - TS 编排层：`arena-pr-verify` 仓库 `agent/ts-runtime-replacement` 分支（领域层 + runtime/loop.ts 最小闭环）
+> - TS 编排层：本仓库 `packages/arena-agent/`（domain/ + runtime/loop.ts 最小闭环，已合并进 main）
 > - Python 版继续跑 4 租户 burn-in 收集数据（供 TS 差分验证），不再加新功能
 > - 迁移方案与进度：`docs/migration-plan.md`（W0 嵌入闸门 ✅ · W1 wire schema+Golden Replay ✅ · 最小闭环 ✅ · W4 决策桥 → W6 删 Python）
 
@@ -64,7 +64,7 @@ curl http://127.0.0.1:8123/state    # 调试端点：t1 状态快照
 ## TS 侧参考（迁移主线）
 
 - SDK 事实：`arena-hero-ts`（wire schema 单源 → contracts/generated/*.schema.json；client/turn/协议）
-- 编排层事实：`arena-pr-verify/packages/arena-agent`（domain/ + runtime/loop.ts + strategies/safety-planner.ts）
+- 编排层事实：本仓库 `packages/arena-agent/`（domain/ + runtime/loop.ts + strategies/safety-planner.ts）
 - 测试：`npx tsx --test "test/*.test.ts"`（node --test 只能跑 12/21，勿用）
 
 ## 红线
