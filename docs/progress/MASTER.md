@@ -14,18 +14,20 @@
 | 项 | 状态 | 提交 |
 |----|------|------|
 | 3E 接口勘误（runId 单源/启动失败/SEL deadline） | ✅ | 20a5a5c |
+| P0-2 跨 generation 竞态修复（15 测试） | ✅ | 9c6314a |
+| P0-1 DecisionMode/SubmissionMode 拆分（execution/observation，5 新暗卷） | ✅ | 95b24ce |
+| 运行入口（config/lock/manifest/doctor，11 测试） | ✅ | e601019 |
+| 遥测（decision-trace/jsonl/schema，10 测试） | ✅ | 98ae0e0 |
+| ResourcePlanner 骨架（13 测试） | ✅ | 6e3cbc3 |
 | 4-preflight（CandidateSink 契约/status/依赖 pin/4C 修正） | ✅ | 63632d0/d6231e1/7aaae58 |
 | 4A 会话工厂（6 测试） | ✅ | 7e61c5d |
 | 4B 工具层（11 测试，slot + 严格解析） | ✅ | 764ebf1/11874cf |
 | 4C prompt + StrategyMemory（11 测试） | ✅ | c0060f6/7aaae58 |
 | 4D-pre 协议封口（slot/严格解析/source 统一/runId 格式） | ✅ | 11874cf |
 | PiAgentRuntime stub 层（11 测试，生命周期/abort/rotation） | ✅ | 09cdada |
-| PiAgentRuntime 真实嵌入冒烟（fake stream） | 🔄 Agent A |
-| 运行入口（config/lock/manifest/doctor） | 🔄 Agent B |
-| 遥测（decision-trace/jsonl/schema） | 🔄 Agent C |
-| ResourcePlanner 骨架（snapshot/task/assignment） | 🔄 Agent D |
-| Leader tenant-runtime 集成 | ⏳ |
-| 真机 Canary（Safety 20 Tick → shadow → hybrid） | ⏳ |
+| PiAgentRuntime 真实嵌入冒烟（fake stream） | 🔄 待做（leader 地界） |
+| Leader tenant-runtime 集成（锁/manifest/三流遥测/优雅关闭，6 暗卷） | ✅ | bf7c963 |
+| 真机 Canary（Safety 20 Tick → shadow → hybrid） | ⏳ 下一步 |
 
 ## 并行任务（4 份，地界互斥）
 
@@ -45,7 +47,7 @@ cd .. && npm run replay:check && uv run pytest -q
 uv run python scripts/gen-status.py --check
 ```
 
-当前基线：TS 149 / SDK 48 / Python 168 / replay 硬差异 0。
+当前基线：TS 201 / SDK 48 / Python 168 / replay 硬差异 0。
 
 ## 风险与红线
 
