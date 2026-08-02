@@ -43,6 +43,8 @@ export interface DecisionCoordinatorOptions {
   readonly tenantId: string;
   readonly rulesVersion: string;
   readonly configHash: string;
+  /** 3.2：生产 runId 前缀（启动 manifest 的 processRunId；缺省 "local"）。 */
+  readonly processRunId?: string;
   readonly arbiter?: PlanArbiter;
   /** 等待到截止时刻的可注入实现（测试用 FakeClock 驱动，默认 setTimeout）。 */
   readonly sleepUntil?: (deadlineMs: number, clock: Clock) => Promise<void>;
@@ -74,6 +76,9 @@ export class DecisionCoordinator {
   private readonly arbiter: PlanArbiter;
   private readonly sleepUntil: (deadlineMs: number, clock: Clock) => Promise<void>;
   private readonly onRunSettled: DecisionCoordinatorOptions["onRunSettled"];
+  private readonly processRunId: string;
+  /** 3.2：进程内 run 序号（runId = processRunId:tenantId:tick:sequence）。 */
+  private runSeq = 0;
 
   /** 候选投递口（公开：Agent runtime / 测试经此投递，模拟 arena_plan 工具调用）。
    *  返回 registry.submit 的结构化结果（accepted / 具体拒绝 code）——工具反馈给模型用。 */
@@ -91,6 +96,7 @@ export class DecisionCoordinator {
     this.arbiter = options.arbiter ?? new PlanArbiter();
     this.sleepUntil = options.sleepUntil ?? DEFAULT_SLEEP_UNTIL;
     this.onRunSettled = options.onRunSettled;
+    this.processRunId = options.processRunId ?? "local";
     // 候选投递口：runId 精确索引——旧 run 的迟到调用命中旧 Lease（已终结 → 拒绝），
     // 永不漏到新 Tick；结构化结果原样返回（LeaseSubmission）。
     this.sink = (envelope) => this.registry.submit(envelope.runId, envelope);
@@ -113,8 +119,9 @@ export class DecisionCoordinator {
       configHash: this.configHash,
       receivedAtMonotonic: t0,
     };
-    // 3E-1：runId 由 coordinator 唯一分配（单源），注册 Lease 后随 request 下发
-    const runId = `${this.tenantId}-${tick}-${t0}`;
+    // 3E-1/3.2：runId 由 coordinator 唯一分配（单源），格式 <processRunId>:<tenantId>:<tick>:<sequence>
+    //（不用浮点性能时间：跨进程可追踪、跨 rotation 唯一、不暴露给模型）
+    const runId = `${this.processRunId}:${this.tenantId}:${tick}:${this.runSeq++}`;
 
     // 1) Safety 预计算（立即，不等待 Agent）
     let safetyPlan: Plan;

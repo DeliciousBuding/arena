@@ -110,12 +110,11 @@ export async function handleTurn(
 ): Promise<TickOutcome> {
   const state = reduceTurn(turn as unknown as TurnLike);
 
-  // W4 路径：coordinator 时序（Safety 预计算 + deadline race + arbiter）
+  // W4 路径（唯一正式路径，4D-pre）：coordinator 时序（Safety 预计算 + deadline race + arbiter）。
+  // 4D-pre：不再压缩 source（hybrid/emergency 原样保留进遥测）。
   if (options.coordinator) {
     const result = await options.coordinator.decide(state);
-    const toDomainSource = (s: string): DecisionSource =>
-      s === "agent" || s === "hybrid" ? "agent" : "safety";
-    const source = toDomainSource(result.source);
+    const source = result.source;
     if (options.shadow) {
       return {
         tick: result.tick,
@@ -151,6 +150,8 @@ export async function handleTurn(
     }
   }
 
+  // [DEPRECATED 4D-pre] 旧 decide bridge（Date.now + 无 coordinator 时序）：coordinator 是
+  // 唯一正式路径；本段仅 shadow 工具与旧调用方使用，切片 6 删除，不再维护。
   const lease = new DecisionLease({
     tick: state.tick,
     stateHash: hashTickState(state),

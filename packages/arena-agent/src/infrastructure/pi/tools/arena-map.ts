@@ -11,7 +11,8 @@ import { Type, type Static } from "typebox";
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
-import type { MapSnapshot, ToolContext } from "./tool-context.ts";
+import type { MapSnapshot } from "./tool-context.ts";
+import { ActiveToolContextSlot } from "./active-context-slot.ts";
 
 const arenaMapSchema = Type.Object(
   {
@@ -47,7 +48,7 @@ function inBounds(position: readonly [number, number], bounds?: readonly number[
   return x >= bounds[0] && x <= bounds[2] && y >= bounds[1] && y <= bounds[3];
 }
 
-export function createArenaMapToolDefinition(ctx: ToolContext): ToolDefinition<typeof arenaMapSchema> {
+export function createArenaMapToolDefinition(slot: ActiveToolContextSlot): ToolDefinition<typeof arenaMapSchema> {
   return {
     name: "arena_map",
     label: "arena_map",
@@ -58,6 +59,7 @@ export function createArenaMapToolDefinition(ctx: ToolContext): ToolDefinition<t
     promptGuidelines: ["在 arena_plan 之前可多次调用 arena_map 获取地图信息。"],
     parameters: arenaMapSchema,
     async execute(_toolCallId, params) {
+      const ctx = slot.current(); // 每次 execute 取当前 active context
       const snapshot = ctx.mapSnapshot;
       if (snapshot === null) {
         return {

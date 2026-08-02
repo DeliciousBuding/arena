@@ -37,6 +37,8 @@ export interface ToolContext {
   readonly tenantId: string;
   readonly tick: number;
   readonly stateHash: string;
+  /** 本 Tick 受控单位 UUID 集合（4D-pre：未知 unit UUID → unknown_unit 拒绝）。 */
+  readonly controlledUnits: ReadonlySet<string>;
   readonly mapSnapshot: MapSnapshot | null;
   readonly sink: CandidateSink;
   /** arena_plan 成功调用次数（必须且只能 1 次；>0 即 duplicate）。 */
@@ -51,8 +53,14 @@ export function createToolContext(input: {
   readonly tenantId: string;
   readonly tick: number;
   readonly stateHash: string;
+  readonly controlledUnits?: ReadonlySet<string>;
   readonly mapSnapshot: MapSnapshot | null;
   readonly sink: CandidateSink;
 }): ToolContext {
-  return { ...input, planCalls: 0, closed: false };
+  return {
+    ...input,
+    controlledUnits: input.controlledUnits ?? new Set<string>(),
+    planCalls: 0,
+    closed: false,
+  };
 }

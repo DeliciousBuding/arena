@@ -101,7 +101,8 @@ export interface DecisionCandidate {
   readonly confidence?: number;
 }
 
-export type DecisionSource = "agent" | "safety" | "repaired-agent";
+/** 决策来源（4D-pre 统一：权威定义在 runtime/decision-types.ts，本处 re-export 防双套矛盾）。 */
+export type { DecisionSource } from "../runtime/decision-types.ts";
 
 export function cellKey(position: Position): string {
   return `${position[0]},${position[1]}`;

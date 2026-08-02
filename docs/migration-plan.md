@@ -190,3 +190,7 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 - ~~arena-hero-ts 嵌套 package 需 clean-clone 安装~~（2026-08-02 monorepo 合并后 npm workspace 直接解析，无 pin）；
 - raw-state 只能进入 gitignored run 目录，fixture 必须脱敏；
 - Pi fork 只保留通用、可上游化修复。
+
+## 7. 长期路线图（W7-W18）
+
+> W6 不是终点。迁移完成后的长期规划（生产运行系统 / Planner 竞赛 / 数据平台 / 模拟器 / Bandit / 价值模型 / RL / 自我改进 / 协同智能 / 通用化）见 [roadmap-long-term.md](roadmap-long-term.md)。Leader 长期优先级固定：正确性 → 可恢复性 → 可观测性 → 确定性算法收益 → 数据质量 → 模拟器真实性 → ML → RL → 自我改进 → 平台化。

@@ -9,7 +9,9 @@
 import type { Plan, TickState } from "../domain/model.ts";
 import type { LeaseSubmission } from "./decision-lease.ts";
 
-export type DecisionSource = "agent" | "hybrid" | "safety" | "emergency";
+/** 决策来源（4D-pre：统一单类型，5 值——不再有 domain/runtime 两套矛盾定义）。
+ *  repaired-agent 仅供 loop 层使用（repair 只提升 agent 来源；safety 被修复仍记 safety）。 */
+export type DecisionSource = "agent" | "hybrid" | "safety" | "emergency" | "repaired-agent";
 
 /** 决策上下文：不可变，一次决策全程共享（R9：World 必须在 Tick 开始时快照化）。 */
 export interface DecisionContext {

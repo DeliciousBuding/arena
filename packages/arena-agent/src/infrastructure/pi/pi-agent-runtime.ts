@@ -1,0 +1,335 @@
+/**
+ * PiAgentRuntime（切片 4 阶段 3，总任务书 3.x）：AgentDecisionRuntime 的真实 Pi 实现。
+ *
+ * 生命周期：initializing → ready → running → ready；running → aborting → ready；
+ * 严重错误 → unhealthy → rotating → ready。
+ *
+ * 关键约束（总任务书 + GPT 审核）：
+ * - session 在 create() 时异步创建（长驻单 session，in-memory；失败才 rotation）；
+ * - 工具定义在 session 创建时注册一次，持有 ctxRef（每 run 替换 ToolContext）；
+ * - prompt() Promise 是 settle 主信号；settleOnce() 防 Promise/事件/abort 重复结算；
+ * - abort 同步返回（不 await），后台等待 prompt 终止 → waitForIdle → ready；
+ *   超过 idleTimeoutMs 未 settle → unhealthy → rotate session；
+ * - rotation 期间 startDecision 抛错（coordinator 立即 Safety）；
+ * - runId 由 coordinator 分配（3E 单源），runtime 绝不自行生成。
+ */
+
+import type {
+  AgentDecisionRequest,
+  AgentDecisionRuntime,
+  AgentRunHandle,
+  AgentRunResult,
+  AgentRuntimeHealth,
+  CandidateSink,
+} from "../../runtime/decision-types.ts";
+import { StrategyMemory } from "./strategy-memory.ts";
+import { ActiveToolContextSlot } from "./tools/active-context-slot.ts";
+import { createArenaMapToolDefinition } from "./tools/arena-map.ts";
+import { createArenaPlanToolDefinition } from "./tools/arena-plan.ts";
+import { createToolContext, type MapSnapshot, type ToolContext } from "./tools/tool-context.ts";
+import { PiSessionFactory } from "./pi-session-factory.ts";
+import type { PiSessionFactoryOptions, PiSessionArtifacts } from "./pi-types.ts";
+
+export type PiRuntimeState =
+  | "initializing"
+  | "ready"
+  | "running"
+  | "aborting"
+  | "unhealthy"
+  | "rotating"
+  | "closed";
+
+export interface PiRuntimeTelemetry {
+  readonly type:
+    | "run_settled"
+    | "abort_requested"
+    | "prompt_error"
+    | "unhealthy"
+    | "rotating"
+    | "rotated"
+    | "rotation_failed"
+    | "violation";
+  readonly runId?: string;
+  readonly reason?: string;
+  readonly message?: string;
+  readonly generation?: number;
+}
+
+export interface PiAgentRuntimeOptions {
+  /** 会话工厂配置（customTools 由 runtime 注入，忽略调用方传入的）。 */
+  readonly session: Omit<PiSessionFactoryOptions, "customTools">;
+  readonly tenantId: string;
+  /** 五段 prompt 构建（4C buildDecisionPrompt；测试注入 fake）。 */
+  readonly promptBuilder: (input: {
+    readonly state: AgentDecisionRequest["state"];
+    readonly context: AgentDecisionRequest["context"];
+    readonly memory: StrategyMemory;
+    readonly runId: string;
+  }) => string;
+  /** 每 run 地图冻结快照提供者（缺省 null = 地图不可用）。 */
+  readonly mapSnapshotProvider?: () => MapSnapshot | null;
+  /** 战略记忆（缺省自建）。 */
+  readonly memory?: StrategyMemory;
+  /** abort 后等待 settle 的超时（缺省 15000ms），超时 → unhealthy → rotate。 */
+  readonly idleTimeoutMs?: number;
+  /** 连续 prompt 失败阈值（缺省 3），达到 → unhealthy → rotate。 */
+  readonly consecutiveErrorThreshold?: number;
+  /** 生命周期/异常 telemetry。 */
+  readonly onTelemetry?: (event: PiRuntimeTelemetry) => void;
+}
+
+interface ActiveRun {
+  readonly runId: string;
+  readonly ctx: ToolContext;
+  readonly settled: Promise<AgentRunResult>;
+  resolveSettled: (result: AgentRunResult) => void;
+  aborted: boolean;
+  abortReason: string | null;
+  /** settleOnce 落位（abort 超时检查用：settled 已完成则无需 rotate）。 */
+  settledResult: AgentRunResult | null;
+}
+
+export class PiAgentRuntime implements AgentDecisionRuntime {
+  readonly memory: StrategyMemory;
+
+  private readonly options: PiAgentRuntimeOptions;
+  private readonly factory: PiSessionFactory;
+  private state: PiRuntimeState = "initializing";
+  private artifacts: PiSessionArtifacts | null = null;
+  private sink: CandidateSink | null = null;
+  private readonly slot = new ActiveToolContextSlot();
+  private active: ActiveRun | null = null;
+  private generation = 0;
+  private consecutiveErrors = 0;
+  private abortTimers = new Set<ReturnType<typeof setTimeout>>();
+
+  private constructor(options: PiAgentRuntimeOptions) {
+    this.options = options;
+    this.memory = options.memory ?? new StrategyMemory();
+    // 工具定义持有 ctxRef getter：session 创建时注册一次，每 run 替换 ctx 对象
+    this.factory = new PiSessionFactory({
+      ...options.session,
+      // 4D-pre：工具定义持有 slot（长驻 session 每 run 激活/停用上下文）
+      customTools: [createArenaPlanToolDefinition(this.slot), createArenaMapToolDefinition(this.slot)],
+    });
+  }
+
+  /** 异步工厂：创建 session 完成后 runtime 才进入 ready。 */
+  static async create(options: PiAgentRuntimeOptions): Promise<PiAgentRuntime> {
+    const runtime = new PiAgentRuntime(options);
+    await runtime.initialize();
+    return runtime;
+  }
+
+  private async initialize(): Promise<void> {
+    this.state = "initializing";
+    this.artifacts = await this.factory.createSession(this.options.tenantId);
+    this.state = "ready";
+  }
+
+  // ---------- AgentDecisionRuntime 端口 ----------
+
+  bindCandidateSink(sink: CandidateSink): void {
+    this.sink = sink;
+  }
+
+  startDecision(request: AgentDecisionRequest): AgentRunHandle {
+    if (this.state !== "ready") {
+      throw new Error(`runtime not ready (${this.state})`);
+    }
+    if (this.active !== null) {
+      throw new Error(`overlapping run: ${this.active.runId} is not settled`);
+    }
+    // 3.3：用 request.runId 建 ToolContext（权威值源），mapSnapshot 本 Tick 冻结
+    const ctx = createToolContext({
+      runId: request.runId,
+      tenantId: request.tenantId,
+      tick: request.tick,
+      stateHash: request.stateHash,
+      controlledUnits: new Set<string>(request.state.units.map((u) => u.id)),
+      mapSnapshot: this.options.mapSnapshotProvider?.() ?? null,
+      sink: this.sink ?? (() => {
+        throw new Error("candidate sink not bound");
+      }),
+    });
+    this.slot.activate(ctx); // 4D-pre：激活当前 run 的 context
+
+    const promptText = this.options.promptBuilder({
+      state: request.state,
+      context: request.context,
+      memory: this.memory,
+      runId: request.runId,
+    });
+
+    let resolveSettled: (result: AgentRunResult) => void = () => {};
+    const settled = new Promise<AgentRunResult>((resolve) => {
+      resolveSettled = resolve;
+    });
+    const run: ActiveRun = {
+      runId: request.runId,
+      ctx,
+      settled,
+      resolveSettled,
+      aborted: false,
+      abortReason: null,
+      settledResult: null,
+    };
+    this.active = run;
+    this.state = "running";
+
+    // settleOnce：防 prompt/abort/事件重复结算（总任务书 3.3）
+    let finished = false;
+    const settleOnce = (result: AgentRunResult): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      run.settledResult = result;
+      run.resolveSettled(result);
+      if (this.active === run) {
+        this.active = null;
+        this.state = "ready";
+        this.slot.deactivate(run.runId); // 4D-pre：settle 后停用（只匹配本 run）
+      }
+      this.onTelemetry("run_settled", run.runId, undefined, undefined, undefined);
+    };
+
+    // prompt() 是主 settle 信号（GPT 裁决 2）
+    void this.sessionPrompt(promptText)
+      .then(() => {
+        this.consecutiveErrors = 0;
+        settleOnce({ outcome: "settled" });
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.consecutiveErrors += 1;
+        this.onTelemetry("prompt_error", run.runId, message);
+        settleOnce({ outcome: "error", message });
+        // 连续失败超阈值 → unhealthy（总任务书 3.1 严重错误）
+        if (this.consecutiveErrors >= (this.options.consecutiveErrorThreshold ?? 3)) {
+          this.markUnhealthy(`consecutive_prompt_errors: ${this.consecutiveErrors}`);
+        }
+      });
+
+    return {
+      runId: request.runId,
+      settled: run.settled,
+      abort: (reason: string) => this.abortRun(run, reason),
+    };
+  }
+
+  health(): AgentRuntimeHealth {
+    if (this.state === "ready" || this.state === "running" || this.state === "aborting") {
+      return { ready: true, activeRunId: this.active?.runId ?? null };
+    }
+    return { ready: false, activeRunId: this.active?.runId ?? null, reason: this.state };
+  }
+
+  reportViolation(reason: string): void {
+    this.onTelemetry("violation", this.active?.runId, reason);
+    this.markUnhealthy(`violation: ${reason}`);
+  }
+
+  /** 关停：abort 当前 run，session 关闭；之后拒绝新 run。 */
+  async close(): Promise<void> {
+    if (this.state === "closed") {
+      return;
+    }
+    if (this.active !== null && !this.active.aborted) {
+      this.abortRun(this.active, "runtime_close");
+    }
+    if (this.active !== null) {
+      await this.active.settled.catch(() => {});
+    }
+    await this.artifacts?.close();
+    this.state = "closed";
+  }
+
+  // ---------- 内部 ----------
+
+  private sessionPrompt(text: string): Promise<void> {
+    if (this.artifacts === null) {
+      return Promise.reject(new Error("session not initialized"));
+    }
+    return this.artifacts.session.prompt(text);
+  }
+
+  /** 同步返回；后台等待 prompt 终止 → ready；超时 → unhealthy → rotate（总任务书 3.4）。 */
+  private abortRun(run: ActiveRun, reason: string): void {
+    if (this.active !== run || run.aborted) {
+      return;
+    }
+    run.aborted = true;
+    run.abortReason = reason;
+    this.state = "aborting";
+    this.onTelemetry("abort_requested", run.runId, reason);
+    // 不 await：void 后台完成（coordinator 永不阻塞在 abort 上）
+    void this.abortAndSettle(run, reason);
+  }
+
+  private async abortAndSettle(run: ActiveRun, reason: string): Promise<void> {
+    const timer = setTimeout(() => {
+      this.abortTimers.delete(timer);
+      if (this.active === run && run.settledResult === null) {
+        this.markUnhealthy(`abort_idle_timeout: ${reason}`);
+        void this.rotate();
+      }
+    }, this.options.idleTimeoutMs ?? 15000);
+    this.abortTimers.add(timer);
+    const clear = (): void => {
+      this.abortTimers.delete(timer);
+      clearTimeout(timer);
+    };
+    try {
+      // pi abort 内部 waitForIdle；prompt promise 随之终止 → settleOnce → ready
+      await this.artifacts?.session.abort();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.markUnhealthy(`abort_failed: ${message}`);
+    } finally {
+      // 等待 prompt settle（可能已发生）；无论结果如何清除超时
+      void run.settled.then(clear, clear);
+    }
+  }
+
+  /** 标记 unhealthy 并触发 rotation（不 await——调用方不被阻塞）。 */
+  private markUnhealthy(reason: string): void {
+    if (this.state === "unhealthy" || this.state === "rotating" || this.state === "closed") {
+      return;
+    }
+    this.state = "unhealthy";
+    this.onTelemetry("unhealthy", this.active?.runId, reason);
+    void this.rotate();
+  }
+
+  private async rotate(): Promise<void> {
+    if (this.state === "rotating" || this.state === "closed") {
+      return;
+    }
+    this.state = "rotating";
+    this.slot.forceClear(); // 4D-pre：rotation 强制清空残留上下文
+    this.generation += 1;
+    this.onTelemetry("rotating", undefined, undefined, undefined, this.generation);
+    try {
+      await this.artifacts?.close();
+      await this.initialize();
+      this.consecutiveErrors = 0;
+      this.onTelemetry("rotated", undefined, undefined, undefined, this.generation);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.onTelemetry("rotation_failed", undefined, message, undefined, this.generation);
+      // rotation 失败保持 unhealthy（下一 Tick startDecision 抛错 → Safety）
+      this.state = "unhealthy";
+    }
+  }
+
+  private onTelemetry(
+    type: PiRuntimeTelemetry["type"],
+    runId?: string,
+    message?: string,
+    reason?: string,
+    generation?: number,
+  ): void {
+    this.options.onTelemetry?.({ type, runId, reason, message, generation });
+  }
+}

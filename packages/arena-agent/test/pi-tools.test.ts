@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 
 import type { LeaseSubmission } from "../src/runtime/decision-lease.ts";
 import type { CandidateEnvelope } from "../src/runtime/decision-types.ts";
+import { ActiveToolContextSlot } from "../src/infrastructure/pi/tools/active-context-slot.ts";
 import { createArenaMapToolDefinition } from "../src/infrastructure/pi/tools/arena-map.ts";
 import { createArenaPlanToolDefinition, type ArenaPlanParams } from "../src/infrastructure/pi/tools/arena-plan.ts";
 import { createToolContext, type MapSnapshot, type ToolContext } from "../src/infrastructure/pi/tools/tool-context.ts";
@@ -27,6 +28,7 @@ const ACCEPTED: LeaseSubmission = {
 
 function makeCtx(overrides: Partial<ToolContext> = {}): {
   ctx: ToolContext;
+  slot: ActiveToolContextSlot;
   envelopes: CandidateEnvelope[];
   sink: (e: CandidateEnvelope) => LeaseSubmission;
 } {
@@ -40,11 +42,14 @@ function makeCtx(overrides: Partial<ToolContext> = {}): {
     tenantId: "t1",
     tick: 100,
     stateHash: "sha256:state-100",
+    controlledUnits: new Set(["u1", "u2"]),
     mapSnapshot: null,
     sink,
     ...overrides,
   });
-  return { ctx, envelopes, sink };
+  const slot = new ActiveToolContextSlot();
+  slot.activate(ctx);
+  return { ctx, slot, envelopes, sink };
 }
 
 
@@ -69,8 +74,8 @@ const VALID_PARAMS: ArenaPlanParams = {
 // ---------- 值源与回显校验 ----------
 
 test("合法回显 → sink 收到 envelope，标识字段 == ctx 值（而非参数值）", async () => {
-  const { ctx, envelopes } = makeCtx();
-  const tool = createArenaPlanToolDefinition(ctx);
+  const { ctx, slot, envelopes } = makeCtx();
+  const tool = createArenaPlanToolDefinition(slot);
   const result = await tool.execute("c1", VALID_PARAMS, undefined, undefined, undefined as never);
   assert.equal(envelopes.length, 1);
   const env = envelopes[0];
@@ -93,8 +98,8 @@ test("合法回显 → sink 收到 envelope，标识字段 == ctx 值（而非�
 });
 
 test("回显不一致（runId/tick/stateHash 各一种）→ context_mismatch，不投递", async () => {
-  const { ctx, envelopes } = makeCtx();
-  const tool = createArenaPlanToolDefinition(ctx);
+  const { ctx, slot, envelopes } = makeCtx();
+  const tool = createArenaPlanToolDefinition(slot);
   for (const bad of [
     { ...VALID_PARAMS, runId: "t1-99-0" },
     { ...VALID_PARAMS, tick: 99 },
@@ -108,8 +113,8 @@ test("回显不一致（runId/tick/stateHash 各一种）→ context_mismatch，
 });
 
 test("重复调用 → 第二次 duplicate_tool_call，不投递", async () => {
-  const { ctx, envelopes } = makeCtx();
-  const tool = createArenaPlanToolDefinition(ctx);
+  const { ctx, slot, envelopes } = makeCtx();
+  const tool = createArenaPlanToolDefinition(slot);
   await tool.execute("c1", VALID_PARAMS, undefined, undefined, undefined as never);
   const second = await tool.execute("c2", VALID_PARAMS, undefined, undefined, undefined as never);
   assert.match(textOf(second), /duplicate_tool_call/);
@@ -119,54 +124,68 @@ test("重复调用 → 第二次 duplicate_tool_call，不投递", async () => {
 test("sink 返回 rejected → 文本含 code；换 ctx → envelope 用新 ctx 值（不读全局）", async () => {
   const envelopes: CandidateEnvelope[] = [];
   const ctxA = createToolContext({
-    runId: "t1-100-0", tenantId: "t1", tick: 100, stateHash: "sha256:state-100", mapSnapshot: null,
+    runId: "t1-100-0", tenantId: "t1", tick: 100, stateHash: "sha256:state-100", controlledUnits: new Set(["u1", "u2"]), mapSnapshot: null,
     sink: (e) => { envelopes.push(e); return REJECTED; },
   });
-  const toolA = createArenaPlanToolDefinition(ctxA);
+  const slotA = new ActiveToolContextSlot(); slotA.activate(ctxA);
+  const toolA = createArenaPlanToolDefinition(slotA);
   const resultA = await toolA.execute("c1", VALID_PARAMS, undefined, undefined, undefined as never);
   assert.match(textOf(resultA), /deadline_exceeded/);
   assert.match(textOf(resultA), /候选被拒/);
 
   // 新 run 新 ctx：同一工具定义换 ctx 后 envelope 携带新标识
   const ctxB = createToolContext({
-    runId: "t2-101-5", tenantId: "t2", tick: 101, stateHash: "h101", mapSnapshot: null,
+    runId: "t2-101-5", tenantId: "t2", tick: 101, stateHash: "h101", controlledUnits: new Set(["u1", "u2"]), mapSnapshot: null,
     sink: (e) => { envelopes.push(e); return ACCEPTED; },
   });
-  const toolB = createArenaPlanToolDefinition(ctxB);
+  const slotB = new ActiveToolContextSlot(); slotB.activate(ctxB);
+  const toolB = createArenaPlanToolDefinition(slotB);
   await toolB.execute("c1", { ...VALID_PARAMS, runId: "t2-101-5", tick: 101, stateHash: "h101" }, undefined, undefined, undefined as never);
   assert.equal(envelopes[1].runId, "t2-101-5");
   assert.equal(envelopes[1].tick, 101);
 });
 
-test("重复 unit → 只保留最后一条；core: null → coreAction null；空 actions 合法", async () => {
-  const { ctx, envelopes } = makeCtx();
-  const tool = createArenaPlanToolDefinition(ctx);
-  await tool.execute("c1", { ...VALID_PARAMS, actions: [
+test("重复 unit → duplicate_unit_action 拒绝（4D-pre）；core: null → coreAction null；空 actions 合法", async () => {
+  const { ctx, slot, envelopes } = makeCtx();
+  const tool = createArenaPlanToolDefinition(slot);
+  const dup = await tool.execute("c1", { ...VALID_PARAMS, actions: [
     { unit: "u1", kind: "MOVE", direction: "UP" },
     { unit: "u1", kind: "WAIT" },
   ], core: null }, undefined, undefined, undefined as never);
-  assert.deepEqual(envelopes[0].plan.unitActions.u1, { type: "WAIT" }, "重复 unit 取最后一条");
-  assert.equal(envelopes[0].plan.coreAction, null);
+  assert.match(textOf(dup), /duplicate_unit_action/);
+  assert.equal(envelopes.length, 0, "重复 unit 一律不投递（不猜值不覆盖）");
 
-  const { ctx: ctx2, envelopes: env2 } = makeCtx();
-  const tool2 = createArenaPlanToolDefinition(ctx2);
+  const { ctx: ctx2, slot: slot2, envelopes: env2 } = makeCtx();
+  const tool2 = createArenaPlanToolDefinition(slot2);
   await tool2.execute("c1", { ...VALID_PARAMS, actions: [] }, undefined, undefined, undefined as never);
   assert.deepEqual(env2[0].plan.unitActions, {}, "空 actions 合法（保守计划）");
 });
 
+test("未知己方 unit → unknown_unit 拒绝；缺 direction → invalid_tool_arguments（不猜值）", async () => {
+  const { ctx, slot, envelopes } = makeCtx();
+  const tool = createArenaPlanToolDefinition(slot);
+  const unknown = await tool.execute("c1", { ...VALID_PARAMS, actions: [{ unit: "ghost", kind: "WAIT" }] }, undefined, undefined, undefined as never);
+  assert.match(textOf(unknown), /unknown_unit/);
+  const noDir = await tool.execute("c2", { ...VALID_PARAMS, actions: [{ unit: "u1", kind: "MOVE" }] }, undefined, undefined, undefined as never);
+  assert.match(textOf(noDir), /invalid_tool_arguments/);
+  const noShoot = await tool.execute("c3", { ...VALID_PARAMS, actions: [{ unit: "u1", kind: "SHOOT", target_id: "e9" }] }, undefined, undefined, undefined as never);
+  assert.match(textOf(noShoot), /invalid_tool_arguments/);
+  assert.equal(envelopes.length, 0, "全部拒绝，不投递");
+});
+
 test("terminate 语义：arena_plan terminate、arena_map 不 terminate", () => {
-  const { ctx } = makeCtx();
-  const planTool = createArenaPlanToolDefinition(ctx);
+  const { ctx, slot } = makeCtx();
+  const planTool = createArenaPlanToolDefinition(slot);
   assert.equal((planTool as { terminate?: boolean }).terminate ?? false, false);
   // ToolDefinition 的 terminate 通过 execute 返回结果表达；验证 execute 返回 terminate: true
-  const mapTool = createArenaMapToolDefinition(ctx);
+  const mapTool = createArenaMapToolDefinition(slot);
   assert.ok(mapTool.name === "arena_map");
   assert.ok(planTool.name === "arena_plan");
 });
 
 test("arena_plan execute 返回 terminate: true（收尾工具）", async () => {
-  const { ctx } = makeCtx();
-  const tool = createArenaPlanToolDefinition(ctx);
+  const { ctx, slot } = makeCtx();
+  const tool = createArenaPlanToolDefinition(slot);
   const result = await tool.execute("c1", VALID_PARAMS, undefined, undefined, undefined as never);
   assert.equal(result.terminate, true);
 });
@@ -185,8 +204,8 @@ const SNAPSHOT: MapSnapshot = {
 };
 
 test("arena_map：stats/resources/obstacles/allies/enemies 各自返回冻结快照", async () => {
-  const { ctx } = makeCtx({ mapSnapshot: SNAPSHOT });
-  const tool = createArenaMapToolDefinition(ctx);
+  const { ctx, slot } = makeCtx({ mapSnapshot: SNAPSHOT });
+  const tool = createArenaMapToolDefinition(slot);
   const stats = await tool.execute("c1", { query: "stats" }, undefined, undefined, undefined as never);
   assert.match(textOf(stats), /20x20/);
   const res = await tool.execute("c2", { query: "resources" }, undefined, undefined, undefined as never);
@@ -200,21 +219,21 @@ test("arena_map：stats/resources/obstacles/allies/enemies 各自返回冻结快
 });
 
 test("arena_map：bounds 过滤生效；无快照 → disabled 降级文本", async () => {
-  const { ctx } = makeCtx({ mapSnapshot: SNAPSHOT });
-  const tool = createArenaMapToolDefinition(ctx);
+  const { ctx, slot } = makeCtx({ mapSnapshot: SNAPSHOT });
+  const tool = createArenaMapToolDefinition(slot);
   const filtered = await tool.execute("c1", { query: "resources", bounds: [0, 0, 5, 5] }, undefined, undefined, undefined as never);
   assert.match(textOf(filtered), /\[2,2\]/);
   assert.ok(!textOf(filtered).includes("9,9"), "bounds 过滤必须生效");
 
-  const { ctx: ctxNull } = makeCtx();
-  const toolNull = createArenaMapToolDefinition(ctxNull);
+  const { ctx: ctxNull, slot: slotNull } = makeCtx();
+  const toolNull = createArenaMapToolDefinition(slotNull);
   const disabled = await toolNull.execute("c2", { query: "stats" }, undefined, undefined, undefined as never);
   assert.match(textOf(disabled), /地图不可用/);
 });
 
 test("arena_map 多次调用不影响 planCalls（0..N 次允许）", async () => {
-  const { ctx } = makeCtx({ mapSnapshot: SNAPSHOT });
-  const mapTool = createArenaMapToolDefinition(ctx);
+  const { ctx, slot } = makeCtx({ mapSnapshot: SNAPSHOT });
+  const mapTool = createArenaMapToolDefinition(slot);
   for (let i = 0; i < 3; i += 1) {
     await mapTool.execute(`c${i}`, { query: "stats" }, undefined, undefined, undefined as never);
   }
