@@ -27,14 +27,17 @@ def parse_params(spec: str | None) -> dict:
         key, _, raw = item.partition("=")
         key = key.strip()
         raw = raw.strip()
-        # 参考 TacticConfig 字段类型：int/str/bool
+        # 参考 TacticConfig 字段类型：int/float/str/bool
         if raw.lower() in ("true", "false"):
             params[key] = raw.lower() == "true"
         else:
             try:
                 params[key] = int(raw)
             except ValueError:
-                params[key] = raw
+                try:
+                    params[key] = float(raw)
+                except ValueError:
+                    params[key] = raw
     return params
 
 

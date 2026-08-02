@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-from arena_hero import ArenaHeroClient, UnitType
+from arena_hero import ArenaHeroClient, APIError, UnitType
 
 from .config import (MAP_STORE_PATH, PROJECT_ROOT, TacticConfig, TenantConfig,
                      load_api_key)
@@ -208,7 +208,14 @@ def play(api_key: str, config: TacticConfig,
                 log.debug("tick %d 无任何动作，跳过提交", state.tick)
                 continue
             apply_plan(turn, plan)
-            accepted = state.submit()
+            try:
+                accepted = state.submit()
+            except APIError as exc:
+                if exc.status_code == 409:  # TICK_MISMATCH：决策超窗口，本 tick 作废
+                    log.warning("tick %d 提交 TICK_MISMATCH（决策超 15s 窗口），跳过",
+                                state.tick)
+                    continue
+                raise
 
             if telemetry is not None:
                 telemetry.record(
