@@ -1,0 +1,3 @@
+{
+  "world_memory": "memory/units 差异：TS World 主动清理已死亡/消失单位记忆（当前 Tick 权威设计，world.ts observe liveUnits 清理）；Python UnitStateTracker 永久保留历史单位。实测 plan 内容差异 0/100，决策不受影响。属已解释的设计差异，非迁移 bug。"
+}
