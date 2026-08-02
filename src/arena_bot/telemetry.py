@@ -61,6 +61,8 @@ class Telemetry:
             *(ev.get(name, 0) for name in EVENT_COUNTERS),
             combat, intent_repr,
         ))
+        # 立即落盘：遥测必须可实时观察（评估/监控依赖文件内容）
+        self._file.flush()
 
     def close(self) -> None:
         if not self._file.closed:

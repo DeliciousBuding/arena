@@ -170,6 +170,8 @@ def test_telemetry_records_and_csv_shape(tmp_path):
                     vanguards=0, rangers=0, core_hp=5, core_shield=5,
                     enemies_visible=0, events=(ev,),
                     intents={"core": "harvest"})
+        # record 后立即落盘（不依赖 close）
+        assert path.read_text(encoding="utf-8").count("\n") >= 2
     with path.open(encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     assert len(rows) == 2
