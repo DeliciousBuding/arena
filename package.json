@@ -6,7 +6,12 @@
   "workspaces": [
     "packages/*"
   ],
+  "scripts": {
+    "check": "npm run check -w packages/arena-hero-ts -w packages/arena-agent",
+    "test": "npm run test -w packages/arena-hero-ts -w packages/arena-agent",
+    "schema:check": "node packages/arena-hero-ts/scripts/generate-schemas.mjs && git diff --exit-code -- packages/arena-hero-ts/contracts/"
+  },
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=24.0.0"
   }
 }
