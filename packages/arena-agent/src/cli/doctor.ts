@@ -61,8 +61,9 @@ export function runDoctor(
   // 5) submitEnabled 状态明确输出
   add("submit_enabled", true, `decisionMode=${config.decisionMode} submitEnabled=${config.submitEnabled}`);
 
-  // 6) 锁目录父路径可写（doctor 不 acquire——live 启动时再获取）
-  const lockDir = join(runtimeBaseDir, "locks");
+  // 6) 锁目录父路径可写（doctor 不 acquire——live 启动时再获取）；
+  //    与 tenant-runtime 的 <baseDir>/<tenantId>/locks 布局一致
+  const lockDir = join(runtimeBaseDir, config.tenantId, "locks");
   try {
     mkdirSync(lockDir, { recursive: true });
     add("lock_dir_writable", true, lockDir);

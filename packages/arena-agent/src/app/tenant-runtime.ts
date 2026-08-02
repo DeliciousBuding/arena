@@ -16,8 +16,8 @@
 
 import { ArenaHeroClient } from "@arena/arena-hero-ts";
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
+import { isAbsolute, join } from "node:path";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { loadRuntimeConfig, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
@@ -125,7 +125,11 @@ export async function runTenant(
   const deadlines = resolveDeadlines(config);
 
   const processRunId = newProcessRunId();
-  const dirs = tenantDirs(config.baseDir ?? "runtime", config.tenantId);
+  // baseDir 相对 repoRoot 解析（绝对路径原样）——产物落点与 doctor/CLI 一致
+  const baseDir = isAbsolute(config.baseDir ?? "runtime")
+    ? (config.baseDir ?? "runtime")
+    : join(repoRoot, config.baseDir ?? "runtime");
+  const dirs = tenantDirs(baseDir, config.tenantId);
 
   // 1) 单写者锁（红线：同一租户一个提交者；拿不到直接失败）
   const lock = new SingleWriterLock(dirs.lockDir, config.tenantId, processRunId);

@@ -11,9 +11,32 @@
  */
 
 import { parseArgs } from "node:util";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runDoctor } from "./doctor.ts";
 import { runTenant } from "../app/tenant-runtime.ts";
+
+/** 加载 <repoRoot>/.env（KEY=VALUE 行，忽略 # 注释；不覆盖已存在的 env；绝不打印值）。 */
+function loadDotEnv(repoRoot: string): void {
+  const path = join(repoRoot, ".env");
+  if (!existsSync(path)) {
+    return;
+  }
+  for (const line of readFileSync(path, "utf-8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("#")) {
+      continue;
+    }
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) {
+      continue;
+    }
+    const key = trimmed.slice(0, eq).trim();
+    if (process.env[key] === undefined) {
+      process.env[key] = trimmed.slice(eq + 1);
+    }
+  }
+}
 
 async function main(): Promise<void> {
   const { values } = parseArgs({
@@ -32,6 +55,7 @@ async function main(): Promise<void> {
     return;
   }
   const repoRoot = values.repoRoot ?? process.cwd();
+  loadDotEnv(repoRoot); // 密钥只从 .env 进进程环境，不落盘不打印
   const configDir = join(repoRoot, "runtime", "configs");
   const configPath = values.config;
 
