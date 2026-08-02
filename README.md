@@ -2,6 +2,9 @@
 
 用官方 Python SDK（`arena-hero` 0.2.6）自动游玩 Arena Hero（规则 v0.10）。
 
+**目标**：攒 Core 资源 → 商店兑换公益站注册码（3 账号并行产出）。
+战略、商店清单、防御设计与限流分析见 `docs/GOAL.md`、`docs/LIMITS.md`。
+
 ## 两种模式
 
 | 模式 | 文件 | 说明 |
