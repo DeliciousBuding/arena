@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
@@ -36,7 +37,19 @@ class DebugServer:
         self._snapshot = snapshot
         self._command = command
         self._map_store = map_store
-        self._httpd = ThreadingHTTPServer((host, port), _make_handler(self))
+        # bind 重试：Windows 上快速重启时旧进程端口处于 TIME_WAIT，
+        # 直接 bind 报 WinError 10013——等待 TIME_WAIT（约 2 分钟）过期
+        self._httpd = None
+        for attempt in range(24):
+            try:
+                self._httpd = ThreadingHTTPServer((host, port), _make_handler(self))
+                return
+            except OSError as exc:
+                if attempt == 23:
+                    raise
+                print(f"[debug] 端口 {port} bind 失败（{exc}），5s 后重试"
+                      f"（等待 TIME_WAIT 过期，{attempt + 1}/24）", flush=True)
+                time.sleep(5)
 
     def start(self) -> None:
         Thread(target=self._httpd.serve_forever, daemon=True, name="debug-api").start()
