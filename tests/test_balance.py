@@ -182,8 +182,9 @@ def test_multiple_workers_patrol_different_directions():
     w2 = FakeUnit((0, 0), UnitType.WORKER, 2, uid=uuid.UUID(int=2))
     st = make_state(core=core, units=[w1, w2], resources=2,
                     beacon_pos=(10, 0), beacon_status=BeaconStatus.GROUND)
-    assert action_of(s, st, w1.id).direction is Direction.RIGHT
-    assert action_of(s, st, w2.id).direction is Direction.DOWN
+    plan = s.decide(st)  # 单次 decide：两个 Worker 按序号错开扇区
+    assert plan.actions[w1.id].direction is Direction.RIGHT  # index 0 → 主方向
+    assert plan.actions[w2.id].direction is Direction.DOWN   # index 1 → 顺时针一格
 
 
 # ---------- 恢复 ----------

@@ -13,3 +13,6 @@ logs/
 # 外部克隆的 skill 仓库（独立版本管理）
 .agents/
 mapstore/
+
+# pi 二开 worktree（独立 git 仓库，pi 主 clone 在 [pi-repo]）
+pi-dev/
