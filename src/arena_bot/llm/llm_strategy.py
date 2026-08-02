@@ -1,23 +1,29 @@
 """LLM 决策策略：backend（pi RPC）→ parser（严格校验）→ fallback（确定性）。
 
-注册表名 "llm"。decide() 流程：
-1. 构建 prompt（第一 Tick 注入完整规则，之后只发局势增量 → 前缀稳定缓存命中）
-2. backend.ask() → LLM 决策文本
-3. parser 严格校验 → Plan；失败/超时 → fallback.decide()（默认 balance）
+注册表名 "llm"。decide() 完整链路（按优先级降级，绝不空手而归）：
+1. 主路径：原生 tool calling（arena_plan）→ parse_tool_plan 严格校验
+2. 兼容路径：LLM 输出自由文本 JSON → parse_llm_plan（工具调用退化时仍可用）
+3. 兜底路径：全部失败/异常 → fallback.decide()（默认 balance，确定性）
 
-LLM 是"指挥官"：只输出决策意图，执行（apply_plan/合法性）由框架负责——
-不暴露工具给 LLM，保持决策与执行解耦。
+健壮性设计：
+- retry：瞬态失败（超时/进程/IO）指数退避重试 llm_retries 次；校验类失败不重试
+  （模型没调用工具，重试大概率同样失败，直接降级）
+- 进程自愈：backend 崩溃后自动重启（见 PiRpcBackend._ensure_alive）
+- 决策统计：每次 decide 记录路径/延迟/重试次数 → snapshot 可观测
+
+LLM 是"指挥官"：只输出决策意图，执行（apply_plan/合法性）由框架负责。
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from ..config import TacticConfig
 from ..strategy import Plan, Strategy
 from .backend import LLMBackend, PiRpcBackend
-from .parser import parse_tool_plan
+from .parser import parse_llm_plan, parse_tool_plan
 
 if TYPE_CHECKING:
     from ..core.state import TickState
@@ -44,7 +50,11 @@ RULES = """你是 Arena Hero 游戏的战术指挥官，每 Tick 必须使用 ar
 
 
 def state_to_prompt(state: "TickState", first: bool = False) -> str:
-    """Tick 状态 → 决策 prompt（首 Tick 含完整规则，之后仅增量）。"""
+    """Tick 状态 → 决策 prompt（首 Tick 含完整规则，之后仅增量）。
+
+    增量只发局势，不发规则 → prompt 前缀逐 Tick 稳定 → DeepSeek context cache
+    命中（实测 94-98%），token 成本和时间都大幅下降。
+    """
     lines = [RULES, ""] if first else [""]
     core = state.core
     lines.append(
@@ -65,12 +75,12 @@ def state_to_prompt(state: "TickState", first: bool = False) -> str:
             f"- {u.unit_type.value} {u.id} pos={u.position} hp={u.hp}"
             f"{f' cargo={cargo}' if cargo is not None else ''}")
     lines.append("")
-    lines.append("请给出下一 Tick 行动计划（严格按输出契约，只输出 JSON）:")
+    lines.append("请调用 arena_plan 工具提交下一 Tick 计划:")
     return "\n".join(lines)
 
 
 class LLMStrategy(Strategy):
-    """LLM 指挥官策略：决策失败/超时回退确定性策略。"""
+    """LLM 指挥官策略：tool calling 主路径 + 文本兼容 + 确定性兜底。"""
 
     name = "llm"
 
@@ -82,34 +92,84 @@ class LLMStrategy(Strategy):
             backend = PiRpcBackend(
                 pi_cli=config.llm_pi_cli, model=config.llm_model,
                 session_dir=config.llm_session_dir,
-                startup_timeout=config.llm_startup_timeout)
+                startup_timeout=config.llm_startup_timeout,
+                arena_tools=config.llm_arena_tools)
         self.backend = backend
         self.fallback = fallback if fallback is not None else _balance(config, world)
         self._first = True
+        # 决策统计（snapshot/telemetry 可观测）
+        self.stats = {
+            "calls": 0, "tool_ok": 0, "text_ok": 0, "fallback": 0,
+            "retries": 0, "last_latency_s": 0.0, "avg_latency_s": 0.0,
+        }
 
     def decide(self, state: "TickState") -> Plan:
         prompt = state_to_prompt(state, first=self._first)
         self._first = False
-        try:
-            result = self.backend.ask(prompt, f"tick-{state.tick}",
-                                      timeout=self.config.llm_timeout)
-        except (TimeoutError, RuntimeError, OSError) as exc:
-            log.warning("tick %d LLM 调用失败（%s），回退确定性策略", state.tick, exc)
-            return self.fallback.decide(state)
-        # 主路径：原生 tool calling（arena_plan）
+        self.stats["calls"] += 1
+
+        result, latency = self._ask_with_retry(state, prompt)
+        if result is None:  # 重试耗尽仍失败
+            return self._fallback(state, latency, "backend_error")
+
+        # 主路径：原生 tool calling
         tool = result.tool("arena_plan")
         if tool is not None:
             plan = parse_tool_plan(tool.input, state)
             if plan is not None:
+                self._mark("tool_ok", latency)
                 plan.intents = {str(k): f"llm:{v}"
                                 for k, v in plan.intents.items()}
                 return plan
-            log.warning("tick %d arena_plan 参数校验失败（%r），回退确定性策略",
+            log.warning("tick %d arena_plan 参数校验失败（%.200r），降级文本解析",
                         state.tick, tool.input)
-            return self.fallback.decide(state)
-        log.warning("tick %d LLM 未调用 arena_plan（%.200s），回退确定性策略",
-                    state.tick, result.text.replace("\n", " "))
+        # 兼容路径：文本 JSON（工具未调用/校验失败时仍可能产出可用计划）
+        if result.text:
+            plan = parse_llm_plan(result.text, state)
+            if plan is not None:
+                self._mark("text_ok", latency)
+                plan.intents = {str(k): f"llm:{v}"
+                                for k, v in plan.intents.items()}
+                return plan
+        return self._fallback(state, latency, "parse_failed")
+
+    # ---- 内部 ----
+
+    def _ask_with_retry(self, state: "TickState", prompt: str):
+        """决策级重试：瞬态失败指数退避重试，直到成功或耗尽次数。
+
+        返回 (AskResult | None, latency)。None 表示重试耗尽。
+        """
+        t0 = time.monotonic()
+        for attempt in range(self.config.llm_retries + 1):
+            try:
+                result = self.backend.ask(
+                    prompt, f"tick-{state.tick}", timeout=self.config.llm_timeout)
+                return result, time.monotonic() - t0
+            except (TimeoutError, OSError, RuntimeError) as exc:
+                if attempt < self.config.llm_retries:
+                    delay = self.config.llm_retry_delay * (2 ** attempt)
+                    log.warning(
+                        "tick %d LLM 调用失败（第 %d 次：%s），%.1fs 后重试",
+                        state.tick, attempt + 1, exc, delay)
+                    time.sleep(delay)
+                else:
+                    log.warning("tick %d LLM 调用重试耗尽（%s），回退确定性策略",
+                                state.tick, exc)
+            self.stats["retries"] += 1
+        return None, time.monotonic() - t0
+
+    def _fallback(self, state: "TickState", latency: float, reason: str) -> Plan:
+        self._mark("fallback", latency)
+        log.warning("tick %d 降级到确定性策略（reason=%s）", state.tick, reason)
         return self.fallback.decide(state)
+
+    def _mark(self, kind: str, latency: float) -> None:
+        self.stats[kind] += 1
+        self.stats["last_latency_s"] = round(latency, 2)
+        n = self.stats["calls"]
+        self.stats["avg_latency_s"] = round(
+            (self.stats["avg_latency_s"] * (n - 1) + latency) / n, 2) if n else 0.0
 
     def close(self) -> None:
         self.backend.close()

@@ -51,6 +51,8 @@ def main() -> int:
     ap.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
     ap.add_argument("--pi", type=Path, default=DEFAULT_PI_CLI)
     ap.add_argument("--model", default="newapi/deepseek-v4-flash")
+    ap.add_argument("--arena-tools", action="store_true",
+                    help="pi 唯一工具模式（arena_plan tool calling）")
     args = ap.parse_args()
 
     if not args.pi.exists():
@@ -61,26 +63,31 @@ def main() -> int:
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
     print(f"[桥接] 启动 pi RPC: {' '.join(PiRpcBackend(args.pi, args.model, SESSION_DIR).cmd)}")
-    bridge = PiRpcBackend(args.pi, args.model, SESSION_DIR)
+    bridge = PiRpcBackend(args.pi, args.model, SESSION_DIR,
+                          arena_tools=args.arena_tools)
     try:
         print("[桥接] RPC 就绪，开始逐 Tick 决策\n")
         report = []
         for tick in range(1, args.ticks + 1):
             state = evolve_state(base, tick)
-            msg = (RULES if tick == 1 else "") + state_summary(state) + "\n\n请给出下一 Tick 行动计划:"
+            msg = (RULES if tick == 1 else "") + state_summary(state) + \
+                "\n\n请调用 arena_plan 工具提交下一 Tick 计划:"
             try:
                 t0 = time.monotonic()
-                text = bridge.ask(msg, f"tick-{tick}")
+                result = bridge.ask(msg, f"tick-{tick}")
                 dt = time.monotonic() - t0
             except TimeoutError as e:
                 print(f"[tick {tick}] 超时: {e}")
                 report.append((tick, "TIMEOUT", 0.0, ""))
                 continue
-            ok = len(text.strip()) >= 10
-            print(f"[tick {tick}] {dt:.1f}s | {len(text)} 字符 | {'✓' if ok else '? 空/过短'}")
-            print(text.strip()[:300])
+            tool = result.tool("arena_plan")
+            text = result.text if tool is None else json.dumps(tool.input, ensure_ascii=False)
+            ok = tool is not None or len(text.strip()) >= 10
+            tag = "tool" if tool is not None else ("ok" if ok else "short")
+            print(f"[tick {tick}] {dt:.1f}s | {tag} | {len(text)} 字符")
+            print(text[:400])
             print("-" * 60)
-            report.append((tick, "ok" if ok else "short", dt, text.strip()[:200]))
+            report.append((tick, tag, dt, text[:200]))
 
         times = [r[2] for r in report if r[1] == "ok"]
         if times:

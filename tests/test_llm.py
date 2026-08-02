@@ -9,7 +9,7 @@ from arena_hero import BeaconStatus, CoreState, Direction, UnitType
 
 from arena_bot.config import TacticConfig
 from arena_bot.core.state import TickState
-from arena_bot.llm.backend import AskResult, LLMBackend, ToolCall
+from arena_bot.llm.backend import AskResult, LLMBackend, ToolCall, _extract_result
 from arena_bot.llm.llm_strategy import LLMStrategy, state_to_prompt
 from arena_bot.llm.parser import parse_llm_plan, parse_tool_plan
 from arena_bot.world import World
@@ -39,16 +39,20 @@ class FakeUnit:
 
 
 class FakeBackend:
-    """可编程 backend：固定 AskResult / 抛错 / 记录调用。"""
+    """可编程 backend：固定 AskResult / 抛错（可限前 N 次）/ 记录调用。"""
 
-    def __init__(self, results=None, error=None):
+    def __init__(self, results=None, error=None, fail_first=0):
         self.results = list(results or [])
         self.error = error
+        self.fail_first = fail_first  # 前 N 次调用抛错（瞬态失败语义），之后正常
         self.calls: list[tuple[str, int]] = []
         self.closed = False
 
     def ask(self, message: str, request_id: str, timeout: float) -> AskResult:
         self.calls.append((request_id, len(message)))
+        if self.fail_first > 0:
+            self.fail_first -= 1
+            raise TimeoutError("transient")  # 瞬态失败：限前 N 次，之后正常
         if self.error is not None:
             raise self.error
         return self.results.pop(0) if self.results else AskResult(text="")
@@ -57,8 +61,42 @@ class FakeBackend:
         self.closed = True
 
 
-def tool_call(name, **input):
+def make_tool_call(name, **input):
     return ToolCall(name=name, input=input)
+
+
+# ---------- backend：turn_end 提取（pi 原生命名） ----------
+
+def test_extract_result_pi_toolCall_block():
+    """pi 原生 toolCall block（arguments 字段）→ ToolCall。"""
+    res = _extract_result({
+        "role": "assistant", "content": [
+            {"type": "thinking", "thinking": "想一下"},
+            {"type": "toolCall", "id": "call_1", "name": "arena_plan",
+             "arguments": {"actions": [], "reason": "无"}},
+        ]})
+    assert res.thinking == "想一下"
+    assert res.tool("arena_plan") is not None
+    assert res.tool("arena_plan").input["actions"] == []
+    assert res.text == ""
+
+
+def test_extract_result_anthropic_tool_use_block():
+    """Anthropic 风格 tool_use + input 同样兼容。"""
+    res = _extract_result({
+        "content": [
+            {"type": "tool_use", "name": "arena_plan",
+             "input": {"actions": [{"unit": "u1", "kind": "WAIT"}]}},
+            {"type": "text", "text": "已提交"},
+        ]})
+    assert res.text == "已提交"
+    assert res.tool("arena_plan").input["actions"][0]["kind"] == "WAIT"
+
+
+def test_extract_result_no_blocks():
+    assert _extract_result({}).text == ""
+    assert _extract_result({"content": []}).tool_calls == []
+    assert _extract_result({"text": "plain"}).text == "plain"
 
 
 def make_state(units=(), enemies=(), resources=5):
@@ -167,12 +205,12 @@ def test_parse_rejects_core_action_without_core():
 
 # ---------- LLMStrategy：决策与回退 ----------
 
-def test_llm_strategy_uses_tool_call():
+def test_llm_strategy_uses_make_tool_call():
     """主路径：arena_plan tool_use → Plan。"""
     w = FakeUnit((5, 5), UnitType.WORKER)
     st = make_state(units=[w], resources=8)
     backend = FakeBackend(results=[
-        AskResult(text="", tool_calls=[tool_call(
+        AskResult(text="", tool_calls=[make_tool_call(
             "arena_plan", actions=[{"unit": str(w.id), "kind": "HARVEST"}],
             core=None)])])
     strat = LLMStrategy(TacticConfig(), World(), backend=backend)
@@ -186,11 +224,81 @@ def test_llm_strategy_fallback_on_timeout():
     w = FakeUnit((5, 5), UnitType.WORKER)
     st = make_state(units=[w], resources=8)
     backend = FakeBackend(error=TimeoutError("slow"))
-    strat = LLMStrategy(TacticConfig(), World(), backend=backend)
+    # retries=0：不重试直接回退（retry 行为另有专测）
+    strat = LLMStrategy(TacticConfig(llm_retries=0), World(), backend=backend)
     plan = strat.decide(st)
     # 回退到 balance：资源 8 够造 Worker（早期 5+1）
     assert plan.core_action is not None
     assert plan.core_action.kind == "SPAWN"
+    assert strat.stats["fallback"] == 1
+    assert strat.stats["calls"] == 1
+
+
+def test_llm_strategy_retry_then_success():
+    """瞬态失败（超时）→ 指数退避重试 → 成功。"""
+    w = FakeUnit((5, 5), UnitType.WORKER)
+    st = make_state(units=[w], resources=8)
+    backend = FakeBackend(
+        fail_first=1,
+        results=[AskResult(text="", tool_calls=[make_tool_call(
+            "arena_plan", actions=[{"unit": str(w.id), "kind": "HARVEST"}],
+            core=None)])])
+    strat = LLMStrategy(
+        TacticConfig(llm_retries=2, llm_retry_delay=0.01), World(), backend=backend)
+    plan = strat.decide(st)
+    assert plan.actions[w.id].kind == "HARVEST"
+    assert len(backend.calls) == 2          # 第 1 次失败 + 重试成功
+    assert strat.stats["retries"] == 1      # 失败总次数
+    assert strat.stats["tool_ok"] == 1
+    assert strat.stats["fallback"] == 0
+
+
+def test_llm_strategy_retry_exhausted_falls_back():
+    """重试耗尽仍失败 → 回退确定性策略（stats 留痕）。"""
+    w = FakeUnit((5, 5), UnitType.WORKER)
+    st = make_state(units=[w], resources=8)
+    backend = FakeBackend(error=OSError("pipe broken"))
+    strat = LLMStrategy(
+        TacticConfig(llm_retries=2, llm_retry_delay=0.01), World(), backend=backend)
+    plan = strat.decide(st)
+    assert plan.core_action is not None     # balance 兜底
+    assert len(backend.calls) == 3          # 1 次 + 2 次重试
+    assert strat.stats["retries"] == 3      # 失败总次数 = calls
+    assert strat.stats["fallback"] == 1
+
+
+def test_llm_strategy_degrades_tool_fail_to_text_json():
+    """分级降级：arena_plan 校验失败 → 文本 JSON 仍可用 → text_ok 路径。"""
+    w = FakeUnit((5, 5), UnitType.WORKER)
+    st = make_state(units=[w], resources=8)
+    # 工具 input 非法（未知单位），但文本里带着合法 JSON
+    backend = FakeBackend(results=[
+        AskResult(
+            text='{"actions": [{"unit": "%s", "kind": "HARVEST"}]}' % w.id,
+            tool_calls=[make_tool_call(
+                "arena_plan", actions=[{"unit": "nobody", "kind": "HARVEST"}],
+                core=None)])])
+    strat = LLMStrategy(TacticConfig(llm_retries=0), World(), backend=backend)
+    plan = strat.decide(st)
+    assert plan.actions[w.id].kind == "HARVEST"  # 不是 balance 兜底
+    assert strat.stats["text_ok"] == 1
+    assert strat.stats["fallback"] == 0
+
+
+def test_llm_strategy_stats_recorded():
+    """决策统计：calls/latency 记录。"""
+    w = FakeUnit((5, 5), UnitType.WORKER)
+    st = make_state(units=[w], resources=8)
+    backend = FakeBackend(results=[
+        AskResult(text="", tool_calls=[make_tool_call(
+            "arena_plan", actions=[{"unit": str(w.id), "kind": "HARVEST"}],
+            core=None)])])
+    strat = LLMStrategy(TacticConfig(llm_retries=0), World(), backend=backend)
+    strat.decide(st)
+    assert strat.stats["calls"] == 1
+    assert strat.stats["tool_ok"] == 1
+    assert strat.stats["fallback"] == 0
+    assert strat.stats["avg_latency_s"] >= 0
 
 
 def test_llm_strategy_fallback_when_no_tool():
@@ -209,7 +317,7 @@ def test_llm_strategy_fallback_on_bad_tool_input():
     w = FakeUnit((5, 5), UnitType.WORKER)
     st = make_state(units=[w], resources=2)
     backend = FakeBackend(results=[
-        AskResult(text="", tool_calls=[tool_call(
+        AskResult(text="", tool_calls=[make_tool_call(
             "arena_plan", actions=[{"unit": "nobody", "kind": "HARVEST"}],
             core=None)])])
     strat = LLMStrategy(TacticConfig(), World(), backend=backend)

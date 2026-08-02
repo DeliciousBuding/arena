@@ -57,6 +57,9 @@ class TacticConfig:
     llm_timeout: float = 60.0       # 单 Tick 决策超时（窗口 15 秒内需留提交余量）
     llm_startup_timeout: float = 30.0
     llm_session_dir: str = "logs/pi_rpc_sessions"  # 会话落盘（缓存前缀稳定）
+    llm_arena_tools: bool = True    # 唯一工具模式：只暴露 arena_plan（noTools=all）
+    llm_retries: int = 2            # 决策级重试次数（瞬态失败，指数退避）
+    llm_retry_delay: float = 2.0    # 重试退避基数（秒），第 n 次等待 delay*2^n
 
     # 调试端点
     debug_host: str = "127.0.0.1"

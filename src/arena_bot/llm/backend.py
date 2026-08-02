@@ -7,6 +7,7 @@ pi RPC 是默认后端，未来可直接换成 HTTP 后端（直连 NewAPI）而
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import subprocess
 import threading
@@ -25,8 +26,9 @@ class ToolCall:
 
 @dataclass
 class AskResult:
-    """一次决策询问的结果：文本 + 工具调用（原生 tool calling）。"""
+    """一次决策询问的结果：文本 + 思考 + 工具调用（原生 tool calling）。"""
     text: str
+    thinking: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
 
     def tool(self, name: str) -> "ToolCall | None":
@@ -47,29 +49,36 @@ class LLMBackend(Protocol):
 
 
 def _extract_result(message: dict) -> AskResult:
-    """从 turn_end.message 提取文本与 tool_use（Anthropic 风格 content blocks）。
+    """从 turn_end.message 提取文本/思考/工具调用。
 
-    message 结构：{text: [blocks]} 或 {content: [blocks]}；
-    block：{type:"text", text} / {type:"tool_use", name, input} / str。
+    message 结构：{role, content: [blocks]}；
+    block：{type:"text", text} / {type:"thinking", thinking} /
+           {type:"toolCall", name, arguments}（pi 原生命名，Anthropic 风格为
+           tool_use + input，两者都认） / str。
     """
     blocks = message.get("text")
     if blocks is None:
         blocks = message.get("content")
     if not isinstance(blocks, list):
         return AskResult(text=str(blocks) if blocks is not None else "")
-    texts, tools = [], []
+    texts, think, tools = [], [], []
     for block in blocks:
         if isinstance(block, str):
             texts.append(block)
         elif isinstance(block, dict):
             if block.get("type") == "text":
                 texts.append(str(block.get("text", "")))
-            elif block.get("type") == "tool_use":
-                raw = block.get("input") or {}
+            elif block.get("type") == "thinking":
+                think.append(str(block.get("thinking", "")))
+            elif block.get("type") in ("toolCall", "tool_use"):
+                raw = block.get("arguments")
+                if not isinstance(raw, dict):
+                    raw = block.get("input") or {}
                 tools.append(ToolCall(
                     name=str(block.get("name", "")),
                     input=raw if isinstance(raw, dict) else {}))
-    return AskResult(text="".join(texts), tool_calls=tools)
+    return AskResult(text="".join(texts), thinking="".join(think),
+                     tool_calls=tools)
 
 
 class PiRpcBackend(LLMBackend):
@@ -81,9 +90,11 @@ class PiRpcBackend(LLMBackend):
     """
 
     def __init__(self, pi_cli: Path, model: str, session_dir: Path,
-                 startup_timeout: float = 30.0) -> None:
+                 startup_timeout: float = 30.0, arena_tools: bool = False) -> None:
         self.cmd = ["node", str(pi_cli), "--mode", "rpc", "--model", model,
                     "--session-dir", str(session_dir)]
+        if arena_tools:
+            self.cmd.append("--arena-tools")
         self.proc = subprocess.Popen(
             self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8",
@@ -134,8 +145,29 @@ class PiRpcBackend(LLMBackend):
             if ev.get("type") == "response" and ev.get("id") == "hs":
                 return ev.get("success") is True
 
+    def _ensure_alive(self) -> None:
+        """进程自愈：崩溃后自动重启 + 重新握手（长驻可靠性）。"""
+        if self.proc.poll() is None:
+            return
+        log = logging.getLogger("arena_bot.llm")
+        log.warning("pi RPC 进程退出（rc=%s），自动重启", self.proc.returncode)
+        self.proc = subprocess.Popen(
+            self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8",
+            errors="replace", bufsize=1)
+        self.events = queue.Queue()
+        threading.Thread(target=self._read_loop, daemon=True).start()
+        if not self.handshake(timeout=30.0):
+            raise RuntimeError("pi RPC 重启后握手失败")
+
     def ask(self, message: str, request_id: str, timeout: float = 90.0) -> AskResult:
-        """发 prompt，等 agent_settled，返回决策结果（文本 + 原生 tool_use）。"""
+        """发 prompt，等 agent_settled，返回决策结果。
+
+        信息源：RPC 原生事件——
+        - tool_execution_start：工具调用（含结构化 args，决策主输出）
+        - turn_end：最终 assistant 消息（text/thinking，渲染用）
+        """
+        self._ensure_alive()
         self._send({"id": request_id, "type": "prompt", "message": message})
         last = AskResult(text="")
         while True:
@@ -143,7 +175,12 @@ class PiRpcBackend(LLMBackend):
             if ev is None:
                 raise TimeoutError(f"{request_id}: 等待事件超时")
             t = ev.get("type")
-            if t == "turn_end":
+            if t == "tool_execution_start":
+                args = ev.get("args") or {}
+                last.tool_calls.append(ToolCall(
+                    name=str(ev.get("toolName", "")),
+                    input=args if isinstance(args, dict) else {}))
+            elif t == "turn_end":
                 last = _extract_result(ev.get("message") or {})
             elif t == "agent_settled":
                 return last
