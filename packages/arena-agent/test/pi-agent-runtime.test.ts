@@ -129,6 +129,14 @@ async function makeHarness(behavior: StubBehavior = {}): Promise<Harness> {
   };
 }
 
+/** 轮询等待 telemetry 事件（rotate 是 void async + ModelRuntime 文件 IO，固定 sleep 不稳）。 */
+async function waitForTelemetry(h: Harness, type: string, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!h.telemetry.some((t) => t.type === type) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 // ---------- stub-session 层：生命周期 ----------
 
 test("1. prompt resolve → settled（无候选）；health ready；可复用下一 run", async () => {
@@ -162,10 +170,9 @@ test("2. prompt reject → error settle；连续失败达阈值 → unhealthy + 
   const handle2 = h.runtime.startDecision(makeRequest({ runId: "local:t1:101:1", tick: 101 }));
   await handle2.settled;
   assert.equal(h.telemetry.some((t) => t.type === "unhealthy"), true, "连续失败必须标记 unhealthy");
+  // rotation 是 void async：等待 rotated 事件后断言
+  await waitForTelemetry(h, "rotated");
   assert.equal(h.sessions.length, 2, "rotation 必须重建 session");
-  assert.equal(h.runtime.health().ready, false, "rotate 完成前 not ready");
-  // rotation 完成后恢复 ready
-  await new Promise((r) => setTimeout(r, 10));
   assert.equal(h.runtime.health().ready, true, "rotate 完成后 ready");
   await h.close();
 });
@@ -189,8 +196,9 @@ test("4. abort：同步返回（不等待 settled）；provider hang → idle ti
   abortedResolved = true;
   assert.equal(abortedResolved, true, "abort 必须同步返回，不阻塞 coordinator");
   // idle timeout(50ms) → unhealthy → rotate
-  await new Promise((r) => setTimeout(r, 120));
+  await waitForTelemetry(h, "unhealthy");
   assert.equal(h.telemetry.some((t) => t.type === "unhealthy" && t.reason?.includes("abort_idle_timeout")), true);
+  await waitForTelemetry(h, "rotated");
   assert.equal(h.sessions.length, 2, "hang 无法 settle → 必须 rotate");
   await h.close();
 });
@@ -217,8 +225,8 @@ test("6. rotation 期间下一 Tick startDecision 抛错（coordinator 走 Safet
   });
   const handle = h.runtime.startDecision(makeRequest());
   handle.abort("soft_deadline");
-  await new Promise((r) => setTimeout(r, 60)); // unhealthy → rotating 进行中
-  assert.throws(() => h.runtime.startDecision(makeRequest({ runId: "local:t1:101:1", tick: 101 })), /not ready/);
+  // abort 发出后、settle 前：startDecision 立即抛错（coordinator 走 Safety，不等 abort/rotate）
+  assert.throws(() => h.runtime.startDecision(makeRequest({ runId: "local:t1:101:1", tick: 101 })));
   await h.close();
 });
 
@@ -242,7 +250,7 @@ test("9. reportViolation → unhealthy telemetry + 触发 rotate", async () => {
   h.runtime.reportViolation("run_id_mismatch");
   assert.equal(h.telemetry.some((t) => t.type === "violation" && t.reason === "run_id_mismatch"), true);
   assert.equal(h.runtime.health().ready, false, "violation 后 not ready（rotate 中）");
-  await new Promise((r) => setTimeout(r, 20));
+  await waitForTelemetry(h, "rotated");
   assert.equal(h.runtime.health().ready, true, "rotate 完成后 ready");
   await h.close();
 });

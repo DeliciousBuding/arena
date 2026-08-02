@@ -134,11 +134,12 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
   }
 
   startDecision(request: AgentDecisionRequest): AgentRunHandle {
-    if (this.state !== "ready") {
-      throw new Error(`runtime not ready (${this.state})`);
-    }
+    // 检查顺序：重叠 run 优先于 not-ready（语义上"上一 run 未 settle"更具体）
     if (this.active !== null) {
       throw new Error(`overlapping run: ${this.active.runId} is not settled`);
+    }
+    if (this.state !== "ready") {
+      throw new Error(`runtime not ready (${this.state})`);
     }
     // 3.3：用 request.runId 建 ToolContext（权威值源），mapSnapshot 本 Tick 冻结
     const ctx = createToolContext({
@@ -226,11 +227,12 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
   }
 
   reportViolation(reason: string): void {
-    this.onTelemetry("violation", this.active?.runId, reason);
+    this.onTelemetry("violation", this.active?.runId, undefined, reason);
     this.markUnhealthy(`violation: ${reason}`);
   }
 
-  /** 关停：abort 当前 run，session 关闭；之后拒绝新 run。 */
+  /** 关停：abort 当前 run（100ms 兜底不等无限 settle），取消全部 abort timer，
+   *  session 关闭；之后拒绝新 run。 */
   async close(): Promise<void> {
     if (this.state === "closed") {
       return;
@@ -239,8 +241,15 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
       this.abortRun(this.active, "runtime_close");
     }
     if (this.active !== null) {
-      await this.active.settled.catch(() => {});
+      await Promise.race([
+        this.active.settled.catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, 100)),
+      ]);
     }
+    for (const timer of this.abortTimers) {
+      clearTimeout(timer);
+    }
+    this.abortTimers.clear();
     await this.artifacts?.close();
     this.state = "closed";
   }
@@ -262,7 +271,7 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     run.aborted = true;
     run.abortReason = reason;
     this.state = "aborting";
-    this.onTelemetry("abort_requested", run.runId, reason);
+    this.onTelemetry("abort_requested", run.runId, undefined, reason);
     // 不 await：void 后台完成（coordinator 永不阻塞在 abort 上）
     void this.abortAndSettle(run, reason);
   }
@@ -298,7 +307,7 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
       return;
     }
     this.state = "unhealthy";
-    this.onTelemetry("unhealthy", this.active?.runId, reason);
+    this.onTelemetry("unhealthy", this.active?.runId, undefined, reason);
     void this.rotate();
   }
 
@@ -308,6 +317,7 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     }
     this.state = "rotating";
     this.slot.forceClear(); // 4D-pre：rotation 强制清空残留上下文
+    this.active = null; // 旧 run 作废（hang 无法 settle 时不再引用）
     this.generation += 1;
     this.onTelemetry("rotating", undefined, undefined, undefined, this.generation);
     try {
