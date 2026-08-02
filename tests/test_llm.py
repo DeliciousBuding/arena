@@ -341,3 +341,22 @@ def test_prompt_first_includes_rules_then_incremental():
     assert "规则约束" not in later   # 之后增量（缓存前缀稳定）
     assert "tick-42" not in first and "Tick 42" in first
     assert str(w.id) in later        # 单位全量 ID 供 LLM 引用
+
+
+def test_rules_variants_distinct_and_configurable():
+    """策略变体：standard 修复巡逻待命问题，aggressive/economic 各有人格。"""
+    from arena_bot.llm.llm_strategy import RULES_VARIANTS, rules_for
+    assert len(RULES_VARIANTS) >= 3
+    std, agg, eco = (RULES_VARIANTS[k] for k in ("standard", "aggressive", "economic"))
+    # standard 修复：无可见资源要巡逻探索而非原地待命
+    assert "巡逻方向持续移动探索" in std
+    assert "原地等待" in std
+    # 人格差异
+    assert "进攻" in agg and "经济只够军备" in agg
+    assert "种田" in eco and "积累至上" in eco
+    assert rules_for(TacticConfig(llm_rules="economic")) == eco
+    assert rules_for(TacticConfig()) == std          # 默认 standard
+    assert rules_for(TacticConfig(llm_rules="未知")) == std  # 未知回退默认
+    # 变体注入 prompt（首 Tick）
+    st = make_state()
+    assert "经济只够军备" in state_to_prompt(st, first=True, rules=agg)

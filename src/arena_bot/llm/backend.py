@@ -166,12 +166,19 @@ class PiRpcBackend(LLMBackend):
         信息源：RPC 原生事件——
         - tool_execution_start：工具调用（含结构化 args，决策主输出）
         - turn_end：最终 assistant 消息（text/thinking，渲染用）
+
+        timeout 是决策总预算：从发送到 agent_settled 的硬上限，
+        到点即抛 TimeoutError（策略层回退确定性，保证 15s 游戏窗口纪律）。
         """
         self._ensure_alive()
         self._send({"id": request_id, "type": "prompt", "message": message})
+        deadline = time.monotonic() + timeout
         last = AskResult(text="")
         while True:
-            ev = self._read_event(timeout)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"{request_id}: 决策总预算 {timeout:.0f}s 耗尽")
+            ev = self._read_event(remaining)
             if ev is None:
                 raise TimeoutError(f"{request_id}: 等待事件超时")
             t = ev.get("type")

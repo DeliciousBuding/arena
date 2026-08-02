@@ -60,6 +60,7 @@ class TacticConfig:
     llm_arena_tools: bool = True    # 唯一工具模式：只暴露 arena_plan（noTools=all）
     llm_retries: int = 2            # 决策级重试次数（瞬态失败，指数退避）
     llm_retry_delay: float = 2.0    # 重试退避基数（秒），第 n 次等待 delay*2^n
+    llm_rules: str = "standard"     # RULES 变体：standard/aggressive/economic
 
     # 调试端点
     debug_host: str = "127.0.0.1"

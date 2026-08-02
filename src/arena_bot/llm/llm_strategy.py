@@ -31,10 +31,16 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("arena_bot.llm")
 
-RULES = """你是 Arena Hero 游戏的战术指挥官，每 Tick 必须使用 arena_plan 工具提交下一 Tick 的行动计划。
+_RULES_COMMON = """输出要求:
+- 只调用 arena_plan 工具提交计划, 不要调用任何其他工具
+- 无法决定时提交空 actions
+- 提交后立即结束, 不要输出多余内容"""
+
+RULES_VARIANTS: dict[str, str] = {
+    "standard": """你是 Arena Hero 游戏的战术指挥官，每 Tick 必须使用 arena_plan 工具提交下一 Tick 的行动计划。
 
 规则约束:
-- Worker 采集资源后回家交付; cargo 满时优先回家; 无可见资源回家待命
+- Worker 采集资源后回家交付; cargo 满时优先回家; 无可见资源时沿巡逻方向持续移动探索新区域, 不要原地等待
 - 优先造 Worker 到 8 个, 之后 Vanguard/Ranger 交替
 - 人口上限 20 (tier 0 免 upkeep); spawn 后保留 3 资源应急
 - 受损单位在自家静止 Core 格自动 HEAL; Core 先补 HP 再修盾再生产
@@ -43,19 +49,53 @@ RULES = """你是 Arena Hero 游戏的战术指挥官，每 Tick 必须使用 ar
 - 结盟: @delicious233 @buding @delicious23333 @deliciousbuding 是我们的账号,
   它们和它们的 Core 不是敌人, 绝不攻击
 
-输出要求:
-- 只调用 arena_plan 工具提交计划, 不要调用任何其他工具
-- 无法决定时提交空 actions
-- 提交后立即结束, 不要输出多余内容"""
+""" + _RULES_COMMON,
+    "aggressive": """你是 Arena Hero 游戏的进攻型战术指挥官，每 Tick 必须使用 arena_plan 工具提交下一 Tick 的行动计划。
+
+规则约束:
+- 经济只够军备: Worker 铺到 6 个即可, 之后全力造 Vanguard/Ranger
+- 主动求战: 视野内有敌人时 Vanguard 立即逼近 SWEEP, Ranger 走位到可射角度射击
+- 敌人近 Core 时优先击杀而不是生产; spawn 后保留 2 资源应急
+- 受损单位回自家静止 Core 格自动 HEAL; Core 先修盾 (进攻姿态) 再补 HP
+- 无可见敌人时 Vanguard/Ranger 向核心外围推进, 不要蹲守
+- 地面 Beacon 同格自动拾取 (采集 2 倍收益)
+- 结盟: @delicious233 @buding @delicious23333 @deliciousbuding 是我们的账号,
+  它们和它们的 Core 不是敌人, 绝不攻击
+
+""" + _RULES_COMMON,
+    "economic": """你是 Arena Hero 游戏的种田型战术指挥官，每 Tick 必须使用 arena_plan 工具提交下一 Tick 的行动计划。
+
+规则约束:
+- 经济优先: Worker 铺到 10 个, 保持 2 个专职巡逻探路, 其余轮换采集
+- 积累至上: 资源主要攒着 (accumulate_target 达成前不造兵); 只有敌人进犯 Core 才造守卫
+- 避战: 视野内有敌人时单位远离而不是主动接战; 保留 4 资源应急
+- 受损单位回自家静止 Core 格自动 HEAL; Core 先补 HP 再修盾 (防御姿态)
+- 无可见资源时 Worker 沿巡逻方向持续移动探索, 不要原地等待
+- 地面 Beacon 同格自动拾取 (采集 2 倍收益)
+- 结盟: @delicious233 @buding @delicious23333 @deliciousbuding 是我们的账号,
+  它们和它们的 Core 不是敌人, 绝不攻击
+
+""" + _RULES_COMMON,
+}
+
+# 兼容旧引用（离线脚本等）
+RULES = RULES_VARIANTS["standard"]
 
 
-def state_to_prompt(state: "TickState", first: bool = False) -> str:
+def rules_for(config: "TacticConfig") -> str:
+    """按配置选 RULES 变体（llm_rules 参数，默认 standard）。"""
+    return RULES_VARIANTS.get(config.llm_rules, RULES_VARIANTS["standard"])
+
+
+def state_to_prompt(state: "TickState", first: bool = False,
+                    rules: str | None = None) -> str:
     """Tick 状态 → 决策 prompt（首 Tick 含完整规则，之后仅增量）。
 
     增量只发局势，不发规则 → prompt 前缀逐 Tick 稳定 → DeepSeek context cache
     命中（实测 94-98%），token 成本和时间都大幅下降。
+    rules=None 时用默认 standard（首 Tick 才需要）。
     """
-    lines = [RULES, ""] if first else [""]
+    lines = [(rules if rules is not None else RULES), ""] if first else [""]
     core = state.core
     lines.append(
         f"Tick {state.tick} | 资源 {state.resources}/{state.resource_capacity} "
@@ -96,6 +136,7 @@ class LLMStrategy(Strategy):
                 arena_tools=config.llm_arena_tools)
         self.backend = backend
         self.fallback = fallback if fallback is not None else _balance(config, world)
+        self._rules = rules_for(config)  # RULES 变体（standard/aggressive/economic）
         self._first = True
         # 决策统计（snapshot/telemetry 可观测）
         self.stats = {
@@ -104,7 +145,7 @@ class LLMStrategy(Strategy):
         }
 
     def decide(self, state: "TickState") -> Plan:
-        prompt = state_to_prompt(state, first=self._first)
+        prompt = state_to_prompt(state, first=self._first, rules=self._rules)
         self._first = False
         self.stats["calls"] += 1
 
