@@ -102,7 +102,7 @@ test("脱敏：API key/Authorization/token/长随机串全部替换为 [REDACTED
   assert.ok(!text.includes("Bearer"), "Bearer token 必须脱敏");
   assert.ok(!text.includes("sk-1234567890"), "API key 必须脱敏");
   assert.ok(!text.includes("supersecrettoken"), "env token 必须脱敏");
-  const sanitized = sanitizeValue(dirty);
+  const sanitized = sanitizeValue(dirty) as { runId: string };
   assert.equal(sanitized.runId, "[REDACTED]");
 });
 
