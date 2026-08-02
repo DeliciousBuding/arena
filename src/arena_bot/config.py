@@ -47,6 +47,9 @@ class TacticConfig:
     guard_resources: int = 30     # 资源 ≥ 此值视为"值得抢"→ 触发守备补兵
     guard_force: int = 4          # 守备兵力目标数（Vanguard+Ranger）
 
+    # 自诊断 watchdog（卡死/停滞告警）
+    watchdog_stall_ticks: int = 20  # 连续 N tick 无进展视为停滞（约 5 分钟）
+
     # 调试端点
     debug_host: str = "127.0.0.1"
     debug_port: int = 8123

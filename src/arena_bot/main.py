@@ -15,7 +15,7 @@ import sys
 
 from arena_hero import ArenaHeroClient, UnitType
 
-from .config import TacticConfig, TenantConfig, load_api_key
+from .config import PROJECT_ROOT, TacticConfig, TenantConfig, load_api_key
 from .core.state import TickState
 from .debug_api import DebugServer
 from .logging_util import get_logger, set_current_tick, setup_logging
@@ -23,6 +23,7 @@ from .phase_machine import GamePhase, PhaseMachine
 from .strategies import create_strategy
 from .strategy import apply_plan
 from .telemetry import Telemetry
+from .watchdog import Watchdog
 from .world import World
 
 log = get_logger("main")
@@ -66,7 +67,7 @@ def build_command_handler(cfg: TacticConfig, phase: PhaseMachine,
 
 
 def build_snapshot(cfg: TacticConfig, phase: PhaseMachine, world: World,
-                   state_holder: dict) -> callable:
+                   state_holder: dict, watchdog: Watchdog | None = None) -> callable:
     """debug API 快照：运行态全状态（状态/记忆/阶段/参数/暂停标志）。"""
 
     def snapshot() -> dict:
@@ -83,7 +84,7 @@ def build_snapshot(cfg: TacticConfig, phase: PhaseMachine, world: World,
                     "intent": state_holder.get("intents", {}).get(str(u.id)),
                     "worker_state": world.unit_states.get(u.id).worker_state.value,
                 })
-        return {
+        body = {
             "tick": world.tick,
             "paused": state_holder.get("paused", False),
             "resources": st.resources if st else None,
@@ -103,6 +104,12 @@ def build_snapshot(cfg: TacticConfig, phase: PhaseMachine, world: World,
                 "pop_ceiling": cfg.pop_ceiling,
             },
         }
+        if watchdog is not None:
+            body["alarms"] = [
+                {"type": a.alarm_type, "tick": a.tick, "message": a.message}
+                for a in watchdog.open_alarms()
+            ]
+        return body
 
     return snapshot
 
@@ -122,11 +129,17 @@ def play(api_key: str, config: TacticConfig,
                                config, world)
     state_holder: dict = {"paused": False}
 
+    watchdog = Watchdog(
+        alert_path=(PROJECT_ROOT / "alerts" / f"{tenant.name}.jsonl")
+        if tenant is not None else None,
+        stall_ticks=config.watchdog_stall_ticks,
+    )
+
     host = config.debug_host
     port = tenant.debug_port if tenant is not None else config.debug_port
     debug = DebugServer(
         host, port,
-        build_snapshot(config, phase, world, state_holder),
+        build_snapshot(config, phase, world, state_holder, watchdog),
         build_command_handler(config, phase, strategy, world, state_holder),
     )
     debug.start()
@@ -166,7 +179,15 @@ def play(api_key: str, config: TacticConfig,
             plan = strategy.decide(state)
             # intents 存 str key（snapshot 按 str(u.id) 查询）
             state_holder["intents"] = {str(k): v for k, v in plan.intents.items()}
-            if not plan.actions and plan.core_action is None:
+            empty_plan = not plan.actions and plan.core_action is None
+            # watchdog：观察停滞（空计划/单位卡死/经济停滞）
+            watchdog.observe(
+                tick=state.tick, empty_plan=empty_plan,
+                units=[{"id": str(u.id), "pos": tuple(u.position),
+                        "intent": plan.intents.get(u.id)}
+                       for u in state.units],
+                resources=state.resources, resource_capacity=state.resource_capacity)
+            if empty_plan:
                 # 全单位无动作（等效 WAIT）：跳过提交，避免 UI 显示"空计划"
                 log.debug("tick %d 无任何动作，跳过提交", state.tick)
                 continue
