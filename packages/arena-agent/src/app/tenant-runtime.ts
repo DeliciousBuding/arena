@@ -37,6 +37,21 @@ import { decisionTrace, outcomeTrace, planHashOf, runtimeTrace } from "../teleme
 
 export const RULES_VERSION = "v0.11";
 
+/** safety 模式占位 runtime：coordinator 短路不会调用（P0-1），
+ *  避免 Pi session 创建（模型认证）成为 safety Canary 的前置失败点。 */
+class NoopAgentRuntime implements AgentDecisionRuntime {
+  bindCandidateSink(): void {}
+  startDecision(): never {
+    throw new Error("noop runtime: safety 模式不启动 Agent");
+  }
+  health() {
+    return { ready: true, activeRunId: null };
+  }
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
 /** 运行时目录布局：<baseDir>/<tenantId>/{locks,runs,telemetry,pi}。 */
 function tenantDirs(baseDir: string, tenantId: string) {
   const root = join(baseDir, tenantId);
@@ -153,14 +168,18 @@ export async function runTenant(
       options.client ??
       new ArenaHeroClient({ apiKey: readEnvToken(config.arenaTokenEnv) });
 
-    // 5) Agent runtime（真实 Pi 或测试注入 fake）；rotationGeneration 经 onTelemetry 透传
+    // 5) Agent runtime：safety 模式用 no-op 占位（coordinator 短路不调用，Pi 认证不阻断 Canary）；
+    //    其他模式真实 Pi 或测试注入 fake；rotationGeneration 经 onTelemetry 透传
     let runtimeGeneration = 0;
     const onRuntimeTelemetry = (event: PiRuntimeTelemetry): void => {
       if (event.generation !== undefined) {
         runtimeGeneration = event.generation;
       }
     };
-    const runtime = options.runtime ?? (await createPiRuntime(config, dirs.piBaseDir, onRuntimeTelemetry));
+    const runtime =
+      decisionMode === "safety" && options.runtime === undefined
+        ? new NoopAgentRuntime()
+        : (options.runtime ?? (await createPiRuntime(config, dirs.piBaseDir, onRuntimeTelemetry)));
 
     // 6) coordinator（P0-1：decisionMode 传递；deterministic 由 planner 注入，见入口守卫）
     const coordinator = new DecisionCoordinator({
