@@ -36,14 +36,31 @@ def load_experiment(name: str) -> dict:
 
 
 def stop_all() -> None:
+    """P0-5 优雅停机：先发 debug API shutdown（租户结束当前 tick 后自清理），
+    超时才强杀——pi RPC 子进程随 strategy.close() 一并释放，不留孤儿。"""
+    import json
+    import urllib.request
+    for i, p in enumerate(procs):
+        if p.poll() is None:
+            port = 8123 + i
+            try:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/command",
+                    data=json.dumps({"cmd": "shutdown"}).encode(),
+                    headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=3)
+                print(f"  租户 {i + 1}（端口 {port}）收到 shutdown 指令")
+            except Exception as exc:
+                print(f"  租户 {i + 1}（端口 {port}）shutdown 指令失败：{exc}")
     for p in procs:
         if p.poll() is None:
-            p.terminate()
-    for p in procs:
-        try:
-            p.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            p.kill()
+            try:
+                p.wait(timeout=15)  # 宽限期：结束当前 tick + 清理 pi RPC
+            except subprocess.TimeoutExpired:
+                print(f"  pid={p.pid} 宽限期超时，强杀")
+                p.kill()
+            else:
+                print(f"  pid={p.pid} 已优雅退出 rc={p.returncode}")
 
 
 def main() -> int:

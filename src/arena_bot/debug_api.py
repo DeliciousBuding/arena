@@ -22,7 +22,7 @@ from typing import Callable
 from .map_store import MapStore
 
 # 白名单指令（main 注册命令处理器时校验）
-COMMANDS = ("pause", "resume", "set_param", "set_phase")
+COMMANDS = ("pause", "resume", "set_param", "set_phase", "shutdown")
 
 SnapshotFn = Callable[[], dict]
 CommandFn = Callable[[str, dict], tuple[bool, str]]

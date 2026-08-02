@@ -38,6 +38,10 @@ def build_command_handler(cfg: TacticConfig, phase: PhaseMachine,
 
     def handle(cmd: str, args: dict) -> tuple[bool, str]:
         nonlocal cfg
+        if cmd == "shutdown":
+            state_holder["shutdown"] = True
+            log.warning("调试指令：优雅退出（结束当前 tick 后清理）")
+            return True, "shutting down"
         if cmd == "pause":
             state_holder["paused"] = True
             log.warning("调试指令：暂停提交（观察模式）")
@@ -141,7 +145,7 @@ def play(api_key: str, config: TacticConfig,
         strategy_kwargs["map_url"] = f"http://127.0.0.1:{tenant.debug_port}"
     strategy = create_strategy(tenant.strategy_name if tenant else "balance",
                                config, world, **strategy_kwargs)
-    state_holder: dict = {"paused": False}
+    state_holder: dict = {"paused": False, "shutdown": False}
 
     watchdog = Watchdog(
         alert_path=(PROJECT_ROOT / "alerts" / f"{tenant.name}.jsonl")
@@ -151,22 +155,28 @@ def play(api_key: str, config: TacticConfig,
 
     host = config.debug_host
     port = tenant.debug_port if tenant is not None else config.debug_port
-    debug = DebugServer(
-        host, port,
-        build_snapshot(config, phase, world, state_holder, watchdog),
-        build_command_handler(config, phase, strategy, world, state_holder),
-        map_store=map_store,
-    )
-    debug.start()
-    log.info("调试端点 http://%s:%s（GET /state /strategies，POST /command）", host, port)
+    debug = None
+    telemetry = None
+    try:
+        debug = DebugServer(
+            host, port,
+            build_snapshot(config, phase, world, state_holder, watchdog),
+            build_command_handler(config, phase, strategy, world, state_holder),
+            map_store=map_store,
+        )
+        debug.start()
+        log.info("调试端点 http://%s:%s（GET /state /strategies，POST /command）", host, port)
 
-    telemetry = Telemetry(tenant.telemetry_path) if tenant is not None else None
+        telemetry = Telemetry(tenant.telemetry_path) if tenant is not None else None
 
-    with ArenaHeroClient(api_key=api_key) as game:
-        for turn in game.turns():
-            set_current_tick(turn.tick)
-            state = TickState.from_turn(turn)
-            state_holder["state"] = state
+        with ArenaHeroClient(api_key=api_key) as game:
+            for turn in game.turns():
+                if state_holder.get("shutdown"):
+                    log.info("收到 shutdown 指令，优雅退出")
+                    break
+                set_current_tick(turn.tick)
+                state = TickState.from_turn(turn)
+                state_holder["state"] = state
 
             # 事件 → world（采集成功/失败、单位状态）
             harvest_failed = {ev.position for ev in state.events
@@ -243,11 +253,15 @@ def play(api_key: str, config: TacticConfig,
                 state.resources, state.resource_capacity, state.population,
                 len(state.workers), len(state.vanguards), len(state.rangers),
                 len(state.visible_enemies))
-
-    if telemetry is not None:
-        telemetry.close()
-    strategy.close()  # 释放策略资源（LLM backend 进程等）
-    map_store.close()
+    finally:
+        # P0-5 优雅退出：无论正常/异常/指令停机，资源全部释放
+        if debug is not None:
+            debug.shutdown()
+        if telemetry is not None:
+            telemetry.close()
+        strategy.close()  # 释放策略资源（LLM backend 进程等，含 pi RPC）
+        map_store.close()
+        log.info("租户 %s 资源清理完毕", tenant.name if tenant else "solo")
 
 
 def main() -> None:
