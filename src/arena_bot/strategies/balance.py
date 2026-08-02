@@ -9,6 +9,7 @@ from arena_hero import BeaconStatus, Direction, UnitType
 from ..config import UNIT_MAX_HP
 from ..core.nav import (explore_target, line_blocked, manhattan, nearest,
                         step_toward)
+from ..core.unit_state import WorkerState
 from ..strategy import Action, Plan, Strategy
 
 if TYPE_CHECKING:
@@ -107,20 +108,47 @@ class BalanceStrategy(Strategy):
     def _decide_worker(self, state, plan, unit, home, core_normal,
                        obstacle, resource_cells, index) -> None:
         pos = unit.position
-        # 经济：先交付后采集
+        mem = self.world.unit_states.get(unit.id)
+        # --- cargo>0：先交付后采集（cargo 是权威字段，无需记忆）---
         if unit.cargo > 0:
             if home is not None and pos == home:
                 if state.resource_space > 0:
                     plan.set(Action(unit.id, "DEPOSIT"), "deposit")
+                    # 下一 Tick cargo==0 自然回到 PATROL
                 # 容量满：原地等待，下 Tick 再看
             elif home is not None:
                 d = step_toward(pos, home, obstacle)
                 if d is not None:
                     plan.set(Action(unit.id, "MOVE", direction=d), "return_home")
             return
+        # --- cargo==0 ---
+        # 站在资源格 → 采集（成功后事件处理清目标）
         if pos in resource_cells:
             plan.set(Action(unit.id, "HARVEST"), "harvest")
+            mem.worker_state = WorkerState.PATROL
+            mem.harvest_target = None
             return
+        # 有可见资源 → 设目标前往
+        if resource_cells:
+            target = nearest(resource_cells, pos)
+            mem.worker_state = WorkerState.GO_HARVEST
+            mem.harvest_target = target
+            if target != pos:
+                d = step_toward(pos, target, obstacle)
+                if d is not None:
+                    plan.set(Action(unit.id, "MOVE", direction=d), "go_harvest")
+            return
+        # 无可见资源：记忆目标仍在线索中 → 继续前往（跨 Tick 意图）
+        if (mem.worker_state is WorkerState.GO_HARVEST
+                and mem.harvest_target is not None
+                and mem.harvest_target in set(self.world.resource_hints())):
+            d = step_toward(pos, mem.harvest_target, obstacle)
+            if d is not None:
+                plan.set(Action(unit.id, "MOVE", direction=d), "go_harvest_mem")
+            return
+        # 目标失效（被采/被抢/刷新移走）→ 回 PATROL，进入巡逻
+        mem.worker_state = WorkerState.PATROL
+        mem.harvest_target = None
         # 空手：朝最近可见资源格走；无可见资源则在家半径内巡逻
         if resource_cells:
             target = nearest(resource_cells, pos)
