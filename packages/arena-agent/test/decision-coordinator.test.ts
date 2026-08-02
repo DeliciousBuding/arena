@@ -80,7 +80,7 @@ function makeState(tick: number): TickState {
   return reduceTurn(turn as unknown as TurnLike);
 }
 
-function makeHarness(mode: FakeRuntimeMode, plan?: Plan): Harness {
+function makeHarness(mode: FakeRuntimeMode, plan?: Plan, decisionMode?: "hybrid" | "agent-shadow" | "safety"): Harness {
   const clock = new FakeClock();
   const runtime = new FakeAgentRuntime({
     sink: () => ({ accepted: false, code: "lease_not_found", message: "unused" }),
@@ -99,6 +99,7 @@ function makeHarness(mode: FakeRuntimeMode, plan?: Plan): Harness {
     tenantId: "t1",
     rulesVersion: "v0.11",
     configHash: "test",
+    ...(decisionMode !== undefined ? { decisionMode } : {}),
     sleepUntil: (deadlineMs, c) =>
       new Promise<void>((resolve) => {
         (c as FakeClock).setTimeout(() => resolve(), Math.max(0, deadlineMs - c.now()));
@@ -119,9 +120,9 @@ test("1. Agent 立即给出合法计划 → agent", async () => {
     u2: { type: "MOVE", direction: "LEFT" },
   }));
   const result = await h.coordinator.decide(h.state);
-  assert.equal(result.source, "agent");
+  assert.equal(result.execution.source, "agent");
   assert.equal(result.deadlineOutcome, "candidate");
-  assert.ok(result.plan.unitActions.u1 !== undefined);
+  assert.ok(result.execution.plan.unitActions.u1 !== undefined);
 });
 
 test("2. Agent 半合法计划 → hybrid", async () => {
@@ -132,7 +133,7 @@ test("2. Agent 半合法计划 → hybrid", async () => {
     ghost: { type: "MOVE", direction: "RIGHT" },
   }));
   const result = await h.coordinator.decide(h.state);
-  assert.equal(result.source, "hybrid");
+  assert.equal(result.execution.source, "hybrid");
   assert.ok(result.invalidAgentActionCount >= 1);
 });
 
@@ -141,7 +142,7 @@ test("3. Agent 不返回 → soft deadline 时 safety", async () => {
   const pending = h.coordinator.decide(h.state);
   h.clock.advance(100); // 到 soft deadline
   const result = await pending;
-  assert.equal(result.source, "safety");
+  assert.equal(result.execution.source, "safety");
   assert.equal(result.deadlineOutcome, "soft_deadline");
   assert.equal(result.abortRequested, true);
 });
@@ -153,7 +154,7 @@ test("4. 候选在 deadline 前 1ms 到达 → 可接受", async () => {
   const pending = h.coordinator.decide(h.state);
   h.clock.advance(50); // 候选在 soft(100) 前 50ms 到达（delayMs 缺省 50）
   const result = await pending;
-  assert.equal(result.source, "agent");
+  assert.equal(result.execution.source, "agent");
 });
 
 test("5. 候选恰好在 deadline 到达 → 拒绝（Lease now>=deadline 即过期）", async () => {
@@ -181,7 +182,7 @@ test("5. 候选恰好在 deadline 到达 → 拒绝（Lease now>=deadline 即过
   }, 100);
   clock.advance(100); // 候选与 deadline 同时触发
   const result = await pending;
-  assert.equal(result.source, "safety"); // 候选被 Lease 拒绝
+  assert.equal(result.execution.source, "safety"); // 候选被 Lease 拒绝
 });
 
 test("6. Agent 在 deadline 后提交 → stale rejection", async () => {
@@ -207,7 +208,7 @@ test("6. Agent 在 deadline 后提交 → stale rejection", async () => {
   const pending = coordinator.decide(makeState(100));
   clock.advance(150); // 越过 soft：先 expire，后候选到达 → 拒绝
   const result = await pending;
-  assert.equal(result.source, "safety");
+  assert.equal(result.execution.source, "safety");
 });
 
 // ---------- 7-9：runId/tick/stateHash/重复 ----------
@@ -228,7 +229,7 @@ test("7. 旧 Tick tool call 在下一 Tick 到达 → 永不执行", async () =>
   });
   h.clock.advance(100);
   const result2 = await r2;
-  assert.equal(result2.source, "safety"); // 旧候选未影响新 Tick
+  assert.equal(result2.execution.source, "safety"); // 旧候选未影响新 Tick
   assert.equal(result2.tick, 101);
 });
 
@@ -237,24 +238,24 @@ test("8. 错误 runId/tick/stateHash → 拒绝", async () => {
   const p1 = h.coordinator.decide(h.state);
   h.clock.advance(100); // 错误 runId 候选被拒 → 等 soft deadline → safety
   const r1 = await p1;
-  assert.equal(r1.source, "safety");
+  assert.equal(r1.execution.source, "safety");
   const h2 = makeHarness("submits-wrong-tick", agentPlan(100));
   const p2 = h2.coordinator.decide(h2.state);
   h2.clock.advance(100);
   const r2 = await p2;
-  assert.equal(r2.source, "safety");
+  assert.equal(r2.execution.source, "safety");
   const h3 = makeHarness("submits-wrong-state", agentPlan(100));
   const p3 = h3.coordinator.decide(h3.state);
   h3.clock.advance(100);
   const r3 = await p3;
-  assert.equal(r3.source, "safety");
+  assert.equal(r3.execution.source, "safety");
 });
 
 test("9. 重复 arena_plan → 只接受第一次", async () => {
   const h = makeHarness("submits-twice", agentPlan(100, { u1: { type: "MOVE", direction: "UP" } }));
   const result = await h.coordinator.decide(h.state);
-  assert.equal(result.source, "agent"); // 第一次 accepted
-  assert.ok(result.plan.unitActions.u1 !== undefined);
+  assert.equal(result.execution.source, "agent"); // 第一次 accepted
+  assert.ok(result.execution.plan.unitActions.u1 !== undefined);
 });
 
 // ---------- 10-12：异常/abort/重叠 ----------
@@ -264,7 +265,7 @@ test("10. Agent 抛异常 → safety", async () => {
   const pending = h.coordinator.decide(h.state);
   h.clock.advance(100); // throws 延时 settle，无候选 → soft deadline → safety
   const result = await pending;
-  assert.equal(result.source, "safety");
+  assert.equal(result.execution.source, "safety");
 });
 
 test("11. Agent 无视 abort → 当前 Tick 仍正常返回", async () => {
@@ -277,7 +278,7 @@ test("11. Agent 无视 abort → 当前 Tick 仍正常返回", async () => {
   const pending = h.coordinator.decide(h.state);
   h.clock.advance(100); // soft deadline → abort 发出（submits-after-abort 此时才提交 → 被拒）
   const result = await pending;
-  assert.equal(result.source, "safety"); // abort 后提交被拒，safety 固定
+  assert.equal(result.execution.source, "safety"); // abort 后提交被拒，safety 固定
   assert.equal(result.abortRequested, true);
   assert.ok(h.runtime.abortLog.length >= 1);
 });
@@ -290,7 +291,7 @@ test("12. 上一 run 未 settle → 下一 Tick 拒绝重叠 → degraded safety
   const r2 = h.coordinator.decide(makeState(101));
   h.clock.advance(100);
   const result2 = await r2;
-  assert.equal(result2.source, "safety"); // 重叠拒绝 → 无 handle → safety
+  assert.equal(result2.execution.source, "safety"); // 重叠拒绝 → 无 handle → safety
 });
 
 // ---------- 13-15：selection/repair/emergency ----------
@@ -305,7 +306,7 @@ test("13. 候选在 soft 前到达 → 计划在 selection deadline 前固定", 
   h.clock.advance(50); // 候选到达 → 立即固定
   const result = await pending;
   assert.equal(resolved, true);
-  assert.equal(result.source, "agent");
+  assert.equal(result.execution.source, "agent");
   assert.ok(result.selectionLatencyMs < BUDGET.selectionMs);
 });
 
@@ -314,8 +315,8 @@ test("14. 最终计划必过 validator（即使 Safety 被 repair 仍标 safety�
   const pending = h.coordinator.decide(h.state);
   h.clock.advance(100);
   const result = await pending;
-  assert.equal(result.source, "safety");
-  const validation = validatePlan(h.state, result.plan);
+  assert.equal(result.execution.source, "safety");
+  const validation = validatePlan(h.state, result.execution.plan);
   assert.equal(validation.valid, true);
 });
 
@@ -341,8 +342,8 @@ test("15. SafetyPlanner 抛异常 → emergency", async () => {
   const pending = coordinator.decide(makeState(100));
   clock.advance(100);
   const result = await pending;
-  assert.equal(result.source, "emergency");
-  assert.equal(validatePlan(makeState(100), result.plan).valid, true);
+  assert.equal(result.execution.source, "emergency");
+  assert.equal(validatePlan(makeState(100), result.execution.plan).valid, true);
 });
 
 // ---------- 16：压力无泄漏 ----------
@@ -401,7 +402,7 @@ test("17. handle.runId ≠ request.runId → 立即 abort + Safety + violation�
   });
   const result = await pending; // 不 advance：startDecision 返回后同步检测
   assert.equal(resolved, true);
-  assert.equal(result.source, "safety");
+  assert.equal(result.execution.source, "safety");
   assert.equal(result.deadlineOutcome, "error");
   assert.ok(runtime.violationLog.some((v) => v.includes("run_id_mismatch")));
   assert.ok(runtime.abortLog.some((a) => a.reason.includes("run_id_mismatch")));
@@ -420,7 +421,7 @@ test("18. 上一 run active → startDecision 抛错 → 立即 Safety（不等 
   });
   const r2 = await p2; // 不 advance：startDecision 抛错 → 立即返回
   assert.equal(resolved, true);
-  assert.equal(r2.source, "safety");
+  assert.equal(r2.execution.source, "safety");
   assert.equal(r2.deadlineOutcome, "error");
   assert.equal(r2.tick, 101);
 });
@@ -458,7 +459,7 @@ test("19. 选择过程超过 selection deadline → 弃候选，用已准备好�
   const pending = coordinator.decide(makeState(100));
   clock.advance(100); // 候选 50ms 投递（accepted）；raceCandidate 在 soft(100) 取回候选
   const result = await pending; // 慢 arbiter 已把时钟推到 350（> selection 200）
-  assert.equal(result.source, "safety"); // 候选被弃，SafetyPlan 固定
+  assert.equal(result.execution.source, "safety"); // 候选被弃，SafetyPlan 固定
   assert.equal(result.deadlineOutcome, "selection_timeout");
   assert.ok(result.selectionLatencyMs >= BUDGET.selectionMs);
 });
@@ -483,8 +484,99 @@ test("20. run 最终 settle 经 onRunSettled telemetry 上报（不阻塞决策�
   const pending = coordinator.decide(makeState(100));
   clock.advance(100); // soft → abort → submits-after-abort 提交并 settle
   const result = await pending;
-  assert.equal(result.source, "safety");
+  assert.equal(result.execution.source, "safety");
   assert.equal(result.abortRequested, true);
   await new Promise((r) => setTimeout(r, 0)); // 微任务 flush（后台观察）
   assert.ok(settledEvents.some((e) => e.runId === "local:t1:100:0" && e.result.outcome === "settled"));
+});
+
+// ---------- P0-1：DecisionMode 语义（GPT 裁决：两轴拆分） ----------
+
+test("P0-1 safety 模式：不启动 Agent、立即返回、无 observation", async () => {
+  const h = makeHarness("immediate-valid", agentPlan(100, { u1: { type: "MOVE", direction: "UP" } }), "safety");
+  // 不 advance——safety 模式必须立即 resolve（无 deadline race）
+  const result = await h.coordinator.decide(h.state);
+  assert.equal(result.execution.source, "safety");
+  assert.equal(result.observation, undefined, "safety 模式无候选评估");
+  assert.equal(result.deadlineOutcome, "soft_deadline"); // 无候选路径哨兵值
+  assert.equal(h.runtime.activeRunId, null, "safety 模式不得启动 Agent run");
+  assert.equal(result.agentLatencyMs, null);
+});
+
+test("P0-1 agent-shadow：候选 accepted 但 execution 恒 Safety + observation 完整", async () => {
+  const plan = agentPlan(100, { u1: { type: "MOVE", direction: "UP" } });
+  const h = makeHarness("immediate-valid", plan, "agent-shadow");
+  const result = await h.coordinator.decide(h.state);
+  assert.equal(result.execution.source, "safety", "agent-shadow 下执行权恒在 Safety");
+  // execution.plan = SafetyPlan（含 u2 patrol 补齐），而非 Agent 候选
+  assert.ok(result.execution.plan.unitActions.u2 !== undefined, "SafetyPlan 含未指派单位的补齐动作");
+  assert.ok(result.observation !== undefined, "候选评估必须完整保留");
+  assert.equal(result.observation.outcome, "accepted");
+  assert.equal(result.observation.proposedSource, "agent");
+  // proposedPlan = 仲裁合成后的候选计划（agent u1 + safety 补齐 u2）
+  assert.ok(result.observation.proposedPlan.unitActions.u1 !== undefined, "候选的 agent 动作保留");
+  assert.equal(result.deadlineOutcome, "candidate");
+});
+
+test("P0-1 agent-shadow：soft deadline → execution=Safety + 无 observation", async () => {
+  const h = makeHarness("never-settles", undefined, "agent-shadow");
+  const p = h.coordinator.decide(h.state);
+  h.clock.advance(100); // 到 soft deadline
+  const result = await p;
+  assert.equal(result.execution.source, "safety");
+  assert.equal(result.observation, undefined, "无候选 → 无观测");
+  assert.equal(result.deadlineOutcome, "soft_deadline");
+});
+
+test("P0-1 hybrid（缺省）：execution=仲裁结果 + observation 同源", async () => {
+  const plan = agentPlan(100, { u1: { type: "MOVE", direction: "UP" } });
+  const h = makeHarness("immediate-valid", plan); // 缺省 hybrid
+  const result = await h.coordinator.decide(h.state);
+  assert.equal(result.execution.source, "agent", "hybrid 下 execution=仲裁结果");
+  assert.ok(result.execution.plan.unitActions.u1 !== undefined, "候选的 agent 动作进入执行计划");
+  assert.equal(result.observation?.outcome, "accepted");
+  assert.equal(result.observation?.proposedSource, "agent");
+  assert.deepEqual(result.observation?.proposedPlan, result.execution.plan, "hybrid 下 observation 与 execution 同源");
+});
+
+test("P0-1 agent-shadow：selection_timeout → execution=Safety + observation 记录候选被弃", async () => {
+  const clock = new FakeClock();
+  const runtime = new FakeAgentRuntime({
+    sink: () => ({ accepted: false, code: "lease_not_found", message: "unused" }),
+    mode: "delayed-valid",
+    clock,
+    plan: agentPlan(100, { u1: { type: "MOVE", direction: "UP" } }),
+  });
+  const realArbiter = new PlanArbiter();
+  // 慢 arbiter：arbitrate 期间推进时钟越过 selection deadline(200)
+  const slowArbiter = {
+    arbitrate: (input: Parameters<PlanArbiter["arbitrate"]>[0]) => {
+      clock.advance(250);
+      return realArbiter.arbitrate(input);
+    },
+    emergencyPlan: (s: TickState) => realArbiter.emergencyPlan(s),
+  } as unknown as PlanArbiter;
+  const coordinator = new DecisionCoordinator({
+    runtime,
+    planner: new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
+    registry: new LeaseRegistry(),
+    clock,
+    budgetConfig: BUDGET,
+    tenantId: "t1",
+    rulesVersion: "v0.11",
+    configHash: "test",
+    arbiter: slowArbiter,
+    decisionMode: "agent-shadow",
+    sleepUntil: (d, c) =>
+      new Promise<void>((r) => (c as FakeClock).setTimeout(() => r(), Math.max(0, d - c.now()))),
+  });
+  const pending = coordinator.decide(makeState(100));
+  clock.advance(100); // 候选 50ms 投递（accepted）；raceCandidate 在 soft(100) 取回候选
+  const result = await pending; // 慢 arbiter 已把时钟推到 350（> selection 200）
+  assert.equal(result.execution.source, "safety");
+  assert.equal(result.deadlineOutcome, "selection_timeout");
+  assert.ok(result.observation !== undefined, "候选迟到被弃也是可观测事实");
+  assert.equal(result.observation.outcome, "selection_timeout");
+  assert.equal(result.observation.proposedSource, "agent");
+  assert.equal(result.abortRequested, true);
 });

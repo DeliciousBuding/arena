@@ -60,7 +60,7 @@ async function runReplay(dir: string): Promise<void> {
     // Python dump 的 PlayerState 不含 tick——tick 在文件名（{tick}.json）
     const tick = Number(file.replace(".json", ""));
     const turn = new Turn(tick, state, noopSubmitter);
-    const outcome = await handleTurn(turn as never, planner, { shadow: true }, 8000);
+    const outcome = await handleTurn(turn as never, planner, { submissionMode: "disabled" }, 8000);
     decisions[outcome.source] = (decisions[outcome.source] ?? 0) + 1;
 
     ticks += 1;
@@ -81,7 +81,7 @@ async function runLive(): Promise<void> {
   const client = new ArenaHeroClient({ apiKey: apiKey("ARENA_HERO_API_KEY_4") });
   for await (const turn of client.turns()) {
     if (ticks >= maxTicks) break;
-    const outcome = await handleTurn(turn as never, planner, { shadow: true }, 8000);
+    const outcome = await handleTurn(turn as never, planner, { submissionMode: "disabled" }, 8000);
     decisions[outcome.source] = (decisions[outcome.source] ?? 0) + 1;
 
     ticks += 1;

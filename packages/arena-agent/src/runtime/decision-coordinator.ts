@@ -31,6 +31,9 @@ import type {
   CandidateEnvelope,
   CandidateSink,
   DecisionContext,
+  DecisionExecution,
+  DecisionModeName,
+  DecisionObservation,
   DecisionResult,
 } from "./decision-types.ts";
 
@@ -50,6 +53,9 @@ export interface DecisionCoordinatorOptions {
   readonly sleepUntil?: (deadlineMs: number, clock: Clock) => Promise<void>;
   /** 3E：run 最终 settle 状态经此 telemetry 上报（不异步修改已返回的结果）。 */
   readonly onRunSettled?: (info: { readonly runId: string; readonly result: AgentRunResult }) => void;
+  /** P0-1：决策模式（缺省 "hybrid"）。"deterministic" 不在 coordinator 表达——
+   *  loop 层注入 ResourcePlanner 为 planner 即得。 */
+  readonly decisionMode?: DecisionModeName;
 }
 
 /** runtime 候选投递口：契约正式化（GPT 审核）——AgentDecisionRuntime.bindCandidateSink
@@ -77,6 +83,8 @@ export class DecisionCoordinator {
   private readonly sleepUntil: (deadlineMs: number, clock: Clock) => Promise<void>;
   private readonly onRunSettled: DecisionCoordinatorOptions["onRunSettled"];
   private readonly processRunId: string;
+  /** P0-1：决策模式（"hybrid" 缺省；"safety" 短路；"agent-shadow" execution 恒 Safety）。 */
+  private readonly decisionMode: Exclude<DecisionModeName, "deterministic">;
   /** 3.2：进程内 run 序号（runId = processRunId:tenantId:tick:sequence）。 */
   private runSeq = 0;
 
@@ -97,6 +105,7 @@ export class DecisionCoordinator {
     this.sleepUntil = options.sleepUntil ?? DEFAULT_SLEEP_UNTIL;
     this.onRunSettled = options.onRunSettled;
     this.processRunId = options.processRunId ?? "local";
+    this.decisionMode = options.decisionMode === "deterministic" ? "hybrid" : (options.decisionMode ?? "hybrid");
     // 候选投递口：runId 精确索引——旧 run 的迟到调用命中旧 Lease（已终结 → 拒绝），
     // 永不漏到新 Tick；结构化结果原样返回（LeaseSubmission）。
     this.sink = (envelope) => this.registry.submit(envelope.runId, envelope);
@@ -131,6 +140,30 @@ export class DecisionCoordinator {
     } catch (exc) {
       safetyError = exc instanceof Error ? exc.message : String(exc);
       safetyPlan = this.arbiter.emergencyPlan(state);
+    }
+
+    // P0-1：safety 模式短路——不启动 Agent、不注册 Lease（没有候选者）。
+    // deadlineOutcome 用 "soft_deadline" 作"无候选路径"哨兵值；observation 缺省。
+    if (this.decisionMode === "safety") {
+      let plan = safetyPlan;
+      let repairCount = 0;
+      const validation = validatePlan(state, plan);
+      if (!validation.valid && validation.plan !== plan) {
+        plan = validation.plan;
+        repairCount = validation.issues.length;
+      }
+      return {
+        tick,
+        execution: { source: safetyError !== null ? "emergency" : "safety", plan },
+        agentActionCount: 0,
+        safetyReplacementCount: 0,
+        invalidAgentActionCount: 0,
+        repairCount,
+        deadlineOutcome: "soft_deadline",
+        agentLatencyMs: null,
+        selectionLatencyMs: this.clock.now() - t0,
+        abortRequested: false,
+      };
     }
 
     // 2) Lease 注册（runId 精确索引；deadline = soft deadline，Lease 内部校验）
@@ -178,8 +211,7 @@ export class DecisionCoordinator {
       this.registry.select(runId);
       return {
         tick,
-        source: safetyError !== null ? "emergency" : "safety",
-        plan: safetyPlan,
+        execution: { source: safetyError !== null ? "emergency" : "safety", plan: safetyPlan },
         agentActionCount: 0,
         safetyReplacementCount: 0,
         invalidAgentActionCount: 0,
@@ -194,16 +226,18 @@ export class DecisionCoordinator {
     // 4) 等待：Lease accepted（候选经 sink → registry 校验）或 soft deadline
     const candidate = await this.raceCandidate(runId, budget.agentSoftDeadline);
     const candidateAt = this.clock.now();
-    const agentLatency = handle !== null ? candidateAt - t0 : null;
+    const agentLatency = candidateAt - t0;
 
-    let source: DecisionResult["source"];
-    let plan: Plan;
+    let source: DecisionResult["execution"]["source"] = "safety";
+    let plan: Plan = safetyPlan;
     let agentActionCount = 0;
     let safetyReplacementCount = 0;
     let invalidAgentActionCount = 0;
     let repairCount = 0;
     let abortRequested = false;
-    let deadlineOutcome: DecisionResult["deadlineOutcome"];
+    let deadlineOutcome: DecisionResult["deadlineOutcome"] = "soft_deadline";
+    // P0-1：候选评估观测（agent-shadow 的完整评估；hybrid 下与 execution 一致；soft_deadline 缺省）
+    let observation: DecisionObservation | undefined;
 
     if (candidate !== null && safetyError === null) {
       // 5) 候选路径：arbiter 合成（合法 Agent > Safety 补齐 > 无动作）
@@ -230,13 +264,14 @@ export class DecisionCoordinator {
         }
       } catch (exc) {
         pipelineError = exc instanceof Error ? exc.message : String(exc);
-        candidatePlan = safetyPlan;
+        candidatePlan = candidate.plan; // 保留 Agent 原计划供 observation（不被采纳）
       }
       if (pipelineError !== null || arbitration === null) {
         // 候选管道异常/无仲裁结果 → 弃候选，固定预计算的 SafetyPlan（deadlineOutcome=error）
-        source = "safety";
+        source = safetyError !== null ? "emergency" : "safety";
         plan = safetyPlan;
         deadlineOutcome = "error";
+        observation = { outcome: "error", proposedSource: "safety", proposedPlan: candidatePlan, repairCount: 0 };
         if (pipelineError !== null) {
           this.runtime.reportViolation?.(`candidate_pipeline_error: ${pipelineError}`);
         }
@@ -246,6 +281,7 @@ export class DecisionCoordinator {
         source = "safety";
         plan = safetyPlan;
         deadlineOutcome = "selection_timeout";
+        observation = { outcome: "selection_timeout", proposedSource: arbitration.source, proposedPlan: candidatePlan, repairCount };
         if (handle !== null) {
           abortRequested = true;
           handle.abort("selection_timeout");
@@ -257,10 +293,11 @@ export class DecisionCoordinator {
         safetyReplacementCount = arbitration.safetyReplacementCount;
         invalidAgentActionCount = arbitration.invalidAgentActionCount;
         deadlineOutcome = "candidate";
+        observation = { outcome: "accepted", proposedSource: arbitration.source, proposedPlan: candidatePlan, repairCount };
       }
     } else {
       // 6) soft deadline 路径：先 expire → 固定 Safety → 后台 abort（不 await；
-      //    settle 观察已在步骤 3 统一绑定一次）
+      //    settle 观察已在步骤 3 统一绑定一次）。无候选 → 无 observation。
       this.registry.expire(runId);
       this.registry.select(runId); // expired → selected（终结 run）
       source = safetyError !== null ? "emergency" : "safety";
@@ -272,19 +309,29 @@ export class DecisionCoordinator {
       }
     }
 
-    // 7) 兜底校验：safety/emergency/selection_timeout 路径（候选路径已并入 5）
-    if (deadlineOutcome !== "candidate") {
-      const validation = validatePlan(state, plan);
-      if (!validation.valid && validation.plan !== plan) {
-        plan = validation.plan;
+    // P0-1：execution 组装。agent-shadow 下 execution 恒为 Safety（observation 承载候选评估）；
+    // hybrid 下 execution = 仲裁结果。
+    let execution: DecisionExecution;
+    if (this.decisionMode === "agent-shadow") {
+      execution = { source: safetyError !== null ? "emergency" : "safety", plan: safetyPlan };
+    } else {
+      execution = { source, plan };
+    }
+
+    // 7) 兜底校验：非 candidate 路径（candidate 路径已在步骤 5 内校验）；
+    //    agent-shadow 的 execution=Safety 计划未过步骤 5 → 一并兜底
+    if (deadlineOutcome !== "candidate" || this.decisionMode === "agent-shadow") {
+      const validation = validatePlan(state, execution.plan);
+      if (!validation.valid && validation.plan !== execution.plan) {
+        execution = { ...execution, plan: validation.plan };
         repairCount += validation.issues.length;
       }
     }
 
     return {
       tick,
-      source,
-      plan,
+      execution,
+      observation,
       agentActionCount,
       safetyReplacementCount,
       invalidAgentActionCount,

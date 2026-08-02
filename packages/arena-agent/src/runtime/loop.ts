@@ -1,7 +1,8 @@
 /** TS 编排层主循环：turns() → reduceTurn → 决策（agent/safety）→ lease 校验 → submit。
  *
  * Python 版 arena_bot/main.py 的 TS 等价物（minimal viable loop）。
- * shadow 模式：只观察不提交（差分验证用）。
+ * P0-1：submissionMode=disabled 只观察不提交（差分验证用）；decisionMode 两轴拆分，
+ * 不再用单一 shadow:boolean 同时表达"谁掌权"与"是否提交"。
  */
 
 import {
@@ -24,6 +25,7 @@ import { DecisionLease } from "./decision-lease.ts";
 import { DecisionCoordinator } from "./decision-coordinator.ts";
 import { hashTickState } from "./state-hash.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../strategies/safety-planner.ts";
+import type { DecisionModeName, SubmissionModeName } from "./decision-types.ts";
 
 // ---------- Plan（domain）→ CommandPlan（SDK wire） ----------
 
@@ -75,7 +77,7 @@ export interface TickOutcome {
 
 export interface TenantLoopOptions {
   readonly client: ArenaHeroClient;
-  /** 确定性 safety planner（默认 DEFAULT_SAFETY_CONFIG）。 */
+  /** 确定性 planner（默认 SafetyPlanner；decisionMode=deterministic 时注入 ResourcePlanner）。 */
   readonly planner?: SafetyPlanner;
   /** W4 决策核心（可选）：提供后走 coordinator 时序（Safety 预计算 + deadline race）。
    *   loop 不再理解 Agent/abort 细节。 */
@@ -84,8 +86,11 @@ export interface TenantLoopOptions {
   readonly decide?: (state: TickState, lease: DecisionLease) => Promise<DecisionCandidate | null>;
   /** 每 tick 回调（遥测/日志）。 */
   readonly onTick?: (outcome: TickOutcome) => void;
-  /** shadow 模式：只观察不提交。 */
-  readonly shadow?: boolean;
+  /** P0-1：提交模式（缺省 "disabled"=只观察不提交）。替代旧 shadow:boolean。 */
+  readonly submissionMode?: SubmissionModeName;
+  /** P0-1：决策模式（缺省 "hybrid"）；传递到 coordinator。
+   *  deterministic：loop 层注入 ResourcePlanner 为 planner，coordinator 保持 hybrid 语义。 */
+  readonly decisionMode?: DecisionModeName;
   /** 决策 deadline（ms），默认 8000（15s 游戏窗口内留提交余量）。 */
   readonly deadlineMs?: number;
 }
@@ -105,28 +110,29 @@ export async function runTenantLoop(options: TenantLoopOptions): Promise<void> {
 export async function handleTurn(
   turn: Turn,
   planner: SafetyPlanner,
-  options: Pick<TenantLoopOptions, "decide" | "shadow" | "onTick" | "coordinator">,
+  options: Pick<TenantLoopOptions, "decide" | "submissionMode" | "onTick" | "coordinator">,
   deadlineMs: number,
 ): Promise<TickOutcome> {
   const state = reduceTurn(turn as unknown as TurnLike);
+  const live = options.submissionMode === "live";
 
   // W4 路径（唯一正式路径，4D-pre）：coordinator 时序（Safety 预计算 + deadline race + arbiter）。
   // 4D-pre：不再压缩 source（hybrid/emergency 原样保留进遥测）。
   if (options.coordinator) {
     const result = await options.coordinator.decide(state);
-    const source = result.source;
-    if (options.shadow) {
+    const source = result.execution.source;
+    if (!live) {
       return {
         tick: result.tick,
         source,
         originalSource: source,
         repairCount: result.repairCount,
-        plan: result.plan,
+        plan: result.execution.plan,
         accepted: false,
       };
     }
     try {
-      const wirePlan = planToCommandPlan(result.plan);
+      const wirePlan = planToCommandPlan(result.execution.plan);
       turn.replace(wirePlan);
       const accepted = await turn.submit();
       return {
@@ -134,7 +140,7 @@ export async function handleTurn(
         source,
         originalSource: source,
         repairCount: result.repairCount,
-        plan: result.plan,
+        plan: result.execution.plan,
         accepted: accepted.accepted,
       };
     } catch (exc) {
@@ -143,7 +149,7 @@ export async function handleTurn(
         source,
         originalSource: source,
         repairCount: result.repairCount,
-        plan: result.plan,
+        plan: result.execution.plan,
         accepted: false,
         error: exc instanceof Error ? exc.message : String(exc),
       };
@@ -202,8 +208,8 @@ export async function handleTurn(
   }
   const originalSource = source === "repaired-agent" ? "agent" : source;
 
-  // 4) shadow：只观察不提交
-  if (options.shadow) {
+  // 4) 只观察不提交（P0-1：submissionMode=disabled）
+  if (!live) {
     return { tick: state.tick, source, originalSource, repairCount, plan, accepted: false };
   }
 

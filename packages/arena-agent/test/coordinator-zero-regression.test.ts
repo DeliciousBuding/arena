@@ -70,10 +70,10 @@ test("零回归：100 tick fixture 上 coordinator（never-settles）计划 == S
       const pending = coordinator.decide(tickState);
       clock.advance(150); // 越过 soft deadline → safety
       const result = await pending;
-      assert.equal(result.source, "safety", `tick ${tick}: 应全部 safety`);
+      assert.equal(result.execution.source, "safety", `tick ${tick}: 应全部 safety`);
 
       const reference = referencePlanner.decide({ state: tickState });
-      assert.deepEqual(result.plan, reference, `tick ${tick}: coordinator 计划 != SafetyPlanner`);
+      assert.deepEqual(result.execution.plan, reference, `tick ${tick}: coordinator 计划 != SafetyPlanner`);
       compared += 1;
     }
   }

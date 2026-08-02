@@ -82,11 +82,11 @@ test("handleTurn shadow 模式：产出 plan 但不提交", async () => {
     return { accepted: true, tick: 100 };
   });
   const planner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG);
-  const outcome = await handleTurn(turn, planner, { shadow: true }, 8000);
+  const outcome = await handleTurn(turn, planner, { submissionMode: "disabled" }, 8000);
   assert.equal(outcome.tick, 100);
   assert.equal(outcome.source, "safety");
   assert.equal(outcome.accepted, false);
-  assert.equal(submitted, false, "shadow 模式不得提交");
+  assert.equal(submitted, false, "submissionMode=disabled 不得提交");
   assert.ok(outcome.plan.tick === 100);
 });
 
@@ -109,7 +109,7 @@ test("handleTurn 提交路径：决策 plan 转 wire 注入 Turn 提交", async 
       },
       reason: "test",
     });
-    void handleTurn(turn, new SafetyPlanner(DEFAULT_SAFETY_CONFIG), { decide }, 8000).then(
+    void handleTurn(turn, new SafetyPlanner(DEFAULT_SAFETY_CONFIG), { decide, submissionMode: "live" }, 8000).then(
       (outcome) => {
         assert.equal(outcome.source, "agent");
         assert.equal(outcome.accepted, true);
@@ -127,7 +127,7 @@ test("handleTurn 提交失败：error 字段带出", async () => {
   const turn = makeTurn(async () => {
     throw new Error("boom");
   });
-  const outcome = await handleTurn(turn, new SafetyPlanner(DEFAULT_SAFETY_CONFIG), {}, 8000);
+  const outcome = await handleTurn(turn, new SafetyPlanner(DEFAULT_SAFETY_CONFIG), { submissionMode: "live" }, 8000);
   assert.equal(outcome.accepted, false);
   assert.equal(outcome.error, "boom");
 });

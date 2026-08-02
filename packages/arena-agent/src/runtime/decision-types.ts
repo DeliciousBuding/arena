@@ -13,6 +13,11 @@ import type { LeaseSubmission } from "./decision-lease.ts";
  *  repaired-agent 仅供 loop 层使用（repair 只提升 agent 来源；safety 被修复仍记 safety）。 */
 export type DecisionSource = "agent" | "hybrid" | "safety" | "emergency" | "repaired-agent";
 
+/** P0-1（GPT 裁决）：两个轴拆分——Agent 是否掌权（DecisionMode）与是否提交（SubmissionMode）。
+ *  禁止用单一 shadow:boolean 同时表达两者。 */
+export type DecisionModeName = "safety" | "deterministic" | "agent-shadow" | "hybrid";
+export type SubmissionModeName = "disabled" | "live";
+
 /** 决策上下文：不可变，一次决策全程共享（R9：World 必须在 Tick 开始时快照化）。 */
 export interface DecisionContext {
   readonly tenantId: string;
@@ -100,14 +105,31 @@ export interface DeadlineBudget {
   readonly hardDeadline: number;
 }
 
-/** Coordinator 决策结果：永远在 selection deadline 前返回。 */
-export interface DecisionResult {
-  readonly tick: number;
+/** 实际执行结果（agent-shadow 下恒为 Safety；hybrid 下为仲裁结果）。 */
+export interface DecisionExecution {
   readonly source: DecisionSource;
   readonly plan: Plan;
+}
+
+/** 候选评估观测（agent-shadow 下 execution=Safety、observation=Agent 候选真实评估）。 */
+export interface DecisionObservation {
+  readonly outcome: "accepted" | "rejected" | "soft_deadline" | "selection_timeout" | "error";
+  readonly proposedSource: DecisionSource;
+  readonly proposedPlan: Plan;
+  readonly repairCount: number;
+}
+
+/** Coordinator 决策结果：永远在 selection deadline 前返回。
+ *  P0-1：execution（实际执行）与 observation（Agent 候选评估）分离——模式判断错误
+ *  不会让 Agent 意外获得执行权。 */
+export interface DecisionResult {
+  readonly tick: number;
+  readonly execution: DecisionExecution;
+  readonly observation?: DecisionObservation;
   readonly agentActionCount: number;
   readonly safetyReplacementCount: number;
   readonly invalidAgentActionCount: number;
+  /** 本 Tick 总修复数（execution 兜底修复 + 候选仲裁修复；observation.repairCount 只计候选评估侧）。 */
   readonly repairCount: number;
   readonly deadlineOutcome: "candidate" | "soft_deadline" | "selection_timeout" | "error";
   /** Agent 候选到达延迟（raceCandidate 返回时刻 - t0；无 handle/无候选为 null）。 */

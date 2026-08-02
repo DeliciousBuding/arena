@@ -9,8 +9,8 @@ import { readFileSync } from "node:fs";
 import { Type, type Static } from "typebox";
 import { Compile } from "typebox/compile";
 
-export type DecisionModeName = "safety" | "deterministic" | "agent-shadow" | "hybrid";
-export type SubmissionModeName = "disabled" | "live";
+// P0-1：模式类型单源在 runtime/decision-types.ts（GPT 裁决：决策类型只定义一次）
+export type { DecisionModeName, SubmissionModeName } from "../runtime/decision-types.ts";
 
 export const DEFAULT_DEADLINES = {
   agentSoftMs: 6000,
