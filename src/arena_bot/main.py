@@ -167,6 +167,13 @@ def play(api_key: str, config: TacticConfig,
             world.observe(state.tick, state.obstacle_cells, state.resource_cells,
                           state.visible_enemies, harvest_failed,
                           observer=tenant.name if tenant else "solo")
+            # 结盟：注册自己的 Core username（其他租户看到后不攻击）
+            if state.core_view is not None and map_store.register_ally(
+                    state.core_view.owner_username,
+                    tenant.name if tenant else "solo", state.tick):
+                log.info("盟友注册：@%s（%s）",
+                         state.core_view.owner_username,
+                         tenant.name if tenant else "solo")
             for ev in state.events:
                 if ev.event_type == "HARVEST_SUCCEEDED" and ev.position:
                     world.mark_harvested(ev.position, state.tick)

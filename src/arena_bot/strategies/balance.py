@@ -35,7 +35,15 @@ class BalanceStrategy(Strategy):
         if self.world.map_store is not None:
             obstacle = obstacle | self.world.map_store.obstacles()
         resource_cells = set(state.resource_cells)
-        enemies = sorted(state.visible_enemies, key=lambda e: e.id)
+        # 结盟：盟友 Core（我方账号）不视为敌人（协议：单位不公开 owner，
+        # 只有 Core 带 owner_username——单位级敌友识别做不了）
+        allies = (self.world.map_store.allies()
+                  if self.world.map_store is not None else frozenset())
+        enemies = sorted(
+            (e for e in state.visible_enemies
+             if not (e.kind == "CORE"
+                     and getattr(e, "owner_username", None) in allies)),
+            key=lambda e: e.id)
         beacon = state.beacon
 
         # 我方是否已持 Beacon（对照 carrier_id 与本单位 UUID）

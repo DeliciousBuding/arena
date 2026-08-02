@@ -23,12 +23,18 @@ class MapStore:
             "CREATE TABLE IF NOT EXISTS obstacles ("
             "x INT NOT NULL, y INT NOT NULL, observer TEXT, seen_tick INT, "
             "PRIMARY KEY (x, y))")
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS allies ("
+            "username TEXT PRIMARY KEY, observer TEXT, seen_tick INT)")
         self._obstacles: set[tuple[int, int]] = set()
+        self._allies: set[str] = set()
         self._load()
 
     def _load(self) -> None:
         for x, y in self._conn.execute("SELECT x, y FROM obstacles"):
             self._obstacles.add((x, y))
+        for (username,) in self._conn.execute("SELECT username FROM allies"):
+            self._allies.add(username)
 
     def record(self, cells, observer: str, tick: int) -> int:
         """落盘新观察到的障碍格（去重）。返回新增数量。"""
@@ -46,6 +52,21 @@ class MapStore:
     def obstacles(self) -> frozenset[tuple[int, int]]:
         """全量已知障碍（含本进程加载前其他租户记录的）。"""
         return frozenset(self._obstacles)
+
+    def register_ally(self, username: str, observer: str, tick: int) -> bool:
+        """注册盟友（我方账号的 Core username）。返回是否新增。"""
+        if username in self._allies:
+            return False
+        self._conn.execute(
+            "INSERT OR IGNORE INTO allies (username, observer, seen_tick) "
+            "VALUES (?, ?, ?)", (username, observer, tick))
+        self._conn.commit()
+        self._allies.add(username)
+        return True
+
+    def allies(self) -> frozenset[str]:
+        """已注册的盟友 username 集合（跨租户共享）。"""
+        return frozenset(self._allies)
 
     def stats(self) -> dict:
         chunks = {(x // CHUNK_SIZE, y // CHUNK_SIZE)

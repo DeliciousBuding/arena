@@ -70,6 +70,71 @@ def test_balance_uses_shared_obstacles(tmp_path):
     ms.close()
 
 
+def test_ally_registration_and_shared(tmp_path):
+    """盟友注册跨实例共享（4 账号互相注册为盟友）。"""
+    db = tmp_path / "m.db"
+    ms1 = MapStore(db)
+    assert ms1.register_ally("delicious233", "t1", 1) is True
+    assert ms1.register_ally("delicious233", "t1", 2) is False  # 去重
+    ms1.close()
+    ms2 = MapStore(db)
+    ms2.register_ally("buding", "t2", 1)
+    assert ms2.allies() == frozenset({"delicious233", "buding"})
+    ms2.close()
+
+
+def test_balance_ignores_ally_core(tmp_path):
+    """盟友 Core 不视为敌人（不攻击/不追击）。"""
+    ms = MapStore(tmp_path / "m.db")
+    ms.register_ally("ally1", "t2", 1)
+    world = World(map_store=ms)
+    strat = BalanceStrategy(TacticConfig(), world)
+    core = FakeCore((0, 0))
+    v = FakeUnit((5, 5), UnitType.VANGUARD, 4)
+    ally_core = SimpleNamespace(id=uuid.uuid4(), position=(5, 6), kind="CORE",
+                                owner_username="ally1")
+    # 直接构造 TickState（make_state 不支持 visible_enemies）
+    st = TickState(
+        tick=1, resources=0, resource_capacity=10, resource_space=10,
+        core=core, core_view=core.view, units=(v,),
+        workers=(), vanguards=(v,), rangers=(),
+        visible_enemies=(ally_core,), resource_cells=frozenset(),
+        obstacle_cells=frozenset(),
+        beacon=SimpleNamespace(status=BeaconStatus.GROUND, position=(0, 20),
+                               carrier_id=None),
+        events=(),
+    )
+    plan = strat.decide(st)
+    a = plan.actions.get(v.id)
+    assert a is not None and a.kind != "SWEEP"  # 不攻击盟友 Core（守家移动合法）
+    ms.close()
+
+
+def test_balance_attacks_enemy_core(tmp_path):
+    """非盟友 Core 仍是敌人（会攻击）。"""
+    ms = MapStore(tmp_path / "m.db")
+    world = World(map_store=ms)
+    strat = BalanceStrategy(TacticConfig(), world)
+    core = FakeCore((0, 0))
+    v = FakeUnit((5, 5), UnitType.VANGUARD, 4)
+    enemy_core = SimpleNamespace(id=uuid.uuid4(), position=(5, 6), kind="CORE",
+                                 owner_username="enemy1")
+    st = TickState(
+        tick=1, resources=0, resource_capacity=10, resource_space=10,
+        core=core, core_view=core.view, units=(v,),
+        workers=(), vanguards=(v,), rangers=(),
+        visible_enemies=(enemy_core,), resource_cells=frozenset(),
+        obstacle_cells=frozenset(),
+        beacon=SimpleNamespace(status=BeaconStatus.GROUND, position=(0, 20),
+                               carrier_id=None),
+        events=(),
+    )
+    plan = strat.decide(st)
+    a = plan.actions.get(v.id)
+    assert a is not None and a.kind == "SWEEP"
+    ms.close()
+
+
 # ---- 夹具 ----
 
 class FakeUnit:
