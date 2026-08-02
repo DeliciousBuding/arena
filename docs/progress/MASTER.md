@@ -13,7 +13,7 @@
 
 | 项 | 状态 | 提交 |
 |----|------|------|
-| 3E 接口勘误（runId 单源/启动失败/SEL deadline） | ✅ | bc60fa0 |
+| 3E 接口勘误（runId 单源/启动失败/SEL deadline） | ✅ | 20a5a5c |
 | 4-preflight（CandidateSink 契约/status/依赖 pin/4C 修正） | ✅ | 63632d0/d6231e1/7aaae58 |
 | 4A 会话工厂（6 测试） | ✅ | 7e61c5d |
 | 4B 工具层（11 测试，slot + 严格解析） | ✅ | 764ebf1/11874cf |

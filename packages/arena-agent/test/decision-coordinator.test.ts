@@ -175,7 +175,7 @@ test("5. 候选恰好在 deadline 到达 → 拒绝（Lease now>=deadline 即过
   // 候选精确安排在 soft deadline(100) 时刻投递（经 sink → Lease 校验）
   clock.setTimeout(() => {
     coordinator.sink({
-      protocolVersion: "1", runId: "t1-100-0", tenantId: "t1",
+      protocolVersion: "1", runId: "local:t1:100:0", tenantId: "t1",
       tick: 100, stateHash: "h", plan: agentPlan(100), reason: "at-deadline", confidence: null,
     });
   }, 100);
@@ -217,7 +217,7 @@ test("7. 旧 Tick tool call 在下一 Tick 到达 → 永不执行", async () =>
   const r1 = h.coordinator.decide(h.state);
   h.clock.advance(100);
   await r1; // tick 100 → safety
-  const oldRunId = h.runtime.abortLog[0]?.runId ?? "t1-100-0";
+  const oldRunId = h.runtime.abortLog[0]?.runId ?? "local:t1:100:0";
   // 下一 Tick：旧 run 的迟到候选投递
   const state2 = makeState(101);
   const r2 = h.coordinator.decide(state2);
@@ -486,5 +486,5 @@ test("20. run 最终 settle 经 onRunSettled telemetry 上报（不阻塞决策�
   assert.equal(result.source, "safety");
   assert.equal(result.abortRequested, true);
   await new Promise((r) => setTimeout(r, 0)); // 微任务 flush（后台观察）
-  assert.ok(settledEvents.some((e) => e.runId === "t1-100-0" && e.result.outcome === "settled"));
+  assert.ok(settledEvents.some((e) => e.runId === "local:t1:100:0" && e.result.outcome === "settled"));
 });
