@@ -21,6 +21,7 @@ import {
 import { reduceTurn, type TurnLike } from "../domain/state-reducer.ts";
 import { validatePlan } from "../domain/plan-validator.ts";
 import { DecisionLease } from "./decision-lease.ts";
+import { DecisionCoordinator } from "./decision-coordinator.ts";
 import { hashTickState } from "./state-hash.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../strategies/safety-planner.ts";
 
@@ -76,7 +77,10 @@ export interface TenantLoopOptions {
   readonly client: ArenaHeroClient;
   /** 确定性 safety planner（默认 DEFAULT_SAFETY_CONFIG）。 */
   readonly planner?: SafetyPlanner;
-  /** Agent 决策桥（Pi 嵌入，可选）：返回 null/抛错 → 回退 safety。 */
+  /** W4 决策核心（可选）：提供后走 coordinator 时序（Safety 预计算 + deadline race）。
+   *   loop 不再理解 Agent/abort 细节。 */
+  readonly coordinator?: DecisionCoordinator;
+  /** 旧决策桥（Pi 嵌入，可选，coordinator 未提供时使用）：返回 null/抛错 → 回退 safety。 */
   readonly decide?: (state: TickState, lease: DecisionLease) => Promise<DecisionCandidate | null>;
   /** 每 tick 回调（遥测/日志）。 */
   readonly onTick?: (outcome: TickOutcome) => void;
@@ -101,10 +105,52 @@ export async function runTenantLoop(options: TenantLoopOptions): Promise<void> {
 export async function handleTurn(
   turn: Turn,
   planner: SafetyPlanner,
-  options: Pick<TenantLoopOptions, "decide" | "shadow" | "onTick">,
+  options: Pick<TenantLoopOptions, "decide" | "shadow" | "onTick" | "coordinator">,
   deadlineMs: number,
 ): Promise<TickOutcome> {
   const state = reduceTurn(turn as unknown as TurnLike);
+
+  // W4 路径：coordinator 时序（Safety 预计算 + deadline race + arbiter）
+  if (options.coordinator) {
+    const result = await options.coordinator.decide(state);
+    const toDomainSource = (s: string): DecisionSource =>
+      s === "agent" || s === "hybrid" ? "agent" : "safety";
+    const source = toDomainSource(result.source);
+    if (options.shadow) {
+      return {
+        tick: result.tick,
+        source,
+        originalSource: source,
+        repairCount: result.repairCount,
+        plan: result.plan,
+        accepted: false,
+      };
+    }
+    try {
+      const wirePlan = planToCommandPlan(result.plan);
+      turn.replace(wirePlan);
+      const accepted = await turn.submit();
+      return {
+        tick: result.tick,
+        source,
+        originalSource: source,
+        repairCount: result.repairCount,
+        plan: result.plan,
+        accepted: accepted.accepted,
+      };
+    } catch (exc) {
+      return {
+        tick: result.tick,
+        source,
+        originalSource: source,
+        repairCount: result.repairCount,
+        plan: result.plan,
+        accepted: false,
+        error: exc instanceof Error ? exc.message : String(exc),
+      };
+    }
+  }
+
   const lease = new DecisionLease({
     tick: state.tick,
     stateHash: hashTickState(state),

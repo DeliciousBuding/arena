@@ -187,7 +187,8 @@ export class FakeAgentRuntime implements AgentDecisionRuntime {
   /** abort 记录（测试观测用）。 */
   readonly abortLog: Array<{ readonly runId: string; readonly reason: string }> = [];
 
-  private readonly options: FakeAgentRuntimeOptions;
+  private options: FakeAgentRuntimeOptions;
+  private sinkImpl: (envelope: CandidateEnvelope) => void;
   private active: FakeRun | null = null;
   private runSeq = 0;
   private closedFlag = false;
@@ -195,6 +196,17 @@ export class FakeAgentRuntime implements AgentDecisionRuntime {
   constructor(options: FakeAgentRuntimeOptions) {
     this.options = options;
     this.clock = options.clock ?? new FakeClock();
+    this.sinkImpl = options.sink;
+  }
+
+  /** 候选投递口（DecisionCoordinator 构造时接入 LeaseRegistry.submit）。 */
+  setSink(sink: (envelope: CandidateEnvelope) => void): void {
+    this.sinkImpl = sink;
+  }
+
+  /** runId 生成器（DecisionCoordinator 注入，保证 lease runId 与候选 runId 一致）。 */
+  setRunIdFor(fn: (request: AgentDecisionRequest) => string): void {
+    this.options = { ...this.options, runIdFor: fn };
   }
 
   get activeRunId(): string | null {
@@ -348,7 +360,7 @@ export class FakeAgentRuntime implements AgentDecisionRuntime {
     const final = mutate === undefined ? envelope : mutate(envelope);
     this.submissions.push(final);
     try {
-      this.options.sink(final);
+      this.sinkImpl(final);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.finish(run, { outcome: "error", message: `sink rejected: ${message}` });

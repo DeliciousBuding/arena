@@ -6,6 +6,22 @@ export * from "./domain/state-reducer.ts";
 export * from "./domain/world.ts";
 export * from "./map-store.ts";
 export * from "./runtime/decision-lease.ts";
+export * from "./runtime/decision-coordinator.ts";
+export {
+  type AgentDecisionRequest,
+  type AgentRunHandle,
+  type AgentRunResult,
+  type AgentDecisionRuntime,
+  type AgentRuntimeHealth,
+  type CandidateEnvelope,
+  type DecisionContext,
+  type DeadlineBudget,
+  type DecisionResult,
+} from "./runtime/decision-types.ts";
+export * from "./runtime/plan-arbiter.ts";
+export * from "./runtime/clock.ts";
+export * from "./runtime/deadline-budget.ts";
+export * from "./runtime/lease-registry.ts";
 export * from "./runtime/lease-registry.ts";
 export * from "./runtime/loop.ts";
 export * from "./runtime/state-hash.ts";
