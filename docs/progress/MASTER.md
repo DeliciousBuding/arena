@@ -30,7 +30,8 @@
 | **真机 Safety Canary（t1：shadow 10 tick + live 45 tick，P0 红线全 0）** | ✅ | 2026-08-03，证据 runs/run-20260802T133504-7b42dd/ts-live-canary/ |
 | agent-shadow 观察（114 tick：候选率 96.5%、p95 10.1s、rotation 0——门槛全达标） | ✅ | 2026-08-03，证据 runs/run-20260802T133504-7b42dd/ts-agent-shadow/ |
 | agent-shadow live（Safety 真提交 + Agent 记录） | ⏳ 待用户确认切换 |
-| deterministic（D 验收后）→ hybrid | ⏳ 后续里程碑 |
+| deterministic 观察（t2：33 tick repair=0——唯一性+避障+全合法） | ✅ | 2026-08-03，证据 runs/run-20260802T133504-7b42dd/ts-deterministic/ |
+| deterministic live / hybrid | ⏳ 待用户确认 |
 
 ## 并行任务（4 份，地界互斥）
 
