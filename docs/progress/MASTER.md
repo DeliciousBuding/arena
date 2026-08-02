@@ -28,7 +28,9 @@
 | PiAgentRuntime 真实嵌入冒烟（fake stream 全链路，6 暗卷） | ✅ | 10b60a6 |
 | Leader tenant-runtime 集成（锁/manifest/三流遥测/优雅关闭，6 暗卷） | ✅ | bf7c963 |
 | **真机 Safety Canary（t1：shadow 10 tick + live 45 tick，P0 红线全 0）** | ✅ | 2026-08-03，证据 runs/run-20260802T133504-7b42dd/ts-live-canary/ |
-| agent-shadow（真实 Pi，观察中）→ deterministic（D 验收后）→ hybrid | 🔄 观察中 |
+| agent-shadow 观察（114 tick：候选率 96.5%、p95 10.1s、rotation 0——门槛全达标） | ✅ | 2026-08-03，证据 runs/run-20260802T133504-7b42dd/ts-agent-shadow/ |
+| agent-shadow live（Safety 真提交 + Agent 记录） | ⏳ 待用户确认切换 |
+| deterministic（D 验收后）→ hybrid | ⏳ 后续里程碑 |
 
 ## 并行任务（4 份，地界互斥）
 
