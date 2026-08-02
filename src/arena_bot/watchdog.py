@@ -69,13 +69,16 @@ class Watchdog:
             intent = u.get("intent") or ""
             if intent not in ("patrol", "go_harvest", "go_harvest_mem",
                               "return_home", "vanguard_move", "ranger_move"):
+                # 合法等待（deposit/heal 等）：不算卡死，并解除已有告警
                 self._unit_stall.pop(uid, None)
                 self._unit_positions.pop(uid, None)
+                self._resolve("UNIT_STALL")
                 continue
             if self._unit_positions.get(uid) == u["pos"]:
                 self._unit_stall[uid] = self._unit_stall.get(uid, 0) + 1
             else:
                 self._unit_stall[uid] = 1  # 新位置/首次观察：计数 1
+                self._resolve("UNIT_STALL")  # 单位恢复移动 → 解除
             self._unit_positions[uid] = u["pos"]
             if self._unit_stall[uid] >= self.stall_ticks:
                 self._raise_alarm(
@@ -86,6 +89,7 @@ class Watchdog:
             if uid not in current:
                 self._unit_stall.pop(uid, None)
                 self._unit_positions.pop(uid, None)
+                self._resolve("UNIT_STALL")  # 单位消失/死亡 → 解除
 
         # 3. 经济停滞（资源未满且不增长）
         if resources is not None and resource_capacity is not None:
