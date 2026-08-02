@@ -6,13 +6,13 @@
 
 ## 任务
 
-- [ ] A1: pyproject.toml + uv 初始化
-  - 验收：`uv sync` 成功；`uv run pytest` 现有 38 例全过
+- [x] A1: pyproject.toml + uv 初始化
+  - 验收：`uv sync` 成功；`uv run pytest` 现有 38 例全过 —— **通过（uv + Python 3.14，38 例）**
   - 依赖：arena-hero>=0.2.6,<0.3（钉死）；pytest dev 依赖
-- [ ] A2: `src/arena_bot` 包结构 + `config.py`
-  - 验收：常量/参数/`.env` 读取集中；现有调优参数（EXPLORE_RADIUS=8、WORKER_TARGET=8、动态 reserve、POP_CEILING=20）全部可配置；秘钥只从 .env 读
-- [ ] A3: pytest 配置
-  - 验收：`uv run pytest` 从项目根跑通；tests/ 与 src/ 布局正确
+- [x] A2: `src/arena_bot` 包结构 + `config.py`
+  - 验收：常量/参数/`.env` 读取集中；现有调优参数（EXPLORE_RADIUS=8、WORKER_TARGET=8、动态 reserve、POP_CEILING=20）全部可配置；秘钥只从 .env 读 —— **通过（frozen dataclass + with_param）**
+- [x] A3: pytest 配置
+  - 验收：`uv run pytest` 从项目根跑通；tests/ 与 src/ 布局正确 —— **通过（pythonpath = ["src", "."]，43 例全绿）**
 
 ## Notes
 

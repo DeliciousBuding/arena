@@ -22,7 +22,7 @@
 
 ## 阶段总览
 
-- [ ] Phase A: 工程基座 (0/3 tasks) — `docs/progress/phase-a-baseline.md`
+- [x] Phase A: 工程基座 (3/3 tasks) — `docs/progress/phase-a-baseline.md`
 - [ ] Phase B: 核心库 (0/3 tasks) — `docs/progress/phase-b-core.md`
 - [ ] Phase C: 决策内核 (0/2 tasks) — `docs/progress/phase-c-decision.md`
 - [ ] Phase D: 状态机+调试 (0/3 tasks) — `docs/progress/phase-d-stateful-debug.md`
@@ -40,14 +40,14 @@
 
 ## Current Status
 
-- 正在：Phase A 任务 A1（pyproject.toml + uv 初始化）
+- 正在：Phase B 任务 B1（日志系统）
 - 线上：旧 tactic.py 继续后台运行（b5j5ardxo），切换前不停
 
 ## Next Steps
 
-1. A1: `uv init` 迁移 → pyproject.toml 钉死 arena-hero 0.2.6
-2. A2: src/arena_bot 包 + config.py
-3. A3: pytest rootdir 配置
+1. B1: logging_util.py（轮转 + stdout 双写 + [tick] 关联）
+2. B2: world.py 环境记忆
+3. B3: core/state.py Turn 适配层
 
 ## Adaptive Control State
 
@@ -63,4 +63,6 @@
 
 | 任务 | 实际工作量 | S.U.P.E.R | 未计划依赖 | 备注 |
 |---|---|---|---|---|
-| （执行中填写） | | | | |
+| A1 pyproject+uv | S | — | uv 默认 Python 3.14（需验证 SDK 兼容） | 38 例全过 |
+| A2 包结构+config | M | S+E 提升 | — | frozen dataclass + with_param |
+| A3 pytest 配置 | S | — | pythonpath 需含根目录（旧 import tactic） | 43 例全绿 |
