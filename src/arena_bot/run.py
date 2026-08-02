@@ -122,7 +122,8 @@ def main() -> int:
     tenants: list[TenantProcess] = []
     for t in exp["tenants"]:
         params_spec = ",".join(f"{k}={v}" for k, v in t.get("params", {}).items())
-        # W3 差分回放素材：raw state 落盘到 run 目录
+        # W3 差分回放素材：raw state 落盘到 run 目录；
+        # 租户目录隔离（raw-state/<tenant_name>/<tick>.json）由 main.py 按 tenant.name 完成
         raw_state_dir = run_dir / "raw-state"
         params_spec = f"{params_spec},raw_state_dir={raw_state_dir.as_posix()}" if params_spec \
             else f"raw_state_dir={raw_state_dir.as_posix()}"
