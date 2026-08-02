@@ -173,31 +173,37 @@ class BalanceStrategy(Strategy):
         # 目标失效（被采/被抢/刷新移走）→ 回 PATROL，进入巡逻
         mem.worker_state = WorkerState.PATROL
         mem.harvest_target = None
-        # 空手：朝最近可见资源格走；无可见资源则辐射巡逻（家→方向点→回家→换方向）
+        # 空手：朝最近可见资源格走；无可见资源则辐射巡逻
+        # （相位机：出发→到达方向点→返回→到家→换扇区，覆盖整个圆盘）
         if resource_cells:
             target = nearest(resource_cells, pos)
         elif home is not None:
             beacon_pos = (state.beacon.position
                           if state.beacon is not None else home)
+            patrol_point = explore_target(pos, home, beacon_pos,
+                                          mem.patrol_direction,
+                                          self.config.explore_radius)
             if manhattan(pos, home) > self.config.explore_radius:
-                target = home  # 超距回头，不走丢
+                mem.patrol_returning = True  # 超距：强制返回
+                target = home
             elif pos == home:
-                # 到家 → 换下一个扇区方向出发（覆盖整个圆盘而非圆周弦）
+                # 到家 → 换下一个扇区方向出发（首次按序号直发）
                 if mem.patrol_started:
                     mem.patrol_direction = (mem.patrol_direction + 1) % 4
                 else:
-                    mem.patrol_started = True  # 首次按序号方向直发
-                target = explore_target(pos, home, beacon_pos,
-                                        mem.patrol_direction,
-                                        self.config.explore_radius)
-            elif pos == explore_target(pos, home, beacon_pos,
-                                       mem.patrol_direction,
-                                       self.config.explore_radius):
-                target = home  # 到达方向点 → 返回，回家后换扇区
+                    mem.patrol_started = True
+                mem.patrol_returning = False
+                patrol_point = explore_target(pos, home, beacon_pos,
+                                              mem.patrol_direction,
+                                              self.config.explore_radius)
+                target = patrol_point
+            elif mem.patrol_returning:
+                target = home  # 返回相位：持续回家，不被方向点拉回
+            elif pos == patrol_point:
+                mem.patrol_returning = True  # 到达方向点 → 进入返回相位
+                target = home
             else:
-                target = explore_target(pos, home, beacon_pos,
-                                        mem.patrol_direction,
-                                        self.config.explore_radius)
+                target = patrol_point  # 出发相位：朝方向点走
         else:
             beacon_pos = (state.beacon.position
                           if state.beacon is not None else (0, 0))

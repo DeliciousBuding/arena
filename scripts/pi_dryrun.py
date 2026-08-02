@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 import time
+from os import environ
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -65,10 +66,13 @@ def main() -> int:
     state = json.loads(args.snapshot.read_text(encoding="utf-8"))
     prompt = build_prompt(state)
 
+    env = dict(environ)
+    # undici 原生 fetch 不读 HTTPS_PROXY；--use-env-proxy 让它走 Clash 代理（模型目录刷新用）
+    env["NODE_OPTIONS"] = env.get("NODE_OPTIONS", "") + " --use-env-proxy"
     cmd = ["node", str(args.pi), "--model", args.model, "-p", prompt]
-    print(f"[pi] 调用: node {args.pi.name} -m {args.model} (prompt {len(prompt)} 字符)")
+    print(f"[pi] 调用: node {args.pi.name} --model {args.model} (prompt {len(prompt)} 字符)")
     t0 = time.monotonic()
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=120)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=120, env=env)
     dt = time.monotonic() - t0
     print(f"[pi] 退出码 {proc.returncode}, 耗时 {dt:.1f}s")
     print("=== pi 输出 ===")

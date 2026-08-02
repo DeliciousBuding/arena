@@ -71,6 +71,36 @@ def test_economy_stall_alarm_only_below_capacity(tmp_path):
     assert wd2.open_alarms() == []
 
 
+def test_unit_cycle_alarm_on_oscillation(tmp_path):
+    """两点振荡（A→B→A→B）→ UNIT_CYCLE 告警；走出循环解除。"""
+    wd = Watchdog(tmp_path / "alerts.jsonl", stall_ticks=100)  # 关掉 stall
+    u = _unit((0, 0))
+    # 6 tick 内在 (0,0)↔(1,0) 振荡
+    for tick in range(1, 7):
+        u["pos"] = (0, 0) if tick % 2 else (1, 0)
+        wd.observe(tick=tick, empty_plan=False, units=[u],
+                   resources=tick, resource_capacity=10)
+    alarms = [a.alarm_type for a in wd.open_alarms()]
+    assert "UNIT_CYCLE" in alarms
+    # 走出循环（出现第 3 个位置）→ 解除
+    for tick in range(7, 12):
+        u["pos"] = (tick, 0)
+        wd.observe(tick=tick, empty_plan=False, units=[u],
+                   resources=tick, resource_capacity=10)
+    assert "UNIT_CYCLE" not in [a.alarm_type for a in wd.open_alarms()]
+
+
+def test_unit_cycle_no_alarm_on_progress(tmp_path):
+    """持续前进（每个 tick 位置不同）→ 不触发循环告警。"""
+    wd = Watchdog(tmp_path / "alerts.jsonl", stall_ticks=100)
+    u = _unit((0, 0))
+    for tick in range(1, 12):
+        u["pos"] = (tick, 0)
+        wd.observe(tick=tick, empty_plan=False, units=[u],
+                   resources=tick, resource_capacity=10)
+    assert [a.alarm_type for a in wd.open_alarms()] == []
+
+
 def test_alerts_persisted_jsonl(tmp_path):
     wd = Watchdog(tmp_path / "alerts.jsonl", stall_ticks=2)
     for tick in range(1, 3):

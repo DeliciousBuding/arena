@@ -38,6 +38,7 @@ class UnitMemory:
     harvest_target: "Position | None" = None  # GO_HARVEST 的目标格
     patrol_direction: int = 0  # 辐射巡逻当前方向（轮盘索引 0-3）
     patrol_started: bool = False  # 是否已按序号方向出发过（首次不换扇区）
+    patrol_returning: bool = False  # 返回相位：从方向点回家途中（不被拉回）
     last_tick: int = 0
 
 

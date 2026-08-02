@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,6 +41,7 @@ class Watchdog:
         self._empty_plan_count = 0
         self._unit_positions: dict[str, tuple] = {}   # uid -> last pos
         self._unit_stall: dict[str, int] = {}         # uid -> 连续不动 tick
+        self._unit_history: dict[str, deque] = {}     # uid -> 最近位置序列
         self._last_resources: int | None = None
         self._resource_stall = 0
         self._tick = 0
@@ -80,6 +82,19 @@ class Watchdog:
                 self._unit_stall[uid] = 1  # 新位置/首次观察：计数 1
                 self._resolve("UNIT_STALL")  # 单位恢复移动 → 解除
             self._unit_positions[uid] = u["pos"]
+
+            # 循环走格检测：实际在振荡（位置变化 ≥3 次且只覆盖 ≤2 格）
+            hist = self._unit_history.setdefault(uid, deque(maxlen=8))
+            hist.append(u["pos"])
+            changes = sum(1 for a, b in zip(hist, list(hist)[1:]) if a != b)
+            if (len(hist) >= 6 and len(set(hist)) <= 2 and changes >= 3):
+                self._raise_alarm(
+                    "UNIT_CYCLE",
+                    f"单位 {uid[:8]} 在 {sorted(set(hist))} 间循环走格 "
+                    f"（最近 {len(hist)} tick {changes} 次来回）")
+            elif len(set(hist)) >= 3:
+                self._resolve("UNIT_CYCLE")  # 走出循环 → 解除
+
             if self._unit_stall[uid] >= self.stall_ticks:
                 self._raise_alarm(
                     "UNIT_STALL",
@@ -89,7 +104,9 @@ class Watchdog:
             if uid not in current:
                 self._unit_stall.pop(uid, None)
                 self._unit_positions.pop(uid, None)
+                self._unit_history.pop(uid, None)
                 self._resolve("UNIT_STALL")  # 单位消失/死亡 → 解除
+                self._resolve("UNIT_CYCLE")
 
         # 3. 经济停滞（资源未满且不增长）
         if resources is not None and resource_capacity is not None:
