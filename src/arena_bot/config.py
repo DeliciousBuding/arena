@@ -7,7 +7,7 @@ TacticConfig 为 frozen dataclass：运行期参数调整通过 replace() 产生
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +42,11 @@ class TacticConfig:
     threat_enemy_near: int = 2    # 视野内可见敌人 ≥ 此值视为威胁 → 优先军事
     threat_enemy_dist: int = 5    # 敌人距 Core ≤ 此值计为"近敌"
 
+    # 积累模式（GOAL：攒资源兑换商店商品）
+    accumulate_target: int = 0    # Core 资源 ≥ 此值停止消费（0 = 关闭积累模式）
+    guard_resources: int = 30     # 资源 ≥ 此值视为"值得抢"→ 触发守备补兵
+    guard_force: int = 4          # 守备兵力目标数（Vanguard+Ranger）
+
     # 调试端点
     debug_host: str = "127.0.0.1"
     debug_port: int = 8123
@@ -51,10 +56,41 @@ class TacticConfig:
         return self.reserve_wealthy if resources >= self.wealthy_threshold else self.reserve_early
 
     def with_param(self, name: str, value: object) -> "TacticConfig":
-        """运行时参数调整（debug API）：返回新实例；未知参数抛 KeyError。"""
+        """运行时参数调整（debug API / 实验参数覆盖）：返回新实例；未知参数抛 KeyError。"""
         if name not in self.__dataclass_fields__:
             raise KeyError(f"未知参数: {name}")
         return replace(self, **{name: value})
+
+    def with_params(self, params: dict) -> "TacticConfig":
+        """批量参数覆盖（实验定义）。"""
+        cfg = self
+        for name, value in params.items():
+            cfg = cfg.with_param(name, value)
+        return cfg
+
+
+@dataclass(frozen=True)
+class TenantConfig:
+    """单个账号租户的运行时配置（进程隔离，一租户一进程）。"""
+
+    index: int                     # 租户索引（0-based），决定 key/端口/路径
+    name: str                      # 租户名：t1/t2/t3...
+    api_key: str
+    strategy_name: str = "balance"  # 策略注册表名字
+    params: dict = field(default_factory=dict)  # 实验参数覆盖
+    base_port: int = 8123           # 调试端口 = base_port + index
+
+    @property
+    def debug_port(self) -> int:
+        return self.base_port + self.index
+
+    @property
+    def log_dir(self) -> Path:
+        return PROJECT_ROOT / "logs" / f"tenant-{self.name}"
+
+    @property
+    def telemetry_path(self) -> Path:
+        return PROJECT_ROOT / "telemetry" / f"{self.name}.csv"
 
 
 def load_api_key() -> str:
@@ -65,3 +101,34 @@ def load_api_key() -> str:
             if line.startswith("ARENA_HERO_API_KEY="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
     return os.environ.get("ARENA_HERO_API_KEY", "")
+
+
+def load_tenant_keys() -> list[str]:
+    """读多租户 key：ARENA_HERO_API_KEY_1..N；无序号时回退单 key。
+
+    返回列表与租户索引对应（index 0 → 第一个 key）。
+    """
+    keys: list[str] = []
+    idx = 1
+    while True:
+        name = f"ARENA_HERO_API_KEY_{idx}"
+        env_value = os.environ.get(name, "")
+        file_value = ""
+        if ENV_PATH.exists():
+            for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith(f"{name}="):
+                    file_value = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+        if env_value:
+            keys.append(env_value)
+        elif file_value:
+            keys.append(file_value)
+        else:
+            break
+        idx += 1
+    if not keys:
+        fallback = load_api_key()
+        if fallback:
+            keys.append(fallback)
+    return keys

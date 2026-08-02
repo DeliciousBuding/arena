@@ -35,8 +35,12 @@ class _TickFilter(logging.Filter):
         return True
 
 
-def setup_logging(level: int = logging.INFO) -> logging.Logger:
-    """初始化 arena_bot 日志树（幂等）。文件 DEBUG 全量 + stdout INFO 摘要。"""
+def setup_logging(level: int = logging.INFO,
+                  log_dir: Path | None = None) -> logging.Logger:
+    """初始化 arena_bot 日志树（幂等）。文件 DEBUG 全量 + stdout INFO 摘要。
+
+    log_dir 覆盖日志目录（多租户：每租户 logs/tenant-<name>/）。
+    """
     global _configured
     root = logging.getLogger("arena_bot")
     if _configured:
@@ -44,9 +48,11 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
     root.setLevel(logging.DEBUG)
     fmt = logging.Formatter(_FORMAT)
 
-    LOG_DIR.mkdir(exist_ok=True)
+    target_dir = Path(log_dir) if log_dir is not None else LOG_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
     file_handler = RotatingFileHandler(
-        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+        target_dir / "arena.log", maxBytes=5 * 1024 * 1024, backupCount=5,
+        encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(fmt)
     file_handler.addFilter(_TickFilter())

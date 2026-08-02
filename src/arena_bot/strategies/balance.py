@@ -95,11 +95,23 @@ class BalanceStrategy(Strategy):
             plan.intents["core"] = "repair_shield"
             return plan
         if state.core_normal and state.population < self.config.pop_ceiling:
-            unit_type, cost = self._next_spawn(state)
-            reserve = self.config.spawn_reserve(state.resources)
+            cfg = self.config
+            # 积累模式：达标 → 停止消费（等兑换；兑换后资源下降自动恢复）
+            if (cfg.accumulate_target
+                    and state.resources >= cfg.accumulate_target):
+                plan.intents["core"] = "accumulated_target"
+                return plan
+            # 守备：资源值得抢且兵力不足 → 优先造兵（Vanguard/Ranger 交替）
+            military = len(state.vanguards) + len(state.rangers)
+            if (cfg.accumulate_target
+                    and state.resources >= cfg.guard_resources
+                    and military < cfg.guard_force):
+                unit_type, cost = self._next_guard(state)
+            else:
+                unit_type, cost = self._next_spawn(state)
+            reserve = cfg.spawn_reserve(state.resources)
             if state.resources >= cost + reserve:
-                plan.core_action = Action(core.id, "SPAWN",
-                                          unit_type=unit_type)
+                plan.core_action = Action(core.id, "SPAWN", unit_type=unit_type)
                 plan.intents["core"] = f"spawn_{unit_type.name.lower()}"
         return plan
 
@@ -230,6 +242,15 @@ class BalanceStrategy(Strategy):
         rangers = len(state.rangers)
         if workers < self.config.worker_target:
             return UnitType.WORKER, 5
+        if vanguards <= rangers:
+            return UnitType.VANGUARD, 10
+        return UnitType.RANGER, 12
+
+    @staticmethod
+    def _next_guard(state):
+        """守备补兵：Vanguard/Ranger 交替（Vanguard 优先近战守家）。"""
+        vanguards = len(state.vanguards)
+        rangers = len(state.rangers)
         if vanguards <= rangers:
             return UnitType.VANGUARD, 10
         return UnitType.RANGER, 12

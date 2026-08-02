@@ -63,9 +63,9 @@ Core 容量 = max(10, 人口 × 5)     # 人口 = 存活单位数（不含 Core�
 配置参数（`TacticConfig`，可 debug API 运行时调整）：
 `accumulate_target`、`guard_resources`、`guard_force`
 
-## 三账号并行
+## 四账号并行
 
-- `.env`：`ARENA_HERO_API_KEY_1/2/3`（delicious233 / buding / delicious23333）
+- `.env`：`ARENA_HERO_API_KEY_1..4`（delicious233 / buding / delicious23333 / deliciousbuding）
 - 调度器：`uv run python -m arena_bot.run --experiment exp-xxx`
 - 每租户独立：进程/日志/调试端口(8123+N)/遥测 CSV（telemetry/tN.csv）
 - 产出对比：`uv run python -m arena_bot.evaluate --experiment exp-xxx`
