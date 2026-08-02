@@ -6,7 +6,7 @@
 
 | 模式 | 文件 | 说明 |
 |------|------|------|
-| 战术脚本（长跑主力） | `tactic.py` | 纯决策函数 `decide_actions(turn)`，确定性选择，常驻后台运行 |
+| 战术脚本（长跑主力） | `src/arena_bot/` | uv 管理，状态机决策 + 环境记忆 + 结构化日志 |
 | 直接操作（LLM 指挥） | skill 自带 `scripts/direct_session.py` | 本会话逐 Tick 决策提交；15 秒窗口内可能错过 Tick，不能当 24h Bot |
 
 同一 Tick 内，战术脚本与直接操作桥共用 **同一个 AGENT 计划槽**，后提交完整替换前者——两者不能同时提交。切换方式：停掉 `tactic.py` → 启动 direct bridge → 结束后重启 `tactic.py`。
@@ -14,9 +14,10 @@
 ## 运行
 
 ```bash
-python -m pip install 'arena-hero>=0.2.6,<0.3'
-python tactic.py              # 从 .env 读 ARENA_HERO_API_KEY
-python -m pytest tests/ -q   # 无凭据决策测试
+uv sync
+uv run python -m arena_bot.main    # 运行（.env 读 key）
+uv run pytest tests/ -q          # 106 例无凭据决策测试
+curl http://127.0.0.1:8123/state  # 调试端点：状态快照
 ```
 
 秘钥只存于 `.env`（已 gitignore），永不入仓。
