@@ -8,7 +8,7 @@
 |---|---|---|
 | Python 测试 | 168 passed / 0 failed / 0 skipped | `uv run pytest tests/ -q`（实际执行输出解析） |
 | SDK 测试 | 48 pass / 0 fail（共 48） | `node --experimental-transform-types --test --test-reporter=tap test/*.test.ts` |
-| 编排层测试 | 119 pass / 0 fail（共 119） | `npx tsx --test --test-reporter=tap test/*.test.ts` |
+| 编排层测试 | 127 pass / 0 fail（共 127） | `npx tsx --test --test-reporter=tap test/*.test.ts` |
 | schema 契约文件数 | 6 | `ls packages/arena-hero-ts/contracts/generated/*.schema.json` 计数 |
 | Python 待退役模块数 | 23 | `find src/arena_bot -name '*.py'` 计数 |
 
