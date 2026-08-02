@@ -139,6 +139,14 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 - 关键内容：`DecisionLease(runId, tick, stateHash, deadline)` 三重校验；soft deadline 前接受合法候选，否则 lease 过期 + `session.abort()` 提交 SafetyPlan；迟到调用一律拒绝；abort 后会话复用。
 - 验收变化：stale / late plan 永不执行（fault injection 测试证明）；abort / 复用闭环测试全绿。
 
+> ✅ **已完成（2026-08-03）**：契约冻结（decision-types.ts）+ 3A Clock/DeadlineBudget +
+> 3B LeaseRegistry（runId 精确索引 + 状态机 + 有界清理）+ 3C AgentRuntime 端口 + Fake
+> （11 故障模式走 sink 路径）+ 3D PlanArbiter（Hybrid 合成 + emergency）+ leader 集成
+> DecisionCoordinator（Safety 预计算 → deadline race → expire 先于 abort → 后台 settle）。
+> 16 暗卷全过；零回归门槛：100 tick fixture 上 coordinator（never-settles）计划 ==
+> SafetyPlanner 100/100。完成闸门五项全绿（check/test/schema:check/replay:check/pytest）。
+> 下一步：切片 4 真实 Pi Adapter（消灭 Python RPC 桥）。
+
 ### 切片 4 — 真实 Pi Adapter（4-5 天）
 
 - 目标：决策核心接真实 pi `createAgentSession`，消灭 Python RPC 桥。
