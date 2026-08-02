@@ -25,10 +25,10 @@
 | 4C prompt + StrategyMemory（11 测试） | ✅ | c0060f6/7aaae58 |
 | 4D-pre 协议封口（slot/严格解析/source 统一/runId 格式） | ✅ | 11874cf |
 | PiAgentRuntime stub 层（11 测试，生命周期/abort/rotation） | ✅ | 09cdada |
-| PiAgentRuntime 真实嵌入冒烟（fake stream） | 🔄 待做（leader 地界） |
+| PiAgentRuntime 真实嵌入冒烟（fake stream 全链路，6 暗卷） | ✅ | 10b60a6 |
 | Leader tenant-runtime 集成（锁/manifest/三流遥测/优雅关闭，6 暗卷） | ✅ | bf7c963 |
 | **真机 Safety Canary（t1：shadow 10 tick + live 45 tick，P0 红线全 0）** | ✅ | 2026-08-03，证据 runs/run-20260802T133504-7b42dd/ts-live-canary/ |
-| agent-shadow（≥100 Tick）→ deterministic（D 验收后）→ hybrid | ⏳ 下一里程碑 |
+| agent-shadow（真实 Pi，观察中）→ deterministic（D 验收后）→ hybrid | 🔄 观察中 |
 
 ## 并行任务（4 份，地界互斥）
 
