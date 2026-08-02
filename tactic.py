@@ -22,7 +22,7 @@ RESERVE_WEALTHY = 3   # 资源充足时 spawn 后保留的应急资源
 RESERVE_EARLY = 1     # 早期（<10 资源）只留 1，尽快铺 Worker 经济
 WORKER_TARGET = 8     # 经济目标 Worker 数，之后开始造兵
 POP_CEILING = 20      # 人口上限：tier 0 (0-19) 无 upkeep，留 1 格缓冲
-EXPLORE_RADIUS = 12   # 巡逻半径：空 Worker 在家周围巡逻，不远离 Core
+EXPLORE_RADIUS = 8    # 巡逻半径：空 Worker 在家周围巡逻，不远离 Core（半径越大往返周期越长）
 
 UNIT_MAX_HP = {UnitType.WORKER: 2, UnitType.VANGUARD: 4, UnitType.RANGER: 2}
 

@@ -169,7 +169,7 @@ def test_worker_explores_toward_beacon_when_no_resources():
 
 def test_worker_returns_home_beyond_explore_radius():
     core = core_at((0, 0))
-    w = FakeUnit((15, 0), UnitType.WORKER, 2)  # 距 Core 15 > EXPLORE_RADIUS 12
+    w = FakeUnit((10, 0), UnitType.WORKER, 2)  # 距 Core 10 > EXPLORE_RADIUS 8
     turn = FakeTurn(core=core, units=[w], resources=2,
                     beacon_pos=(10, 0), beacon_status=BeaconStatus.GROUND)
     decide_actions(turn)
