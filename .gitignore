@@ -11,7 +11,7 @@ venv/
 # 运行时产物
 logs/
 alerts/
-telemetry/
+/telemetry/
 
 # 外部克隆的 skill 仓库（独立版本管理）
 .agents/
