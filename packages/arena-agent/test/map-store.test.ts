@@ -132,7 +132,13 @@ test("多进程并发写：子进程同时写不同障碍无锁冲突", async ()
       const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
         cwd: PKG_ROOT,
       });
-      child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`child exit ${code}`))));
+      const stderr: Buffer[] = [];
+      child.stderr.on("data", (d: Buffer) => stderr.push(d));
+      child.on("exit", (code) =>
+        code === 0
+          ? resolve()
+          : reject(new Error(`child exit ${code}: ${Buffer.concat(stderr).toString()}`)),
+      );
       child.on("error", reject);
     });
   await Promise.all([writer(0, 40), writer(100, 40), writer(200, 40), writer(300, 40)]);

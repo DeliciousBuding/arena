@@ -8,7 +8,8 @@ import type { PlayerState } from "@arena/arena-hero-ts";
 
 import { planToCommandPlan, handleTurn } from "../src/runtime/loop.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG } from "../src/strategies/safety-planner.ts";
-import type { Plan } from "../src/domain/model.ts";
+import type { DecisionCandidate, Plan, TickState } from "../src/domain/model.ts";
+import type { DecisionLease } from "../src/runtime/decision-lease.ts";
 
 const MIN_STATE: PlayerState = {
   status: "ACTIVE",
@@ -89,19 +90,37 @@ test("handleTurn shadow 模式：产出 plan 但不提交", async () => {
   assert.ok(outcome.plan.tick === 100);
 });
 
-test("handleTurn 提交路径：safety plan 提交成功", async () => {
-  const accepted = await new Promise<{ accepted: boolean; tick: number }>((resolve) => {
+test("handleTurn 提交路径：决策 plan 转 wire 注入 Turn 提交", async () => {
+  const submitted = await new Promise<unknown>((resolve) => {
     const turn = makeTurn(async (plan) => {
-      const p = plan as { tick: number };
-      resolve({ accepted: true, tick: p.tick });
-      return { accepted: true, tick: p.tick };
+      resolve(plan);
+      return { accepted: true, tick: 100 };
     });
-    void handleTurn(turn, new SafetyPlanner(DEFAULT_SAFETY_CONFIG), {}, 8000).then((outcome) => {
-      assert.equal(outcome.source, "safety");
-      assert.equal(outcome.accepted, true);
+    // decide 注入已知 plan → 提交的必须是它的 wire 转换（接线缺口回归测试）
+    const decide = async (_state: TickState, lease: DecisionLease): Promise<DecisionCandidate> => ({
+      protocolVersion: "1" as const,
+      tick: 100,
+      stateHash: lease.stateHash, // 真实 hash，避免 lease 拒绝回退 safety
+      plan: {
+        tick: 100,
+        unitActions: { u1: { type: "MOVE", direction: "UP" } },
+        coreAction: null,
+        intents: {},
+      },
+      reason: "test",
     });
+    void handleTurn(turn, new SafetyPlanner(DEFAULT_SAFETY_CONFIG), { decide }, 8000).then(
+      (outcome) => {
+        assert.equal(outcome.source, "agent");
+        assert.equal(outcome.accepted, true);
+      },
+    );
   });
-  assert.equal(accepted.tick, 100);
+  assert.deepEqual(submitted, {
+    tick: 100,
+    unit_actions: { u1: { type: "MOVE", direction: "UP" } },
+    core_action: null,
+  });
 });
 
 test("handleTurn 提交失败：error 字段带出", async () => {

@@ -28,7 +28,7 @@ export interface ValidationResult {
   readonly issues: readonly ValidationIssue[];
 }
 
-const UNIT_MAX_HP = { WORKER: 2, VANGUARD: 4, RANGER: 2 } as const;
+export const UNIT_MAX_HP = { WORKER: 2, VANGUARD: 4, RANGER: 2 } as const;
 const SPAWN_COST = { WORKER: 5, VANGUARD: 10, RANGER: 12 } as const;
 
 export function validatePlan(

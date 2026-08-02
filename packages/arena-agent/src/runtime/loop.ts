@@ -13,6 +13,7 @@ import {
 import {
   type CoreAction,
   type DecisionCandidate,
+  type DecisionSource,
   type Plan,
   type TickState,
   type UnitAction,
@@ -56,8 +57,6 @@ export function planToCommandPlan(plan: Plan): CommandPlan {
 }
 
 // ---------- 主循环 ----------
-
-export type DecisionSource = "agent" | "safety" | "repaired-agent";
 
 export interface TickOutcome {
   readonly tick: number;
@@ -147,13 +146,15 @@ export async function handleTurn(
     source = "repaired-agent";
   }
 
-  // 4) shadow：不提交
+  // 4) shadow：只观察不提交
   if (options.shadow) {
     return { tick: state.tick, source, plan, accepted: false };
   }
 
-  // 5) 提交
+  // 5) 决策计划注入 Turn 并提交（走 SDK 原提交通道：重试/幂等）
   try {
+    const wirePlan = planToCommandPlan(plan);
+    turn.replace(wirePlan);
     const accepted = await turn.submit();
     return { tick: state.tick, source, plan, accepted: accepted.accepted };
   } catch (exc) {

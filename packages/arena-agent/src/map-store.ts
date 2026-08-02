@@ -49,8 +49,10 @@ export class MapStore {
   constructor(path: string) {
     this.path = path;
     this.db = new DatabaseSync(path);
-    this.db.exec("PRAGMA journal_mode=WAL");
+    // busy_timeout 必须先于 WAL pragma：journal 切换需要独占锁，
+    // 4 租户并发首开会锁，无超时则直接抛 "database is locked"
     this.db.exec("PRAGMA busy_timeout=5000");
+    this.db.exec("PRAGMA journal_mode=WAL");
     this.setupSchema();
     this.refresh();
   }

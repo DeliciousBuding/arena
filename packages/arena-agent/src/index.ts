@@ -6,5 +6,6 @@ export * from "./domain/state-reducer.ts";
 export * from "./domain/world.ts";
 export * from "./map-store.ts";
 export * from "./runtime/decision-lease.ts";
+export * from "./runtime/loop.ts";
 export * from "./runtime/state-hash.ts";
 export * from "./strategies/safety-planner.ts";

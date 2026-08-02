@@ -18,6 +18,7 @@ import {
   nearest,
   stepToward,
 } from "../domain/nav.ts";
+import { UNIT_MAX_HP } from "../domain/plan-validator.ts";
 import { countEnemiesNearCore } from "../domain/plan-validator.ts";
 import { PhaseMachine, type PhaseConfig } from "../domain/phase-machine.ts";
 import { World } from "../domain/world.ts";
@@ -48,12 +49,6 @@ export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
   guardResources: 30,
   guardForce: 4,
 });
-
-const UNIT_MAX_HP: Readonly<Record<UnitType, number>> = {
-  WORKER: 2,
-  VANGUARD: 4,
-  RANGER: 2,
-};
 
 export interface SafetyPlannerInput {
   readonly state: TickState;

@@ -9,10 +9,10 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test \"test/*.test.ts\""
+    "test": "tsx --test \"test/*.test.ts\""
   },
   "dependencies": {
-    "@arena/arena-hero-ts": "git+https://github.com/DeliciousBuding/arena-hero-ts.git#fd0da66"
+    "@arena/arena-hero-ts": "github:DeliciousBuding/arena-hero-ts#ef38adb"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
