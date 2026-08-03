@@ -257,10 +257,55 @@ test("runTenant：maxTicks 达标后 runtime 内部优雅关闭并精确计数",
   }
 });
 
+test("runTenant：startupSyncTurns 首 Tick 只观察，后续 Tick 才 live 提交", async () => {
+  const base = mkdtempSync(join(tmpdir(), "tenant-run-"));
+  const configPath = writeConfig(makeConfig(base));
+  const runtime = new SyncCandidateRuntime();
+  const client = makeInfiniteClient();
+  const old = process.env.ARENA_HERO_API_KEY_T_TEST;
+  process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
+  try {
+    const result = await runTenant(configPath, "PROJECT_ROOT/arena", {
+      runtime,
+      client: client as never,
+      decisionMode: "deterministic",
+      submissionMode: "live",
+      startupSyncTurns: 1,
+      maxTicks: 3,
+      onSignal: () => {},
+    });
+    assert.equal(result.processedTickCount, 3);
+    assert.equal(client.submitted.length, 2, "首 Tick 只同步，后两 Tick 提交");
+    const lines = readFileSync(result.telemetryPaths.runtime, "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { submitResult: string; notSubmittedReason?: string });
+    assert.deepEqual(
+      lines.map((line) => [line.submitResult, line.notSubmittedReason ?? null]),
+      [
+        ["not_submitted", "startup_sync"],
+        ["accepted", null],
+        ["accepted", null],
+      ],
+    );
+  } finally {
+    if (old === undefined) delete process.env.ARENA_HERO_API_KEY_T_TEST;
+    else process.env.ARENA_HERO_API_KEY_T_TEST = old;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("runTenant：非法 maxTicks 在拿锁前 fail-fast", async () => {
   await assert.rejects(
     runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { maxTicks: 0 }),
     /maxTicks 必须是正整数/,
+  );
+});
+
+test("runTenant：非法 startupSyncTurns 在拿锁前 fail-fast", async () => {
+  await assert.rejects(
+    runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { startupSyncTurns: -1 }),
+    /startupSyncTurns 必须是非负整数/,
   );
 });
 

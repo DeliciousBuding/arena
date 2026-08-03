@@ -103,6 +103,8 @@ export interface TenantRunOptions {
   readonly onSignal?: (callback: () => void) => void;
   /** 处理满 N 个 Turn 后由 runtime 自己优雅关闭；Canary/Burn-in 门禁使用。 */
   readonly maxTicks?: number;
+  /** live 启动时先观察 N 个 Turn，不提交；CLI 生产缺省为 1。 */
+  readonly startupSyncTurns?: number;
 }
 
 export interface TenantRunResult {
@@ -127,6 +129,12 @@ export async function runTenant(
 ): Promise<TenantRunResult> {
   if (options.maxTicks !== undefined && (!Number.isInteger(options.maxTicks) || options.maxTicks < 1)) {
     throw new Error(`maxTicks 必须是正整数，实际=${String(options.maxTicks)}`);
+  }
+  if (
+    options.startupSyncTurns !== undefined &&
+    (!Number.isInteger(options.startupSyncTurns) || options.startupSyncTurns < 0)
+  ) {
+    throw new Error(`startupSyncTurns 必须是非负整数，实际=${String(options.startupSyncTurns)}`);
   }
   const config = loadRuntimeConfig(configPath);
   const decisionMode = options.decisionMode ?? config.decisionMode;
@@ -276,8 +284,13 @@ export async function runTenant(
           selectionLatencyMs: decision.selectionLatencyMs,
           abortRequested: decision.abortRequested,
           rotationGeneration: runtimeGeneration,
-          submitResult: outcome.accepted ? "accepted" : submissionMode === "live" ? "rejected" : "not_submitted",
+          submitResult: outcome.submitAttempted
+            ? outcome.accepted
+              ? "accepted"
+              : "rejected"
+            : "not_submitted",
           submitError: outcome.error,
+          notSubmittedReason: outcome.notSubmittedReason,
           leaseRejectionCode: outcome.leaseCode,
         };
         runtimeWriter.write(runtimeRecord);
@@ -371,6 +384,7 @@ export async function runTenant(
       coordinator,
       submissionMode,
       decisionMode,
+      startupSyncTurns: options.startupSyncTurns,
       onTick,
     });
     await Promise.race([loopPromise, stopped]);

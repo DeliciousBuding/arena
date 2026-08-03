@@ -71,6 +71,9 @@ export interface TickOutcome {
   readonly repairCount: number;
   readonly plan: Plan;
   readonly accepted: boolean;
+  /** 是否实际调用过 turn.submit()。shadow/startup sync 为 false。 */
+  readonly submitAttempted: boolean;
+  readonly notSubmittedReason?: "disabled" | "startup_sync";
   readonly leaseCode?: string;
   readonly error?: string;
   /** 决策时点 state（outcome trace 资源对比用；loop 始终持有，透传零成本）。 */
@@ -97,16 +100,30 @@ export interface TenantLoopOptions {
   readonly decisionMode?: DecisionModeName;
   /** 决策 deadline（ms），默认 8000（15s 游戏窗口内留提交余量）。 */
   readonly deadlineMs?: number;
+  /** live 启动后先观察 N 个 Turn 再提交，避免接入已关窗的当前 Tick。 */
+  readonly startupSyncTurns?: number;
 }
 
 export async function runTenantLoop(options: TenantLoopOptions): Promise<void> {
   const { client } = options;
   const planner = options.planner ?? new SafetyPlanner(DEFAULT_SAFETY_CONFIG);
   const deadlineMs = options.deadlineMs ?? 8000;
+  const startupSyncTurns = options.startupSyncTurns ?? 0;
+  let observedTurns = 0;
 
   for await (const turn of client.turns()) {
-    const outcome = await handleTurn(turn, planner, options, deadlineMs);
-    options.onTick?.(outcome);
+    const startupSync = options.submissionMode === "live" && observedTurns < startupSyncTurns;
+    const outcome = await handleTurn(
+      turn,
+      planner,
+      startupSync ? { ...options, submissionMode: "disabled" } : options,
+      deadlineMs,
+    );
+    observedTurns += 1;
+    const recordedOutcome = startupSync
+      ? { ...outcome, notSubmittedReason: "startup_sync" as const }
+      : outcome;
+    options.onTick?.(recordedOutcome);
   }
 }
 
@@ -133,6 +150,8 @@ export async function handleTurn(
         repairCount: result.repairCount,
         plan: result.execution.plan,
         accepted: false,
+        submitAttempted: false,
+        notSubmittedReason: "disabled",
         state,
         decision: result,
       };
@@ -148,6 +167,7 @@ export async function handleTurn(
         repairCount: result.repairCount,
         plan: result.execution.plan,
         accepted: accepted.accepted,
+        submitAttempted: true,
         state,
         decision: result,
       };
@@ -159,6 +179,7 @@ export async function handleTurn(
         repairCount: result.repairCount,
         plan: result.execution.plan,
         accepted: false,
+        submitAttempted: true,
         error: exc instanceof Error ? exc.message : String(exc),
         state,
         decision: result,
@@ -220,7 +241,17 @@ export async function handleTurn(
 
   // 4) 只观察不提交（P0-1：submissionMode=disabled）
   if (!live) {
-    return { tick: state.tick, source, originalSource, repairCount, plan, accepted: false, state };
+    return {
+      tick: state.tick,
+      source,
+      originalSource,
+      repairCount,
+      plan,
+      accepted: false,
+      submitAttempted: false,
+      notSubmittedReason: "disabled",
+      state,
+    };
   }
 
   // 5) 决策计划注入 Turn 并提交（走 SDK 原提交通道：重试/幂等）
@@ -228,7 +259,16 @@ export async function handleTurn(
     const wirePlan = planToCommandPlan(plan);
     turn.replace(wirePlan);
     const accepted = await turn.submit();
-    return { tick: state.tick, source, originalSource, repairCount, plan, accepted: accepted.accepted, state };
+    return {
+      tick: state.tick,
+      source,
+      originalSource,
+      repairCount,
+      plan,
+      accepted: accepted.accepted,
+      submitAttempted: true,
+      state,
+    };
   } catch (exc) {
     return {
       tick: state.tick,
@@ -237,6 +277,7 @@ export async function handleTurn(
       repairCount,
       plan,
       accepted: false,
+      submitAttempted: true,
       error: exc instanceof Error ? exc.message : String(exc),
       state,
     };

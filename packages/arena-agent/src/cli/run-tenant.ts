@@ -6,6 +6,7 @@
  *   npx tsx src/cli/run-tenant.ts --config=... --live                        # 强制 live 提交
  *   npx tsx src/cli/run-tenant.ts --config=... --mode=agent-shadow           # 覆盖决策模式
  *   npx tsx src/cli/run-tenant.ts --config=... --live --max-ticks=100         # 受控 Burn-in
+ *   # --live 缺省先观察 1 Tick；可用 --startup-sync-ticks=0 显式关闭
  *   npx tsx src/cli/run-tenant.ts --doctor --config=...                      # 只跑 doctor（只读）
  *
  * 安全：密钥只从 env 读（config.arenaTokenEnv）；SIGINT/SIGTERM 优雅关闭。
@@ -47,12 +48,13 @@ async function main(): Promise<void> {
       live: { type: "boolean", short: "l" },
       mode: { type: "string" },
       "max-ticks": { type: "string" },
+      "startup-sync-ticks": { type: "string" },
       repoRoot: { type: "string" },
     },
   });
 
   if (values.config === undefined) {
-    console.error("用法：run-tenant --config=<tenant.json> [--doctor] [--live] [--mode=safety|deterministic|agent-shadow|hybrid] [--max-ticks=N]");
+    console.error("用法：run-tenant --config=<tenant.json> [--doctor] [--live] [--mode=safety|deterministic|agent-shadow|hybrid] [--max-ticks=N] [--startup-sync-ticks=N]");
     process.exitCode = 1;
     return;
   }
@@ -75,6 +77,13 @@ async function main(): Promise<void> {
   if (maxTicks !== undefined && (!Number.isInteger(maxTicks) || maxTicks < 1)) {
     throw new Error(`--max-ticks 必须是正整数，实际=${maxTicksRaw}`);
   }
+  const startupSyncRaw = values["startup-sync-ticks"];
+  const startupSyncTurns = startupSyncRaw === undefined
+    ? values.live ? 1 : 0
+    : Number(startupSyncRaw);
+  if (!Number.isInteger(startupSyncTurns) || startupSyncTurns < 0) {
+    throw new Error(`--startup-sync-ticks 必须是非负整数，实际=${startupSyncRaw}`);
+  }
   const decisionMode = values.mode === undefined
     ? undefined
     : (values.mode as "safety" | "deterministic" | "agent-shadow" | "hybrid");
@@ -82,6 +91,7 @@ async function main(): Promise<void> {
     submissionMode: values.live ? "live" : undefined,
     decisionMode,
     maxTicks,
+    startupSyncTurns,
   });
   console.log(
     `run 结束：processRunId=${result.processRunId} tenant=${result.tenantId} ` +
