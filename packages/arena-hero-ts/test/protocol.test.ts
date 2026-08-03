@@ -83,8 +83,19 @@ test("parseStreamMessage: state 信封解析 PlayerState", () => {
   assert.equal(core.kind, "CORE");
   if (core.kind === "CORE") {
     assert.equal(core.owner_username, "buding");
+    assert.equal(core.move_direction, null);
+    assert.equal(core.move_progress, null);
+    assert.equal(core.move_required_ticks, null);
+    assert.equal(core.destination, null);
   }
+  const ranger = state.objects[1];
+  assert.equal(ranger.kind, "UNIT");
+  if (ranger.kind === "UNIT") assert.equal(ranger.cargo, null);
   assert.equal(state.events[0].event_type, "HARVEST_SUCCEEDED");
+  assert.equal(state.events[0].reason_code, null);
+  assert.equal(state.events[0].actor_id, null);
+  assert.equal(state.events[0].target_id, null);
+  assert.equal(state.events[0].position, null);
 });
 
 test("parseStreamMessage: ACTIVE wire 可省略 respawn_at_tick，domain 归一为 null", () => {
@@ -96,7 +107,7 @@ test("parseStreamMessage: ACTIVE wire 可省略 respawn_at_tick，domain 归一�
       population: 0,
       population_tier: 0,
       upkeep_next_tick: 0,
-      champion_beacon: { position: [0, 0], status: "GROUND", carrier_id: null },
+      champion_beacon: { position: [0, 0] },
       objects: [],
       events: [],
     },
@@ -105,6 +116,8 @@ test("parseStreamMessage: ACTIVE wire 可省略 respawn_at_tick，domain 归一�
   assert.ok("status" in state);
   assert.equal(state.respawn_at_tick, null);
   assert.equal(Object.hasOwn(state, "respawn_at_tick"), true, "domain object 必须补齐字段");
+  assert.equal(state.champion_beacon.status, null);
+  assert.equal(state.champion_beacon.carrier_id, null);
 });
 
 test("parseStreamMessage: RESPAWNING wire 省略 respawn_at_tick 仍拒绝", () => {
@@ -162,6 +175,21 @@ test("parseStreamMessage: cargo 只在受控 Worker 上", () => {
     },
   });
   assert.throws(() => parseStreamMessage(raw), ProtocolError);
+});
+
+test("parseStreamMessage: received 省略 core_action 时 domain 归一为 null", () => {
+  const received = parseStreamMessage(JSON.stringify({
+    type: "received",
+    data: {
+      tick: 7,
+      source: "AGENT",
+      received_at: "2026-08-03T00:00:00Z",
+      plan: { tick: 7, unit_actions: {} },
+    },
+  }));
+  assert.ok("plan" in received);
+  assert.equal(received.plan.core_action, null);
+  assert.equal(Object.hasOwn(received.plan, "core_action"), true);
 });
 
 test("parseAccepted: 合法 202 应答", () => {
