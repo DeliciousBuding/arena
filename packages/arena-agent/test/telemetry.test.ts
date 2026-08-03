@@ -40,6 +40,7 @@ const DT: Omit<DecisionTraceRecord, "processRunId" | "tenantId"> = {
   safetyReplacementCount: 1,
   invalidAgentActionCount: 0,
   repairCount: 0,
+  intentCounts: { patrol: 2, return_home: 1 },
   planHash: "sha256:abc",
 };
 
@@ -48,6 +49,9 @@ const OT: Omit<OutcomeTraceRecord, "processRunId" | "tenantId"> = {
   coreResourcesBefore: 5,
   coreResourcesAfter: 7,
   coreResourceDelta: 2,
+  uniqueWorkerCellCount: 3,
+  workerMaxDistanceFromCore: 8,
+  workerMeanDistanceFromCore: 4.5,
   failedEvents: [{
     eventType: "UNIT_MOVE_FAILED",
     reasonCode: "blocked",
@@ -86,6 +90,7 @@ test("decisionTrace 字段齐全", () => {
   const record = decisionTrace(DT);
   assert.equal(record.decisionSource, "hybrid");
   assert.equal(record.planHash, "sha256:abc");
+  assert.equal(record.intentCounts?.patrol, 2);
 });
 
 test("outcomeTrace 字段齐全", () => {
@@ -94,6 +99,8 @@ test("outcomeTrace 字段齐全", () => {
   assert.deepEqual(record.events, ["DEPOSIT 2"]);
   assert.equal(record.failedEvents?.[0]?.reasonCode, "blocked");
   assert.equal(record.failedEvents?.[0]?.priorIntent, "return_home");
+  assert.equal(record.uniqueWorkerCellCount, 3);
+  assert.equal(record.workerMeanDistanceFromCore, 4.5);
 });
 
 test("工厂缺必填字段 → 抛错（fail-fast 不静默）", () => {

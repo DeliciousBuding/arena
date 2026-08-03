@@ -59,6 +59,8 @@ export interface DecisionTraceRecord {
   readonly harvestCount?: number;
   readonly depositCount?: number;
   readonly waitCount?: number;
+  /** 最终计划 intent 分布（patrol/go-resource/return-home/capacity-reroute 等）。 */
+  readonly intentCounts?: Readonly<Record<string, number>>;
   /** 最终采纳计划的稳定哈希（planHashOf；用于审计/漂移比对）。 */
   readonly planHash: string;
   readonly reason?: string;
@@ -77,6 +79,9 @@ export interface OutcomeTraceRecord {
   readonly workerCount?: number;
   readonly workersWithCargo?: number;
   readonly workerCargoTotal?: number;
+  readonly uniqueWorkerCellCount?: number;
+  readonly workerMaxDistanceFromCore?: number;
+  readonly workerMeanDistanceFromCore?: number;
   /** 服务端失败事件 + 上一 Tick 实际提交动作，用于精确归因而非猜测。 */
   readonly failedEvents?: readonly FailedEventTrace[];
   readonly grossDeposit?: number;

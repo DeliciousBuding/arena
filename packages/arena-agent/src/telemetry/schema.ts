@@ -61,6 +61,7 @@ export const DecisionTraceSchema = Type.Object({
   harvestCount: Type.Optional(Type.Integer()),
   depositCount: Type.Optional(Type.Integer()),
   waitCount: Type.Optional(Type.Integer()),
+  intentCounts: Type.Optional(Type.Record(Type.String(), Type.Integer())),
   planHash: Type.String(),
   reason: Type.Optional(Type.String()),
 });
@@ -76,6 +77,9 @@ export const OutcomeTraceSchema = Type.Object({
   workerCount: Type.Optional(Type.Integer()),
   workersWithCargo: Type.Optional(Type.Integer()),
   workerCargoTotal: Type.Optional(Type.Integer()),
+  uniqueWorkerCellCount: Type.Optional(Type.Integer()),
+  workerMaxDistanceFromCore: Type.Optional(Type.Number()),
+  workerMeanDistanceFromCore: Type.Optional(Type.Number()),
   failedEvents: Type.Optional(Type.Array(Type.Object({
     eventType: Type.String(),
     reasonCode: Type.Union([Type.String(), Type.Null()]),

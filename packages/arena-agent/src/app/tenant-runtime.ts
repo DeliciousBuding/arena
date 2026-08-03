@@ -32,6 +32,7 @@ import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi
 import { buildDecisionPrompt } from "../infrastructure/pi/prompt-builder.ts";
 import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
+import { manhattan } from "../domain/nav.ts";
 import type { AgentDecisionRuntime, DecisionModeName, DecisionResult, SubmissionModeName } from "../runtime/decision-types.ts";
 import { JsonlWriter } from "../telemetry/jsonl-writer.ts";
 import { sanitizeValue } from "../telemetry/jsonl-writer.ts";
@@ -259,6 +260,10 @@ export async function runTenant(
     const onTick = (outcome: TickOutcome): void => {
       const decision = outcome.decision;
       if (decision !== undefined) {
+        const intentCounts = Object.values(outcome.plan.intents).reduce<Record<string, number>>((counts, intent) => {
+          counts[intent] = (counts[intent] ?? 0) + 1;
+          return counts;
+        }, {});
         // runtime trace + decision trace（三流以 runId 关联；直接构造 record——
         // 工厂默认值（unknown）是危险默认，生产路径显式传全字段，validate 由 JsonlWriter 执行）
         const runtimeRecord: RuntimeTraceRecord = {
@@ -290,12 +295,17 @@ export async function runTenant(
           harvestCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "HARVEST").length,
           depositCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "DEPOSIT").length,
           waitCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "WAIT").length,
+          intentCounts,
           planHash: planHashOf(outcome.plan),
         };
         decisionWriter.write(decisionRecord);
       }
       // outcome trace：t-1 决策时资源 → t 决策时资源（提交执行后的净变化）
       if (holder.prev !== null) {
+        const corePosition = outcome.state.core?.position;
+        const workerDistances = corePosition === undefined
+          ? []
+          : outcome.state.workers.map((worker) => manhattan(worker.position, corePosition));
         const failedEvents = outcome.state.events
           .filter((event) => event.eventType.endsWith("_FAILED") || event.reasonCode !== null)
           .map((event) => {
@@ -333,6 +343,11 @@ export async function runTenant(
           workerCount: outcome.state.workers.length,
           workersWithCargo: outcome.state.workers.filter((worker) => worker.cargo > 0).length,
           workerCargoTotal: outcome.state.workers.reduce((total, worker) => total + worker.cargo, 0),
+          uniqueWorkerCellCount: new Set(outcome.state.workers.map((worker) => `${worker.position[0]},${worker.position[1]}`)).size,
+          workerMaxDistanceFromCore: workerDistances.length === 0 ? undefined : Math.max(...workerDistances),
+          workerMeanDistanceFromCore: workerDistances.length === 0
+            ? undefined
+            : workerDistances.reduce((total, distance) => total + distance, 0) / workerDistances.length,
           failedEvents,
           events: outcome.state.events.map((e) => e.eventType),
         };
