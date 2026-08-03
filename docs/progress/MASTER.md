@@ -70,7 +70,8 @@ combat、第四 Tick Unit/Core 争抢、Beacon pickup/drop/death、Core destruct
 3. 稳定 TS commit/config 回滚演练；
 4. combat、Core migration、Beacon、respawn 专项 Runtime-Golden；
 5. 在目标服务器实际安装 systemd 单元并完成 shadow 长期运行、重启/磁盘告警演练；
-6. 基于真实净收益决定是否允许单租户 hybrid canary。
+6. 升级或受控修补 Pi 依赖链中的 undici，再开放服务器 `agent-shadow` / `hybrid`；
+7. 基于真实净收益决定是否允许单租户 hybrid canary。
 
 ## 生产晋级顺序
 

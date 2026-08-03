@@ -17,6 +17,10 @@ const diskHealth = read("arena-disk-health.service");
 const wrapperPath = join(root, "scripts", "server", "run-supervisor.sh");
 const wrapper = readFileSync(wrapperPath, "utf-8");
 const envExample = read("arena.env.example");
+const packageLock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf-8"));
+const piUndiciVersion = packageLock.packages?.[
+  "node_modules/@earendil-works/pi-coding-agent/node_modules/undici"
+]?.version;
 
 mustContain(shadowUnit, "Restart=on-failure", "shadow service must auto-recover bounded failures");
 mustContain(shadowUnit, "RestartPreventExitStatus=64 78", "shadow wrapper errors must not restart-loop");
@@ -51,9 +55,17 @@ mustContain(liveUnit, "EnvironmentFile=/etc/arena/arena.env", "live supervisor m
 mustContain(liveUnit, "EnvironmentFile=-/etc/arena/health.env", "live supervisor must share health settings");
 mustContain(wrapper, '"--config-dir=$config_dir"', "wrapper must use external configs");
 mustContain(wrapper, '"--runtime-dir=$runtime_dir"', "wrapper must use external runtime state");
+mustContain(wrapper, 'args+=("--mode=deterministic" "--shadow")', "server shadow must remain deterministic by default");
 mustContain(wrapper, 'args+=("--mode=deterministic" "--live")', "live wrapper must pin deterministic mode");
 mustContain(wrapper, 'exec "$tsx_bin" packages/arena-agent/src/cli/run-supervisor.ts', "wrapper must exec the native TS entry directly");
 mustNotContain(wrapper, "npm run arena:supervisor", "server wrapper must not add an npm process layer");
+if (typeof piUndiciVersion !== "string") {
+  throw new Error("cannot resolve pi-coding-agent nested undici version from package-lock.json");
+}
+if (compareVersions(piUndiciVersion, "8.9.0") < 0) {
+  mustNotContain(wrapper, "--mode=agent-shadow", "vulnerable Pi HTTP stack must not be enabled by server units");
+  mustNotContain(wrapper, "--mode=hybrid", "vulnerable Pi HTTP stack must not be enabled by server units");
+}
 if (/^ARENA_HERO_API_KEY_\d+=\S+/m.test(envExample)) {
   throw new Error("arena.env.example must not contain tenant secret values");
 }
@@ -108,6 +120,19 @@ function mustContain(text, expected, message) {
 
 function mustNotContain(text, unexpected, message) {
   if (text.includes(unexpected)) throw new Error(`${message}: found ${unexpected}`);
+}
+
+function compareVersions(left, right) {
+  const leftParts = left.split(".").map(Number);
+  const rightParts = right.split(".").map(Number);
+  if ([...leftParts, ...rightParts].some((part) => !Number.isSafeInteger(part) || part < 0)) {
+    throw new Error(`invalid numeric version comparison: ${left} vs ${right}`);
+  }
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const delta = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
 }
 
 function runHealth(url, runtimeDir, minFreeBytes, extraArgs = []) {
