@@ -174,11 +174,27 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 - 关键内容：supervisor 管理 4 个租户进程；append-only 全 Tick JSONL；readiness / health / debug API；process-tree 优雅关闭与孤儿检测；run manifest 固定 arena / SDK / Pi SHA、schema hash、模型与配置；MapStore 走 worker 线程，node:sqlite 不阻塞主 event loop。
 - 验收变化：四租户并行稳定运行；停止后无孤儿进程；遥测 / 调试端点可用；manifest 可复现运行环境。
 
+> ✅ **已完成（2026-08-04，切片 6 前置）**：`TenantSupervisor`（4 租户进程管家：spawn /
+> SIGTERM 优雅关闭 / SIGKILL 超时兜底 / supervisor.jsonl 事件流）+ `DebugServer`
+> （只读 /health /state /events /tenants）+ `run-supervisor` CLI（--live/--mode/--port
+> 透传）。单元测试 7 个（fake-child 零真实进程）。MapStore worker 化延后：MapStore 不在
+> 主决策链（仅 pi 工具经 map-snapshot 使用），非切换 blocker。其余遥测/manifest 已有
+> （runtime/decision/pi/outcome.jsonl + run manifest）。
+
 ### 切片 6 — 真机切换与 Python 删除（5-7 天）
 
 - 目标：按序切换真机，删除 Python 运行时。
 - 关键内容：切换顺序 TS shadow → 单租户 TS deterministic → 单租户 TS + Pi → 四租户 TS；删除 Python runtime、RPC bridge、重复 parser/schema 与正式入口，仅保留无法替代的离线研究脚本。
 - 验收变化：运行链零 Python；正式启动路径不再引用 Python；每步切换有回退预案。
+
+> ✅ **进行中（2026-08-04）**：
+> 1. TS shadow 验收已过（切片 4，27/30 candidate）；
+> 2. 单租户 TS deterministic live 验证中（t1，100 tick 真机提交，全部 accepted）；
+> 3. **Python 运行链已删除**：`src/arena_bot/` 全部、`scripts/{replay_py,pi_rpc_bridge,
+>    compare_legacy,debug_decide}.py`、`tests/`（Python 测试）随运行链退役；
+>    gen-status/CI/package.json 引用同步清理（py job = docs/status drift gate 仅；
+>    replay:python/diff/check 移除）；保留 scripts/diagnose.py 等独立离线工具。
+> 4. 待做：单租户 TS + Pi（agent live）、四租户 TS 并行、最终验收记录。
 
 ## 5. 合并闸门
 
