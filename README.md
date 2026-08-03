@@ -1,97 +1,190 @@
-# Arena Hero — 4 账号 LLM 自动游玩工作区
+# Arena Hero Autonomous Decision System
 
-用官方 Python SDK（`arena-hero` 0.2.6）自动游玩 Arena Hero（规则 **v0.11**）：
-**4 个账号并行**，每账号由 **LLM（pi → NewAPI → deepseek-v4-flash）逐 Tick 决策**，
-确定性策略（balance）兜底。
+这是 Arena Hero 的单仓自主决策工作区：**TypeScript SDK + 实时决策运行时 + 确定性 Planner + Pi/LLM 候选层 + 遥测与实验基础设施**。
 
-**目标**：攒 Core 资源 → 商店兑换公益站注册码（30/50 资源；容量 = max(10, 人口×5)）。
+当前目标是安全、稳定地积累 Core 资源，并把每次策略升级建立在真实线上证据上。
 
-## 架构
+> 当前目标架构是 **TS-first**。`src/arena_bot/` Python 运行时仍用于多租户生产和回滚，待 W6 门禁通过后退役；它不再承载新策略开发。
 
+## 当前状态
+
+已完成：
+
+- TS SDK 与 Python 100-tick Golden Replay 语义对齐；
+- deadline-aware DecisionCoordinator、Lease、Validator、Safety fallback；
+- Pi `createAgentSession` 真实嵌入，内置工具禁用，只开放 `arena_plan` / `arena_map`；
+- 单租户运行入口、单写者锁、manifest、doctor、runtime/decision/outcome JSONL；
+- TS Safety 单租户真机 Canary；
+- agent-shadow 与 DeterministicPlanner 的线上观察。
+
+仍在门禁中：
+
+- agent-shadow live 在 warmup / session rotation 修复后的重新验收；
+- DeterministicPlanner 真机 Canary 与 Safety A/B 收益验证；
+- W5 多租户 Supervisor 与渐进发布；
+- W6 Python runtime 删除。
+
+当前进度和证据以 [`docs/progress/MASTER.md`](docs/progress/MASTER.md) 为准；中长期路线见 [`docs/roadmap-long-term.md`](docs/roadmap-long-term.md)。
+
+## 目标运行链
+
+```text
+Arena state
+  → TS SDK reducer
+  → baseline planner（Safety / Deterministic）
+  → 可选 Pi/LLM observation 或 candidate
+  → Lease + Arbiter + Validator
+  → final Plan
+  → TS SDK submit
+  → runtime / decision / outcome telemetry
 ```
-experiments/*.yaml ──▶ run.py（调度器：按实验定义 spawn 租户进程）
-                            │
-        ┌───────────────────┼───────────────────┐
-      t1 进程             t2 进程            t3/t4 进程（同构）
-        │ 每 15s 一个 Tick（游戏窗口）
-        ├─ ArenaHeroClient 连接 + 提交
-        ├─ LLMStrategy：pi RPC 长驻进程 ──▶ NewAPI ──▶ deepseek-v4-flash
-        │    ├─ arena_plan 工具（原生 tool calling 提交计划）
-        │    └─ arena_map 工具（HTTP 代理查共享地图）
-        ├─ balance 兜底（LLM 超时/失败 → 确定性策略）
-        ├─ Debug API（/state /command /map/query，外部控制）
-        ├─ Watchdog（4 类停滞告警 → alerts/*.jsonl）
-        └─ Telemetry（JSONL：全 Tick 遥测，outcome=submitted/paused/empty/tick_mismatch/error）
-              │
-        mapstore/arena_map.db（SQLite WAL，4 进程共享测绘：障碍/盟友）
-```
 
-> **TS 迁移进行中**：Python 运行时将退役，改由 TS 编排层直接嵌入 pi-coding-agent（RPC 桥消失）。
-> 当前 Python 版继续跑 4 租户 burn-in（数据收集，供 TS 侧差分验证）。
-> 方案见 [docs/migration-plan.md](docs/migration-plan.md)，
-> 迁移进度：W0 嵌入闸门 ✅ · W1 wire schema+Golden Replay ✅ · TS 编排层最小闭环（loop）✅ · W4 决策桥 → W6 删 Python。
+### 安全不变量
 
-**单仓 monorepo 结构**（2026-08-02 合并自原 arena-hero-ts 仓库）：
+- 同一租户只能有一个 live writer；
+- wrong-tick、stale、duplicate candidate 永不执行；
+- LLM 超时、失败或 session rotation 时立即回退 baseline；
+- `agent-shadow` 中真实执行始终是 Safety，Agent 只记录 observation；
+- 任何 P0 出现立即停止该租户 TS，确认无残留提交后回滚；
+- 凭据只从环境变量读取，不进入配置、manifest、日志或 issue。
 
-```
-packages/arena-hero-ts/  ← TS SDK（wire schema 单源 + client/turn + contracts/ 契约产物）
-packages/arena-agent/    ← TS 编排层（domain/ + runtime/loop.ts + strategies/）
-reference/arena-hero-python/ ← 官方 Python SDK 源码镜像（追上游对照用，见 sync-log.md）
-src/arena_bot/           ← Python 运行时（退役中，burn-in 数据收集）
+## 决策模式
+
+| Decision mode | Submission mode | 行为 |
+|---|---|---|
+| `safety` | `live` | SafetyPlanner 真提交 |
+| `deterministic` | `disabled` | DeterministicPlanner 只观察 |
+| `deterministic` | `live` | 通过独立 Canary 后才允许真提交 |
+| `agent-shadow` | `live` | Safety 真提交，Agent 只记录候选和延迟 |
+| `hybrid` | `live` | Agent/Hybrid/Safety 仲裁后真提交；当前仍需独立门禁 |
+
+`DecisionMode` 与 `SubmissionMode` 是两个独立轴；不要再使用一个 `shadow:boolean` 同时表达“不提交”和“Agent 不掌权”。
+
+## 仓库结构
+
+```text
+packages/arena-hero-ts/       TS SDK、wire schema、Turn/client 与契约产物
+packages/arena-agent/         实时编排、Planner、Pi adapter、运行入口与遥测
+reference/arena-hero-python/  官方 Python SDK 镜像，仅用于上游对照
+src/arena_bot/                legacy Python runtime，生产回滚链，W6 后删除
+fixtures/differential/        Python/TS Golden Replay fixture
+scripts/                      schema、replay、status 与离线工具
+experiments/                  legacy Python 实验配置，迁移期间保留
+runs/                         本地运行证据，gitignored
 ```
 
 ## 快速开始
 
+### 安装
+
 ```bash
-uv sync                          # 装 Python 依赖（arena-hero 0.2.6）
-npm install                      # 装 TS 依赖（workspaces：SDK + 编排层一次装齐）
-# 秘钥：.env 设 ARENA_HERO_API_KEY_1..4（gitignore，永不入仓）
-uv run pytest tests/ -q          # 135 例无凭据决策测试
-cd packages/arena-agent && npx tsx --test "test/*.test.ts"   # TS 编排层 21 例
-cd packages/arena-hero-ts && node --experimental-transform-types --test "test/*.test.ts"  # SDK 48 例
-uv run python -m arena_bot.run --experiment exp-llm-4   # 4 账号 LLM 并发实验
-curl http://127.0.0.1:8123/state # 调试端点：t1 状态快照（8123-8126 各租户）
+uv sync
+npm install
 ```
 
-## 目录结构
+要求 Node.js 24+。密钥只放在 `.env` 或受控环境变量中，禁止提交到仓库。
 
-| 路径 | 用途 |
-|------|------|
-| `src/arena_bot/run.py` | 调度器：YAML 实验定义 → 多租户进程（Ctrl-C 统一清理） |
-| `src/arena_bot/tenant.py` | 单租户入口（CLI 参数 → 主循环） |
-| `src/arena_bot/main.py` | 主循环：turns → 状态 → 决策 → 提交（409 容错） |
-| `src/arena_bot/strategies/` | 策略注册表：`balance`（确定性）/ `llm`（LLM 指挥官） |
-| `src/arena_bot/llm/` | LLM 桥：PiRpcBackend（进程自愈/总预算超时）、RULES 三变体、严格解析 |
-| `src/arena_bot/map_store.py` | 共享地图（SQLite WAL）：障碍/盟友，4 进程协同测绘 |
-| `src/arena_bot/debug_api.py` | 外部控制：/state /command /map/query |
-| `src/arena_bot/watchdog.py` | 停滞告警（卡死/循环/经济停滞） |
-| `src/arena_bot/telemetry.py` | 遥测 JSONL（每 Tick，runs/<run_id>/telemetry/）+ evaluate.py 报告 |
-| `experiments/*.yaml` | 实验定义（租户/策略/参数覆盖） |
-| `docs/` | 权威文档：规则/交接/架构/目标 |
-| `scripts/pi_rpc_bridge.py` | LLM 桥离线验证（不烧游戏） |
+### 全量门禁
 
-## 策略
+```bash
+npm run check
+npm test
+npm run schema:check
+npm run replay:check
+uv run pytest tests/ -q
+uv run python scripts/gen-status.py --check
+```
 
-- **LLM 三变体**（`llm_rules` 参数，RULES 注入 prompt）：
-  `standard`（平衡+巡逻探索）/ `aggressive`（军备优先）/ `economic`（种田积累）
-- **决策链路**：原生 tool calling（arena_plan）→ 文本 JSON 兼容 → balance 兜底；
-  瞬态失败指数退避重试；LLM 进程崩溃自动重启
-- **地图**：LLM 可经 arena_map 工具查询共享地图（障碍/盟友/统计），按需调用
-- **决策闭环**：上轮执行结果（采集成功/失败等事件）注入 prompt
+测试数量不在 README 手工维护；仓库状态由 [`docs/generated/status.md`](docs/generated/status.md) 和 CI 生成结果承载。
 
-## 规则版本与更新
+### 单租户 TS 入口
 
-当前 **v0.11**（2026-08-02）：未付 upkeep 改伤"多余单位"（Core 受保护）。
-规则变更源：`docs/reference-changelog.md`（arena-hero-doc 仓库）。
-**规则更新流程**：拉取 changelog → 更新 `docs/game-rules.md` → 检查 balance/LLM RULES 适配。
+```bash
+cd packages/arena-agent
 
-## 相关仓库
+npm run arena:doctor -- --config <tenant-config.json>
+npm run arena:shadow -- --config <tenant-config.json>
+npm run arena:live -- --config <tenant-config.json>
+```
 
-- 本仓库：arena（单仓 monorepo：Python 运行时退役中 + TS SDK + TS 编排层）
-- pi 二开：独立 private 仓库（arena-llm-bridge 分支，LLM agent 框架侧改动）
-- ~~arena-hero-ts~~：已合并进本仓库（2026-08-02），原 public 仓库冻结保留历史
+运行前必须完成：
 
-## 文档索引
+1. doctor 只读检查通过；
+2. 记录 Python PID、当前 tick、resources、Core 状态和回滚命令；
+3. 停止该租户 Python 并确认无第二写者；
+4. TS 成功获取单写者锁；
+5. 先 3 tick 盯盘，再扩到预定 Canary；
+6. SIGTERM 后确认停止提交、flush telemetry、释放锁。
 
-`docs/game-rules.md` 全量规则 · `docs/GOAL.md` 商店目标 · `docs/LIMITS.md` 限流分析 ·
-`docs/handoff-pi-llm-bridge.md` LLM 桥交接 · `docs/ARCHITECTURE.md` 架构
+不要直接从 shadow 跳到四租户 hybrid。
+
+## 证据与评估
+
+每次 live 运行至少保留：
+
+```text
+runs/<processRunId>/
+  manifest.json
+  runtime.jsonl
+  decision.jsonl
+  outcome.jsonl
+  pi.jsonl          # 启用 Pi 时
+```
+
+可靠性指标优先于收益：
+
+```text
+wrong_tick_submit = 0
+duplicate_submit = 0
+stale_candidate_executed = 0
+illegal_final_plan = 0
+orphan_process = 0
+```
+
+策略收益不能只看 Core 余额变化。主要指标包括：
+
+- `ticks_to_redemption_target`
+- `core_resource_gain_per_100_ticks`
+- `gross_deposit_per_100_ticks`
+- worker idle / travel waste
+- upkeep、spawn、heal、repair 支出
+- unit loss replacement cost
+
+Replay 用于验证兼容性；真实收益需要交替窗口或高保真模拟器，不能从单段 shadow 日志做反事实结论。
+
+## 文档
+
+- [当前进度与门禁](docs/progress/MASTER.md)
+- [TS 迁移计划 W0–W6](docs/migration-plan.md)
+- [长期路线 W7–W18](docs/roadmap-long-term.md)
+- [Arena Hero v0.11 规则](docs/game-rules.md)
+- [目标与资源兑换](docs/GOAL.md)
+- [限制与速率分析](docs/LIMITS.md)
+
+旧的 Python RPC、Debug API 和 handoff 文档属于迁移参考；执行当前任务前先核对 MASTER 和 open issues。
+
+## 当前 Leader issues
+
+- W4 收口与当日指挥：#3
+- Pi session 生命周期与 agent-shadow live：#4
+- DeterministicPlanner live / Safety A/B：#5
+- 仓库 SSOT 整理：#6
+- W5 多租户生产运行层：#7
+
+## 长期方向
+
+固定优先级：
+
+```text
+正确性
+→ 可恢复性
+→ 可观测性
+→ 确定性算法收益
+→ 数据质量
+→ 高保真模拟器
+→ 价值模型 / Bandit
+→ 强化学习
+→ 受控自我改进
+```
+
+本项目最终不是“让 LLM 直接玩游戏”，而是用确定性安全骨架承载 LLM、优化算法和学习策略，并通过可复现证据逐步提升真实线上决策质量。
