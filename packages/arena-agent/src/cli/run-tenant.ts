@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { runDoctor } from "./doctor.ts";
 import { runTenant } from "../app/tenant-runtime.ts";
 import { loadDotEnv } from "../app/dotenv.ts";
+import { registerShutdownRequest } from "../app/process-shutdown.ts";
 
 async function main(): Promise<void> {
   const { values } = parseArgs({
@@ -95,6 +96,7 @@ async function main(): Promise<void> {
     maxLiveTicks,
     startupSyncTurns,
     recordCalibration: values["record-calibration"] === true,
+    onSignal: registerShutdownRequest,
   });
   console.log(
     `run 结束：processRunId=${result.processRunId} tenant=${result.tenantId} ` +
@@ -112,7 +114,13 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(`run-tenant 失败: ${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
-});
+void main()
+  .catch((error) => {
+    console.error(`run-tenant 失败: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    if (process.connected) {
+      try { process.disconnect(); } catch {}
+    }
+  });

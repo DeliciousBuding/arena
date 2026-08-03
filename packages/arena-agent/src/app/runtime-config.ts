@@ -53,6 +53,18 @@ export const RuntimeConfigSchema = Type.Object(
       ),
     ),
     costLimitUsd: Type.Optional(Type.Number({ minimum: 0 })),
+    /** Pi/Provider 熔断器（Track B）：连续失败阈值 + open 冷却时长。 */
+    circuitBreaker: Type.Optional(
+      Type.Object(
+        {
+          /** 连续失败次数（缺省 3），达到后电路 open（停止 Pi 请求）。 */
+          failureThreshold: Type.Number({ minimum: 1 }),
+          /** open 冷却时长 ms（缺省 30000），冷却后进入 half-open 单次试探。 */
+          openMs: Type.Number({ minimum: 100 }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     /** 运行时根目录（锁/会话/遥测），缺省 "runtime"。 */
     baseDir: Type.Optional(Type.String({ minLength: 1 })),
   },
@@ -84,4 +96,19 @@ export interface ResolvedDeadlines {
 
 export function resolveDeadlines(config: TenantRuntimeConfig): ResolvedDeadlines {
   return { ...DEFAULT_DEADLINES, ...(config.deadlines ?? {}) };
+}
+
+/** 熔断器缺省（Track B）：连续 3 次失败 open，冷却 30s。 */
+export const DEFAULT_CIRCUIT_BREAKER = {
+  failureThreshold: 3,
+  openMs: 30000,
+} as const;
+
+export interface ResolvedCircuitBreaker {
+  readonly failureThreshold: number;
+  readonly openMs: number;
+}
+
+export function resolveCircuitBreaker(config: TenantRuntimeConfig): ResolvedCircuitBreaker {
+  return { ...DEFAULT_CIRCUIT_BREAKER, ...(config.circuitBreaker ?? {}) };
 }

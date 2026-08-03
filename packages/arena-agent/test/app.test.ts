@@ -12,7 +12,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { loadRuntimeConfig, resolveDeadlines, type TenantRuntimeConfig } from "../src/app/runtime-config.ts";
+import {
+  loadRuntimeConfig,
+  resolveCircuitBreaker,
+  resolveDeadlines,
+  type TenantRuntimeConfig,
+} from "../src/app/runtime-config.ts";
 import { SingleWriterLock } from "../src/app/single-writer-lock.ts";
 import {
   newProcessRunId,
@@ -55,6 +60,22 @@ test("config：合法配置加载 + 默认 deadlines 生效", () => {
     writeConfig({ ...VALID_CONFIG, deadlines: { agentSoftMs: 1000, selectionMs: 2000, submitMs: 3000, hardMs: 4000 } }),
   );
   assert.equal(resolveDeadlines(withDeadlines).agentSoftMs, 1000);
+});
+
+
+
+test("config：circuit breaker defaults, overrides and bounds are enforced", () => {
+  const defaults = loadRuntimeConfig(writeConfig(VALID_CONFIG));
+  assert.deepEqual(resolveCircuitBreaker(defaults), { failureThreshold: 3, openMs: 30000 });
+  const custom = loadRuntimeConfig(writeConfig({
+    ...VALID_CONFIG,
+    circuitBreaker: { failureThreshold: 5, openMs: 1200 },
+  }));
+  assert.deepEqual(resolveCircuitBreaker(custom), { failureThreshold: 5, openMs: 1200 });
+  assert.throws(
+    () => loadRuntimeConfig(writeConfig({ ...VALID_CONFIG, circuitBreaker: { failureThreshold: 0, openMs: 99 } })),
+    /invalid runtime config/,
+  );
 });
 
 test("config：非法配置（缺字段/错类型/额外字段）抛错", () => {

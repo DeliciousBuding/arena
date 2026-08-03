@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { Turn, type PlayerState } from "@arena/arena-hero-ts";
 
-import { runTenant, resolvePiModel } from "../src/app/tenant-runtime.ts";
+import { appendPiTelemetryEvent, runTenant, resolvePiModel } from "../src/app/tenant-runtime.ts";
 import type { TenantRuntimeConfig } from "../src/app/runtime-config.ts";
 import type {
   AgentDecisionRequest,
@@ -131,6 +131,20 @@ function makeInfiniteClient(): FakeClient {
     close() {
       closed = true;
     },
+  };
+}
+
+/** fake client：进入 turns 后立即抛错，用于验证异常 cleanup。 */
+function makeThrowingClient(): FakeClient {
+  let closed = false;
+  return {
+    submitted: [],
+    get closed() { return closed; },
+    async *turns() {
+      throw new Error("synthetic loop failure");
+      yield undefined as never;
+    },
+    close() { closed = true; },
   };
 }
 
@@ -663,6 +677,82 @@ test("runTenant：deterministic+live SIGTERM 优雅关闭——停止提交、�
       process.env.ARENA_HERO_API_KEY_T_TEST = old;
     }
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+
+
+test("runTenant：loop 异常仍关闭 client/runtime/recorder、注销 listener 并释放锁", async () => {
+  const base = mkdtempSync(join(tmpdir(), "tenant-run-error-"));
+  const configPath = writeConfig(makeConfig(base));
+  const runtime = new SyncCandidateRuntime();
+  const client = makeThrowingClient();
+  let recorderClosed = false;
+  let disposerCalls = 0;
+  const recorder = {
+    observe() {},
+    async close() {
+      recorderClosed = true;
+      return {
+        outputDir: base,
+        manifestPath: join(base, "manifest.json"),
+        caseCount: 0,
+        skippedRejected: 0,
+        droppedPending: 0,
+        errorCount: 0,
+      };
+    },
+  };
+  const old = process.env.ARENA_HERO_API_KEY_T_TEST;
+  process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
+  try {
+    await assert.rejects(
+      runTenant(configPath, REPO_ROOT, {
+        runtime,
+        client: client as never,
+        calibrationRecorder: recorder as never,
+        onSignal: () => () => { disposerCalls += 1; },
+      }),
+      /synthetic loop failure/,
+    );
+    assert.equal(client.closed, true);
+    assert.equal(runtime.closed, true);
+    assert.equal(recorderClosed, true);
+    assert.equal(disposerCalls, 1);
+    assert.equal(existsSync(join(base, "t1", "locks", "t1.lock")), false);
+  } finally {
+    if (old === undefined) delete process.env.ARENA_HERO_API_KEY_T_TEST;
+    else process.env.ARENA_HERO_API_KEY_T_TEST = old;
+    rmSync(base, { recursive: true, force: true });
+    rmSync(dirname(configPath), { recursive: true, force: true });
+  }
+});
+
+test("Pi circuit telemetry is structurally persisted without raw-field duplication", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-telemetry-"));
+  const path = join(dir, "pi.jsonl");
+  try {
+    appendPiTelemetryEvent(path, {
+      type: "circuit_opened",
+      message: "provider failed",
+      circuitState: "open",
+      consecutiveFailures: 3,
+      lastTripAt: 1234,
+      fallbackReason: "provider_failure",
+    }, "2026-08-04T00:00:00.000Z");
+    const row = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    assert.equal("message" in row, false);
+    assert.deepEqual(row, {
+      at: "2026-08-04T00:00:00.000Z",
+      type: "circuit_opened",
+      reason: "provider failed",
+      circuitState: "open",
+      consecutiveFailures: 3,
+      lastTripAt: 1234,
+      fallbackReason: "provider_failure",
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

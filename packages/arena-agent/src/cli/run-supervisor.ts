@@ -1,16 +1,6 @@
-/**
- * run-supervisor CLI（切片 5）：四租户进程管家。
- *
- * 用法：
- *   npx tsx src/cli/run-supervisor.ts --repoRoot=CODE_ROOT/Projects/arena          # t1-t4，按 config 默认
- *   npx tsx src/cli/run-supervisor.ts --configs=t1,t2 --live --live-ticks=100    # 只跑 t1/t2 live
- *   npx tsx src/cli/run-supervisor.ts --mode=agent-shadow --shadow               # 全租户 LLM shadow
- *
- * 事件落盘 <repoRoot>/runtime/supervisor.jsonl；SIGINT/SIGTERM 优雅关闭全部子进程。
- */
+/** Four-tenant process supervisor CLI. Debug port is bound before any child spawn. */
 
 import { parseArgs } from "node:util";
-import { join } from "node:path";
 import { TenantSupervisor } from "../app/tenant-supervisor.ts";
 import { DebugServer } from "../app/debug-server.ts";
 import { loadDotEnv } from "../app/dotenv.ts";
@@ -31,96 +21,88 @@ async function main(): Promise<void> {
     },
   });
 
+  if (values.live && values.shadow) throw new Error("--live and --shadow are mutually exclusive");
   const repoRoot = values["repo-root"] ?? process.cwd();
   loadDotEnv(repoRoot);
-
   const configNames = (values.configs ?? "t1,t2,t3,t4")
     .split(",")
-    .map((name) => (name.endsWith(".json") ? name : `${name}.json`));
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .map((name) => name.endsWith(".json") ? name : `${name}.json`);
 
   const tenantArgs: string[] = [];
-  if (values.live) {
-    tenantArgs.push("--live");
-  }
-  if (values.shadow) {
-    tenantArgs.push("--shadow");
-  }
-  if (values.mode !== undefined) {
-    tenantArgs.push(`--mode=${values.mode}`);
-  }
-  if (values["live-ticks"] !== undefined) {
-    tenantArgs.push(`--live-ticks=${values["live-ticks"]}`);
-  }
-  if (values["max-ticks"] !== undefined) {
-    tenantArgs.push(`--max-ticks=${values["max-ticks"]}`);
-  }
-  if (values["startup-sync-ticks"] !== undefined) {
-    tenantArgs.push(`--startup-sync-ticks=${values["startup-sync-ticks"]}`);
+  if (values.live) tenantArgs.push("--live");
+  if (values.shadow) tenantArgs.push("--shadow");
+  if (values.mode !== undefined) tenantArgs.push(`--mode=${values.mode}`);
+  for (const [key, flag] of [
+    ["live-ticks", "--live-ticks"],
+    ["max-ticks", "--max-ticks"],
+    ["startup-sync-ticks", "--startup-sync-ticks"],
+  ] as const) {
+    const raw = values[key];
+    if (raw !== undefined) {
+      const number = Number(raw);
+      const minimum = key === "startup-sync-ticks" ? 0 : 1;
+      if (!Number.isInteger(number) || number < minimum) throw new Error(`${flag} has invalid value: ${raw}`);
+      tenantArgs.push(`${flag}=${raw}`);
+    }
   }
 
-  const shutdownTimeoutMs = values["shutdown-timeout-ms"] === undefined
-    ? undefined
-    : Number(values["shutdown-timeout-ms"]);
-
+  const shutdownTimeoutMs = parseInteger(values["shutdown-timeout-ms"], 8000, 1, "--shutdown-timeout-ms");
+  const port = parseInteger(values.port, 8120, 0, "--port");
   const supervisor = new TenantSupervisor({
     repoRoot,
     configs: configNames,
     tenantArgs,
-    ...(shutdownTimeoutMs !== undefined ? { shutdownTimeoutMs } : {}),
+    shutdownTimeoutMs,
     onEvent: (event) => {
       console.log(`[supervisor] ${event.at} ${event.type} ${event.tenantId}${event.detail ? `: ${event.detail}` : ""}`);
     },
   });
+  const debugServer = new DebugServer({ repoRoot, supervisor, port });
 
-  const results = supervisor.start();
-  let failed = false;
-  for (const [tenantId, ok] of results) {
-    console.log(`[supervisor] ${ok ? "started" : "FAILED to start"} ${tenantId}`);
-    failed = failed || !ok;
-  }
-  if (failed) {
-    process.exitCode = 1;
-    return;
-  }
+  // Port conflicts must fail with zero spawned tenant processes.
+  await debugServer.listen();
+  const addr = debugServer.address();
+  console.log(`[supervisor] debug API: http://${addr?.host ?? "127.0.0.1"}:${addr?.port ?? port}`);
 
-  // 可观测性：debug API（--port 缺省 8120；只读 /health /state /events /tenants）
-  let debugServer: DebugServer | null = null;
-  const portRaw = values.port;
-  if (portRaw !== undefined) {
-    debugServer = new DebugServer({
-      repoRoot,
-      supervisor,
-      port: Number(portRaw),
-    });
-    await debugServer.listen();
-    const addr = debugServer.address();
-    console.log(`[supervisor] debug API: http://${addr?.host ?? "127.0.0.1"}:${addr?.port ?? portRaw}`);
-  }
+  let signalResolve: ((signal: string) => void) | null = null;
+  const signalPromise = new Promise<string>((resolve) => { signalResolve = resolve; });
+  const onSigint = (): void => signalResolve?.("SIGINT");
+  const onSigterm = (): void => signalResolve?.("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
 
-  const onSignal = (signal: string): void => {
-    console.log(`[supervisor] received ${signal}, shutting down all tenants`);
-    void supervisor.shutdown().then(async () => {
-      if (debugServer !== null) {
-        await debugServer.close();
-      }
-      console.log("[supervisor] all tenants exited cleanly");
-      process.exitCode = 0;
-    });
-  };
-  process.once("SIGINT", () => onSignal("SIGINT"));
-  process.once("SIGTERM", () => onSignal("SIGTERM"));
-
-  // 子进程全部退出（非关闭路径）→ supervisor 跟随退出
-  const waitPoll = setInterval(() => {
-    if (supervisor.allExited()) {
-      clearInterval(waitPoll);
-      console.log("[supervisor] all tenants exited");
-      process.exitCode = [...supervisor.status()].some((s) => s.exitCode !== 0) ? 1 : 0;
+  try {
+    await supervisor.start();
+    const outcome = await Promise.race([
+      supervisor.waitForAllExited().then(() => "children_exited" as const),
+      signalPromise,
+    ]);
+    if (outcome !== "children_exited") {
+      console.log(`[supervisor] received ${outcome}, shutting down all tenants`);
+      await supervisor.shutdown();
     }
-  }, 200);
+    const failed = supervisor.status().some((status) => status.lifecycle === "failed" || status.exitCode !== 0);
+    process.exitCode = failed ? 1 : 0;
+  } catch (error) {
+    await supervisor.shutdown().catch(() => {});
+    throw error;
+  } finally {
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+    await debugServer.close().catch(() => {});
+  }
 }
 
-main().catch((error) => {
+function parseInteger(raw: string | undefined, fallback: number, minimum: number, name: string): number {
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < minimum) throw new Error(`${name} has invalid value: ${raw}`);
+  return value;
+}
+
+void main().catch((error) => {
   console.error(`run-supervisor 失败: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 });
