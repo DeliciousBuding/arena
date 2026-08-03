@@ -24,6 +24,30 @@ import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-plann
 import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snapshot.ts";
 import { WorkerTaskPlanner, type Assignment } from "./worker-task-planner.ts";
 
+const CELL_ENTITY_CAPACITY = 2;
+const REROUTE_ORDER: Readonly<Record<Direction, readonly Direction[]>> = {
+  UP: ["RIGHT", "LEFT", "DOWN"],
+  RIGHT: ["DOWN", "UP", "LEFT"],
+  DOWN: ["LEFT", "RIGHT", "UP"],
+  LEFT: ["UP", "DOWN", "RIGHT"],
+};
+
+interface MoveCandidate {
+  readonly unitId: string;
+  readonly source: Position;
+  readonly destination: Position;
+  readonly direction: Direction;
+  readonly intent: string;
+  readonly priority: number;
+}
+
+export interface CapacityResolution {
+  readonly unitActions: Readonly<Record<string, UnitAction>>;
+  readonly intents: Readonly<Record<string, string>>;
+  readonly rerouteCount: number;
+  readonly waitCount: number;
+}
+
 /** 朝向目标的确定性一步（先 x 后 y；已在目标列/行则走另一轴）。 */
 export function stepToward(from: Position, target: Position): Direction {
   const dx = target[0] - from[0];
@@ -52,6 +76,166 @@ function stepCell(position: Position, direction: Direction): Position {
  *  修正依据：t2 真机观察 repair 率 48.5%（blocked_move 系统性）——骨架不避障导致。 */
 export function stepTowardAvoiding(from: Position, target: Position, obstacles: ReadonlySet<string>): Direction | null {
   return pathStepToward(from, target, obstacles);
+}
+
+/**
+ * 按服务端全局移动规则做客户端侧容量预裁决：单格最多 2 个占用实体；所有已选 MOVE
+ * 先组成最终占用图，超容量格逐步淘汰最低优先级的到达动作，直到固定点。这样保留
+ * 合法依赖链/循环，不会把“当前已满但占用者本 Tick 会离开”的格误判成永久墙。
+ */
+export function resolveMoveCapacity(
+  state: TickState,
+  actions: Readonly<Record<string, UnitAction>>,
+  intents: Readonly<Record<string, string>>,
+  obstacles: ReadonlySet<string>,
+): CapacityResolution {
+  const nextActions: Record<string, UnitAction> = { ...actions };
+  const nextIntents: Record<string, string> = { ...intents };
+  const units = new Map(state.units.map((unit) => [unit.id, unit]));
+  const currentOccupancy = new Map<string, number>();
+  const hostileCells = new Set<string>();
+  const increment = (key: string, amount = 1): void => {
+    currentOccupancy.set(key, (currentOccupancy.get(key) ?? 0) + amount);
+  };
+
+  for (const unit of state.units) increment(cellKey(unit.position));
+  if (state.core !== null) increment(cellKey(state.core.position));
+  for (const enemy of state.visibleEnemies) {
+    const key = cellKey(enemy.position);
+    increment(key);
+    hostileCells.add(key);
+  }
+
+  const candidates = new Map<string, MoveCandidate>();
+  for (const [unitId, action] of Object.entries(actions)) {
+    if (action.type !== "MOVE") continue;
+    const unit = units.get(unitId);
+    if (unit === undefined) continue;
+    const intent = intents[unitId] ?? "MOVE";
+    candidates.set(unitId, {
+      unitId,
+      source: unit.position,
+      destination: stepCell(unit.position, action.direction),
+      direction: action.direction,
+      intent,
+      priority: movePriority(unit.cargo, intent),
+    });
+  }
+
+  const selected = new Set(candidates.keys());
+  // 可见敌方占用格按“敌方不会可靠离开”保守处理，避免 MOVE_DESTINATION_OCCUPIED。
+  for (const candidate of candidates.values()) {
+    if (hostileCells.has(cellKey(candidate.destination))) selected.delete(candidate.unitId);
+  }
+
+  let finalOccupancy = projectedOccupancy(currentOccupancy, candidates, selected);
+  while (true) {
+    const violatingCell = firstCapacityViolation(currentOccupancy, finalOccupancy, candidates, selected);
+    if (violatingCell === null) break;
+    const arrivals = [...candidates.values()]
+      .filter((candidate) => selected.has(candidate.unitId) && cellKey(candidate.destination) === violatingCell)
+      .sort(compareWorstMoveFirst);
+    if (arrivals.length === 0) break;
+    selected.delete(arrivals[0].unitId);
+    finalOccupancy = projectedOccupancy(currentOccupancy, candidates, selected);
+  }
+
+  let rerouteCount = 0;
+  let waitCount = 0;
+  const rejected = [...candidates.values()]
+    .filter((candidate) => !selected.has(candidate.unitId))
+    .sort(compareBestMoveFirst);
+  for (const candidate of rejected) {
+    const sourceKey = cellKey(candidate.source);
+    let rerouted = false;
+    if (isPatrolIntent(candidate.intent)) {
+      for (const direction of REROUTE_ORDER[candidate.direction]) {
+        const destination = stepCell(candidate.source, direction);
+        const destinationKey = cellKey(destination);
+        const currentDestinationOccupancy = currentOccupancy.get(destinationKey) ?? 0;
+        if (
+          obstacles.has(destinationKey) ||
+          hostileCells.has(destinationKey) ||
+          currentDestinationOccupancy > CELL_ENTITY_CAPACITY ||
+          (finalOccupancy.get(destinationKey) ?? 0) >= CELL_ENTITY_CAPACITY
+        ) {
+          continue;
+        }
+        finalOccupancy.set(sourceKey, Math.max(0, (finalOccupancy.get(sourceKey) ?? 0) - 1));
+        finalOccupancy.set(destinationKey, (finalOccupancy.get(destinationKey) ?? 0) + 1);
+        nextActions[candidate.unitId] = { type: "MOVE", direction };
+        nextIntents[candidate.unitId] = `capacity_reroute:${candidate.intent}`;
+        rerouteCount += 1;
+        rerouted = true;
+        break;
+      }
+    }
+    if (!rerouted) {
+      nextActions[candidate.unitId] = { type: "WAIT" };
+      nextIntents[candidate.unitId] = `capacity_wait:${candidate.intent}`;
+      waitCount += 1;
+    }
+  }
+
+  return { unitActions: nextActions, intents: nextIntents, rerouteCount, waitCount };
+}
+
+function projectedOccupancy(
+  current: ReadonlyMap<string, number>,
+  candidates: ReadonlyMap<string, MoveCandidate>,
+  selected: ReadonlySet<string>,
+): Map<string, number> {
+  const result = new Map(current);
+  for (const unitId of selected) {
+    const candidate = candidates.get(unitId);
+    if (candidate === undefined) continue;
+    const sourceKey = cellKey(candidate.source);
+    const destinationKey = cellKey(candidate.destination);
+    result.set(sourceKey, Math.max(0, (result.get(sourceKey) ?? 0) - 1));
+    result.set(destinationKey, (result.get(destinationKey) ?? 0) + 1);
+  }
+  return result;
+}
+
+function firstCapacityViolation(
+  current: ReadonlyMap<string, number>,
+  projected: ReadonlyMap<string, number>,
+  candidates: ReadonlyMap<string, MoveCandidate>,
+  selected: ReadonlySet<string>,
+): string | null {
+  const keys = new Set([...current.keys(), ...projected.keys()]);
+  for (const key of [...keys].sort()) {
+    const currentCount = current.get(key) ?? 0;
+    const projectedCount = projected.get(key) ?? 0;
+    // 历史超容量格不得接收入场；正常格最终容量不得超过 2。
+    const hasIncoming = [...candidates.values()].some(
+      (candidate) => selected.has(candidate.unitId) && cellKey(candidate.destination) === key,
+    );
+    if ((currentCount > CELL_ENTITY_CAPACITY && hasIncoming) || projectedCount > CELL_ENTITY_CAPACITY) {
+      return key;
+    }
+  }
+  return null;
+}
+
+function movePriority(cargo: number, intent: string): number {
+  if (cargo > 0 || intent === "DEPOSIT" || intent === "return_home") return 0;
+  if (intent === "GO_RESOURCE" || intent === "go_harvest" || intent === "go_harvest_mem") return 1;
+  if (intent === "RETURN_FOR_HEAL" || intent.includes("heal")) return 2;
+  if (isPatrolIntent(intent)) return 4;
+  return 3;
+}
+
+function isPatrolIntent(intent: string): boolean {
+  return intent === "patrol" || intent === "WAIT_UNCLAIMED" || intent.startsWith("capacity_reroute:patrol");
+}
+
+function compareBestMoveFirst(a: MoveCandidate, b: MoveCandidate): number {
+  return a.priority - b.priority || a.unitId.localeCompare(b.unitId);
+}
+
+function compareWorstMoveFirst(a: MoveCandidate, b: MoveCandidate): number {
+  return b.priority - a.priority || b.unitId.localeCompare(a.unitId);
 }
 
 export class DeterministicPlanner implements PlanProvider {
@@ -112,9 +296,16 @@ export class DeterministicPlanner implements PlanProvider {
       }
     }
 
+    const resolved = resolveMoveCapacity(input.state, unitActions, intents, snapshot.obstacleCells);
+
     // 当前生产目标是积累 Core 资源，deterministic 热路径暂不主动消费资源；
     // MacroPolicy 后续只需决定是否放开 fallback.coreAction，无需重写单位策略。
-    return { tick: input.state.tick, unitActions, coreAction: null, intents };
+    return {
+      tick: input.state.tick,
+      unitActions: resolved.unitActions,
+      coreAction: null,
+      intents: resolved.intents,
+    };
   }
 
   /** Task → UnitAction（确定性映射；核心语义见文件头注释）。 */

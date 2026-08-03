@@ -10,11 +10,16 @@ import assert from "node:assert/strict";
 
 import { Turn, type PlayerState } from "@arena/arena-hero-ts";
 
-import { DeterministicPlanner, stepToward, stepTowardAvoiding } from "../src/planning/deterministic-planner.ts";
+import {
+  DeterministicPlanner,
+  resolveMoveCapacity,
+  stepToward,
+  stepTowardAvoiding,
+} from "../src/planning/deterministic-planner.ts";
 import { reduceTurn, type TurnLike } from "../src/domain/state-reducer.ts";
 import { validatePlan } from "../src/domain/plan-validator.ts";
 import { move } from "../src/domain/nav.ts";
-import type { Position, TickState } from "../src/domain/model.ts";
+import type { Position, TickState, UnitAction } from "../src/domain/model.ts";
 
 function makeState(tick: number, objects: PlayerState["objects"], resources = 6): TickState {
   const turn = new Turn(
@@ -99,6 +104,99 @@ test("DeterministicPlanner：单资源只分配一个 Worker，其余继续巡�
   assert.equal(intents.filter((intent) => intent === "GO_RESOURCE").length, 1);
   assert.equal(Object.values(plan.unitActions).filter((action) => action.type === "WAIT").length, 0);
   assert.ok(intents.filter((intent) => intent === "patrol").length >= 2);
+});
+
+test("容量裁决：Core 占一个槽，回仓 Worker 优先于巡逻并让巡逻改道", () => {
+  const state = makeState(100, [
+    core(0, 0),
+    unit("w-cargo", 1, 0, "WORKER", 1),
+    unit("w-patrol", 0, 1),
+  ]);
+  const result = resolveMoveCapacity(
+    state,
+    {
+      "w-cargo": { type: "MOVE", direction: "LEFT" },
+      "w-patrol": { type: "MOVE", direction: "UP" },
+    },
+    { "w-cargo": "return_home", "w-patrol": "patrol" },
+    new Set(),
+  );
+  assert.deepEqual(result.unitActions["w-cargo"], { type: "MOVE", direction: "LEFT" });
+  assert.notDeepEqual(result.unitActions["w-patrol"], { type: "MOVE", direction: "UP" });
+  assert.equal(result.rerouteCount, 1);
+  assert.equal(result.waitCount, 0);
+  assert.equal(result.intents["w-patrol"], "capacity_reroute:patrol");
+});
+
+test("容量裁决：三个巡逻 Worker 争同一空格，只保留两个并为第三个改道", () => {
+  const state = makeState(100, [
+    unit("w1", 0, 1),
+    unit("w2", 1, 0),
+    unit("w3", 2, 1),
+  ]);
+  const result = resolveMoveCapacity(
+    state,
+    {
+      w1: { type: "MOVE", direction: "RIGHT" },
+      w2: { type: "MOVE", direction: "DOWN" },
+      w3: { type: "MOVE", direction: "LEFT" },
+    },
+    { w1: "patrol", w2: "patrol", w3: "patrol" },
+    new Set(),
+  );
+  const arrivalsAtCenter = Object.entries(result.unitActions).filter(([id, action]) => {
+    if (action.type !== "MOVE") return false;
+    const source = state.units.find((item) => item.id === id)?.position;
+    if (source === undefined) return false;
+    const destination = move(source, action.direction);
+    return destination[0] === 1 && destination[1] === 1;
+  });
+  assert.equal(arrivalsAtCenter.length, 2);
+  assert.equal(result.rerouteCount, 1);
+  assert.equal(result.waitCount, 0);
+});
+
+test("容量裁决：当前满格的两个占用者都离开时，依赖链允许新 Worker 进入", () => {
+  const state = makeState(100, [
+    unit("a", 1, 0),
+    unit("b", 1, 0),
+    unit("c", 0, 0),
+  ]);
+  const actions: Record<string, UnitAction> = {
+    a: { type: "MOVE", direction: "RIGHT" },
+    b: { type: "MOVE", direction: "DOWN" },
+    c: { type: "MOVE", direction: "RIGHT" },
+  };
+  const result = resolveMoveCapacity(
+    state,
+    actions,
+    { a: "patrol", b: "patrol", c: "patrol" },
+    new Set(),
+  );
+  assert.deepEqual(result.unitActions, actions);
+  assert.equal(result.rerouteCount, 0);
+  assert.equal(result.waitCount, 0);
+});
+
+test("容量裁决：两个 cargo Worker 同时回 Core 时仅一个进入，另一个等待重算", () => {
+  const state = makeState(100, [
+    core(0, 0),
+    unit("0001", 1, 0, "WORKER", 1),
+    unit("0002", 0, 1, "WORKER", 1),
+  ]);
+  const result = resolveMoveCapacity(
+    state,
+    {
+      "0001": { type: "MOVE", direction: "LEFT" },
+      "0002": { type: "MOVE", direction: "UP" },
+    },
+    { "0001": "return_home", "0002": "return_home" },
+    new Set(),
+  );
+  assert.deepEqual(result.unitActions["0001"], { type: "MOVE", direction: "LEFT" });
+  assert.deepEqual(result.unitActions["0002"], { type: "WAIT" });
+  assert.equal(result.waitCount, 1);
+  assert.equal(result.intents["0002"], "capacity_wait:return_home");
 });
 
 test("DeterministicPlanner：DEPOSIT——cargo>0 回 Core；到位 DEPOSIT", () => {
