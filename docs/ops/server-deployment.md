@@ -130,6 +130,16 @@ sudo systemctl daemon-reload
 
 ## 6. 先运行 shadow
 
+当前服务器 shadow 固定为 `deterministic + disabled submission`，不是 `agent-shadow`。原因是
+`@earendil-works/pi-coding-agent@0.83.0` 精确携带 `undici 8.5.0`，官方 npm audit 对该版本线报告高危 HTTP 客户端公告，而上游尚无更新版本。标准 npm override 在当前 workspace 依赖图中不生效，禁止通过手工篡改 lock 或 postinstall 删除模块制造“已修复”假象。
+
+`npm run server:check` 会读取 lock 中的实际 undici 版本；在版本低于 8.9.0 时，服务器包装器若出现 `agent-shadow` 或 `hybrid` 会直接门禁失败。恢复服务器 Pi 模式的前置条件是：
+
+1. 上游 Pi 发布携带 patched undici 的版本，或建立有来源/许可证/完整性验证的受控本地 fork；
+2. `npm ls undici --all` 显示实际运行树已修复；
+3. 使用官方 npm registry 的 audit 不再报告该链路；
+4. Pi session、stream、abort、rotation、circuit breaker 和全量测试重新通过。
+
 启用 shadow 与健康计时器：
 
 ```bash
@@ -149,7 +159,7 @@ curl -fsS http://127.0.0.1:8120/ready
 journalctl -u arena-supervisor-shadow.service -f
 ```
 
-shadow service 进程异常退出或 readiness 连续失败时可以自动恢复，因为它不拥有真实提交权。
+shadow service 进程异常退出或 readiness 连续失败时可以自动恢复，因为它不拥有真实提交权，并且当前不启动 Pi Provider 请求。
 
 ## 7. 晋级 deterministic live
 

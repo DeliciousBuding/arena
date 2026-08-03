@@ -44,7 +44,8 @@ fi
 
 case "$mode" in
   shadow)
-    args+=("--shadow")
+    # Server shadow remains deterministic until the Pi HTTP dependency is patched and re-audited.
+    args+=("--mode=deterministic" "--shadow")
     ;;
   live)
     # Production default remains deterministic. Hybrid promotion is a separate gate.
