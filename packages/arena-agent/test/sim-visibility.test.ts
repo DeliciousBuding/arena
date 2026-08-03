@@ -96,6 +96,12 @@ test("S6: supercover 45° 对角——角两侧格都计入", () => {
   assert.deepEqual(line.map(keyOf).sort(), ["0,0", "0,1", "1,0", "1,1"]);
 });
 
+test("S6: supercover 2:3 斜率不误收终点旁格", () => {
+  const line = supercoverLine([0, 0], [-2, 3]);
+  assert.deepEqual(line.map(keyOf), ["0,0", "0,1", "-1,1", "-1,2", "-2,2", "-2,3"]);
+  assert.equal(line.map(keyOf).includes("-1,3"), false);
+});
+
 test("S6: supercover 对角长线", () => {
   const line = supercoverLine([0, 0], [2, 2]);
   const keys = line.map(keyOf).sort();
@@ -115,6 +121,14 @@ test("S6: 障碍遮挡——障碍格可见，其后不可见", () => {
   assert.ok(!visible.has("2,0"), "cell behind obstacle hidden");
   assert.ok(!visible.has("3,0"), "cell far behind obstacle hidden");
   assert.ok(visible.has("0,1"), "unblocked side visible");
+});
+
+test("S6: 终点旁障碍不阻挡 2:3 中心线上的目标障碍", () => {
+  const world = makeWorld({
+    obstacles: [[-1, 3], [-2, 3]],
+  });
+  const visible = visibleCellSet(world, "p1", rules);
+  assert.ok(visible.has("-2,3"), "target obstacle is inside Core radius and not behind the side obstacle");
 });
 
 test("S6: corner-touch——过角线任一侧障碍阻挡", () => {
