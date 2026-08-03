@@ -1,7 +1,7 @@
 # MASTER — Arena 当前进度与门禁
 
 > 当前执行入口。历史设计见 `docs/migration-plan.md`，长期路线见 `docs/roadmap-long-term.md`。
-> 最后整理：2026-08-03 21:00。代码、run manifest、JSONL、Runtime-Golden 与 Git 提交优先于聊天记录。
+> 最后整理：2026-08-03 22:30。代码、run manifest、JSONL、Runtime-Golden 与 Git 提交优先于聊天记录。
 
 ## 当前阶段
 
@@ -38,15 +38,16 @@
 - run `f38102de…`：14/14 accepted、WAIT=0、1 deposit、Core 8→9；
 - 证明巡逻发现资源 → HARVEST → cargo → 绕障返航 → DEPOSIT 的完整链路。
 
-### t2–t4 严格 100 Tick burn-in
+### t1–t4 严格 100 Tick burn-in
 
 | 租户 | run | accepted | harvest/deposit | Core Δ | failed | WAIT ratio | P95 |
 |---|---|---:|---:|---:|---:|---:|---:|
+| t1 | `825f47a9…` | 100/100 | 4 / 4 | +4 | 0 | 0% | 25.92 ms |
 | t2 | `901dba1a…` | 100/100 | 3 / 2 | +2 | 0 | 0.25% | 19.05 ms |
 | t3 | `21d1556a…` | 100/100 | 1 / 1 | +1 | 0 | 0% | 14.07 ms |
 | t4 | `f7a14164…` | 100/100 | 1 / 1 | +1 | 0 | 0% | 2.74 ms |
 
-三份报告均 `passed=true`，0 rejected、0 repair、0 `CELL_UNIT_LIMIT`，运行结束后无锁与孤儿进程。
+四份报告均 `passed=true`，每份包含 1 Tick startup sync、100 次 live submit 和最终 outcome drain；合计 400/400 accepted、0 rejected、0 repair、0执行失败，运行结束后无锁与孤儿进程。t1 报告：`runtime/t1/migrations/20260803-final-pass-825f47a9-11e7-4324-ba1d-11d4fb66bc40.json`。
 
 ## Runtime-Golden 真机证据
 
