@@ -65,6 +65,7 @@ Arena state
 ```text
 packages/arena-hero-ts/       TS SDK、wire schema、Turn/client 与契约产物
 packages/arena-agent/         实时编排、Planner、Pi adapter、运行入口与遥测
+  └─ src/sim/                 本地光速模拟器（Digital Twin，W10；分支 sim-digital-twin）
 reference/arena-hero-python/  官方 Python SDK 镜像，仅用于上游对照
 src/arena_bot/                legacy Python runtime，生产回滚链，W6 后删除
 fixtures/differential/        Python/TS Golden Replay fixture
@@ -160,6 +161,7 @@ Replay 用于验证兼容性；真实收益需要交替窗口或高保真模拟�
 - [Arena Hero v0.11 规则](docs/game-rules.md)
 - [目标与资源兑换](docs/GOAL.md)
 - [限制与速率分析](docs/LIMITS.md)
+- [本地模拟器计划（Digital Twin，分支 `sim-digital-twin`）](docs/archives/spec-driven-2026-08-03-sim/plan/README.md)
 
 旧的 Python RPC、Debug API 和 handoff 文档属于迁移参考；执行当前任务前先核对 MASTER 和 open issues。
 

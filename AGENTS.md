@@ -1,6 +1,6 @@
 # AGENTS.md — Arena Hero 游戏接管项目
 
-最后更新：2026-08-02
+最后更新：2026-08-03
 
 用官方 Python SDK 自动游玩 Arena Hero 的独立工作区（uv 管理）。规则契约 **v0.11**（2026-08-02 changelog），SDK **arena-hero 0.2.6**。
 
@@ -32,7 +32,7 @@
 | `src/arena_bot/debug_api.py` | 外部控制：/state /command /map/query（8123-8126 各租户） |
 | `src/arena_bot/watchdog.py` | 停滞告警（alerts/*.jsonl） |
 | `src/arena_bot/telemetry.py` | 遥测 JSONL（runs/<run_id>/telemetry/）+ evaluate.py 报告 |
-| `tests/` | 135 例无凭据测试（Fake TickState，零网络） |
+| `tests/` | 无凭据 Python 测试（Fake TickState，零网络）；**数量以 `docs/generated/status.md` 为准** |
 | `packages/arena-agent/` | TS 编排层（domain/ + runtime/loop.ts + strategies/，TS 迁移主线） |
 | `packages/arena-hero-ts/` | TS SDK（wire schema 单源 + client/turn + contracts/ 契约产物） |
 | `reference/arena-hero-python/` | 官方 Python SDK 源码镜像（追上游对照，sync-log.md） |
@@ -43,10 +43,11 @@
 ## 命令
 
 ```bash
-uv run python -m arena_bot.run --experiment exp-llm-4   # 4 账号 LLM 并发实验
-uv run pytest tests/ -q             # 135 例测试
+uv run python -m arena_bot.run --experiment exp-llm-4   # 4 账号 LLM 并发实验（legacy，见 experiments/README.md）
+uv run pytest tests/ -q             # Python 测试；数量以 docs/generated/status.md 为准
 uv run python -m arena_bot.evaluate --run <run_id>      # JSONL 评估报告
 python scripts/sync_docs.py         # skill 文档 → docs/
+python scripts/docs_health.py --check   # docs 健康门禁（CI 同款）
 curl http://127.0.0.1:8123/state    # 调试端点：t1 状态快照
 ```
 
@@ -56,9 +57,10 @@ curl http://127.0.0.1:8123/state    # 调试端点：t1 状态快照
 - 指令白名单：`pause`（暂停提交=观察）、`resume`、`set_param {name,value}`、`set_phase {phase}`
 - 阶段：early_expansion / balanced / military；参数：explore_radius、worker_target、pop_ceiling 等（config.py）
 
-## 架构要点（详见 docs/ARCHITECTURE.md，Python 版）
+## 架构（TS 主线 + Python legacy）
 
-- 每 Tick：TickState → 事件→world → 阶段机 → Strategy.decide→Plan → apply_plan → submit
+- **权威架构**：TS 主线见 `docs/ts-architecture.md`；Python 退役参考见 `docs/ARCHITECTURE.md`
+- Python 每 Tick：TickState → 事件→world → 阶段机 → Strategy.decide→Plan → apply_plan → submit
 - 决策确定性：UUID 排序、固定轴优先、记忆只做线索、当前 Turn 永远权威
 - Worker 意图状态机（PATROL/GO_HARVEST）跨 Tick；HARVEST_FAILED 格冷却 4 tick
 - 策略接口可插拔：新策略继承 `Strategy` 实现 `decide()`
@@ -68,6 +70,9 @@ curl http://127.0.0.1:8123/state    # 调试端点：t1 状态快照
 - SDK 事实：`arena-hero-ts`（wire schema 单源 → contracts/generated/*.schema.json；client/turn/协议）
 - 编排层事实：本仓库 `packages/arena-agent/`（domain/ + runtime/loop.ts + strategies/safety-planner.ts）
 - 测试：`npx tsx --test "test/*.test.ts"`（node --test 只能跑 12/21，勿用）
+- **本地模拟器（Digital Twin，W10）**：分支 `sim-digital-twin`（worktree `.worktrees/sim-digital-twin`），
+  `packages/arena-agent/src/sim/`；策略改动先跑模拟器验证（秒级），再上线上；计划见
+  `docs/archives/spec-driven-2026-08-03-sim/`
 
 ## 红线
 

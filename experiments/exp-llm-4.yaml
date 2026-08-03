@@ -1,3 +1,5 @@
+# legacy：LLM 逐 Tick 直控已被 #8 裁决否决（冷启动 22.8s ≫ 14s 窗口）。
+# 保留仅作数据收集参考；新策略走 TS 编排层，见 experiments/README.md。
 name: exp-llm-4
 description: 4 账号 LLM 并发 — 每账号独立 pi RPC 进程/会话，策略变体对比（economic/aggressive/standard/standard）
 tenants:

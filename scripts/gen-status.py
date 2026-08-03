@@ -16,6 +16,7 @@ status.md 是生成物，禁止手工编辑；各数字都标注来源命令，�
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -37,9 +38,12 @@ def die(msg: str) -> None:
 
 def sh(cmd: list[str], note: str) -> str:
     """在仓库根执行命令，返回去首尾空白的 stdout；失败时给出可读错误。"""
+    # Windows 上强制 UTF-8 模式：subprocess 的 stdout 管道 reader thread 默认用
+    # locale 编码（GBK），node 测试输出含 UTF-8 字符时解码崩溃（2026-08-03 实测）。
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     try:
         proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=600)
+                              encoding="utf-8", errors="replace", timeout=600, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         die(f"{note} 无法执行：{exc}")
     if proc.returncode != 0:

@@ -246,9 +246,10 @@ export class ArenaHeroClient {
         let overrideDelay: number | null = null;
         const queue = new MessageQueue();
         const abort = new AbortController();
+        let ws: WebSocket | null = null;
         this._abortController = abort;
         try {
-          const ws = await this._connect(queue, abort.signal);
+          ws = await this._connect(queue, abort.signal);
           this._socket = ws;
           delay = this.config.reconnectMinDelay;
           for (;;) {
@@ -270,6 +271,12 @@ export class ArenaHeroClient {
         } catch (exc) {
           overrideDelay = this._classifyError(exc);
         } finally {
+          // AsyncGenerator 消费者可能在任意 yield 处 break/return。握手完成后
+          // abort listener 已被移除；若先清空 _socket，后续 close() 将无法再
+          // 取得仍 OPEN 的句柄，Node 会被残留 WebSocket 卡住。
+          if (ws !== null && ws.readyState !== WebSocket.CLOSED) {
+            ws.terminate();
+          }
           this._socket = null;
           this._closeCode = null;
           this._establishedError = null;
