@@ -113,7 +113,7 @@ export function validateWorld(world: SimWorld): string[] {
       let carrierFound = false;
       for (const player of world.players.values()) {
         if (
-          world.beacon.carrierId === `core:${player.core?.id ?? ""}` ||
+          world.beacon.carrierId === player.core?.id ||
           player.units.some((unit) => unit.id === world.beacon!.carrierId)
         ) {
           carrierFound = true;
@@ -166,7 +166,7 @@ export function validateWorld(world: SimWorld): string[] {
       const beaconShieldCap = world.beacon !== null &&
         world.beacon.status === "CARRIED" &&
         world.beacon.carrierId !== null &&
-        (world.beacon.carrierId === `core:${player.core.id}` ||
+        (world.beacon.carrierId === player.core.id ||
           player.units.some((unit) => unit.id === world.beacon!.carrierId))
         ? 10
         : 5;

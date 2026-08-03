@@ -28,7 +28,7 @@ interface BeaconRequest {
 
 /**
  * 收集 Beacon 动作请求（PICKUP/DROP），确定性排序（与输入顺序无关）。
- * Core 动作以 `core:<coreId>` 标记（区别于 unit UUID，避免与 unit 冲突）。
+ * actorId 使用真实 UUID（unit id 或 core id，全局唯一，天然区分）。
  */
 function collectRequests(world: SimWorld, plans: ReadonlyMap<string, Plan>): BeaconRequest[] {
   const requests: BeaconRequest[] = [];
@@ -42,9 +42,9 @@ function collectRequests(world: SimWorld, plans: ReadonlyMap<string, Plan>): Bea
     }
     const core = world.players.get(playerId)?.core;
     if (plan.coreAction?.type === "PICKUP_BEACON" && core != null) {
-      requests.push({ actorId: `core:${core.id}`, playerId, kind: "pickup" });
+      requests.push({ actorId: core.id, playerId, kind: "pickup" });
     } else if (plan.coreAction?.type === "DROP_BEACON" && core != null) {
-      requests.push({ actorId: `core:${core.id}`, playerId, kind: "drop" });
+      requests.push({ actorId: core.id, playerId, kind: "drop" });
     }
   }
   requests.sort((a, b) => compareUuidRaw(a.actorId, b.actorId));
@@ -55,8 +55,7 @@ function collectRequests(world: SimWorld, plans: ReadonlyMap<string, Plan>): Bea
 function actorPosition(world: SimWorld, request: BeaconRequest): Position | null {
   const player = world.players.get(request.playerId);
   if (player === undefined) return null;
-  if (request.actorId.startsWith("core:")) {
-    if (player.core === null) return null;
+  if (player.core !== null && player.core.id === request.actorId) {
     return player.core.position;
   }
   const unit = player.units.find((u) => u.id === request.actorId);
@@ -67,8 +66,8 @@ function actorPosition(world: SimWorld, request: BeaconRequest): Position | null
 function actorAlive(world: SimWorld, request: BeaconRequest): boolean {
   const player = world.players.get(request.playerId);
   if (player === undefined) return false;
-  if (request.actorId.startsWith("core:")) {
-    return player.core !== null && player.core.state !== "MOVING";
+  if (player.core !== null && player.core.id === request.actorId) {
+    return player.core.state !== "MOVING";
   }
   return player.units.some((u) => u.id === request.actorId);
 }
@@ -189,7 +188,7 @@ function clampShieldAfterBeaconLoss(
       beforeBeacon !== null &&
       beforeBeacon.status === "CARRIED" &&
       beforeBeacon.carrierId !== null &&
-      (beforeBeacon.carrierId === `core:${player.core.id}` ||
+      (beforeBeacon.carrierId === player.core.id ||
         player.units.some((unit) => unit.id === beforeBeacon.carrierId));
     if (!wasCarrier) continue;
     players.set(playerId, {

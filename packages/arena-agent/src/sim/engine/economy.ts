@@ -383,7 +383,7 @@ function playerHoldsBeacon(draft: SimWorld, playerId: string): boolean {
   if (beacon === null || beacon.status !== "CARRIED" || beacon.carrierId === null) return false;
   const player = draft.players.get(playerId);
   if (player === undefined) return false;
-  if (beacon.carrierId === `core:${player.core?.id ?? ""}`) return true;
+  if (player.core !== null && beacon.carrierId === player.core.id) return true;
   return player.units.some((unit) => unit.id === beacon.carrierId);
 }
 
