@@ -52,7 +52,10 @@ def sh(cmd: list[str], note: str) -> str:
 
 
 def pytest_counts() -> tuple[int, int, int]:
-    """实际跑 pytest，解析 passed/failed/skipped（非 collect-only）。"""
+    """实际跑 pytest，解析 passed/failed/skipped（非 collect-only）。
+    Python 运行链已退役（2026-08-04）：tests/ 不存在时返回全 0。"""
+    if not (ROOT / "tests").is_dir():
+        return 0, 0, 0
     out = sh(["uv", "run", "pytest", "tests/", "-q"], "uv run pytest tests/ -q")
     passed = int(re.search(r"(\d+) passed", out).group(1) if re.search(r"(\d+) passed", out) else 0)
     failed = int(re.search(r"(\d+) failed", out).group(1) if re.search(r"(\d+) failed", out) else 0)
@@ -91,7 +94,8 @@ def main() -> None:
         "编排层测试",
     )
     contracts = count_files(CONTRACTS_DIR, "*.schema.json", "contracts/generated")
-    py_mods = count_files(PYTHON_MOD_DIR, "*.py", "src/arena_bot")
+    # Python 运行链已退役（2026-08-04）：目录不存在时按 0 处理
+    py_mods = count_files(PYTHON_MOD_DIR, "*.py", "src/arena_bot") if PYTHON_MOD_DIR.is_dir() else 0
 
     rows = [
         ("Python 测试", f"{py_passed} passed / {py_failed} failed / {py_skipped} skipped",
