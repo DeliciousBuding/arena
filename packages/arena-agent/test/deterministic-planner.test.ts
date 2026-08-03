@@ -18,9 +18,12 @@ import {
 } from "../src/planning/deterministic-planner.ts";
 import { reduceTurn, type TurnLike } from "../src/domain/state-reducer.ts";
 import { validatePlan } from "../src/domain/plan-validator.ts";
+import { SafetyPlanner } from "../src/strategies/safety-planner.ts";
 import {
   chebyshev,
   EXPLORE_DIRECTION_COUNT,
+  EXPLORE_RING_COUNT,
+  exploreRadiusForRing,
   exploreTarget,
   move,
 } from "../src/domain/nav.ts";
@@ -89,6 +92,28 @@ test("exploreTarget：8 个 Worker 获得 8 个独立方位且保持同一 Cheby
   ]);
   assert.equal(new Set(targets.map((target) => `${target[0]},${target[1]}`)).size, 8);
   assert.ok(targets.every((target) => chebyshev(home, target) === 8));
+});
+
+test("分层扩圈：半径按 8→16→24→32 循环，Worker 完成一趟后进入下一圈", () => {
+  assert.deepEqual(
+    Array.from({ length: EXPLORE_RING_COUNT + 1 }, (_, ring) => exploreRadiusForRing(8, ring)),
+    [8, 16, 24, 32, 8],
+  );
+
+  const planner = new SafetyPlanner();
+  const atHome = makeState(100, [core(0, 0), unit("w1", 0, 0)]);
+  planner.decide({ state: atHome });
+  assert.equal(planner.world.unitMemory("w1").patrolRing, 0);
+
+  const atFirstTarget = makeState(101, [core(0, 0), unit("w1", 8, 8)]);
+  planner.decide({ state: atFirstTarget });
+  assert.equal(planner.world.unitMemory("w1").patrolReturning, true);
+
+  const returnedHome = makeState(102, [core(0, 0), unit("w1", 0, 0)]);
+  planner.decide({ state: returnedHome });
+  const memory = planner.world.unitMemory("w1");
+  assert.equal(memory.patrolRing, 1);
+  assert.equal(memory.patrolDirection, 1);
 });
 
 test("DeterministicPlanner：decide 输出合法 Plan（validatePlan 过）", () => {

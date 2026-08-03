@@ -2,6 +2,7 @@ import { cellKey, type Direction, type Position } from "./model.ts";
 
 const DIRECTION_ORDER: readonly Direction[] = ["RIGHT", "DOWN", "LEFT", "UP"];
 export const EXPLORE_DIRECTION_COUNT = 8;
+export const EXPLORE_RING_COUNT = 4;
 /** 顺时针 8 方位：东、东南、南、西南、西、西北、北、东北。 */
 const EXPLORE_DELTAS: readonly Position[] = [
   [1, 0],
@@ -26,6 +27,15 @@ export function manhattan(a: Position, b: Position): number {
 
 export function chebyshev(a: Position, b: Position): number {
   return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
+}
+
+/** 分层扩圈：base、2×base、3×base、4×base，然后循环回内圈。 */
+export function exploreRadiusForRing(baseRadius: number, ringIndex: number): number {
+  if (!Number.isInteger(baseRadius) || baseRadius < 1) {
+    throw new Error(`baseRadius must be a positive integer: ${String(baseRadius)}`);
+  }
+  const normalized = ((ringIndex % EXPLORE_RING_COUNT) + EXPLORE_RING_COUNT) % EXPLORE_RING_COUNT;
+  return baseRadius * (normalized + 1);
 }
 
 export function lineBlocked(a: Position, b: Position, obstacles: ReadonlySet<string>): boolean {

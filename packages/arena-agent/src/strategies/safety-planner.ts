@@ -14,6 +14,8 @@ import {
   chebyshev,
   directionToAdjacent,
   EXPLORE_DIRECTION_COUNT,
+  EXPLORE_RING_COUNT,
+  exploreRadiusForRing,
   exploreTarget,
   lineBlocked,
   manhattan,
@@ -188,17 +190,20 @@ export class SafetyPlanner {
     let target: Position | null = null;
     if (home !== null) {
       const beacon = state.beacon.position ?? home;
-      let patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, this.config.exploreRadius);
-      if (chebyshev(unit.position, home) > this.config.exploreRadius) {
+      let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
+      let patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+      if (chebyshev(unit.position, home) > patrolRadius) {
         memory.patrolReturning = true;
         target = home;
       } else if (samePosition(unit.position, home)) {
         if (memory.patrolStarted) {
           memory.patrolDirection = (memory.patrolDirection + 1) % EXPLORE_DIRECTION_COUNT;
+          memory.patrolRing = (memory.patrolRing + 1) % EXPLORE_RING_COUNT;
         }
         else memory.patrolStarted = true;
         memory.patrolReturning = false;
-        patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, this.config.exploreRadius);
+        patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
+        patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
         target = patrolPoint;
       } else if (memory.patrolReturning) {
         target = home;

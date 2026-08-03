@@ -22,6 +22,7 @@ export interface UnitMemory {
   workerMode: WorkerMode;
   harvestTarget: Position | null;
   patrolDirection: number;
+  patrolRing: number;
   patrolStarted: boolean;
   patrolReturning: boolean;
   lastTick: number;
@@ -115,6 +116,7 @@ export class World {
         workerMode: "patrol",
         harvestTarget: null,
         patrolDirection: initialPatrolDirection,
+        patrolRing: 0,
         patrolStarted: false,
         patrolReturning: false,
         lastTick: this.tick,
