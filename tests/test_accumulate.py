@@ -220,15 +220,17 @@ def test_telemetry_records_and_jsonl_shape(tmp_path):
     assert "harvest" in rows[1]["intents"]
 
 
-def test_telemetry_combat_counter(tmp_path):
+def test_telemetry_combat_counter_uses_authoritative_events(tmp_path):
     path = tmp_path / "t2.jsonl"
     with Telemetry(path) as tele:
-        ev = SimpleNamespace(event_type="CORE_DESTROYED")
+        official = SimpleNamespace(event_type="UNIT_DAMAGED")
+        removed_legacy = SimpleNamespace(event_type="UNIT_DESTROYED")
+        non_combat = SimpleNamespace(event_type="UNIT_HEAL_FAILED")
         tele.record(tick=1, outcome="submitted", phase="military",
                     resources=0, resource_capacity=10, population=0,
                     workers=0, vanguards=0, rangers=0, core_hp=None,
-                    core_shield=None, enemies_visible=2, events=(ev,),
-                    intents={})
+                    core_shield=None, enemies_visible=2,
+                    events=(official, removed_legacy, non_combat), intents={})
     with path.open(encoding="utf-8") as fh:
         rows = [json.loads(line) for line in fh if line.strip()]
     assert rows[0]["combat_events"] == 1
