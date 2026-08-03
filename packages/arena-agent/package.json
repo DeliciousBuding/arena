@@ -8,11 +8,14 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && node scripts/check-sim-isolation.mjs",
     "test": "tsx --test \"test/*.test.ts\"",
     "arena:doctor": "tsx src/cli/run-tenant.ts --doctor",
     "arena:shadow": "tsx src/cli/run-tenant.ts",
-    "arena:live": "tsx src/cli/run-tenant.ts --live"
+    "arena:live": "tsx src/cli/run-tenant.ts --live",
+    "arena:sim": "tsx src/cli/run-sim.ts",
+    "sim:isolation-check": "node scripts/check-sim-isolation.mjs",
+    "sim:test": "tsx --test test/sim-isolation.test.ts"
   },
   "dependencies": {
     "@arena/arena-hero-ts": "*",
