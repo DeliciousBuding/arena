@@ -21,7 +21,8 @@
     "sim:calibrate": "tsx src/cli/run-sim.ts calibrate",
     "sim:isolation-check": "node scripts/check-sim-isolation.mjs",
     "sim:test": "tsx --test \"test/sim-*.test.ts\"",
-    "sim:calibrate-dataset": "tsx src/cli/run-sim.ts calibrate-dataset"
+    "sim:calibrate-dataset": "tsx src/cli/run-sim.ts calibrate-dataset",
+    "arena:supervisor": "tsx src/cli/run-supervisor.ts"
   },
   "dependencies": {
     "@arena/arena-hero-ts": "*",

@@ -1,184 +1,538 @@
-/**
- * TenantSupervisor 测试：fake child 注入，零真实进程。
- * 覆盖：spawn 全部 configs、SIGTERM 优雅关闭、SIGKILL 超时兜底、exit 记录、事件流。
- */
+/** Production-boundary tests for the native TenantSupervisor. No Arena network access. */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createServer as createNetServer } from "node:net";
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { TenantSupervisor, type SupervisorEvent } from "../src/app/tenant-supervisor.ts";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { TenantSupervisor, type SupervisorEvent, type TenantSpec } from "../src/app/tenant-supervisor.ts";
+import { DebugServer } from "../src/app/debug-server.ts";
+import { registerShutdownRequest } from "../src/app/process-shutdown.ts";
 
-/** Fake ChildProcess：可手动触发 exit；记录 kill 信号。 */
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..");
+let nextPid = 41000;
+
 class FakeChild extends EventEmitter {
-  killed: string[] = [];
-  stdout: EventEmitter = new EventEmitter();
-  stderr: EventEmitter = new EventEmitter();
+  readonly pid = nextPid++;
+  readonly stdout = new EventEmitter();
+  readonly stderr = new EventEmitter();
+  connected = true;
+  readonly sent: unknown[] = [];
+  readonly killed: string[] = [];
+  autoExitOnSend = false;
+
+  send(message: unknown, callback?: (error: Error | null) => void): boolean {
+    this.sent.push(message);
+    callback?.(null);
+    if (this.autoExitOnSend) queueMicrotask(() => this.emitExit(0, null));
+    return true;
+  }
 
   kill(signal: string): boolean {
     this.killed.push(signal);
     return true;
   }
 
-  emitExit(code: number | null, signal: string | null = null): void {
+  emitExit(code: number | null, signal: string | null): void {
+    if (!this.connected) return;
+    this.connected = false;
     this.emit("exit", code, signal);
   }
 }
 
-function makeTempRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), "supervisor-test-"));
-  mkdirSync(join(dir, "runtime", "configs"), { recursive: true });
-  for (const tenant of ["t1", "t2", "t3", "t4"]) {
-    writeFileSync(join(dir, "runtime", "configs", `${tenant}.json`), "{}");
-  }
-  return dir;
+interface TempRepo {
+  readonly root: string;
+  readonly envNames: readonly string[];
+  cleanup(): void;
 }
 
-test("supervisor spawns all configured tenants and records events", async () => {
-  const repo = makeTempRepo();
-  const eventLogPath = join(repo, "runtime", "supervisor-test.jsonl");
-  const spawned: string[] = [];
-  const events: SupervisorEvent[] = [];
-  const children = new Map<string, FakeChild>();
-
-  const supervisor = new TenantSupervisor({
-    repoRoot: repo,
-    configs: ["t1.json", "t2.json", "t3.json", "t4.json"],
-    eventLogPath,
-    onEvent: (event) => events.push(event),
-    spawnChild: (args) => {
-      const configIdx = args.findIndex((a) => a === "--config");
-      const configPath = args[configIdx + 1];
-      const tenantId = configPath.split(/[\\/]/).pop()!.replace(/\.json$/, "");
-      spawned.push(tenantId);
-      const child = new FakeChild();
-      children.set(tenantId, child);
-      return child as unknown as ReturnType<TenantSupervisorOptions_spawn>;
-    },
-  });
-
-  const results = supervisor.start();
-  assert.deepEqual([...results.keys()], ["t1", "t2", "t3", "t4"]);
-  assert.deepEqual(spawned, ["t1", "t2", "t3", "t4"]);
-  assert.equal(supervisor.allExited(), false);
-
-  // 全部正常退出
-  for (const child of children.values()) {
-    child.emitExit(0);
+function makeTempRepo(
+  tenants: readonly { file: string; tenantId: string; envName?: string; baseDir?: string }[] = [
+    { file: "t1.json", tenantId: "t1" },
+  ],
+): TempRepo {
+  const root = mkdtempSync(join(tmpdir(), "arena-supervisor-"));
+  mkdirSync(join(root, "runtime", "configs"), { recursive: true });
+  const envNames: string[] = [];
+  for (const tenant of tenants) {
+    const envName = tenant.envName ?? `ARENA_TEST_${tenant.tenantId}_${Math.random().toString(16).slice(2)}`;
+    process.env[envName] = "test-key-not-real";
+    envNames.push(envName);
+    writeFileSync(join(root, "runtime", "configs", tenant.file), JSON.stringify({
+      tenantId: tenant.tenantId,
+      arenaTokenEnv: envName,
+      decisionMode: "deterministic",
+      submitEnabled: false,
+      model: { provider: "test", id: "test-model" },
+      baseDir: tenant.baseDir ?? "runtime",
+    }));
   }
-  assert.equal(supervisor.allExited(), true);
-  assert.ok(events.some((e) => e.type === "spawned"));
-  assert.ok(events.some((e) => e.type === "exited" && e.exitCode === 0));
-
-  // 事件落盘
-  const log = readFileSync(eventLogPath, "utf-8");
-  assert.ok(log.includes('"type":"spawned"'));
-  assert.ok(log.includes('"type":"exited"'));
-
-  rmSync(repo, { recursive: true, force: true });
-});
-
-test("shutdown sends SIGTERM to all alive children then all_exited", async () => {
-  const repo = makeTempRepo();
-  const children = new Map<string, FakeChild>();
-  const events: SupervisorEvent[] = [];
-
-  const supervisor = new TenantSupervisor({
-    repoRoot: repo,
-    configs: ["t1.json", "t2.json"],
-    eventLogPath: join(repo, "runtime", "supervisor-test2.jsonl"),
-    onEvent: (event) => events.push(event),
-    spawnChild: (args) => {
-      const configIdx = args.findIndex((a) => a === "--config");
-      const tenantId = args[configIdx + 1].split(/[\\/]/).pop()!.replace(/\.json$/, "");
-      const child = new FakeChild();
-      children.set(tenantId, child);
-      return child as unknown as ReturnType<TenantSupervisorOptions_spawn>;
+  return {
+    root,
+    envNames,
+    cleanup() {
+      for (const name of envNames) delete process.env[name];
+      rmSync(root, { recursive: true, force: true });
     },
-  });
+  };
+}
 
-  supervisor.start();
-  const shutdownPromise = supervisor.shutdown();
+function fakeSpawn(children: Map<string, FakeChild>): (args: readonly string[], spec: TenantSpec) => ChildProcess {
+  return (_args, spec) => {
+    const child = new FakeChild();
+    children.set(spec.tenantId, child);
+    return child as unknown as ChildProcess;
+  };
+}
 
-  // 子进程立即响应 SIGTERM 退出
-  for (const child of children.values()) {
-    assert.deepEqual(child.killed, ["SIGTERM"]);
-    child.emitExit(0, "SIGTERM");
+function writeLock(spec: TenantSpec, pid: number): void {
+  mkdirSync(dirname(spec.lockPath), { recursive: true });
+  writeFileSync(spec.lockPath, JSON.stringify({ pid, processRunId: "test-run" }));
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error("condition timeout");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
-  await shutdownPromise;
+}
 
-  assert.equal(supervisor.allExited(), true);
-  assert.ok(events.some((e) => e.type === "terminating"));
-  assert.ok(events.some((e) => e.type === "all_exited"));
+async function requestJson(port: number, path: string): Promise<{ status: number; body: any }> {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`);
+  return { status: response.status, body: await response.json() };
+}
 
-  rmSync(repo, { recursive: true, force: true });
-});
-
-test("shutdown escalates to SIGKILL when child ignores SIGTERM", async () => {
-  const repo = makeTempRepo();
+test("complete preflight happens before the first spawn", async () => {
+  const repo = makeTempRepo([
+    { file: "alpha.json", tenantId: "t1" },
+    { file: "beta.json", tenantId: "t2" },
+  ]);
   const children = new Map<string, FakeChild>();
-  const events: SupervisorEvent[] = [];
-
-  const supervisor = new TenantSupervisor({
-    repoRoot: repo,
-    configs: ["t1.json", "t2.json"],
-    eventLogPath: join(repo, "runtime", "supervisor-test3.jsonl"),
-    shutdownTimeoutMs: 300,
-    onEvent: (event) => events.push(event),
-    spawnChild: (args) => {
-      const configIdx = args.findIndex((a) => a === "--config");
-      const tenantId = args[configIdx + 1].split(/[\\/]/).pop()!.replace(/\.json$/, "");
-      const child = new FakeChild();
-      children.set(tenantId, child);
-      return child as unknown as ReturnType<TenantSupervisorOptions_spawn>;
-    },
-  });
-
-  supervisor.start();
-  const shutdownPromise = supervisor.shutdown();
-
-  // 子进程忽略 SIGTERM → 等 300ms 兜底 SIGKILL
-  await new Promise((resolve) => setTimeout(resolve, 450));
-  for (const child of children.values()) {
-    assert.deepEqual(child.killed, ["SIGTERM", "SIGKILL"]);
-    child.emitExit(null, "SIGKILL");
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      configs: ["alpha.json", "beta.json"],
+      spawnChild: fakeSpawn(children),
+    });
+    const results = await supervisor.start();
+    assert.deepEqual([...results.keys()], ["t1", "t2"]);
+    assert.equal(children.size, 2);
+    assert.deepEqual(supervisor.status().map((row) => row.lifecycle), ["starting", "starting"]);
+    for (const child of children.values()) child.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    repo.cleanup();
   }
-  await shutdownPromise;
-
-  assert.ok(events.some((e) => e.type === "timeout_killed"));
-  assert.equal(supervisor.allExited(), true);
-
-  rmSync(repo, { recursive: true, force: true });
 });
 
-test("status reflects alive/dead/exitCode", () => {
+test("duplicate tenantId fails preflight with zero spawn", async () => {
+  const repo = makeTempRepo([
+    { file: "a.json", tenantId: "same" },
+    { file: "b.json", tenantId: "same" },
+  ]);
+  let spawnCount = 0;
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      configs: ["a.json", "b.json"],
+      spawnChild: () => { spawnCount += 1; return new FakeChild() as unknown as ChildProcess; },
+    });
+    await assert.rejects(supervisor.start(), /duplicate tenantId/);
+    assert.equal(spawnCount, 0);
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("duplicate config and path traversal fail before spawn", async () => {
+  const repo = makeTempRepo();
+  let spawnCount = 0;
+  const spawnChild = (): ChildProcess => { spawnCount += 1; return new FakeChild() as unknown as ChildProcess; };
+  try {
+    await assert.rejects(
+      new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json", "t1.json"], spawnChild }).start(),
+      /duplicate config/,
+    );
+    await assert.rejects(
+      new TenantSupervisor({ repoRoot: repo.root, configs: ["../outside.json"], spawnChild }).start(),
+      /runtime\/configs|runtime\\configs/,
+    );
+    assert.equal(spawnCount, 0);
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("missing secret fails preflight with zero spawn", async () => {
+  const repo = makeTempRepo();
+  delete process.env[repo.envNames[0]];
+  let spawnCount = 0;
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      configs: ["t1.json"],
+      spawnChild: () => { spawnCount += 1; return new FakeChild() as unknown as ChildProcess; },
+    });
+    await assert.rejects(supervisor.start(), /env .* missing/);
+    assert.equal(spawnCount, 0);
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("mid-spawn failure rolls back already-started children", async () => {
+  const repo = makeTempRepo([
+    { file: "t1.json", tenantId: "t1" },
+    { file: "t2.json", tenantId: "t2" },
+  ]);
+  const first = new FakeChild();
+  first.autoExitOnSend = true;
+  let calls = 0;
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      configs: ["t1.json", "t2.json"],
+      shutdownTimeoutMs: 100,
+      spawnChild: () => {
+        calls += 1;
+        if (calls === 2) throw new Error("synthetic spawn failure");
+        return first as unknown as ChildProcess;
+      },
+    });
+    await assert.rejects(supervisor.start(), /synthetic spawn failure/);
+    assert.deepEqual(first.sent, [{ type: "arena.shutdown" }]);
+    assert.equal(supervisor.allExited(), true);
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("readiness requires a continuously matching writer-lock pid", async () => {
   const repo = makeTempRepo();
   const children = new Map<string, FakeChild>();
-
-  const supervisor = new TenantSupervisor({
-    repoRoot: repo,
-    configs: ["t1.json"],
-    eventLogPath: join(repo, "runtime", "supervisor-test4.jsonl"),
-    spawnChild: (args) => {
-      const child = new FakeChild();
-      children.set("t1", child);
-      return child as unknown as ReturnType<TenantSupervisorOptions_spawn>;
-    },
-  });
-
-  supervisor.start();
-  assert.equal(supervisor.status()[0].alive, true);
-  children.get("t1")!.emitExit(3);
-  const status = supervisor.status()[0];
-  assert.equal(status.alive, false);
-  assert.equal(status.exitCode, 3);
-
-  rmSync(repo, { recursive: true, force: true });
+  try {
+    const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"], spawnChild: fakeSpawn(children) });
+    await supervisor.start();
+    const spec = supervisor.preflight()[0];
+    const child = children.get("t1")!;
+    assert.equal(supervisor.isReady(), false);
+    writeLock(spec, child.pid + 1);
+    assert.equal(supervisor.isReady(), false);
+    writeLock(spec, child.pid);
+    assert.equal(supervisor.isReady(), true);
+    rmSync(spec.lockPath, { force: true });
+    assert.equal(supervisor.isReady(), false);
+    assert.equal(supervisor.status()[0].lifecycle, "degraded");
+    child.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    repo.cleanup();
+  }
 });
 
-/** 类型辅助：TenantSupervisorOptions.spawnChild 的返回类型。 */
-type TenantSupervisorOptions_spawn = (
-  args: readonly string[],
-) => import("node:child_process").ChildProcess;
+test("shutdown requests graceful IPC cleanup and clears readiness", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  try {
+    const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"], spawnChild: fakeSpawn(children) });
+    await supervisor.start();
+    const child = children.get("t1")!;
+    writeLock(supervisor.preflight()[0], child.pid);
+    assert.equal(supervisor.isReady(), true);
+    child.autoExitOnSend = true;
+    await supervisor.shutdown();
+    assert.deepEqual(child.sent, [{ type: "arena.shutdown" }]);
+    assert.equal(supervisor.isReady(), false);
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("unresponsive child escalates through injected process-tree killer", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  let forced = 0;
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      configs: ["t1.json"],
+      spawnChild: fakeSpawn(children),
+      shutdownTimeoutMs: 20,
+      forceKillTree: async (child) => {
+        forced += 1;
+        (child as unknown as FakeChild).emitExit(null, "SIGKILL");
+      },
+    });
+    await supervisor.start();
+    await supervisor.shutdown();
+    assert.equal(forced, 1);
+    assert.equal(supervisor.allExited(), true);
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("unexpected nonzero exit becomes failed and not ready", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  try {
+    const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"], spawnChild: fakeSpawn(children) });
+    await supervisor.start();
+    children.get("t1")!.emitExit(3, null);
+    const status = supervisor.status()[0];
+    assert.equal(status.lifecycle, "failed");
+    assert.match(status.lastError ?? "", /unexpected exit/);
+    assert.equal(supervisor.isReady(), false);
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("DebugServer separates health from lock-backed readiness", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"], spawnChild: fakeSpawn(children) });
+  const debug = new DebugServer({ repoRoot: repo.root, supervisor, port: 0 });
+  try {
+    await debug.listen();
+    await supervisor.start();
+    const port = debug.address()!.port;
+    assert.equal((await requestJson(port, "/health")).status, 200);
+    assert.equal((await requestJson(port, "/ready")).status, 503);
+    writeLock(supervisor.preflight()[0], children.get("t1")!.pid);
+    const ready = await requestJson(port, "/ready");
+    assert.equal(ready.status, 200);
+    assert.equal(ready.body.ready, true);
+    children.get("t1")!.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    await debug.close();
+    repo.cleanup();
+  }
+});
+
+test("DebugServer bounds events and rejects unbounded n", async () => {
+  const repo = makeTempRepo();
+  const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"] });
+  const debug = new DebugServer({ repoRoot: repo.root, supervisor, port: 0 });
+  try {
+    for (let i = 0; i < 500; i += 1) {
+      appendFileSync(join(repo.root, "runtime", "supervisor.jsonl"), `${JSON.stringify({ i, pad: "x".repeat(700) })}\n`);
+    }
+    await debug.listen();
+    const port = debug.address()!.port;
+    assert.equal((await requestJson(port, "/events?n=201")).status, 400);
+    const tail = await requestJson(port, "/events?n=3");
+    assert.deepEqual(tail.body.events.map((row: { i: number }) => row.i), [497, 498, 499]);
+  } finally {
+    await debug.close();
+    repo.cleanup();
+  }
+});
+
+test("DebugServer walks backward from a truncated JSONL tail", async () => {
+  const repo = makeTempRepo();
+  const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"] });
+  const debug = new DebugServer({ repoRoot: repo.root, supervisor, port: 0 });
+  try {
+    const path = join(repo.root, "runtime", "t1", "telemetry", "runtime.jsonl");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '{"tick":1}\n{"tick":2}\n{"tick":');
+    await debug.listen();
+    const result = await requestJson(debug.address()!.port, "/state?tenant=t1");
+    assert.equal(result.status, 200);
+    assert.equal(result.body.row.tick, 2);
+  } finally {
+    await debug.close();
+    repo.cleanup();
+  }
+});
+
+test("run-supervisor binds debug port before preflight and spawns zero children on conflict", async () => {
+  const repo = makeTempRepo();
+  const blocker = createNetServer();
+  await new Promise<void>((resolvePromise) => blocker.listen(0, "127.0.0.1", resolvePromise));
+  const address = blocker.address();
+  assert.notEqual(typeof address, "string");
+  const port = (address as { port: number }).port;
+  try {
+    const cli = resolve(PACKAGE_ROOT, "src", "cli", "run-supervisor.ts");
+    const child = spawn(process.execPath, ["--import", "tsx", cli, `--repo-root=${repo.root}`, "--configs=t1", `--port=${port}`], {
+      cwd: PACKAGE_ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+    let output = "";
+    child.stdout!.on("data", (chunk) => { output += String(chunk); });
+    child.stderr!.on("data", (chunk) => { output += String(chunk); });
+    const code = await new Promise<number | null>((resolvePromise) => child.once("exit", resolvePromise));
+    assert.equal(code, 1);
+    assert.match(output, /EADDRINUSE|address already in use/i);
+    const eventPath = join(repo.root, "runtime", "supervisor.jsonl");
+    const events = existsSync(eventPath) ? readFileSync(eventPath, "utf8") : "";
+    assert.doesNotMatch(events, /"type":"spawned"/);
+  } finally {
+    await new Promise<void>((resolvePromise) => blocker.close(() => resolvePromise()));
+    repo.cleanup();
+  }
+});
+
+test("shutdown request bridge is idempotent and disposer removes listeners", () => {
+  const source = new EventEmitter();
+  let calls = 0;
+  const dispose = registerShutdownRequest(() => { calls += 1; }, source as never);
+  source.emit("message", { type: "other" });
+  source.emit("message", { type: "arena.shutdown" });
+  source.emit("message", { type: "arena.shutdown" });
+  source.emit("SIGTERM");
+  assert.equal(calls, 1);
+  dispose();
+  assert.equal(source.listenerCount("message"), 0);
+  assert.equal(source.listenerCount("SIGINT"), 0);
+  assert.equal(source.listenerCount("SIGTERM"), 0);
+});
+
+test("Supervisor IPC drives a real runTenant child to natural cleanup and exit", async () => {
+  const repo = makeTempRepo();
+  const marker = join(repo.root, "natural-cleanup.json");
+  const script = join(repo.root, "run-tenant-child.mts");
+  const runtimeModule = pathToFileURL(resolve(PACKAGE_ROOT, "src", "app", "tenant-runtime.ts")).href;
+  const shutdownModule = pathToFileURL(resolve(PACKAGE_ROOT, "src", "app", "process-shutdown.ts")).href;
+  const configPath = join(repo.root, "runtime", "configs", "t1.json");
+  writeFileSync(script, `
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { runTenant } from ${JSON.stringify(runtimeModule)};
+import { registerShutdownRequest } from ${JSON.stringify(shutdownModule)};
+let clientClosed = false;
+let runtimeClosed = false;
+const client = {
+  submitted: [],
+  async *turns() { while (!clientClosed) await new Promise(r => setTimeout(r, 10)); },
+  close() { clientClosed = true; },
+};
+const runtime = {
+  bindCandidateSink() {},
+  startDecision() { throw new Error("not used"); },
+  health() { return { ready: true, activeRunId: null }; },
+  async close() { runtimeClosed = true; },
+};
+try {
+  await runTenant(${JSON.stringify(configPath)}, ${JSON.stringify(repo.root)}, {
+    client, runtime, onSignal: registerShutdownRequest,
+    decisionMode: "deterministic", submissionMode: "disabled",
+  });
+  writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
+    clientClosed, runtimeClosed,
+    lockExists: existsSync(join(${JSON.stringify(repo.root)}, "runtime", "t1", "locks", "t1.lock")),
+    connectedBeforeFinally: process.connected,
+  }));
+} finally {
+  if (process.connected) process.disconnect();
+}
+`);
+  let child: ChildProcess | null = null;
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      configs: ["t1.json"],
+      shutdownTimeoutMs: 2000,
+      spawnChild: () => {
+        child = spawn(process.execPath, ["--import", "tsx", script], {
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+          windowsHide: true,
+          detached: process.platform !== "win32",
+          env: process.env,
+        });
+        return child;
+      },
+    });
+    await supervisor.start();
+    await waitUntil(() => supervisor.isReady(), 3000);
+    await supervisor.shutdown();
+    const result = JSON.parse(readFileSync(marker, "utf8"));
+    assert.deepEqual(result, {
+      clientClosed: true,
+      runtimeClosed: true,
+      lockExists: false,
+      connectedBeforeFinally: true,
+    });
+    assert.equal(supervisor.allExited(), true);
+  } finally {
+    const remainingChild = child as ChildProcess | null;
+    if (remainingChild !== null && remainingChild.exitCode === null) remainingChild.kill("SIGKILL");
+    repo.cleanup();
+  }
+});
+
+test("timeout escalation removes a real child and grandchild process tree", async () => {
+  const repo = makeTempRepo();
+  const pidsPath = join(repo.root, "tree-pids.json");
+  const script = join(repo.root, "tree-child.mjs");
+  writeFileSync(script, `
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+writeFileSync(${JSON.stringify(pidsPath)}, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+setInterval(() => {}, 1000);
+`);
+  let child: ChildProcess | null = null;
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      configs: ["t1.json"],
+      shutdownTimeoutMs: 100,
+      spawnChild: () => {
+        child = spawn(process.execPath, [script], {
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+          windowsHide: true,
+          detached: process.platform !== "win32",
+          env: process.env,
+        });
+        return child;
+      },
+    });
+    await supervisor.start();
+    await waitUntil(() => existsSync(pidsPath));
+    const pids = JSON.parse(readFileSync(pidsPath, "utf8")) as { child: number; grandchild: number };
+    await supervisor.shutdown();
+    await waitUntil(() => processStopped(pids.child) && processStopped(pids.grandchild), 5000);
+    assert.equal(processStopped(pids.child), true);
+    assert.equal(processStopped(pids.grandchild), true);
+  } finally {
+    const remainingChild = child as ChildProcess | null;
+    if (remainingChild !== null && remainingChild.exitCode === null) remainingChild.kill("SIGKILL");
+    repo.cleanup();
+  }
+});
+
+function processStopped(pid: number): boolean {
+  if (process.platform !== "win32") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      if (stat.split(" ")[2] === "Z") return true;
+    } catch {
+      return true;
+    }
+  }
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch {
+    return true;
+  }
+}

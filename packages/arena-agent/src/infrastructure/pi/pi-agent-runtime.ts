@@ -39,6 +39,9 @@ export type PiRuntimeState =
   | "rotating"
   | "closed";
 
+/** Pi/Provider 熔断状态（Track B）：closed → open → half-open → closed/open。 */
+export type CircuitState = "closed" | "open" | "half-open";
+
 export interface PiRuntimeTelemetry {
   readonly type:
     | "run_settled"
@@ -49,11 +52,19 @@ export interface PiRuntimeTelemetry {
     | "rotated"
     | "rotation_failed"
     | "warmup_timeout"
-    | "violation";
+    | "violation"
+    | "circuit_opened"
+    | "circuit_half_open"
+    | "circuit_closed"
+    | "circuit_retry_failed";
   readonly runId?: string;
   readonly reason?: string;
   readonly message?: string;
   readonly generation?: number;
+  readonly circuitState?: CircuitState;
+  readonly consecutiveFailures?: number;
+  readonly lastTripAt?: number;
+  readonly fallbackReason?: string;
 }
 
 export interface PiAgentRuntimeOptions {
@@ -87,6 +98,11 @@ export interface PiAgentRuntimeOptions {
   readonly maxRunsBeforeRotate?: number;
   /** warmup 独立超时（缺省 30000ms）。超时/失败不阻断启动——fail-open（见 warmupSession）。 */
   readonly warmupTimeoutMs?: number;
+  /** 熔断 open 冷却时长 ms（缺省 30000）。冷却结束后允许 half-open 单次试探。
+   *  打开阈值复用 consecutiveErrorThreshold（连续失败数）。 */
+  readonly circuitOpenMs?: number;
+  /** Monotonic clock injection for deterministic circuit tests. */
+  readonly nowMs?: () => number;
 }
 
 interface ActiveRun {
@@ -122,11 +138,20 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
   private maxRunsBeforeRotate = 40;
   /** 自上次 rotate 以来的 run 数。 */
   private runsSinceRotate = 0;
+  /** Pi/Provider 熔断（Track B）：closed → open → half-open → closed/open。 */
+  private circuitState: CircuitState = "closed";
+  /** 上次电路 open 的时刻（performance.now）；null = 从未 trip。 */
+  private lastTripAt: number | null = null;
+  /** open 冷却时长（ms），冷却结束允许 half-open 单次试探。 */
+  private readonly circuitOpenMs: number;
+  private readonly nowMs: () => number;
 
   private constructor(options: PiAgentRuntimeOptions) {
     this.options = options;
     this.memory = options.memory ?? new StrategyMemory();
     this.maxRunsBeforeRotate = options.maxRunsBeforeRotate ?? 40;
+    this.circuitOpenMs = options.circuitOpenMs ?? 30000;
+    this.nowMs = options.nowMs ?? (() => performance.now());
     // 工具定义持有 ctxRef getter：session 创建时注册一次，每 run 替换 ctx 对象
     this.factory = new PiSessionFactory({
       ...options.session,
@@ -156,20 +181,20 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
       return;
     }
     const timeoutMs = this.options.warmupTimeoutMs ?? 30000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-    }, timeoutMs);
     try {
-      await Promise.race([
-        this.artifacts.session.prompt(text),
-        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs + 10)),
+      timedOut = await Promise.race([
+        this.artifacts.session.prompt(text).then(() => false),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(true), timeoutMs);
+        }),
       ]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.onTelemetry("prompt_error", undefined, `warmup: ${message}`);
     } finally {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
     }
     if (timedOut) {
       this.onTelemetry("warmup_timeout", undefined, "warmup did not settle within timeout");
@@ -204,6 +229,29 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     }
     if (this.state !== "ready") {
       throw new Error(`runtime not ready (${this.state})`);
+    }
+    // 熔断（Track B）：open 且冷却未到 → 立即抛错（coordinator 走 Safety 快速路径，
+    // 不等待 soft deadline）；冷却已到 → half-open 单次试探（本 Tick 放行）。
+    if (this.circuitState === "open") {
+      const elapsedMs = this.lastTripAt === null ? 0 : this.nowMs() - this.lastTripAt;
+      if (elapsedMs < this.circuitOpenMs) {
+        const remainingMs = Math.ceil(this.circuitOpenMs - elapsedMs);
+        throw new Error(
+          `circuit open (fallbackReason=provider_failure, cooldownRemainingMs=${remainingMs})`,
+        );
+      }
+      this.circuitState = "half-open";
+      this.onTelemetry(
+        "circuit_half_open",
+        undefined,
+        "cooldown elapsed, single probe allowed",
+        undefined,
+        undefined,
+        this.circuitState,
+        this.consecutiveErrors,
+        this.lastTripAt ?? undefined,
+        "provider_probe",
+      );
     }
     // 3.3：用 request.runId 建 ToolContext（权威值源），mapSnapshot 本 Tick 冻结
     const ctx = createToolContext({
@@ -273,6 +321,23 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
           return;
         }
         this.consecutiveErrors = 0;
+        // half-open 试探成功 → 电路恢复 closed（Provider 只恢复候选能力；
+        // 是否晋级 hybrid 由上层 promotion gate 决定，runtime 不自动开）。
+        if (this.circuitState === "half-open") {
+          this.circuitState = "closed";
+          this.lastTripAt = null;
+          this.onTelemetry(
+            "circuit_closed",
+            run.runId,
+            "probe succeeded, circuit closed",
+            undefined,
+            undefined,
+            this.circuitState,
+            this.consecutiveErrors,
+            this.lastTripAt ?? undefined,
+            "provider_recovered",
+          );
+        }
         settleOnce({ outcome: "settled" });
       })
       .catch((error: unknown) => {
@@ -284,8 +349,30 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
         this.consecutiveErrors += 1;
         this.onTelemetry("prompt_error", run.runId, message);
         settleOnce({ outcome: "error", message });
-        // 连续失败超阈值 → unhealthy（总任务书 3.1 严重错误）
-        if (this.consecutiveErrors >= (this.options.consecutiveErrorThreshold ?? 3)) {
+        // 熔断（Track B）：失败达到阈值 → open（冷却期内不启动 Pi 请求，直接 Safety）。
+        // 降级优先：trip 与 half-open 失败都不立即 rotation；只有持续失败
+        // （consecutiveErrors ≥ 2×threshold，即跨两个 open 周期）才升级 unhealthy → rotate
+        // 换 session（rotation 仍是最后兜底，与 abort-idle-timeout/violation 路径一致）。
+        const threshold = this.options.consecutiveErrorThreshold ?? 3;
+        if (this.circuitState === "half-open" || this.consecutiveErrors >= threshold) {
+          const wasHalfOpen = this.circuitState === "half-open";
+          this.circuitState = "open";
+          this.lastTripAt = this.nowMs();
+          this.onTelemetry(
+            wasHalfOpen ? "circuit_retry_failed" : "circuit_opened",
+            run.runId,
+            wasHalfOpen
+              ? `probe failed, circuit re-opened (failures=${this.consecutiveErrors})`
+              : `trip after ${this.consecutiveErrors} consecutive failures`,
+            undefined,
+            undefined,
+            this.circuitState,
+            this.consecutiveErrors,
+            this.lastTripAt,
+            wasHalfOpen ? "circuit_retry_failed" : "provider_failure",
+          );
+        }
+        if (this.consecutiveErrors >= threshold * 2) {
           this.markUnhealthy(`consecutive_prompt_errors: ${this.consecutiveErrors}`);
         }
       });
@@ -323,6 +410,10 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     }
     this.closing = true;
     this.lifecycleEpoch += 1; // P0-2：使进行中的 initialize 失效（防关闭后复活）
+    // 熔断清理（Track B）：close 后状态复位（下次 create 全新开始）
+    this.circuitState = "closed";
+    this.lastTripAt = null;
+    this.consecutiveErrors = 0;
     if (this.active !== null && !this.active.aborted) {
       this.abortRun(this.active, "runtime_close");
     }
@@ -444,6 +535,9 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
       // 新 session 同样预热（rotate 后首 tick 不冷启动超时）
       await this.warmupSession();
       this.consecutiveErrors = 0;
+      // 熔断复位（Track B）：换 session 后从 closed 重新开始
+      this.circuitState = "closed";
+      this.lastTripAt = null;
       this.onTelemetry("rotated", undefined, undefined, undefined, this.generation);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -459,7 +553,21 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     message?: string,
     reason?: string,
     generation?: number,
+    circuitState?: CircuitState,
+    consecutiveFailures?: number,
+    lastTripAt?: number,
+    fallbackReason?: string,
   ): void {
-    this.options.onTelemetry?.({ type, runId, reason, message, generation });
+    this.options.onTelemetry?.({
+      type,
+      runId,
+      reason,
+      message,
+      generation,
+      ...(circuitState !== undefined ? { circuitState } : {}),
+      ...(consecutiveFailures !== undefined ? { consecutiveFailures } : {}),
+      ...(lastTripAt !== undefined ? { lastTripAt } : {}),
+      ...(fallbackReason !== undefined ? { fallbackReason } : {}),
+    });
   }
 }

@@ -2,7 +2,7 @@
   "name": "arena",
   "version": "0.1.0",
   "private": true,
-  "description": "Arena Hero 单仓：Python 运行时（退役中）+ TS SDK + TS 编排层",
+  "description": "Arena Hero TS-only safe autonomous runtime and simulator",
   "workspaces": [
     "packages/*"
   ],
@@ -10,7 +10,9 @@
     "check": "npm run check -w packages/arena-hero-ts -w packages/arena-agent",
     "test": "npm run test -w packages/arena-hero-ts -w packages/arena-agent",
     "schema:check": "node packages/arena-hero-ts/scripts/generate-schemas.mjs && git diff --exit-code -- packages/arena-hero-ts/contracts/",
-    "replay:ts": "npx tsx packages/arena-agent/scripts/replay-ts.ts --manifest fixtures/differential/burnin-20260802-a/manifest.json --fixture-dir fixtures/differential/burnin-20260802-a --out /tmp/replay-ts.jsonl"
+    "replay:ts": "npx tsx packages/arena-agent/scripts/replay-ts.ts --manifest fixtures/differential/burnin-20260802-a/manifest.json --fixture-dir fixtures/differential/burnin-20260802-a --out /tmp/replay-ts.jsonl",
+    "arena:supervisor": "tsx packages/arena-agent/src/cli/run-supervisor.ts",
+    "replay:check": "npx tsx packages/arena-agent/scripts/replay-ts.ts --manifest fixtures/differential/burnin-20260802-a/manifest.json --fixture-dir fixtures/differential/burnin-20260802-a --out /tmp/replay-ts.jsonl"
   },
   "engines": {
     "node": ">=24.0.0"

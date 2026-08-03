@@ -1,20 +1,13 @@
-/**
- * DebugServer（切片 5）：租户集群只读观测 HTTP 端点。
- *
- * 端点：
- *   GET /health          → 各租户进程存活状态 + supervisor 版本
- *   GET /state?tenant=t1 → 该租户 runtime.jsonl 最后一行（决策/延迟/提交结果）
- *   GET /state?tenant=t1&stream=pi → pi.jsonl 最后一行（pi 事件流）
- *   GET /events?n=50     → supervisor.jsonl 尾部 N 行
- *   GET /tenants         → 配置中的租户列表
- *
- * 只读：不做 /command 写入（控制面留给后续切片；POST 语义需要跨进程通信协议）。
- */
+/** Bounded, read-only local observability for TenantSupervisor. */
 
-import { createServer, type Server } from "node:http";
-import { existsSync, readFileSync } from "node:fs";
+import { createServer, type Server, type ServerResponse } from "node:http";
+import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { TenantSupervisor } from "./tenant-supervisor.ts";
+
+const MAX_TAIL_BYTES = 256 * 1024;
+const MAX_EVENT_ROWS = 200;
+const STATE_STREAMS = new Set(["runtime", "decision", "outcome", "pi"]);
 
 export interface DebugServerOptions {
   readonly repoRoot: string;
@@ -26,11 +19,9 @@ export interface DebugServerOptions {
 export class DebugServer {
   private readonly options: DebugServerOptions;
   private readonly server: Server;
-  private readonly tenantIds: string[];
 
   constructor(options: DebugServerOptions) {
     this.options = options;
-    this.tenantIds = options.supervisor.status().map((entry) => entry.tenantId);
     this.server = createServer((req, res) => {
       this.route(req.url ?? "/", res).catch((error) => {
         this.json(res, 500, { error: error instanceof Error ? error.message : String(error) });
@@ -41,97 +32,135 @@ export class DebugServer {
   listen(): Promise<void> {
     const port = this.options.port ?? 8120;
     const host = this.options.host ?? "127.0.0.1";
-    return new Promise((resolvePromise) => {
-      this.server.listen(port, host, () => resolvePromise());
+    return new Promise((resolvePromise, reject) => {
+      const onError = (error: Error): void => reject(error);
+      this.server.once("error", onError);
+      this.server.listen(port, host, () => {
+        this.server.off("error", onError);
+        resolvePromise();
+      });
     });
   }
 
   close(): Promise<void> {
-    return new Promise((resolvePromise) => this.server.close(() => resolvePromise()));
+    if (!this.server.listening) return Promise.resolve();
+    return new Promise((resolvePromise, reject) => {
+      this.server.close((error) => error === undefined ? resolvePromise() : reject(error));
+    });
   }
 
   address(): { host: string; port: number } | null {
     const addr = this.server.address();
-    if (addr === null || typeof addr === "string") {
-      return null;
-    }
+    if (addr === null || typeof addr === "string") return null;
     return { host: addr.address, port: addr.port };
   }
 
-  private async route(url: string, res: import("node:http").ServerResponse): Promise<void> {
+  private async route(url: string, res: ServerResponse): Promise<void> {
     const urlObj = new URL(url, "http://localhost");
     const path = urlObj.pathname;
+
     if (path === "/health") {
       this.json(res, 200, {
         ok: true,
+        shuttingDown: this.options.supervisor.isShuttingDown(),
         tenants: this.options.supervisor.status(),
-        allExited: this.options.supervisor.allExited(),
       });
       return;
     }
+    if (path === "/ready") {
+      const ready = this.options.supervisor.isReady();
+      this.json(res, ready ? 200 : 503, { ready, tenants: this.options.supervisor.status() });
+      return;
+    }
     if (path === "/tenants") {
-      this.json(res, 200, { tenants: this.tenantIds });
+      this.json(res, 200, { tenants: this.options.supervisor.tenantIds() });
       return;
     }
     if (path === "/state") {
+      const tenantIds = this.options.supervisor.tenantIds();
       const tenant = urlObj.searchParams.get("tenant");
-      if (tenant === null || !this.tenantIds.includes(tenant)) {
-        this.json(res, 400, { error: `tenant 必须是 ${this.tenantIds.join("/")}` });
+      if (tenant === null || !tenantIds.includes(tenant)) {
+        this.json(res, 400, { error: `tenant must be one of: ${tenantIds.join(", ")}` });
         return;
       }
       const stream = urlObj.searchParams.get("stream") ?? "runtime";
-      const row = lastJsonlLine(join(this.options.repoRoot, "runtime", tenant, "telemetry", `${stream}.jsonl`));
+      if (!STATE_STREAMS.has(stream)) {
+        this.json(res, 400, { error: `stream must be one of: ${[...STATE_STREAMS].join(", ")}` });
+        return;
+      }
+      const row = lastValidJsonlRow(
+        join(this.options.repoRoot, "runtime", tenant, "telemetry", `${stream}.jsonl`),
+      );
       if (row === null) {
-        this.json(res, 404, { error: `${stream}.jsonl 不存在或为空` });
+        this.json(res, 404, { error: `${stream}.jsonl has no complete JSON record` });
         return;
       }
       this.json(res, 200, { tenant, stream, row });
       return;
     }
     if (path === "/events") {
-      const nRaw = urlObj.searchParams.get("n");
-      const n = nRaw === null ? 50 : Number(nRaw);
-      const lines = readJsonlTail(join(this.options.repoRoot, "runtime", "supervisor.jsonl"), n);
-      this.json(res, 200, { events: lines });
+      const raw = urlObj.searchParams.get("n");
+      const n = raw === null ? 50 : Number(raw);
+      if (!Number.isInteger(n) || n < 1 || n > MAX_EVENT_ROWS) {
+        this.json(res, 400, { error: `n must be an integer between 1 and ${MAX_EVENT_ROWS}` });
+        return;
+      }
+      this.json(res, 200, {
+        events: readJsonlTail(join(this.options.repoRoot, "runtime", "supervisor.jsonl"), n),
+      });
       return;
     }
     this.json(res, 404, { error: `unknown path: ${path}` });
   }
 
-  private json(res: import("node:http").ServerResponse, status: number, body: unknown): void {
+  private json(res: ServerResponse, status: number, body: unknown): void {
+    if (res.headersSent) return;
     res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(body));
   }
 }
 
-function lastJsonlLine(path: string): unknown | null {
-  if (!existsSync(path)) {
-    return null;
+function lastValidJsonlRow(path: string): unknown | null {
+  const lines = tailLines(path);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      return JSON.parse(lines[index]);
+    } catch {
+      // A concurrent append may leave the final line incomplete; walk backward.
+    }
   }
-  const lines = readFileSync(path, "utf-8").split(/\r?\n/).filter((line) => line.trim().length > 0);
-  if (lines.length === 0) {
-    return null;
-  }
-  try {
-    return JSON.parse(lines[lines.length - 1]);
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 function readJsonlTail(path: string, n: number): unknown[] {
-  if (!existsSync(path)) {
-    return [];
-  }
-  const lines = readFileSync(path, "utf-8").split(/\r?\n/).filter((line) => line.trim().length > 0);
-  const tail = lines.slice(-n);
   const parsed: unknown[] = [];
-  for (const line of tail) {
+  for (const line of tailLines(path)) {
     try {
       parsed.push(JSON.parse(line));
     } catch {
-      // 忽略坏行（append 中截断）
+      // Ignore incomplete/bad append records; never read beyond the bounded tail.
     }
   }
-  return parsed;
+  return parsed.slice(-n);
+}
+
+function tailLines(path: string): string[] {
+  if (!existsSync(path)) return [];
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    if (size === 0) return [];
+    const length = Math.min(size, MAX_TAIL_BYTES);
+    const offset = size - length;
+    const buffer = Buffer.allocUnsafe(length);
+    const bytes = readSync(fd, buffer, 0, length, offset);
+    let text = buffer.subarray(0, bytes).toString("utf8");
+    if (offset > 0) {
+      const firstNewline = text.indexOf("\n");
+      text = firstNewline < 0 ? "" : text.slice(firstNewline + 1);
+    }
+    return text.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  } finally {
+    closeSync(fd);
+  }
 }

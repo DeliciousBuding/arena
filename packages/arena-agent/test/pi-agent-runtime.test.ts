@@ -112,9 +112,30 @@ interface Harness {
   close: () => Promise<void>;
 }
 
+/** 运行一个 startDecision 并等待其 settle（prompt reject 场景）。 */
+async function runAndSettle(h: Harness, overrides: Partial<AgentDecisionRequest> = {}): Promise<AgentRunResult> {
+  const handle = h.runtime.startDecision(makeRequest(overrides));
+  return handle.settled;
+}
+
+/** 连续 prompt 失败直至电路 open（threshold=2：第 2 次失败 trip）。 */
+async function tripCircuit(h: Harness): Promise<void> {
+  await runAndSettle(h); // 失败 1
+  await waitForTelemetry(h, "prompt_error");
+  await runAndSettle(h); // 失败 2 → trip
+  await waitForTelemetry(h, "circuit_opened");
+}
+
 async function makeHarness(
   behavior: StubBehavior = {},
-  options: { deferredPrompt?: boolean; maxRunsBeforeRotate?: number; warmupTimeoutMs?: number; warmupPrompt?: string } = {},
+  options: {
+    deferredPrompt?: boolean;
+    maxRunsBeforeRotate?: number;
+    warmupTimeoutMs?: number;
+    warmupPrompt?: string;
+    circuitOpenMs?: number;
+    nowMs?: () => number;
+  } = {},
 ): Promise<Harness> {
   const sessions: AgentSession[] = [];
   const promptControls: Deferred[] = [];
@@ -142,6 +163,8 @@ async function makeHarness(
     // 缺省无 warmup：大部分测试不关心预热行为；#4-6/#4-7 显式启用
     warmupPrompt: options.warmupPrompt,
     warmupTimeoutMs: options.warmupTimeoutMs ?? 30000,
+    ...(options.circuitOpenMs !== undefined ? { circuitOpenMs: options.circuitOpenMs } : {}),
+    ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
     onTelemetry: (event) => telemetry.push(event),
   });
   runtime.bindCandidateSink((envelope) => {
@@ -182,27 +205,23 @@ test("1. prompt resolve → settled（无候选）；health ready；可复用下
   await h.close();
 });
 
-test("2. prompt reject → error settle；连续失败达阈值 → unhealthy + rotate", async () => {
-  let rejectCount = 0;
+test("2. prompt reject → error settle；连续失败达阈值 → circuit open（降级不轮询，不立即 rotate）", async () => {
   const h = await makeHarness({
-    prompt: () => {
-      rejectCount += 1;
-      return Promise.reject(new Error("provider down"));
-    },
+    prompt: () => Promise.reject(new Error("provider down")),
   });
+  // 阈值 2：第一次失败仅 error settle
   const handle = h.runtime.startDecision(makeRequest());
   const result = await handle.settled;
   assert.equal(result.outcome, "error");
-  // 阈值 2：第一次失败仅 error settle，不 unhealthy
   assert.equal(h.telemetry.some((t) => t.type === "unhealthy"), false);
-  // 第二次失败 → 连续 2 次 → unhealthy → rotate（创建新 session）
+  // 第二次失败 → 连续 2 次 → circuit open（Track B：降级优先，不立即 rotation）
   const handle2 = h.runtime.startDecision(makeRequest({ runId: "local:t1:101:1", tick: 101 }));
   await handle2.settled;
-  assert.equal(h.telemetry.some((t) => t.type === "unhealthy"), true, "连续失败必须标记 unhealthy");
-  // rotation 是 void async：等待 rotated 事件后断言
-  await waitForTelemetry(h, "rotated");
-  assert.equal(h.sessions.length, 2, "rotation 必须重建 session");
-  assert.equal(h.runtime.health().ready, true, "rotate 完成后 ready");
+  await waitForTelemetry(h, "circuit_opened");
+  assert.equal(h.telemetry.some((t) => t.type === "unhealthy"), false, "trip 是降级不是 session 损坏：不立即 rotate");
+  assert.equal(h.sessions.length, 1, "trip 不触发 rotation（session 保持复用）");
+  // open 期间 startDecision 立即抛错（coordinator 走 Safety）
+  assert.throws(() => h.runtime.startDecision(makeRequest({ runId: "local:t1:102:2", tick: 102 })), /circuit open/);
   await h.close();
 });
 
@@ -323,17 +342,27 @@ test("P0-2. 旧 generation 迟到 reject → 不影响新 generation 的 health/
 });
 
 test("P0-2. 旧 generation 迟到 resolve → 不重置新 generation 错误计数", async () => {
-  const h = await makeHarness({
-    prompt: () => Promise.reject(new Error("provider down")),
-  });
+  const h = await makeHarness({}, { deferredPrompt: true });
   const handle1 = h.runtime.startDecision(makeRequest());
-  await handle1.settled;
-  const handle2 = h.runtime.startDecision(makeRequest({ runId: "local:t1:101:1", tick: 101 }));
-  await handle2.settled;
+  handle1.abort("soft_deadline"); // session1 hang → idle timeout → rotate（generation 1 → 2）
   await waitForTelemetry(h, "rotated");
   assert.equal(h.sessions.length, 2);
-  const unhealthyCount = h.telemetry.filter((t) => t.type === "unhealthy").length;
-  assert.equal(unhealthyCount, 1, "只有一次 unhealthy（阈值 2 触发）");
+  // 新 session 连续失败 2 次（阈值 2）→ circuit open（计数从 0 累计，trip 不 rotate）
+  const handle2 = h.runtime.startDecision(makeRequest({ runId: "local:t1:101:1", tick: 101 }));
+  h.promptControls[1].reject(new Error("provider down"));
+  await handle2.settled;
+  const handle3 = h.runtime.startDecision(makeRequest({ runId: "local:t1:102:2", tick: 102 }));
+  await handle3.settled;
+  await waitForTelemetry(h, "circuit_opened");
+  assert.equal(h.sessions.length, 2, "trip 是降级不是 session 损坏：不 rotate");
+  // 旧 generation 迟到 resolve → 不得重置新 generation 的错误计数（circuit 保持 open）
+  h.promptControls[0].resolve();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.throws(
+    () => h.runtime.startDecision(makeRequest({ runId: "local:t1:103:3", tick: 103 })),
+    /circuit open/,
+    "迟到 resolve 不得重置新 generation 错误计数",
+  );
   await h.close();
 });
 
@@ -892,5 +921,141 @@ test("#4-7: warmup timeout → fail-open + warmup_timeout telemetry，close 不�
     return;
   } finally {
     hang.resolve(); // 释放挂起（close 已过，防悬挂 timer）
+  }
+});
+
+// ---------- Track B：Pi/Provider 最小熔断（circuit breaker） ----------
+
+test("CB-1: 连续失败达阈值 → circuit open；open 期间 startDecision 立即抛错（fallbackReason=provider_failure）", async () => {
+  let promptCalls = 0;
+  const h = await makeHarness({
+    prompt: () => {
+      promptCalls += 1;
+      return Promise.reject(new Error("provider down"));
+    },
+  });
+  try {
+    // 失败 1、2（threshold=2）→ trip
+    await tripCircuit(h);
+    const opened = h.telemetry.find((t) => t.type === "circuit_opened");
+    assert.ok(opened !== undefined, "必须发出 circuit_opened");
+    assert.equal(opened.circuitState, "open");
+    assert.equal(opened.consecutiveFailures, 2);
+    // open 且冷却未到（默认 30s）→ startDecision 立即抛错，不启动 Pi 请求
+    assert.throws(
+      () => h.runtime.startDecision(makeRequest({ runId: "local:t1:102:3", tick: 102 })),
+      /circuit open \(fallbackReason=provider_failure/,
+    );
+    // prompt 未被再次调用（open 期间零 Pi 请求）
+    assert.equal(promptCalls, 2, "open 期间不得发起新的 prompt");
+  } finally {
+    await h.close();
+  }
+});
+
+test("CB-2: 冷却结束后 → half-open 单次试探 → 成功恢复 closed（仅恢复候选能力）", async () => {
+  let fail = true;
+  let now = 0;
+  const h = await makeHarness(
+    {
+      prompt: () => (fail ? Promise.reject(new Error("provider down")) : Promise.resolve()),
+    },
+    { circuitOpenMs: 80, nowMs: () => now },
+  );
+  try {
+    await tripCircuit(h);
+    // 冷却中：仍抛错
+    assert.throws(() => h.runtime.startDecision(makeRequest({ runId: "local:t1:102:3", tick: 102 })));
+    // 推进单调时钟越过冷却，不使用真实 sleep。
+    now = 80;
+    // half-open：放行单次试探；provider 已恢复 → 成功 → closed
+    fail = false;
+    const handle = h.runtime.startDecision(makeRequest({ runId: "local:t1:103:4", tick: 103 }));
+    const result = await handle.settled;
+    assert.equal(result.outcome, "settled");
+    assert.ok(h.telemetry.some((t) => t.type === "circuit_half_open"), "必须经过 half-open");
+    assert.ok(h.telemetry.some((t) => t.type === "circuit_closed"), "试探成功必须恢复 closed");
+    // closed：后续 run 正常
+    const handle2 = h.runtime.startDecision(makeRequest({ runId: "local:t1:104:5", tick: 104 }));
+    await handle2.settled;
+    assert.equal(h.runtime.health().ready, true);
+  } finally {
+    await h.close();
+  }
+});
+
+test("CB-3: half-open 试探失败 → 立即重新 open（circuit_retry_failed），冷却重新计时", async () => {
+  let now = 0;
+  const h = await makeHarness(
+    {
+      prompt: () => Promise.reject(new Error("provider still down")),
+    },
+    { circuitOpenMs: 80, nowMs: () => now },
+  );
+  try {
+    await tripCircuit(h);
+    now = 80; // 冷却结束
+    // half-open 试探（仍然失败）→ 重新 open
+    const handle = h.runtime.startDecision(makeRequest({ runId: "local:t1:103:4", tick: 103 }));
+    const result = await handle.settled;
+    assert.equal(result.outcome, "error");
+    assert.ok(
+      h.telemetry.some((t) => t.type === "circuit_retry_failed"),
+      "half-open 失败必须发出 circuit_retry_failed",
+    );
+    const reopened = h.telemetry.find((t) => t.type === "circuit_retry_failed");
+    assert.equal(reopened?.circuitState, "open");
+    // 重新 open：再次立即抛错（新冷却从 lastTripAt 起算）
+    assert.throws(() => h.runtime.startDecision(makeRequest({ runId: "local:t1:104:5", tick: 104 })), /circuit open/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("CB-4: 成功恢复后失败计数清零；close() 复位 circuit 状态", async () => {
+  let fail = true;
+  let now = 0;
+  const h = await makeHarness(
+    {
+      prompt: () => (fail ? Promise.reject(new Error("provider down")) : Promise.resolve()),
+    },
+    { circuitOpenMs: 80, nowMs: () => now },
+  );
+  try {
+    await tripCircuit(h);
+    now = 80;
+    fail = false;
+    const handle = h.runtime.startDecision(makeRequest({ runId: "local:t1:103:4", tick: 103 }));
+    await handle.settled;
+    assert.ok(h.telemetry.some((t) => t.type === "circuit_closed"));
+    // closed 后失败计数已清零：单次失败不再 trip（需连续 threshold 次）
+    fail = true;
+    const h2 = await runAndSettle(h, { runId: "local:t1:104:5", tick: 104 });
+    assert.equal(h2.outcome, "error");
+    assert.equal(
+      h.telemetry.filter((t) => t.type === "circuit_opened" || t.type === "circuit_retry_failed").length,
+      1,
+      "closed 后单次失败不得直接 trip（计数已清零）",
+    );
+    await h.close();
+    // close 后 startDecision 拒绝（状态已复位，无残留）
+    assert.throws(() => h.runtime.startDecision(makeRequest()));
+  } finally {
+    await h.close();
+  }
+});
+
+test("CB-5: agent-shadow 语义不变——熔断不授予任何真实提交权（runtime 层面无 submit 路径）", async () => {
+  const h = await makeHarness({
+    prompt: () => Promise.reject(new Error("provider down")),
+  });
+  try {
+    await tripCircuit(h);
+    // runtime 只暴露 startDecision/settle 端口，无 submit/plan 写入路径；
+    // open 时 startDecision 抛错 → coordinator 立即 Safety（execution 恒 safety/agent-shadow）
+    assert.throws(() => h.runtime.startDecision(makeRequest({ runId: "local:t1:102:3", tick: 102 })), /circuit open/);
+    assert.equal(h.envelopes.length, 0, "熔断期间不得产生任何候选（无提交素材）");
+  } finally {
+    await h.close();
   }
 });

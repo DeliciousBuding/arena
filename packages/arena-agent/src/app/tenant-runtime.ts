@@ -20,7 +20,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import { loadRuntimeConfig, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
+import { loadRuntimeConfig, resolveCircuitBreaker, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
 import { SingleWriterLock } from "./single-writer-lock.ts";
 import { newProcessRunId, readGitSha, writeRunManifest, type RunManifest } from "./run-manifest.ts";
 import { DecisionCoordinator } from "../runtime/decision-coordinator.ts";
@@ -106,7 +106,7 @@ export interface TenantRunOptions {
   /** Agent runtime（测试注入 fake；缺省真实 PiAgentRuntime）。 */
   readonly runtime?: AgentDecisionRuntime;
   /** 自定义信号回调注册（测试注入；缺省 process.on SIGINT/SIGTERM）。 */
-  readonly onSignal?: (callback: () => void) => void;
+  readonly onSignal?: (callback: () => void) => void | (() => void);
   /** 处理满 N 个 Turn 后由 runtime 自己优雅关闭；Canary/Burn-in 门禁使用。 */
   readonly maxTicks?: number;
   /** 精确提交 N 个 live Tick，并在最后一次提交后额外观察结算 Turn。 */
@@ -190,6 +190,22 @@ export async function runTenant(
     }
   };
 
+  type CleanupTask = () => void | Promise<void>;
+  const cleanupStack: CleanupTask[] = [releaseLock];
+  let cleanupStarted = false;
+  let calibration: RuntimeGoldenRecorderResult | undefined;
+  const cleanupAll = async (): Promise<void> => {
+    if (cleanupStarted) return;
+    cleanupStarted = true;
+    for (let index = cleanupStack.length - 1; index >= 0; index -= 1) {
+      try {
+        await cleanupStack[index]();
+      } catch {
+        // One failed close must never prevent later resources or the writer lock from closing.
+      }
+    }
+  };
+
   try {
     // 2) run manifest（绝不含密钥；config 只含 env 名，不含 env 值）
     const configHash = `sha256:${sha256Canonical(config)}`;
@@ -212,8 +228,11 @@ export async function runTenant(
     // 3) telemetry 三流（append-only + 脱敏 + 校验）
     mkdirSync(dirs.telemetryDir, { recursive: true });
     const runtimeWriter = new JsonlWriter(join(dirs.telemetryDir, "runtime.jsonl"));
+    cleanupStack.push(() => runtimeWriter.close());
     const decisionWriter = new JsonlWriter(join(dirs.telemetryDir, "decision.jsonl"));
+    cleanupStack.push(() => decisionWriter.close());
     const outcomeWriter = new JsonlWriter(join(dirs.telemetryDir, "outcome.jsonl"));
+    cleanupStack.push(() => outcomeWriter.close());
 
     // S8b recorder 默认关闭。初始化失败也只写独立告警，绝不阻断 live loop。
     const recorderWarningPath = join(dirs.telemetryDir, "calibration-recorder.jsonl");
@@ -243,11 +262,17 @@ export async function runTenant(
         recorderWarning(`init: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    if (calibrationRecorder !== null) {
+      cleanupStack.push(async () => {
+        calibration = await calibrationRecorder!.close();
+      });
+    }
 
     // 4) 游戏客户端（密钥只在此处从 env 读取）
     const client =
       options.client ??
       new ArenaHeroClient({ apiKey: readEnvToken(config.arenaTokenEnv) });
+    cleanupStack.push(() => client.close?.());
 
     // 运行停止控制：signal 与 maxTicks 共用同一幂等路径。
     let stopping = false;
@@ -265,8 +290,13 @@ export async function runTenant(
     const onSignal = options.onSignal ?? ((cb) => {
       process.once("SIGINT", cb);
       process.once("SIGTERM", cb);
+      return () => {
+        process.off("SIGINT", cb);
+        process.off("SIGTERM", cb);
+      };
     });
-    onSignal(requestStop);
+    const disposeSignal = onSignal(requestStop);
+    if (disposeSignal !== undefined) cleanupStack.push(disposeSignal);
 
     // 5) Agent runtime：safety/deterministic 模式用 no-op 占位（coordinator 短路不调用，
     //    Pi 认证不阻断 Canary）；其他模式真实 Pi 或测试注入 fake；rotationGeneration 经 onTelemetry 透传；
@@ -276,24 +306,15 @@ export async function runTenant(
     // 不走 JsonlWriter（TraceRecord schema 不承载 Pi 事件）——独立 append + 脱敏，IO 失败不阻塞。
     const piEventsPath = join(dirs.telemetryDir, "pi.jsonl");
     const onRuntimeTelemetry = (event: PiRuntimeTelemetry): void => {
-      if (event.generation !== undefined) {
-        runtimeGeneration = event.generation;
-      }
-      try {
-        appendFileSync(
-          piEventsPath,
-          `${JSON.stringify(sanitizeValue({ at: new Date().toISOString(), type: event.type, reason: event.reason ?? event.message ?? "" }))}\n`,
-          "utf-8",
-        );
-      } catch {
-        // IO 失败不阻塞决策路径
-      }
+      if (event.generation !== undefined) runtimeGeneration = event.generation;
+      appendPiTelemetryEvent(piEventsPath, event);
     };
     const noAgent = decisionMode === "safety" || decisionMode === "deterministic";
     const runtime =
       noAgent && options.runtime === undefined
         ? new NoopAgentRuntime()
         : (options.runtime ?? (await createPiRuntime(config, dirs.piBaseDir, onRuntimeTelemetry)));
+    cleanupStack.push(() => runtime.close());
 
     // 6) coordinator（P0-1：decisionMode 传递；deterministic = planner 注入 DeterministicPlanner，
     //    coordinator 短路语义同 safety——不启动 Agent）
@@ -458,18 +479,8 @@ export async function runTenant(
       await loopPromise;
     }
 
-    // loop 也可能因 maxLiveTicks + outcome drain 自然结束；与 signal/maxTicks 路径统一，
-    // 在关闭 writer/runtime 前显式关闭客户端。close 必须幂等（真实 SDK 与 fake 均如此）。
-    client.close?.();
-
-    // 9) 优雅关闭：先等待旁路 recorder 队列，再 flush telemetry/runtime/lock。
-    // recorder 内部 fail-open；这里不会改变已完成的提交结果。
-    const calibration = calibrationRecorder === null ? undefined : await calibrationRecorder.close();
-    runtimeWriter.close();
-    decisionWriter.close();
-    outcomeWriter.close();
-    await runtime.close().catch(() => {});
-    await releaseLock();
+    // 9) 正常与异常共用同一幂等 cleanup stack，避免两套关闭语义漂移。
+    await cleanupAll();
 
     return {
       processRunId,
@@ -489,8 +500,33 @@ export async function runTenant(
       ...(calibration === undefined ? {} : { calibration }),
     };
   } catch (error) {
-    await releaseLock();
+    await cleanupAll();
     throw error;
+  }
+}
+
+/** Append one sanitized Pi lifecycle/circuit event. IO failure is deliberately fail-open. */
+export function appendPiTelemetryEvent(
+  path: string,
+  event: PiRuntimeTelemetry,
+  at = new Date().toISOString(),
+): void {
+  try {
+    appendFileSync(
+      path,
+      `${JSON.stringify(sanitizeValue({
+        at,
+        type: event.type,
+        reason: event.reason ?? event.message ?? "",
+        ...(event.circuitState === undefined ? {} : { circuitState: event.circuitState }),
+        ...(event.consecutiveFailures === undefined ? {} : { consecutiveFailures: event.consecutiveFailures }),
+        ...(event.lastTripAt === undefined ? {} : { lastTripAt: event.lastTripAt }),
+        ...(event.fallbackReason === undefined ? {} : { fallbackReason: event.fallbackReason }),
+      }))}\n`,
+      "utf-8",
+    );
+  } catch {
+    // Telemetry must never take down the decision or cleanup path.
   }
 }
 
@@ -514,6 +550,7 @@ async function createPiRuntime(
   piBaseDir: string,
   onTelemetry: (event: PiRuntimeTelemetry) => void,
 ): Promise<PiAgentRuntime> {
+  const circuit = resolveCircuitBreaker(config);
   return PiAgentRuntime.create({
     session: {
       baseDir: piBaseDir,
@@ -530,6 +567,8 @@ async function createPiRuntime(
     // warmup 文本明确禁止工具调用（slot 未激活，工具执行会抛错；#4 要求不污染 ToolContext）。
     warmupPrompt: "预热：请用一句话确认你已就绪。禁止调用任何工具，只回答「就绪」。",
     warmupTimeoutMs: 30000,
+    consecutiveErrorThreshold: circuit.failureThreshold,
+    circuitOpenMs: circuit.openMs,
     onTelemetry,
   });
 }

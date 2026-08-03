@@ -1,19 +1,25 @@
-/**
- * TenantSupervisor（切片 5）：管理 4 个租户 run-tenant 子进程。
- *
- * - spawn 每租户一个子进程（run-tenant CLI，--config + --repoRoot 透传）；
- * - 事件流落 supervisor.jsonl（spawned / exited / signal / timeout_killed）；
- * - SIGINT/SIGTERM → 全子进程 SIGTERM，超时 SIGKILL（孤儿兜底）；
- * - 任一子进程异常退出不自动重启（本轮不做自愈，退出码聚合上报）；
- * - spawn 可注入（测试 fake child），核心逻辑与 CLI 解耦。
- */
+/** Native multi-tenant process supervisor. One child process owns one tenant writer. */
 
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { promisify } from "node:util";
+import { loadRuntimeConfig, type TenantRuntimeConfig } from "./runtime-config.ts";
+
+const execFileAsync = promisify(execFile);
+
+export type TenantLifecycle =
+  | "starting"
+  | "ready"
+  | "degraded"
+  | "terminating"
+  | "exited"
+  | "failed";
 
 export type SupervisorEventType =
   | "spawned"
+  | "ready"
+  | "readiness_lost"
   | "exited"
   | "signal_received"
   | "terminating"
@@ -26,34 +32,58 @@ export interface SupervisorEvent {
   readonly tenantId: string;
   readonly at: string;
   readonly detail?: string;
+  readonly pid?: number;
   readonly exitCode?: number | null;
   readonly signal?: string | null;
 }
 
+export interface TenantSpec {
+  readonly configName: string;
+  readonly configPath: string;
+  readonly config: TenantRuntimeConfig;
+  readonly tenantId: string;
+  readonly lockPath: string;
+}
+
+export interface TenantStatus {
+  readonly tenantId: string;
+  readonly pid: number | null;
+  readonly alive: boolean;
+  readonly ready: boolean;
+  readonly lifecycle: TenantLifecycle;
+  readonly exitCode: number | null;
+  readonly exitSignal: string | null;
+  readonly terminating: boolean;
+  readonly lastError: string | null;
+}
+
 export interface TenantSupervisorOptions {
   readonly repoRoot: string;
-  /** 相对 repoRoot/runtime/configs 的配置名（如 t1.json），顺序即租户顺序。 */
   readonly configs: readonly string[];
-  /** 透传给 run-tenant 的固定参数（如 --live、--mode=...）。 */
   readonly tenantArgs?: readonly string[];
-  /** 可注入 spawn（测试 fake child）。缺省用 node:child_process spawn。 */
-  readonly spawnChild?: (args: readonly string[]) => ChildProcess;
-  /** 事件回调（测试/日志用）。 */
+  readonly spawnChild?: (args: readonly string[], spec: TenantSpec) => ChildProcess;
+  readonly forceKillTree?: (child: ChildProcess) => Promise<void>;
   readonly onEvent?: (event: SupervisorEvent) => void;
-  /** SIGTERM 后强制 SIGKILL 的超时（缺省 8000ms）。 */
   readonly shutdownTimeoutMs?: number;
-  /** supervisor 事件落盘路径（缺省 <repoRoot>/runtime/supervisor.jsonl）。 */
   readonly eventLogPath?: string;
 }
 
 interface TenantChild {
-  readonly tenantId: string;
+  readonly spec: TenantSpec;
   readonly child: ChildProcess;
+  readonly pid: number;
   exitCode: number | null;
   exitSignal: string | null;
   exited: boolean;
-  /** 关闭期间记录：已发 SIGTERM。 */
   terminating: boolean;
+  lifecycle: TenantLifecycle;
+  everReady: boolean;
+  lastError: string | null;
+}
+
+interface LockContent {
+  readonly pid: number;
+  readonly processRunId?: string;
 }
 
 export class TenantSupervisor {
@@ -61,136 +91,258 @@ export class TenantSupervisor {
 
   private readonly options: TenantSupervisorOptions;
   private readonly children = new Map<string, TenantChild>();
+  private specs: readonly TenantSpec[] | null = null;
   private shuttingDown = false;
+  private shutdownPromise: Promise<void> | null = null;
   private closeTimer: ReturnType<typeof setTimeout> | null = null;
-
-  constructor(options: TenantSupervisorOptions) {
-    this.repoRoot = options.repoRoot;
-    this.options = options;
-    mkdirSync(join(this.repoRoot, "runtime"), { recursive: true });
-    const logPath = options.eventLogPath ?? join(this.repoRoot, "runtime", "supervisor.jsonl");
-    if (!this.logInited) {
-      writeFileSync(logPath, "", { flag: "a" });
-      this.logInited = true;
-    }
-    this.eventLogPath = logPath;
-  }
-
-  private logInited = false;
+  private readonly exitWaiters = new Set<() => void>();
   private readonly eventLogPath: string;
 
-  /** 启动全部租户子进程（顺序与 configs 一致）。返回 tenantId → 是否启动成功。 */
-  start(): Map<string, boolean> {
+  constructor(options: TenantSupervisorOptions) {
+    this.repoRoot = resolve(options.repoRoot);
+    this.options = options;
+    mkdirSync(join(this.repoRoot, "runtime"), { recursive: true });
+    this.eventLogPath = options.eventLogPath ?? join(this.repoRoot, "runtime", "supervisor.jsonl");
+    writeFileSync(this.eventLogPath, "", { flag: "a" });
+  }
+
+  /** Validate the complete cluster before the first spawn. */
+  preflight(): readonly TenantSpec[] {
+    if (this.specs !== null) return this.specs;
+    if (this.options.configs.length === 0) throw new Error("at least one tenant config is required");
+
+    const configRoot = resolve(this.repoRoot, "runtime", "configs");
+    const seenPaths = new Set<string>();
+    const seenTenants = new Set<string>();
+    const specs: TenantSpec[] = [];
+
+    for (const configName of this.options.configs) {
+      const configPath = resolve(configRoot, configName);
+      const rel = relative(configRoot, configPath);
+      if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+        throw new Error(`config path must stay under runtime/configs: ${configName}`);
+      }
+      const key = configPath.toLowerCase();
+      if (seenPaths.has(key)) throw new Error(`duplicate config path: ${configName}`);
+      seenPaths.add(key);
+      if (!existsSync(configPath) || !statSync(configPath).isFile()) {
+        throw new Error(`config not found: ${configPath}`);
+      }
+
+      const config = loadRuntimeConfig(configPath);
+      if (seenTenants.has(config.tenantId)) throw new Error(`duplicate tenantId: ${config.tenantId}`);
+      seenTenants.add(config.tenantId);
+      const secret = process.env[config.arenaTokenEnv];
+      if (secret === undefined || secret.length === 0) {
+        throw new Error(`env ${config.arenaTokenEnv} missing for tenant ${config.tenantId}`);
+      }
+
+      const baseDir = isAbsolute(config.baseDir ?? "runtime")
+        ? (config.baseDir ?? "runtime")
+        : resolve(this.repoRoot, config.baseDir ?? "runtime");
+      specs.push({
+        configName,
+        configPath,
+        config,
+        tenantId: config.tenantId,
+        lockPath: join(baseDir, config.tenantId, "locks", `${config.tenantId}.lock`),
+      });
+    }
+
+    this.specs = Object.freeze(specs);
+    return this.specs;
+  }
+
+  /** Start all tenants only after complete preflight. Partial spawn is rolled back. */
+  async start(): Promise<Map<string, boolean>> {
+    if (this.children.size > 0) throw new Error("supervisor already started");
+    const specs = this.preflight();
     const results = new Map<string, boolean>();
-    for (const config of this.options.configs) {
-      const tenantId = config.replace(/\.json$/, "");
-      const args = [
-        "--config",
-        resolve(this.repoRoot, "runtime", "configs", config),
-        "--repoRoot",
-        this.repoRoot,
-        ...(this.options.tenantArgs ?? []),
-      ];
-      try {
-        const child = (this.options.spawnChild ?? ((argv) => spawnChildProcess(this.repoRoot, argv)))(args);
+
+    try {
+      for (const spec of specs) {
+        const args = [
+          "--config",
+          spec.configPath,
+          "--repoRoot",
+          this.repoRoot,
+          ...(this.options.tenantArgs ?? []),
+        ];
+        const child = (this.options.spawnChild ?? ((argv) => spawnChildProcess(this.repoRoot, argv)))(args, spec);
+        if (!Number.isInteger(child.pid) || (child.pid ?? 0) <= 0) {
+          throw new Error(`spawned child has no valid pid for tenant ${spec.tenantId}`);
+        }
         const entry: TenantChild = {
-          tenantId,
+          spec,
           child,
+          pid: child.pid!,
           exitCode: null,
           exitSignal: null,
           exited: false,
           terminating: false,
+          lifecycle: "starting",
+          everReady: false,
+          lastError: null,
         };
-        this.children.set(tenantId, entry);
-        child.stdout?.on("data", (chunk) => process.stdout.write(`[${tenantId}] ${chunk}`));
-        child.stderr?.on("data", (chunk) => process.stderr.write(`[${tenantId}] ${chunk}`));
+        this.children.set(spec.tenantId, entry);
+        child.stdout?.on("data", (chunk) => process.stdout.write(`[${spec.tenantId}] ${chunk}`));
+        child.stderr?.on("data", (chunk) => process.stderr.write(`[${spec.tenantId}] ${chunk}`));
         child.on("error", (error) => {
-          this.emit("error", tenantId, error.message);
+          entry.lastError = error.message;
+          if (!entry.terminating) entry.lifecycle = "failed";
+          this.emit("error", spec.tenantId, error.message, entry.pid);
         });
         child.on("exit", (code, signal) => {
           entry.exitCode = code;
           entry.exitSignal = signal;
           entry.exited = true;
-          this.emit("exited", tenantId, undefined, code, signal);
+          entry.lifecycle = entry.terminating || code === 0 ? "exited" : "failed";
+          if (!entry.terminating && code !== 0) {
+            entry.lastError = `unexpected exit code=${String(code)} signal=${String(signal)}`;
+          }
+          this.emit("exited", spec.tenantId, undefined, entry.pid, code, signal);
+          this.notifyExitWaiters();
         });
-        this.emit("spawned", tenantId, undefined, null, null);
-        results.set(tenantId, true);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.emit("error", tenantId, message);
-        results.set(tenantId, false);
+        this.emit("spawned", spec.tenantId, undefined, entry.pid, null, null);
+        results.set(spec.tenantId, true);
       }
+      return results;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.emit("error", "cluster", `partial start rollback: ${message}`);
+      await this.shutdown();
+      throw error;
     }
-    return results;
   }
 
-  /** 当前租户存活状态（debug API 数据源）。 */
-  status(): Array<{
-    tenantId: string;
-    alive: boolean;
-    exitCode: number | null;
-    exitSignal: string | null;
-    terminating: boolean;
-  }> {
-    return [...this.children.entries()].map(([tenantId, entry]) => ({
-      tenantId,
-      alive: !entry.exited,
-      exitCode: entry.exitCode,
-      exitSignal: entry.exitSignal,
-      terminating: entry.terminating,
-    }));
+  tenantIds(): readonly string[] {
+    if (this.specs !== null) return this.specs.map((spec) => spec.tenantId);
+    if (this.children.size > 0) return [...this.children.keys()];
+    return this.options.configs.map((name) => name.replace(/\.json$/i, ""));
   }
 
-  /** 是否全部子进程已退出。 */
+  status(): TenantStatus[] {
+    const statuses: TenantStatus[] = [];
+    for (const entry of this.children.values()) {
+      this.refreshReadiness(entry);
+      statuses.push({
+        tenantId: entry.spec.tenantId,
+        pid: entry.pid,
+        alive: !entry.exited,
+        ready: entry.lifecycle === "ready",
+        lifecycle: entry.lifecycle,
+        exitCode: entry.exitCode,
+        exitSignal: entry.exitSignal,
+        terminating: entry.terminating,
+        lastError: entry.lastError,
+      });
+    }
+    return statuses;
+  }
+
+  isReady(): boolean {
+    const expected = this.specs?.length ?? 0;
+    const statuses = this.status();
+    return expected > 0 && statuses.length === expected && statuses.every((entry) => entry.ready);
+  }
+
+  isShuttingDown(): boolean {
+    return this.shuttingDown;
+  }
+
   allExited(): boolean {
     return this.children.size > 0 && [...this.children.values()].every((entry) => entry.exited);
   }
 
-  /** 优雅关闭：全子进程 SIGTERM → 超时 SIGKILL。resolve 于全部退出。 */
-  async shutdown(): Promise<void> {
-    if (this.shuttingDown) {
-      return;
-    }
-    this.shuttingDown = true;
-    this.emit("terminating", "all", "SIGTERM to all tenants");
-    for (const entry of this.children.values()) {
-      entry.terminating = true;
-      if (!entry.exited) {
-        entry.child.kill("SIGTERM");
-      }
-    }
-    const timeoutMs = this.options.shutdownTimeoutMs ?? 8000;
-    if (this.closeTimer === null) {
-      this.closeTimer = setTimeout(() => {
-        for (const entry of this.children.values()) {
-          if (!entry.exited) {
-            this.emit("timeout_killed", entry.tenantId, `SIGKILL after ${timeoutMs}ms`);
-            entry.child.kill("SIGKILL");
-          }
-        }
-      }, timeoutMs);
-      this.closeTimer.unref?.();
-    }
-    await this.waitForExit();
+  waitForAllExited(): Promise<void> {
+    if (this.children.size === 0 || this.allExited()) return Promise.resolve();
+    return new Promise((resolvePromise) => this.exitWaiters.add(resolvePromise));
   }
 
-  /** 等待全部退出（轮询 100ms；注入 fake child 时依赖其 exit 事件）。 */
-  private waitForExit(): Promise<void> {
-    return new Promise((resolvePromise) => {
-      const poll = setInterval(() => {
-        if (this.allExited()) {
-          clearInterval(poll);
-          this.emit("all_exited", "all", undefined, null, null);
-          resolvePromise();
+  /** Ask each child to clean itself through IPC; force-kill the complete tree on timeout. */
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise !== null) return this.shutdownPromise;
+    this.shuttingDown = true;
+    this.shutdownPromise = this.shutdownInternal();
+    return this.shutdownPromise;
+  }
+
+  private async shutdownInternal(): Promise<void> {
+    if (this.children.size === 0 || this.allExited()) return;
+    this.emit("terminating", "all", "arena.shutdown to all tenants");
+
+    for (const entry of this.children.values()) {
+      if (entry.exited) continue;
+      entry.terminating = true;
+      entry.lifecycle = "terminating";
+      try {
+        if (entry.child.connected && typeof entry.child.send === "function") {
+          entry.child.send({ type: "arena.shutdown" }, () => {});
+        } else {
+          entry.child.kill("SIGTERM");
         }
-      }, 100);
-    });
+      } catch (error) {
+        entry.lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    const timeoutMs = this.options.shutdownTimeoutMs ?? 8000;
+    this.closeTimer = setTimeout(() => {
+      void Promise.all([...this.children.values()].map(async (entry) => {
+        if (entry.exited) return;
+        this.emit("timeout_killed", entry.spec.tenantId, `process tree kill after ${timeoutMs}ms`, entry.pid);
+        try {
+          await (this.options.forceKillTree ?? forceKillProcessTree)(entry.child);
+        } catch (error) {
+          entry.lastError = error instanceof Error ? error.message : String(error);
+          this.emit("error", entry.spec.tenantId, entry.lastError, entry.pid);
+        }
+      }));
+    }, timeoutMs);
+    this.closeTimer.unref?.();
+
+    await this.waitForAllExited();
+    if (this.closeTimer !== null) {
+      clearTimeout(this.closeTimer);
+      this.closeTimer = null;
+    }
+    this.emit("all_exited", "all");
+  }
+
+  private refreshReadiness(entry: TenantChild): void {
+    if (entry.exited || entry.terminating || entry.lifecycle === "failed") return;
+    const lock = readLock(entry.spec.lockPath);
+    const ready = lock?.pid === entry.pid;
+    if (ready) {
+      if (entry.lifecycle !== "ready") {
+        entry.lifecycle = "ready";
+        entry.everReady = true;
+        entry.lastError = null;
+        this.emit("ready", entry.spec.tenantId, undefined, entry.pid);
+      }
+      return;
+    }
+
+    if (entry.lifecycle === "ready" || entry.everReady) {
+      entry.lifecycle = "degraded";
+      entry.lastError = "single-writer lock missing or pid mismatch";
+      this.emit("readiness_lost", entry.spec.tenantId, entry.lastError, entry.pid);
+    } else {
+      entry.lifecycle = "starting";
+    }
+  }
+
+  private notifyExitWaiters(): void {
+    if (!this.allExited()) return;
+    for (const resolvePromise of this.exitWaiters) resolvePromise();
+    this.exitWaiters.clear();
   }
 
   private emit(
     type: SupervisorEventType,
     tenantId: string,
     detail?: string,
+    pid?: number,
     exitCode?: number | null,
     signal?: string | null,
   ): void {
@@ -199,6 +351,7 @@ export class TenantSupervisor {
       tenantId,
       at: new Date().toISOString(),
       ...(detail !== undefined ? { detail } : {}),
+      ...(pid !== undefined ? { pid } : {}),
       ...(exitCode !== undefined ? { exitCode } : {}),
       ...(signal !== undefined ? { signal } : {}),
     };
@@ -206,18 +359,45 @@ export class TenantSupervisor {
     try {
       appendFileSync(this.eventLogPath, `${JSON.stringify(event)}\n`, "utf-8");
     } catch {
-      // 事件落盘失败不阻塞关闭路径
+      // Observability must not block the safety path.
     }
   }
 }
 
-/** 默认 spawn：node --import tsx 运行 run-tenant CLI（工作目录 = arena-agent）。 */
+function readLock(path: string): LockContent | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<LockContent>;
+    return Number.isInteger(parsed.pid) ? { pid: parsed.pid!, processRunId: parsed.processRunId } : null;
+  } catch {
+    return null;
+  }
+}
+
 function spawnChildProcess(repoRoot: string, args: readonly string[]): ChildProcess {
   const cliPath = join(repoRoot, "packages", "arena-agent", "src", "cli", "run-tenant.ts");
-  const cwd = join(repoRoot, "packages", "arena-agent");
   return spawn(process.execPath, ["--import", "tsx", cliPath, ...args], {
-    cwd,
-    stdio: ["ignore", "pipe", "pipe"],
+    cwd: join(repoRoot, "packages", "arena-agent"),
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
     windowsHide: true,
+    detached: process.platform !== "win32",
   });
+}
+
+async function forceKillProcessTree(child: ChildProcess): Promise<void> {
+  const pid = child.pid;
+  if (!Number.isInteger(pid) || pid! <= 0) return;
+  if (process.platform === "win32") {
+    try {
+      await execFileAsync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.toLowerCase().includes("not found")) throw error;
+    }
+    return;
+  }
+  try {
+    process.kill(-pid!, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
 }
