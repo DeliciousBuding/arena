@@ -17,6 +17,7 @@ Arena 是 Arena Hero 的 **TS-only** 安全自主运行时、确定性策略和 
 - 单租户 manifest、single-writer lock、runtime/decision/outcome/pi JSONL；
 - 原生 `TenantSupervisor`：全量 preflight、部分启动回收、lock-backed readiness、端口预占、IPC 优雅关闭与跨平台 process-tree 清理；
 - 只读 Debug API：`/health`、`/ready`、`/tenants`、有界 `/events` 与 `/state`；
+- 原生服务器基线：systemd cgroup、不可变 release、外置 config/runtime、shadow 有界自恢复、live 禁止自动重启、有限 JSONL 轮转；
 - Digital Twin 与首份 Runtime-Golden 数据集。
 
 代码门禁已经通过 Windows 与 Linux Node 24；生产长期验收仍需四租户分级 soak、Provider shadow 故障注入、TS 版本回滚演练和专项 Runtime-Golden。
@@ -87,4 +88,4 @@ curl 'http://127.0.0.1:8120/state?tenant=t1&stream=runtime'
 - combat、Core migration、Beacon、respawn 已有实现、micro-Golden 和 invariant 测试，但仍需专项真机触发数据。
 - `INCONCLUSIVE` 不能写成 `MATCH`，单个漂亮窗口不能写成长期收益。
 
-权威进度见 [`docs/progress/MASTER.md`](docs/progress/MASTER.md)，运维步骤见 [`docs/ops/supervisor-runbook.md`](docs/ops/supervisor-runbook.md)。
+权威进度见 [`docs/progress/MASTER.md`](docs/progress/MASTER.md)，本地运维见 [`docs/ops/supervisor-runbook.md`](docs/ops/supervisor-runbook.md)，服务器部署见 [`docs/ops/server-deployment.md`](docs/ops/server-deployment.md)。

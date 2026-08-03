@@ -1,0 +1,16 @@
+{
+  "tenantId": "t1",
+  "arenaTokenEnv": "ARENA_HERO_API_KEY_1",
+  "decisionMode": "deterministic",
+  "submitEnabled": false,
+  "model": {
+    "provider": "newapi",
+    "id": "replace-with-approved-model",
+    "thinkingLevel": "low"
+  },
+  "baseDir": "/var/lib/arena",
+  "circuitBreaker": {
+    "failureThreshold": 3,
+    "openMs": 30000
+  }
+}

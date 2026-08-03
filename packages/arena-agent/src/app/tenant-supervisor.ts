@@ -1,10 +1,11 @@
 /** Native multi-tenant process supervisor. One child process owns one tenant writer. */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { loadRuntimeConfig, type TenantRuntimeConfig } from "./runtime-config.ts";
+import { appendJsonlLine } from "../telemetry/jsonl-writer.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -59,6 +60,10 @@ export interface TenantStatus {
 
 export interface TenantSupervisorOptions {
   readonly repoRoot: string;
+  /** Tenant config directory. Relative paths resolve from repoRoot. */
+  readonly configRoot?: string;
+  /** Shared runtime root for events and tenant baseDir validation. */
+  readonly runtimeRoot?: string;
   readonly configs: readonly string[];
   readonly tenantArgs?: readonly string[];
   readonly spawnChild?: (args: readonly string[], spec: TenantSpec) => ChildProcess;
@@ -88,6 +93,8 @@ interface LockContent {
 
 export class TenantSupervisor {
   readonly repoRoot: string;
+  readonly configRoot: string;
+  readonly runtimeRoot: string;
 
   private readonly options: TenantSupervisorOptions;
   private readonly children = new Map<string, TenantChild>();
@@ -100,9 +107,11 @@ export class TenantSupervisor {
 
   constructor(options: TenantSupervisorOptions) {
     this.repoRoot = resolve(options.repoRoot);
+    this.configRoot = resolveFromRepo(this.repoRoot, options.configRoot ?? join("runtime", "configs"));
+    this.runtimeRoot = resolveFromRepo(this.repoRoot, options.runtimeRoot ?? "runtime");
     this.options = options;
-    mkdirSync(join(this.repoRoot, "runtime"), { recursive: true });
-    this.eventLogPath = options.eventLogPath ?? join(this.repoRoot, "runtime", "supervisor.jsonl");
+    mkdirSync(this.runtimeRoot, { recursive: true });
+    this.eventLogPath = options.eventLogPath ?? join(this.runtimeRoot, "supervisor.jsonl");
     writeFileSync(this.eventLogPath, "", { flag: "a" });
   }
 
@@ -111,7 +120,7 @@ export class TenantSupervisor {
     if (this.specs !== null) return this.specs;
     if (this.options.configs.length === 0) throw new Error("at least one tenant config is required");
 
-    const configRoot = resolve(this.repoRoot, "runtime", "configs");
+    const configRoot = this.configRoot;
     const seenPaths = new Set<string>();
     const seenTenants = new Set<string>();
     const specs: TenantSpec[] = [];
@@ -120,7 +129,7 @@ export class TenantSupervisor {
       const configPath = resolve(configRoot, configName);
       const rel = relative(configRoot, configPath);
       if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
-        throw new Error(`config path must stay under runtime/configs: ${configName}`);
+        throw new Error(`config path must stay under configured config root: ${configName}`);
       }
       const key = configPath.toLowerCase();
       if (seenPaths.has(key)) throw new Error(`duplicate config path: ${configName}`);
@@ -138,8 +147,13 @@ export class TenantSupervisor {
       }
 
       const baseDir = isAbsolute(config.baseDir ?? "runtime")
-        ? (config.baseDir ?? "runtime")
+        ? resolve(config.baseDir ?? "runtime")
         : resolve(this.repoRoot, config.baseDir ?? "runtime");
+      if (this.options.runtimeRoot !== undefined && baseDir !== this.runtimeRoot) {
+        throw new Error(
+          `tenant ${config.tenantId} baseDir must match supervisor runtimeRoot: ${this.runtimeRoot}`,
+        );
+      }
       specs.push({
         configName,
         configPath,
@@ -357,11 +371,15 @@ export class TenantSupervisor {
     };
     this.options.onEvent?.(event);
     try {
-      appendFileSync(this.eventLogPath, `${JSON.stringify(event)}\n`, "utf-8");
+      appendJsonlLine(this.eventLogPath, JSON.stringify(event));
     } catch {
       // Observability must not block the safety path.
     }
   }
+}
+
+function resolveFromRepo(repoRoot: string, path: string): string {
+  return isAbsolute(path) ? resolve(path) : resolve(repoRoot, path);
 }
 
 function readLock(path: string): LockContent | null {

@@ -4,6 +4,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { TenantSupervisor } from "./tenant-supervisor.ts";
+import { rotatedJsonlPaths } from "../telemetry/jsonl-writer.ts";
 
 const MAX_TAIL_BYTES = 256 * 1024;
 const MAX_EVENT_ROWS = 200;
@@ -89,7 +90,7 @@ export class DebugServer {
         return;
       }
       const row = lastValidJsonlRow(
-        join(this.options.repoRoot, "runtime", tenant, "telemetry", `${stream}.jsonl`),
+        join(this.options.supervisor.runtimeRoot, tenant, "telemetry", `${stream}.jsonl`),
       );
       if (row === null) {
         this.json(res, 404, { error: `${stream}.jsonl has no complete JSON record` });
@@ -106,7 +107,7 @@ export class DebugServer {
         return;
       }
       this.json(res, 200, {
-        events: readJsonlTail(join(this.options.repoRoot, "runtime", "supervisor.jsonl"), n),
+        events: readJsonlTail(join(this.options.supervisor.runtimeRoot, "supervisor.jsonl"), n),
       });
       return;
     }
@@ -121,12 +122,14 @@ export class DebugServer {
 }
 
 function lastValidJsonlRow(path: string): unknown | null {
-  const lines = tailLines(path);
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    try {
-      return JSON.parse(lines[index]);
-    } catch {
-      // A concurrent append may leave the final line incomplete; walk backward.
+  for (const candidate of [path, ...rotatedJsonlPaths(path)]) {
+    const lines = tailLines(candidate);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      try {
+        return JSON.parse(lines[index]);
+      } catch {
+        // A concurrent append may leave the final line incomplete; walk backward.
+      }
     }
   }
   return null;
@@ -134,11 +137,14 @@ function lastValidJsonlRow(path: string): unknown | null {
 
 function readJsonlTail(path: string, n: number): unknown[] {
   const parsed: unknown[] = [];
-  for (const line of tailLines(path)) {
-    try {
-      parsed.push(JSON.parse(line));
-    } catch {
-      // Ignore incomplete/bad append records; never read beyond the bounded tail.
+  const oldestFirst = [...rotatedJsonlPaths(path)].reverse().concat(path);
+  for (const candidate of oldestFirst) {
+    for (const line of tailLines(candidate)) {
+      try {
+        parsed.push(JSON.parse(line));
+      } catch {
+        // Ignore incomplete/bad append records; never read beyond the bounded tail.
+      }
     }
   }
   return parsed.slice(-n);

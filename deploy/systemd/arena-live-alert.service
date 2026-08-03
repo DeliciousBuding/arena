@@ -1,0 +1,6 @@
+[Unit]
+Description=Emit critical alert for Arena deterministic-live failure
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/logger -p daemon.crit -- "Arena deterministic-live is unhealthy or stopped. Automatic restart is intentionally disabled; inspect locks, last accepted tick, server receipts, and journal before recovery."

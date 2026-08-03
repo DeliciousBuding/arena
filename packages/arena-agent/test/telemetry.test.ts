@@ -19,7 +19,12 @@ import {
   type OutcomeTraceRecord,
   type RuntimeTraceRecord,
 } from "../src/telemetry/decision-trace.ts";
-import { JsonlWriter, sanitizeText, sanitizeValue } from "../src/telemetry/jsonl-writer.ts";
+import {
+  JsonlWriter,
+  rotatedJsonlPaths,
+  sanitizeText,
+  sanitizeValue,
+} from "../src/telemetry/jsonl-writer.ts";
 
 const RT: Omit<RuntimeTraceRecord, "processRunId" | "tenantId"> = {
   tick: 1000,
@@ -121,6 +126,35 @@ test("JsonlWriter 写 3 条 → 逐行 JSON 完整可解析且顺序一致", () 
   assert.equal(parsed[0].runId, "run-1");
   assert.equal(parsed[1].decisionSource, "hybrid");
   assert.equal(parsed[2].coreResourceDelta, 2);
+});
+
+
+
+test("JsonlWriter rotates only at complete-line boundaries with finite retention", () => {
+  const path = tempFile();
+  const sample = runtimeTrace({ ...RT, tick: 2000, runId: "rotation-0" });
+  const oneLineBytes = Buffer.byteLength(`${JSON.stringify(sample)}\n`, "utf-8");
+  const writer = new JsonlWriter(path, { maxBytes: oneLineBytes + 8, maxBackups: 2 });
+  for (let index = 0; index < 5; index += 1) {
+    writer.write(runtimeTrace({ ...RT, tick: 2000 + index, runId: `rotation-${index}` }));
+  }
+  writer.close();
+
+  const [backup1, backup2, backup3] = rotatedJsonlPaths(path, 3);
+  assert.equal(existsSync(path), true);
+  assert.equal(existsSync(backup1), true);
+  assert.equal(existsSync(backup2), true);
+  assert.equal(existsSync(backup3), false);
+  const rows = [backup2, backup1, path].flatMap((file) =>
+    readFileSync(file, "utf-8").trim().split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as { runId: string }),
+  );
+  assert.deepEqual(rows.map((row) => row.runId), ["rotation-2", "rotation-3", "rotation-4"]);
+});
+
+test("JsonlWriter rejects invalid rotation policy", () => {
+  assert.throws(() => new JsonlWriter(tempFile(), { maxBytes: 0, maxBackups: 1 }), /maxBytes/);
+  assert.throws(() => new JsonlWriter(tempFile(), { maxBytes: 1, maxBackups: -1 }), /maxBackups/);
 });
 
 test("脱敏：API key/Authorization/token/长随机串全部替换为 [REDACTED]", () => {

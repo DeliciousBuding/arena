@@ -9,6 +9,8 @@ async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
       "repo-root": { type: "string" },
+      "config-dir": { type: "string" },
+      "runtime-dir": { type: "string" },
       configs: { type: "string" },
       live: { type: "boolean" },
       shadow: { type: "boolean" },
@@ -52,6 +54,8 @@ async function main(): Promise<void> {
   const port = parseInteger(values.port, 8120, 0, "--port");
   const supervisor = new TenantSupervisor({
     repoRoot,
+    ...(values["config-dir"] !== undefined ? { configRoot: values["config-dir"] } : {}),
+    ...(values["runtime-dir"] !== undefined ? { runtimeRoot: values["runtime-dir"] } : {}),
     configs: configNames,
     tenantArgs,
     shutdownTimeoutMs,
