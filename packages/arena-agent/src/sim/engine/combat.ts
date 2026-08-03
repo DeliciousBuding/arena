@@ -358,8 +358,15 @@ function applyCoreDestruction(
       }
     }
 
-    // fleet 移除 → RESPAWNING（respawn 由 P12 后的 respawn 阶段处理）
-    players.set(victim.id, { ...victim, core: null, units: [], status: "RESPAWNING" });
+    // fleet 移除 → RESPAWNING（respawn 由 P12 respawn resolver 处理）；
+    // respawnAtTick = 当前结算 Tick：P12 在本 Tick 内立即尝试放置。
+    players.set(victim.id, {
+      ...victim,
+      core: null,
+      units: [],
+      status: "RESPAWNING",
+      respawnAtTick: draft.tick,
+    });
 
     const loot = winner !== null ? victim.resources : 0;
     if (winner !== null && loot > 0) {

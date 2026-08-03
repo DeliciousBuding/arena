@@ -198,6 +198,7 @@ test("S2: 跨玩家共格触发 invariant", () => {
           id: "p2",
           username: "p2",
           status: "ACTIVE",
+          respawnAtTick: null,
           resources: 0,
           core: null,
           units: [{ id: "55555555-5555-5555-5555-555555555555", owner: "p2", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 }],

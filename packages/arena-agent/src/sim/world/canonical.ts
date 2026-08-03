@@ -33,6 +33,7 @@ export function canonicalWorldJson(world: SimWorld): string {
       id,
       username: player.username,
       status: player.status,
+      respawnAtTick: player.respawnAtTick,
       resources: player.resources,
       core: player.core === null ? null : sortRecord(player.core),
       units: [...player.units]

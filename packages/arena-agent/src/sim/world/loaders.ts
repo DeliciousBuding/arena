@@ -46,6 +46,10 @@ interface ScenarioPlayer {
   readonly resources: number;
   readonly core: ScenarioCore | null;
   readonly units: readonly ScenarioUnit[];
+  /** 可选：RESPAWNING 状态（缺省 ACTIVE）。 */
+  readonly status?: "ACTIVE" | "RESPAWNING";
+  /** 可选：下一次重生尝试 Tick（wire respawn_at_tick 等价源；缺省 null）。 */
+  readonly respawnAtTick?: number | null;
 }
 
 interface ScenarioFile {
@@ -181,7 +185,25 @@ function normalizeScenario(raw: unknown): ScenarioFile {
         ...migrationFields(c, `players[${i}].core`),
       };
     }
-    return { id, username: String(player.username ?? id), resources: Number(player.resources ?? 0), core, units };
+    const status: "ACTIVE" | "RESPAWNING" =
+      player.status === "RESPAWNING" ? "RESPAWNING" : "ACTIVE";
+    const respawnAtTickRaw = player.respawnAtTick ?? player.respawn_at_tick ?? null;
+    const respawnAtTick =
+      respawnAtTickRaw === null || respawnAtTickRaw === undefined
+        ? null
+        : Number(respawnAtTickRaw);
+    if (respawnAtTick !== null && (!Number.isInteger(respawnAtTick) || respawnAtTick < 1)) {
+      throw new ScenarioLoadError(`players[${i}].respawnAtTick must be a positive integer or null`);
+    }
+    return {
+      id,
+      username: String(player.username ?? id),
+      resources: Number(player.resources ?? 0),
+      status,
+      respawnAtTick,
+      core,
+      units,
+    };
   });
   return {
     rulesVersion,
@@ -264,7 +286,8 @@ export function worldFromScenario(raw: unknown): SimWorld {
     players.set(p.id, {
       id: p.id,
       username: p.username,
-      status: "ACTIVE",
+      status: p.status ?? "ACTIVE",
+      respawnAtTick: p.respawnAtTick ?? null,
       resources: p.resources,
       core,
       units,
@@ -329,6 +352,7 @@ interface RawObject {
 
 interface RawPlayerState {
   readonly status: string;
+  readonly respawn_at_tick?: number | null;
   readonly resources: number;
   readonly objects: readonly RawObject[];
   readonly champion_beacon?: {
@@ -419,6 +443,10 @@ export function worldFromRawState(raw: RawPlayerState, playerId: string, rulesVe
     id: playerId,
     username: raw.objects.find((o) => o.kind === "CORE" && o.controlled === true)?.owner_username ?? "sim-player",
     status: raw.status === "RESPAWNING" ? "RESPAWNING" : "ACTIVE",
+    respawnAtTick:
+      raw.respawn_at_tick === null || raw.respawn_at_tick === undefined
+        ? null
+        : Number(raw.respawn_at_tick),
     resources: Number(raw.resources),
     core,
     units,
