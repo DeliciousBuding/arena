@@ -1,12 +1,12 @@
 /**
- * Settlement 主循环（S3 骨架）：phase 注册表、draft 管理、atomic commit。
+ * Authoritative settlement pipeline：phase registry、draft management、atomic commit。
  *
  * 固定顺序执行 15 个内部 phase（architecture §6，映射官方 resolution order）。
  * 所有 mutation 只在 structuredClone 的 draft 上进行；任一 phase 抛错或
  * invariant 失败 → 整体抛错，不返回半更新 world。
  *
- * 未实现的 resolver（movement/economy）在 S4/S5 注册进对应 phase；
- * unsupported-* phase 已实现输入检测（触发即标记 feature，不得静默跳过）。
+ * 已支持的 resolver 进入固定阶段；仅对缺少必要内部进度或服务端秘密的
+ * 输入标记 unsupported/unknown，不得静默伪装成 MATCH。
  */
 
 import type { Plan } from "../../domain/model.ts";
@@ -98,7 +98,7 @@ function scanUnsupported(world: SimWorld, plans: ReadonlyMap<string, Plan>): Sim
   return [...hit].sort();
 }
 
-/* ---------------- phase 注册表（S3 骨架，固定顺序） ---------------- */
+/* ---------------- 固定 settlement phase 注册表 ---------------- */
 
 const PHASES: readonly Phase[] = [
   {
@@ -107,16 +107,8 @@ const PHASES: readonly Phase[] = [
     run: () => EMPTY_OUTCOME,
   },
   ...economyPhases.slice(0, 3), // P02 self-destruct / P03 capacity-shrink / P04 upkeep
-  {
-    id: "P05-unit-movement",
-    officialPhase: 4,
-    run: movementPhase.run,
-  },
-  {
-    id: "P06-core-migration",
-    officialPhase: 5,
-    run: coreMigrationPhase.run,
-  },
+  movementPhase,
+  coreMigrationPhase,
   beaconPhase, // P07 beacon（PICKUP/DROP；同格争抢低 UUID 获胜；落地 tick 不可再拾取）
   ...economyPhases.slice(3, 4), // P08 harvest-and-deposit
   combatPhase, // P09 combat（SWEEP/SHOOT 快照结算；伤害累积 → 同时应用）
@@ -126,7 +118,7 @@ const PHASES: readonly Phase[] = [
     id: "P13-refill-policy",
     officialPhase: 13,
     run: (draft, ctx) => {
-      // 官方 refill 是 server secret（seed 不可见）——MVP 每 refill cadence
+      // 官方 refill 是 server secret（seed 不可见）——每 refill cadence
       // 记录 unknown 效应，绝不伪装成 MATCH。test-seeded rng 存在时也不
       // 称为"官方 refill"，只是场景注入。
       const cadence = ctx.rules.rules.economy.refillEveryTicks;
@@ -176,7 +168,13 @@ export function settleTick(
 
   const draft: SimWorld = structuredClone(world);
   const features = new Set<SimFeature>(scanUnsupported(world, plans));
-  const ctx: PhaseContext = { rules: context.rules, plans, rng: context.rng, features };
+  const ctx: PhaseContext = {
+    rules: context.rules,
+    plans,
+    rng: context.rng,
+    features,
+    beaconPickupLockedCells: new Set(),
+  };
   const events: ResolutionEvent[] = [];
   const unknownEffects: UnknownEffect[] = [];
   const unsupported: SimFeature[] = [];
@@ -212,7 +210,9 @@ function sortEvents(events: readonly ResolutionEvent[]): readonly ResolutionEven
   return [...events].sort((a, b) => {
     const byActor = compareCodeUnit(a.actorId ?? a.targetId ?? "", b.actorId ?? b.targetId ?? "");
     if (byActor !== 0) return byActor;
-    return compareCodeUnit(a.eventType, b.eventType);
+    const byType = compareCodeUnit(a.eventType, b.eventType);
+    if (byType !== 0) return byType;
+    return compareCodeUnit(a.recipientPlayerId ?? "", b.recipientPlayerId ?? "");
   });
 }
 

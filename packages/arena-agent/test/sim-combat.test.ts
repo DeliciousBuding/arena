@@ -14,6 +14,7 @@ import { loadRulesManifest } from "../src/sim/contracts/rules-manifest.ts";
 import { resolveCombat } from "../src/sim/engine/combat.ts";
 import { idlePlans, settleTick } from "../src/sim/engine/settlement.ts";
 import { worldFromScenario } from "../src/sim/world/loaders.ts";
+import { privateEventsForPlayer } from "../src/sim/visibility/private-events.ts";
 import type { SimWorld } from "../src/sim/world/types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -69,7 +70,7 @@ test("S10: SWEEP 对相邻目标格内所有敌方对象造成 1 伤害", () => 
   const world = makeWorld();
   // p1 Vanguard[2,0] SWEEP LEFT → 目标格 [1,0]（空）→ 无命中
   const miss = settleTick(world, new Map([["p1", planOf(world, { [P1_VANGUARD]: { type: "SWEEP", direction: "LEFT" } })]]), ctx);
-  assert.equal(miss.events.length, 0);
+  assert.deepEqual(miss.events.find((e) => e.eventType === "SWEEP_RESOLVED")?.values, { targets_hit: 0 });
   assert.equal(miss.world.players.get("p1")!.units.find((u) => u.id === P1_VANGUARD)!.hp, 4);
 
   // p1 Vanguard SWEEP RIGHT → [3,0]（p2 Vanguard 在）→ p2 Vanguard -1
@@ -122,7 +123,8 @@ test("S10: 多 SWEEP 叠加伤害，杀死满 hp 单位", () => {
   );
   // p2 Vanguard 2hp 收到 2 伤害 → 死亡
   assert.equal(result.world.players.get("p2")!.units.find((u) => u.id === P2_VANGUARD), undefined);
-  assert.ok(result.events.some((e) => e.eventType === "UNIT_DESTROYED" && e.targetId === P2_VANGUARD));
+  assert.ok(result.events.some((e) => e.eventType === "UNIT_DAMAGED" && e.targetId === P2_VANGUARD && e.values?.hp === 0));
+  assert.ok(!result.events.some((e) => e.eventType === "UNIT_DESTROYED"));
 });
 
 test("S10: SHOOT 八方向线 1-3 格、障碍阻断、非直线无效", () => {
@@ -149,7 +151,7 @@ test("S10: SHOOT 八方向线 1-3 格、障碍阻断、非直线无效", () => {
     new Map([["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: "99999999-9999-9999-9999-999999999999", expectedCell: [3, 2] } })]]),
     ctx,
   );
-  assert.ok(noTarget.events.length === 0);
+  assert.ok(noTarget.events.some((e) => e.eventType === "SHOT_MISSED" && e.reasonCode === "SHOT_MISSED"));
 });
 
 test("S10: SHOOT 沿八方向线命中并造成 1 伤害", () => {
@@ -303,8 +305,12 @@ test("S10: Core 伤害先护盾后 HP，摧毁时掉落 cargo + 击杀者得资�
   assert.equal(p1.units[0].cargo, 0);
   assert.equal(p1.resources, 5, "starting resources after respawn");
   assert.equal(result.world.terrain.piles.get("0,1")?.amount, 2);
-  // 击杀者 p2 获得 p1 资源
-  assert.equal(result.world.players.get("p2")!.resources, 5 + 10);
+  // p2 post-combat capacity = max(10, 1×5) = 10，所以只存 5、其余 5 销毁。
+  assert.equal(result.world.players.get("p2")!.resources, 10);
+  assert.deepEqual(
+    result.events.find((e) => e.eventType === "CORE_RESOURCES_CAPTURED")?.values,
+    { amount: 5, available: 10, destroyed: 5, capacity: 10 },
+  );
   assert.ok(result.events.some((e) => e.eventType === "CORE_DESTROYED" && e.targetId === P1_CORE));
   assert.ok(result.events.some((e) => e.eventType === "CORE_RESPAWNED"), "CORE_RESPAWNED missing");
 });
@@ -355,4 +361,227 @@ test("S10: resolveCombat 纯函数——原 world 不变", () => {
   const resolution = resolveCombat(world, plans);
   assert.equal(JSON.stringify(world), before);
   assert.ok(resolution.damageByTarget.get(P2_VANGUARD) === 1);
+});
+
+
+test("S10 contract: Worker/Vanguard/Ranger 只能使用各自攻击类型", () => {
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 5,
+        core: { id: P1_CORE, position: [0, 2], hp: 5, shield: 5, state: "NORMAL" },
+        units: [
+          { id: P1_WORKER, owner: "p1", position: [0, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+          { id: P1_VANGUARD, owner: "p1", position: [0, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
+        ],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [5, 5], hp: 5, shield: 5, state: "NORMAL" },
+        units: [
+          { id: P2_VANGUARD, owner: "p2", position: [1, 0], hp: 4, unitType: "VANGUARD", cargo: 0 },
+          { id: P2_RANGER, owner: "p2", position: [1, 1], hp: 2, unitType: "RANGER", cargo: 0 },
+        ],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world,
+    new Map([
+      ["p1", planOf(world, {
+        [P1_WORKER]: { type: "SWEEP", direction: "RIGHT" },
+        [P1_VANGUARD]: { type: "SHOOT", targetId: P2_RANGER, expectedCell: [1, 1] },
+      })],
+      ["p2", planOf(world, {
+        [P2_RANGER]: { type: "SWEEP", direction: "LEFT" },
+      })],
+    ]),
+    ctx,
+  );
+  assert.equal(result.world.players.get("p2")!.units.find((u) => u.id === P2_VANGUARD)!.hp, 4);
+  assert.equal(result.world.players.get("p2")!.units.find((u) => u.id === P2_RANGER)!.hp, 2);
+  assert.equal(result.world.players.get("p1")!.units.find((u) => u.id === P1_VANGUARD)!.hp, 4);
+  assert.ok(!result.events.some((event) => ["SWEEP_RESOLVED", "SHOT_HIT", "SHOT_MISSED"].includes(event.eventType)));
+});
+
+test("S10 contract: moved/incorrect expected_cell 统一 SHOT_MISSED，不形成 fog oracle", () => {
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 5,
+        core: { id: P1_CORE, position: [5, 5], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P1_WORKER, owner: "p1", position: [0, 1], hp: 2, unitType: "WORKER", cargo: 0 }],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P2_RANGER, owner: "p2", position: [0, 3], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const expectedCell: [number, number] = [0, 0];
+  const result = settleTick(
+    world,
+    new Map([["p2", planOf(world, {
+      [P2_RANGER]: { type: "SHOOT", targetId: P1_WORKER, expectedCell },
+    })]]),
+    ctx,
+  );
+  assert.equal(result.world.players.get("p1")!.units[0].hp, 2);
+  const miss = result.events.find((event) => event.eventType === "SHOT_MISSED");
+  assert.equal(miss?.reasonCode, "SHOT_MISSED");
+  assert.equal(miss?.actorId, P2_RANGER);
+  assert.equal(miss?.targetId, P1_WORKER);
+  assert.deepEqual(miss?.position, expectedCell);
+});
+
+test("S10 contract: combat kill 事件对齐且 participation 仅投递给攻击者", () => {
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "victim",
+        resources: 5,
+        core: { id: P1_CORE, position: [5, 5], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P1_WORKER, owner: "p1", position: [0, 1], hp: 1, unitType: "WORKER", cargo: 2 }],
+      },
+      {
+        id: "p2",
+        username: "attacker",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P2_RANGER, owner: "p2", position: [0, 3], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world,
+    new Map([["p2", planOf(world, {
+      [P2_RANGER]: { type: "SHOOT", targetId: P1_WORKER, expectedCell: [0, 1] },
+    })]]),
+    ctx,
+  );
+  const hit = result.events.find((event) => event.eventType === "SHOT_HIT");
+  assert.deepEqual(hit?.values, { damage: 1 });
+  const damage = result.events.find((event) => event.eventType === "UNIT_DAMAGED");
+  assert.equal(damage?.reasonCode, "ATTACK");
+  assert.deepEqual(damage?.values, { damage: 1, hp: 0 });
+  assert.ok(!result.events.some((event) => event.eventType === "UNIT_DESTROYED"));
+  assert.deepEqual(
+    result.events.find((event) => event.eventType === "WORKER_CARGO_DROPPED")?.values,
+    { amount: 2 },
+  );
+  const attackerEvents = privateEventsForPlayer(world, result.world, "p2", result.events);
+  const victimEvents = privateEventsForPlayer(world, result.world, "p1", result.events);
+  assert.ok(attackerEvents.some((event) => event.eventType === "DESTRUCTION_PARTICIPATION"));
+  assert.ok(!victimEvents.some((event) => event.eventType === "DESTRUCTION_PARTICIPATION"));
+});
+
+test("S10 economy: combat 减员当 Tick 收缩容量，资源不会延迟到下一 Tick 销毁", () => {
+  const extraA = "77777777-7777-7777-7777-777777777777";
+  const extraB = "88888888-8888-8888-8888-888888888888";
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 15,
+        core: { id: P1_CORE, position: [5, 5], hp: 5, shield: 5, state: "NORMAL" },
+        units: [
+          { id: P1_WORKER, owner: "p1", position: [0, 1], hp: 1, unitType: "WORKER", cargo: 0 },
+          { id: extraA, owner: "p1", position: [1, 1], hp: 2, unitType: "WORKER", cargo: 0 },
+          { id: extraB, owner: "p1", position: [2, 1], hp: 2, unitType: "WORKER", cargo: 0 },
+        ],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P2_RANGER, owner: "p2", position: [0, 3], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world,
+    new Map([["p2", planOf(world, {
+      [P2_RANGER]: { type: "SHOOT", targetId: P1_WORKER, expectedCell: [0, 1] },
+    })]]),
+    ctx,
+  );
+  assert.equal(result.world.players.get("p1")!.units.length, 2);
+  assert.equal(result.world.players.get("p1")!.resources, 10);
+  assert.deepEqual(
+    result.events.find((event) => event.eventType === "CORE_RESOURCE_OVERFLOW_DESTROYED")?.values,
+    { amount: 5, capacity: 10 },
+  );
+});
+
+test("S10 economy: 双方 Core 同归于尽时不捕获，延迟 respawn 也不保留旧库存", () => {
+  const p1Ranger = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const p2Ranger = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 9,
+        core: { id: P1_CORE, position: [0, 0], hp: 1, shield: 0, state: "NORMAL" },
+        units: [{ id: p1Ranger, owner: "p1", position: [6, 3], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 8,
+        core: { id: P2_CORE, position: [6, 0], hp: 1, shield: 0, state: "NORMAL" },
+        units: [{ id: p2Ranger, owner: "p2", position: [0, 3], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world,
+    new Map([
+      ["p1", planOf(world, { [p1Ranger]: { type: "SHOOT", targetId: P2_CORE, expectedCell: [6, 0] } })],
+      ["p2", planOf(world, { [p2Ranger]: { type: "SHOOT", targetId: P1_CORE, expectedCell: [0, 0] } })],
+    ]),
+    ctx,
+  );
+  assert.ok(!result.events.some((event) => event.eventType === "CORE_RESOURCES_CAPTURED"));
+  assert.equal(result.world.players.get("p1")!.resources, 0);
+  assert.equal(result.world.players.get("p2")!.resources, 0);
+  assert.equal(result.world.players.get("p1")!.status, "RESPAWNING");
+  assert.equal(result.world.players.get("p2")!.status, "RESPAWNING");
 });

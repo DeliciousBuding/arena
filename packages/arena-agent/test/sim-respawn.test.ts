@@ -22,6 +22,7 @@ import {
   resolveRespawn,
 } from "../src/sim/engine/respawn.ts";
 import { idlePlans, settleTick, type SettlementContext } from "../src/sim/engine/settlement.ts";
+import { privateEventsForPlayer } from "../src/sim/visibility/private-events.ts";
 import { projectPlayerState } from "../src/sim/visibility/visibility.ts";
 import { worldHash } from "../src/sim/world/canonical.ts";
 import { worldFromScenario } from "../src/sim/world/loaders.ts";
@@ -260,6 +261,9 @@ test("P12: CORE_RESPAWNED 事件字段（target_id 新 Core、position、values�
     workers: rules.rules.core.startingWorkerCount,
   });
   assert.equal(event!.tick, world.tick);
+  assert.ok(result.unknownEffects.some((effect) =>
+    effect.kind === "server-generated-id" && effect.note.includes(player.core!.id),
+  ));
 });
 
 /* ---------------- 放置失败与重试 ---------------- */
@@ -279,6 +283,8 @@ test("P12: 无活 Core → 找不到合法 cell → RESPAWN_DELAYED/NO_LEGAL_SPA
   assert.equal(delayed!.targetId, null);
   assert.equal(delayed!.position, null);
   assert.equal(delayed!.values, null);
+  const privateEvents = privateEventsForPlayer(world, result.world, "p1", result.events);
+  assert.ok(privateEvents.some((event) => event.eventType === "RESPAWN_DELAYED"));
   assert.ok(!result.events.some((e) => e.eventType === "CORE_RESPAWNED"));
 });
 

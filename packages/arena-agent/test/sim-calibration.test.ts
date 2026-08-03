@@ -13,7 +13,7 @@ import {
   type CalibrationCaseV1,
 } from "../src/sim/calibration/schema.ts";
 import { loadRulesManifest } from "../src/sim/contracts/rules-manifest.ts";
-import { settleTick } from "../src/sim/engine/settlement.ts";
+import { idlePlans, settleTick } from "../src/sim/engine/settlement.ts";
 import { projectPlayerState } from "../src/sim/visibility/visibility.ts";
 import { worldFromScenario } from "../src/sim/world/loaders.ts";
 import type { SimWorld } from "../src/sim/world/types.ts";
@@ -254,6 +254,77 @@ test("S8a: server-generated spawn UUID is normalized and reported INCONCLUSIVE",
   ));
   assert.equal(
     report.differences.some((difference) => ["STATE", "ENTITY", "TERRAIN", "EVENT"].includes(difference.class)),
+    false,
+  );
+});
+
+
+test("S8a: private respawn placement and replacement UUIDs stay INCONCLUSIVE, not hard mismatch", () => {
+  const p2Core = "99999999-9999-9999-9999-999999999999";
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 42,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        status: "RESPAWNING",
+        respawnAtTick: 1,
+        resources: 0,
+        core: null,
+        units: [],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: p2Core, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+  });
+  const fullResult = settleTick(world, idlePlans(world), { rules, rng: null });
+  const beforeState = projectPlayerState(world, "p1", rules);
+  const afterState = structuredClone(projectPlayerState(fullResult.world, "p1", rules, fullResult.events));
+  const core = afterState.objects.find((object) => object.kind === "CORE" && object.controlled);
+  const worker = afterState.objects.find((object) => object.kind === "UNIT" && object.controlled);
+  const event = afterState.events.find((candidate) => candidate.event_type === "CORE_RESPAWNED");
+  assert.ok(core !== undefined && core.kind === "CORE");
+  assert.ok(worker !== undefined && worker.kind === "UNIT");
+  assert.ok(event !== undefined);
+  const serverCoreId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const serverWorkerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  core.id = serverCoreId;
+  worker.id = serverWorkerId;
+  event.target_id = serverCoreId;
+
+  const calibrationCase: CalibrationCaseV1 = {
+    schema: "sim-calibration-case-v1",
+    caseId: "case-respawn-private",
+    tenantId: "p1",
+    rulesVersion: "v0.11",
+    seed: 42,
+    metadata: {
+      source: "fixture",
+      opponentPlans: "complete",
+      recordedAt: null,
+      sourceCommit: null,
+      runId: null,
+    },
+    before: { tick: world.tick, state: beforeState },
+    plan: { tick: world.tick, unitActions: {}, coreAction: null, intents: {} },
+    after: { tick: fullResult.world.tick, state: afterState },
+  };
+  const report = runCalibrationCase(calibrationCase, MANIFEST_PATH);
+  assert.equal(report.status, "INCONCLUSIVE");
+  assert.ok(report.differences.some((difference) =>
+    difference.class === "EXPECTED_UNKNOWN" && difference.path === "$.simulation.respawn-placement",
+  ));
+  assert.equal(
+    report.differences.some((difference) => ["STATE", "ENTITY", "EVENT"].includes(difference.class)),
     false,
   );
 });

@@ -23,15 +23,34 @@ const DIFFERENCE_CLASSES = new Set<CalibrationDifferenceClass>([
 const SUPPORTED_DETERMINISTIC_EVENTS = new Set([
   "UNIT_MOVE_SUCCEEDED",
   "UNIT_MOVE_FAILED",
+  "CORE_MOVE_STARTED",
+  "CORE_MOVE_PROGRESS",
+  "CORE_MOVE_SUCCEEDED",
+  "CORE_MOVE_FAILED",
+  "CORE_MOVE_START_FAILED",
+  "CORE_MOVE_CANCELLED",
   "UNIT_SELF_DESTRUCTED",
   "WORKER_CARGO_DROPPED",
   "CORE_RESOURCE_OVERFLOW_DESTROYED",
   "UPKEEP_PAID",
+  "CORE_DAMAGED",
+  "CORE_DESTROYED",
   "UNIT_DAMAGED",
   "HARVEST_SUCCEEDED",
   "HARVEST_FAILED",
+  "BEACON_HARVEST_BONUS",
   "DEPOSIT_SUCCEEDED",
   "DEPOSIT_FAILED",
+  "BEACON_PICKUP_FAILED",
+  "BEACON_PICKED_UP",
+  "BEACON_DROP_FAILED",
+  "BEACON_DROPPED",
+  "BEACON_DROPPED_ON_DEATH",
+  "SWEEP_RESOLVED",
+  "SHOT_MISSED",
+  "SHOT_HIT",
+  "DESTRUCTION_PARTICIPATION",
+  "CORE_RESOURCES_CAPTURED",
   "UNIT_HEAL_SUCCEEDED",
   "UNIT_HEAL_FAILED",
   "CORE_SPAWN_SUCCEEDED",
@@ -41,6 +60,8 @@ const SUPPORTED_DETERMINISTIC_EVENTS = new Set([
   "CORE_REPAIR_SUCCEEDED",
   "CORE_REPAIR_FAILED",
   "CORE_ACTION_FAILED",
+  "RESPAWN_DELAYED",
+  "CORE_RESPAWNED",
 ]);
 
 interface DatasetCaseEntry {
@@ -204,7 +225,8 @@ function controlledIds(state: PlayerState): Set<string> {
 }
 
 function normalizedEvent(event: ResolutionEvent): string {
-  const spawn = event.event_type === "CORE_SPAWN_SUCCEEDED";
+  const spawn = event.event_type === "CORE_SPAWN_SUCCEEDED" ||
+    event.event_type === "CORE_RESPAWNED";
   return canonicalIntegrityJson({
     event_type: event.event_type,
     reason_code: event.reason_code,
@@ -215,11 +237,29 @@ function normalizedEvent(event: ResolutionEvent): string {
   });
 }
 
-function knownEventMultiset(state: PlayerState, ids: ReadonlySet<string>): Map<string, number> {
+function knownEventMultiset(
+  state: PlayerState,
+  ids: ReadonlySet<string>,
+  opponentPlansComplete: boolean,
+): Map<string, number> {
   const counts = new Map<string, number>();
   for (const event of state.events) {
     if (!SUPPORTED_DETERMINISTIC_EVENTS.has(event.event_type)) continue;
-    if (event.actor_id === null || !ids.has(event.actor_id)) continue;
+    const ownedActor = event.actor_id !== null && ids.has(event.actor_id);
+    const ownedTarget = event.target_id !== null && ids.has(event.target_id);
+    const opponentDependentTarget =
+      (event.event_type === "UNIT_DAMAGED" ||
+        event.event_type === "CORE_DAMAGED" ||
+        event.event_type === "CORE_DESTROYED") &&
+      event.reason_code === "ATTACK";
+    const privateWithoutStableOwnedId =
+      event.event_type === "DESTRUCTION_PARTICIPATION" ||
+      event.event_type === "RESPAWN_DELAYED" ||
+      event.event_type === "CORE_RESPAWNED";
+    const eligible = ownedActor ||
+      (ownedTarget && (!opponentDependentTarget || opponentPlansComplete)) ||
+      (privateWithoutStableOwnedId && opponentPlansComplete);
+    if (!eligible) continue;
     const signature = normalizedEvent(event);
     counts.set(signature, (counts.get(signature) ?? 0) + 1);
   }
@@ -232,8 +272,9 @@ function eventAccuracy(
 ): { readonly matched: number; readonly compared: number } {
   if (report.predictedState === null || report.unsupported.length > 0) return { matched: 0, compared: 0 };
   const ids = controlledIds(calibrationCase.before.state);
-  const observed = knownEventMultiset(report.observedState, ids);
-  const predicted = knownEventMultiset(report.predictedState, ids);
+  const opponentPlansComplete = calibrationCase.metadata.opponentPlans === "complete";
+  const observed = knownEventMultiset(report.observedState, ids, opponentPlansComplete);
+  const predicted = knownEventMultiset(report.predictedState, ids, opponentPlansComplete);
   let matched = 0;
   let compared = 0;
   const signatures = new Set([...observed.keys(), ...predicted.keys()]);

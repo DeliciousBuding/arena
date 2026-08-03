@@ -459,3 +459,41 @@ test("S5: 10000 Tick economy soak 无 invariant failure", () => {
   assert.equal(current.resolvedTickCount, 10_000);
   assert.equal(current.players.get("p1")!.units.length, 1);
 });
+
+
+test("S5/S11: Beacon carrier self-destruct 后同 Tick 不可被同格对象重拾", () => {
+  const carrier = uuid(90);
+  const contender = uuid(91);
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 42,
+    players: [{
+      id: "p1",
+      username: "p1",
+      resources: 5,
+      core: { id: coreUuid("p1"), position: [0, 0], hp: 5, shield: 7, state: "NORMAL" },
+      units: [
+        { id: carrier, owner: "p1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+        { id: contender, owner: "p1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+      ],
+    }],
+    terrain: { obstacles: [], resources: [] },
+    beacon: { position: [1, 0], status: "CARRIED", carrierId: carrier },
+  });
+  const first = settle(world, new Map([["p1", planFor(world, "p1", {
+    [carrier]: { type: "SELF_DESTRUCT" },
+    [contender]: { type: "PICKUP_BEACON" },
+  })]]));
+  assert.equal(first.world.beacon?.status, "GROUND");
+  assert.equal(first.world.beacon?.carrierId, null);
+  assert.equal(first.world.players.get("p1")!.core!.shield, 5);
+  assert.ok(first.events.some((event) => event.eventType === "BEACON_DROPPED_ON_DEATH"));
+  assert.ok(!first.events.some((event) => event.eventType === "BEACON_PICKED_UP"));
+
+  const second = settle(first.world, new Map([["p1", planFor(first.world, "p1", {
+    [contender]: { type: "PICKUP_BEACON" },
+  })]]));
+  assert.equal(second.world.beacon?.status, "CARRIED");
+  assert.equal(second.world.beacon?.carrierId, contender);
+});

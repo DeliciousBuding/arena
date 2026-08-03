@@ -18,6 +18,7 @@ import { createSeededRng } from "../deterministic/rng.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { ResolutionEvent, UnknownEffect } from "../engine/phase.ts";
 import { settleTick, type SettlementContext } from "../engine/settlement.ts";
+import { privateEventsForPlayer } from "../visibility/private-events.ts";
 import { simTurnLike } from "../visibility/visibility.ts";
 import { worldHash } from "../world/canonical.ts";
 import { worldFromScenario } from "../world/loaders.ts";
@@ -119,29 +120,6 @@ export function hashPlan(plan: Plan): string {
 
 function hashPlanSet(plans: Readonly<Record<string, Plan>>): string {
   return createHash("sha256").update(canonicalJson(plans)).digest("hex");
-}
-
-function entityIds(world: SimWorld, playerId: string): Set<string> {
-  const ids = new Set<string>();
-  const player = world.players.get(playerId);
-  if (player?.core !== null && player?.core !== undefined) ids.add(player.core.id);
-  for (const unit of player?.units ?? []) ids.add(unit.id);
-  return ids;
-}
-
-/** 只把与己方实体相关的私有事件回灌给该 tenant。 */
-function privateEventsForPlayer(
-  before: SimWorld,
-  after: SimWorld,
-  playerId: string,
-  events: readonly ResolutionEvent[],
-): ResolutionEvent[] {
-  const ids = entityIds(before, playerId);
-  for (const id of entityIds(after, playerId)) ids.add(id);
-  return events.filter((event) =>
-    (event.actorId !== null && ids.has(event.actorId)) ||
-    (event.targetId !== null && ids.has(event.targetId)),
-  );
 }
 
 function validateConfig(config: EpisodeConfig, world: SimWorld, rules: RulesManifest): EpisodeTenant[] {

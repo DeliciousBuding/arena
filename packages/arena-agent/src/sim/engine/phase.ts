@@ -1,5 +1,5 @@
 /**
- * Settlement pipeline 骨架（S3）：phase 注册、事件类型、unsupported 语义。
+ * Settlement phase contracts：phase 注册、事件类型、unknown/unsupported 语义。
  *
  * 15 个内部 phase（architecture §6），每个 phase 映射官方结算阶段。
  * 结算只允许在 draft（settlement 内部可变副本）上操作；
@@ -10,7 +10,7 @@ import type { Plan, Position } from "../../domain/model.ts";
 import type { RulesManifest } from "../contracts/rules-manifest.ts";
 import type { SimFeature, SimWorld } from "../world/types.ts";
 
-/** 与线上 event_type 对齐的结算事件（MVP 子集）。 */
+/** 与线上 event_type 对齐的结算事件；recipientPlayerId 仅供内部私有投递。 */
 export interface ResolutionEvent {
   readonly tick: number;
   readonly eventType: string;
@@ -19,6 +19,8 @@ export interface ResolutionEvent {
   readonly targetId: string | null;
   readonly position: Position | null;
   readonly values: Readonly<Record<string, unknown>> | null;
+  /** Internal delivery metadata; omitted from SDK wire events. */
+  readonly recipientPlayerId?: string;
 }
 
 /** unknown/不可预测效应（refill、对手动作）——不得伪装成 MATCH。 */
@@ -56,6 +58,8 @@ export interface PhaseContext {
   readonly rng: (() => number) | null;
   /** 本 tick 输入触发的 unsupported feature（供 unsupported-* phase 报告）。 */
   readonly features: ReadonlySet<SimFeature>;
+  /** Cells where a carried Beacon landed through death before P07. */
+  readonly beaconPickupLockedCells: Set<string>;
 }
 
 export const EMPTY_OUTCOME: PhaseOutcome = Object.freeze({
@@ -82,6 +86,7 @@ export function eventOf(
     targetId?: string | null;
     position?: Position | null;
     values?: Readonly<Record<string, unknown>> | null;
+    recipientPlayerId?: string;
   } = {},
 ): ResolutionEvent {
   return Object.freeze({
@@ -92,5 +97,6 @@ export function eventOf(
     targetId: opts.targetId ?? null,
     position: opts.position ?? null,
     values: opts.values ?? null,
+    ...(opts.recipientPlayerId === undefined ? {} : { recipientPlayerId: opts.recipientPlayerId }),
   });
 }

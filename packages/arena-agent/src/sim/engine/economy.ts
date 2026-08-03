@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { cellKey, type Plan, type Position, type UnitType } from "../../domain/model.ts";
 import { compareCodeUnit, compareUuidRaw } from "../deterministic/uuid.ts";
 import { CELL_ENTITY_CAPACITY } from "../world/world.ts";
+import { dropBeaconOnDeath } from "./beacon.ts";
 import type { SimPlayer, SimUnit, SimWorld } from "../world/types.ts";
 import {
   eventOf,
@@ -111,7 +112,9 @@ function removeUnitAndDropCargo(
   playerId: string,
   unit: SimUnit,
   events: ResolutionEvent[],
+  pickupLockedCells?: Set<string>,
 ): void {
+  dropBeaconOnDeath(draft, unit.id, unit.position, events, { pickupLockedCells });
   removeUnitOnly(draft, playerId, unit.id);
   dropWorkerCargo(draft, unit, events);
 }
@@ -150,7 +153,7 @@ const selfDestructPhase: Phase = {
     for (const request of collectUnitRequests(draft, ctx.plans, "SELF_DESTRUCT")) {
       const unit = findUnit(draft, request.playerId, request.unitId);
       if (unit === null) continue;
-      removeUnitAndDropCargo(draft, request.playerId, unit, events);
+      removeUnitAndDropCargo(draft, request.playerId, unit, events, ctx.beaconPickupLockedCells);
       events.push(eventOf(draft.tick, "UNIT_SELF_DESTRUCTED", { actorId: unit.id, position: unit.position }));
     }
     return outcome({ events });
@@ -253,7 +256,7 @@ function applyDeficitDamage(
       }),
     );
     if (hp <= 0) {
-      removeUnitAndDropCargo(draft, playerId, unit, events);
+      removeUnitAndDropCargo(draft, playerId, unit, events, ctx.beaconPickupLockedCells);
     } else {
       updatePlayerUnits(draft, playerId, (units) =>
         units.map((current) => (current.id === unit.id ? { ...current, hp } : current)),
@@ -375,6 +378,16 @@ function applyHarvest(
       values: { amount, source: fromPile ? "DROPPED_CARGO" : "RESOURCE_NODE" },
     }),
   );
+  if (!fromPile && beaconBonus) {
+    const bonusAmount = Math.max(0, amount - ctx.rules.rules.economy.harvestAmount);
+    if (bonusAmount > 0) {
+      events.push(eventOf(draft.tick, "BEACON_HARVEST_BONUS", {
+        actorId: unit.id,
+        position: unit.position,
+        values: { amount: bonusAmount },
+      }));
+    }
+  }
 }
 
 /** 该玩家是否持有 Beacon（carrier 是其 unit 或 Core）。 */

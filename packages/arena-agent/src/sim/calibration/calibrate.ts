@@ -6,6 +6,7 @@ import { loadRulesManifest, manifestHash } from "../contracts/rules-manifest.ts"
 import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { UnknownEffect } from "../engine/phase.ts";
 import { settleTick } from "../engine/settlement.ts";
+import { privateEventsForPlayer } from "../visibility/private-events.ts";
 import { projectPlayerState } from "../visibility/visibility.ts";
 import { worldFromRawState } from "../world/loaders.ts";
 import type { SimFeature, SimWorld } from "../world/types.ts";
@@ -73,24 +74,47 @@ function parsePosition(position: Position): string {
   return cellKey(position);
 }
 
-function spawnIdMap(state: PlayerState): Map<string, string> {
-  const ids = state.events
-    .filter((event) => event.event_type === "CORE_SPAWN_SUCCEEDED" && event.target_id !== null)
-    .map((event) => event.target_id!)
-    .sort(compareCodeUnit);
-  return new Map(ids.map((id, index) => [id, `<spawn:${index}>`]));
+function generatedIdMap(state: PlayerState): Map<string, string> {
+  const ids = new Map<string, string>();
+  const spawnEvents = state.events.filter(
+    (event) => event.event_type === "CORE_SPAWN_SUCCEEDED" && event.target_id !== null,
+  );
+  for (const [index, event] of spawnEvents.entries()) {
+    ids.set(event.target_id!, `<spawn:${index}>`);
+  }
+
+  const respawnEvents = state.events.filter(
+    (event) => event.event_type === "CORE_RESPAWNED" &&
+      event.target_id !== null &&
+      event.position !== null,
+  );
+  for (const [index, event] of respawnEvents.entries()) {
+    ids.set(event.target_id!, `<respawn-core:${index}>`);
+    const replacementWorkers = state.objects
+      .filter((object): object is Extract<WorldObject, { kind: "UNIT" }> =>
+        object.kind === "UNIT" &&
+        object.controlled === true &&
+        object.position[0] === event.position![0] &&
+        object.position[1] === event.position![1],
+      )
+      .sort((a, b) => compareCodeUnit(a.id, b.id));
+    for (const [workerIndex, worker] of replacementWorkers.entries()) {
+      ids.set(worker.id, `<respawn-worker:${index}:${workerIndex}>`);
+    }
+  }
+  return ids;
 }
 
-function normalizeId(id: string | null, spawnIds: ReadonlyMap<string, string>): string | null {
+function normalizeId(id: string | null, generatedIds: ReadonlyMap<string, string>): string | null {
   if (id === null) return null;
-  return spawnIds.get(id) ?? id;
+  return generatedIds.get(id) ?? id;
 }
 
-function normalizeEntity(object: Exclude<WorldObject, { kind: "OBSTACLE" | "RESOURCE" }>, spawnIds: ReadonlyMap<string, string>): unknown {
+function normalizeEntity(object: Exclude<WorldObject, { kind: "OBSTACLE" | "RESOURCE" }>, generatedIds: ReadonlyMap<string, string>): unknown {
   if (object.kind === "CORE") {
     return {
       kind: object.kind,
-      id: normalizeId(object.id, spawnIds),
+      id: normalizeId(object.id, generatedIds),
       controlled: object.controlled,
       owner_username: object.owner_username,
       position: parsePosition(object.position),
@@ -105,7 +129,7 @@ function normalizeEntity(object: Exclude<WorldObject, { kind: "OBSTACLE" | "RESO
   }
   return {
     kind: object.kind,
-    id: normalizeId(object.id, spawnIds),
+    id: normalizeId(object.id, generatedIds),
     controlled: object.controlled,
     position: parsePosition(object.position),
     hp: object.hp,
@@ -115,7 +139,7 @@ function normalizeEntity(object: Exclude<WorldObject, { kind: "OBSTACLE" | "RESO
 }
 
 function normalizeState(state: PlayerState): unknown {
-  const spawnIds = spawnIdMap(state);
+  const generatedIds = generatedIdMap(state);
   const obstacles = new Set<string>();
   const resources = new Set<string>();
   const entities: Record<string, unknown> = {};
@@ -127,7 +151,7 @@ function normalizeState(state: PlayerState): unknown {
     } else {
       const normalized = normalizeEntity(
         object as Exclude<WorldObject, { kind: "OBSTACLE" | "RESOURCE" }>,
-        spawnIds,
+        generatedIds,
       ) as { id: string };
       entities[normalized.id] = normalized;
     }
@@ -137,8 +161,8 @@ function normalizeState(state: PlayerState): unknown {
       tick: event.tick,
       event_type: event.event_type,
       reason_code: event.reason_code,
-      actor_id: normalizeId(event.actor_id, spawnIds),
-      target_id: normalizeId(event.target_id, spawnIds),
+      actor_id: normalizeId(event.actor_id, generatedIds),
+      target_id: normalizeId(event.target_id, generatedIds),
       position: event.position === null ? null : parsePosition(event.position),
       values: event.values,
     }));
@@ -153,7 +177,7 @@ function normalizeState(state: PlayerState): unknown {
     champion_beacon: {
       position: parsePosition(state.champion_beacon.position),
       status: state.champion_beacon.status,
-      carrier_id: normalizeId(state.champion_beacon.carrier_id, spawnIds),
+      carrier_id: normalizeId(state.champion_beacon.carrier_id, generatedIds),
     },
     terrain: {
       obstacles: Object.fromEntries([...obstacles].sort(compareCodeUnit).map((key) => [key, true])),
@@ -322,8 +346,12 @@ export function runCalibrationCase(rawCase: unknown, rulesPath: string): Calibra
   const ruleAssumptionUnknown = result.unknownEffects.some(
     (effect) => effect.kind === "rule-assumption",
   );
+  // A private RESPAWNING snapshot has no observer and therefore cannot expose
+  // the live Core anchors used by the server's placement search.
+  const respawnPlacementUnknown = calibrationCase.before.state.status === "RESPAWNING";
   const dynamicStateUnknown =
-    opponentUnknown || beaconUnknown || result.unsupported.length > 0 || ruleAssumptionUnknown;
+    opponentUnknown || beaconUnknown || result.unsupported.length > 0 ||
+    ruleAssumptionUnknown || respawnPlacementUnknown;
   const harvestSourceUnknown = observedDroppedCargoHarvest(calibrationCase);
   const beforeObstacles = terrainKeys(calibrationCase.before.state, "OBSTACLE");
   const beforeResources = terrainKeys(calibrationCase.before.state, "RESOURCE");
@@ -364,6 +392,15 @@ export function runCalibrationCase(rawCase: unknown, rulesPath: string): Calibra
       note: "local replay assumes GROUND only to continue deterministic supported phases",
     });
   }
+  if (respawnPlacementUnknown) {
+    differences.push({
+      class: "EXPECTED_UNKNOWN",
+      path: "$.simulation.respawn-placement",
+      expected: null,
+      actual: "private RESPAWNING state omits live Core anchors and hidden occupancy",
+      note: "replacement placement and resulting server UUIDs require full-world Runtime-Golden evidence",
+    });
+  }
   if (harvestSourceUnknown) {
     differences.push({
       class: "EXPECTED_UNKNOWN",
@@ -376,7 +413,13 @@ export function runCalibrationCase(rawCase: unknown, rulesPath: string): Calibra
 
   let predictedState: PlayerState | null = null;
   try {
-    predictedState = projectPlayerState(result.world, calibrationCase.tenantId, rules, result.events);
+    const privateEvents = privateEventsForPlayer(
+      beforeWorld,
+      result.world,
+      calibrationCase.tenantId,
+      result.events,
+    );
+    predictedState = projectPlayerState(result.world, calibrationCase.tenantId, rules, privateEvents);
   } catch (error) {
     if (result.unsupported.length === 0) throw error;
     differences.push({

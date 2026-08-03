@@ -33,14 +33,14 @@ function calibrationCase() {
       core: { id: CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
       units: [{ id: WORKER, owner: "p1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 }],
     }],
-    terrain: { obstacles: [], resources: [] },
-    beacon: { position: [20, 20], status: "GROUND", carrierId: null },
+    terrain: { obstacles: [], resources: [[1, 0]] },
+    beacon: { position: [1, 0], status: "CARRIED", carrierId: WORKER },
   });
   const plan: Plan = {
     tick: 1,
-    unitActions: { [WORKER]: { type: "MOVE", direction: "RIGHT" } },
+    unitActions: { [WORKER]: { type: "HARVEST" } },
     coreAction: null,
-    intents: { [WORKER]: "fixture_move" },
+    intents: { [WORKER]: "fixture_harvest" },
   };
   const result = settleTick(world, new Map([["p1", plan]]), { rules, rng: null });
   return {
@@ -103,8 +103,8 @@ test("S8b dataset: integrity verified + known deterministic event accuracy 100%"
     assert.equal(report.caseCount, 1);
     assert.equal(report.statusCounts.MATCH, 1);
     assert.equal(report.hardMismatchCaseCount, 0);
-    assert.equal(report.knownEventMatched, 1);
-    assert.equal(report.knownEventCompared, 1);
+    assert.equal(report.knownEventMatched, 2);
+    assert.equal(report.knownEventCompared, 2);
     assert.equal(report.knownEventAccuracy, 1);
     assert.equal(report.accuracyGatePassed, true);
     assert.equal(report.passed, true);
@@ -137,9 +137,9 @@ test("S8b dataset: re-signed semantic event mismatch still fails hard and accura
     assert.equal(report.statusCounts.MISMATCH, 1);
     assert.equal(report.taxonomyCounts.EVENT > 0, true);
     assert.equal(report.hardMismatchCaseCount, 1);
-    assert.equal(report.knownEventMatched, 0);
-    assert.equal(report.knownEventCompared, 1);
-    assert.equal(report.knownEventAccuracy, 0);
+    assert.equal(report.knownEventMatched, 1);
+    assert.equal(report.knownEventCompared, 2);
+    assert.equal(report.knownEventAccuracy, 0.5);
     assert.equal(report.passed, false);
   } finally {
     rmSync(root, { recursive: true, force: true });

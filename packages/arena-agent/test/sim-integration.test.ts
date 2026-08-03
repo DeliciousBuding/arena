@@ -1,7 +1,7 @@
 /**
  * Cross-resolver 集成测试（sim-integration）：
  * combat ↔ beacon / combat ↔ core-migration / core-migration ↔ beacon /
- * combat → respawn（fail-closed）/ beacon ↔ economy / 三域组合。
+ * combat → respawn / beacon ↔ economy / 三域组合。
  *
  * 规则依据（docs/game-rules.md）：
  * - §Champion Beacon：「If a Beacon carried at the start of the Tick is dropped,
@@ -12,10 +12,10 @@
  *   position until the fourth-Tick real move succeeds.」
  * - §Combat：Core 伤害先消耗 shield 再消耗 hp；摧毁 Core → fleet 移除、cargo
  *   原地掉落、携带的 Beacon 按 Beacon 规则落地、玩家进入 RESPAWNING。
- * - §Core destruction and respawn：RESPAWNING 期间 spawn resolver 未实现时
- *   必须 fail-closed（unsupported），不得静默当作成功。
+ * - §Core destruction and respawn：P12 在同一结算 Tick 尝试确定性 replacement；
+ *   无合法格时才保持 RESPAWNING 并延迟重试。
  *
- * 结算顺序（settlement.ts）：P05 movement → P06 core-migration → P07 beacon →
+ * 结算顺序（settlement.ts）：P05 global movement → P06 core-migration actions → P07 beacon →
  * P08 harvest → P09 combat → P12 respawn-check。
  */
 
@@ -177,20 +177,20 @@ test("X1: carrier 被 SWEEP 杀死 → Beacon 落地于死亡位置，同 tick �
       ],
     ]),
   );
-  assert.ok(tick1.events.some((event) => event.eventType === "UNIT_DESTROYED" && event.targetId === P1_WORKER));
+  assert.ok(tick1.events.some((event) => event.eventType === "UNIT_DAMAGED" && event.targetId === P1_WORKER && event.values?.hp === 0));
   // Beacon 落地于 carrier 最终实际位置 [2,0]
   assert.equal(tick1.world.beacon!.status, "GROUND");
   assert.equal(tick1.world.beacon!.carrierId, null);
   assert.deepEqual(tick1.world.beacon!.position, [2, 0]);
   assert.ok(
     tick1.events.some(
-      (event) => event.eventType === "BEACON_DROPPED" && event.actorId === P1_WORKER && event.position?.[0] === 2 && event.position?.[1] === 0,
+      (event) => event.eventType === "BEACON_DROPPED_ON_DEATH" && event.actorId === P1_WORKER && event.position?.[0] === 2 && event.position?.[1] === 0,
     ),
   );
   // 同 tick 无任何拾取成功；失去 Beacon 的盾立即 clamp 5
   assert.ok(!tick1.events.some((event) => event.eventType === "BEACON_PICKED_UP"));
   assert.equal(tick1.world.players.get("p1")!.core!.shield, 5);
-  assert.ok(tick1.events.some((event) => event.eventType === "CORE_SHIELD_CLAMPED"));
+  assert.ok(!tick1.events.some((event) => event.eventType === "CORE_SHIELD_CLAMPED"));
 
   // tick 2-3：p2 Worker 走到 Beacon 格（[3,1] → [2,1] → [2,0]）
   let tick2 = settle(
@@ -258,13 +258,13 @@ test("X1b: 本 tick 移动过的 carrier 死亡 → Beacon 落地于移动后的
     ]),
   );
   assert.ok(result.events.some((event) => event.eventType === "UNIT_MOVE_SUCCEEDED" && event.actorId === P1_WORKER));
-  assert.ok(result.events.some((event) => event.eventType === "UNIT_DESTROYED" && event.targetId === P1_WORKER));
+  assert.ok(result.events.some((event) => event.eventType === "UNIT_DAMAGED" && event.targetId === P1_WORKER && event.values?.hp === 0));
   assert.equal(result.world.beacon!.status, "GROUND");
   assert.equal(result.world.beacon!.carrierId, null);
   assert.deepEqual(result.world.beacon!.position, [3, 0], "beacon lands at moved (final) position");
   assert.ok(
     result.events.some(
-      (event) => event.eventType === "BEACON_DROPPED" && event.actorId === P1_WORKER && event.position?.[0] === 3,
+      (event) => event.eventType === "BEACON_DROPPED_ON_DEATH" && event.actorId === P1_WORKER && event.position?.[0] === 3,
     ),
   );
 });
@@ -464,8 +464,7 @@ test("X4: combat 摧毁 Core → CORE_DESTROYED/cargo 掉落 + P12 同 Tick resp
   assert.ok(destroyed, "CORE_DESTROYED missing");
   assert.equal(destroyed!.targetId, P1_CORE);
   assert.deepEqual(destroyed!.position, [0, 0]);
-  assert.equal(destroyed!.values?.winner, "p2");
-  assert.equal(destroyed!.values?.loot, 10);
+  assert.deepEqual(destroyed!.values, { destroyed_by: ["p2"] });
   const p1 = result.world.players.get("p1")!;
   // respawn 已实现：P12 同 tick 放置 replacement → ACTIVE
   assert.equal(p1.status, "ACTIVE");
@@ -474,7 +473,11 @@ test("X4: combat 摧毁 Core → CORE_DESTROYED/cargo 掉落 + P12 同 Tick resp
   assert.equal(p1.resources, 5);
   assert.equal(p1.units.length, 1, "replacement worker");
   assert.equal(result.world.terrain.piles.get("0,1")?.amount, 2, "worker cargo dropped in place");
-  assert.equal(result.world.players.get("p2")!.resources, 15, "winner loot");
+  assert.equal(result.world.players.get("p2")!.resources, 10, "capture respects post-combat capacity");
+  assert.deepEqual(
+    result.events.find((event) => event.eventType === "CORE_RESOURCES_CAPTURED")?.values,
+    { amount: 5, available: 10, destroyed: 5, capacity: 10 },
+  );
   // respawn 已实现 → 不再 fail-closed unsupported
   assert.ok(!result.unsupported.includes("respawn"), "respawn resolver handles destruction");
   assert.ok(result.events.some((event) => event.eventType === "CORE_RESPAWNED"));
@@ -579,7 +582,7 @@ test("X6: 摧毁携带 Beacon 的迁移 Core → Beacon 落地于 Core 最终实
   assert.deepEqual(mid.world.beacon!.position, [0, 0], "beacon lands at migrating core's logical position");
   assert.ok(
     mid.events.some(
-      (event) => event.eventType === "BEACON_DROPPED" && event.actorId === P1_CORE && event.position?.[0] === 0,
+      (event) => event.eventType === "BEACON_DROPPED_ON_DEATH" && event.actorId === P1_CORE && event.position?.[0] === 0,
     ),
   );
   assert.equal(mid.world.players.get("p1")!.status, "ACTIVE", "respawn resolver places replacement same tick");
@@ -629,12 +632,12 @@ test("X6: 摧毁携带 Beacon 的迁移 Core → Beacon 落地于 Core 最终实
 
 /* ---------------- 结算顺序：集成测试依赖的 phase 顺序快照 ---------------- */
 
-test("X0: 结算顺序 P05 movement → P06 core-migration → P07 beacon → P08 harvest → P09 combat → P12 respawn", () => {
+test("X0: 结算顺序 P05 global movement → P06 core-migration actions → P07 beacon → P08 harvest → P09 combat → P12 respawn", () => {
   const order = phaseOrder();
   const indexOf = (id: string): number => order.findIndex((phaseId) => phaseId === id);
-  assert.ok(indexOf("P05-unit-movement") >= 0);
-  assert.ok(indexOf("P06-core-migration") > indexOf("P05-unit-movement"));
-  assert.ok(indexOf("P07-beacon") > indexOf("P06-core-migration"));
+  assert.ok(indexOf("P05-global-movement") >= 0);
+  assert.ok(indexOf("P06-core-migration-actions") > indexOf("P05-global-movement"));
+  assert.ok(indexOf("P07-beacon") > indexOf("P06-core-migration-actions"));
   assert.ok(indexOf("P08-harvest-and-deposit") > indexOf("P07-beacon"));
   assert.ok(indexOf("P09-combat") > indexOf("P08-harvest-and-deposit"));
   assert.ok(indexOf("P12-respawn") > indexOf("P09-combat"));

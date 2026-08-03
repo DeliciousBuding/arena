@@ -30,7 +30,7 @@ import { cellKey, type Position } from "../../domain/model.ts";
 import type { RulesManifest } from "../contracts/rules-manifest.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { SimCore, SimFeature, SimPlayer, SimUnit, SimWorld } from "../world/types.ts";
-import { eventOf, outcome, type Phase, type PhaseContext, type ResolutionEvent } from "./phase.ts";
+import { eventOf, outcome, type Phase, type PhaseContext, type ResolutionEvent, type UnknownEffect } from "./phase.ts";
 
 /** 距最近活 Core 的 Manhattan 距离区间（game-rules.md Core destruction and respawn）。 */
 export const RESPAWN_DISTANCE_MIN = 20;
@@ -52,6 +52,7 @@ const DIRECTION_DELTA: Readonly<Record<"UP" | "DOWN" | "LEFT" | "RIGHT", readonl
 
 export interface RespawnResolution {
   readonly events: readonly ResolutionEvent[];
+  readonly unknownEffects: readonly UnknownEffect[];
   /** playerId → 更新后的玩家（仅 RESPAWNING 且本 tick 尝试过的）。 */
   readonly updatedPlayers: ReadonlyMap<string, SimPlayer>;
 }
@@ -199,6 +200,7 @@ function pickSpawnCell(world: SimWorld, working: WorkingState): Position | null 
  */
 export function resolveRespawn(world: SimWorld, rules: RulesManifest): RespawnResolution {
   const events: ResolutionEvent[] = [];
+  const unknownEffects: UnknownEffect[] = [];
   const updatedPlayers = new Map<string, SimPlayer>();
   const working = buildWorkingState(world);
 
@@ -227,7 +229,10 @@ export function resolveRespawn(world: SimWorld, rules: RulesManifest): RespawnRe
       working.players.set(player.id, { ...player, respawnAtTick: working.tick + 1 });
       updatedPlayers.set(player.id, working.players.get(player.id)!);
       events.push(
-        eventOf(world.tick, "RESPAWN_DELAYED", { reasonCode: "NO_LEGAL_SPAWN" }),
+        eventOf(world.tick, "RESPAWN_DELAYED", {
+          reasonCode: "NO_LEGAL_SPAWN",
+          recipientPlayerId: player.id,
+        }),
       );
       continue;
     }
@@ -276,9 +281,14 @@ export function resolveRespawn(world: SimWorld, rules: RulesManifest): RespawnRe
         },
       }),
     );
+    unknownEffects.push({
+      tick: world.tick,
+      kind: "server-generated-id",
+      note: `respawn uses deterministic local UUIDs for Core ${coreId} and ${workerIds.length} Worker(s); server UUID algorithm is not public`,
+    });
   }
 
-  return { events, updatedPlayers };
+  return { events, unknownEffects, updatedPlayers };
 }
 
 /** P12 respawn phase：把重生结算应用到 draft。 */
@@ -296,6 +306,10 @@ export const respawnPhase: Phase = {
     }
     // 裸 RESPAWNING（外部快照）输入仍属 unsupported：无法确定解析，不得伪装成功
     const unsupported: SimFeature[] = ctx.features.has("respawn") ? ["respawn"] : [];
-    return outcome({ events: resolution.events, unsupported });
+    return outcome({
+      events: resolution.events,
+      unknownEffects: resolution.unknownEffects,
+      unsupported,
+    });
   },
 };

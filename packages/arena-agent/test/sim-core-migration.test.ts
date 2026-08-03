@@ -292,7 +292,7 @@ test("P06: 迁移 4 Tick 完成——事件序列、位置更新、状态回 NOR
     ["CORE_MOVE_STARTED"],
     ["CORE_MOVE_PROGRESS"],
     ["CORE_MOVE_PROGRESS"],
-    ["CORE_MOVE_STARTED", "CORE_MOVE_SUCCEEDED"],
+    ["CORE_MOVE_SUCCEEDED", "CORE_MOVE_STARTED"],
   ]);
   const core = world.players.get("p1")!.core!;
   assert.deepEqual(core.position, [1, 0], "real move applied on 4th tick");
@@ -356,6 +356,65 @@ test("P06: 第 4 Tick 跨玩家同目的地 → 双方 CORE_MOVE_FAILED/MOVE_CON
   assert.deepEqual(result.world.players.get("p1")!.core!.position, [0, 0]);
   assert.deepEqual(result.world.players.get("p2")!.core!.position, [2, 0]);
   assert.equal(result.world.players.get("p1")!.core!.state, "NORMAL");
+});
+
+
+test("P05/P06: Unit 与第 4 Tick Core 同抢目的地 → 双方 MOVE_CONTESTED", () => {
+  const p2Worker = uuid(70);
+  const world = makeWorld([
+    {
+      id: "p1",
+      resources: 5,
+      core: { id: P1_CORE, position: [0, 0], state: "MOVING", moveDirection: "RIGHT", moveProgress: 3, moveRequiredTicks: 4, destination: [1, 0] },
+    },
+    {
+      id: "p2",
+      resources: 5,
+      core: { id: P2_CORE, position: [5, 5] },
+      units: [{ id: p2Worker, position: [2, 0] }],
+    },
+  ]);
+  const result = settle(world, new Map([
+    ["p1", planFor(world, "p1", {}, null)],
+    ["p2", planFor(world, "p2", { [p2Worker]: { type: "MOVE", direction: "LEFT" } }, null)],
+  ]));
+  assert.deepEqual(result.world.players.get("p1")!.core!.position, [0, 0]);
+  assert.deepEqual(result.world.players.get("p2")!.units[0].position, [2, 0]);
+  assert.ok(result.events.some(
+    (event) => event.eventType === "CORE_MOVE_FAILED" &&
+      event.actorId === P1_CORE &&
+      event.reasonCode === "MOVE_CONTESTED",
+  ));
+  assert.ok(result.events.some(
+    (event) => event.eventType === "UNIT_MOVE_FAILED" &&
+      event.actorId === p2Worker &&
+      event.reasonCode === "MOVE_CONTESTED",
+  ));
+});
+
+test("P05/P06: Unit 可进入第 4 Tick Core 成功离开的原格", () => {
+  const p2Worker = uuid(71);
+  const world = makeWorld([
+    {
+      id: "p1",
+      resources: 5,
+      core: { id: P1_CORE, position: [1, 0], state: "MOVING", moveDirection: "RIGHT", moveProgress: 3, moveRequiredTicks: 4, destination: [2, 0] },
+    },
+    {
+      id: "p2",
+      resources: 5,
+      core: { id: P2_CORE, position: [5, 5] },
+      units: [{ id: p2Worker, position: [0, 0] }],
+    },
+  ]);
+  const result = settle(world, new Map([
+    ["p1", planFor(world, "p1", {}, null)],
+    ["p2", planFor(world, "p2", { [p2Worker]: { type: "MOVE", direction: "RIGHT" } }, null)],
+  ]));
+  assert.deepEqual(result.world.players.get("p1")!.core!.position, [2, 0]);
+  assert.deepEqual(result.world.players.get("p2")!.units[0].position, [1, 0]);
+  assert.ok(result.events.some((event) => event.eventType === "CORE_MOVE_SUCCEEDED" && event.actorId === P1_CORE));
+  assert.ok(result.events.some((event) => event.eventType === "UNIT_MOVE_SUCCEEDED" && event.actorId === p2Worker));
 });
 
 test("P06: 第 4 Tick 双向 swap → 双方 CORE_MOVE_FAILED/MOVE_SWAP_BLOCKED", () => {

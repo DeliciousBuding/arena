@@ -87,7 +87,11 @@ test("S11: 同格 PICKUP 成功——低 raw UUID 获胜", () => {
   assert.equal(result.world.beacon!.status, "CARRIED");
   assert.equal(result.world.beacon!.carrierId, P1_WORKER_A);
   assert.ok(result.events.some((e) => e.eventType === "BEACON_PICKED_UP" && e.actorId === P1_WORKER_A));
-  assert.ok(result.events.some((e) => e.eventType === "BEACON_PICKUP_FAILED" && e.actorId === P1_WORKER_C));
+  assert.ok(result.events.some(
+    (e) => e.eventType === "BEACON_PICKUP_FAILED" &&
+      e.actorId === P1_WORKER_C &&
+      e.reasonCode === "ALREADY_CARRIED",
+  ));
   assert.deepEqual(result.unsupported, []);
 });
 
@@ -101,6 +105,11 @@ test("S11: 不同格 PICKUP 失败——不在 Beacon 格", () => {
   );
   assert.equal(result.world.beacon!.status, "GROUND");
   assert.equal(result.world.beacon!.carrierId, null);
+  assert.ok(result.events.some(
+    (e) => e.eventType === "BEACON_PICKUP_FAILED" &&
+      e.actorId === P1_WORKER_B &&
+      e.reasonCode === "BEACON_NOT_PRESENT",
+  ));
 });
 
 test("S11: DROP 仅当前 carrier——落地于 carrier 位置，本 tick 不可再拾取", () => {
@@ -119,8 +128,13 @@ test("S11: DROP 仅当前 carrier——落地于 carrier 位置，本 tick 不�
   assert.equal(result.world.beacon!.position[0], 2);
   assert.equal(result.world.beacon!.position[1], 2);
   assert.ok(result.events.some((e) => e.eventType === "BEACON_DROPPED" && e.actorId === P1_WORKER_A));
-  // p2 本 tick 拾取失败（无 BEACON_PICKED_UP 事件）
+  // p2 本 tick 拾取失败，公开原因仍不泄漏额外状态。
   assert.ok(!result.events.some((e) => e.eventType === "BEACON_PICKED_UP"));
+  assert.ok(result.events.some(
+    (e) => e.eventType === "BEACON_PICKUP_FAILED" &&
+      e.actorId === P2_WORKER &&
+      e.reasonCode === "BEACON_NOT_PRESENT",
+  ));
 });
 
 test("S11: 非 carrier DROP 无效", () => {
@@ -133,6 +147,80 @@ test("S11: 非 carrier DROP 无效", () => {
   );
   assert.equal(result.world.beacon!.status, "CARRIED");
   assert.equal(result.world.beacon!.carrierId, P1_WORKER_A);
+  assert.ok(result.events.some(
+    (e) => e.eventType === "BEACON_DROP_FAILED" &&
+      e.actorId === P2_WORKER &&
+      e.reasonCode === "NOT_BEACON_CARRIER",
+  ));
+});
+
+
+test("S11 contract: 迁移 Core PICKUP/DROP 都返回 CORE_MOVING", () => {
+  const movingCore = {
+    id: P1_CORE,
+    position: [0, 0] as const,
+    hp: 5,
+    shield: 5,
+    state: "MOVING" as const,
+    moveDirection: "RIGHT" as const,
+    moveProgress: 1,
+    moveRequiredTicks: 4,
+    destination: [1, 0] as const,
+  };
+  const base = {
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [{
+      id: "p1",
+      username: "p1",
+      resources: 5,
+      core: movingCore,
+      units: [],
+    }],
+    terrain: { obstacles: [], resources: [] },
+  } as const;
+
+  const pickupWorld = worldFromScenario({
+    ...base,
+    beacon: { position: [0, 0], status: "GROUND", carrierId: null },
+  });
+  const pickup = settleTick(
+    pickupWorld,
+    new Map([["p1", {
+      tick: pickupWorld.tick,
+      unitActions: {},
+      coreAction: { type: "PICKUP_BEACON" },
+      intents: {},
+    }]]),
+    ctx,
+  );
+  assert.ok(pickup.events.some(
+    (event) => event.eventType === "BEACON_PICKUP_FAILED" &&
+      event.actorId === P1_CORE &&
+      event.reasonCode === "CORE_MOVING",
+  ));
+
+  const dropWorld = worldFromScenario({
+    ...base,
+    beacon: { position: [0, 0], status: "CARRIED", carrierId: P1_CORE },
+  });
+  const drop = settleTick(
+    dropWorld,
+    new Map([["p1", {
+      tick: dropWorld.tick,
+      unitActions: {},
+      coreAction: { type: "DROP_BEACON" },
+      intents: {},
+    }]]),
+    ctx,
+  );
+  assert.equal(drop.world.beacon?.status, "CARRIED");
+  assert.ok(drop.events.some(
+    (event) => event.eventType === "BEACON_DROP_FAILED" &&
+      event.actorId === P1_CORE &&
+      event.reasonCode === "CORE_MOVING",
+  ));
 });
 
 test("S11: 失去 Beacon 时盾 >5 clamp 到 5", () => {
@@ -144,7 +232,7 @@ test("S11: 失去 Beacon 时盾 >5 clamp 到 5", () => {
     ctx,
   );
   assert.equal(result.world.players.get("p1")!.core!.shield, 5);
-  assert.ok(result.events.some((e) => e.eventType === "CORE_SHIELD_CLAMPED"));
+  assert.ok(!result.events.some((e) => e.eventType === "CORE_SHIELD_CLAMPED"), "no invented wire event");
 });
 
 test("S11: 未失去 Beacon 时盾不 clamp", () => {
@@ -193,6 +281,10 @@ test("S11: 持有者 harvest 加成 2，非持有者 1", () => {
   const p2Worker = result.world.players.get("p2")!.units.find((u) => u.id === P2_WORKER)!;
   assert.equal(p1Worker.cargo, 2, "持有者收获 2");
   assert.equal(p2Worker.cargo, 1, "非持有者收获 1");
+  assert.deepEqual(
+    result.events.find((event) => event.eventType === "BEACON_HARVEST_BONUS")?.values,
+    { amount: 1 },
+  );
 });
 
 test("S11: 移动经过 Beacon 不自动拾取", () => {

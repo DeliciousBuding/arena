@@ -1,5 +1,5 @@
 /**
- * S3 settlement pipeline 骨架测试：
+ * S3 settlement pipeline 合同测试：
  * phase 顺序、atomicity（原 world 不变）、unsupported 分类、unknown 语义、
  * no-op tick、事件稳定排序。
  */
@@ -138,11 +138,46 @@ test("S3: refill cadence 记录 unknown 效应，不伪装成 MATCH", () => {
   assert.equal(result.unknownEffects[0].kind, "refill");
 });
 
-test("S3: 事件排序稳定（actorId 序，与插入顺序无关）", () => {
-  // S4/S5 resolver 未接入，S3 无事件产出——验证 sortEvents 对已注入事件的稳定性
-  // 通过构造两个顺序相反的事件列表验证（间接：settleTick 内部调用）
-  const world = makeWorld();
-  // 使用带多个单位的场景验证 id 排序路径存在（当前 stub 无事件，仅保证不炸）
-  const result = settleTick(world, idlePlans(world), ctx);
-  assert.ok(Array.isArray(result.events));
+test("S3: phase 内事件排序稳定（actorId 序，与对象插入顺序无关）", () => {
+  const low = "22222222-2222-2222-2222-222222222222";
+  const high = "33333333-3333-3333-3333-333333333333";
+  const makeOrderedWorld = (reverse: boolean): SimWorld => worldFromScenario({
+    ...SCENARIO,
+    players: [{
+      ...SCENARIO.players[0],
+      units: (reverse
+        ? [
+            { id: high, owner: "p1", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+            { id: low, owner: "p1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+          ]
+        : [
+            { id: low, owner: "p1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+            { id: high, owner: "p1", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+          ]) as typeof SCENARIO.players[0]["units"],
+    }],
+  });
+  const settleOrdered = (world: SimWorld) => {
+    const plan: Plan = {
+      tick: world.tick,
+      unitActions: {
+        [high]: { type: "SELF_DESTRUCT" },
+        [low]: { type: "SELF_DESTRUCT" },
+      },
+      coreAction: null,
+      intents: {},
+    };
+    return settleTick(world, new Map([["p1", plan]]), ctx).events.map((event) => ({
+      eventType: event.eventType,
+      actorId: event.actorId,
+      targetId: event.targetId,
+      reasonCode: event.reasonCode,
+    }));
+  };
+  const forward = settleOrdered(makeOrderedWorld(false));
+  const reversed = settleOrdered(makeOrderedWorld(true));
+  assert.deepEqual(reversed, forward);
+  assert.deepEqual(
+    forward.filter((event) => event.eventType === "UNIT_SELF_DESTRUCTED").map((event) => event.actorId),
+    [low, high],
+  );
 });
