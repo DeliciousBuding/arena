@@ -24,10 +24,11 @@
 - DeterministicPlanner 经济闭环：BFS 绕障、资源唯一分配、分层巡逻、跨 Tick 资源记忆、cargo 回仓、容量裁决；
 - 动态移动争用退避：`MOVE_CONTESTED` 等只对对应 actor 短期冷却，不污染永久地图；
 - 最低 Worker 自恢复：Worker <2 时允许紧急补员；正常阶段继续积累，Core heal/repair 保留；
-- S0–S9 Digital Twin：movement/economy/visibility、Planner 闭环、A/B、benchmark、calibration；
+- S0–S12 / P06 / P12 Digital Twin：movement/economy/visibility、combat、Beacon、Core migration、respawn、Planner 闭环、A/B、benchmark、calibration；
 - S8b Runtime-Golden recorder：默认关闭、submit 后旁路、fail-open、四层 integrity hash；
 - `calibrate-dataset`：hash/path/rules 绑定、taxonomy、硬差异与已知事件 ≥99.9% 门禁；
-- 生产 deterministic 与模拟器两条开发线已融合进 `main`。
+- 生产 deterministic、Runtime-Golden 与扩展模拟器 resolver 已融合进 `main`；
+- MapStore WAL 重试在 Node 24 下改用对齐的 `SharedArrayBuffer(4)`，多进程并发写连续 5 轮通过。
 
 ## 真机迁移证据
 

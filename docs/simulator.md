@@ -1,6 +1,6 @@
 # Arena 离线模拟器与实验工具
 
-> 状态：S0–S9、S8b live full-plan recorder 与 Runtime-Golden dataset gate 已实现并融合进 `main`。首份真机数据集已验证：3 cases、硬差异 0、已知确定性事件 6/6。
+> 状态：S0–S12 / P06 / P12、S8b live full-plan recorder 与 Runtime-Golden dataset gate 已实现并融合进 `main`。首份真机数据集已验证：3 cases、硬差异 0、已知确定性事件 6/6。
 
 ## 1. 安全边界
 
@@ -223,18 +223,19 @@ run directory already exists ... (use --force to replace)
 - self-destruct、capacity、tier upkeep；
 - harvest/deposit、cargo pile；
 - Unit/Core heal、shield repair、spawn；
-- visibility、supercover 遮挡与 Planner observation；
-- Planner 闭环、A/B、benchmark、offline calibration。
+- visibility、center-based supercover 遮挡与 Planner observation；
+- combat：SWEEP/SHOOT 快照结算、互杀、Core shield/HP、击杀资源归属；
+- Core migration：START_MOVE/CANCEL_MOVE、Four-Tick 进度与最终移动裁决；
+- Champion Beacon：PICKUP/DROP、carrier 跟随、harvest 加成与失去时 shield clamp；
+- respawn：Core 摧毁后同 Tick 确定性重生、延迟重试与事件投影；
+- Planner 闭环、A/B、benchmark、offline calibration 与 Runtime-Golden dataset gate。
 
 仍需显式 unknown/unsupported 的内容包括：
 
-- combat；
-- Core migration 完整状态；
-- Beacon pickup/drop 与真实持有者全局状态；
-- respawn；
 - server-secret refill placement；
-- 未记录的对手动作与隐藏世界；
-- 服务端生成 UUID；
+- 未记录的对手锁定 Plan 与隐藏世界；
+- 服务端生成 UUID 的精确来源；
+- 外部裸 `MOVING` / `RESPAWNING` 快照缺少内部进度字段时的恢复；
 - v0.11 upkeep deficit 的 `PENDING-VERIFICATION` 细节。
 
 不得把 `INCONCLUSIVE` 当作 MATCH，也不得用模拟器输出替代真实服务器 Golden。
