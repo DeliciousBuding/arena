@@ -106,7 +106,7 @@ export function validateWorld(world: SimWorld): string[] {
       let carrierFound = false;
       for (const player of world.players.values()) {
         if (
-          player.core?.id === world.beacon.carrierId ||
+          world.beacon.carrierId === `core:${player.core?.id ?? ""}` ||
           player.units.some((unit) => unit.id === world.beacon!.carrierId)
         ) {
           carrierFound = true;
@@ -155,7 +155,15 @@ export function validateWorld(world: SimWorld): string[] {
     if (player.resources < 0) problems.push(`player ${player.id} negative resources`);
     if (player.core !== null) {
       if (player.core.hp < 0 || player.core.hp > 5) problems.push(`core ${player.core.id} hp out of range`);
-      if (player.core.shield < 0 || player.core.shield > 5) {
+      // 持有 Beacon 的玩家盾上限 10（maxShieldWithBeacon），否则 5
+      const beaconShieldCap = world.beacon !== null &&
+        world.beacon.status === "CARRIED" &&
+        world.beacon.carrierId !== null &&
+        (world.beacon.carrierId === `core:${player.core.id}` ||
+          player.units.some((unit) => unit.id === world.beacon!.carrierId))
+        ? 10
+        : 5;
+      if (player.core.shield < 0 || player.core.shield > beaconShieldCap) {
         problems.push(`core ${player.core.id} shield out of range`);
       }
     }

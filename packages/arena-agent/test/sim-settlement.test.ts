@@ -101,7 +101,7 @@ test("S3: combat 已实现——SHOOT/SWEEP 不再触发 unsupported", () => {
   assert.ok(!result.world.unsupportedFeatures.includes("combat"));
 });
 
-test("S3: core-migration / beacon 输入各自触发 unsupported", () => {
+test("S3: core-migration 输入触发 unsupported（beacon 已实现）", () => {
   const world = makeWorld();
   const migratePlan: Plan = {
     tick: world.tick,
@@ -112,6 +112,7 @@ test("S3: core-migration / beacon 输入各自触发 unsupported", () => {
   const r1 = settleTick(world, new Map([["p1", migratePlan]]), ctx);
   assert.deepEqual(r1.unsupported, ["core-migration"]);
 
+  // beacon 已实现：DROP_BEACON 不再触发 unsupported
   const beaconPlan: Plan = {
     tick: world.tick,
     unitActions: {},
@@ -119,7 +120,7 @@ test("S3: core-migration / beacon 输入各自触发 unsupported", () => {
     intents: {},
   };
   const r2 = settleTick(world, new Map([["p1", beaconPlan]]), ctx);
-  assert.deepEqual(r2.unsupported, ["beacon"]);
+  assert.deepEqual(r2.unsupported, []);
 });
 
 test("S3: refill cadence 记录 unknown 效应，不伪装成 MATCH", () => {

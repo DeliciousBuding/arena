@@ -345,9 +345,13 @@ function applyHarvest(
 ): void {
   const pile = draft.terrain.piles.get(key);
   const fromPile = pile !== undefined;
+  const beaconBonus = playerHoldsBeacon(draft, playerId);
+  const harvestAmount = beaconBonus
+    ? ctx.rules.rules.economy.harvestAmountWithBeacon
+    : ctx.rules.rules.economy.harvestAmount;
   const amount = fromPile
     ? Math.min(ctx.rules.rules.units.workerCargoCapacity, pile.amount)
-    : Math.min(ctx.rules.rules.units.workerCargoCapacity, ctx.rules.rules.economy.harvestAmount);
+    : Math.min(ctx.rules.rules.units.workerCargoCapacity, harvestAmount);
 
   updatePlayerUnits(draft, playerId, (units) =>
     units.map((current) => (current.id === unit.id ? { ...current, cargo: amount } : current)),
@@ -371,6 +375,16 @@ function applyHarvest(
       values: { amount, source: fromPile ? "DROPPED_CARGO" : "RESOURCE_NODE" },
     }),
   );
+}
+
+/** 该玩家是否持有 Beacon（carrier 是其 unit 或 Core）。 */
+function playerHoldsBeacon(draft: SimWorld, playerId: string): boolean {
+  const beacon = draft.beacon;
+  if (beacon === null || beacon.status !== "CARRIED" || beacon.carrierId === null) return false;
+  const player = draft.players.get(playerId);
+  if (player === undefined) return false;
+  if (beacon.carrierId === `core:${player.core?.id ?? ""}`) return true;
+  return player.units.some((unit) => unit.id === beacon.carrierId);
 }
 
 function resolveDepositRequests(draft: SimWorld, ctx: PhaseContext, events: ResolutionEvent[]): void {

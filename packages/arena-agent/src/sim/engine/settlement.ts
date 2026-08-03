@@ -14,6 +14,7 @@ import type { RulesManifest } from "../contracts/rules-manifest.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { SimFeature, SimWorld } from "../world/types.ts";
 import { assertWorldInvariants } from "../world/world.ts";
+import { beaconPhase } from "./beacon.ts";
 import { combatPhase } from "./combat.ts";
 import { economyPhases } from "./economy.ts";
 import { movementPhase } from "./movement.ts";
@@ -109,16 +110,7 @@ const PHASES: readonly Phase[] = [
       return EMPTY_OUTCOME;
     },
   },
-  {
-    id: "P07-unsupported-beacon-check",
-    officialPhase: 7,
-    run: (draft, ctx) => {
-      if (ctx.features.has("beacon")) {
-        return outcome({ unsupported: ["beacon"] });
-      }
-      return EMPTY_OUTCOME;
-    },
-  },
+  beaconPhase, // P07 beacon（PICKUP/DROP；同格争抢低 UUID 获胜；落地 tick 不可再拾取）
   ...economyPhases.slice(3, 4), // P08 harvest-and-deposit
   combatPhase, // P09 combat（SWEEP/SHOOT 快照结算；伤害累积 → 同时应用）
   ...economyPhases.slice(4, 6), // P10 unit-heal / P11 core-action
