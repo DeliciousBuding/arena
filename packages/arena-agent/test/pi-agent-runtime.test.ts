@@ -114,7 +114,7 @@ interface Harness {
 
 async function makeHarness(
   behavior: StubBehavior = {},
-  options: { deferredPrompt?: boolean } = {},
+  options: { deferredPrompt?: boolean; maxRunsBeforeRotate?: number; warmupTimeoutMs?: number; warmupPrompt?: string } = {},
 ): Promise<Harness> {
   const sessions: AgentSession[] = [];
   const promptControls: Deferred[] = [];
@@ -138,6 +138,10 @@ async function makeHarness(
     promptBuilder: (input) => `runId=${input.runId} tick=${input.context.tick} state=${input.context.stateHash}`,
     idleTimeoutMs: 50,
     consecutiveErrorThreshold: 2,
+    maxRunsBeforeRotate: options.maxRunsBeforeRotate ?? 40,
+    // 缺省无 warmup：大部分测试不关心预热行为；#4-6/#4-7 显式启用
+    warmupPrompt: options.warmupPrompt,
+    warmupTimeoutMs: options.warmupTimeoutMs ?? 30000,
     onTelemetry: (event) => telemetry.push(event),
   });
   runtime.bindCandidateSink((envelope) => {
@@ -664,17 +668,229 @@ test("冒烟 6：1000 runs 无泄漏——全部 settle、active 清理、runtim
   try {
     const RUNS = 1000;
     for (let i = 0; i < RUNS; i += 1) {
-      const handle = runtime.startDecision(makeRequest({ runId: `local:t1:100:${i}` }));
-      const result = await handle.settled;
-      assert.equal(result.outcome, "settled", `run ${i} 必须 settle`);
+      // 周期重置（每 40 run，#4 语义）是异步的——等待 runtime 回 ready 再继续
+      const deadline = Date.now() + 2000;
+      while (!runtime.health().ready) {
+        assert.ok(Date.now() < deadline, `run ${i} 等待周期 rotation 完成超时`);
+        await new Promise((r) => setTimeout(r, 5));
+      }
       if (i % 100 === 99) {
         assert.equal(runtime.health().ready, true, `run ${i} 后 runtime 必须 ready（无泄漏）`);
         assert.equal(runtime.health().activeRunId, null, `run ${i} 后无残留 active run`);
       }
+      const handle = runtime.startDecision(makeRequest({ runId: `local:t1:100:${i}` }));
+      const result = await handle.settled;
+      assert.equal(result.outcome, "settled", `run ${i} 必须 settle`);
+    }
+    // 第 1000 个 run settle 后周期 rotate（25×40）异步在途——等待回 ready 再断言
+    const deadline = Date.now() + 2000;
+    while (!runtime.health().ready) {
+      assert.ok(Date.now() < deadline, "最终周期 rotation 完成超时");
+      await new Promise((r) => setTimeout(r, 5));
     }
     assert.equal(runtime.health().ready, true);
     assert.equal(runtime.health().activeRunId, null);
   } finally {
     await close();
+  }
+});
+
+// ---------- #4：周期重置计数语义（成功/abort 都计，idle 边界 rotate） ----------
+
+function rotatingEvents(h: Harness): PiRuntimeTelemetry[] {
+  return h.telemetry.filter((t) => t.type === "rotating");
+}
+
+test("#4-1: 39 个成功 run 不 rotate（阈值 40 未到）", async () => {
+  const h = await makeHarness({}, { maxRunsBeforeRotate: 40 });
+  try {
+    for (let i = 0; i < 39; i += 1) {
+      const handle = h.runtime.startDecision(makeRequest({ runId: `local:t1:${100 + i}:${i}`, tick: 100 + i }));
+      const result = await handle.settled;
+      assert.equal(result.outcome, "settled");
+    }
+    assert.equal(rotatingEvents(h).length, 0, "39 run 未达阈值，不得 rotate");
+    assert.equal(h.sessions.length, 1, "不 rotate → 不重建 session");
+  } finally {
+    await h.close();
+  }
+});
+
+test("#4-2: 第 40 个成功 run settle 后 rotate 一次（idle 边界，reason=periodic_reset，事件单组）", async () => {
+  const h = await makeHarness({}, { maxRunsBeforeRotate: 40 });
+  try {
+    for (let i = 0; i < 40; i += 1) {
+      const handle = h.runtime.startDecision(makeRequest({ runId: `local:t1:${100 + i}:${i}`, tick: 100 + i }));
+      const result = await handle.settled;
+      assert.equal(result.outcome, "settled");
+    }
+    await waitForTelemetry(h, "rotated");
+    const rotating = rotatingEvents(h);
+    assert.equal(rotating.length, 1, "恰好一次 rotating（无重复事件）");
+    assert.equal(rotating[0].reason, "periodic_reset", "周期重置必须带 reason=periodic_reset");
+    assert.equal(h.telemetry.filter((t) => t.type === "rotated").length, 1, "rotated 事件单组");
+    assert.equal(h.sessions.length, 2, "rotate 后 session 重建");
+    assert.deepEqual(h.runtime.health(), { ready: true, activeRunId: null }, "rotate 后恢复 ready");
+  } finally {
+    await h.close();
+  }
+});
+
+test("#4-3: 40 个 aborted run 仍只 rotate 一次（无 double count）", async () => {
+  // abort 时 prompt 才 resolve（模拟真实 pi：abort 打断 LLM → prompt 立即终止）——
+  // 计数在 startDecision（abort 也计一次），第 40 个 settle 触发唯一一次周期 rotate
+  let control: Deferred | null = null;
+  const h = await makeHarness(
+    {
+      prompt: () => (control !== null ? control.promise : Promise.resolve()),
+      abort: () => {
+        control?.resolve();
+        return Promise.resolve();
+      },
+    },
+    { maxRunsBeforeRotate: 40, deferredPrompt: true },
+  );
+  try {
+    control = h.promptControls[0] ?? null;
+    for (let i = 0; i < 40; i += 1) {
+      const handle = h.runtime.startDecision(makeRequest({ runId: `local:t1:${100 + i}:${i}`, tick: 100 + i }));
+      handle.abort("test-abort");
+      const result = await handle.settled;
+      assert.equal(result.outcome, "settled" as const, "abort 后 prompt 终止 → settle");
+    }
+    await waitForTelemetry(h, "rotated");
+    assert.equal(rotatingEvents(h).length, 1, "40 个 aborted run 只 rotate 一次（无 double count）");
+    assert.equal(h.telemetry.filter((t) => t.type === "rotated").length, 1);
+    assert.equal(h.sessions.length, 2);
+  } finally {
+    await h.close();
+  }
+});
+
+test("#4-4: 成功/abort 混合计数正确（20 成功 + 20 abort → 40 触发一次）", async () => {
+  // deferredPrompt：prompt 返回本 session 的 control.promise（挂起）——
+  // 成功 run 显式 resolve（模拟 LLM 完成）；abort run abort 后 resolve（模拟打断终止）。
+  // 同一 session 内所有 prompt 调用共享已 resolve 的 promise → 后续 run 立即 settle。
+  const h = await makeHarness({}, { maxRunsBeforeRotate: 40, deferredPrompt: true });
+  try {
+    const control = h.promptControls[0];
+    for (let i = 0; i < 40; i += 1) {
+      const handle = h.runtime.startDecision(makeRequest({ runId: `local:t1:${100 + i}:${i}`, tick: 100 + i }));
+      if (i < 20) {
+        control?.resolve(); // 成功 run：LLM 完成 → settle
+      } else {
+        handle.abort("test-abort"); // abort run：打断 → resolve 终止 prompt
+        control?.resolve();
+      }
+      const result = await handle.settled;
+      assert.equal(result.outcome, "settled" as const);
+    }
+    await waitForTelemetry(h, "rotated");
+    assert.equal(rotatingEvents(h).length, 1, "混合 40 次计数恰好一次 rotate（无 double count）");
+    assert.equal(h.sessions.length, 2);
+  } finally {
+    await h.close();
+  }
+});
+
+test("#4-5: 旧 generation 延迟 settle 不影响新计数（rotate 后旧 prompt 才结束）", async () => {
+  // 场景：run 0 的 prompt 挂起 → abort → idle 超时（50ms）→ 异常 rotate →
+  // 新 generation 跑 run 1-5（计数 5）→ 旧 run 0 的 prompt 此刻才 settle（旧 generation）→
+  // 迟到 settle 不得触发周期 rotate、不得消耗/重置新计数
+  const hang = makeDeferred();
+  let hangUsed = false;
+  const h = await makeHarness(
+    {
+      prompt: () => {
+        if (!hangUsed) {
+          hangUsed = true;
+          return hang.promise; // 首调用（run 0）挂起
+        }
+        return Promise.resolve();
+      },
+    },
+    { maxRunsBeforeRotate: 40 },
+  );
+  try {
+    const handle = h.runtime.startDecision(makeRequest());
+    handle.abort("test-abort");
+    await waitForTelemetry(h, "rotated"); // idle 超时 → unhealthy → rotate
+    assert.equal(h.sessions.length, 2, "异常路径 rotate 重建 session");
+    assert.equal(rotatingEvents(h).length, 1);
+    assert.equal(rotatingEvents(h)[0].reason, undefined, "异常 rotation 不带 periodic_reset");
+    // 新 generation 跑 5 个 run（新计数 5）
+    for (let i = 1; i <= 5; i += 1) {
+      const hd = h.runtime.startDecision(makeRequest({ runId: `local:t1:${100 + i}:${i}`, tick: 100 + i }));
+      await hd.settled;
+    }
+    hang.resolve(); // 旧 run 0 迟到 settle（旧 generation）
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(rotatingEvents(h).length, 1, "旧 generation 迟到 settle 不得触发 rotate");
+    assert.equal(h.sessions.length, 2, "旧 session 迟到 settle 不得重建 session");
+    // 新计数不受影响：再跑 40 个新 run → 计数 5+40=45 ≥ 40 → 恰好触发一次周期 rotate；
+    // 第 40 个 settle 触发异步 rotate → 循环内等 ready（与冒烟 6 同模式）
+    for (let i = 6; i < 46; i += 1) {
+      const deadline = Date.now() + 2000;
+      while (!h.runtime.health().ready) {
+        assert.ok(Date.now() < deadline, `run ${i} 等待周期 rotation 完成超时`);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      const hd = h.runtime.startDecision(makeRequest({ runId: `local:t1:${100 + i}:${i}`, tick: 100 + i }));
+      await hd.settled;
+    }
+    await new Promise((r) => setTimeout(r, 200)); // 等周期 rotate 完成（rotating 事件已计数）
+    const periodic = rotatingEvents(h).filter((t) => t.reason === "periodic_reset");
+    assert.equal(periodic.length, 1, "新计数到 40 仍触发周期 rotate（旧迟到 settle 未重置计数）");
+    assert.equal(h.sessions.length, 3, "周期 rotate 重建第三个 session");
+  } finally {
+    hang.resolve();
+    await h.close();
+  }
+});
+
+test("#4-6: warmup reject → fail-open（telemetry 记录，runtime 仍 ready）", async () => {
+  let warmupRejected = false;
+  const h = await makeHarness(
+    {
+      prompt: () => {
+        if (!warmupRejected) {
+          warmupRejected = true;
+          return Promise.reject(new Error("warmup provider down"));
+        }
+        return Promise.resolve();
+      },
+    },
+    { warmupPrompt: "warmup" },
+  );
+  try {
+    assert.equal(h.runtime.health().ready, true, "warmup 失败 fail-open：runtime 必须 ready");
+    const err = h.telemetry.find((t) => t.type === "prompt_error" && t.message?.startsWith("warmup:"));
+    assert.ok(err !== undefined, "warmup 失败必须写 telemetry（prompt_error + warmup 前缀）");
+    // 首决策正常
+    const handle = h.runtime.startDecision(makeRequest());
+    const result = await handle.settled;
+    assert.equal(result.outcome, "settled");
+  } finally {
+    await h.close();
+  }
+});
+
+test("#4-7: warmup timeout → fail-open + warmup_timeout telemetry，close 不挂死", async () => {
+  const hang = makeDeferred();
+  const h = await makeHarness(
+    {
+      prompt: () => hang.promise, // 预热挂起 → 超时
+    },
+    { warmupTimeoutMs: 50, warmupPrompt: "warmup-hang" },
+  );
+  try {
+    assert.equal(h.runtime.health().ready, true, "warmup 超时 fail-open：runtime 必须 ready");
+    assert.ok(h.telemetry.some((t) => t.type === "warmup_timeout"), "必须发出 warmup_timeout");
+    // close 并发：后台 abort 不阻塞关闭
+    await h.close();
+    assert.ok(true, "close 在 warmup 超时后不挂死");
+    return;
+  } finally {
+    hang.resolve(); // 释放挂起（close 已过，防悬挂 timer）
   }
 });

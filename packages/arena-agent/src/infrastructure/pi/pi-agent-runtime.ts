@@ -48,6 +48,7 @@ export interface PiRuntimeTelemetry {
     | "rotating"
     | "rotated"
     | "rotation_failed"
+    | "warmup_timeout"
     | "violation";
   readonly runId?: string;
   readonly reason?: string;
@@ -79,9 +80,13 @@ export interface PiAgentRuntimeOptions {
   /** 启动预热 prompt（缺省无）。真实 LLM 冷启动 12s+（首调用）会让首 tick
    *  在 soft deadline 超时 → abort 残留 → 恶性循环；预热后 2-4s/轮稳定。 */
   readonly warmupPrompt?: string;
-  /** 主动重置阈值（缺省 40）：每 N 个 run 主动 rotate 一次——对抗会话历史累积
-   *  （每 tick prompt 追加，上下文增长让 LLM 变慢；rotate 后重新预热 1-2 tick）。 */
+  /** 主动重置阈值（缺省 40）：每 N 个启动成功的 run 主动 rotate 一次——对抗会话历史累积
+   *  （每 tick prompt 追加，上下文增长让 LLM 变慢；rotate 后重新预热 1-2 tick）。
+   *  计数语义（#4）：startDecision 成功即计数（settled/error/aborted 都算一次），
+   *  重置在 run settled 后的 idle 边界执行（maybePeriodicRotate）。 */
   readonly maxRunsBeforeRotate?: number;
+  /** warmup 独立超时（缺省 30000ms）。超时/失败不阻断启动——fail-open（见 warmupSession）。 */
+  readonly warmupTimeoutMs?: number;
 }
 
 interface ActiveRun {
@@ -135,10 +140,43 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     const runtime = new PiAgentRuntime(options);
     await runtime.initialize();
     // 预热：让 LLM 首调用（冷启动 12s+）在首 tick 前完成——首 tick 就 2-4s 稳定
-    if (options.warmupPrompt !== undefined && options.warmupPrompt.length > 0) {
-      await runtime.artifacts?.session.prompt(options.warmupPrompt).catch(() => {});
-    }
+    await runtime.warmupSession();
     return runtime;
+  }
+
+  /** 启动/rotate 后预热（#4）：独立 timeout + fail-open。
+   *  fail-open 是生产默认：预热失败仅损失预热收益，不影响决策正确性——
+   *  真实首决策的冷启动已由 deadline（agentSoft 24s ≫ 冷启动 22.8s）覆盖；
+   *  warmup 文本明确禁止工具调用，且 slot 未激活（无 ToolContext），不污染决策上下文。
+   *  timeout 语义：Promise.race 让 create 不被挂起 prompt 阻塞（fail-open）——
+   *  超时后后台 abort；session 若仍忙，首 tick startDecision 抛错 → Safety。 */
+  private async warmupSession(): Promise<void> {
+    const text = this.options.warmupPrompt;
+    if (text === undefined || text.length === 0 || this.artifacts === null) {
+      return;
+    }
+    const timeoutMs = this.options.warmupTimeoutMs ?? 30000;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+    }, timeoutMs);
+    try {
+      await Promise.race([
+        this.artifacts.session.prompt(text),
+        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs + 10)),
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.onTelemetry("prompt_error", undefined, `warmup: ${message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (timedOut) {
+      this.onTelemetry("warmup_timeout", undefined, "warmup did not settle within timeout");
+      // 后台尝试 abort（不 await——hang 时不能阻塞启动）；session 若仍忙，
+      // 首 tick startDecision 抛错 → coordinator 立即 Safety（fail-open）
+      void this.artifacts.session.abort().catch(() => {});
+    }
   }
 
   private async initialize(): Promise<void> {
@@ -215,9 +253,12 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
       run.settledResult = result;
       run.resolveSettled(result);
       if (this.active === run) {
-        this.active = null;
         this.state = "ready";
         this.slot.deactivate(run.runId); // 4D-pre：settle 后停用（只匹配本 run）
+        // 周期重置（#4）：run settled 后的 idle 边界检查——先于 active=null 调用
+        // （maybePeriodicRotate 以 active 指向本 run 为前提判定）
+        this.maybePeriodicRotate(run);
+        this.active = null;
       }
       this.onTelemetry("run_settled", run.runId, undefined, undefined, undefined);
     };
@@ -248,6 +289,10 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
           this.markUnhealthy(`consecutive_prompt_errors: ${this.consecutiveErrors}`);
         }
       });
+
+    // #4 计数语义：每个启动成功的 run 计数一次（settled/error/aborted 都算）——
+    // 计数在 startDecision（同步路径，旧 generation 迟到 Promise 无法修改）
+    this.runsSinceRotate += 1;
 
     return {
       runId: request.runId,
@@ -305,7 +350,8 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
   }
 
   /** 同步返回；后台等待 prompt 终止 → ready；超时 → unhealthy → rotate（总任务书 3.4）。
-   *  主动重置检查：runsSinceRotate 达到阈值 → 立即 rotate（对抗会话历史累积）。 */
+   *  周期重置不在此路径（#4）：abort 只负责中止 run，周期 rotate 由 settle 后
+   *  的 idle 边界检查（maybePeriodicRotate）统一触发。 */
   private abortRun(run: ActiveRun, reason: string): void {
     if (this.active !== run || run.aborted) {
       return;
@@ -314,16 +360,23 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     run.abortReason = reason;
     this.state = "aborting";
     this.onTelemetry("abort_requested", run.runId, undefined, reason);
-    this.runsSinceRotate += 1;
     // 不 await：void 后台完成（coordinator 永不阻塞在 abort 上）
-    if (this.runsSinceRotate >= this.maxRunsBeforeRotate) {
-      // 主动重置：会话历史累积到阈值——rotate 清空上下文（LLM 恢复 2-4s）
-      this.onTelemetry("rotating", undefined, "periodic_reset", undefined, this.generation + 1);
-      this.runsSinceRotate = 0;
-      void this.rotate();
+    void this.abortAndSettle(run, reason);
+  }
+
+  /** 周期重置（#4）：run settled 后的 idle 边界——当前 run 的 settle 且 runtime 已
+   *  ready 时才可能触发；阈值按 startDecision 计数（成功/abort 都计，不 double count）。
+   *  与异常 rotation（abort_idle_timeout / 连续 prompt error）分离——异常路径
+   *  走 markUnhealthy，不经此方法。 */
+  private maybePeriodicRotate(run: ActiveRun): void {
+    if (run !== this.active || this.state !== "ready") {
       return;
     }
-    void this.abortAndSettle(run, reason);
+    if (this.runsSinceRotate < this.maxRunsBeforeRotate) {
+      return;
+    }
+    this.runsSinceRotate = 0;
+    void this.rotate("periodic_reset");
   }
 
   private async abortAndSettle(run: ActiveRun, reason: string): Promise<void> {
@@ -366,7 +419,10 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     void this.rotate();
   }
 
-  private async rotate(): Promise<void> {
+  /** 旋转 session。reason 供 telemetry 区分触发源（#4：周期重置 reason=periodic_reset；
+   *  异常路径不带 reason——unhealthy 事件已说明原因）。每次 rotation 只发一组
+   *  lifecycle 事件：rotating(reason) → rotated。 */
+  private async rotate(reason?: string): Promise<void> {
     if (this.state === "rotating" || this.state === "closed") {
       return;
     }
@@ -375,7 +431,8 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     this.slot.forceClear(); // 4D-pre：rotation 强制清空残留上下文
     this.active = null; // 旧 run 作废（hang 无法 settle 时不再引用）
     this.generation += 1;
-    this.onTelemetry("rotating", undefined, undefined, undefined, this.generation);
+    // onTelemetry 签名：type, runId, message, reason, generation——reason 在第 4 参
+    this.onTelemetry("rotating", undefined, undefined, reason, this.generation);
     try {
       // 超时保护：hang 的 prompt 会让 session.abort() 永不返回（真实冒烟暴露）——
       // rotation 必须推进（新 session 就绪），旧 session 泄漏可接受（已作废）
@@ -385,9 +442,7 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
       ]);
       await this.initialize();
       // 新 session 同样预热（rotate 后首 tick 不冷启动超时）
-      if (this.options.warmupPrompt !== undefined && this.options.warmupPrompt.length > 0) {
-        await this.artifacts?.session.prompt(this.options.warmupPrompt).catch(() => {});
-      }
+      await this.warmupSession();
       this.consecutiveErrors = 0;
       this.onTelemetry("rotated", undefined, undefined, undefined, this.generation);
     } catch (error) {

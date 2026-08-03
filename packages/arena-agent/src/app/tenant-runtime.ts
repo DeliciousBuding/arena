@@ -357,8 +357,11 @@ async function createPiRuntime(
     promptBuilder: buildDecisionPrompt,
     mapSnapshotBuilder: (state) => mapSnapshotOf(state),
     // 预热：LLM 冷启动 12s+ 会让首 tick 超时 → abort 残留恶性循环；预热后 2-4s 稳定。
-    // 实测依据：无 abort 连续调用 2.3-3.4s（latency2 诊断），冷启动首调用 12-19s。
-    warmupPrompt: "预热：请用一句话确认你已就绪（无需调用工具）。",
+    // 实测依据：无 abort 连续调用 2.3-3.4s（latency2 诊断），冷启动首调用 12-19s
+    //（完整真实 prompt 冷启动实测 22.8s——deadline 已放大到 24s 兜底，预热失败 fail-open）。
+    // warmup 文本明确禁止工具调用（slot 未激活，工具执行会抛错；#4 要求不污染 ToolContext）。
+    warmupPrompt: "预热：请用一句话确认你已就绪。禁止调用任何工具，只回答「就绪」。",
+    warmupTimeoutMs: 30000,
     onTelemetry,
   });
 }
