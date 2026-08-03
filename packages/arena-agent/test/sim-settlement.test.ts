@@ -101,7 +101,7 @@ test("S3: combat 已实现——SHOOT/SWEEP 不再触发 unsupported", () => {
   assert.ok(!result.world.unsupportedFeatures.includes("combat"));
 });
 
-test("S3: core-migration 输入触发 unsupported（beacon 已实现）", () => {
+test("S3: core-migration 与 beacon 均已实现，不再触发 unsupported", () => {
   const world = makeWorld();
   const migratePlan: Plan = {
     tick: world.tick,
@@ -110,7 +110,9 @@ test("S3: core-migration 输入触发 unsupported（beacon 已实现）", () => 
     intents: {},
   };
   const r1 = settleTick(world, new Map([["p1", migratePlan]]), ctx);
-  assert.deepEqual(r1.unsupported, ["core-migration"]);
+  assert.deepEqual(r1.unsupported, []);
+  assert.equal(r1.world.players.get("p1")!.core!.state, "MOVING");
+  assert.ok(r1.events.some((event) => event.eventType === "CORE_MOVE_STARTED"));
 
   // beacon 已实现：DROP_BEACON 不再触发 unsupported
   const beaconPlan: Plan = {

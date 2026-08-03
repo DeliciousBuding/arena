@@ -6,7 +6,7 @@
  * 禁止把 SimWorld 强转为 TickState。
  */
 
-import type { Position, UnitType } from "../../domain/model.ts";
+import type { Direction, Position, UnitType } from "../../domain/model.ts";
 
 /** 已触发/标记的 unsupported 能力（不得当作成功或 WAIT 静默处理）。 */
 export type SimFeature =
@@ -26,6 +26,16 @@ export interface SimCore {
   readonly hp: number;
   readonly shield: number;
   readonly state: CoreState;
+  /**
+   * 迁移字段（wire CoreView 的 move_* 等价源；全部 null = 非迁移）。
+   * MOVING 且四字段全非 null：Sim 自产迁移，确定性推进；
+   * MOVING 且四字段全 null（裸 MOVING）：外部快照带入、进度未知，
+   *   不得猜测解析——settlement 标记 unsupported，visibility fail closed。
+   */
+  readonly moveDirection: Direction | null;
+  readonly moveProgress: number | null;
+  readonly moveRequiredTicks: number | null;
+  readonly destination: Position | null;
 }
 
 export interface SimUnit {

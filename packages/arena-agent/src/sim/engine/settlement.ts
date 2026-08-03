@@ -16,6 +16,7 @@ import type { SimFeature, SimWorld } from "../world/types.ts";
 import { assertWorldInvariants } from "../world/world.ts";
 import { beaconPhase } from "./beacon.ts";
 import { combatPhase } from "./combat.ts";
+import { coreMigrationPhase } from "./core-migration.ts";
 import { economyPhases } from "./economy.ts";
 import { movementPhase } from "./movement.ts";
 import { EMPTY_OUTCOME, outcome, type Phase, type PhaseContext, type PhaseOutcome, type ResolutionEvent, type UnknownEffect } from "./phase.ts";
@@ -62,10 +63,6 @@ function scanUnsupported(world: SimWorld, plans: ReadonlyMap<string, Plan>): Sim
     }
     if (plan.coreAction !== null) {
       switch (plan.coreAction.type) {
-        case "START_MOVE":
-        case "CANCEL_MOVE":
-          hit.add("core-migration");
-          break;
         case "PICKUP_BEACON":
         case "DROP_BEACON":
           hit.add("beacon");
@@ -77,7 +74,16 @@ function scanUnsupported(world: SimWorld, plans: ReadonlyMap<string, Plan>): Sim
   }
   for (const player of world.players.values()) {
     if (player.core?.state === "MOVING") {
-      hit.add("core-migration");
+      // 裸 MOVING（缺迁移字段）：外部快照进度未知，无法确定性推进，仍算 unsupported；
+      // Sim 自产迁移（四字段齐全）由 P06 resolver 确定性推进，不算 unsupported。
+      if (
+        player.core.moveDirection === null ||
+        player.core.moveProgress === null ||
+        player.core.moveRequiredTicks === null ||
+        player.core.destination === null
+      ) {
+        hit.add("core-migration");
+      }
     }
     if (player.status === "RESPAWNING") {
       hit.add("respawn");
@@ -101,14 +107,9 @@ const PHASES: readonly Phase[] = [
     run: movementPhase.run,
   },
   {
-    id: "P06-unsupported-core-migration-check",
+    id: "P06-core-migration",
     officialPhase: 5,
-    run: (draft, ctx) => {
-      if (ctx.features.has("core-migration")) {
-        return outcome({ unsupported: ["core-migration"] });
-      }
-      return EMPTY_OUTCOME;
-    },
+    run: coreMigrationPhase.run,
   },
   beaconPhase, // P07 beacon（PICKUP/DROP；同格争抢低 UUID 获胜；落地 tick 不可再拾取）
   ...economyPhases.slice(3, 4), // P08 harvest-and-deposit

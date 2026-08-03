@@ -489,6 +489,8 @@ const coreActionPhase: Phase = {
       if (plan?.coreAction === null || plan?.coreAction === undefined || player.core === null) continue;
       const action = plan.coreAction;
       if (action.type === "WAIT") continue;
+      // START_MOVE / CANCEL_MOVE 由 P06 core-migration resolver 独占处理（本 phase 仅 stationary 动作）
+      if (action.type === "START_MOVE" || action.type === "CANCEL_MOVE") continue;
       if (player.core.state === "MOVING") {
         events.push(eventOf(draft.tick, "CORE_ACTION_FAILED", { reasonCode: "CORE_ALREADY_MOVING", actorId: player.core.id, position: player.core.position }));
         continue;
