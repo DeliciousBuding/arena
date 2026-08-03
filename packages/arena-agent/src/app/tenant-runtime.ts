@@ -100,6 +100,8 @@ export interface TenantRunOptions {
   readonly runtime?: AgentDecisionRuntime;
   /** 自定义信号回调注册（测试注入；缺省 process.on SIGINT/SIGTERM）。 */
   readonly onSignal?: (callback: () => void) => void;
+  /** 处理满 N 个 Turn 后由 runtime 自己优雅关闭；Canary/Burn-in 门禁使用。 */
+  readonly maxTicks?: number;
 }
 
 export interface TenantRunResult {
@@ -107,7 +109,11 @@ export interface TenantRunResult {
   readonly tenantId: string;
   readonly decisionMode: DecisionModeName;
   readonly submissionMode: SubmissionModeName;
+  /** 兼容旧字段：最后处理的游戏 Tick 编号，不是数量。 */
   readonly tickCount: number;
+  /** 本次进程实际处理的 Turn 数。 */
+  readonly processedTickCount: number;
+  readonly lastTick: number | null;
   readonly manifestPath: string;
   readonly telemetryPaths: { readonly runtime: string; readonly decision: string; readonly outcome: string };
 }
@@ -118,6 +124,9 @@ export async function runTenant(
   repoRoot: string,
   options: TenantRunOptions = {},
 ): Promise<TenantRunResult> {
+  if (options.maxTicks !== undefined && (!Number.isInteger(options.maxTicks) || options.maxTicks < 1)) {
+    throw new Error(`maxTicks 必须是正整数，实际=${String(options.maxTicks)}`);
+  }
   const config = loadRuntimeConfig(configPath);
   const decisionMode = options.decisionMode ?? config.decisionMode;
   const submissionMode = submissionModeOf(options, config);
@@ -170,6 +179,25 @@ export async function runTenant(
     const client =
       options.client ??
       new ArenaHeroClient({ apiKey: readEnvToken(config.arenaTokenEnv) });
+
+    // 运行停止控制：signal 与 maxTicks 共用同一幂等路径。
+    let stopping = false;
+    let resolveStopped: () => void = () => {};
+    const stopped = new Promise<void>((resolve) => {
+      resolveStopped = resolve;
+    });
+    const requestStop = (): void => {
+      if (!stopping) {
+        stopping = true;
+        client.close?.();
+        resolveStopped();
+      }
+    };
+    const onSignal = options.onSignal ?? ((cb) => {
+      process.once("SIGINT", cb);
+      process.once("SIGTERM", cb);
+    });
+    onSignal(requestStop);
 
     // 5) Agent runtime：safety/deterministic 模式用 no-op 占位（coordinator 短路不调用，
     //    Pi 认证不阻断 Canary）；其他模式真实 Pi 或测试注入 fake；rotationGeneration 经 onTelemetry 透传；
@@ -226,6 +254,7 @@ export async function runTenant(
         coreId: string | null;
       } | null;
     } = { prev: null };
+    let processedTickCount = 0;
 
     const onTick = (outcome: TickOutcome): void => {
       const decision = outcome.decision;
@@ -314,26 +343,13 @@ export async function runTenant(
         plan: outcome.plan,
         coreId: outcome.state.core?.id ?? null,
       };
+      processedTickCount += 1;
+      if (options.maxTicks !== undefined && processedTickCount >= options.maxTicks) {
+        requestStop();
+      }
     };
 
-    // 8) 主循环（signal 到达 → 终止 turns → 提交路径随 Turn 关闭自然停止）
-    let stopping = false;
-    let resolveStopped: () => void = () => {};
-    const stopped = new Promise<void>((resolve) => {
-      resolveStopped = resolve;
-    });
-    const onSignal = options.onSignal ?? ((cb) => {
-      process.once("SIGINT", cb);
-      process.once("SIGTERM", cb);
-    });
-    onSignal(() => {
-      if (!stopping) {
-        stopping = true;
-        client.close?.(); // 停止接收新 Turn（同步关闭 socket，turns() 随之终止）
-        resolveStopped();
-      }
-    });
-
+    // 8) 主循环（signal/maxTicks → 终止 turns → 当前 Tick 提交完成后自然停止）
     const loopPromise = runTenantLoop({
       client,
       coordinator,
@@ -342,6 +358,10 @@ export async function runTenant(
       onTick,
     });
     await Promise.race([loopPromise, stopped]);
+    // requestStop 可能先于 async generator 完成；必须等待 loop 真正退出，避免 close writer 后迟到写入。
+    if (stopping) {
+      await loopPromise;
+    }
 
     // 9) 优雅关闭：flush telemetry → 关闭 runtime → 释放锁
     runtimeWriter.close();
@@ -356,6 +376,8 @@ export async function runTenant(
       decisionMode,
       submissionMode,
       tickCount: holder.prev?.tick ?? 0,
+      processedTickCount,
+      lastTick: holder.prev?.tick ?? null,
       manifestPath,
       telemetryPaths: {
         runtime: join(dirs.telemetryDir, "runtime.jsonl"),

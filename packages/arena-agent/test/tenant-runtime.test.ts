@@ -191,6 +191,8 @@ test("runTenant：safety 模式全链路——锁/manifest/telemetry 三流/优�
     const result = await runTenant(configPath, "PROJECT_ROOT/arena", { runtime, client: client as never });
 
     assert.equal(result.tickCount, 1002, "3 个 Turn 全部处理");
+    assert.equal(result.processedTickCount, 3);
+    assert.equal(result.lastTick, 1002);
     assert.ok(existsSync(result.manifestPath), "manifest 必须写出");
     const manifest = JSON.parse(readFileSync(result.manifestPath, "utf-8")) as { processRunId: string; tenantId: string; piVersion: string };
     assert.equal(manifest.processRunId, result.processRunId);
@@ -218,6 +220,48 @@ test("runTenant：safety 模式全链路——锁/manifest/telemetry 三流/优�
     }
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+test("runTenant：maxTicks 达标后 runtime 内部优雅关闭并精确计数", async () => {
+  const base = mkdtempSync(join(tmpdir(), "tenant-run-"));
+  const configPath = writeConfig(makeConfig(base));
+  const runtime = new SyncCandidateRuntime();
+  const client = makeInfiniteClient();
+  const old = process.env.ARENA_HERO_API_KEY_T_TEST;
+  process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
+  try {
+    const result = await runTenant(configPath, "PROJECT_ROOT/arena", {
+      runtime,
+      client: client as never,
+      decisionMode: "deterministic",
+      submissionMode: "live",
+      maxTicks: 3,
+      onSignal: () => {},
+    });
+    assert.equal(result.processedTickCount, 3);
+    assert.equal(result.lastTick, 1002);
+    assert.equal(result.tickCount, 1002, "兼容字段仍返回 lastTick");
+    assert.equal(client.submitted.length, 3);
+    assert.equal(client.closed, true);
+    assert.equal(runtime.closed, true);
+    assert.equal(existsSync(join(base, "t1", "locks", "t1.lock")), false, "锁已释放");
+    const runtimeLines = readFileSync(result.telemetryPaths.runtime, "utf-8").trim().split("\n");
+    assert.equal(runtimeLines.length, 3, "恰好落 3 Tick telemetry");
+  } finally {
+    if (old === undefined) {
+      delete process.env.ARENA_HERO_API_KEY_T_TEST;
+    } else {
+      process.env.ARENA_HERO_API_KEY_T_TEST = old;
+    }
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("runTenant：非法 maxTicks 在拿锁前 fail-fast", async () => {
+  await assert.rejects(
+    runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { maxTicks: 0 }),
+    /maxTicks 必须是正整数/,
+  );
 });
 
 test("runTenant：agent-shadow + live——runtime 启动 + 候选评估 + 真提交", async () => {
