@@ -245,7 +245,7 @@ interface RawObject {
   readonly state?: string;
   readonly owner_username?: string;
   readonly unit_type?: string;
-  readonly cargo?: number;
+  readonly cargo?: number | null;
   readonly positions?: readonly Position[];
 }
 
