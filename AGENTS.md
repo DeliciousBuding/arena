@@ -8,6 +8,7 @@ Arena 正式运行链为 TS-only。遵循原生设计：优先 Node 标准能力
 
 - 当前状态：`docs/progress/MASTER.md`
 - 运维：`docs/ops/supervisor-runbook.md`
+- 服务器：`docs/ops/server-deployment.md`
 - 架构：`docs/ts-architecture.md`
 - 迁移边界：`docs/migration-plan.md`
 - 测试数字：`docs/generated/status.md`
@@ -20,6 +21,7 @@ npm run check
 npm test
 npm run schema:check
 npm run replay:ts
+npm run server:check
 python scripts/gen-status.py --check
 python scripts/docs_health.py --check
 

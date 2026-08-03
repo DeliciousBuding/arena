@@ -139,6 +139,70 @@ test("complete preflight happens before the first spawn", async () => {
   }
 });
 
+
+
+test("external config/runtime roots support immutable releases", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arena-code-"));
+  const configRoot = mkdtempSync(join(tmpdir(), "arena-config-"));
+  const runtimeRoot = mkdtempSync(join(tmpdir(), "arena-runtime-"));
+  const envName = `ARENA_EXTERNAL_${Math.random().toString(16).slice(2)}`;
+  process.env[envName] = "test-key-not-real";
+  writeFileSync(join(configRoot, "t1.json"), JSON.stringify({
+    tenantId: "t1",
+    arenaTokenEnv: envName,
+    decisionMode: "deterministic",
+    submitEnabled: false,
+    model: { provider: "test", id: "test-model" },
+    baseDir: runtimeRoot,
+  }));
+  const children = new Map<string, FakeChild>();
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot,
+      configRoot,
+      runtimeRoot,
+      configs: ["t1.json"],
+      spawnChild: fakeSpawn(children),
+    });
+    await supervisor.start();
+    assert.equal(supervisor.configRoot, resolve(configRoot));
+    assert.equal(supervisor.runtimeRoot, resolve(runtimeRoot));
+    const spec = supervisor.preflight()[0];
+    writeLock(spec, children.get("t1")!.pid);
+    assert.equal(supervisor.isReady(), true);
+    assert.equal(existsSync(join(runtimeRoot, "supervisor.jsonl")), true);
+    children.get("t1")!.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    delete process.env[envName];
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(configRoot, { recursive: true, force: true });
+    rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test("explicit runtimeRoot rejects tenant baseDir drift before spawn", async () => {
+  const repo = makeTempRepo();
+  const runtimeRoot = mkdtempSync(join(tmpdir(), "arena-runtime-"));
+  let spawnCount = 0;
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      runtimeRoot,
+      configs: ["t1.json"],
+      spawnChild: () => {
+        spawnCount += 1;
+        return new FakeChild() as unknown as ChildProcess;
+      },
+    });
+    await assert.rejects(supervisor.start(), /baseDir must match supervisor runtimeRoot/);
+    assert.equal(spawnCount, 0);
+  } finally {
+    repo.cleanup();
+    rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
 test("duplicate tenantId fails preflight with zero spawn", async () => {
   const repo = makeTempRepo([
     { file: "a.json", tenantId: "same" },
@@ -169,7 +233,7 @@ test("duplicate config and path traversal fail before spawn", async () => {
     );
     await assert.rejects(
       new TenantSupervisor({ repoRoot: repo.root, configs: ["../outside.json"], spawnChild }).start(),
-      /runtime\/configs|runtime\\configs/,
+      /configured config root/,
     );
     assert.equal(spawnCount, 0);
   } finally {
@@ -356,6 +420,32 @@ test("DebugServer walks backward from a truncated JSONL tail", async () => {
     const result = await requestJson(debug.address()!.port, "/state?tenant=t1");
     assert.equal(result.status, 200);
     assert.equal(result.body.row.tick, 2);
+  } finally {
+    await debug.close();
+    repo.cleanup();
+  }
+});
+
+
+
+test("DebugServer reads rotated JSONL history without unbounded scans", async () => {
+  const repo = makeTempRepo();
+  const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"] });
+  const debug = new DebugServer({ repoRoot: repo.root, supervisor, port: 0 });
+  try {
+    const telemetry = join(repo.root, "runtime", "t1", "telemetry");
+    mkdirSync(telemetry, { recursive: true });
+    writeFileSync(join(telemetry, "runtime.jsonl.1"), '{"tick":7}\n');
+    writeFileSync(join(telemetry, "runtime.jsonl"), '{"tick":');
+    const events = join(repo.root, "runtime", "supervisor.jsonl");
+    writeFileSync(`${events}.1`, '{"i":1}\n{"i":2}\n');
+    writeFileSync(events, '{"i":3}\n');
+    await debug.listen();
+    const port = debug.address()!.port;
+    const state = await requestJson(port, "/state?tenant=t1");
+    assert.equal(state.body.row.tick, 7);
+    const tail = await requestJson(port, "/events?n=3");
+    assert.deepEqual(tail.body.events.map((row: { i: number }) => row.i), [1, 2, 3]);
   } finally {
     await debug.close();
     repo.cleanup();

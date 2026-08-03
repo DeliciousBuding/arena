@@ -53,7 +53,7 @@ curl 'http://127.0.0.1:8120/state?tenant=t1&stream=runtime'
 - `failed`：非预期错误或非零退出；
 - `terminating`：已发送关停请求。
 
-JSONL 查询最多读取文件末尾 256 KiB；`events?n=` 最大 200。截断尾行会被忽略，不会加载整个长期日志。
+JSONL 查询最多读取每代文件末尾 256 KiB；`events?n=` 最大 200。日志按完整 JSON 行轮转，默认每流 16 MiB、保留 4 代；截断活动尾行可向前读取备份，不会加载整个长期日志。
 
 ## 4. 关闭
 
@@ -88,3 +88,7 @@ JSONL 查询最多读取文件末尾 256 KiB；`events?n=` 最大 200。截断�
 6. 证据通过后逐租户恢复。
 
 不要恢复已退役 Python runtime，也不要同时运行两个 writer。
+
+## 7. 服务器常驻
+
+不可变 release、外置配置、systemd 单元、健康 timer 与 secrets 权限见 [`server-deployment.md`](server-deployment.md)。代码门禁通过不等于目标服务器已完成长期 soak。

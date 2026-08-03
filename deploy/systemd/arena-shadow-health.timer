@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Arena shadow health check every minute
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=5
+Persistent=true
+Unit=arena-shadow-health.service
+
+[Install]
+WantedBy=timers.target

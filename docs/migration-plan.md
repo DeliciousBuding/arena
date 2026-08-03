@@ -181,9 +181,10 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 > - JSONL 只读末尾 256 KiB，截断尾行向前恢复；
 > - Windows IPC + `taskkill /T /F`、POSIX IPC + 独立进程组 `SIGKILL`；
 > - Windows/Linux 真实 child+grandchild 黑盒 orphan=0；
-> - Provider circuit breaker、结构化 telemetry 和统一异常 cleanup 已接入。
+> - Provider circuit breaker、结构化 telemetry 和统一异常 cleanup 已接入；
+> - systemd 不可变 release / 外置 config-runtime / shadow-live 分离 / 有限 JSONL 轮转已通过静态、Linux 与 `systemd-analyze verify` 门禁。
 >
-> ⚠️ 四租户 Supervisor 长期真机 soak 尚未完成，不能把自动化门禁写成生产验收。
+> ⚠️ 目标服务器尚未实际安装和长期运行；四租户 Supervisor 真机 soak 尚未完成，不能把自动化/systemd 门禁写成生产验收。
 
 ### 切片 6 — 真机切换与 Python 删除
 

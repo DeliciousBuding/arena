@@ -16,7 +16,7 @@
 
 import { ArenaHeroClient } from "@arena/arena-hero-ts";
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { performance } from "node:perf_hooks";
 
@@ -34,8 +34,11 @@ import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
 import { manhattan } from "../domain/nav.ts";
 import type { AgentDecisionRuntime, DecisionModeName, DecisionResult, SubmissionModeName } from "../runtime/decision-types.ts";
-import { JsonlWriter } from "../telemetry/jsonl-writer.ts";
-import { sanitizeValue } from "../telemetry/jsonl-writer.ts";
+import {
+  appendJsonlLine,
+  JsonlWriter,
+  sanitizeValue,
+} from "../telemetry/jsonl-writer.ts";
 import { planHashOf } from "../telemetry/decision-trace.ts";
 import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
 import { sha256Canonical } from "../domain/integrity.ts";
@@ -238,11 +241,9 @@ export async function runTenant(
     const recorderWarningPath = join(dirs.telemetryDir, "calibration-recorder.jsonl");
     const recorderWarning = (message: string): void => {
       try {
-        appendFileSync(
+        appendJsonlLine(
           recorderWarningPath,
-          `${JSON.stringify(sanitizeValue({ at: new Date().toISOString(), type: "runtime_golden_recorder", message }))}
-`,
-          "utf8",
+          JSON.stringify(sanitizeValue({ at: new Date().toISOString(), type: "runtime_golden_recorder", message })),
         );
       } catch {}
     };
@@ -512,9 +513,9 @@ export function appendPiTelemetryEvent(
   at = new Date().toISOString(),
 ): void {
   try {
-    appendFileSync(
+    appendJsonlLine(
       path,
-      `${JSON.stringify(sanitizeValue({
+      JSON.stringify(sanitizeValue({
         at,
         type: event.type,
         reason: event.reason ?? event.message ?? "",
@@ -522,8 +523,7 @@ export function appendPiTelemetryEvent(
         ...(event.consecutiveFailures === undefined ? {} : { consecutiveFailures: event.consecutiveFailures }),
         ...(event.lastTripAt === undefined ? {} : { lastTripAt: event.lastTripAt }),
         ...(event.fallbackReason === undefined ? {} : { fallbackReason: event.fallbackReason }),
-      }))}\n`,
-      "utf-8",
+      })),
     );
   } catch {
     // Telemetry must never take down the decision or cleanup path.

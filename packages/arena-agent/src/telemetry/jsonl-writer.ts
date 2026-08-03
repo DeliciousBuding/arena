@@ -8,7 +8,7 @@
  * - close 后 write 抛错（生命周期闭合）。
  */
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, renameSync, rmSync, statSync } from "node:fs";
 
 import { validateTraceRecord } from "./schema.ts";
 import type { TraceRecord } from "./decision-trace.ts";
@@ -68,14 +68,79 @@ export function sanitizeText(text: string): string {
 
 // ---------- JsonlWriter ----------
 
+export interface JsonlRotationOptions {
+  readonly maxBytes: number;
+  readonly maxBackups: number;
+}
+
+/** Current file plus four backups: bounded local retention without copytruncate. */
+export const DEFAULT_JSONL_ROTATION: JsonlRotationOptions = Object.freeze({
+  maxBytes: 16 * 1024 * 1024,
+  maxBackups: 4,
+});
+
+/** Append exactly one complete JSONL row, rotating before the append. */
+export function appendJsonlLine(
+  path: string,
+  line: string,
+  rotation: JsonlRotationOptions = DEFAULT_JSONL_ROTATION,
+): void {
+  validateRotation(rotation);
+  const completeLine = line.endsWith("\n") ? line : `${line}\n`;
+  const lineBytes = Buffer.byteLength(completeLine, "utf-8");
+  if (existsSync(path)) {
+    const activeSize = statSync(path).size;
+    if (activeSize > 0 && activeSize + lineBytes > rotation.maxBytes) {
+      rotateJsonl(path, rotation.maxBackups);
+    }
+  }
+  appendFileSync(path, completeLine, "utf-8");
+}
+
+/** Paths ordered newest backup first: .1, .2, ... */
+export function rotatedJsonlPaths(
+  path: string,
+  maxBackups = DEFAULT_JSONL_ROTATION.maxBackups,
+): string[] {
+  if (!Number.isSafeInteger(maxBackups) || maxBackups < 0) {
+    throw new Error(`maxBackups must be a safe integer >= 0; actual=${maxBackups}`);
+  }
+  return Array.from({ length: maxBackups }, (_, index) => `${path}.${index + 1}`);
+}
+
+function rotateJsonl(path: string, maxBackups: number): void {
+  if (maxBackups === 0) {
+    rmSync(path, { force: true });
+    return;
+  }
+  rmSync(`${path}.${maxBackups}`, { force: true });
+  for (let index = maxBackups - 1; index >= 1; index -= 1) {
+    const source = `${path}.${index}`;
+    if (existsSync(source)) renameSync(source, `${path}.${index + 1}`);
+  }
+  renameSync(path, `${path}.1`);
+}
+
+function validateRotation(rotation: JsonlRotationOptions): void {
+  if (!Number.isSafeInteger(rotation.maxBytes) || rotation.maxBytes < 1) {
+    throw new Error(`maxBytes must be a safe integer >= 1; actual=${rotation.maxBytes}`);
+  }
+  if (!Number.isSafeInteger(rotation.maxBackups) || rotation.maxBackups < 0) {
+    throw new Error(`maxBackups must be a safe integer >= 0; actual=${rotation.maxBackups}`);
+  }
+}
+
 export class JsonlWriter {
   private readonly path: string;
+  private readonly rotation: JsonlRotationOptions;
   private closed = false;
   /** 运行中偶发写失败计数（不可阻塞 submit deadline；由调用方按需上报）。 */
   private errorCount = 0;
 
-  constructor(path: string) {
+  constructor(path: string, rotation: JsonlRotationOptions = DEFAULT_JSONL_ROTATION) {
     this.path = path;
+    validateRotation(rotation);
+    this.rotation = rotation;
   }
 
   get droppedCount(): number {
@@ -90,7 +155,7 @@ export class JsonlWriter {
     validateTraceRecord(record); // 非法记录抛错（含字段路径），不落盘
     const sanitized = sanitizeValue(record);
     try {
-      appendFileSync(this.path, `${JSON.stringify(sanitized)}\n`, "utf-8");
+      appendJsonlLine(this.path, JSON.stringify(sanitized), this.rotation);
     } catch {
       this.errorCount += 1;
     }

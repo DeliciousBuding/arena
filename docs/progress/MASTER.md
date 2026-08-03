@@ -25,14 +25,15 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 - Windows 使用 IPC 优雅关单 + `taskkill /T /F` 超时升级；POSIX 使用独立进程组 + `SIGKILL`；
 - Windows/Linux 真实 child+grandchild 黑盒均为 orphan=0；
 - Python 实时 runtime、仓库级 `pyproject.toml` / `uv.lock` 和失效入口已退役；
+- 服务器部署基线：不可变 release、外置 config/runtime、systemd cgroup、shadow 有界自恢复、live `Restart=no`、无密钥 health env、磁盘健康与有限 JSONL 轮转；
 - Digital Twin S0–S12 / P06 / P12 与首份 Runtime-Golden 已落地。
 
 ## 自动化证据
 
 - SDK：53/53；
-- arena-agent：485/485；
-- Supervisor Windows：16/16；
-- Linux Node 24 定向：68/68；
+- arena-agent：490/490；
+- Supervisor Windows：19/19；
+- Linux Node 24 定向：86/86；
 - schema：6；
 - TS replay：100 records；
 - simulator economy 10,000 Tick 与 movement 随机 10,000 cases invariant 通过。
@@ -68,7 +69,8 @@ combat、第四 Tick Unit/Core 争抢、Beacon pickup/drop/death、Core destruct
 2. 四租户 Supervisor 分级真机运行与长期 soak；
 3. 稳定 TS commit/config 回滚演练；
 4. combat、Core migration、Beacon、respawn 专项 Runtime-Golden；
-5. 基于真实净收益决定是否允许单租户 hybrid canary。
+5. 在目标服务器实际安装 systemd 单元并完成 shadow 长期运行、重启/磁盘告警演练；
+6. 基于真实净收益决定是否允许单租户 hybrid canary。
 
 ## 生产晋级顺序
 
