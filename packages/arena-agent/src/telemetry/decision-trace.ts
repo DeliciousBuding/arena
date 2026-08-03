@@ -39,7 +39,7 @@ export interface RuntimeTraceRecord {
   readonly submitResult: SubmitResult;
   /** turn.submit() 抛出的脱敏错误；成功/disabled 路径缺省。 */
   readonly submitError?: string;
-  readonly notSubmittedReason?: "disabled" | "startup_sync";
+  readonly notSubmittedReason?: "disabled" | "startup_sync" | "outcome_drain";
   /** submit 被拒时的拒绝码（LeaseRejectionCode，如 deadline_exceeded）。 */
   readonly leaseRejectionCode?: string;
 }

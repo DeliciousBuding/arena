@@ -73,7 +73,7 @@ export interface TickOutcome {
   readonly accepted: boolean;
   /** 是否实际调用过 turn.submit()。shadow/startup sync 为 false。 */
   readonly submitAttempted: boolean;
-  readonly notSubmittedReason?: "disabled" | "startup_sync";
+  readonly notSubmittedReason?: "disabled" | "startup_sync" | "outcome_drain";
   readonly leaseCode?: string;
   readonly error?: string;
   /** 决策时点 state（outcome trace 资源对比用；loop 始终持有，透传零成本）。 */
@@ -102,6 +102,10 @@ export interface TenantLoopOptions {
   readonly deadlineMs?: number;
   /** live 启动后先观察 N 个 Turn 再提交，避免接入已关窗的当前 Tick。 */
   readonly startupSyncTurns?: number;
+  /** 精确执行 N 次 live submit；达到后自动转入 outcome drain。 */
+  readonly maxLiveSubmissions?: number;
+  /** 最后一次 submit 后额外观察的 Turn 数，默认 1（收齐最终结算事件）。 */
+  readonly outcomeDrainTurns?: number;
 }
 
 export async function runTenantLoop(options: TenantLoopOptions): Promise<void> {
@@ -109,21 +113,37 @@ export async function runTenantLoop(options: TenantLoopOptions): Promise<void> {
   const planner = options.planner ?? new SafetyPlanner(DEFAULT_SAFETY_CONFIG);
   const deadlineMs = options.deadlineMs ?? 8000;
   const startupSyncTurns = options.startupSyncTurns ?? 0;
+  const maxLiveSubmissions = options.maxLiveSubmissions;
+  const outcomeDrainTurns = options.outcomeDrainTurns ?? 1;
   let observedTurns = 0;
+  let liveSubmissions = 0;
+  let drainedTurns = 0;
 
   for await (const turn of client.turns()) {
     const startupSync = options.submissionMode === "live" && observedTurns < startupSyncTurns;
+    const outcomeDrain =
+      options.submissionMode === "live" &&
+      maxLiveSubmissions !== undefined &&
+      liveSubmissions >= maxLiveSubmissions;
+    const disabledForBoundary = startupSync || outcomeDrain;
     const outcome = await handleTurn(
       turn,
       planner,
-      startupSync ? { ...options, submissionMode: "disabled" } : options,
+      disabledForBoundary ? { ...options, submissionMode: "disabled" } : options,
       deadlineMs,
     );
     observedTurns += 1;
+    if (outcome.submitAttempted) liveSubmissions += 1;
     const recordedOutcome = startupSync
       ? { ...outcome, notSubmittedReason: "startup_sync" as const }
-      : outcome;
+      : outcomeDrain
+        ? { ...outcome, notSubmittedReason: "outcome_drain" as const }
+        : outcome;
     options.onTick?.(recordedOutcome);
+    if (outcomeDrain) {
+      drainedTurns += 1;
+      if (drainedTurns >= outcomeDrainTurns) break;
+    }
   }
 }
 

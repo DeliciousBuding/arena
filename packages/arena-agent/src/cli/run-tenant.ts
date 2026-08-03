@@ -5,7 +5,8 @@
  *   npx tsx src/cli/run-tenant.ts --config=runtime/configs/t1.json            # 按 config 默认（shadow）
  *   npx tsx src/cli/run-tenant.ts --config=... --live                        # 强制 live 提交
  *   npx tsx src/cli/run-tenant.ts --config=... --mode=agent-shadow           # 覆盖决策模式
- *   npx tsx src/cli/run-tenant.ts --config=... --live --max-ticks=100         # 受控 Burn-in
+ *   npx tsx src/cli/run-tenant.ts --config=... --live --live-ticks=100        # 100 submit + 1 outcome drain
+ *   npx tsx src/cli/run-tenant.ts --config=... --live --max-ticks=100         # 兼容：按观察 Turn 数停止
  *   # --live 缺省先观察 1 Tick；可用 --startup-sync-ticks=0 显式关闭
  *   npx tsx src/cli/run-tenant.ts --doctor --config=...                      # 只跑 doctor（只读）
  *
@@ -48,13 +49,14 @@ async function main(): Promise<void> {
       live: { type: "boolean", short: "l" },
       mode: { type: "string" },
       "max-ticks": { type: "string" },
+      "live-ticks": { type: "string" },
       "startup-sync-ticks": { type: "string" },
       repoRoot: { type: "string" },
     },
   });
 
   if (values.config === undefined) {
-    console.error("用法：run-tenant --config=<tenant.json> [--doctor] [--live] [--mode=safety|deterministic|agent-shadow|hybrid] [--max-ticks=N] [--startup-sync-ticks=N]");
+    console.error("用法：run-tenant --config=<tenant.json> [--doctor] [--live] [--mode=safety|deterministic|agent-shadow|hybrid] [--live-ticks=N|--max-ticks=N] [--startup-sync-ticks=N]");
     process.exitCode = 1;
     return;
   }
@@ -77,6 +79,17 @@ async function main(): Promise<void> {
   if (maxTicks !== undefined && (!Number.isInteger(maxTicks) || maxTicks < 1)) {
     throw new Error(`--max-ticks 必须是正整数，实际=${maxTicksRaw}`);
   }
+  const liveTicksRaw = values["live-ticks"];
+  const maxLiveTicks = liveTicksRaw === undefined ? undefined : Number(liveTicksRaw);
+  if (maxLiveTicks !== undefined && (!Number.isInteger(maxLiveTicks) || maxLiveTicks < 1)) {
+    throw new Error(`--live-ticks 必须是正整数，实际=${liveTicksRaw}`);
+  }
+  if (maxTicks !== undefined && maxLiveTicks !== undefined) {
+    throw new Error("--max-ticks 与 --live-ticks 不能同时设置");
+  }
+  if (maxLiveTicks !== undefined && !values.live) {
+    throw new Error("--live-ticks 只能与 --live 一起使用");
+  }
   const startupSyncRaw = values["startup-sync-ticks"];
   const startupSyncTurns = startupSyncRaw === undefined
     ? values.live ? 1 : 0
@@ -91,12 +104,14 @@ async function main(): Promise<void> {
     submissionMode: values.live ? "live" : undefined,
     decisionMode,
     maxTicks,
+    maxLiveTicks,
     startupSyncTurns,
   });
   console.log(
     `run 结束：processRunId=${result.processRunId} tenant=${result.tenantId} ` +
       `decisionMode=${result.decisionMode} submissionMode=${result.submissionMode} ` +
-      `processedTicks=${result.processedTickCount} lastTick=${String(result.lastTick)}`,
+      `processedTicks=${result.processedTickCount} liveSubmits=${result.liveSubmitCount} ` +
+      `lastTick=${String(result.lastTick)}`,
   );
   console.log(`manifest: ${result.manifestPath}`);
   console.log(`telemetry: ${result.telemetryPaths.runtime}`);

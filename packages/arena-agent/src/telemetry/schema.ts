@@ -47,6 +47,7 @@ export const RuntimeTraceSchema = Type.Object({
   notSubmittedReason: Type.Optional(Type.Union([
     Type.Literal("disabled"),
     Type.Literal("startup_sync"),
+    Type.Literal("outcome_drain"),
   ])),
   leaseRejectionCode: Type.Optional(Type.String()),
 });

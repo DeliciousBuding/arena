@@ -295,10 +295,72 @@ test("runTenant：startupSyncTurns 首 Tick 只观察，后续 Tick 才 live 提
   }
 });
 
+test("runTenant：maxLiveTicks 精确提交并额外 drain 最后一次结算", async () => {
+  const base = mkdtempSync(join(tmpdir(), "tenant-run-"));
+  const configPath = writeConfig(makeConfig(base));
+  const runtime = new SyncCandidateRuntime();
+  const client = makeInfiniteClient();
+  const old = process.env.ARENA_HERO_API_KEY_T_TEST;
+  process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
+  try {
+    const result = await runTenant(configPath, "PROJECT_ROOT/arena", {
+      runtime,
+      client: client as never,
+      decisionMode: "deterministic",
+      submissionMode: "live",
+      startupSyncTurns: 1,
+      maxLiveTicks: 3,
+      outcomeDrainTurns: 1,
+      onSignal: () => {},
+    });
+    assert.equal(result.processedTickCount, 5, "1 sync + 3 live + 1 drain");
+    assert.equal(result.liveSubmitCount, 3);
+    assert.equal(client.submitted.length, 3);
+    assert.equal(client.closed, true);
+    assert.equal(runtime.closed, true);
+    assert.equal(existsSync(join(base, "t1", "locks", "t1.lock")), false, "锁已释放");
+    const runtimeLines = readFileSync(result.telemetryPaths.runtime, "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { submitResult: string; notSubmittedReason?: string });
+    assert.deepEqual(
+      runtimeLines.map((line) => [line.submitResult, line.notSubmittedReason ?? null]),
+      [
+        ["not_submitted", "startup_sync"],
+        ["accepted", null],
+        ["accepted", null],
+        ["accepted", null],
+        ["not_submitted", "outcome_drain"],
+      ],
+    );
+    const outcomeLines = readFileSync(result.telemetryPaths.outcome, "utf-8").trim().split("\n");
+    assert.equal(outcomeLines.length, 4, "sync 后的 3 次 live 结算全部被后续 Turn 覆盖");
+  } finally {
+    if (old === undefined) delete process.env.ARENA_HERO_API_KEY_T_TEST;
+    else process.env.ARENA_HERO_API_KEY_T_TEST = old;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("runTenant：非法 maxTicks 在拿锁前 fail-fast", async () => {
   await assert.rejects(
     runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { maxTicks: 0 }),
     /maxTicks 必须是正整数/,
+  );
+});
+
+test("runTenant：非法 maxLiveTicks / drain / 双重边界在拿锁前 fail-fast", async () => {
+  await assert.rejects(
+    runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { maxLiveTicks: 0 }),
+    /maxLiveTicks 必须是正整数/,
+  );
+  await assert.rejects(
+    runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { outcomeDrainTurns: 0 }),
+    /outcomeDrainTurns 必须是正整数/,
+  );
+  await assert.rejects(
+    runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { maxTicks: 1, maxLiveTicks: 1 }),
+    /不能同时设置/,
   );
 });
 

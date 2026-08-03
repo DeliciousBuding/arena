@@ -103,6 +103,9 @@ export interface TenantRunOptions {
   readonly onSignal?: (callback: () => void) => void;
   /** 处理满 N 个 Turn 后由 runtime 自己优雅关闭；Canary/Burn-in 门禁使用。 */
   readonly maxTicks?: number;
+  /** 精确提交 N 个 live Tick，并在最后一次提交后额外观察结算 Turn。 */
+  readonly maxLiveTicks?: number;
+  readonly outcomeDrainTurns?: number;
   /** live 启动时先观察 N 个 Turn，不提交；CLI 生产缺省为 1。 */
   readonly startupSyncTurns?: number;
 }
@@ -116,6 +119,7 @@ export interface TenantRunResult {
   readonly tickCount: number;
   /** 本次进程实际处理的 Turn 数。 */
   readonly processedTickCount: number;
+  readonly liveSubmitCount: number;
   readonly lastTick: number | null;
   readonly manifestPath: string;
   readonly telemetryPaths: { readonly runtime: string; readonly decision: string; readonly outcome: string };
@@ -129,6 +133,18 @@ export async function runTenant(
 ): Promise<TenantRunResult> {
   if (options.maxTicks !== undefined && (!Number.isInteger(options.maxTicks) || options.maxTicks < 1)) {
     throw new Error(`maxTicks 必须是正整数，实际=${String(options.maxTicks)}`);
+  }
+  if (options.maxLiveTicks !== undefined && (!Number.isInteger(options.maxLiveTicks) || options.maxLiveTicks < 1)) {
+    throw new Error(`maxLiveTicks 必须是正整数，实际=${String(options.maxLiveTicks)}`);
+  }
+  if (options.maxTicks !== undefined && options.maxLiveTicks !== undefined) {
+    throw new Error("maxTicks 与 maxLiveTicks 不能同时设置");
+  }
+  if (
+    options.outcomeDrainTurns !== undefined &&
+    (!Number.isInteger(options.outcomeDrainTurns) || options.outcomeDrainTurns < 1)
+  ) {
+    throw new Error(`outcomeDrainTurns 必须是正整数，实际=${String(options.outcomeDrainTurns)}`);
   }
   if (
     options.startupSyncTurns !== undefined &&
@@ -264,6 +280,7 @@ export async function runTenant(
       } | null;
     } = { prev: null };
     let processedTickCount = 0;
+    let liveSubmitCount = 0;
 
     const onTick = (outcome: TickOutcome): void => {
       const decision = outcome.decision;
@@ -373,6 +390,7 @@ export async function runTenant(
         coreId: outcome.state.core?.id ?? null,
       };
       processedTickCount += 1;
+      if (outcome.submitAttempted) liveSubmitCount += 1;
       if (options.maxTicks !== undefined && processedTickCount >= options.maxTicks) {
         requestStop();
       }
@@ -385,6 +403,8 @@ export async function runTenant(
       submissionMode,
       decisionMode,
       startupSyncTurns: options.startupSyncTurns,
+      maxLiveSubmissions: options.maxLiveTicks,
+      outcomeDrainTurns: options.outcomeDrainTurns,
       onTick,
     });
     await Promise.race([loopPromise, stopped]);
@@ -392,6 +412,10 @@ export async function runTenant(
     if (stopping) {
       await loopPromise;
     }
+
+    // loop 也可能因 maxLiveTicks + outcome drain 自然结束；与 signal/maxTicks 路径统一，
+    // 在关闭 writer/runtime 前显式关闭客户端。close 必须幂等（真实 SDK 与 fake 均如此）。
+    client.close?.();
 
     // 9) 优雅关闭：flush telemetry → 关闭 runtime → 释放锁
     runtimeWriter.close();
@@ -407,6 +431,7 @@ export async function runTenant(
       submissionMode,
       tickCount: holder.prev?.tick ?? 0,
       processedTickCount,
+      liveSubmitCount,
       lastTick: holder.prev?.tick ?? null,
       manifestPath,
       telemetryPaths: {
