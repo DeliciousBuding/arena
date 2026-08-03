@@ -161,6 +161,13 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 - 关键内容：仅注册 `arena_map` / `arena_plan` 两个 custom tools，builtin 全禁用；每 Tick 决策桥接线，模型经 pi 框架（deepseek-v4-flash）调用；先在 shadow 模式只观察不提交。
 - 验收变化：真实 LLM 逐 Tick 决策在 shadow 下稳定运行；Python RPC 桥从决策链移除。
 
+> ✅ **验收通过（2026-08-04）**：真实 LLM（deepseek-v4-flash via pi `createAgentSession`）在
+> t1 shadow 下连续 30 Tick：**27 candidate / 2 soft_deadline / 1 error**（前 3 tick 冷启动，
+> 第 4 tick 起连续 27 tick 全稳定）；LLM 产生 **216 个有效动作、0 invalid**（parse/validate
+> 全过），SafetyPlanner 兜底替换 27 次；0 rotation / 0 prompt_error；warmup 成功。延迟
+> 稳定期 4.4-5.9s ≪ agentSoft 14s。同期补全 CLI `--shadow` 选项（文档承诺、代码缺失）。
+> Python RPC 桥已不在 TS 决策链（`NoopAgentRuntime` 仅 safety/deterministic 用）。
+
 ### 切片 5 — 运行与运维层（4-5 天）
 
 - 目标：补齐原 W5 supervisor 与运维闭环（对应 Python debug API / 看门狗 / 遥测的 TS 对应物）。

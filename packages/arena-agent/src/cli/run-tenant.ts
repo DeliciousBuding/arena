@@ -2,7 +2,8 @@
  * run-tenant CLI（切片 4 阶段 6）：单租户运行入口。
  *
  * 用法：
- *   npx tsx src/cli/run-tenant.ts --config=runtime/configs/t1.json            # 按 config 默认（shadow）
+ *   npx tsx src/cli/run-tenant.ts --config=runtime/configs/t1.json            # 按 config 默认
+ *   npx tsx src/cli/run-tenant.ts --config=... --shadow                      # 强制只观察（不提交）
  *   npx tsx src/cli/run-tenant.ts --config=... --live                        # 强制 live 提交
  *   npx tsx src/cli/run-tenant.ts --config=... --mode=agent-shadow           # 覆盖决策模式
  *   npx tsx src/cli/run-tenant.ts --config=... --live --live-ticks=100        # 100 submit + 1 outcome drain
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
       config: { type: "string", short: "c" },
       doctor: { type: "boolean", short: "d" },
       live: { type: "boolean", short: "l" },
+      shadow: { type: "boolean", short: "s" },
       mode: { type: "string" },
       "max-ticks": { type: "string" },
       "live-ticks": { type: "string" },
@@ -92,6 +94,9 @@ async function main(): Promise<void> {
   if (maxLiveTicks !== undefined && !values.live) {
     throw new Error("--live-ticks 只能与 --live 一起使用");
   }
+  if (values.live && values.shadow) {
+    throw new Error("--live 与 --shadow 互斥");
+  }
   if (values["record-calibration"] === true && !values.live) {
     throw new Error("--record-calibration 只能与 --live 一起使用");
   }
@@ -106,7 +111,7 @@ async function main(): Promise<void> {
     ? undefined
     : (values.mode as "safety" | "deterministic" | "agent-shadow" | "hybrid");
   const result = await runTenant(configPath, repoRoot, {
-    submissionMode: values.live ? "live" : undefined,
+    submissionMode: values.live ? "live" : values.shadow ? "disabled" : undefined,
     decisionMode,
     maxTicks,
     maxLiveTicks,
