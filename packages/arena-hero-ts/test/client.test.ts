@@ -32,6 +32,10 @@ class MockGameServer {
   private sockets = new Set<import("node:stream").Duplex>();
   private connections = new Set<WebSocket>();
 
+  get activeConnectionCount(): number {
+    return this.connections.size;
+  }
+
   constructor() {
     this.http = createServer((req, res) => {
       if (req.method === "POST" && req.url?.startsWith("/api/v1/game/commands")) {
@@ -155,6 +159,16 @@ async function setup(behavior?: (ws: WebSocket) => void): Promise<MockGameServer
   }
   await server.listen();
   return server;
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error("condition did not become true before timeout");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 // ---------- 事件流 ----------
@@ -301,6 +315,25 @@ test("握手期间 close() → 迭代立即结束", async () => {
   client.close(); // 应中断进行中的握手
   const result = await pending;
   assert.equal(result.done, true);
+  await server.close();
+});
+
+test("消费者 break turns() → 已建立 WebSocket 被确定性关闭", async () => {
+  const server = await setup((ws) => {
+    server.send(ws, { type: "tick", data: 12 });
+    server.send(ws, { type: "state", data: MIN_STATE });
+    // 故意保持服务端连接 OPEN；客户端 iterator.return() 必须主动收尾。
+  });
+  const client = makeClient(server);
+
+  for await (const turn of client.turns()) {
+    assert.equal(turn.tick, 12);
+    break;
+  }
+
+  await waitUntil(() => server.activeConnectionCount === 0);
+  assert.equal(server.activeConnectionCount, 0);
+  client.close();
   await server.close();
 });
 
