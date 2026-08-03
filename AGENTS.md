@@ -77,6 +77,7 @@ curl http://127.0.0.1:8123/state    # 调试端点：t1 状态快照
 ## 红线
 
 - 秘钥只在 `.env`；改代码后 grep 确认无 `ah_live` 字样
+- 提交前自动拦截隐私内容：`scripts/hooks/pre-commit`（.env/密钥值/本机路径/个人邮箱/运行时产物，见 `scripts/hooks/README.md`）；clone 后先跑 `sh scripts/hooks/install-hooks.sh`
 - 不重建 SDK 的 WebSocket/重连/回执；协议异常先升 SDK（`uv sync` 后对比测试）
 - 规则数值改动必须对照 `docs/game-rules.md`，禁止凭记忆猜
 - Python 侧只做数据收集/参考，新功能一律走 TS 编排层（避免双轨分裂）

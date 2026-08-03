@@ -9,7 +9,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { Turn, type PlayerState } from "@arena/arena-hero-ts";
 
@@ -22,6 +23,9 @@ import type {
   CandidateSink,
 } from "../src/runtime/decision-types.ts";
 import type { Plan } from "../src/domain/model.ts";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(here, "..", "..", "..");
 
 const MIN_STATE: PlayerState = {
   status: "ACTIVE",
@@ -198,7 +202,7 @@ test("runTenant：safety 模式全链路——锁/manifest/telemetry 三流/优�
   const old = process.env.ARENA_HERO_API_KEY_T_TEST;
   process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
   try {
-    const result = await runTenant(configPath, "PROJECT_ROOT/arena", { runtime, client: client as never });
+    const result = await runTenant(configPath, REPO_ROOT, { runtime, client: client as never });
 
     assert.equal(result.tickCount, 1002, "3 个 Turn 全部处理");
     assert.equal(result.processedTickCount, 3);
@@ -246,7 +250,7 @@ test("runTenant：maxTicks 达标后 runtime 内部优雅关闭并精确计数",
   const old = process.env.ARENA_HERO_API_KEY_T_TEST;
   process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
   try {
-    const result = await runTenant(configPath, "PROJECT_ROOT/arena", {
+    const result = await runTenant(configPath, REPO_ROOT, {
       runtime,
       client: client as never,
       decisionMode: "deterministic",
@@ -281,7 +285,7 @@ test("runTenant：startupSyncTurns 首 Tick 只观察，后续 Tick 才 live 提
   const old = process.env.ARENA_HERO_API_KEY_T_TEST;
   process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
   try {
-    const result = await runTenant(configPath, "PROJECT_ROOT/arena", {
+    const result = await runTenant(configPath, REPO_ROOT, {
       runtime,
       client: client as never,
       decisionMode: "deterministic",
@@ -319,7 +323,7 @@ test("runTenant：maxLiveTicks 精确提交并额外 drain 最后一次结算", 
   const old = process.env.ARENA_HERO_API_KEY_T_TEST;
   process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
   try {
-    const result = await runTenant(configPath, "PROJECT_ROOT/arena", {
+    const result = await runTenant(configPath, REPO_ROOT, {
       runtime,
       client: client as never,
       decisionMode: "deterministic",
@@ -376,11 +380,11 @@ test("S8b：启用 recorder 不改变提交 body，并由 drain 闭合全部 ful
       outcomeDrainTurns: 1,
       onSignal: () => {},
     };
-    const off = await runTenant(configOff, "PROJECT_ROOT/arena", {
+    const off = await runTenant(configOff, REPO_ROOT, {
       ...common,
       client: clientOff as never,
     });
-    const on = await runTenant(configOn, "PROJECT_ROOT/arena", {
+    const on = await runTenant(configOn, REPO_ROOT, {
       ...common,
       client: clientOn as never,
       recordCalibration: true,
@@ -416,7 +420,7 @@ test("S8b：recordCalibration 在非 live 模式拿锁前拒绝", async () => {
   const configPath = writeConfig(makeConfig(base));
   try {
     await assert.rejects(
-      runTenant(configPath, "PROJECT_ROOT/arena", { recordCalibration: true }),
+      runTenant(configPath, REPO_ROOT, { recordCalibration: true }),
       /只能在 live 提交模式启用/,
     );
     assert.equal(existsSync(join(base, "t1", "locks", "t1.lock")), false);
@@ -427,29 +431,29 @@ test("S8b：recordCalibration 在非 live 模式拿锁前拒绝", async () => {
 
 test("runTenant：非法 maxTicks 在拿锁前 fail-fast", async () => {
   await assert.rejects(
-    runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { maxTicks: 0 }),
+    runTenant("does-not-matter.json", REPO_ROOT, { maxTicks: 0 }),
     /maxTicks 必须是正整数/,
   );
 });
 
 test("runTenant：非法 maxLiveTicks / drain / 双重边界在拿锁前 fail-fast", async () => {
   await assert.rejects(
-    runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { maxLiveTicks: 0 }),
+    runTenant("does-not-matter.json", REPO_ROOT, { maxLiveTicks: 0 }),
     /maxLiveTicks 必须是正整数/,
   );
   await assert.rejects(
-    runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { outcomeDrainTurns: 0 }),
+    runTenant("does-not-matter.json", REPO_ROOT, { outcomeDrainTurns: 0 }),
     /outcomeDrainTurns 必须是正整数/,
   );
   await assert.rejects(
-    runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { maxTicks: 1, maxLiveTicks: 1 }),
+    runTenant("does-not-matter.json", REPO_ROOT, { maxTicks: 1, maxLiveTicks: 1 }),
     /不能同时设置/,
   );
 });
 
 test("runTenant：非法 startupSyncTurns 在拿锁前 fail-fast", async () => {
   await assert.rejects(
-    runTenant("does-not-matter.json", "PROJECT_ROOT/arena", { startupSyncTurns: -1 }),
+    runTenant("does-not-matter.json", REPO_ROOT, { startupSyncTurns: -1 }),
     /startupSyncTurns 必须是非负整数/,
   );
 });
@@ -462,7 +466,7 @@ test("runTenant：agent-shadow + live——runtime 启动 + 候选评估 + 真�
   const old = process.env.ARENA_HERO_API_KEY_T_TEST;
   process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
   try {
-    const result = await runTenant(configPath, "PROJECT_ROOT/arena", {
+    const result = await runTenant(configPath, REPO_ROOT, {
       runtime,
       client: client as never,
       decisionMode: "agent-shadow",
@@ -499,7 +503,7 @@ test("runTenant：锁冲突（他人活锁）→ 直接失败，不降级", asyn
   process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
   try {
     await assert.rejects(
-      runTenant(configPath, "PROJECT_ROOT/arena", { runtime, client: makeFakeClient() as never }),
+      runTenant(configPath, REPO_ROOT, { runtime, client: makeFakeClient() as never }),
       /live process/,
     );
     assert.equal(runtime.closed, false, "锁失败不得创建 runtime");
@@ -520,7 +524,7 @@ test("runTenant：deterministic+live → 允许开闸（DeterministicPlanner 注
   const old = process.env.ARENA_HERO_API_KEY_T_TEST;
   process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
   try {
-    const result = await runTenant(configPath, "PROJECT_ROOT/arena", {
+    const result = await runTenant(configPath, REPO_ROOT, {
       runtime: new SyncCandidateRuntime(),
       client: makeFakeClient() as never,
       decisionMode: "deterministic",
@@ -552,7 +556,7 @@ test("runTenant：deterministic+shadow → 允许（DeterministicPlanner 注入�
   const old = process.env.ARENA_HERO_API_KEY_T_TEST;
   process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
   try {
-    const result = await runTenant(configPath, "PROJECT_ROOT/arena", {
+    const result = await runTenant(configPath, REPO_ROOT, {
       runtime: new SyncCandidateRuntime(),
       client: makeFakeClient() as never,
       decisionMode: "deterministic",
@@ -581,7 +585,7 @@ test("runTenant：signal 触发优雅关闭——停收 Turn、释放锁、runti
   const old = process.env.ARENA_HERO_API_KEY_T_TEST;
   process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
   try {
-    const resultPromise = runTenant(configPath, "PROJECT_ROOT/arena", {
+    const resultPromise = runTenant(configPath, REPO_ROOT, {
       runtime,
       client: client as never,
       onSignal: (cb) => {
@@ -626,7 +630,7 @@ test("runTenant：deterministic+live SIGTERM 优雅关闭——停止提交、�
   const old = process.env.ARENA_HERO_API_KEY_T_TEST;
   process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
   try {
-    const resultPromise = runTenant(configPath, "PROJECT_ROOT/arena", {
+    const resultPromise = runTenant(configPath, REPO_ROOT, {
       runtime,
       client: client as never,
       decisionMode: "deterministic",
@@ -667,7 +671,7 @@ test("runTenant：env token 缺失 → 抛错（密钥绝不落盘/降级）", a
   const configPath = writeConfig(makeConfig(base, { arenaTokenEnv: "ARENA_HERO_NO_SUCH_ENV_XYZ" }));
   // 不注入 client → 走真实 ArenaHeroClient 构造 → readEnvToken 缺失抛错
   await assert.rejects(
-    runTenant(configPath, "PROJECT_ROOT/arena", {
+    runTenant(configPath, REPO_ROOT, {
       runtime: new SyncCandidateRuntime(),
     }),
     /缺失/,
