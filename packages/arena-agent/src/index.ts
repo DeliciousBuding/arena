@@ -26,3 +26,4 @@ export * from "./runtime/lease-registry.ts";
 export * from "./runtime/loop.ts";
 export * from "./runtime/state-hash.ts";
 export * from "./strategies/safety-planner.ts";
+export * from "./runtime-golden/recorder.ts";

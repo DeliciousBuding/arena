@@ -38,6 +38,11 @@ import { JsonlWriter } from "../telemetry/jsonl-writer.ts";
 import { sanitizeValue } from "../telemetry/jsonl-writer.ts";
 import { planHashOf } from "../telemetry/decision-trace.ts";
 import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
+import {
+  RuntimeGoldenRecorder,
+  sha256Canonical,
+  type RuntimeGoldenRecorderResult,
+} from "../runtime-golden/recorder.ts";
 
 export const RULES_VERSION = "v0.11";
 
@@ -64,6 +69,7 @@ function tenantDirs(baseDir: string, tenantId: string) {
     lockDir: join(root, "locks"),
     runDir: join(root, "runs"),
     telemetryDir: join(root, "telemetry"),
+    calibrationDir: join(root, "calibration"),
     piBaseDir: join(baseDir, "pi"),
   };
 }
@@ -108,6 +114,10 @@ export interface TenantRunOptions {
   readonly outcomeDrainTurns?: number;
   /** live 启动时先观察 N 个 Turn，不提交；CLI 生产缺省为 1。 */
   readonly startupSyncTurns?: number;
+  /** S8b：默认关闭；仅旁路记录 accepted full-plan + 相邻 raw states。 */
+  readonly recordCalibration?: boolean;
+  /** 测试注入；生产由 recordCalibration 创建。 */
+  readonly calibrationRecorder?: RuntimeGoldenRecorder;
 }
 
 export interface TenantRunResult {
@@ -123,6 +133,7 @@ export interface TenantRunResult {
   readonly lastTick: number | null;
   readonly manifestPath: string;
   readonly telemetryPaths: { readonly runtime: string; readonly decision: string; readonly outcome: string };
+  readonly calibration?: RuntimeGoldenRecorderResult;
 }
 
 /** 主入口：加载配置 → 拿锁 → manifest → 组装 → 循环 → 优雅关闭。 */
@@ -155,6 +166,9 @@ export async function runTenant(
   const config = loadRuntimeConfig(configPath);
   const decisionMode = options.decisionMode ?? config.decisionMode;
   const submissionMode = submissionModeOf(options, config);
+  if (options.recordCalibration === true && submissionMode !== "live") {
+    throw new Error("recordCalibration 只能在 live 提交模式启用");
+  }
   const deadlines = resolveDeadlines(config);
 
   const processRunId = newProcessRunId();
@@ -177,7 +191,8 @@ export async function runTenant(
   };
 
   try {
-    // 2) run manifest（绝不含密钥）
+    // 2) run manifest（绝不含密钥；config 只含 env 名，不含 env 值）
+    const configHash = `sha256:${sha256Canonical(config)}`;
     const manifest: RunManifest = {
       processRunId,
       gitSha: readGitSha(repoRoot),
@@ -189,7 +204,7 @@ export async function runTenant(
       modelId: config.model.id,
       provider: config.model.provider,
       rulesVersion: RULES_VERSION,
-      configHash: "sha256:cfg", // doctor 校验过 model.id 非空；configHash 由部署方注入
+      configHash,
       startedAt: new Date().toISOString(),
     };
     const manifestPath = writeRunManifest(join(dirs.runDir, processRunId), manifest);
@@ -199,6 +214,35 @@ export async function runTenant(
     const runtimeWriter = new JsonlWriter(join(dirs.telemetryDir, "runtime.jsonl"));
     const decisionWriter = new JsonlWriter(join(dirs.telemetryDir, "decision.jsonl"));
     const outcomeWriter = new JsonlWriter(join(dirs.telemetryDir, "outcome.jsonl"));
+
+    // S8b recorder 默认关闭。初始化失败也只写独立告警，绝不阻断 live loop。
+    const recorderWarningPath = join(dirs.telemetryDir, "calibration-recorder.jsonl");
+    const recorderWarning = (message: string): void => {
+      try {
+        appendFileSync(
+          recorderWarningPath,
+          `${JSON.stringify(sanitizeValue({ at: new Date().toISOString(), type: "runtime_golden_recorder", message }))}
+`,
+          "utf8",
+        );
+      } catch {}
+    };
+    let calibrationRecorder = options.calibrationRecorder ?? null;
+    if (calibrationRecorder === null && options.recordCalibration === true) {
+      try {
+        calibrationRecorder = new RuntimeGoldenRecorder({
+          outputDir: join(dirs.calibrationDir, processRunId),
+          processRunId,
+          tenantId: config.tenantId,
+          rulesVersion: RULES_VERSION,
+          sourceCommit: manifest.gitSha,
+          configHash,
+          onWarning: recorderWarning,
+        });
+      } catch (error) {
+        recorderWarning(`init: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
 
     // 4) 游戏客户端（密钥只在此处从 env 读取）
     const client =
@@ -391,6 +435,7 @@ export async function runTenant(
       };
       processedTickCount += 1;
       if (outcome.submitAttempted) liveSubmitCount += 1;
+      calibrationRecorder?.observe(outcome);
       if (options.maxTicks !== undefined && processedTickCount >= options.maxTicks) {
         requestStop();
       }
@@ -417,7 +462,9 @@ export async function runTenant(
     // 在关闭 writer/runtime 前显式关闭客户端。close 必须幂等（真实 SDK 与 fake 均如此）。
     client.close?.();
 
-    // 9) 优雅关闭：flush telemetry → 关闭 runtime → 释放锁
+    // 9) 优雅关闭：先等待旁路 recorder 队列，再 flush telemetry/runtime/lock。
+    // recorder 内部 fail-open；这里不会改变已完成的提交结果。
+    const calibration = calibrationRecorder === null ? undefined : await calibrationRecorder.close();
     runtimeWriter.close();
     decisionWriter.close();
     outcomeWriter.close();
@@ -439,6 +486,7 @@ export async function runTenant(
         decision: join(dirs.telemetryDir, "decision.jsonl"),
         outcome: join(dirs.telemetryDir, "outcome.jsonl"),
       },
+      ...(calibration === undefined ? {} : { calibration }),
     };
   } catch (error) {
     await releaseLock();

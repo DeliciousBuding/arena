@@ -9,6 +9,7 @@ import {
   type Accepted,
   type ArenaHeroClient,
   type CommandPlan,
+  type PlayerState,
   type Turn,
 } from "@arena/arena-hero-ts";
 import {
@@ -76,8 +77,12 @@ export interface TickOutcome {
   readonly notSubmittedReason?: "disabled" | "startup_sync" | "outcome_drain";
   readonly leaseCode?: string;
   readonly error?: string;
-  /** 决策时点 state（outcome trace 资源对比用；loop 始终持有，透传零成本）。 */
+  /** 决策时点 normalized state（planner / telemetry）。 */
   readonly state: TickState;
+  /** SDK 收到的原始 PlayerState；S8b 旁路 recorder 使用，不参与决策。 */
+  readonly rawState: PlayerState;
+  /** 实际 HTTP 202 receipt；仅 accepted live submit 存在。 */
+  readonly receipt?: Accepted;
   /** coordinator 路径的完整 DecisionResult（遥测三流素材；旧 bridge 无）。 */
   readonly decision?: import("./decision-types.ts").DecisionResult;
 }
@@ -173,6 +178,7 @@ export async function handleTurn(
         submitAttempted: false,
         notSubmittedReason: "disabled",
         state,
+        rawState: turn.state,
         decision: result,
       };
     }
@@ -189,6 +195,8 @@ export async function handleTurn(
         accepted: accepted.accepted,
         submitAttempted: true,
         state,
+        rawState: turn.state,
+        receipt: accepted,
         decision: result,
       };
     } catch (exc) {
@@ -202,6 +210,7 @@ export async function handleTurn(
         submitAttempted: true,
         error: exc instanceof Error ? exc.message : String(exc),
         state,
+        rawState: turn.state,
         decision: result,
       };
     }
@@ -271,6 +280,7 @@ export async function handleTurn(
       submitAttempted: false,
       notSubmittedReason: "disabled",
       state,
+      rawState: turn.state,
     };
   }
 
@@ -288,6 +298,8 @@ export async function handleTurn(
       accepted: accepted.accepted,
       submitAttempted: true,
       state,
+      rawState: turn.state,
+      receipt: accepted,
     };
   } catch (exc) {
     return {
@@ -300,6 +312,7 @@ export async function handleTurn(
       submitAttempted: true,
       error: exc instanceof Error ? exc.message : String(exc),
       state,
+      rawState: turn.state,
     };
   }
 }

@@ -6,6 +6,7 @@
  *   npx tsx src/cli/run-tenant.ts --config=... --live                        # 强制 live 提交
  *   npx tsx src/cli/run-tenant.ts --config=... --mode=agent-shadow           # 覆盖决策模式
  *   npx tsx src/cli/run-tenant.ts --config=... --live --live-ticks=100        # 100 submit + 1 outcome drain
+ *   npx tsx src/cli/run-tenant.ts --config=... --live --record-calibration     # S8b 旁路 Runtime-Golden
  *   npx tsx src/cli/run-tenant.ts --config=... --live --max-ticks=100         # 兼容：按观察 Turn 数停止
  *   # --live 缺省先观察 1 Tick；可用 --startup-sync-ticks=0 显式关闭
  *   npx tsx src/cli/run-tenant.ts --doctor --config=...                      # 只跑 doctor（只读）
@@ -51,12 +52,13 @@ async function main(): Promise<void> {
       "max-ticks": { type: "string" },
       "live-ticks": { type: "string" },
       "startup-sync-ticks": { type: "string" },
+      "record-calibration": { type: "boolean" },
       repoRoot: { type: "string" },
     },
   });
 
   if (values.config === undefined) {
-    console.error("用法：run-tenant --config=<tenant.json> [--doctor] [--live] [--mode=safety|deterministic|agent-shadow|hybrid] [--live-ticks=N|--max-ticks=N] [--startup-sync-ticks=N]");
+    console.error("用法：run-tenant --config=<tenant.json> [--doctor] [--live] [--mode=safety|deterministic|agent-shadow|hybrid] [--live-ticks=N|--max-ticks=N] [--startup-sync-ticks=N] [--record-calibration]");
     process.exitCode = 1;
     return;
   }
@@ -90,6 +92,9 @@ async function main(): Promise<void> {
   if (maxLiveTicks !== undefined && !values.live) {
     throw new Error("--live-ticks 只能与 --live 一起使用");
   }
+  if (values["record-calibration"] === true && !values.live) {
+    throw new Error("--record-calibration 只能与 --live 一起使用");
+  }
   const startupSyncRaw = values["startup-sync-ticks"];
   const startupSyncTurns = startupSyncRaw === undefined
     ? values.live ? 1 : 0
@@ -106,6 +111,7 @@ async function main(): Promise<void> {
     maxTicks,
     maxLiveTicks,
     startupSyncTurns,
+    recordCalibration: values["record-calibration"] === true,
   });
   console.log(
     `run 结束：processRunId=${result.processRunId} tenant=${result.tenantId} ` +
@@ -115,6 +121,12 @@ async function main(): Promise<void> {
   );
   console.log(`manifest: ${result.manifestPath}`);
   console.log(`telemetry: ${result.telemetryPaths.runtime}`);
+  if (result.calibration !== undefined) {
+    console.log(
+      `calibration: ${result.calibration.manifestPath} cases=${result.calibration.caseCount} ` +
+        `errors=${result.calibration.errorCount}`,
+    );
+  }
 }
 
 main().catch((error) => {

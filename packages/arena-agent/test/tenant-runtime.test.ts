@@ -81,7 +81,12 @@ function makeFakeClient(): FakeClient {
       for (let i = 0; i < TICK_COUNT; i++) {
         const turn = new Turn(1000 + i, MIN_STATE, (async (plan: unknown) => {
           submitted.push({ tick: 1000 + i, plan });
-          return { accepted: true, tick: 1000 + i };
+          return {
+            accepted: true,
+            tick: 1000 + i,
+            source: "AGENT",
+            received_at: `2026-08-03T00:00:${String(i).padStart(2, "0")}Z`,
+          };
         }) as never);
         yield turn;
       }
@@ -108,7 +113,12 @@ function makeInfiniteClient(): FakeClient {
         await new Promise((r) => setTimeout(r, 0));
         const turn = new Turn(1000 + i, MIN_STATE, (async (plan: unknown) => {
           submitted.push({ tick: 1000 + i, plan });
-          return { accepted: true, tick: 1000 + i };
+          return {
+            accepted: true,
+            tick: 1000 + i,
+            source: "AGENT",
+            received_at: `2026-08-03T00:00:${String(i).padStart(2, "0")}Z`,
+          };
         }) as never);
         yield turn;
         i += 1;
@@ -194,10 +204,16 @@ test("runTenant：safety 模式全链路——锁/manifest/telemetry 三流/优�
     assert.equal(result.processedTickCount, 3);
     assert.equal(result.lastTick, 1002);
     assert.ok(existsSync(result.manifestPath), "manifest 必须写出");
-    const manifest = JSON.parse(readFileSync(result.manifestPath, "utf-8")) as { processRunId: string; tenantId: string; piVersion: string };
+    const manifest = JSON.parse(readFileSync(result.manifestPath, "utf-8")) as {
+      processRunId: string;
+      tenantId: string;
+      piVersion: string;
+      configHash: string;
+    };
     assert.equal(manifest.processRunId, result.processRunId);
     assert.equal(manifest.tenantId, "t1");
     assert.ok(manifest.piVersion.length > 0);
+    assert.match(manifest.configHash, /^sha256:[0-9a-f]{64}$/, "configHash 必须是真实 canonical SHA-256");
 
     // 三流 telemetry：runtime/decision 各 3 条；outcome 2 条（首 tick 无 t-1 基准）
     for (const path of [result.telemetryPaths.runtime, result.telemetryPaths.decision]) {
@@ -338,6 +354,73 @@ test("runTenant：maxLiveTicks 精确提交并额外 drain 最后一次结算", 
   } finally {
     if (old === undefined) delete process.env.ARENA_HERO_API_KEY_T_TEST;
     else process.env.ARENA_HERO_API_KEY_T_TEST = old;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("S8b：启用 recorder 不改变提交 body，并由 drain 闭合全部 full-plan cases", async () => {
+  const baseOff = mkdtempSync(join(tmpdir(), "tenant-run-off-"));
+  const baseOn = mkdtempSync(join(tmpdir(), "tenant-run-on-"));
+  const configOff = writeConfig(makeConfig(baseOff));
+  const configOn = writeConfig(makeConfig(baseOn));
+  const clientOff = makeInfiniteClient();
+  const clientOn = makeInfiniteClient();
+  const old = process.env.ARENA_HERO_API_KEY_T_TEST;
+  process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
+  try {
+    const common = {
+      decisionMode: "deterministic" as const,
+      submissionMode: "live" as const,
+      startupSyncTurns: 1,
+      maxLiveTicks: 3,
+      outcomeDrainTurns: 1,
+      onSignal: () => {},
+    };
+    const off = await runTenant(configOff, "PROJECT_ROOT/arena", {
+      ...common,
+      client: clientOff as never,
+    });
+    const on = await runTenant(configOn, "PROJECT_ROOT/arena", {
+      ...common,
+      client: clientOn as never,
+      recordCalibration: true,
+    });
+
+    assert.deepEqual(clientOn.submitted, clientOff.submitted, "recorder 不得改变任何提交 body/tick");
+    assert.equal(on.liveSubmitCount, off.liveSubmitCount);
+    assert.ok(on.calibration !== undefined);
+    assert.equal(on.calibration.caseCount, 3, "3 live + 1 drain 必须闭合 3 个 case");
+    assert.equal(on.calibration.errorCount, 0);
+    assert.equal(on.calibration.droppedPending, 0);
+    const manifest = JSON.parse(readFileSync(on.calibration.manifestPath, "utf8")) as {
+      caseCount: number;
+      cases: Array<{ file: string; beforeSha256: string; planSha256: string; afterSha256: string }>;
+    };
+    assert.equal(manifest.caseCount, 3);
+    for (const entry of manifest.cases) {
+      assert.match(entry.beforeSha256, /^[0-9a-f]{64}$/);
+      assert.match(entry.planSha256, /^[0-9a-f]{64}$/);
+      assert.match(entry.afterSha256, /^[0-9a-f]{64}$/);
+      assert.ok(existsSync(join(on.calibration.outputDir, entry.file)));
+    }
+  } finally {
+    if (old === undefined) delete process.env.ARENA_HERO_API_KEY_T_TEST;
+    else process.env.ARENA_HERO_API_KEY_T_TEST = old;
+    rmSync(baseOff, { recursive: true, force: true });
+    rmSync(baseOn, { recursive: true, force: true });
+  }
+});
+
+test("S8b：recordCalibration 在非 live 模式拿锁前拒绝", async () => {
+  const base = mkdtempSync(join(tmpdir(), "tenant-run-"));
+  const configPath = writeConfig(makeConfig(base));
+  try {
+    await assert.rejects(
+      runTenant(configPath, "PROJECT_ROOT/arena", { recordCalibration: true }),
+      /只能在 live 提交模式启用/,
+    );
+    assert.equal(existsSync(join(base, "t1", "locks", "t1.lock")), false);
+  } finally {
     rmSync(base, { recursive: true, force: true });
   }
 });
