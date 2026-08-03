@@ -91,6 +91,16 @@ test("DeterministicPlanner：唯一性——同一资源格最多一个 Worker�
   assert.equal(harvesters.length, 1, "唯一性：同一资源格最多一个 HARVEST");
 });
 
+test("DeterministicPlanner：单资源只分配一个 Worker，其余继续巡逻而非 WAIT", () => {
+  const state = makeState(100, [core(), unit("w1", 0, 0), unit("w2", 1, 0), unit("w3", 0, 1)]);
+  const withCell: TickState = { ...state, resourceCells: new Set(["5,0"]) };
+  const plan = new DeterministicPlanner().decide({ state: withCell });
+  const intents = Object.values(plan.intents ?? {});
+  assert.equal(intents.filter((intent) => intent === "GO_RESOURCE").length, 1);
+  assert.equal(Object.values(plan.unitActions).filter((action) => action.type === "WAIT").length, 0);
+  assert.ok(intents.filter((intent) => intent === "patrol").length >= 2);
+});
+
 test("DeterministicPlanner：DEPOSIT——cargo>0 回 Core；到位 DEPOSIT", () => {
   const state = makeState(100, [core(0, 0), unit("w1", 3, 0, "WORKER", 3)]);
   const planner = new DeterministicPlanner();

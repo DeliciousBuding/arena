@@ -143,8 +143,8 @@ export class DecisionCoordinator {
       safetyPlan = this.arbiter.emergencyPlan(state);
     }
 
-    // P0-1：safety 模式短路——不启动 Agent、不注册 Lease（没有候选者）。
-    // deadlineOutcome 用 "soft_deadline" 作"无候选路径"哨兵值；observation 缺省。
+    // P0-1：safety/deterministic 短路——不启动 Agent、不注册 Lease（没有候选者）。
+    // 这不是 deadline，遥测必须明确记为 not_applicable，避免把健康热路径误报成超时。
     if (this.decisionMode === "safety" || this.decisionMode === "deterministic") {
       let plan = safetyPlan;
       let repairCount = 0;
@@ -161,7 +161,7 @@ export class DecisionCoordinator {
         safetyReplacementCount: 0,
         invalidAgentActionCount: 0,
         repairCount,
-        deadlineOutcome: "soft_deadline",
+        deadlineOutcome: "not_applicable",
         agentLatencyMs: null,
         selectionLatencyMs: this.clock.now() - t0,
         abortRequested: false,

@@ -498,7 +498,7 @@ test("P0-1 safety 模式：不启动 Agent、立即返回、无 observation", as
   const result = await h.coordinator.decide(h.state);
   assert.equal(result.execution.source, "safety");
   assert.equal(result.observation, undefined, "safety 模式无候选评估");
-  assert.equal(result.deadlineOutcome, "soft_deadline"); // 无候选路径哨兵值
+  assert.equal(result.deadlineOutcome, "not_applicable");
   assert.equal(h.runtime.activeRunId, null, "safety 模式不得启动 Agent run");
   assert.equal(result.agentLatencyMs, null);
 });

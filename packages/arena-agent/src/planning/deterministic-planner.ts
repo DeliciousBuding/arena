@@ -57,14 +57,19 @@ export function stepTowardAvoiding(from: Position, target: Position, obstacles: 
 export class DeterministicPlanner implements PlanProvider {
   private readonly planner: WorkerTaskPlanner;
   private readonly fallbackPlanner: SafetyPlanner;
+  /** 只用于“资源格已被其他 Worker 占用”时继续探索；永远看不到 resourceCells，
+   *  因此不会把额外 Worker 再次派往同一可见资源格。 */
+  private readonly patrolPlanner: SafetyPlanner;
   private previousAssignments: readonly Assignment[] = [];
 
   constructor(
     planner: WorkerTaskPlanner = new WorkerTaskPlanner(),
     fallbackPlanner: SafetyPlanner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
+    patrolPlanner: SafetyPlanner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
+    this.patrolPlanner = patrolPlanner;
   }
 
   decide(input: { readonly state: TickState }): Plan {
@@ -72,6 +77,9 @@ export class DeterministicPlanner implements PlanProvider {
     // 基线计划，再用 WorkerTaskPlanner 覆盖可见资源的全局唯一分配。这样 deterministic
     // 不再是“看不到资源就 WAIT”的骨架，也不会复制第二套脆弱状态机。
     const fallback = this.fallbackPlanner.decide(input);
+    const patrolFallback = this.patrolPlanner.decide({
+      state: { ...input.state, resourceCells: new Set<string>() },
+    });
     const rawSnapshot = extractPlanningSnapshot(input.state);
     const snapshot: PlanningSnapshot = {
       ...rawSnapshot,
@@ -84,11 +92,11 @@ export class DeterministicPlanner implements PlanProvider {
     const intents: Record<string, string> = { ...(fallback.intents ?? {}) };
     for (const assignment of assignments) {
       if (assignment.task.type === "WAIT") {
-        // 无可见资源时保留 Safety 的资源记忆/分散巡逻动作；有可见资源但数量少于
-        // Worker 时，额外 Worker 必须 WAIT，不能重新扎堆到已被全局分配的资源格。
+        // 无可见资源时保留完整 Safety 的资源记忆；有可见资源但数量少于 Worker 时，
+        // 使用看不到资源格的 patrol baseline，保证继续探索且不会重新扎堆。
         if (snapshot.resourceCells.size > 0) {
-          unitActions[assignment.unitId] = { type: "WAIT" };
-          intents[assignment.unitId] = "WAIT_UNCLAIMED";
+          unitActions[assignment.unitId] = patrolFallback.unitActions[assignment.unitId] ?? { type: "WAIT" };
+          intents[assignment.unitId] = patrolFallback.intents?.[assignment.unitId] ?? "WAIT_UNCLAIMED";
         }
         continue;
       }

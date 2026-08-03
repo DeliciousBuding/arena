@@ -13,6 +13,7 @@ const DeadlineOutcomeSchema = Type.Union([
   Type.Literal("candidate"),
   Type.Literal("soft_deadline"),
   Type.Literal("selection_timeout"),
+  Type.Literal("not_applicable"),
   Type.Literal("error"),
 ]);
 

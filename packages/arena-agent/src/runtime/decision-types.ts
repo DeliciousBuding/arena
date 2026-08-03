@@ -139,7 +139,7 @@ export interface DecisionResult {
   readonly invalidAgentActionCount: number;
   /** 本 Tick 总修复数（execution 兜底修复 + 候选仲裁修复；observation.repairCount 只计候选评估侧）。 */
   readonly repairCount: number;
-  readonly deadlineOutcome: "candidate" | "soft_deadline" | "selection_timeout" | "error";
+  readonly deadlineOutcome: "candidate" | "soft_deadline" | "selection_timeout" | "not_applicable" | "error";
   /** Agent 候选到达延迟（raceCandidate 返回时刻 - t0；无 handle/无候选为 null）。 */
   readonly agentLatencyMs: number | null;
   /** 最终计划固定延迟（selectionLatencyMs = 计划固定时刻 - t0，覆盖 arbitration+repair）。 */
