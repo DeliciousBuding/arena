@@ -7,14 +7,14 @@
  */
 
 import type { Accepted, PlayerState } from "@arena/arena-hero-ts";
-import { createHash } from "node:crypto";
 import {
   appendFileSync,
   mkdirSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
+import { canonicalizeIntegrity, sha256Canonical } from "../domain/integrity.ts";
 import type { Plan } from "../domain/model.ts";
 import type { TickOutcome } from "../runtime/loop.ts";
 import type { CalibrationCaseV1 } from "../sim/calibration/schema.ts";
@@ -83,34 +83,9 @@ interface PendingCase {
   readonly receipt: RuntimeGoldenReceiptSummary;
 }
 
-function canonicalize(value: unknown): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("canonical JSON rejects non-finite numbers");
-    return value;
-  }
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (typeof value !== "object") throw new Error(`canonical JSON rejects ${typeof value}`);
-  const source = value as Record<string, unknown>;
-  const output: Record<string, unknown> = {};
-  for (const key of Object.keys(source).sort()) {
-    if (source[key] === undefined) throw new Error(`canonical JSON rejects undefined at ${key}`);
-    output[key] = canonicalize(source[key]);
-  }
-  return output;
-}
-
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
-}
-
-export function sha256Canonical(value: unknown): string {
-  return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
-}
-
 function atomicWriteJson(path: string, value: unknown): void {
   const temp = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(canonicalize(value), null, 2)}\n`, "utf8");
+  writeFileSync(temp, `${JSON.stringify(canonicalizeIntegrity(value), null, 2)}\n`, "utf8");
   renameSync(temp, path);
 }
 
@@ -193,15 +168,21 @@ export class RuntimeGoldenRecorder {
 
   private async processOutcome(outcome: TickOutcome): Promise<void> {
     if (this.pending !== null) {
-      if (outcome.tick === this.pending.tick + 1) {
-        await this.writeCase(this.pending, outcome.rawState);
+      // 先解除 pending 再做可能失败的 I/O/parser；单个坏 case 不得污染下一对状态。
+      const pending = this.pending;
+      this.pending = null;
+      if (outcome.tick === pending.tick + 1) {
+        try {
+          await this.writeCase(pending, outcome.rawState);
+        } catch (error) {
+          this.recordError(`case:${pending.tick}`, error);
+        }
       } else {
         this.droppedPending += 1;
         this.warn(
-          `non-consecutive raw states: pending=${this.pending.tick}, next=${outcome.tick}; case dropped`,
+          `non-consecutive raw states: pending=${pending.tick}, next=${outcome.tick}; case dropped`,
         );
       }
-      this.pending = null;
     }
 
     if (!outcome.submitAttempted) return;

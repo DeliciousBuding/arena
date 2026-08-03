@@ -431,9 +431,9 @@ test("X3: 迁移 Core 携带 Beacon——CANCEL/重启后 4 Tick 完成，Beacon
   assert.equal(result.world.beacon!.carrierId, P1_CORE);
 });
 
-/* ---------------- 4. combat 摧毁 Core → RESPAWNING + respawn fail-closed ---------------- */
+/* ---------------- 4. combat 摧毁 Core → 同 Tick respawn ---------------- */
 
-test("X4: combat 摧毁 Core → CORE_DESTROYED/cargo 掉落正确，P12 标记 respawn unsupported（fail-closed）", () => {
+test("X4: combat 摧毁 Core → CORE_DESTROYED/cargo 掉落 + P12 同 Tick respawn", () => {
   const world = makeWorld(
     [
       {

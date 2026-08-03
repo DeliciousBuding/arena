@@ -1,7 +1,7 @@
 # Digital Twin（本地模拟器）验收清单
 
-> 执行状态：**S0–S9 全部完成**（含 S8b live full-plan recorder），已合并回 `main`。
-> 仍需真机 live 录制数据（`--record-calibration`）生成首份 Runtime-Golden 数据集，才能解锁 S8a #8–#10 与关单门槛中「真实数据」三项。
+> 执行状态：**S0–S12 / P06 / P12 全部完成**，离线模拟器、S8b live full-plan recorder、真实 Runtime-Golden 校准已融合进 `main`。
+> 首份真机数据集已通过四层完整性校验：3 cases、硬差异 0、未分类差异 0、已知确定性事件 6/6（100%）；不可观测的对手 Plan、Beacon 状态与 server-secret refill 保持 `INCONCLUSIVE`。
 >
 > 运行说明见 `docs/simulator.md`；历史设计与任务拆分见
 > `docs/archives/spec-driven-2026-08-03-sim/`。
@@ -19,9 +19,9 @@
 | 5 | event phase order 参与比较，不被排序掩盖 | ✅ | event reorder 反向测试 |
 | 6 | refill、隐藏 terrain、pile/node、server ID、Beacon、对手 Plan 缺失显式 INCONCLUSIVE | ✅ | unknown 矩阵测试 |
 | 7 | 不在线更新规则，不把不可访问/不可观测信息解释为完全验证 | ✅ | manifest 锁定 + fail-closed 语义 |
-| 8 | 真实 tick 序列己方合法性一致率 100% | ⏸ | 需要 S8b full-plan 数据集 |
-| 9 | 已知确定性事件一致率 ≥99.9% | ⏸ | 需要 S8b full-plan Runtime-Golden |
-| 10 | 真实样本 mismatch 100% 完成 taxonomy 分类 | ⏸ | 需要 S8b 数据集 |
+| 8 | 真实 tick 序列己方合法性一致率 100% | ✅ | 真机 run `26600fea…`：3/3 submit accepted、3/3 full-plan cases 完整闭合 |
+| 9 | 已知确定性事件一致率 ≥99.9% | ✅ | Runtime-Golden：6/6，accuracy=1.000000，门槛 0.999 |
+| 10 | 真实样本 mismatch 100% 完成 taxonomy 分类 | ✅ | 3 cases：硬差异 0、未分类 0；16 条均为 `EXPECTED_UNKNOWN` |
 
 ### S8b — 唯一触碰 live loop 的切片
 
@@ -30,17 +30,17 @@
 | 1 | full-plan recorder 只旁路记录，不修改提交路径 | ✅ | `runtime-golden/recorder.ts`：observe() 只消费已 submit 的 TickOutcome，串行队列 + fail-open |
 | 2 | 默认关闭、可独立回滚、录制失败不影响 live | ✅ | `--record-calibration` 默认关；close()/manifest 错误不抛回 live |
 | 3 | 不记录凭据，不改变 deadline、锁、端口和错误语义 | ✅ | recorder 不触碰 lock/deadline/端口；只有旁路字段透传 |
-| 4 | live 提交行为与启用前一致 | ✅ | `tenant-runtime.test.ts` 接线测试 + 379/379 全绿 |
+| 4 | live 提交行为与启用前一致 | ✅ | on/off 提交 body 逐对象相同；真机 recorder run 3/3 accepted、0 recorder errors |
 | 5 | 未拥有对手完整锁定 Plan 时写 `opponentPlans=absent` | ✅ | `writeCase`：opponentPlans 固定 "absent"（单租户旁路） |
 
-> S8b 已合入 `main`（`78729d3`）。下一步：真机 `--live --record-calibration` 录制首份数据集，驱动 S8a #8–#10。
+> 真机证据：dataset `26600fea-e8c7-45da-98e8-5a4bc03919f9`，source SHA `93a63e3`；校准报告 `runs/sim/runtime-golden-t3-26600fea/calibration-dataset-report.json`。
 
 ## S9 — 工具化收口
 
 | # | 验收项 | 状态 | 证据 |
 |---|---|---|---|
-| 1 | CLI：doctor / episode / ab / benchmark / calibrate | ✅ | `src/cli/run-sim.ts`、E2E tests |
-| 2 | npm scripts：`sim:doctor/run/ab/bench/calibrate/test` | ✅ | `packages/arena-agent/package.json` |
+| 1 | CLI：doctor / episode / ab / benchmark / calibrate / calibrate-dataset | ✅ | `src/cli/run-sim.ts`、E2E tests |
+| 2 | npm scripts：`sim:doctor/run/ab/bench/calibrate/calibrate-dataset/test` | ✅ | `packages/arena-agent/package.json` |
 | 3 | 输出仅限 `runs/sim`，拒绝绝对路径、遍历、junction/symlink 逃逸 | ✅ | path policy + Windows junction 反向测试 |
 | 4 | 语义产物 deterministic，性能产物分离 | ✅ | records/final-world/summary 字节一致测试 |
 | 5 | A/B 使用相同 seeds，输出 paired delta / aggregate | ✅ | `pairedDeltas`、`pairedAggregates` |
@@ -61,12 +61,13 @@
 - harvest / deposit、heal / repair / spawn；
 - visibility / supercover / private observation；
 - existing deterministic / safety Planner 闭环；
-- offline calibration、A/B、benchmark 与可复现产物；
-- **combat（S10）**：SWEEP/SHOOT 快照结算（多目标 AOE、八方向线 1-3 射程、互杀合法、Core 先盾后 HP、击杀者资源归属）；
+- offline calibration、Runtime-Golden dataset integrity/accuracy gate、A/B、benchmark 与可复现产物；
+- **combat（S10）**：SWEEP/SHOOT 快照结算（多目标 AOE、八方向线 1–3 射程、互杀合法、Core 先盾后 HP、击杀者资源归属）；
 - **core-migration（P06）**：Four-Tick Core 迁移（START_MOVE/CANCEL_MOVE、进度推进、真实移动结算、裸 MOVING fail-closed）；
-- **beacon（S11）**：PICKUP/DROP 结算（同格低 UUID 争抢、落地 tick 不可拾取、持有者 harvest 加成、失去时盾 clamp）。
+- **beacon（S11）**：PICKUP/DROP 结算（同格低 UUID 争抢、落地 Tick 不可拾取、持有者 harvest 加成、失去时盾 clamp）；
+- **respawn（P12）**：Core 摧毁后同 Tick 确定性重生与完整事件/状态落地。
 
-仍需 unknown / unsupported：respawn、server-secret refill placement、未记录对手动作、服务端 UUID、PENDING v0.11 upkeep-deficit 细节。
+仍需 unknown / unsupported：server-secret refill placement、未记录对手动作、服务端生成 UUID、PENDING v0.11 upkeep-deficit 细节。
 
 ## 关单门槛
 
@@ -76,22 +77,23 @@
 - [x] 1000 Tick 秒级闭环并报告真实 ticks/s
 - [x] 10000 Tick invariant soak
 - [x] CLI / A-B / benchmark / calibration / docs 收口
-- [x] full-plan Runtime-Golden（S8b）——recorder 实现与单测完成，待真机录制首份数据集
-- [ ] 真实确定性事件一致率 ≥99.9%（需 S8b 真机数据集）
-- [ ] 真实 mismatch 100% 分类（需 S8b 真机数据集）
-- [ ] live recorder 行为不变验证（真机 `--record-calibration` 录制中比对）
-- [x] 分支合并回 `main`（`78729d3`）
+- [x] full-plan Runtime-Golden（S8b）：真机 3 cases、四层 hash 完整
+- [x] 真实确定性事件一致率 ≥99.9%：6/6 = 100%
+- [x] 真实 mismatch 100% 分类：硬差异 0、未分类 0
+- [x] live recorder 行为不变验证：3/3 accepted、0 recorder errors
+- [x] 两条开发线已融合回 `main`
 
 ## 核验命令
 
 ```bash
-cd PROJECT_ROOT/arena/.worktrees/sim-digital-twin
+cd PROJECT_ROOT/arena
 npm ci --ignore-scripts --no-audit --no-fund
 npm run check
 npm test
 npm run schema:check
 npm run replay:check      # 冻结 W3 fixture：严格 state/metadata + 有界 legacy plan 豁免
 npm run sim:test -w packages/arena-agent
+npm run sim:calibrate-dataset -w packages/arena-agent -- --manifest runtime/t3/calibration/26600fea-e8c7-45da-98e8-5a4bc03919f9/manifest.json --run-id runtime-golden-t3-26600fea --force
 uv sync --frozen --all-extras --dev
 uv run pytest tests/ -q
 uv run python scripts/gen-status.py --check

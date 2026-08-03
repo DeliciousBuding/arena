@@ -14,9 +14,9 @@ import { test } from "node:test";
 import type { Accepted, PlayerState } from "@arena/arena-hero-ts";
 import type { Plan } from "../src/domain/model.ts";
 import type { TickOutcome } from "../src/runtime/loop.ts";
+import { sha256Canonical } from "../src/domain/integrity.ts";
 import {
   RuntimeGoldenRecorder,
-  sha256Canonical,
   type RuntimeGoldenDatasetManifest,
 } from "../src/runtime-golden/recorder.ts";
 import { parseCalibrationCase } from "../src/sim/calibration/schema.ts";
@@ -170,6 +170,26 @@ test("S8b: missing drain drops pending case instead of forging after state", asy
   }
 });
 
+test("S8b: one invalid case does not poison the next valid state pair", async () => {
+  const root = mkdtempSync(join(tmpdir(), "runtime-golden-"));
+  try {
+    const recorder = makeRecorder(root);
+    const invalid = structuredClone(state(4)) as PlayerState;
+    invalid.population = 9;
+    recorder.observe(outcome(10, invalid, true));
+    recorder.observe(outcome(11, state(4), true));
+    recorder.observe(outcome(12, state(5), false));
+    const result = await recorder.close();
+    assert.equal(result.errorCount, 1, "第一个非法 case 显式报错");
+    assert.equal(result.caseCount, 1, "后续合法 pair 仍必须落盘");
+    assert.equal(result.droppedPending, 0);
+    const manifest = JSON.parse(readFileSync(result.manifestPath, "utf8")) as RuntimeGoldenDatasetManifest;
+    assert.equal(manifest.cases[0]?.tick, 11);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("S8b: write failure is fail-open and becomes explicit recorder error", async () => {
   const root = mkdtempSync(join(tmpdir(), "runtime-golden-"));
   const warnings: string[] = [];
@@ -182,7 +202,7 @@ test("S8b: write failure is fail-open and becomes explicit recorder error", asyn
     const result = await recorder.close();
     assert.equal(result.caseCount, 0);
     assert.ok(result.errorCount >= 1);
-    assert.ok(warnings.some((message) => message.startsWith("observe:")));
+    assert.ok(warnings.some((message) => message.startsWith("case:10:")));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

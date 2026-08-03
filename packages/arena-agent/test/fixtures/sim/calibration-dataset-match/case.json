@@ -1,0 +1,143 @@
+{
+  "schema": "sim-calibration-case-v1",
+  "caseId": "fixture-dataset-move-match",
+  "tenantId": "p1",
+  "rulesVersion": "v0.11",
+  "seed": 7,
+  "metadata": {
+    "source": "fixture",
+    "opponentPlans": "complete",
+    "recordedAt": null,
+    "sourceCommit": "0123456789abcdef0123456789abcdef01234567",
+    "runId": null
+  },
+  "before": {
+    "tick": 1,
+    "state": {
+      "status": "ACTIVE",
+      "respawn_at_tick": null,
+      "resources": 4,
+      "population": 1,
+      "population_tier": 0,
+      "upkeep_next_tick": 0,
+      "champion_beacon": {
+        "position": [
+          20,
+          20
+        ],
+        "status": "GROUND",
+        "carrier_id": null
+      },
+      "objects": [
+        {
+          "kind": "CORE",
+          "id": "11111111-1111-1111-1111-111111111111",
+          "controlled": true,
+          "owner_username": "p1",
+          "position": [
+            0,
+            0
+          ],
+          "hp": 5,
+          "shield": 5,
+          "state": "NORMAL",
+          "move_direction": null,
+          "move_progress": null,
+          "move_required_ticks": null,
+          "destination": null
+        },
+        {
+          "kind": "UNIT",
+          "id": "22222222-2222-2222-2222-222222222222",
+          "controlled": true,
+          "position": [
+            1,
+            0
+          ],
+          "hp": 2,
+          "unit_type": "WORKER",
+          "cargo": 0
+        }
+      ],
+      "events": []
+    }
+  },
+  "plan": {
+    "tick": 1,
+    "unitActions": {
+      "22222222-2222-2222-2222-222222222222": {
+        "type": "MOVE",
+        "direction": "RIGHT"
+      }
+    },
+    "coreAction": null,
+    "intents": {
+      "22222222-2222-2222-2222-222222222222": "fixture_move"
+    }
+  },
+  "after": {
+    "tick": 2,
+    "state": {
+      "status": "ACTIVE",
+      "respawn_at_tick": null,
+      "resources": 4,
+      "population": 1,
+      "population_tier": 0,
+      "upkeep_next_tick": 0,
+      "champion_beacon": {
+        "position": [
+          20,
+          20
+        ],
+        "status": "GROUND",
+        "carrier_id": null
+      },
+      "objects": [
+        {
+          "kind": "CORE",
+          "id": "11111111-1111-1111-1111-111111111111",
+          "controlled": true,
+          "owner_username": "p1",
+          "position": [
+            0,
+            0
+          ],
+          "hp": 5,
+          "shield": 5,
+          "state": "NORMAL",
+          "move_direction": null,
+          "move_progress": null,
+          "move_required_ticks": null,
+          "destination": null
+        },
+        {
+          "kind": "UNIT",
+          "id": "22222222-2222-2222-2222-222222222222",
+          "controlled": true,
+          "position": [
+            2,
+            0
+          ],
+          "hp": 2,
+          "unit_type": "WORKER",
+          "cargo": 0
+        }
+      ],
+      "events": [
+        {
+          "event_id": "sim:1:0:UNIT_MOVE_SUCCEEDED:22222222-2222-2222-2222-222222222222",
+          "tick": 1,
+          "event_type": "UNIT_MOVE_SUCCEEDED",
+          "reason_code": null,
+          "actor_id": "22222222-2222-2222-2222-222222222222",
+          "target_id": null,
+          "position": [
+            2,
+            0
+          ],
+          "values": null
+        }
+      ]
+    }
+  }
+}

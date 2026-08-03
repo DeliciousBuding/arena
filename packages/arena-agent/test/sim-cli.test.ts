@@ -13,6 +13,7 @@ const PKG_ROOT = resolve(here, "..");
 const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
 const SCENARIO = join(PKG_ROOT, "test", "fixtures", "sim", "scenario-basic.json");
 const CALIBRATION = join(PKG_ROOT, "test", "fixtures", "sim", "calibration-wait-match.json");
+const CALIBRATION_DATASET = join(PKG_ROOT, "test", "fixtures", "sim", "calibration-dataset-match", "manifest.json");
 const RUN_ROOT = join(REPO_ROOT, "runs", "sim");
 const createdRunIds = new Set<string>();
 
@@ -185,6 +186,33 @@ test("S9: benchmark detects semantic stability and reports throughput", () => {
   assert.ok(report.samples.every((sample) => sample.peakHeapBytes >= sample.heapStartBytes));
   assert.ok(report.tickLatencyMs.p95 >= report.tickLatencyMs.p50);
   assert.ok(report.medianTicksPerSecond > 0);
+});
+
+test("S8b: calibration dataset CLI verifies integrity and 99.9% event gate", () => {
+  const id = runId("calibration-dataset");
+  const result = runSim([
+    "calibrate-dataset", "--manifest", CALIBRATION_DATASET, "--run-id", id,
+  ]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /sim calibrate-dataset PASS:/);
+  const report = json<{
+    schema: string;
+    integrityVerified: boolean;
+    caseCount: number;
+    knownEventMatched: number;
+    knownEventCompared: number;
+    knownEventAccuracy: number;
+    accuracyGatePassed: boolean;
+    passed: boolean;
+  }>(id, "calibration-dataset-report.json");
+  assert.equal(report.schema, "runtime-golden-calibration-report-v1");
+  assert.equal(report.integrityVerified, true);
+  assert.equal(report.caseCount, 1);
+  assert.equal(report.knownEventMatched, 1);
+  assert.equal(report.knownEventCompared, 1);
+  assert.equal(report.knownEventAccuracy, 1);
+  assert.equal(report.accuracyGatePassed, true);
+  assert.equal(report.passed, true);
 });
 
 test("S9: calibration CLI writes MATCH report with CI exit code 0", () => {

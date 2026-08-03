@@ -32,6 +32,59 @@ function check(value: unknown, validator: ReturnType<typeof Compile>, message: s
   }
 }
 
+/** Wire 的 nullable 字段允许省略；domain 一律补为显式 null。 */
+function normalizePlayerState(value: unknown): PlayerState {
+  const wire = value as Record<string, unknown>;
+  const beacon = wire.champion_beacon as Record<string, unknown>;
+  const objects = (wire.objects as Record<string, unknown>[]).map((object) => {
+    if (object.kind === "CORE") {
+      return {
+        ...object,
+        move_direction: object.move_direction ?? null,
+        move_progress: object.move_progress ?? null,
+        move_required_ticks: object.move_required_ticks ?? null,
+        destination: object.destination ?? null,
+      };
+    }
+    if (object.kind === "UNIT") {
+      return { ...object, cargo: object.cargo ?? null };
+    }
+    return object;
+  });
+  const events = (wire.events as Record<string, unknown>[]).map((event) => ({
+    ...event,
+    reason_code: event.reason_code ?? null,
+    actor_id: event.actor_id ?? null,
+    target_id: event.target_id ?? null,
+    position: event.position ?? null,
+    values: event.values ?? null,
+  }));
+  return {
+    ...wire,
+    respawn_at_tick: wire.respawn_at_tick ?? null,
+    champion_beacon: {
+      ...beacon,
+      status: beacon.status ?? null,
+      carrier_id: beacon.carrier_id ?? null,
+    },
+    objects,
+    events,
+  } as unknown as PlayerState;
+}
+
+function normalizeReceived(value: unknown): Received {
+  const wire = value as Received & {
+    plan: CommandPlan & { core_action?: CommandPlan["core_action"] };
+  };
+  return {
+    ...wire,
+    plan: {
+      ...wire.plan,
+      core_action: wire.plan.core_action ?? null,
+    },
+  };
+}
+
 /** Parse one server WebSocket text message. */
 export function parseStreamMessage(raw: string | Uint8Array): Tick | PlayerState | Received {
   if (raw instanceof Uint8Array) {
@@ -49,13 +102,13 @@ export function parseStreamMessage(raw: string | Uint8Array): Tick | PlayerState
     return { tick: envelope.data as number } satisfies Tick;
   }
   if (envelope.type === "state") {
-    const state = envelope.data as PlayerState;
+    const state = normalizePlayerState(envelope.data);
     checkPlayerStateRelations(state); // domain 关系约束
     return state;
   }
   // received：data 内含 plan，用独立 schema 校验
   check(envelope.data, receivedValidator, "invalid received message");
-  const rec = envelope.data as Received;
+  const rec = normalizeReceived(envelope.data);
   checkReceivedConsistency(rec);
   return rec;
 }

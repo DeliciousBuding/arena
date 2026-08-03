@@ -1,196 +1,89 @@
 # MASTER — Arena 当前进度与门禁
 
 > 当前执行入口。历史设计见 `docs/migration-plan.md`，长期路线见 `docs/roadmap-long-term.md`。
-> 最后整理：2026-08-03 16:30。代码、运行 manifest、JSONL 证据和 GitHub issue 优先于聊天记录。
+> 最后整理：2026-08-03 21:00。代码、run manifest、JSONL、Runtime-Golden 与 Git 提交优先于聊天记录。
 
 ## 当前阶段
 
-**W4 收口：经济闭环已跑通（HARVEST → cargo → DEPOSIT → Core 增长），t1 deterministic live burn-in 进行中。**
+**W4 deterministic 生产迁移与 Digital Twin / Runtime-Golden 融合已完成。下一阶段是 W5 supervisor/长期 soak 与异步 MacroPolicy；per-tick LLM live 仍保持关闭。**
 
 固定优先级：
 
 ```text
-正确性
-→ 可恢复性
-→ 可观测性
-→ 确定性算法收益
-→ 数据质量
-→ 模拟器
-→ ML / Bandit
-→ RL
+正确性 → 可恢复性 → 可观测性 → 确定性收益 → 数据质量
+→ 模拟器校准 → 安全灰度 → MacroPolicy → ML / Bandit → RL
 ```
 
 ## 当前主干事实
 
-最新整理时 HEAD：`4f5151a`（本地 = 远端，无未推送提交）。
-
 已完成：
 
-- Python / TS 100-tick Golden Replay，未解释硬差异 0；
+- TS SDK wire/domain 归一化、Golden Replay、schema 与协议关系约束；
 - DecisionLease、DeadlineBudget、Coordinator、Arbiter、Validator、Safety fallback；
-- `DecisionMode` / `SubmissionMode` 两轴，以及 execution / observation 分离；
-- Pi `createAgentSession` 真实嵌入，builtin tools 全禁用，仅开放 `arena_plan` / `arena_map`；
-- ActiveToolContextSlot、严格工具参数、runId/tick/stateHash 校验；
-- 单租户 runtime config、原子单写者锁（`wx` / O_CREAT|O_EXCL）、manifest、doctor、优雅关闭；
-- runtime / decision / outcome / pi JSONL 与递归脱敏；
-- **经济闭环（2026-08-03 真机验证）**：有界 BFS 绕障寻路（修复长墙两格振荡）、资源格全局唯一分配、无资源时八方向分层巡逻、跨 Tick 资源记忆、cargo 回仓状态机；
-- **经济遥测**：MOVE/HARVEST/DEPOSIT/WAIT 动作数、可见资源格数、cargo Worker 数/总量、意图混合（intent mix）、探索覆盖、submit 失败明细、失败动作归因（prior plan attribution）。
+- 单租户 runtime、原子 single-writer lock、manifest、doctor、优雅关闭与三流遥测；
+- DeterministicPlanner 经济闭环：BFS 绕障、资源唯一分配、分层巡逻、跨 Tick 资源记忆、cargo 回仓、容量裁决；
+- 动态移动争用退避：`MOVE_CONTESTED` 等只对对应 actor 短期冷却，不污染永久地图；
+- 最低 Worker 自恢复：Worker <2 时允许紧急补员；正常阶段继续积累，Core heal/repair 保留；
+- S0–S9 Digital Twin：movement/economy/visibility、Planner 闭环、A/B、benchmark、calibration；
+- S8b Runtime-Golden recorder：默认关闭、submit 后旁路、fail-open、四层 integrity hash；
+- `calibrate-dataset`：hash/path/rules 绑定、taxonomy、硬差异与已知事件 ≥99.9% 门禁；
+- 生产 deterministic 与模拟器两条开发线已融合进 `main`。
 
-### 近期提交（3c3161a → 4f5151a，10 个）
+## 真机迁移证据
 
-```text
-4f5151a feat(ops): add executable burn-in quality gates
-5db5313 perf(planner): expand patrol through layered rings
-d78df90 perf(planner): expand patrol coverage to eight directions
-511c6d9 fix(runtime): synchronize before first live submission
-75249ed fix(map-store): retry concurrent WAL initialization
-5964354 feat(telemetry): measure intent mix and exploration spread
-2d3bc72 fix(planner): resolve cell capacity before submit
-4e78224 feat(telemetry): retain submit failure details
-9baeb1f feat(runtime): add bounded graceful burn-in runs
-40989b9 feat(telemetry): attribute failed actions to prior plans
-```
+### t1 Canary / 经济闭环
 
-## 已通过的线上门禁
+- run `7a0f9b0a…`：37/37 accepted、3 harvest、2 deposit、Core 6→8；
+- run `f38102de…`：14/14 accepted、WAIT=0、1 deposit、Core 8→9；
+- 证明巡逻发现资源 → HARVEST → cargo → 绕障返航 → DEPOSIT 的完整链路。
 
-### TS Safety Canary
+### t2–t4 严格 100 Tick burn-in
 
-- 租户：t1
-- shadow：10 tick
-- live：45 tick
-- 结论：P0 红线全 0
-- 证据：`runs/run-20260802T133504-7b42dd/ts-live-canary/`
+| 租户 | run | accepted | harvest/deposit | Core Δ | failed | WAIT ratio | P95 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| t2 | `901dba1a…` | 100/100 | 3 / 2 | +2 | 0 | 0.25% | 19.05 ms |
+| t3 | `21d1556a…` | 100/100 | 1 / 1 | +1 | 0 | 0% | 14.07 ms |
+| t4 | `f7a14164…` | 100/100 | 1 / 1 | +1 | 0 | 0% | 2.74 ms |
 
-### Agent shadow 观察
+三份报告均 `passed=true`，0 rejected、0 repair、0 `CELL_UNIT_LIMIT`，运行结束后无锁与孤儿进程。
 
-- 114 tick
-- candidate rate：96.5%
-- p95：10.1s
-- rotation：0
-- 结论：观察模式门槛通过，但不等于 live 门禁通过
-- 证据：`runs/run-20260802T133504-7b42dd/ts-agent-shadow/`
+## Runtime-Golden 真机证据
 
-### Deterministic 观察
+- recorder run：`26600fea-e8c7-45da-98e8-5a4bc03919f9`；
+- source SHA：`93a63e3`；
+- 3/3 live submit accepted，cases=3、recorder errors=0；
+- dataset 四层 hash、路径、rulesVersion、source/config hash 全部验证；
+- known deterministic events：6/6（100%，门槛 99.9%）；
+- hard mismatch cases=0，unclassified differences=0；
+- 16 条差异全部归类为 `EXPECTED_UNKNOWN`（对手 Plan、Beacon 可见性、server-secret refill）；
+- real-data calibration report：`runs/sim/runtime-golden-t3-26600fea/calibration-dataset-report.json`。
 
-- 租户：t2
-- 33 tick
-- blocked move 系统性问题修复后 repair=0
-- 结论：合法性观察通过
-- 证据：`runs/run-20260802T133504-7b42dd/ts-deterministic/`
+这批数据同时发现并修复：SDK optional-nullable wire 字段未归一化、recorder 单 case 失败污染 pending、2:3 斜率 supercover 误收终点旁格。
 
-### Deterministic live 经济闭环 Canary（2026-08-03 新增）
+## 当前运行态
 
-第一轮（run `7a0f9b0a`，tick 43974→44009）：
+- t1–t4 验证进程均已停止；
+- 无 tenant lock、无 orphan Arena writer；
+- 未配置长期常驻 supervisor，避免把验证脚本误当生产守护；
+- Python 回滚资产仍保留，但不得与同租户 TS live writer 并行。
 
-| 指标 | 结果 |
-|---|---|
-| accepted | 37/37 |
-| rejected | 0 |
-| repair | 0 |
-| HARVEST_SUCCEEDED | 3 |
-| DEPOSIT_SUCCEEDED | 2 |
-| Core 资源 | 6 → 8 |
+## 仍未开闸
 
-完整链路已证明：巡逻发现资源 → 前往 → HARVEST → cargo=1 → 绕障回 Core → DEPOSIT → Core 增长。
+### Per-tick LLM / hybrid live
 
-第二轮效率（run `f38102de`，commit 3c3161a，tick 44010→44032）：
+`#8` 结论不变：完整 LLM per-tick 决策冷启动/尾延迟与 15s 游戏窗口结构性不兼容。Agent-shadow 可用于观察，hybrid live 不因 deterministic/模拟器完成而自动解锁。
 
-| 指标 | 结果 |
-|---|---|
-| accepted | 14/14 |
-| decisionSource | deterministic |
-| deadlineOutcome | not_applicable |
-| WAIT | 0 |
-| DEPOSIT_SUCCEEDED | 1 |
-| Core 资源 | 8 → 9 |
+### MacroPolicy
 
-修复：一个资源格只分配一个 Worker，其余继续巡逻（不再 WAIT）。
+后续只允许异步输出低频战略参数（资源储备、Worker 目标、探索半径、防御模式等），每 20–50 Tick 或事件触发；LLM 永不直接控制每 Tick 单位动作。
 
-> 移动失败率对比（修复价值量级）：旧导航 39.7%（4450 次移动 1765 次失败）→ 新导航 run1 0%、run2 1.8%。
+### W5 Supervisor
 
-### t1 deterministic live burn-in（进行中）
-
-- 活跃进程：pid 39064，run `9ec7b2c7`，gitSha `4f5151a`，16:12:29 启动
-- 观察点：tick 44322+，Core 资源 10，visibleResourceCellCount 0→1（巡逻重新发现资源）
-- 门禁：accepted 100%、repair=0、无连续 20 tick 经济停滞、移动失败率低位
-
-## 当前未通过门禁
-
-### 1. Agent-shadow live（架构暂停）
-
-`#8` 裁决：per-tick 完整 LLM 决策（冷启动 22.8s）与 15s 游戏窗口结构性不兼容。agent-shadow live / hybrid live 禁止，直至离线延迟基准与 MacroPolicy 转向完成。`#4` 生命周期修复（b9515aa）已完成但**不自动解锁**。
-
-### 2. 100 Tick burn-in 完成
-
-t1 正在积累 burn-in 证据。完成后需要：
-
-- 移动冲突与失败原因分析（unit 下一格预约）；
-- 逐租户迁移（先 t2，再 t3/t4，不四租户同时开闸）。
-
-### 3. MacroPolicy（#8 第二阶段，暂停中）
-
-- LLM 只异步输出战略指令（accumulate target / worker target / reserve / explore radius / defensive mode），每 20–50 tick 或事件触发；
-- LLM 永不直接控制每 Tick 单位动作；
-- 离线延迟 benchmark 未开始（暂停，优先经济闭环）。
-
-### 4. 仓库 SSOT
-
-完成 #6：
-
-- README TS-first；
-- MASTER 去除过期 Agent 表；
-- `docs/generated/status.md` 与实测同步；
-- `gen-status.py` + CI 防漂移；
-- 文档 current / plans / reference / legacy 分层。
-
-## 当前 issues
-
-- #3 — 2026-08-03 下午到午夜 Leader 总控
-- #4 — Pi 周期重置（已提交 b9515aa，审计项待清理）
-- #5 — Deterministic live 与 Safety A/B（经济闭环已过，A/B 收益验证待做）
-- #6 — 仓库 SSOT 整理
-- #7 — W5 Supervisor / health / rollout
-- #8 — Per-tick LLM 硬实时不成立 → 延迟基准 + MacroPolicy 转向
-
-已完成的上午总控 #2 已关闭，不再作为进度入口。
-
-## W4 关闭条件
-
-全部满足后才能宣布 W4 完成：
-
-- Safety live 证据：已完成；
-- Pi 真实嵌入：已完成；
-- Deterministic live Canary P0 全 0：已完成（两轮）；
-- **t1 100 Tick burn-in 完成（进行中）**；
-- 移动失败率低位 + 失败归因分析；
-- runtime / decision / outcome / pi 证据可关联；
-- README / MASTER / generated status 不冲突；
-- clean clone 全量门禁通过；
-- Python 回滚链仍可用。
-
-W4 关闭不代表允许 hybrid，也不代表允许删除 Python。
-
-## W5 开闸
-
-W5 只做生产运行层：
+下一阶段只做生产运行层：
 
 ```text
-per-tenant process supervisor
-→ liveness / readiness / degraded state
-→ 自动降级
-→ 逐租户 canary / promote / rollback
-→ 四租户 soak
-```
-
-具体任务见 #7。四租户 live 迁移顺序固定：
-
-```text
-单租户 safety
-→ 单租户 deterministic（t1 已跑，burn-in 中）
-→ 逐租户扩展（t2 → t3 → t4，逐个切换）
-→ 长期 soak
-→ hybrid 独立门禁
-→ W6 才讨论 Python 删除
+per-tenant supervisor → liveness/readiness/degraded
+→ 自动降级 → canary/promote/rollback → 四租户长期 soak
 ```
 
 ## 全量门禁
@@ -202,9 +95,16 @@ npm run schema:check
 npm run replay:check
 uv run pytest tests/ -q
 uv run python scripts/gen-status.py --check
+uv run python scripts/docs_health.py --check
 ```
 
-测试命令必须有外层 timeout；超过 2 分钟无输出即终止并调查 open handle。
+Runtime-Golden：
+
+```bash
+npm run sim:calibrate-dataset -w packages/arena-agent -- \
+  --manifest runtime/t3/calibration/26600fea-e8c7-45da-98e8-5a4bc03919f9/manifest.json \
+  --run-id runtime-golden-t3-26600fea --force
+```
 
 ## 永久红线
 
@@ -217,9 +117,9 @@ orphan_process = 0
 credential_in_logs = 0
 ```
 
-- 同一租户 Python / TS 只能一个 live writer；
-- 任何 P0 出现立即停止该租户 TS，确认无提交后回滚；
-- 不用单个漂亮窗口宣称策略收益；
-- 不把 shadow 合法率当作生产收益；
-- 不在四租户稳定 soak 前删除 Python；
-- 不在模拟器校准前启动 RL 主线。
+- 同一租户只能有一个 live writer；
+- P0 出现立即停止、确认无提交后回滚；
+- 不把 `INCONCLUSIVE` 当 MATCH；
+- 不把单个漂亮窗口当长期收益；
+- 不在长期 soak 前删除 Python 回滚链；
+- 不在 Runtime-Golden 覆盖充分前启动 RL 主线。

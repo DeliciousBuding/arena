@@ -49,12 +49,16 @@ export function supercoverLine(from: Position, to: Position): Position[] {
   let iy = 0;
 
   while (ix < nx || iy < ny) {
-    const cross = nx * (iy + 1) - ny * (ix + 1);
-    if (cross > 0) {
+    // Cell-center → cell-center traversal: compare the next half-cell boundary
+    // crossing times without floating point. The old whole-cell comparison added
+    // a false corner-side cell for slopes such as 2:3.
+    const nextX = (2 * ix + 1) * ny;
+    const nextY = (2 * iy + 1) * nx;
+    if (nextX < nextY) {
       x += sx;
       ix += 1;
       cells.push([x, y]);
-    } else if (cross < 0) {
+    } else if (nextX > nextY) {
       y += sy;
       iy += 1;
       cells.push([x, y]);

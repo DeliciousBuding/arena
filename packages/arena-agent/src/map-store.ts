@@ -266,6 +266,9 @@ function isLocked(exc: unknown): boolean {
 }
 
 function sleep(ms: number): void {
-  const buffer = new Uint8Array(1);
-  Atomics.wait(new Int32Array(buffer.buffer), 0, 0, ms);
+  // Buffer/Uint8Array backing stores may be pooled or have a byte length that is
+  // not aligned for Int32Array on newer Node versions. A dedicated 4-byte
+  // SharedArrayBuffer keeps Atomics.wait portable and allocation semantics clear.
+  const signal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  Atomics.wait(signal, 0, 0, ms);
 }
