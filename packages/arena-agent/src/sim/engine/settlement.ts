@@ -119,7 +119,10 @@ const PHASES: readonly Phase[] = [
     id: "P12-unsupported-respawn-check",
     officialPhase: 12,
     run: (draft, ctx) => {
-      if (ctx.features.has("respawn")) {
+      // 输入已 RESPAWNING，或本 tick combat 摧毁 Core 新产生 RESPAWNING（respawn
+      // resolver 未实现）→ 一律 fail-closed 标记 unsupported，不得静默当作成功。
+      const respawningNow = [...draft.players.values()].some((player) => player.status === "RESPAWNING");
+      if (ctx.features.has("respawn") || respawningNow) {
         return outcome({ unsupported: ["respawn"] });
       }
       return EMPTY_OUTCOME;
