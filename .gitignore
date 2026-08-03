@@ -28,3 +28,6 @@ runs/
 # 运行时产物（Canary/真机）——配置只含 env 名，遥测/manifest 脱敏后仍不进 git
 runtime/
 runs/run-*/n/
+
+# 模拟器 worktree（独立分支，模拟器工程专用）
+.worktrees/
