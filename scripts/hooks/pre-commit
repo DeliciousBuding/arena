@@ -1,0 +1,86 @@
+#!/bin/sh
+# arena 防泄露 pre-commit hook
+#
+# 拦截会把隐私内容带进 git 历史/公开仓库的暂存改动：
+#   1. 密钥值（ah_live / sk- / ghp_ / AKIA / xox / ARENA_HERO_API_KEY 赋值 / Bearer）
+#   2. 本机绝对路径（D:\Code、C:\Users\Ding）
+#   3. 个人邮箱（内容中出现的 qq/163/126/foxmail 邮箱）
+#   4. 运行时产物文件（.env、alerts/、runs/、runtime/、mapstore/、*.sqlite、*.jsonl）
+#   5. 提交者邮箱（防 QQ/163 等个人邮箱进入 commit 元数据）
+#
+# 用法：
+#   sh scripts/hooks/install-hooks.sh     # 安装到 .git/hooks/
+#   SKIP_ARENA_SECRET_CHECK=1 git commit # 白名单豁免（慎用）
+#
+# 注意：test/ 目录（含假密钥 fixture）自动豁免内容检查；文件名检查不豁免。
+set -u
+
+if [ "${SKIP_ARENA_SECRET_CHECK:-}" = "1" ]; then
+  exit 0
+fi
+
+# ---- 匹配模式（ERE，作用于暂存新增行；\\ 为字面反斜杠，| 为 alternation）----
+CONTENT_PATTERNS='CODE_ROOT\\|USER_HOME\\|CODE_ROOT/|USER_HOME/|ah_live[A-Za-z0-9_.-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9]{24,}|ARENA_HERO_API_KEY[=_][A-Za-z0-9._-]{8,}|Bearer [A-Za-z0-9._-]{30,}|[A-Za-z0-9._%+-]+@(qq|163|126|foxmail)\.(com|cn)'
+
+# ---- 敏感文件名（路径含这些即拒绝，不豁免测试）----
+FILE_PATTERNS='(^|/)\.env$|(^|/)(alerts|runs|runtime|mapstore)/|\.sqlite(-wal)?$|\.db$|\.jsonl$'
+
+# ---- 测试路径豁免（假密钥 fixture 所在）----
+is_test_path() {
+  case "$1" in
+    */test/*|*/tests/*|tests/*|test/*|*.test.*|*_test.*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ---- hook 规则文件自身豁免（本体含模式字面量，非真实敏感内容）----
+is_hook_path() {
+  case "$1" in
+    scripts/hooks/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+FAILED=0
+
+warn() {
+  FAILED=1
+  echo "pre-commit: [FAIL] $1"
+}
+
+# ---- 1. 文件名检查 ----
+staged_files=$(git diff --cached --name-only -z | tr '\0' '\n')
+for f in $staged_files; do
+  if printf '%s\n' "$f" | grep -qE "$FILE_PATTERNS"; then
+    warn "敏感文件被暂存: $f（.env/运行时产物/数据库不应入仓；如需入仓请重命名并人工确认）"
+  fi
+done
+
+# ---- 2. 内容检查（仅新增行；测试与 hook 规则文件豁免）----
+for f in $staged_files; do
+  if is_test_path "$f" || is_hook_path "$f"; then
+    continue
+  fi
+  hit=$(git diff --cached -- "$f" | grep '^+' | grep -v '^+++' | grep -nE "$CONTENT_PATTERNS" || true)
+  if [ -n "$hit" ]; then
+    warn "文件含疑似敏感内容: $f"
+    printf '%s\n' "$hit" | sed 's/^/    /'
+  fi
+done
+
+# ---- 3. 提交者邮箱检查 ----
+email=$(git config --get user.email || true)
+case "$email" in
+  *@qq.com|*@163.com|*@126.com|*@foxmail.com|*@qq.cn)
+    warn "提交者邮箱是个人邮箱: $email（请用 GitHub noreply 邮箱，如 xxx@users.noreply.github.com）"
+    ;;
+esac
+
+if [ "$FAILED" = "1" ]; then
+  echo
+  echo "pre-commit: 检测到疑似隐私/敏感内容，已阻止提交。"
+  echo "  - 确认是误报？可用 SKIP_ARENA_SECRET_CHECK=1 git commit 豁免（请先自查）"
+  echo "  - 需要改规则？编辑 scripts/hooks/pre-commit 后重跑 sh scripts/hooks/install-hooks.sh"
+  exit 1
+fi
+exit 0

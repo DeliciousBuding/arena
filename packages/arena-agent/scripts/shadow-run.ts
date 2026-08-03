@@ -6,19 +6,20 @@
  *    parseStreamMessage → Turn → handleTurn(shadow) 全链路，不碰网络
  *
  * 用法（arena-pr-verify/packages/arena-agent）：
- *   npx tsx scripts/shadow-run.ts --replay-dir=PROJECT_ROOT/arena/runs/<run>/raw-state [--ticks N]
+ *   npx tsx scripts/shadow-run.ts --replay-dir=<repo-root>/runs/<run>/raw-state [--ticks N]
  *
  * 输出：每 Tick 一行 JSON（tick/status/source/决策要点），结束后打印汇总。
  */
 
 import { ArenaHeroClient, Turn, parseStreamMessage } from "@arena/arena-hero-ts";
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG } from "../src/strategies/safety-planner.ts";
 import { handleTurn } from "../src/runtime/loop.ts";
 
-const ARENA_ROOT = "PROJECT_ROOT/arena"; // 主仓库（.env 所在）
+const ARENA_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", ".."); // 主仓库（.env 所在）
 
 function apiKey(name: string): string {
   const envPath = `${ARENA_ROOT}/.env`;

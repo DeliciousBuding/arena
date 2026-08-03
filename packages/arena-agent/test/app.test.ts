@@ -9,7 +9,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { loadRuntimeConfig, resolveDeadlines, type TenantRuntimeConfig } from "../src/app/runtime-config.ts";
 import { SingleWriterLock } from "../src/app/single-writer-lock.ts";
@@ -21,6 +22,9 @@ import {
   readRunManifest,
 } from "../src/app/run-manifest.ts";
 import { runDoctor } from "../src/cli/doctor.ts";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(here, "..", "..", "..");
 
 const VALID_CONFIG: TenantRuntimeConfig = {
   tenantId: "t1",
@@ -136,7 +140,7 @@ test("manifest：写读回字段齐全 + 目录自动创建", () => {
 
 test("manifest：newProcessRunId 唯一、readGitSha 40 位 hex", () => {
   assert.notEqual(newProcessRunId(), newProcessRunId());
-  const sha = readGitSha("PROJECT_ROOT/arena");
+  const sha = readGitSha(REPO_ROOT);
   assert.match(sha, /^[0-9a-f]{40}$/);
 });
 
@@ -145,7 +149,7 @@ test("doctor：合法配置（env 存在）→ 全 PASS", () => {
   const old = process.env.ARENA_HERO_API_KEY_1;
   process.env.ARENA_HERO_API_KEY_1 = "dummy-not-a-real-key";
   try {
-    const result = runDoctor(configPath, "PROJECT_ROOT/arena", join(mkdtempSync(join(tmpdir(), "doctor-")), "runtime"));
+    const result = runDoctor(configPath, REPO_ROOT, join(mkdtempSync(join(tmpdir(), "doctor-")), "runtime"));
     assert.equal(result.allPass, true, JSON.stringify(result.checks, null, 2));
   } finally {
     if (old === undefined) {
@@ -158,7 +162,7 @@ test("doctor：合法配置（env 存在）→ 全 PASS", () => {
 
 test("doctor：env 缺失 → 该项 FAIL（反向验证：检查真在跑）", () => {
   const configPath = writeConfig({ ...VALID_CONFIG, arenaTokenEnv: "ARENA_DOES_NOT_EXIST_XYZ" });
-  const result = runDoctor(configPath, "PROJECT_ROOT/arena", join(mkdtempSync(join(tmpdir(), "doctor-")), "runtime"));
+  const result = runDoctor(configPath, REPO_ROOT, join(mkdtempSync(join(tmpdir(), "doctor-")), "runtime"));
   const tokenCheck = result.checks.find((c) => c.name === "arena_token_env");
   assert.equal(tokenCheck?.pass, false, "缺失 env 必须 FAIL");
   assert.equal(result.allPass, false);
@@ -168,7 +172,7 @@ test("doctor：非法配置 → config_schema FAIL 且不继续", () => {
   const bad = mkdtempSync(join(tmpdir(), "cfg-bad-"));
   const path = join(bad, "bad.json");
   writeFileSync(path, JSON.stringify({ tenantId: 42 }), "utf-8");
-  const result = runDoctor(path, "PROJECT_ROOT/arena", join(mkdtempSync(join(tmpdir(), "doctor-")), "runtime"));
+  const result = runDoctor(path, REPO_ROOT, join(mkdtempSync(join(tmpdir(), "doctor-")), "runtime"));
   assert.equal(result.checks[0].pass, false);
   assert.equal(result.allPass, false);
 });

@@ -93,7 +93,7 @@
 ## 核验命令
 
 ```bash
-cd PROJECT_ROOT/arena
+cd <repo-root>
 npm ci --ignore-scripts --no-audit --no-fund
 npm run check
 npm test
