@@ -28,6 +28,26 @@
 - 自动降级链：`macro-hybrid → deterministic → safety → emergency → pause`（如 Provider 连续失败 3 次关 LLM 10 分钟；Pi 连续 rotation 退 deterministic；SDK submit 连续失败暂停并报警）。
 - W7 闸门：单租户 10,000 Tick 零错误提交；四租户 2,000 Tick 零跨租户污染；SIGTERM 无孤儿；子进程崩溃自动拉起；热更新错误配置不破坏当前运行；日志零凭据。
 
+### W7 首批实施切片（2026-08-03 规划，hard 层增强）
+
+> 现状盘点：decision-coordinator / decision-lease / deadline-budget / plan-arbiter 已实现且
+> 与 2026 业界共识对齐（见文末「对标 2026 前沿」节）。以下三项是盘点出的真实缺口，按性价比排序。
+
+1. **Provider 熔断（circuit breaker，最高优先）**——业界成熟模式（熔断 + 指数退避 + fallback 链）：
+   - 状态机：`closed → open（连续失败 ≥3 次，关 LLM 10 分钟）→ half-open（试探 1 次）→ closed / 再 open`；
+   - 接入点：Agent runtime 层（startDecision 抛错 / settle outcome=error 计入失败计数），不进 coordinator 决策路径；
+   - 熔断打开时决策模式自动降为 `deterministic`（SafetyPlanner 热路径，遥测 `decisionMode: deterministic`）；
+   - 遥测字段：`circuit_state / consecutive_failures / last_trip_at`；故障不拖死游戏（每次 tick 仍有确定性计划）。
+2. **`raceCandidate` 轮询改事件驱动**——当前 10ms 忙轮询等 soft deadline；改为 Lease 状态变更通知
+   （`registry.submit` 时 resolve 等待者），省 CPU、延迟更精确。纯内部实现，行为不变。
+3. **submit 阶段超时遥测**——`deadline-budget` 定义了 submit/hard 两段但 coordinator 未强制；
+   在 `turn.submit()` 前查 `isExpired(budget, now, "submit")`，超限记 `deadlineOutcome="submit_timeout"`
+   并回退 safety 计划（不提交）。价值在遥测完整，非新机制。
+
+**明确不做**（过度工程边界）：
+- 形式化验证（Z3/Kani 机器证明 fail-closed）——Unfireable Safety Kernel 论文级手段，对游戏 bot 不划算；
+- 双模型竞速 hedging——与本项目「确定性基线 + LLM 增强」的 safety-first 架构相悖，成本收益为负。
+
 ## W8：确定性 Planner 竞赛系统
 
 - `PlannerVariant { id, decide }` 多实现候选（safety-v1 / greedy-resource-v1 / global-assignment-v1 / risk-aware-v1 / capacity-aware-v1 / frontier-balanced-v1）。
@@ -133,3 +153,22 @@
 ```
 
 正确路线：**先安全实际运行 → 再比 baseline 多赚钱 → 再形成可靠数据 → 再建立可校准模拟器 → 再学习价值函数 → 最后才做 RL 和自我改进**。
+
+## 对标 2026 前沿（2026-08-03 调研验证）
+
+> 以下对照基于对当前 hard 层实现（decision-coordinator / decision-lease / deadline-budget /
+> plan-arbiter）的代码盘点 + Web 调研（Unfireable Safety Kernel arXiv 2606.26057、
+> Deterministic Governance Kernels（Zylos 2026-03）、hedged requests（Dean & Barroso Tail at Scale）、
+> HiMAC/HiPER 分层宏微 RL）。结论：**本路线方向与 2026 业界共识一致，无需结构性转向**。
+
+| 本路线/实现 | 对应前沿概念 | 结论 |
+|---|---|---|
+| SafetyPlanner 预计算 + Lease + deadline race | Unfireable Safety Kernel：进程隔离/前置强制/fail-closed/外部化证据 | 已对齐前三项；形式化证明（Z3/Kani）对 bot 属过度工程，明确不做 |
+| Pi 永不持提交权，arena-agent 唯一 submit | Deterministic Governance Kernel：治理者绝不被 LLM 自我治理 | 已对齐 ✅ |
+| DecisionLease 三重校验（runId/tick/stateHash） | LLM idempotency key + 请求去重 | 比多数生产方案更严（含 stateHash） |
+| 确定性基线 + LLM 增强（非双模型竞速） | hedged requests 的 safety-first 变体 | 本路线更优：实时决策系统应保底不竞速 |
+| W12-W14 宏观 LLM + 低层确定性 + 分层 RL | HiMAC / HiPER：macro planning + micro execution | 方向一致，按 W9 数据 + W10 模拟器前置推进 |
+
+**研究课题定位**（W18 对外口径）：本项目实际在做的是
+`hard-deadline hedged agent decision with deterministic governance kernel`——
+这是 2026 年 agent 生产化的核心开放问题，Arena 是第一个真实环境。
