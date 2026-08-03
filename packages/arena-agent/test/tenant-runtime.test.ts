@@ -280,21 +280,28 @@ test("runTenant：锁冲突（他人活锁）→ 直接失败，不降级", asyn
   }
 });
 
-test("runTenant：deterministic+live → 明确拒绝（影子观察达标前禁止 live）", async () => {
+test("runTenant：deterministic+live → 允许开闸（DeterministicPlanner 注入，Submit）", async () => {
   const base = mkdtempSync(join(tmpdir(), "tenant-run-"));
   const configPath = writeConfig(makeConfig(base));
   const old = process.env.ARENA_HERO_API_KEY_T_TEST;
   process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
   try {
-    await assert.rejects(
-      runTenant(configPath, "PROJECT_ROOT/arena", {
-        runtime: new SyncCandidateRuntime(),
-        client: makeFakeClient() as never,
-        decisionMode: "deterministic",
-        submissionMode: "live",
-      }),
-      /暂禁 live/,
-    );
+    const result = await runTenant(configPath, "PROJECT_ROOT/arena", {
+      runtime: new SyncCandidateRuntime(),
+      client: makeFakeClient() as never,
+      decisionMode: "deterministic",
+      submissionMode: "live",
+    });
+    assert.equal(result.decisionMode, "deterministic");
+    assert.equal(result.submissionMode, "live");
+    // 每 Tick 最多 submit 一次（3 Tick → 3 次提交）
+    const decisionLines = readFileSync(result.telemetryPaths.decision, "utf-8").trim().split("\n").filter((l) => l.length > 0);
+    assert.equal(decisionLines.length, 3);
+    // decision trace source 仍 safety（deterministic 走 coordinator 短路语义）
+    for (const line of decisionLines) {
+      const record = JSON.parse(line) as { decisionSource: string };
+      assert.equal(record.decisionSource, "safety");
+    }
   } finally {
     if (old === undefined) {
       delete process.env.ARENA_HERO_API_KEY_T_TEST;
@@ -363,6 +370,51 @@ test("runTenant：signal 触发优雅关闭——停收 Turn、释放锁、runti
     // signal 后 runTenant 必须快速完成（signal 无效则此 await 永不返回 → 测试超时即失败）；
     // tickCount 是微任务竞态下的不稳定值，只验证下限
     assert.ok(result.tickCount >= 1000, "signal 前至少处理了一个 Tick");
+    assert.equal(client.closed, true, "client 已关闭");
+    assert.equal(runtime.closed, true, "runtime 已关闭");
+    assert.equal(existsSync(join(base, "t1", "locks", "t1.lock")), false, "锁已释放");
+  } finally {
+    if (old === undefined) {
+      delete process.env.ARENA_HERO_API_KEY_T_TEST;
+    } else {
+      process.env.ARENA_HERO_API_KEY_T_TEST = old;
+    }
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("runTenant：deterministic+live SIGTERM 优雅关闭——停止提交、释放锁", async () => {
+  const base = mkdtempSync(join(tmpdir(), "tenant-run-"));
+  const configPath = writeConfig(makeConfig(base));
+  const runtime = new SyncCandidateRuntime();
+  const client = makeInfiniteClient();
+  const signal: { cb: (() => void) | null } = { cb: null };
+  const old = process.env.ARENA_HERO_API_KEY_T_TEST;
+  process.env.ARENA_HERO_API_KEY_T_TEST = "test-key-not-real";
+  try {
+    const resultPromise = runTenant(configPath, "PROJECT_ROOT/arena", {
+      runtime,
+      client: client as never,
+      decisionMode: "deterministic",
+      submissionMode: "live",
+      onSignal: (cb) => {
+        signal.cb = cb;
+      },
+    });
+    const runtimeTracePath = join(base, "t1", "telemetry", "runtime.jsonl");
+    const deadline = Date.now() + 5000;
+    while (!existsSync(runtimeTracePath)) {
+      if (Date.now() > deadline) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(signal.cb !== null, "signal 回调已注册");
+    signal.cb!();
+    const result = await resultPromise;
+    assert.ok(result.tickCount >= 1000, "signal 前至少处理了一个 Tick");
+    assert.equal(result.decisionMode, "deterministic");
+    assert.equal(result.submissionMode, "live");
     assert.equal(client.closed, true, "client 已关闭");
     assert.equal(runtime.closed, true, "runtime 已关闭");
     assert.equal(existsSync(join(base, "t1", "locks", "t1.lock")), false, "锁已释放");

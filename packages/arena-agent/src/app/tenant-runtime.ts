@@ -120,10 +120,6 @@ export async function runTenant(
 ): Promise<TenantRunResult> {
   const config = loadRuntimeConfig(configPath);
   const decisionMode = options.decisionMode ?? config.decisionMode;
-  if (decisionMode === "deterministic" && submissionModeOf(options, config) === "live") {
-    // leader 契约：deterministic 先影子观察（决策质量/唯一性验证），影子达标前禁止 live
-    throw new Error("decisionMode=deterministic 暂禁 live：先影子观察达标（候选计划质量/validatePlan），再开闸");
-  }
   const submissionMode = submissionModeOf(options, config);
   const deadlines = resolveDeadlines(config);
 
