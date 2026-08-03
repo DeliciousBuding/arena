@@ -40,12 +40,13 @@ export function canonicalWorldJson(world: SimWorld): string {
     }));
   const obstacles = [...world.terrain.obstacles].sort();
   const resources = [...world.terrain.resources.keys()].sort();
+  const piles = [...world.terrain.piles.entries()].sort(([a], [b]) => a.localeCompare(b));
   const serializable = {
     tick: world.tick,
     resolvedTickCount: world.resolvedTickCount,
     rulesVersion: world.rulesVersion,
     players,
-    terrain: { obstacles, resources },
+    terrain: { obstacles, resources, piles },
     beacon: world.beacon,
     seed: world.seed,
     rngStreamPosition: world.rngStreamPosition,

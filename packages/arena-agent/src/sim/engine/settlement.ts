@@ -13,6 +13,8 @@ import type { Plan } from "../../domain/model.ts";
 import type { RulesManifest } from "../contracts/rules-manifest.ts";
 import type { SimFeature, SimWorld } from "../world/types.ts";
 import { assertWorldInvariants } from "../world/world.ts";
+import { economyPhases } from "./economy.ts";
+import { movementPhase } from "./movement.ts";
 import { EMPTY_OUTCOME, outcome, type Phase, type PhaseContext, type PhaseOutcome, type ResolutionEvent, type UnknownEffect } from "./phase.ts";
 
 export interface SettlementContext {
@@ -86,25 +88,11 @@ const PHASES: readonly Phase[] = [
     officialPhase: 1,
     run: () => EMPTY_OUTCOME,
   },
-  {
-    id: "P02-self-destruct",
-    officialPhase: 2,
-    run: () => EMPTY_OUTCOME, // S5 resolver
-  },
-  {
-    id: "P03-capacity-shrink-after-removal",
-    officialPhase: 2,
-    run: () => EMPTY_OUTCOME, // S5 resolver
-  },
-  {
-    id: "P04-upkeep-and-deficit",
-    officialPhase: 3,
-    run: () => EMPTY_OUTCOME, // S5 resolver
-  },
+  ...economyPhases.slice(0, 3), // P02 self-destruct / P03 capacity-shrink / P04 upkeep
   {
     id: "P05-unit-movement",
     officialPhase: 4,
-    run: () => EMPTY_OUTCOME, // S4 resolver
+    run: movementPhase.run,
   },
   {
     id: "P06-unsupported-core-migration-check",
@@ -126,11 +114,7 @@ const PHASES: readonly Phase[] = [
       return EMPTY_OUTCOME;
     },
   },
-  {
-    id: "P08-harvest-and-deposit",
-    officialPhase: 8,
-    run: () => EMPTY_OUTCOME, // S5 resolver
-  },
+  ...economyPhases.slice(3, 4), // P08 harvest-and-deposit
   {
     id: "P09-unsupported-combat-check",
     officialPhase: 9,
@@ -141,16 +125,7 @@ const PHASES: readonly Phase[] = [
       return EMPTY_OUTCOME;
     },
   },
-  {
-    id: "P10-unit-heal",
-    officialPhase: 10,
-    run: () => EMPTY_OUTCOME, // S5 resolver
-  },
-  {
-    id: "P11-stationary-core-action",
-    officialPhase: 11,
-    run: () => EMPTY_OUTCOME, // S5 resolver
-  },
+  ...economyPhases.slice(4, 6), // P10 unit-heal / P11 core-action
   {
     id: "P12-unsupported-respawn-check",
     officialPhase: 12,
@@ -215,7 +190,7 @@ export function settleTick(
 
   const draft: SimWorld = structuredClone(world);
   const features = new Set<SimFeature>(scanUnsupported(world, plans));
-  const ctx: PhaseContext = { rules: context.rules, rng: context.rng, features };
+  const ctx: PhaseContext = { rules: context.rules, plans, rng: context.rng, features };
   const events: ResolutionEvent[] = [];
   const unknownEffects: UnknownEffect[] = [];
   const unsupported: SimFeature[] = [];

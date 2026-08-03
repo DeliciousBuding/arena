@@ -123,6 +123,10 @@ export function validateWorld(world: SimWorld): string[] {
       if (unit.cargo < 0 || unit.cargo > 2) problems.push(`unit ${unit.id} cargo out of range`);
     }
   }
+  // 5b. 资源堆非负
+  for (const [key, pile] of world.terrain.piles) {
+    if (pile.amount < 0) problems.push(`pile ${key} negative amount`);
+  }
 
   // 6. occupancy 与对象位置一致 + 每格容量 + 敌我（跨玩家）不共格
   const occupancy = new Map<string, string[]>();

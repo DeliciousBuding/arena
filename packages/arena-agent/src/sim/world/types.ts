@@ -50,11 +50,19 @@ export interface ResourceNode {
   readonly cell: Position;
 }
 
+/** Worker 死亡掉落的持久资源堆（先于自然节点被回收，规则 v0.11 §105）。 */
+export interface ResourcePile {
+  readonly cell: Position;
+  readonly amount: number;
+}
+
 export interface SimTerrain {
   /** cellKey（"x,y"）→ 永久障碍格。 */
   readonly obstacles: ReadonlySet<string>;
   /** cellKey → 资源节点（动态可消耗层）。 */
   readonly resources: ReadonlyMap<string, ResourceNode>;
+  /** cellKey → 掉落资源堆（死亡 cargo，先于自然节点回收）。 */
+  readonly piles: ReadonlyMap<string, ResourcePile>;
 }
 
 export interface SimBeacon {

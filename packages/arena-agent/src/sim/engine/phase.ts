@@ -6,7 +6,7 @@
  * settleTick 返回新 world 快照，失败时不返回半更新 world。
  */
 
-import type { Position } from "../../domain/model.ts";
+import type { Plan, Position } from "../../domain/model.ts";
 import type { RulesManifest } from "../contracts/rules-manifest.ts";
 import type { SimFeature, SimWorld } from "../world/types.ts";
 
@@ -45,6 +45,8 @@ export interface Phase {
 export interface PhaseContext {
   /** 规则 manifest（refill cadence 等数值来源）。 */
   readonly rules: RulesManifest;
+  /** 本 tick 冻结的完整计划（playerId → Plan）；缺失 action 等价 WAIT。 */
+  readonly plans: ReadonlyMap<string, Plan>;
   /** 当前 phase 已消费的随机源（test-seeded refill 用；null = disabled）。 */
   readonly rng: (() => number) | null;
   /** 本 tick 输入触发的 unsupported feature（供 unsupported-* phase 报告）。 */

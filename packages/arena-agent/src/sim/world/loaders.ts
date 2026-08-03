@@ -170,7 +170,7 @@ export function worldFromScenario(raw: unknown): SimWorld {
   const resources = new Map<string, { readonly cell: Position }>();
   for (const p of scenario.terrain.resources) resources.set(cellKey(p), { cell: p });
 
-  const terrain: SimTerrain = { obstacles, resources };
+  const terrain: SimTerrain = { obstacles, resources, piles: new Map() };
   const world: SimWorld = {
     tick: scenario.tick,
     resolvedTickCount: 0,
@@ -296,7 +296,7 @@ export function worldFromRawState(raw: RawPlayerState, playerId: string, rulesVe
     resolvedTickCount: 0,
     rulesVersion,
     players: new Map([[playerId, player]]),
-    terrain: { obstacles, resources: resourceCells },
+    terrain: { obstacles, resources: resourceCells, piles: new Map() },
     beacon: raw.champion_beacon === null || raw.champion_beacon === undefined ? null : { position: raw.champion_beacon.position },
     seed: 1,
     rngStreamPosition: 0,
