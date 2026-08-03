@@ -272,6 +272,7 @@ export async function runTenant(
           abortRequested: decision.abortRequested,
           rotationGeneration: runtimeGeneration,
           submitResult: outcome.accepted ? "accepted" : submissionMode === "live" ? "rejected" : "not_submitted",
+          submitError: outcome.error,
           leaseRejectionCode: outcome.leaseCode,
         };
         runtimeWriter.write(runtimeRecord);

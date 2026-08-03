@@ -73,6 +73,15 @@ test("runtimeTrace 字段齐全且默认值生效", () => {
   assert.equal(record.submitResult, "accepted");
 });
 
+test("runtimeTrace：submit 异常保留脱敏前错误字段供归因", () => {
+  const record = runtimeTrace({
+    ...RT,
+    submitResult: "rejected",
+    submitError: "HTTP 409 tick already closed",
+  });
+  assert.equal(record.submitError, "HTTP 409 tick already closed");
+});
+
 test("decisionTrace 字段齐全", () => {
   const record = decisionTrace(DT);
   assert.equal(record.decisionSource, "hybrid");

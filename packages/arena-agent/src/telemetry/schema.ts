@@ -43,6 +43,7 @@ export const RuntimeTraceSchema = Type.Object({
   abortRequested: Type.Boolean(),
   rotationGeneration: Type.Integer(),
   submitResult: SubmitResultSchema,
+  submitError: Type.Optional(Type.String()),
   leaseRejectionCode: Type.Optional(Type.String()),
 });
 

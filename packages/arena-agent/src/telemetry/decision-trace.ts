@@ -37,6 +37,8 @@ export interface RuntimeTraceRecord {
   /** Pi runtime 会话轮换代数（decision-types/pi-agent-runtime generation）。 */
   readonly rotationGeneration: number;
   readonly submitResult: SubmitResult;
+  /** turn.submit() 抛出的脱敏错误；成功/disabled 路径缺省。 */
+  readonly submitError?: string;
   /** submit 被拒时的拒绝码（LeaseRejectionCode，如 deadline_exceeded）。 */
   readonly leaseRejectionCode?: string;
 }
