@@ -1,6 +1,6 @@
 # Arena 离线模拟器与实验工具
 
-> 状态：S0–S7、S8a 与 S9 离线链路已实现。S8b live full-plan recorder **尚未实现，仍需单独审批**。
+> 状态：S0–S9、S8b live full-plan recorder 与 Runtime-Golden dataset gate 已实现并融合进 `main`。首份真机数据集已验证：3 cases、硬差异 0、已知确定性事件 6/6。
 
 ## 1. 安全边界
 
@@ -34,6 +34,7 @@ npm run sim:run -w packages/arena-agent -- --scenario <path>
 npm run sim:ab -w packages/arena-agent -- --scenario <path>
 npm run sim:bench -w packages/arena-agent -- --scenario <path>
 npm run sim:calibrate -w packages/arena-agent -- --case <path>
+npm run sim:calibrate-dataset -w packages/arena-agent -- --manifest <runtime-golden/manifest.json>
 ```
 
 episode、A/B、benchmark 默认串行；`--workers` 当前只接受 `1`。这不是伪并行开关，而是显式 CPU 隔离上限。
@@ -238,22 +239,62 @@ run directory already exists ... (use --force to replace)
 
 不得把 `INCONCLUSIVE` 当作 MATCH，也不得用模拟器输出替代真实服务器 Golden。
 
-## 9. S8b 审批门
+## 9. S8b Runtime-Golden 真机校准
 
-为了获得真实 Runtime-Golden，未来可能需要在 live loop 旁路记录：
+Recorder 默认关闭；只有显式 live 参数才启用：
 
-```text
-before private state + 实际提交的完整 Plan + after private state
+```bash
+npx tsx packages/arena-agent/src/cli/run-tenant.ts \
+  --config runtime/configs/t3.json \
+  --live --mode deterministic --live-ticks=20 \
+  --record-calibration
 ```
 
-这会接触线上路径，因此必须作为独立 S8b：
+每个 accepted Tick 旁路记录：
 
-- 单独设计与评审；
-- 默认关闭；
-- 可独立回滚；
-- 不记录凭据；
-- 不改变提交时序或 deadline；
-- 录制失败不得影响 live 决策；
-- 明确 `opponentPlans=absent`，除非确实拥有全体锁定 Plan。
+```text
+before private PlayerState + 实际提交的完整 domain Plan + next private PlayerState
+```
 
-当前分支没有实现或修改任何 recorder/live loop 代码。
+安全语义：
+
+- recorder 在 `submit()` 返回后才入异步串行队列，不参与 deadline、validator、idempotency key 或 single-writer lock；
+- 默认关闭，可独立回滚；I/O/parser 错误只进入 recorder manifest/告警，不抛回游戏循环；
+- 不记录 API key、Authorization 或连接配置值；
+- 单租户视角没有对手锁定 Plan，因此固定写 `opponentPlans=absent`；
+- 结束时需要 outcome drain 才能闭合最后一个 accepted Plan，缺失时明确 `droppedPending`，不伪造 after state。
+
+输出：
+
+```text
+runtime/<tenant>/calibration/<processRunId>/
+  manifest.json
+  cases/<tick>.json
+```
+
+`manifest.json` 对 case、before、plan、after 分别记录 format-independent canonical SHA-256。离线校准命令会先校验 manifest、路径与四层 hash，再执行规则比较：
+
+```bash
+npm run sim:calibrate-dataset -w packages/arena-agent -- \
+  --manifest runtime/t3/calibration/<processRunId>/manifest.json \
+  --run-id runtime-golden-t3-<short-id> --force
+```
+
+数据集门禁：
+
+- hard mismatch cases 必须为 0；
+- 未分类 difference 必须为 0；
+- 已知、受支持的确定性事件按多重集比较，一致率必须 ≥ 0.999 且分母非零；
+- 对手 Plan 缢失、Beacon 视野受限、server-secret refill、server UUID 等必须保持 `EXPECTED_UNKNOWN` / `INCONCLUSIVE`，不得伪装为 MATCH。
+
+### 首份真实证据（2026-08-03）
+
+- live run：`26600fea-e8c7-45da-98e8-5a4bc03919f9`；
+- source SHA：`93a63e372676e49018c4284eed966044c5069482`；
+- 3/3 live submit accepted，recorder cases=3、errors=0；
+- dataset integrity verified；
+- known deterministic events：6/6，accuracy=1.000000；
+- hard mismatch cases=0，unclassified=0；
+- 16 条差异全部为 `EXPECTED_UNKNOWN`，所以单 case 状态仍为 `INCONCLUSIVE`，这是正确的部分可观测语义。
+
+报告：`runs/sim/runtime-golden-t3-26600fea/calibration-dataset-report.json`。
