@@ -1,4 +1,5 @@
 export * from "./domain/model.ts";
+export * from "./domain/integrity.ts";
 export * from "./domain/nav.ts";
 export * from "./domain/phase-machine.ts";
 export * from "./domain/plan-validator.ts";

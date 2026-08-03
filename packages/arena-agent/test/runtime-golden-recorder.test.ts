@@ -14,9 +14,9 @@ import { test } from "node:test";
 import type { Accepted, PlayerState } from "@arena/arena-hero-ts";
 import type { Plan } from "../src/domain/model.ts";
 import type { TickOutcome } from "../src/runtime/loop.ts";
+import { sha256Canonical } from "../src/domain/integrity.ts";
 import {
   RuntimeGoldenRecorder,
-  sha256Canonical,
   type RuntimeGoldenDatasetManifest,
 } from "../src/runtime-golden/recorder.ts";
 import { parseCalibrationCase } from "../src/sim/calibration/schema.ts";

@@ -38,9 +38,9 @@ import { JsonlWriter } from "../telemetry/jsonl-writer.ts";
 import { sanitizeValue } from "../telemetry/jsonl-writer.ts";
 import { planHashOf } from "../telemetry/decision-trace.ts";
 import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
+import { sha256Canonical } from "../domain/integrity.ts";
 import {
   RuntimeGoldenRecorder,
-  sha256Canonical,
   type RuntimeGoldenRecorderResult,
 } from "../runtime-golden/recorder.ts";
 

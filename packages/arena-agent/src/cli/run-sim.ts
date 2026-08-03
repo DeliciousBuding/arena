@@ -4,6 +4,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runCalibrationCase } from "../sim/calibration/calibrate.ts";
+import { runCalibrationDataset } from "../sim/calibration/dataset.ts";
 import {
   assertRulesSupported,
   loadRulesManifest,
@@ -38,7 +39,7 @@ const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
 const DEFAULT_RULES_PATH = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
 const SUPPORTED_RULES_VERSION = "v0.11";
 
-type Command = "doctor" | "episode" | "ab" | "benchmark" | "calibrate";
+type Command = "doctor" | "episode" | "ab" | "benchmark" | "calibrate" | "calibrate-dataset";
 
 interface ParsedArgs {
   readonly command: Command;
@@ -59,6 +60,7 @@ const KNOWN_FLAGS: Readonly<Record<Command, ReadonlySet<string>>> = {
     "--scenario", "--rules", "--ticks", "--seed", "--planner", "--workers", "--warmup", "--repeats", "--output", "--run-id", "--force", "--help",
   ]),
   calibrate: new Set(["--case", "--rules", "--output", "--run-id", "--force", "--help"]),
+  "calibrate-dataset": new Set(["--manifest", "--rules", "--output", "--run-id", "--force", "--help"]),
 };
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -87,7 +89,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
 }
 
 function parseCommand(value: string): Command {
-  if (["doctor", "episode", "ab", "benchmark", "calibrate"].includes(value)) return value as Command;
+  if (["doctor", "episode", "ab", "benchmark", "calibrate", "calibrate-dataset"].includes(value)) return value as Command;
   throw new Error(`unknown sim command: ${value}`);
 }
 
@@ -99,6 +101,7 @@ function usage(): string {
     "  ab --scenario PATH [--planners deterministic,safety] [--seeds 1,2,3] [--ticks N] [--workers 1]",
     "  benchmark --scenario PATH [--planner deterministic|safety] [--ticks N] [--warmup N] [--repeats N] [--workers 1]",
     "  calibrate --case PATH",
+    "  calibrate-dataset --manifest PATH",
     "common output flags: --output runs/sim[/subdir] --run-id ID --force",
   ].join("\n");
 }
@@ -390,6 +393,46 @@ function runCalibrationCommand(args: ParsedArgs): number {
   return report.status === "MATCH" ? 0 : report.status === "INCONCLUSIVE" ? 2 : 3;
 }
 
+function runCalibrationDatasetCommand(args: ParsedArgs): number {
+  const manifestPath = resolveInputPath(REPO_ROOT, required(args, "--manifest"));
+  const pathToRules = rulesPath(args);
+  const rules = checkedRules(pathToRules);
+  const datasetManifest = readJsonFile(manifestPath);
+  const report = runCalibrationDataset(manifestPath, pathToRules);
+  const identity = {
+    kind: "calibration-dataset",
+    datasetManifestHash: sha256Json(datasetManifest),
+    rulesManifestHash: manifestHash(rules),
+  };
+  const output = outputSettings(args, "calibration-dataset", identity);
+  const runDir = prepareRunDir(output.outputBase, output.runId, output.force);
+  const reportHash = atomicWriteJson(join(runDir, "calibration-dataset-report.json"), report);
+  writeManifest(
+    runDir,
+    {
+      kind: "calibration-dataset",
+      runId: output.runId,
+      status: report.passed ? "PASS" : "FAIL",
+      source: sourceLabel(manifestPath),
+      sourceHash: sha256Json(datasetManifest),
+      rulesVersion: rules.rulesVersion,
+      rulesManifestHash: manifestHash(rules),
+      config: { accuracyThreshold: report.accuracyThreshold },
+    },
+    { "calibration-dataset-report.json": reportHash },
+    null,
+  );
+  console.log(
+    `sim calibrate-dataset ${report.passed ? "PASS" : "FAIL"}: ` +
+      `cases=${report.caseCount} hard=${report.hardMismatchCaseCount} ` +
+      `knownEvents=${report.knownEventMatched}/${report.knownEventCompared} ` +
+      `accuracy=${report.knownEventAccuracy === null ? "n/a" : report.knownEventAccuracy.toFixed(6)} ` +
+      `out=${runDir}`,
+  );
+  if (report.passed) return 0;
+  return report.hardMismatchCaseCount > 0 || report.unclassifiedDifferenceCount > 0 ? 3 : 2;
+}
+
 function main(): number {
   const args = parseArgs(process.argv.slice(2));
   if (args.booleans.has("--help")) {
@@ -402,6 +445,7 @@ function main(): number {
     case "ab": return runABCommand(args);
     case "benchmark": return runBenchmarkCommand(args);
     case "calibrate": return runCalibrationCommand(args);
+    case "calibrate-dataset": return runCalibrationDatasetCommand(args);
   }
 }
 
