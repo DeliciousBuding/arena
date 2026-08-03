@@ -101,7 +101,7 @@ test("S3: combat 输入触发 unsupported 且不静默跳过", () => {
   assert.ok(result.world.unsupportedFeatures.includes("combat"));
 });
 
-test("S3: core-migration / beacon 输入各自触发 unsupported", () => {
+test("S3: core-migration 已实现不再 unsupported；beacon 输入仍触发 unsupported", () => {
   const world = makeWorld();
   const migratePlan: Plan = {
     tick: world.tick,
@@ -110,7 +110,9 @@ test("S3: core-migration / beacon 输入各自触发 unsupported", () => {
     intents: {},
   };
   const r1 = settleTick(world, new Map([["p1", migratePlan]]), ctx);
-  assert.deepEqual(r1.unsupported, ["core-migration"]);
+  assert.deepEqual(r1.unsupported, []);
+  assert.equal(r1.world.players.get("p1")!.core!.state, "MOVING");
+  assert.ok(r1.events.some((event) => event.eventType === "CORE_MOVE_STARTED"));
 
   const beaconPlan: Plan = {
     tick: world.tick,

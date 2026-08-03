@@ -5,12 +5,19 @@
  * 不返回半更新 world（配合 settlement 的 atomic commit）。
  */
 
-import { cellKey, type Position } from "../../domain/model.ts";
+import { cellKey, type Direction, type Position } from "../../domain/model.ts";
 import { assertSafeCoordinate } from "../deterministic/coordinate.ts";
 import { assertCanonicalUuid } from "../deterministic/uuid.ts";
 import type { SimPlayer, SimUnit, SimWorld } from "./types.ts";
 
 export const CELL_ENTITY_CAPACITY = 2;
+
+const DIRECTION_DELTA: Readonly<Record<Direction, readonly [number, number]>> = {
+  UP: [0, -1],
+  DOWN: [0, 1],
+  LEFT: [-1, 0],
+  RIGHT: [1, 0],
+};
 
 export class WorldInvariantError extends Error {
   constructor(message: string) {
@@ -173,6 +180,43 @@ export function validateWorld(world: SimWorld): string[] {
   for (const [key, pile] of world.terrain.piles) {
     if (!Number.isInteger(pile.amount) || pile.amount <= 0) {
       problems.push(`pile ${key} amount must be a positive integer`);
+    }
+  }
+
+  // 5c. Core 迁移字段一致性（game-rules.md Four-Tick Core migration）：
+  //     NORMAL → 四字段全 null；MOVING → 四字段全给且自洽，或全缺（裸 MOVING，
+  //     外部快照进度未知，settlement 标记 unsupported）。
+  for (const player of world.players.values()) {
+    const core = player.core;
+    if (core === null) continue;
+    const hasAny =
+      core.moveDirection !== null ||
+      core.moveProgress !== null ||
+      core.moveRequiredTicks !== null ||
+      core.destination !== null;
+    const hasAll =
+      core.moveDirection !== null &&
+      core.moveProgress !== null &&
+      core.moveRequiredTicks !== null &&
+      core.destination !== null;
+    if (core.state === "NORMAL" && hasAny) {
+      problems.push(`core ${core.id} NORMAL but has migration fields`);
+    }
+    if (core.state === "MOVING" && hasAny && !hasAll) {
+      problems.push(`core ${core.id} MOVING with partial migration fields`);
+    }
+    if (core.state === "MOVING" && hasAll) {
+      const direction = core.moveDirection!;
+      const [dx, dy] = DIRECTION_DELTA[direction];
+      if (cellKey(core.destination!) !== cellKey([core.position[0] + dx, core.position[1] + dy])) {
+        problems.push(`core ${core.id} destination does not match direction`);
+      }
+      if (core.moveRequiredTicks! < 1) {
+        problems.push(`core ${core.id} moveRequiredTicks must be at least 1`);
+      }
+      if (core.moveProgress! < 1 || core.moveProgress! > core.moveRequiredTicks!) {
+        problems.push(`core ${core.id} moveProgress out of 1..moveRequiredTicks range`);
+      }
     }
   }
 

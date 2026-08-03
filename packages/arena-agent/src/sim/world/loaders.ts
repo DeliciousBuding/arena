@@ -6,7 +6,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { cellKey, type Position, type UnitType } from "../../domain/model.ts";
+import { cellKey, type Direction, type Position, type UnitType } from "../../domain/model.ts";
 import { assertSafeCoordinate } from "../deterministic/coordinate.ts";
 import { assertCanonicalUuid } from "../deterministic/uuid.ts";
 import type { SimBeacon, SimCore, SimPlayer, SimTerrain, SimUnit, SimWorld } from "./types.ts";
@@ -34,6 +34,10 @@ interface ScenarioCore {
   readonly hp: number;
   readonly shield: number;
   readonly state: "NORMAL" | "MOVING";
+  readonly moveDirection?: Direction | null;
+  readonly moveProgress?: number | null;
+  readonly moveRequiredTicks?: number | null;
+  readonly destination?: Position | null;
 }
 
 interface ScenarioPlayer {
@@ -72,6 +76,62 @@ function asPosition(value: unknown, path: string): Position {
   const position = value as unknown as Position;
   assertSafeCoordinate(position);
   return position;
+}
+
+const DIRECTION_DELTA: Readonly<Record<Direction, readonly [number, number]>> = {
+  UP: [0, -1],
+  DOWN: [0, 1],
+  LEFT: [-1, 0],
+  RIGHT: [1, 0],
+};
+
+/**
+ * Core 迁移字段归一化（game-rules.md Four-Tick Core migration）。
+ * NORMAL → 四字段恒 null；MOVING → 四字段全给（校验方向/目的地/进度一致）
+ * 或全缺（裸 MOVING：外部快照进度未知，settlement 标记 unsupported）。
+ */
+function migrationFields(
+  raw: Record<string, unknown>,
+  path: string,
+): {
+  readonly moveDirection: Direction | null;
+  readonly moveProgress: number | null;
+  readonly moveRequiredTicks: number | null;
+  readonly destination: Position | null;
+} {
+  const state = raw.state === "MOVING" ? "MOVING" : "NORMAL";
+  if (state !== "MOVING") {
+    return { moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null };
+  }
+  const moveDirection = raw.moveDirection as Direction | null | undefined;
+  const moveProgress = raw.moveProgress as number | null | undefined;
+  const moveRequiredTicks = raw.moveRequiredTicks as number | null | undefined;
+  const destination = raw.destination as Position | null | undefined;
+  const hasDirection = moveDirection !== undefined && moveDirection !== null;
+  const hasProgress = moveProgress !== undefined && moveProgress !== null;
+  const hasRequired = moveRequiredTicks !== undefined && moveRequiredTicks !== null;
+  const hasDestination = destination !== undefined && destination !== null;
+  if (!hasDirection && !hasProgress && !hasRequired && !hasDestination) {
+    return { moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null };
+  }
+  if (!hasDirection || !hasProgress || !hasRequired || !hasDestination) {
+    throw new ScenarioLoadError(`${path}: MOVING core requires all four migration fields or none`);
+  }
+  const direction = moveDirection!;
+  const dest = asPosition(destination!, `${path}.destination`);
+  const required = Number(moveRequiredTicks);
+  const progress = Number(moveProgress);
+  if (!Number.isInteger(required) || required < 1) {
+    throw new ScenarioLoadError(`${path}: moveRequiredTicks must be a positive integer`);
+  }
+  if (!Number.isInteger(progress) || progress < 1 || progress > required) {
+    throw new ScenarioLoadError(`${path}: moveProgress must be within 1..moveRequiredTicks`);
+  }
+  const [dx, dy] = DIRECTION_DELTA[direction];
+  if (cellKey(dest) !== cellKey([(raw.position as Position)[0] + dx, (raw.position as Position)[1] + dy])) {
+    throw new ScenarioLoadError(`${path}: destination does not match moveDirection from position`);
+  }
+  return { moveDirection: direction, moveProgress: progress, moveRequiredTicks: required, destination: dest };
 }
 
 function normalizeScenario(raw: unknown): ScenarioFile {
@@ -118,6 +178,7 @@ function normalizeScenario(raw: unknown): ScenarioFile {
         hp: Number(c.hp),
         shield: Number(c.shield),
         state: c.state === "MOVING" ? "MOVING" : "NORMAL",
+        ...migrationFields(c, `players[${i}].core`),
       };
     }
     return { id, username: String(player.username ?? id), resources: Number(player.resources ?? 0), core, units };
@@ -186,7 +247,20 @@ export function worldFromScenario(raw: unknown): SimWorld {
       if (u.owner !== p.id) throw new ScenarioLoadError(`unit ${u.id} owner mismatch`);
       units.push({ ...u });
     }
-    const core: SimCore | null = p.core === null ? null : { ...p.core };
+    const core: SimCore | null =
+      p.core === null
+        ? null
+        : {
+            id: p.core.id,
+            position: p.core.position,
+            hp: p.core.hp,
+            shield: p.core.shield,
+            state: p.core.state,
+            moveDirection: p.core.moveDirection ?? null,
+            moveProgress: p.core.moveProgress ?? null,
+            moveRequiredTicks: p.core.moveRequiredTicks ?? null,
+            destination: p.core.destination ?? null,
+          };
     players.set(p.id, {
       id: p.id,
       username: p.username,
@@ -247,6 +321,10 @@ interface RawObject {
   readonly unit_type?: string;
   readonly cargo?: number | null;
   readonly positions?: readonly Position[];
+  readonly move_direction?: string | null;
+  readonly move_progress?: number | null;
+  readonly move_required_ticks?: number | null;
+  readonly destination?: Position | null;
 }
 
 interface RawPlayerState {
@@ -296,6 +374,19 @@ export function worldFromRawState(raw: RawPlayerState, playerId: string, rulesVe
             hp: Number(obj.hp),
             shield: Number(obj.shield),
             state: obj.state === "MOVING" ? "MOVING" : "NORMAL",
+            moveDirection: (obj.move_direction as Direction | null) ?? null,
+            moveProgress:
+              obj.move_progress === null || obj.move_progress === undefined
+                ? null
+                : Number(obj.move_progress),
+            moveRequiredTicks:
+              obj.move_required_ticks === null || obj.move_required_ticks === undefined
+                ? null
+                : Number(obj.move_required_ticks),
+            destination:
+              obj.destination === null || obj.destination === undefined
+                ? null
+                : asPosition(obj.destination, "core.destination"),
           };
         } else {
           droppedEnemies += 1;

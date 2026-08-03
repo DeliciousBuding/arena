@@ -231,7 +231,7 @@ test("S6: dropped cargo pile 投影为 RESOURCE，Planner 可继续回收", () =
   assert.ok(tickState.resourceCells.has("1,0"));
 });
 
-test("S6: MOVING Core 细节未建模时 fail closed，不伪造 wire 字段", () => {
+test("S6: 裸 MOVING Core（无迁移字段）fail closed，不伪造 wire 字段", () => {
   const world = worldFromScenario({
     rulesVersion: "v0.11",
     players: [
@@ -252,7 +252,44 @@ test("S6: MOVING Core 细节未建模时 fail closed，不伪造 wire 字段", (
     terrain: { obstacles: [], resources: [] },
     beacon: { position: [100, 100], status: "GROUND", carrierId: null },
   });
-  assert.throws(() => projectPlayerState(world, "p1", rules), /MOVING Core fields are not modeled/);
+  assert.throws(() => projectPlayerState(world, "p1", rules), /MOVING Core without migration fields/);
+});
+
+test("S6: MOVING Core 迁移字段投影到 wire CoreView", () => {
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 5,
+        core: {
+          id: "11111111-1111-1111-1111-111111111111",
+          position: [0, 0],
+          hp: 5,
+          shield: 5,
+          state: "MOVING",
+          moveDirection: "RIGHT",
+          moveProgress: 2,
+          moveRequiredTicks: 4,
+          destination: [1, 0],
+        },
+        units: [],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+  });
+  const state = projectPlayerState(world, "p1", rules);
+  const core = state.objects.find((object) => object.kind === "CORE" && object.controlled === true);
+  assert.ok(core !== undefined && core.kind === "CORE");
+  assert.equal(core.state, "MOVING");
+  assert.equal(core.move_direction, "RIGHT");
+  assert.equal(core.move_progress, 2);
+  assert.equal(core.move_required_ticks, 4);
+  assert.deepEqual(core.destination, [1, 0]);
+  // 迁移期间 position 保持逻辑位置
+  assert.deepEqual(core.position, [0, 0]);
 });
 
 /* ---------------- reduceTurn 兼容 ---------------- */

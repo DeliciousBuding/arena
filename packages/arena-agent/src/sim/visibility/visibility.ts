@@ -11,7 +11,25 @@ import type { TurnLike } from "../../domain/state-reducer.ts";
 import type { RulesManifest } from "../contracts/rules-manifest.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { ResolutionEvent } from "../engine/phase.ts";
-import type { SimWorld } from "../world/types.ts";
+import type { SimCore, SimWorld } from "../world/types.ts";
+
+/**
+ * wire CoreView 要求 MOVING 时带全迁移字段（api-state-model.md Moving Core）。
+ * 裸 MOVING（缺字段）无法投影——fail closed，禁止伪造 wire 字段。
+ */
+function assertProjectableCore(core: SimCore): void {
+  if (core.state !== "MOVING") return;
+  if (
+    core.moveDirection === null ||
+    core.moveProgress === null ||
+    core.moveRequiredTicks === null ||
+    core.destination === null
+  ) {
+    throw new Error(
+      "projectPlayerState: MOVING Core without migration fields (unresolvable external state)",
+    );
+  }
+}
 
 /**
  * from→to 的 supercover 格子集合（含端点与过角时的两侧邻格）。
@@ -145,9 +163,7 @@ export function projectPlayerState(
   }
 
   if (player.core !== null) {
-    if (player.core.state === "MOVING") {
-      throw new Error("projectPlayerState: MOVING Core fields are not modeled yet");
-    }
+    assertProjectableCore(player.core);
     objects.push({
       kind: "CORE",
       id: player.core.id,
@@ -157,10 +173,10 @@ export function projectPlayerState(
       hp: player.core.hp,
       shield: player.core.shield,
       state: player.core.state,
-      move_direction: null,
-      move_progress: null,
-      move_required_ticks: null,
-      destination: null,
+      move_direction: player.core.moveDirection,
+      move_progress: player.core.moveProgress,
+      move_required_ticks: player.core.moveRequiredTicks,
+      destination: player.core.destination,
     });
   }
 
@@ -180,9 +196,7 @@ export function projectPlayerState(
   for (const [enemyId, enemy] of world.players) {
     if (enemyId === playerId) continue;
     if (enemy.core !== null && visible.has(cellKey(enemy.core.position))) {
-      if (enemy.core.state === "MOVING") {
-        throw new Error("projectPlayerState: visible MOVING enemy Core fields are not modeled yet");
-      }
+      assertProjectableCore(enemy.core);
       enemies.push({
         kind: "CORE",
         id: enemy.core.id,
@@ -192,10 +206,10 @@ export function projectPlayerState(
         hp: enemy.core.hp,
         shield: enemy.core.shield,
         state: enemy.core.state,
-        move_direction: null,
-        move_progress: null,
-        move_required_ticks: null,
-        destination: null,
+        move_direction: enemy.core.moveDirection,
+        move_progress: enemy.core.moveProgress,
+        move_required_ticks: enemy.core.moveRequiredTicks,
+        destination: enemy.core.destination,
       });
     }
     for (const unit of enemy.units) {
