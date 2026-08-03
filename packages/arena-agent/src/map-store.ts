@@ -52,9 +52,28 @@ export class MapStore {
     // busy_timeout 必须先于 WAL pragma：journal 切换需要独占锁，
     // 4 租户并发首开会锁，无超时则直接抛 "database is locked"
     this.db.exec("PRAGMA busy_timeout=5000");
-    this.db.exec("PRAGMA journal_mode=WAL");
+    this.enableWal();
     this.setupSchema();
     this.refresh();
+  }
+
+  /**
+   * 多进程首次打开同一新库时，多个连接会同时尝试切 WAL；node:sqlite 的
+   * PRAGMA journal_mode 不总是遵守 busy_timeout，必须在应用层重试。
+   */
+  private enableWal(): void {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        this.db.exec("PRAGMA journal_mode=WAL");
+        return;
+      } catch (exc) {
+        if (isLocked(exc) && attempt < 7) {
+          sleep(100 * (attempt + 1));
+          continue;
+        }
+        throw exc;
+      }
+    }
   }
 
   /** 建表：显式写事务 + 重试（4 租户同时启动并发 DDL 会 locked）。 */
