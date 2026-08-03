@@ -61,9 +61,12 @@
 - harvest / deposit、heal / repair / spawn；
 - visibility / supercover / private observation；
 - existing deterministic / safety Planner 闭环；
-- offline calibration、A/B、benchmark 与可复现产物。
+- offline calibration、A/B、benchmark 与可复现产物；
+- **combat（S10）**：SWEEP/SHOOT 快照结算（多目标 AOE、八方向线 1-3 射程、互杀合法、Core 先盾后 HP、击杀者资源归属）；
+- **core-migration（P06）**：Four-Tick Core 迁移（START_MOVE/CANCEL_MOVE、进度推进、真实移动结算、裸 MOVING fail-closed）；
+- **beacon（S11）**：PICKUP/DROP 结算（同格低 UUID 争抢、落地 tick 不可拾取、持有者 harvest 加成、失去时盾 clamp）。
 
-仍需 unknown / unsupported：combat、Core migration 完整状态、Beacon 动作、respawn、server-secret refill placement、未记录对手动作、服务端 UUID、PENDING v0.11 upkeep-deficit 细节。
+仍需 unknown / unsupported：respawn、server-secret refill placement、未记录对手动作、服务端 UUID、PENDING v0.11 upkeep-deficit 细节。
 
 ## 关单门槛
 
