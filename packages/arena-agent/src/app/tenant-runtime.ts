@@ -210,7 +210,7 @@ export async function runTenant(
       rulesVersion: RULES_VERSION,
       configHash: manifest.configHash,
       processRunId,
-      decisionMode: decisionMode === "deterministic" ? "safety" : decisionMode,
+      decisionMode,
       onRunSettled: (info) => {
         // runtime trace 的 settle 补充事件（不阻塞决策路径）
         void info;
@@ -249,6 +249,10 @@ export async function runTenant(
           safetyReplacementCount: decision.safetyReplacementCount,
           invalidAgentActionCount: decision.invalidAgentActionCount,
           repairCount: decision.repairCount,
+          moveCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "MOVE").length,
+          harvestCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "HARVEST").length,
+          depositCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "DEPOSIT").length,
+          waitCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "WAIT").length,
           planHash: planHashOf(outcome.plan),
         };
         decisionWriter.write(decisionRecord);
@@ -262,6 +266,10 @@ export async function runTenant(
           coreResourcesBefore: holder.prev.resources,
           coreResourcesAfter: outcome.state.resources,
           coreResourceDelta: outcome.state.resources - holder.prev.resources,
+          visibleResourceCellCount: outcome.state.resourceCells.size,
+          workerCount: outcome.state.workers.length,
+          workersWithCargo: outcome.state.workers.filter((worker) => worker.cargo > 0).length,
+          workerCargoTotal: outcome.state.workers.reduce((total, worker) => total + worker.cargo, 0),
           events: outcome.state.events.map((e) => e.eventType),
         };
         outcomeWriter.write(outcomeRecord);

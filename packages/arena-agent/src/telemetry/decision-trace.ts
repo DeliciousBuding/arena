@@ -51,6 +51,11 @@ export interface DecisionTraceRecord {
   readonly safetyReplacementCount: number;
   readonly invalidAgentActionCount: number;
   readonly repairCount: number;
+  /** 最终执行计划动作分布（经济闭环与空转诊断）。 */
+  readonly moveCount?: number;
+  readonly harvestCount?: number;
+  readonly depositCount?: number;
+  readonly waitCount?: number;
   /** 最终采纳计划的稳定哈希（planHashOf；用于审计/漂移比对）。 */
   readonly planHash: string;
   readonly reason?: string;
@@ -64,6 +69,11 @@ export interface OutcomeTraceRecord {
   readonly coreResourcesBefore: number;
   readonly coreResourcesAfter: number;
   readonly coreResourceDelta: number;
+  /** 本 Tick 决策快照中的经济前置信号。 */
+  readonly visibleResourceCellCount?: number;
+  readonly workerCount?: number;
+  readonly workersWithCargo?: number;
+  readonly workerCargoTotal?: number;
   readonly grossDeposit?: number;
   readonly spawnCount?: number;
   readonly healCount?: number;

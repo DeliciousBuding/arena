@@ -33,20 +33,76 @@ export function stepToward(
   target: Position,
   obstacles: ReadonlySet<string>,
 ): Direction | null {
-  const dx = target[0] - position[0];
-  const dy = target[1] - position[1];
-  const primary: Direction[] = [];
-  if (dx !== 0) primary.push(dx > 0 ? "RIGHT" : "LEFT");
-  if (dy !== 0) primary.push(dy > 0 ? "DOWN" : "UP");
+  if (position[0] === target[0] && position[1] === target[1]) return null;
 
-  for (const direction of primary) {
-    if (!obstacles.has(cellKey(move(position, direction)))) return direction;
+  // 旧实现只看下一格：遇到墙时会在两个格之间来回摆动，永远无法绕到目标。
+  // 这里做有界 BFS，直接返回一条最短路的第一步。地图无显式边界，因此逐级
+  // 扩大搜索框；已知障碍视为永久阻塞，未知格允许探索。
+  for (const margin of [4, 8, 16, 32] as const) {
+    const direction = shortestPathFirstStep(position, target, obstacles, margin);
+    if (direction !== null) return direction;
   }
-  for (const direction of ["UP", "DOWN", "LEFT", "RIGHT"] as const) {
-    if (primary.includes(direction)) continue;
+
+  // 极端情况下（目标被超长障碍完全包围）保持 fail-safe：只走一个不会撞墙、
+  // 且方向尽量朝向目标的格；若四周全堵则 WAIT。
+  for (const direction of orderedDirections(position, target)) {
     if (!obstacles.has(cellKey(move(position, direction)))) return direction;
   }
   return null;
+}
+
+interface SearchNode {
+  readonly position: Position;
+  readonly firstDirection: Direction | null;
+}
+
+function shortestPathFirstStep(
+  start: Position,
+  target: Position,
+  obstacles: ReadonlySet<string>,
+  margin: number,
+): Direction | null {
+  const minX = Math.min(start[0], target[0]) - margin;
+  const maxX = Math.max(start[0], target[0]) + margin;
+  const minY = Math.min(start[1], target[1]) - margin;
+  const maxY = Math.max(start[1], target[1]) + margin;
+  const queue: SearchNode[] = [{ position: start, firstDirection: null }];
+  const visited = new Set<string>([cellKey(start)]);
+  let head = 0;
+
+  while (head < queue.length && visited.size <= 20_000) {
+    const current = queue[head++];
+    for (const direction of orderedDirections(current.position, target)) {
+      const next = move(current.position, direction);
+      if (next[0] < minX || next[0] > maxX || next[1] < minY || next[1] > maxY) continue;
+      const key = cellKey(next);
+      if (visited.has(key) || obstacles.has(key)) continue;
+      const firstDirection = current.firstDirection ?? direction;
+      if (next[0] === target[0] && next[1] === target[1]) return firstDirection;
+      visited.add(key);
+      queue.push({ position: next, firstDirection });
+    }
+  }
+  return null;
+}
+
+function orderedDirections(from: Position, target: Position): readonly Direction[] {
+  const dx = target[0] - from[0];
+  const dy = target[1] - from[1];
+  const xDirection: Direction | null = dx === 0 ? null : dx > 0 ? "RIGHT" : "LEFT";
+  const yDirection: Direction | null = dy === 0 ? null : dy > 0 ? "DOWN" : "UP";
+  const preferred: Direction[] = [];
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    if (xDirection !== null) preferred.push(xDirection);
+    if (yDirection !== null) preferred.push(yDirection);
+  } else {
+    if (yDirection !== null) preferred.push(yDirection);
+    if (xDirection !== null) preferred.push(xDirection);
+  }
+  for (const direction of DIRECTION_ORDER) {
+    if (!preferred.includes(direction)) preferred.push(direction);
+  }
+  return preferred;
 }
 
 export function exploreTarget(

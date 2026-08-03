@@ -11,7 +11,7 @@ import type { LeaseSubmission } from "./decision-lease.ts";
 
 /** 决策来源（4D-pre：统一单类型，5 值——不再有 domain/runtime 两套矛盾定义）。
  *  repaired-agent 仅供 loop 层使用（repair 只提升 agent 来源；safety 被修复仍记 safety）。 */
-export type DecisionSource = "agent" | "hybrid" | "safety" | "emergency" | "repaired-agent";
+export type DecisionSource = "agent" | "hybrid" | "deterministic" | "safety" | "emergency" | "repaired-agent";
 
 /** P0-1（GPT 裁决）：两个轴拆分——Agent 是否掌权（DecisionMode）与是否提交（SubmissionMode）。
  *  禁止用单一 shadow:boolean 同时表达两者。 */

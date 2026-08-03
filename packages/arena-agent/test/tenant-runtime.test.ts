@@ -297,10 +297,10 @@ test("runTenant：deterministic+live → 允许开闸（DeterministicPlanner 注
     // 每 Tick 最多 submit 一次（3 Tick → 3 次提交）
     const decisionLines = readFileSync(result.telemetryPaths.decision, "utf-8").trim().split("\n").filter((l) => l.length > 0);
     assert.equal(decisionLines.length, 3);
-    // decision trace source 仍 safety（deterministic 走 coordinator 短路语义）
+    // decision trace source 记录真实执行来源（deterministic 不再伪装成 safety）
     for (const line of decisionLines) {
       const record = JSON.parse(line) as { decisionSource: string };
-      assert.equal(record.decisionSource, "safety");
+      assert.equal(record.decisionSource, "deterministic");
     }
   } finally {
     if (old === undefined) {

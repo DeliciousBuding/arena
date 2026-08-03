@@ -17,8 +17,10 @@
  * 计算——本类缓存上一 Tick 分配结果传入。
  */
 
-import type { Direction, Plan, Position, TickState, UnitAction } from "../domain/model.ts";
+import { cellKey, type Direction, type Plan, type Position, type TickState, type UnitAction } from "../domain/model.ts";
+import { stepToward as pathStepToward } from "../domain/nav.ts";
 import type { PlanProvider } from "../runtime/decision-types.ts";
+import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snapshot.ts";
 import { WorkerTaskPlanner, type Assignment } from "./worker-task-planner.ts";
 
@@ -49,47 +51,52 @@ function stepCell(position: Position, direction: Direction): Position {
 /** 障碍感知一步：首选方向被挡 → 依次尝试纯 x / 纯 y 轴；全挡返回 null（调用方 WAIT）。
  *  修正依据：t2 真机观察 repair 率 48.5%（blocked_move 系统性）——骨架不避障导致。 */
 export function stepTowardAvoiding(from: Position, target: Position, obstacles: ReadonlySet<string>): Direction | null {
-  const cellKey = (p: Position): string => `${p[0]},${p[1]}`;
-  const preferred = stepToward(from, target);
-  const candidates = [preferred];
-  // 另一轴方向（先纯 x 后纯 y——与 stepToward 的优先级一致）
-  const altX = stepToward(from, [target[0], from[1]]);
-  const altY = stepToward(from, [from[0], target[1]]);
-  if (altX !== preferred) {
-    candidates.push(altX);
-  }
-  if (altY !== preferred && altY !== altX) {
-    candidates.push(altY);
-  }
-  for (const direction of candidates) {
-    if (!obstacles.has(cellKey(stepCell(from, direction)))) {
-      return direction;
-    }
-  }
-  return null;
+  return pathStepToward(from, target, obstacles);
 }
 
 export class DeterministicPlanner implements PlanProvider {
   private readonly planner: WorkerTaskPlanner;
+  private readonly fallbackPlanner: SafetyPlanner;
   private previousAssignments: readonly Assignment[] = [];
 
-  constructor(planner: WorkerTaskPlanner = new WorkerTaskPlanner()) {
+  constructor(
+    planner: WorkerTaskPlanner = new WorkerTaskPlanner(),
+    fallbackPlanner: SafetyPlanner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
+  ) {
     this.planner = planner;
+    this.fallbackPlanner = fallbackPlanner;
   }
 
   decide(input: { readonly state: TickState }): Plan {
-    const snapshot = extractPlanningSnapshot(input.state);
+    // SafetyPlanner 已包含跨 Tick World（障碍/资源线索/Worker 巡逻状态）。先生成完整
+    // 基线计划，再用 WorkerTaskPlanner 覆盖可见资源的全局唯一分配。这样 deterministic
+    // 不再是“看不到资源就 WAIT”的骨架，也不会复制第二套脆弱状态机。
+    const fallback = this.fallbackPlanner.decide(input);
+    const rawSnapshot = extractPlanningSnapshot(input.state);
+    const snapshot: PlanningSnapshot = {
+      ...rawSnapshot,
+      obstacleCells: this.fallbackPlanner.world.obstacles(rawSnapshot.obstacleCells),
+    };
     const { assignments } = this.planner.plan(snapshot, this.previousAssignments);
     this.previousAssignments = assignments;
 
-    const unitActions: Record<string, UnitAction> = {};
-    const intents: Record<string, string> = {};
+    const unitActions: Record<string, UnitAction> = { ...fallback.unitActions };
+    const intents: Record<string, string> = { ...(fallback.intents ?? {}) };
     for (const assignment of assignments) {
-      const action = this.taskAction(assignment, snapshot);
-      unitActions[assignment.unitId] = action;
+      if (assignment.task.type === "WAIT") {
+        // 无可见资源时保留 Safety 的资源记忆/分散巡逻动作；有可见资源但数量少于
+        // Worker 时，额外 Worker 必须 WAIT，不能重新扎堆到已被全局分配的资源格。
+        if (snapshot.resourceCells.size > 0) {
+          unitActions[assignment.unitId] = { type: "WAIT" };
+          intents[assignment.unitId] = "WAIT_UNCLAIMED";
+        }
+        continue;
+      }
+      unitActions[assignment.unitId] = this.taskAction(assignment, snapshot);
       intents[assignment.unitId] = assignment.task.type;
     }
-    // 非 Worker 单位（无 assignment）→ WAIT（确定性骨架只分配 Worker）
+
+    // 防御分支：任何缺失动作的单位都必须有合法 WAIT；正常情况下 fallback 已覆盖。
     for (const unit of snapshot.units) {
       if (unitActions[unit.id] === undefined) {
         unitActions[unit.id] = { type: "WAIT" };
@@ -97,6 +104,8 @@ export class DeterministicPlanner implements PlanProvider {
       }
     }
 
+    // 当前生产目标是积累 Core 资源，deterministic 热路径暂不主动消费资源；
+    // MacroPolicy 后续只需决定是否放开 fallback.coreAction，无需重写单位策略。
     return { tick: input.state.tick, unitActions, coreAction: null, intents };
   }
 
@@ -128,7 +137,8 @@ export class DeterministicPlanner implements PlanProvider {
           return { type: "WAIT" };
         }
         if (unit.position[0] === target[0] && unit.position[1] === target[1]) {
-          return { type: "HARVEST" }; // 已到位（plan 快照滞后边界）
+          const targetKey = task.targetCellKey ?? cellKey(target);
+          return snapshot.resourceCells.has(targetKey) ? { type: "HARVEST" } : { type: "WAIT" };
         }
         const direction = stepTowardAvoiding(unit.position, target, snapshot.obstacleCells);
         return direction === null ? { type: "WAIT" } : { type: "MOVE", direction };

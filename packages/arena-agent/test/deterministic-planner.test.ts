@@ -13,7 +13,8 @@ import { Turn, type PlayerState } from "@arena/arena-hero-ts";
 import { DeterministicPlanner, stepToward, stepTowardAvoiding } from "../src/planning/deterministic-planner.ts";
 import { reduceTurn, type TurnLike } from "../src/domain/state-reducer.ts";
 import { validatePlan } from "../src/domain/plan-validator.ts";
-import type { TickState } from "../src/domain/model.ts";
+import { move } from "../src/domain/nav.ts";
+import type { Position, TickState } from "../src/domain/model.ts";
 
 function makeState(tick: number, objects: PlayerState["objects"], resources = 6): TickState {
   const turn = new Turn(
@@ -102,13 +103,27 @@ test("DeterministicPlanner：DEPOSIT——cargo>0 回 Core；到位 DEPOSIT", ()
   assert.equal(plan2.unitActions["w1"]?.type, "DEPOSIT");
 });
 
-test("DeterministicPlanner：非 Worker（Vanguard）→ WAIT（骨架只分配 Worker）", () => {
+test("DeterministicPlanner：无资源时继承完整 Safety 基线（Worker 巡逻、Vanguard 守家）", () => {
   const state = makeState(100, [core(), unit("w1", 1, 0, "WORKER"), unit("v1", 1, 2, "VANGUARD")]);
   const planner = new DeterministicPlanner();
   const plan = planner.decide({ state });
-  assert.equal(plan.unitActions["v1"]?.type, "WAIT");
-  assert.equal(plan.intents["v1"], "WAIT");
-  assert.equal(plan.unitActions["w1"]?.type, "WAIT"); // 无资源格 → WAIT
+  assert.equal(plan.unitActions["v1"]?.type, "MOVE");
+  assert.equal(plan.intents["v1"], "vanguard_move");
+  assert.equal(plan.unitActions["w1"]?.type, "MOVE");
+  assert.equal(plan.intents["w1"], "patrol");
+});
+
+test("DeterministicPlanner：资源离开视野后继续跨 Tick 追踪，不退化为 WAIT", () => {
+  const planner = new DeterministicPlanner();
+  const seen = makeState(100, [core(), unit("w1", 0, 0)]);
+  const p1 = planner.decide({ state: { ...seen, resourceCells: new Set(["3,0"]) } });
+  assert.equal(p1.unitActions["w1"]?.type, "MOVE");
+  assert.equal(p1.intents["w1"], "GO_RESOURCE");
+
+  const hidden = makeState(101, [core(), unit("w1", 1, 0)]);
+  const p2 = planner.decide({ state: hidden });
+  assert.equal(p2.unitActions["w1"]?.type, "MOVE");
+  assert.equal(p2.intents["w1"], "go_harvest_mem");
 });
 
 test("DeterministicPlanner：sticky——上一 Tick 分配缓存（防抖动）", () => {
@@ -123,13 +138,29 @@ test("DeterministicPlanner：sticky——上一 Tick 分配缓存（防抖动）
 });
 
 test("stepTowardAvoiding：首选方向被障碍挡 → 另一轴；全挡 → null", () => {
-  // 目标在右侧，但右侧是障碍 → 纯 x 被挡 → 纯 y（从 [3,0] 到 [3,0] 纯 y = UP）
+  // 目标在右侧，但右侧是障碍 → BFS 选择确定性的向下绕行。
   const obstacles = new Set(["4,0"]);
   const dir = stepTowardAvoiding([3, 0], [6, 0], obstacles);
-  assert.equal(dir, "UP");
-  // 上/下/右全挡 → null
-  const blocked = new Set(["4,0", "3,1", "3,-1"]);
+  assert.equal(dir, "DOWN");
+  // 四邻全挡 → null
+  const blocked = new Set(["4,0", "2,0", "3,1", "3,-1"]);
   assert.equal(stepTowardAvoiding([3, 0], [6, 0], blocked), null);
+});
+
+test("stepTowardAvoiding：长墙场景可绕行到 Core，不再两格振荡", () => {
+  const target: Position = [119, 109];
+  const obstacles = new Set<string>();
+  for (let y = 97; y <= 108; y += 1) obstacles.add(`119,${y}`);
+  let position: Position = [119, 95];
+  const visited = new Set([`${position[0]},${position[1]}`]);
+  for (let i = 0; i < 40 && (position[0] !== target[0] || position[1] !== target[1]); i += 1) {
+    const direction = stepTowardAvoiding(position, target, obstacles);
+    assert.notEqual(direction, null, "可绕行墙体时不得 WAIT");
+    position = move(position, direction!);
+    visited.add(`${position[0]},${position[1]}`);
+  }
+  assert.deepEqual(position, target);
+  assert.ok(visited.size > 14, "路径应包含绕墙侧移，而不是 95/96 两格来回");
 });
 
 test("DeterministicPlanner：障碍避让——MOVE 不再被挡（blocked_move 修复）", () => {

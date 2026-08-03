@@ -55,8 +55,7 @@ export interface DecisionCoordinatorOptions {
   readonly sleepUntil?: (deadlineMs: number, clock: Clock) => Promise<void>;
   /** 3E：run 最终 settle 状态经此 telemetry 上报（不异步修改已返回的结果）。 */
   readonly onRunSettled?: (info: { readonly runId: string; readonly result: AgentRunResult }) => void;
-  /** P0-1：决策模式（缺省 "hybrid"）。"deterministic" 不在 coordinator 表达——
-   *  loop 层注入 ResourcePlanner 为 planner 即得。 */
+  /** P0-1：决策模式（缺省 "hybrid"）。deterministic 使用确定性 planner 热路径。 */
   readonly decisionMode?: DecisionModeName;
 }
 
@@ -86,7 +85,7 @@ export class DecisionCoordinator {
   private readonly onRunSettled: DecisionCoordinatorOptions["onRunSettled"];
   private readonly processRunId: string;
   /** P0-1：决策模式（"hybrid" 缺省；"safety" 短路；"agent-shadow" execution 恒 Safety）。 */
-  private readonly decisionMode: Exclude<DecisionModeName, "deterministic">;
+  private readonly decisionMode: DecisionModeName;
   /** 3.2：进程内 run 序号（runId = processRunId:tenantId:tick:sequence）。 */
   private runSeq = 0;
 
@@ -107,7 +106,7 @@ export class DecisionCoordinator {
     this.sleepUntil = options.sleepUntil ?? DEFAULT_SLEEP_UNTIL;
     this.onRunSettled = options.onRunSettled;
     this.processRunId = options.processRunId ?? "local";
-    this.decisionMode = options.decisionMode === "deterministic" ? "hybrid" : (options.decisionMode ?? "hybrid");
+    this.decisionMode = options.decisionMode ?? "hybrid";
     // 候选投递口：runId 精确索引——旧 run 的迟到调用命中旧 Lease（已终结 → 拒绝），
     // 永不漏到新 Tick；结构化结果原样返回（LeaseSubmission）。
     this.sink = (envelope) => this.registry.submit(envelope.runId, envelope);
@@ -146,7 +145,7 @@ export class DecisionCoordinator {
 
     // P0-1：safety 模式短路——不启动 Agent、不注册 Lease（没有候选者）。
     // deadlineOutcome 用 "soft_deadline" 作"无候选路径"哨兵值；observation 缺省。
-    if (this.decisionMode === "safety") {
+    if (this.decisionMode === "safety" || this.decisionMode === "deterministic") {
       let plan = safetyPlan;
       let repairCount = 0;
       const validation = validatePlan(state, plan);
@@ -157,7 +156,7 @@ export class DecisionCoordinator {
       return {
         runId,
         tick,
-        execution: { source: safetyError !== null ? "emergency" : "safety", plan },
+        execution: { source: safetyError !== null ? "emergency" : this.decisionMode, plan },
         agentActionCount: 0,
         safetyReplacementCount: 0,
         invalidAgentActionCount: 0,
