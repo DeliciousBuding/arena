@@ -271,6 +271,15 @@ export const movementPhase: Phase = {
         });
       }
       (draft as { players: typeof draft.players }).players = players;
+      // game-rules.md §Champion Beacon：「The Beacon follows a Unit whenever its
+      // move succeeds.」——携带者 Unit 移动成功后 Beacon 跟随到新位置。
+      const beacon = draft.beacon;
+      if (beacon !== null && beacon.status === "CARRIED" && beacon.carrierId !== null) {
+        const movedTo = resolution.positions.get(beacon.carrierId);
+        if (movedTo !== undefined && cellKey(movedTo) !== cellKey(beacon.position)) {
+          (draft as { beacon: SimWorld["beacon"] }).beacon = { ...beacon, position: movedTo };
+        }
+      }
     }
     return outcome({ events: resolution.events });
   },

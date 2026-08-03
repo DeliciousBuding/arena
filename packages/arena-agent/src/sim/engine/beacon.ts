@@ -173,7 +173,7 @@ export const beaconPhase: Phase = {
 };
 
 /** 失去 Beacon 时：Core 盾 >5（无 Beacon 上限）立即 clamp 到 5。 */
-function clampShieldAfterBeaconLoss(
+export function clampShieldAfterBeaconLoss(
   draft: SimWorld,
   beforeBeacon: SimBeacon | null,
   nextBeacon: SimBeacon,

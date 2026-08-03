@@ -17,7 +17,8 @@
 
 import { cellKey, type Direction, type Plan, type Position } from "../../domain/model.ts";
 import { compareUuidRaw } from "../deterministic/uuid.ts";
-import type { SimPlayer, SimWorld } from "../world/types.ts";
+import type { SimBeacon, SimPlayer, SimWorld } from "../world/types.ts";
+import { clampShieldAfterBeaconLoss } from "./beacon.ts";
 import { eventOf, outcome, type Phase, type PhaseContext, type ResolutionEvent } from "./phase.ts";
 
 const DIRECTION_DELTA: Readonly<Record<Direction, readonly [number, number]>> = {
@@ -343,6 +344,20 @@ function applyCoreDestruction(
       }
     }
 
+    // game-rules.md §Champion Beacon：「…or the owner's Core is destroyed, it lands
+    // at the carrier's final actual position」——摧毁 Core 前落地（carrier 是它的
+    // Core 或它的 Unit；迁移中的 Core 逻辑位置即最终实际位置）。
+    // 盾 clamp 跳过：victim 的 Core 本 tick 被摧毁，无盾可 clamp。
+    const beacon = draft.beacon;
+    if (beacon !== null && beacon.status === "CARRIED" && beacon.carrierId !== null) {
+      const carriedByCore = beacon.carrierId === victim.core.id;
+      const carriedByUnit = victim.units.find((unit) => unit.id === beacon.carrierId);
+      const carrierPosition = carriedByCore ? victim.core.position : carriedByUnit?.position;
+      if (carrierPosition !== undefined) {
+        dropCarriedBeacon(draft, beacon.carrierId, carrierPosition, events, { clampShield: false });
+      }
+    }
+
     // fleet 移除 → RESPAWNING（respawn 由 P12 后的 respawn 阶段处理）
     players.set(victim.id, { ...victim, core: null, units: [], status: "RESPAWNING" });
 
@@ -369,6 +384,17 @@ function applyUnitDeaths(
   events: ResolutionEvent[],
 ): void {
   const dead = new Set(killedUnits);
+  // game-rules.md §Champion Beacon：「…its carrier dies, it lands at the carrier's
+  // final actual position」——必须先落地（含盾 clamp），因为 clamp 需要 carrier
+  // 仍在其 owner 的 units 列表中判定归属。
+  for (const player of draft.players.values()) {
+    const carrier = player.units.find(
+      (unit) => dead.has(unit.id) && draft.beacon?.carrierId === unit.id,
+    );
+    if (carrier !== undefined) {
+      dropCarriedBeacon(draft, carrier.id, carrier.position, events);
+    }
+  }
   const players = new Map(draft.players);
   for (const [playerId, player] of draft.players) {
     if (!player.units.some((u) => dead.has(u.id))) continue;
@@ -391,6 +417,30 @@ function applyUnitDeaths(
     });
   }
   (draft as unknown as { players: Map<string, SimPlayer> }).players = players;
+}
+
+/**
+ * 携带的 Beacon 落地（§Champion Beacon）：carrier 死亡或 owner Core 被摧毁时
+ * 落在 carrier 最终实际位置。P09 在 P07 之后，本 tick 已无拾取阶段——
+ * "No other object may pick it up until the next Tick" 天然满足。
+ * 默认同时处理失去 Beacon 的盾 clamp（与 P07 DROP 路径共用同一规则）；
+ * owner Core 被摧毁的场景跳过 clamp（无盾可 clamp）。
+ */
+function dropCarriedBeacon(
+  draft: SimWorld,
+  carrierId: string,
+  position: Position,
+  events: ResolutionEvent[],
+  options: { clampShield?: boolean } = {},
+): void {
+  const beacon = draft.beacon;
+  if (beacon === null || beacon.status !== "CARRIED" || beacon.carrierId !== carrierId) return;
+  const nextBeacon: SimBeacon = { position, status: "GROUND", carrierId: null };
+  (draft as unknown as { beacon: SimWorld["beacon"] }).beacon = nextBeacon;
+  if (options.clampShield !== false) {
+    clampShieldAfterBeaconLoss(draft, beacon, nextBeacon, events);
+  }
+  events.push(eventOf(draft.tick, "BEACON_DROPPED", { actorId: carrierId, position }));
 }
 
 function dropCargo(draft: SimWorld, position: Position, amount: number): void {
