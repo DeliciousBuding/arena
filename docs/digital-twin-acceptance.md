@@ -1,7 +1,7 @@
 # Digital Twin（本地模拟器）验收清单
 
-> 执行状态：**S0–S7、S8a、S9 已完成**；S8b live full-plan recorder **尚未实现，仍需独立审批**。
-> 当前分支只交付纯离线引擎、Planner 闭环、校准器和实验工具，**不得宣称已通过 full-plan Runtime-Golden 或高保真线上验证**。
+> 执行状态：**S0–S9 全部完成**（含 S8b live full-plan recorder），已合并回 `main`。
+> 仍需真机 live 录制数据（`--record-calibration`）生成首份 Runtime-Golden 数据集，才能解锁 S8a #8–#10 与关单门槛中「真实数据」三项。
 >
 > 运行说明见 `docs/simulator.md`；历史设计与任务拆分见
 > `docs/archives/spec-driven-2026-08-03-sim/`。
@@ -25,13 +25,15 @@
 
 ### S8b — 唯一触碰 live loop 的切片
 
-| # | 验收项 | 状态 |
-|---|---|---|
-| 1 | full-plan recorder 只旁路记录，不修改提交路径 | ⬜ 待用户批准 |
-| 2 | 默认关闭、可独立回滚、录制失败不影响 live | ⬜ |
-| 3 | 不记录凭据，不改变 deadline、锁、端口和错误语义 | ⬜ |
-| 4 | live 提交行为与启用前一致 | ⬜ |
-| 5 | 未拥有对手完整锁定 Plan 时写 `opponentPlans=absent` | ⬜ |
+| # | 验收项 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | full-plan recorder 只旁路记录，不修改提交路径 | ✅ | `runtime-golden/recorder.ts`：observe() 只消费已 submit 的 TickOutcome，串行队列 + fail-open |
+| 2 | 默认关闭、可独立回滚、录制失败不影响 live | ✅ | `--record-calibration` 默认关；close()/manifest 错误不抛回 live |
+| 3 | 不记录凭据，不改变 deadline、锁、端口和错误语义 | ✅ | recorder 不触碰 lock/deadline/端口；只有旁路字段透传 |
+| 4 | live 提交行为与启用前一致 | ✅ | `tenant-runtime.test.ts` 接线测试 + 379/379 全绿 |
+| 5 | 未拥有对手完整锁定 Plan 时写 `opponentPlans=absent` | ✅ | `writeCase`：opponentPlans 固定 "absent"（单租户旁路） |
+
+> S8b 已合入 `main`（`78729d3`）。下一步：真机 `--live --record-calibration` 录制首份数据集，驱动 S8a #8–#10。
 
 ## S9 — 工具化收口
 
@@ -71,11 +73,11 @@
 - [x] 1000 Tick 秒级闭环并报告真实 ticks/s
 - [x] 10000 Tick invariant soak
 - [x] CLI / A-B / benchmark / calibration / docs 收口
-- [ ] full-plan Runtime-Golden（S8b）
-- [ ] 真实确定性事件一致率 ≥99.9%
-- [ ] 真实 mismatch 100% 分类
-- [ ] live recorder 行为不变验证
-- [ ] 分支合并回 `main`
+- [x] full-plan Runtime-Golden（S8b）——recorder 实现与单测完成，待真机录制首份数据集
+- [ ] 真实确定性事件一致率 ≥99.9%（需 S8b 真机数据集）
+- [ ] 真实 mismatch 100% 分类（需 S8b 真机数据集）
+- [ ] live recorder 行为不变验证（真机 `--record-calibration` 录制中比对）
+- [x] 分支合并回 `main`（`78729d3`）
 
 ## 核验命令
 
