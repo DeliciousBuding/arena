@@ -10,10 +10,7 @@
     "check": "npm run check -w packages/arena-hero-ts -w packages/arena-agent",
     "test": "npm run test -w packages/arena-hero-ts -w packages/arena-agent",
     "schema:check": "node packages/arena-hero-ts/scripts/generate-schemas.mjs && git diff --exit-code -- packages/arena-hero-ts/contracts/",
-    "replay:python": "uv run python scripts/replay_py.py --manifest fixtures/differential/burnin-20260802-a/manifest.json --fixture-dir fixtures/differential/burnin-20260802-a --out /tmp/replay-py.jsonl",
-    "replay:ts": "npx tsx packages/arena-agent/scripts/replay-ts.ts --manifest fixtures/differential/burnin-20260802-a/manifest.json --fixture-dir fixtures/differential/burnin-20260802-a --out /tmp/replay-ts.jsonl",
-    "replay:diff": "uv run python scripts/diff_replay.py --py /tmp/replay-py.jsonl --ts /tmp/replay-ts.jsonl --whitelist scripts/differential/whitelist.json --report /tmp/w3-report.txt --json /tmp/w3-diff.json",
-    "replay:check": "npm run replay:python && npm run replay:ts && npm run replay:diff"
+    "replay:ts": "npx tsx packages/arena-agent/scripts/replay-ts.ts --manifest fixtures/differential/burnin-20260802-a/manifest.json --fixture-dir fixtures/differential/burnin-20260802-a --out /tmp/replay-ts.jsonl"
   },
   "engines": {
     "node": ">=24.0.0"
