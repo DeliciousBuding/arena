@@ -13,6 +13,7 @@ const shadowUnit = read("arena-supervisor-shadow.service");
 const liveUnit = read("arena-supervisor-live.service");
 const shadowHealth = read("arena-shadow-health.service");
 const liveHealth = read("arena-live-health.service");
+const diskHealth = read("arena-disk-health.service");
 const wrapperPath = join(root, "scripts", "server", "run-supervisor.sh");
 const wrapper = readFileSync(wrapperPath, "utf-8");
 const envExample = read("arena.env.example");
@@ -24,6 +25,7 @@ mustNotContain(liveUnit, "Restart=on-failure", "live service must not inherit sh
 for (const [name, unit] of [["shadow", shadowUnit], ["live", liveUnit]]) {
   mustContain(unit, "KillMode=control-group", `${name} service must own the full process tree`);
   mustContain(unit, "ProtectSystem=strict", `${name} service must keep the release immutable`);
+  mustContain(unit, "ProtectProc=invisible", `${name} service must hide process metadata from other users`);
   mustContain(unit, "EnvironmentFile=/etc/arena/arena.env", `${name} service must use external secrets`);
 }
 mustContain(shadowHealth, "OnFailure=arena-shadow-recover.service", "shadow readiness failures must recover");
@@ -34,6 +36,15 @@ mustNotContain(shadowHealth, "EnvironmentFile=/etc/arena/arena.env", "shadow hea
 mustNotContain(liveHealth, "EnvironmentFile=/etc/arena/arena.env", "live health must not receive tenant secrets");
 mustContain(shadowHealth, "EnvironmentFile=-/etc/arena/health.env", "shadow health must read non-secret settings");
 mustContain(liveHealth, "EnvironmentFile=-/etc/arena/health.env", "live health must read non-secret settings");
+mustContain(shadowHealth, "--skip-disk", "shadow readiness failure must not be coupled to disk recovery");
+mustContain(liveHealth, "--skip-disk", "live readiness failure must not be coupled to disk recovery");
+mustNotContain(shadowHealth, "--disk-only", "shadow readiness unit must not be disk-only");
+mustNotContain(liveHealth, "--disk-only", "live readiness unit must not be disk-only");
+mustContain(diskHealth, "OnFailure=arena-disk-alert.service", "disk pressure must alert without restarting writers");
+mustContain(diskHealth, "--disk-only", "disk health must not depend on supervisor readiness");
+mustContain(diskHealth, "EnvironmentFile=-/etc/arena/health.env", "disk health must use non-secret settings");
+mustNotContain(diskHealth, "--systemd-unit", "disk health must run even when supervisors are inactive");
+mustNotContain(diskHealth, "/etc/arena/arena.env", "disk health must not inherit tenant secrets");
 mustContain(shadowUnit, "EnvironmentFile=/etc/arena/arena.env", "shadow supervisor must receive secrets");
 mustContain(shadowUnit, "EnvironmentFile=-/etc/arena/health.env", "shadow supervisor must share health settings");
 mustContain(liveUnit, "EnvironmentFile=/etc/arena/arena.env", "live supervisor must receive secrets");
@@ -70,13 +81,13 @@ try {
   if (parsed.ok !== true || parsed.freeBytes < 0) throw new Error("healthy probe returned invalid JSON");
 
   ready = false;
-  const unready = await runHealth(url, runtimeDir, "0");
+  const unready = await runHealth(url, runtimeDir, "0", ["--skip-disk"]);
   if (unready.code === 0 || !unready.stderr.includes("HTTP 503")) {
     throw new Error(`unready probe did not fail closed: ${unready.stderr}`);
   }
 
   ready = true;
-  const lowDisk = await runHealth(url, runtimeDir, String(Number.MAX_SAFE_INTEGER));
+  const lowDisk = await runHealth(url, runtimeDir, String(Number.MAX_SAFE_INTEGER), ["--disk-only"]);
   if (lowDisk.code === 0 || !lowDisk.stderr.includes("below minimum")) {
     throw new Error(`disk budget probe did not fail closed: ${lowDisk.stderr}`);
   }
@@ -99,7 +110,7 @@ function mustNotContain(text, unexpected, message) {
   if (text.includes(unexpected)) throw new Error(`${message}: found ${unexpected}`);
 }
 
-function runHealth(url, runtimeDir, minFreeBytes) {
+function runHealth(url, runtimeDir, minFreeBytes, extraArgs = []) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, [
       join(root, "scripts", "server", "healthcheck.mjs"),
@@ -107,6 +118,7 @@ function runHealth(url, runtimeDir, minFreeBytes) {
       "--timeout-ms=2000",
       `--runtime-dir=${runtimeDir}`,
       `--min-free-bytes=${minFreeBytes}`,
+      ...extraArgs,
     ], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";

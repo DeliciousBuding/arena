@@ -33,6 +33,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectProc=invisible
 ProtectClock=true
 ProtectHostname=true
 ProtectKernelTunables=true

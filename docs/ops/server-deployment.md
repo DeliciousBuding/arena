@@ -122,6 +122,7 @@ sudo systemctl daemon-reload
 - `KillMode=control-group`：systemd 对整棵进程树负责；
 - 30 秒有界停止，超时后 cgroup 强制清理；
 - `ProtectSystem=strict`：release 目录只读；
+- `ProtectProc=invisible`：同机非特权用户不可枚举服务进程环境；
 - `NoNewPrivileges`、`PrivateTmp`、内核/控制组保护；
 - CPU、内存、进程数和文件描述符上限；
 - stdout/stderr 进入 journald；
@@ -135,6 +136,7 @@ sudo systemctl daemon-reload
 sudo systemctl disable --now arena-supervisor-live.service arena-live-health.timer 2>/dev/null || true
 sudo systemctl enable --now arena-supervisor-shadow.service
 sudo systemctl enable --now arena-shadow-health.timer
+sudo systemctl enable --now arena-disk-health.timer
 ```
 
 检查：
@@ -167,6 +169,7 @@ shadow service 进程异常退出或 readiness 连续失败时可以自动恢复
 sudo systemctl disable --now arena-shadow-health.timer arena-supervisor-shadow.service
 sudo systemctl enable --now arena-supervisor-live.service
 sudo systemctl enable --now arena-live-health.timer
+sudo systemctl enable --now arena-disk-health.timer
 ```
 
 `arena-supervisor-live.service` 固定使用：
@@ -179,12 +182,13 @@ sudo systemctl enable --now arena-live-health.timer
 
 ## 8. 健康与磁盘门禁
 
-每分钟健康检查同时验证：
+readiness 计时器每分钟验证：
 
 - `/ready` 返回 HTTP 2xx；
 - 响应体 `ready=true`；
-- `/var/lib/arena` 所在文件系统剩余空间高于 `ARENA_MIN_FREE_BYTES`；
 - 检查在规定 timeout 内完成。
+
+独立的 `arena-disk-health.timer` 每 5 分钟验证 `/var/lib/arena` 所在文件系统剩余空间高于 `ARENA_MIN_FREE_BYTES`。磁盘不足只触发 `arena-disk-alert.service`，不会重启 shadow 或 live writer。
 
 手工执行：
 
@@ -196,7 +200,7 @@ npm run server:healthcheck -- \
   --min-free-bytes=1073741824
 ```
 
-shadow 检查失败会触发 `arena-shadow-recover.service`。live 检查失败只触发 daemon.crit 告警；不会自动重启 live writer。
+shadow readiness 失败会触发 `arena-shadow-recover.service`。live readiness 失败只触发 daemon.crit 告警；不会自动重启 live writer。服务未启用或已经停止时，readiness probe 会安全跳过，避免 timer 制造重启/告警风暴。
 
 所有常规 JSONL 流使用写入前 rename 轮转，不使用 `copytruncate`：
 

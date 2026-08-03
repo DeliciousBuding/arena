@@ -3,3 +3,4 @@ reference/arena-hero-python/** -text
 packages/arena-hero-ts/contracts/generated/*.schema.json text eol=lf
 *.sh text eol=lf
 deploy/systemd/* text eol=lf
+scripts/server/*.mjs text eol=lf
