@@ -70,6 +70,9 @@ curl http://127.0.0.1:8123/state    # 调试端点：t1 状态快照
 - SDK 事实：`arena-hero-ts`（wire schema 单源 → contracts/generated/*.schema.json；client/turn/协议）
 - 编排层事实：本仓库 `packages/arena-agent/`（domain/ + runtime/loop.ts + strategies/safety-planner.ts）
 - 测试：`npx tsx --test "test/*.test.ts"`（node --test 只能跑 12/21，勿用）
+- **本地模拟器（Digital Twin，W10）**：分支 `sim-digital-twin`（worktree `.worktrees/sim-digital-twin`），
+  `packages/arena-agent/src/sim/`；策略改动先跑模拟器验证（秒级），再上线上；计划见
+  `docs/archives/spec-driven-2026-08-03-sim/`
 
 ## 红线
 
