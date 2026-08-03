@@ -1,6 +1,6 @@
 # Arena 离线模拟器与实验工具
 
-> 状态：S0–S12 / P06 / P12、S8b live full-plan recorder 与 Runtime-Golden dataset gate 已实现并融合进 `main`。首份真机数据集已验证：3 cases、硬差异 0、已知确定性事件 6/6。
+> 状态：S0–S12 / P06 / P12 的实现与 micro-Golden、S8b live full-plan recorder、Runtime-Golden dataset gate 已融合进 `main`。首份真机数据集验证了其实际触发路径：3 cases、硬差异 0、已知确定性事件 6/6；它没有覆盖全部新增 resolver。
 
 ## 1. 安全边界
 
@@ -230,6 +230,12 @@ run directory already exists ... (use --force to replace)
 - respawn：Core 摧毁后同 Tick 确定性重生、延迟重试与事件投影；
 - Planner 闭环、A/B、benchmark、offline calibration 与 Runtime-Golden dataset gate。
 
+证据必须分层解读：
+
+- 首份真实 Runtime-Golden 已覆盖并验证当时触发的 movement / economy / visibility 路径；
+- combat、Unit/Core 统一移动图、Core migration、Beacon、respawn 已通过 micro-Golden、组合测试和 invariant soak；
+- 上述新增 resolver 仍需专项真机触发数据，不能用现有 6/6 代替。
+
 仍需显式 unknown/unsupported 的内容包括：
 
 - server-secret refill placement；
@@ -286,7 +292,7 @@ npm run sim:calibrate-dataset -w packages/arena-agent -- \
 - hard mismatch cases 必须为 0；
 - 未分类 difference 必须为 0；
 - 已知、受支持的确定性事件按多重集比较，一致率必须 ≥ 0.999 且分母非零；
-- 对手 Plan 缢失、Beacon 视野受限、server-secret refill、server UUID 等必须保持 `EXPECTED_UNKNOWN` / `INCONCLUSIVE`，不得伪装为 MATCH。
+- 对手 Plan 缺失、Beacon 视野受限、server-secret refill、server UUID 等必须保持 `EXPECTED_UNKNOWN` / `INCONCLUSIVE`，不得伪装为 MATCH。
 
 ### 首份真实证据（2026-08-03）
 
@@ -294,8 +300,10 @@ npm run sim:calibrate-dataset -w packages/arena-agent -- \
 - source SHA：`93a63e372676e49018c4284eed966044c5069482`；
 - 3/3 live submit accepted，recorder cases=3、errors=0；
 - dataset integrity verified；
-- known deterministic events：6/6，accuracy=1.000000；
+- 该数据集实际触发的 known deterministic events：6/6，accuracy=1.000000；
 - hard mismatch cases=0，unclassified=0；
 - 16 条差异全部为 `EXPECTED_UNKNOWN`，所以单 case 状态仍为 `INCONCLUSIVE`，这是正确的部分可观测语义。
 
 报告：`runs/sim/runtime-golden-t3-26600fea/calibration-dataset-report.json`。
+
+下一批 Runtime-Golden 应使用可控场景分别触发 combat、第四 Tick Unit/Core 争抢、Beacon pickup/drop/death 与 Core destruction/respawn，并继续要求 hard mismatch=0、unclassified=0。

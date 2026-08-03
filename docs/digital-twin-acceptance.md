@@ -1,7 +1,7 @@
 # Digital Twin（本地模拟器）验收清单
 
-> 执行状态：**S0–S12 / P06 / P12 全部完成**，离线模拟器、S8b live full-plan recorder、真实 Runtime-Golden 校准已融合进 `main`。
-> 首份真机数据集已通过四层完整性校验：3 cases、硬差异 0、未分类差异 0、已知确定性事件 6/6（100%）；不可观测的对手 Plan、Beacon 状态与 server-secret refill 保持 `INCONCLUSIVE`。
+> 执行状态：**S0–S12 / P06 / P12 的实现与 micro-Golden 已完成**；离线模拟器、S8b live full-plan recorder 和首份真实 Runtime-Golden 校准已融合进 `main`。
+> 首份真机数据集已通过四层完整性校验：3 cases、硬差异 0、未分类差异 0、其实际覆盖的已知确定性事件 6/6（100%）。该数据集主要覆盖 movement / economy / visibility，**不等于 combat、Core migration、Beacon、respawn 已获真机覆盖**。
 >
 > 运行说明见 `docs/simulator.md`；历史设计与任务拆分见
 > `docs/archives/spec-driven-2026-08-03-sim/`。
@@ -69,6 +69,12 @@
 
 仍需 unknown / unsupported：server-secret refill placement、未记录对手动作、服务端生成 UUID、PENDING v0.11 upkeep-deficit 细节。
 
+### 证据分层
+
+- **Runtime-Golden 已验证**：首份数据集实际触发的 movement / economy / visibility 路径；known deterministic events 6/6。
+- **实现 + micro-Golden 已验证**：combat、Unit/Core 统一移动图、Four-Tick Core migration、Beacon、respawn，以及跨 resolver 组合语义。
+- **仍待专项 Runtime-Golden**：真实 SWEEP/SHOOT、第四 Tick Unit/Core 争抢、Beacon pickup/drop/death、Core destruction/respawn。respawn placement、服务端 UUID 与未记录对手 Plan 在拿到充分证据前不得宣称与服务端完全一致。
+
 ## 关单门槛
 
 - [x] 六条隔离边界由自动化门禁证明
@@ -78,8 +84,9 @@
 - [x] 10000 Tick invariant soak
 - [x] CLI / A-B / benchmark / calibration / docs 收口
 - [x] full-plan Runtime-Golden（S8b）：真机 3 cases、四层 hash 完整
-- [x] 真实确定性事件一致率 ≥99.9%：6/6 = 100%
-- [x] 真实 mismatch 100% 分类：硬差异 0、未分类 0
+- [x] 首份样本实际覆盖的确定性事件一致率 ≥99.9%：6/6 = 100%
+- [x] 首份样本 mismatch 100% 分类：硬差异 0、未分类 0
+- [ ] combat / Core migration / Beacon / respawn 专项触发型 Runtime-Golden 覆盖
 - [x] live recorder 行为不变验证：3/3 accepted、0 recorder errors
 - [x] 两条开发线已融合回 `main`
 

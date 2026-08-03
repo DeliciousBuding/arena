@@ -55,12 +55,14 @@
 - source SHA：`93a63e3`；
 - 3/3 live submit accepted，cases=3、recorder errors=0；
 - dataset 四层 hash、路径、rulesVersion、source/config hash 全部验证；
-- known deterministic events：6/6（100%，门槛 99.9%）；
+- 该数据集实际触发的 known deterministic events：6/6（100%，门槛 99.9%）；
 - hard mismatch cases=0，unclassified differences=0；
 - 16 条差异全部归类为 `EXPECTED_UNKNOWN`（对手 Plan、Beacon 可见性、server-secret refill）；
 - real-data calibration report：`runs/sim/runtime-golden-t3-26600fea/calibration-dataset-report.json`。
 
 这批数据同时发现并修复：SDK optional-nullable wire 字段未归一化、recorder 单 case 失败污染 pending、2:3 斜率 supercover 误收终点旁格。
+
+证据边界：这 3 cases 主要覆盖 movement / economy / visibility，不覆盖后来加入的 combat、Unit/Core 统一移动图、Core migration、Beacon 与 respawn。后者当前属于“实现 + micro-Golden”，需要专项真机触发数据后才能升级为 Runtime-Golden verified。
 
 ## 当前运行态
 
