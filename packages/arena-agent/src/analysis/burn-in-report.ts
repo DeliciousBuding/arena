@@ -8,6 +8,7 @@ import type {
 export interface BurnInThresholds {
   readonly expectedLiveTicks: number;
   readonly expectedStartupSyncTicks: number;
+  readonly expectedOutcomeDrainTicks: number;
   readonly maxFailedActionRate: number;
   readonly maxWaitRatio: number;
   readonly maxSelectionP95Ms: number;
@@ -17,6 +18,7 @@ export interface BurnInThresholds {
 export const DEFAULT_BURN_IN_THRESHOLDS: BurnInThresholds = Object.freeze({
   expectedLiveTicks: 100,
   expectedStartupSyncTicks: 1,
+  expectedOutcomeDrainTicks: 1,
   maxFailedActionRate: 0.01,
   maxWaitRatio: 0.02,
   maxSelectionP95Ms: 100,
@@ -35,6 +37,8 @@ export interface BurnInReport {
   readonly observedTicks: number;
   readonly liveAttempts: number;
   readonly startupSyncTicks: number;
+  readonly outcomeDrainTicks: number;
+  readonly outcomeRecords: number;
   readonly accepted: number;
   readonly rejected: number;
   readonly repairTotal: number;
@@ -66,6 +70,7 @@ export function buildBurnInReport(
 ): BurnInReport {
   assertPositiveInteger(thresholds.expectedLiveTicks, "expectedLiveTicks");
   assertNonNegativeInteger(thresholds.expectedStartupSyncTicks, "expectedStartupSyncTicks");
+  assertNonNegativeInteger(thresholds.expectedOutcomeDrainTicks, "expectedOutcomeDrainTicks");
   assertRatio(thresholds.maxFailedActionRate, "maxFailedActionRate");
   assertRatio(thresholds.maxWaitRatio, "maxWaitRatio");
   if (!Number.isFinite(thresholds.maxSelectionP95Ms) || thresholds.maxSelectionP95Ms < 0) {
@@ -77,6 +82,9 @@ export function buildBurnInReport(
   const liveAttempts = accepted + rejected;
   const startupSyncTicks = runtime.filter(
     (record) => record.submitResult === "not_submitted" && record.notSubmittedReason === "startup_sync",
+  ).length;
+  const outcomeDrainTicks = runtime.filter(
+    (record) => record.submitResult === "not_submitted" && record.notSubmittedReason === "outcome_drain",
   ).length;
   const repairTotal = sum(decisions.map((record) => record.repairCount));
   const moveActions = sum(decisions.map((record) => record.moveCount ?? 0));
@@ -118,6 +126,18 @@ export function buildBurnInReport(
       startupSyncTicks,
       `== ${thresholds.expectedStartupSyncTicks}`,
     ),
+    gate(
+      "outcome_drain_count",
+      outcomeDrainTicks === thresholds.expectedOutcomeDrainTicks,
+      outcomeDrainTicks,
+      `== ${thresholds.expectedOutcomeDrainTicks}`,
+    ),
+    gate(
+      "final_outcome_coverage",
+      outcomes.length >= thresholds.expectedLiveTicks + thresholds.expectedOutcomeDrainTicks,
+      outcomes.length,
+      `>= ${thresholds.expectedLiveTicks + thresholds.expectedOutcomeDrainTicks}`,
+    ),
     gate("all_live_submits_accepted", accepted === thresholds.expectedLiveTicks, accepted, `== ${thresholds.expectedLiveTicks}`),
     gate("no_submit_rejection", rejected === 0, rejected, "== 0"),
     gate("deterministic_source_only", decisionSources.length === 1 && decisionSources[0] === "deterministic", decisionSources.join(","), "deterministic"),
@@ -142,6 +162,8 @@ export function buildBurnInReport(
     observedTicks: decisions.length,
     liveAttempts,
     startupSyncTicks,
+    outcomeDrainTicks,
+    outcomeRecords: outcomes.length,
     accepted,
     rejected,
     repairTotal,

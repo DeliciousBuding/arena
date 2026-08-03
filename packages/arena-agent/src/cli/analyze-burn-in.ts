@@ -25,6 +25,7 @@ function main(): void {
       runtime: { type: "string" },
       "live-ticks": { type: "string" },
       "startup-sync-ticks": { type: "string" },
+      "outcome-drain-ticks": { type: "string" },
       "max-failed-rate": { type: "string" },
       "max-wait-ratio": { type: "string" },
       "max-p95-ms": { type: "string" },
@@ -57,6 +58,12 @@ function main(): void {
       values["startup-sync-ticks"],
       DEFAULT_BURN_IN_THRESHOLDS.expectedStartupSyncTicks,
       "--startup-sync-ticks",
+      0,
+    ),
+    expectedOutcomeDrainTicks: parseInteger(
+      values["outcome-drain-ticks"],
+      DEFAULT_BURN_IN_THRESHOLDS.expectedOutcomeDrainTicks,
+      "--outcome-drain-ticks",
       0,
     ),
     maxFailedActionRate: parseNumber(
@@ -127,7 +134,8 @@ function printHuman(report: ReturnType<typeof buildBurnInReport>): void {
   console.log(`Burn-in ${report.passed ? "PASS" : "FAIL"} — ${report.processRunId}`);
   console.log(
     `ticks=${report.observedTicks} live=${report.liveAttempts} accepted=${report.accepted} rejected=${report.rejected} ` +
-      `sync=${report.startupSyncTicks} repair=${report.repairTotal}`,
+      `sync=${report.startupSyncTicks} drain=${report.outcomeDrainTicks} ` +
+      `outcomes=${report.outcomeRecords} repair=${report.repairTotal}`,
   );
   console.log(
     `economy: harvest=${report.harvestActions} deposit=${report.depositActions} ` +

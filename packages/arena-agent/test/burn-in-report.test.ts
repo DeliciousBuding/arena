@@ -82,14 +82,17 @@ test("Burn-in report：1 startup sync + 100 accepted + 正收益 → PASS", () =
   const runtime = [
     runtimeRecord(1, "not_submitted", "startup_sync"),
     ...Array.from({ length: 100 }, (_, index) => runtimeRecord(index + 2, "accepted")),
+    runtimeRecord(102, "not_submitted", "outcome_drain"),
   ];
-  const decisions = Array.from({ length: 101 }, (_, index) => decisionRecord(index + 1));
-  const outcomes = Array.from({ length: 100 }, (_, index) => outcomeRecord(index + 2));
+  const decisions = Array.from({ length: 102 }, (_, index) => decisionRecord(index + 1));
+  const outcomes = Array.from({ length: 101 }, (_, index) => outcomeRecord(index + 2));
   const report = buildBurnInReport(RUN_ID, runtime, decisions, outcomes);
 
   assert.equal(report.passed, true);
   assert.equal(report.liveAttempts, 100);
   assert.equal(report.startupSyncTicks, 1);
+  assert.equal(report.outcomeDrainTicks, 1);
+  assert.equal(report.outcomeRecords, 101);
   assert.equal(report.accepted, 100);
   assert.equal(report.rejected, 0);
   assert.equal(report.harvestActions, 1);
@@ -98,19 +101,34 @@ test("Burn-in report：1 startup sync + 100 accepted + 正收益 → PASS", () =
   assert.equal(report.gates.every((gate) => gate.pass), true);
 });
 
+test("Burn-in report：缺 outcome drain 即使提交和收益全绿也 FAIL", () => {
+  const runtime = [
+    runtimeRecord(1, "not_submitted", "startup_sync"),
+    ...Array.from({ length: 100 }, (_, index) => runtimeRecord(index + 2, "accepted")),
+  ];
+  const decisions = Array.from({ length: 101 }, (_, index) => decisionRecord(index + 1));
+  const outcomes = Array.from({ length: 100 }, (_, index) => outcomeRecord(index + 2));
+  const report = buildBurnInReport(RUN_ID, runtime, decisions, outcomes);
+  assert.equal(report.passed, false);
+  const failedNames = report.gates.filter((gate) => !gate.pass).map((gate) => gate.name);
+  assert.ok(failedNames.includes("outcome_drain_count"));
+  assert.ok(failedNames.includes("final_outcome_coverage"));
+});
+
 test("Burn-in report：submit reject + CELL_UNIT_LIMIT + 无收益 → FAIL 且精确列门禁", () => {
   const runtime = [
     runtimeRecord(1, "not_submitted", "startup_sync"),
     ...Array.from({ length: 99 }, (_, index) => runtimeRecord(index + 2, "accepted")),
     { ...runtimeRecord(101, "rejected"), submitError: "409 COMMAND_WINDOW_CLOSED" },
+    runtimeRecord(102, "not_submitted", "outcome_drain"),
   ];
-  const decisions = Array.from({ length: 101 }, (_, index) => ({
+  const decisions = Array.from({ length: 102 }, (_, index) => ({
     ...decisionRecord(index + 1),
     repairCount: index === 4 ? 1 : 0,
     harvestCount: 0,
     depositCount: 0,
   }));
-  const outcomes = Array.from({ length: 100 }, (_, index) => ({
+  const outcomes = Array.from({ length: 101 }, (_, index) => ({
     ...outcomeRecord(index + 2),
     coreResourceDelta: 0,
     failedEvents: index === 5
