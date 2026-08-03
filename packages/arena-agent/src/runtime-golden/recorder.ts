@@ -8,7 +8,6 @@
 
 import type { Accepted, PlayerState } from "@arena/arena-hero-ts";
 import {
-  appendFileSync,
   mkdirSync,
   renameSync,
   writeFileSync,
@@ -18,6 +17,7 @@ import { canonicalizeIntegrity, sha256Canonical } from "../domain/integrity.ts";
 import type { Plan } from "../domain/model.ts";
 import type { TickOutcome } from "../runtime/loop.ts";
 import type { CalibrationCaseV1 } from "../sim/calibration/schema.ts";
+import { appendJsonlLine } from "../telemetry/jsonl-writer.ts";
 
 export const RUNTIME_GOLDEN_DATASET_SCHEMA = "runtime-golden-dataset-v1" as const;
 
@@ -148,10 +148,9 @@ export class RuntimeGoldenRecorder {
         this.recordError("manifest", error);
         // 最后一次 best-effort：append-only 错误证据，不再抛回 live runtime。
         try {
-          appendFileSync(
+          appendJsonlLine(
             join(this.outputDir, "recorder-errors.jsonl"),
-            `${JSON.stringify({ at: new Date().toISOString(), error: String(error) })}\n`,
-            "utf8",
+            JSON.stringify({ at: new Date().toISOString(), error: String(error) }),
           );
         } catch {}
       }

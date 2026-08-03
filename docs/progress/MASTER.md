@@ -25,7 +25,7 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 - Windows 使用 IPC 优雅关单 + `taskkill /T /F` 超时升级；POSIX 使用独立进程组 + `SIGKILL`；
 - Windows/Linux 真实 child+grandchild 黑盒均为 orphan=0；
 - Python 实时 runtime、仓库级 `pyproject.toml` / `uv.lock` 和失效入口已退役；
-- 服务器部署基线：不可变 release、外置 config/runtime、systemd cgroup、shadow 有界自恢复、live `Restart=no`、无密钥 health env、磁盘健康与有限 JSONL 轮转；
+- 服务器部署基线：不可变 release、外置 config/runtime、systemd cgroup、shadow readiness 有界自恢复、live `Restart=no`、无密钥 health env、独立磁盘告警不重启 writer、有限 JSONL 轮转；
 - Digital Twin S0–S12 / P06 / P12 与首份 Runtime-Golden 已落地。
 
 ## 自动化证据

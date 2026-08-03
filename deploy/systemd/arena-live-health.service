@@ -1,5 +1,5 @@
 [Unit]
-Description=Arena deterministic-live readiness and disk health check
+Description=Arena deterministic-live readiness check
 After=arena-supervisor-live.service
 OnFailure=arena-live-alert.service
 
@@ -13,7 +13,7 @@ Environment=ARENA_DEBUG_PORT=8120
 Environment=ARENA_RUNTIME_DIR=/var/lib/arena
 Environment=ARENA_MIN_FREE_BYTES=1073741824
 EnvironmentFile=-/etc/arena/health.env
-ExecStart=/usr/bin/env node scripts/server/healthcheck.mjs --systemd-unit=arena-supervisor-live.service --url=http://127.0.0.1:${ARENA_DEBUG_PORT}/ready --runtime-dir=${ARENA_RUNTIME_DIR} --min-free-bytes=${ARENA_MIN_FREE_BYTES}
+ExecStart=/usr/bin/env node scripts/server/healthcheck.mjs --skip-disk --systemd-unit=arena-supervisor-live.service --url=http://127.0.0.1:${ARENA_DEBUG_PORT}/ready
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

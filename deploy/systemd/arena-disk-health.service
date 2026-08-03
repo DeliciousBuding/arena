@@ -1,0 +1,20 @@
+[Unit]
+Description=Arena runtime filesystem free-space check
+OnFailure=arena-disk-alert.service
+
+[Service]
+Type=oneshot
+User=arena
+Group=arena
+WorkingDirectory=/opt/arena/current
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=ARENA_RUNTIME_DIR=/var/lib/arena
+Environment=ARENA_MIN_FREE_BYTES=1073741824
+EnvironmentFile=-/etc/arena/health.env
+ExecStart=/usr/bin/env node scripts/server/healthcheck.mjs --disk-only --runtime-dir=${ARENA_RUNTIME_DIR} --min-free-bytes=${ARENA_MIN_FREE_BYTES}
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX
