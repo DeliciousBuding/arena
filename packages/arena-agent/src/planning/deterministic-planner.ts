@@ -17,7 +17,15 @@
  * 计算——本类缓存上一 Tick 分配结果传入。
  */
 
-import { cellKey, type Direction, type Plan, type Position, type TickState, type UnitAction } from "../domain/model.ts";
+import {
+  cellKey,
+  type CoreAction,
+  type Direction,
+  type Plan,
+  type Position,
+  type TickState,
+  type UnitAction,
+} from "../domain/model.ts";
 import { stepToward as pathStepToward } from "../domain/nav.ts";
 import type { PlanProvider } from "../runtime/decision-types.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
@@ -238,6 +246,47 @@ function compareWorstMoveFirst(a: MoveCandidate, b: MoveCandidate): number {
   return b.priority - a.priority || b.unitId.localeCompare(a.unitId);
 }
 
+const WORKER_RECOVERY_FLOOR = 2;
+const WORKER_SPAWN_COST = 5;
+
+/**
+ * deterministic 的长期目标仍是积累资源，但不能因此失去自恢复能力：
+ * - Core HEAL / REPAIR_SHIELD 属于生存动作，直接沿用 Safety 的合法裁决；
+ * - Worker 少于 2 时允许紧急补员，即使只剩刚好 5 资源；
+ * - 其余 SPAWN / 战略动作继续关闭，交给后续 MacroPolicy。
+ */
+export function selectDeterministicCoreAction(
+  state: TickState,
+  fallbackAction: CoreAction | null,
+): { readonly action: CoreAction | null; readonly intent: string | null } {
+  if (fallbackAction?.type === "HEAL") {
+    return { action: fallbackAction, intent: "core_heal" };
+  }
+  if (fallbackAction?.type === "REPAIR_SHIELD") {
+    return { action: fallbackAction, intent: "repair_shield" };
+  }
+
+  const core = state.core;
+  if (
+    core !== null &&
+    core.state === "NORMAL" &&
+    state.workers.length < WORKER_RECOVERY_FLOOR &&
+    state.resources >= WORKER_SPAWN_COST
+  ) {
+    const unitsOnCore = state.units.filter(
+      (unit) => unit.position[0] === core.position[0] && unit.position[1] === core.position[1],
+    ).length;
+    // Core 自身占一个容量位；只有没有 Unit 站在 Core 格时才安全生成。
+    if (unitsOnCore === 0) {
+      return {
+        action: { type: "SPAWN", unitType: "WORKER" },
+        intent: "emergency_spawn_worker",
+      };
+    }
+  }
+  return { action: null, intent: null };
+}
+
 export class DeterministicPlanner implements PlanProvider {
   private readonly planner: WorkerTaskPlanner;
   private readonly fallbackPlanner: SafetyPlanner;
@@ -297,14 +346,18 @@ export class DeterministicPlanner implements PlanProvider {
     }
 
     const resolved = resolveMoveCapacity(input.state, unitActions, intents, snapshot.obstacleCells);
+    const finalIntents: Record<string, string> = { ...resolved.intents };
+    // fallback 可能提出被 deterministic 故意压制的普通 spawn；不要留下“有 intent
+    // 但 coreAction=null”的误导遥测。只有实际执行的恢复/生存动作才记录 core intent。
+    delete finalIntents.core;
+    const coreDecision = selectDeterministicCoreAction(input.state, fallback.coreAction);
+    if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;
 
-    // 当前生产目标是积累 Core 资源，deterministic 热路径暂不主动消费资源；
-    // MacroPolicy 后续只需决定是否放开 fallback.coreAction，无需重写单位策略。
     return {
       tick: input.state.tick,
       unitActions: resolved.unitActions,
-      coreAction: null,
-      intents: resolved.intents,
+      coreAction: coreDecision.action,
+      intents: finalIntents,
     };
   }
 

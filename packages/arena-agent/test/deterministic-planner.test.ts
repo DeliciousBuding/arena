@@ -13,6 +13,7 @@ import { Turn, type PlayerState } from "@arena/arena-hero-ts";
 import {
   DeterministicPlanner,
   resolveMoveCapacity,
+  selectDeterministicCoreAction,
   stepToward,
   stepTowardAvoiding,
 } from "../src/planning/deterministic-planner.ts";
@@ -353,6 +354,42 @@ test("容量裁决：两个 cargo Worker 同时回 Core 时仅一个进入，另
   assert.deepEqual(result.unitActions["0002"], { type: "WAIT" });
   assert.equal(result.waitCount, 1);
   assert.equal(result.intents["0002"], "capacity_wait:return_home");
+});
+
+test("deterministic Core：Worker 少于 2 且 Core 格空闲时紧急补员", () => {
+  const state = makeState(100, [core(0, 0), unit("w1", 2, 0)], 5);
+  const plan = new DeterministicPlanner().decide({ state });
+  assert.deepEqual(plan.coreAction, { type: "SPAWN", unitType: "WORKER" });
+  assert.equal(plan.intents.core, "emergency_spawn_worker");
+});
+
+test("deterministic Core：Core 格已有 Unit 时不冒险 SPAWN", () => {
+  const state = makeState(100, [core(0, 0), unit("w1", 0, 0)], 5);
+  const decision = selectDeterministicCoreAction(state, null);
+  assert.equal(decision.action, null);
+  assert.equal(decision.intent, null);
+});
+
+test("deterministic Core：正常人口继续积累，不保留被压制的 spawn intent", () => {
+  const state = makeState(100, [core(0, 0), unit("w1", 1, 0), unit("w2", 2, 0)], 20);
+  const plan = new DeterministicPlanner().decide({ state });
+  assert.equal(plan.coreAction, null);
+  assert.equal(plan.intents.core, undefined);
+});
+
+test("deterministic Core：生存动作 HEAL / REPAIR_SHIELD 继续执行", () => {
+  const healthyBase = makeState(100, [core(0, 0), unit("w1", 1, 0), unit("w2", 2, 0)], 3);
+  const damaged: TickState = {
+    ...healthyBase,
+    core: { ...healthyBase.core!, hp: 4 },
+  };
+  assert.deepEqual(new DeterministicPlanner().decide({ state: damaged }).coreAction, { type: "HEAL" });
+
+  const unshielded: TickState = {
+    ...healthyBase,
+    core: { ...healthyBase.core!, shield: 4 },
+  };
+  assert.deepEqual(new DeterministicPlanner().decide({ state: unshielded }).coreAction, { type: "REPAIR_SHIELD" });
 });
 
 test("DeterministicPlanner：DEPOSIT——cargo>0 回 Core；到位 DEPOSIT", () => {
