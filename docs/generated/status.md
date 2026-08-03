@@ -1,15 +1,13 @@
 # 仓库状态（自动生成）
 
-> 由 `scripts/gen-status.py` 生成，**禁止手工编辑**。每次代码改动后重跑：`python scripts/gen-status.py`。
-> 背景：测试数曾手工维护于多份文档导致漂移（架构评审 R1），本文件是这些数字的唯一权威来源。
-> 注：本文件不含 commit SHA 与生成时间（生成物自身提交会使 SHA 过期，属自指）；瞬时事实见运行 manifest 与 CI。
+> 由 `scripts/gen-status.py` 生成，禁止手工编辑。
+> 测试数来自实际命令输出；瞬时 SHA 和生产运行事实属于 manifest/CI，不写入该自指生成物。
 
-| 指标 | 数值 | 来源命令 |
+| 指标 | 数值 | 来源 |
 |---|---|---|
-| Python 测试 | 0 passed / 0 failed / 0 skipped | `uv run pytest tests/ -q`（实际执行输出解析） |
-| SDK 测试 | 53 pass / 0 fail（共 53） | `node --experimental-transform-types --test --test-reporter=tap test/*.test.ts` |
-| 编排层测试 | 465 pass / 0 fail（共 465） | `npx tsx --test --test-reporter=tap test/*.test.ts` |
-| schema 契约文件数 | 6 | `ls packages/arena-hero-ts/contracts/generated/*.schema.json` 计数 |
-| Python 待退役模块数 | 0 | `find src/arena_bot -name '*.py'` 计数 |
+| SDK 测试 | 53 pass / 0 fail（共 53） | Node TAP 实跑 |
+| 编排层测试 | 485 pass / 0 fail（共 485） | Node TAP 实跑 |
+| schema 契约文件数 | 6 | contracts/generated 计数 |
+| Python 实时运行模块数 | 0 | src/arena_bot/*.py 计数（目标 0） |
 
-数值与文档不一致时，以实测为准：先重跑本脚本，再修文档。
+数值漂移时先重跑 `python scripts/gen-status.py`，再提交生成物。

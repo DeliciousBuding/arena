@@ -60,15 +60,14 @@ Core 容量 = max(10, 人口 × 5)     # 人口 = 存活单位数（不含 Core�
 | 守备期 | 资源 ≥ guard_resources：兵力 < guard_force 时优先造兵 |
 | 达标 | 资源 ≥ accumulate_target：不消费、日志提示"可兑换"；兑换后自动回积累期 |
 
-配置参数（`TacticConfig`，可 debug API 运行时调整）：
-`accumulate_target`、`guard_resources`、`guard_force`
+这些战略意图由 TS Planner/config 或后续低频 MacroPolicy 表达；旧 `TacticConfig` 和 Python debug 写接口已退役。
 
 ## 四账号并行
 
-- `.env`：`ARENA_HERO_API_KEY_1..4`（delicious233 / buding / delicious23333 / deliciousbuding）
-- 调度器：`uv run python -m arena_bot.run --experiment exp-xxx`
-- 每租户独立：进程/日志/调试端口(8123+N)/遥测 CSV（telemetry/tN.csv）
-- 产出对比：`uv run python -m arena_bot.evaluate --experiment exp-xxx`
+- 每租户配置只保存 token env 名，token 值位于仓外 secrets；
+- 调度器：`npm run arena:supervisor -- --configs=t1,t2,t3,t4 ...`；
+- 每租户独立：OS 进程、single-writer lock、manifest 与 JSONL telemetry；
+- 产出比较：Digital Twin、Runtime-Golden 与有界真机交替窗口。
 
 ## 限流（详见 docs/LIMITS.md）
 

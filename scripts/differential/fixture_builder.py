@@ -21,7 +21,7 @@
   - 默认 --window 时允许优雅降级：取最长的连续干净窗口，并向 stderr 输出显式警告。
 
 用法：
-  uv run python scripts/differential/fixture_builder.py \
+  python scripts/differential/fixture_builder.py \
       --source runs/<run_id>/raw-state --dataset <id> --tenant auto \
       --out fixtures/differential/<dataset> [--map-mode disabled]
       [--config-json '{"worker_target": 8, ...}']

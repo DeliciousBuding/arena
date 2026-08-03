@@ -168,33 +168,31 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 > 稳定期 4.4-5.9s ≪ agentSoft 14s。同期补全 CLI `--shadow` 选项（文档承诺、代码缺失）。
 > Python RPC 桥已不在 TS 决策链（`NoopAgentRuntime` 仅 safety/deterministic 用）。
 
-### 切片 5 — 运行与运维层（4-5 天）
+### 切片 5 — 运行与运维层
 
-- 目标：补齐原 W5 supervisor 与运维闭环（对应 Python debug API / 看门狗 / 遥测的 TS 对应物）。
-- 关键内容：supervisor 管理 4 个租户进程；append-only 全 Tick JSONL；readiness / health / debug API；process-tree 优雅关闭与孤儿检测；run manifest 固定 arena / SDK / Pi SHA、schema hash、模型与配置；MapStore 走 worker 线程，node:sqlite 不阻塞主 event loop。
-- 验收变化：四租户并行稳定运行；停止后无孤儿进程；遥测 / 调试端点可用；manifest 可复现运行环境。
+- 目标：用最小原生运行层管理四个独立租户进程，不建立第二套业务状态或提交链。
+- 实现：全量 preflight、部分启动回收、single-writer lock readiness、只读 Debug API、append-only JSONL、IPC 优雅关闭与平台进程树强杀。
+- 安全裁决：live writer 不自动重启；跨进程幂等键和 last accepted tick 恢复语义完成前，自动拉起可能重复提交。
 
-> ✅ **已完成（2026-08-04，切片 6 前置）**：`TenantSupervisor`（4 租户进程管家：spawn /
-> SIGTERM 优雅关闭 / SIGKILL 超时兜底 / supervisor.jsonl 事件流）+ `DebugServer`
-> （只读 /health /state /events /tenants）+ `run-supervisor` CLI（--live/--mode/--port
-> 透传）。单元测试 7 个（fake-child 零真实进程）。MapStore worker 化延后：MapStore 不在
-> 主决策链（仅 pi 工具经 map-snapshot 使用），非切换 blocker。其余遥测/manifest 已有
-> （runtime/decision/pi/outcome.jsonl + run manifest）。
+> ✅ **代码门禁完成（2026-08-04）**：
+> - config 路径/tenant/secret 全量校验后才 spawn，失败为 0 spawn；
+> - Debug 端口在 spawn 前绑定，部分 spawn 失败会回收已有 child；
+> - `/health` 与 `/ready` 分离，ready 持续要求 lock PID == child PID；
+> - JSONL 只读末尾 256 KiB，截断尾行向前恢复；
+> - Windows IPC + `taskkill /T /F`、POSIX IPC + 独立进程组 `SIGKILL`；
+> - Windows/Linux 真实 child+grandchild 黑盒 orphan=0；
+> - Provider circuit breaker、结构化 telemetry 和统一异常 cleanup 已接入。
+>
+> ⚠️ 四租户 Supervisor 长期真机 soak 尚未完成，不能把自动化门禁写成生产验收。
 
-### 切片 6 — 真机切换与 Python 删除（5-7 天）
+### 切片 6 — 真机切换与 Python 删除
 
-- 目标：按序切换真机，删除 Python 运行时。
-- 关键内容：切换顺序 TS shadow → 单租户 TS deterministic → 单租户 TS + Pi → 四租户 TS；删除 Python runtime、RPC bridge、重复 parser/schema 与正式入口，仅保留无法替代的离线研究脚本。
-- 验收变化：运行链零 Python；正式启动路径不再引用 Python；每步切换有回退预案。
-
-> ✅ **进行中（2026-08-04）**：
-> 1. TS shadow 验收已过（切片 4，27/30 candidate）；
-> 2. 单租户 TS deterministic live 验证中（t1，100 tick 真机提交，全部 accepted）；
-> 3. **Python 运行链已删除**：`src/arena_bot/` 全部、`scripts/{replay_py,pi_rpc_bridge,
->    compare_legacy,debug_decide}.py`、`tests/`（Python 测试）随运行链退役；
->    gen-status/CI/package.json 引用同步清理（py job = docs/status drift gate 仅；
->    replay:python/diff/check 移除）；保留 scripts/diagnose.py 等独立离线工具。
-> 4. 待做：单租户 TS + Pi（agent live）、四租户 TS 并行、最终验收记录。
+- 目标：正式运行链零 Python，回滚使用稳定 TS commit/config。
+- 已完成：`src/arena_bot/`、Python RPC bridge、Python 正式入口、仓库级 `pyproject.toml` / `uv.lock` 和依赖旧 runtime 的脚本已删除。
+- 保留：标准库文档/状态工具、上游 Python SDK 只读镜像、历史 differential comparator 的 one-shot 依赖运行方式。
+- 历史真机证据：t1–t4 deterministic 各 100 submit，合计 400/400 accepted；Pi t1 shadow 30 Tick 中 27 candidate、216 valid actions、0 invalid。
+- 待完成：Provider shadow 故障注入、四租户 Supervisor 分级 soak、TS 回滚演练、专项 Runtime-Golden。
+- `hybrid + live` 不是关单前置；没有稳定净收益时保持 deterministic。
 
 ## 5. 合并闸门
 
@@ -211,7 +209,7 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 ## 6. 已知风险
 
 - Provider stream 必须响应 AbortSignal；DecisionLease 是必须保留的第二道隔离；
-- node:sqlite 同步 API 不能留在主 event loop；
+- MapStore worker 化只在 profiling 证明主 event loop 阻塞时实施；
 - ~~arena-hero-ts 嵌套 package 需 clean-clone 安装~~（2026-08-02 monorepo 合并后 npm workspace 直接解析，无 pin）；
 - raw-state 只能进入 gitignored run 目录，fixture 必须脱敏；
 - Pi fork 只保留通用、可上游化修复。
