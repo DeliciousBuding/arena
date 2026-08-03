@@ -16,6 +16,7 @@
 | 限流与并发边界 | `LIMITS.md` |
 | 架构（Python 退役参考 + TS 主线） | `ARCHITECTURE.md`、`ts-architecture.md` |
 | 本地模拟器计划（Digital Twin） | `archives/spec-driven-2026-08-03-sim/`（分支 `sim-digital-twin`） |
+| 模拟器验收清单 | `digital-twin-acceptance.md`（S8/S9 逐项核验） |
 | 历史归档（评审/交接/旧记录） | `archives/history-2026-08-03/`（索引见该目录 README） |
 | 生成状态（测试数单源） | `generated/status.md`（gen-status 生成，勿手改） |
 
