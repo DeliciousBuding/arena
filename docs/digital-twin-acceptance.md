@@ -1,62 +1,93 @@
 # Digital Twin（本地模拟器）验收清单
 
-> 执行状态：**S0-S7 已完成**（分支 `sim-digital-twin`，worktree `.worktrees/sim-digital-twin`，
-> 336 测试全绿，1000 Tick ≈ 80ms）。**S8 校准进行中**（GPT 在 `src/sim/calibration/` 推进）。
-> 本清单供 S8/S9 完成后逐项核验；计划原文见
-> `docs/archives/spec-driven-2026-08-03-sim/`（task-breakdown.md / milestones.md）。
+> 执行状态：**S0–S7、S8a、S9 已完成**；S8b live full-plan recorder **尚未实现，仍需独立审批**。
+> 当前分支只交付纯离线引擎、Planner 闭环、校准器和实验工具，**不得宣称已通过 full-plan Runtime-Golden 或高保真线上验证**。
+>
+> 运行说明见 `docs/simulator.md`；历史设计与任务拆分见
+> `docs/archives/spec-driven-2026-08-03-sim/`。
 
 最后更新：2026-08-03
 
-## S8 — 校准（进行中）
+## S8a — 离线校准
 
 | # | 验收项 | 状态 | 证据 |
 |---|---|---|---|
-| 1 | `sim-calibration-case-v1` schema 冻结（含完整 plan，非仅 state） | ⬜ | `src/sim/calibration/` |
-| 2 | 真实 tick 序列校准：己方动作合法性一致率 100% | ⬜ | 校准报告 |
-| 3 | 已知确定性事件一致率 ≥99.9% | ⬜ | 校准报告 |
-| 4 | 差异 100% 分类（可见性/对手动作/refill 不可预测/规则误解/模拟器 bug） | ⬜ | 差异分类报告 |
-| 5 | 旧 state-only fixture 被拒绝（校验缺失 plan） | ⬜ | 测试 |
-| 6 | 规则版本变化 → calibration report 自动标 stale | ⬜ | 测试 |
-| 7 | 拒绝在线更新规则；服务端不可访问不得解释为"规则已完全验证" | ⬜ | 测试 |
+| 1 | `sim-calibration-case-v1` schema 冻结，完整 Plan 必填 | ✅ | `src/sim/calibration/schema.ts`、JSON Schema、`sim-calibration.test.ts` |
+| 2 | 旧 state-only fixture 被拒绝 | ✅ | parser 反向测试 |
+| 3 | 规则版本不一致 fail closed / stale | ✅ | calibration 测试 |
+| 4 | 差异分类：STATE / ENTITY / TERRAIN / EVENT / EXPECTED_UNKNOWN / UNSUPPORTED | ✅ | `calibrate.ts` + taxonomy 测试 |
+| 5 | event phase order 参与比较，不被排序掩盖 | ✅ | event reorder 反向测试 |
+| 6 | refill、隐藏 terrain、pile/node、server ID、Beacon、对手 Plan 缺失显式 INCONCLUSIVE | ✅ | unknown 矩阵测试 |
+| 7 | 不在线更新规则，不把不可访问/不可观测信息解释为完全验证 | ✅ | manifest 锁定 + fail-closed 语义 |
+| 8 | 真实 tick 序列己方合法性一致率 100% | ⏸ | 需要 S8b full-plan 数据集 |
+| 9 | 已知确定性事件一致率 ≥99.9% | ⏸ | 需要 S8b full-plan Runtime-Golden |
+| 10 | 真实样本 mismatch 100% 完成 taxonomy 分类 | ⏸ | 需要 S8b 数据集 |
 
-**S8b 特别项（唯一触碰 live loop 的切片，需独立评审）**：
-
-| # | 验收项 | 状态 |
-|---|---|---|
-| 8 | full-plan recorder 只记录、不修改线上提交路径 | ⬜ 待用户批准 |
-| 9 | live 提交/锁/端口/凭据行为与启用 recorder 前逐字节一致 | ⬜ |
-
-## S9 — 收口
+### S8b — 唯一触碰 live loop 的切片
 
 | # | 验收项 | 状态 |
 |---|---|---|
-| 1 | CLI 可用：`run-sim`（scenario/ticks/seed/output/workers，默认 workers=1 有上限） | ⬜ |
-| 2 | benchmark 输出：tick 吞吐 + 经济曲线 | ⬜ |
-| 3 | A/B runner：同环境比较不同策略 | ⬜ |
-| 4 | `arena:sim` npm script 接入 | ⬜ |
-| 5 | AGENTS.md 加"策略改动先跑模拟器"指引 | ✅（2026-08-03 main 已补） |
-| 6 | README/docs 导航指向模拟器 | ✅（2026-08-03 main 已补） |
+| 1 | full-plan recorder 只旁路记录，不修改提交路径 | ⬜ 待用户批准 |
+| 2 | 默认关闭、可独立回滚、录制失败不影响 live | ⬜ |
+| 3 | 不记录凭据，不改变 deadline、锁、端口和错误语义 | ⬜ |
+| 4 | live 提交行为与启用前一致 | ⬜ |
+| 5 | 未拥有对手完整锁定 Plan 时写 `opponentPlans=absent` | ⬜ |
 
-## 关单门槛（milestones.md M5，全部需过）
+## S9 — 工具化收口
 
-- [ ] 六条隔离边界全自动化证明（`npm run check` 含 isolation checker）
-- [ ] micro-Golden 全绿（movement/economy 确定性事件）
-- [ ] full-plan Runtime-Golden（S8b 通过后）
-- [ ] 确定性事件一致率 ≥99.9%，mismatch 100% 分类
-- [ ] 1000 Tick 秒级（当前 80ms，已达成）
-- [ ] 10000 Tick 无 invariant failure
-- [ ] root 全量门禁 + clean clone 通过（check/test/schema/replay/pytest/docs_health/gen-status）
-- [ ] live 提交/锁/端口/凭据行为不变（S8b 引入后必验）
-- [ ] 分支 `sim-digital-twin` merge 回 `main`
+| # | 验收项 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | CLI：doctor / episode / ab / benchmark / calibrate | ✅ | `src/cli/run-sim.ts`、E2E tests |
+| 2 | npm scripts：`sim:doctor/run/ab/bench/calibrate/test` | ✅ | `packages/arena-agent/package.json` |
+| 3 | 输出仅限 `runs/sim`，拒绝绝对路径、遍历、junction/symlink 逃逸 | ✅ | path policy + Windows junction 反向测试 |
+| 4 | 语义产物 deterministic，性能产物分离 | ✅ | records/final-world/summary 字节一致测试 |
+| 5 | A/B 使用相同 seeds，输出 paired delta / aggregate | ✅ | `pairedDeltas`、`pairedAggregates` |
+| 6 | A/B unknown/unsupported 时 `rankingStatus=exploratory` | ✅ | A/B tests |
+| 7 | benchmark：tick/s、p50/p95/max tick latency、heap memory | ✅ | benchmark report/tests |
+| 8 | benchmark：完整经济曲线及 hash | ✅ | `economicCurve`、`economicCurveHash` |
+| 9 | benchmark 锁定 final-world / trace / summary / economic-curve | ✅ | semantic-drift gates |
+| 10 | CPU 隔离默认串行，`--workers` 上限固定为 1 | ✅ | CLI + boundary tests |
+| 11 | 文档与导航同步 | ✅ | `docs/simulator.md`、README 导航 |
+
+## 当前支持范围
+
+确定性主线已覆盖：
+
+- scenario / raw private snapshot 载入；
+- movement 全局依赖、容量与 reason codes；
+- self-destruct、tier upkeep、capacity、cargo pile；
+- harvest / deposit、heal / repair / spawn；
+- visibility / supercover / private observation；
+- existing deterministic / safety Planner 闭环；
+- offline calibration、A/B、benchmark 与可复现产物。
+
+仍需 unknown / unsupported：combat、Core migration 完整状态、Beacon 动作、respawn、server-secret refill placement、未记录对手动作、服务端 UUID、PENDING v0.11 upkeep-deficit 细节。
+
+## 关单门槛
+
+- [x] 六条隔离边界由自动化门禁证明
+- [x] movement / economy micro-Golden 全绿
+- [x] 同 seed/config/scenario 语义轨迹一致
+- [x] 1000 Tick 秒级闭环并报告真实 ticks/s
+- [x] 10000 Tick invariant soak
+- [x] CLI / A-B / benchmark / calibration / docs 收口
+- [ ] full-plan Runtime-Golden（S8b）
+- [ ] 真实确定性事件一致率 ≥99.9%
+- [ ] 真实 mismatch 100% 分类
+- [ ] live recorder 行为不变验证
+- [ ] 分支合并回 `main`
 
 ## 核验命令
 
 ```bash
 cd PROJECT_ROOT/arena/.worktrees/sim-digital-twin
-npm run check && npm test          # tsc + isolation + 全量测试
-# merge 后（root 门禁）：
-cd PROJECT_ROOT/arena
-npm run check && npm test && npm run schema:check && npm run replay:check
+npm ci --ignore-scripts --no-audit --no-fund
+npm run check
+npm test
+npm run schema:check
+npm run replay:check      # 冻结 W3 fixture：严格 state/metadata + 有界 legacy plan 豁免
+npm run sim:test -w packages/arena-agent
+uv sync --frozen --all-extras --dev
 uv run pytest tests/ -q
 uv run python scripts/gen-status.py --check
 uv run python scripts/docs_health.py --check

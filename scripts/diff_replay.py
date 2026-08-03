@@ -152,20 +152,65 @@ def compare_plan(pa: dict, pb: dict) -> list[tuple[str, str, str]]:
 
 
 def load_whitelist_rules(path: str | None) -> list[dict]:
-    """白名单 rules：[{category, path_pattern, difference, reason}]。"""
+    """加载有界白名单；迁移豁免必须带原因，且可按复合 record key 限域。"""
     if not path:
         return []
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     rules = data.get("rules", data if isinstance(data, list) else [])
+    if not isinstance(rules, list):
+        raise SystemExit("whitelist rules 必须是数组")
+    allowed = {
+        "category", "path_pattern", "difference", "reason",
+        "dataset_id", "tenant_id", "segment_id", "tick_min", "tick_max",
+    }
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            raise SystemExit(f"whitelist rule[{index}] 必须是对象")
+        unknown = sorted(set(rule) - allowed)
+        if unknown:
+            raise SystemExit(f"whitelist rule[{index}] 含未知字段：{unknown}")
+        if not isinstance(rule.get("category"), str) or not rule["category"]:
+            raise SystemExit(f"whitelist rule[{index}] 缺少 category")
+        if not isinstance(rule.get("reason"), str) or not rule["reason"].strip():
+            raise SystemExit(f"whitelist rule[{index}] 必须提供非空 reason")
+        for field in ("dataset_id", "tenant_id", "segment_id"):
+            if field in rule and not isinstance(rule[field], str):
+                raise SystemExit(f"whitelist rule[{index}].{field} 必须是字符串")
+        for field in ("tick_min", "tick_max"):
+            if field in rule and (not isinstance(rule[field], int) or isinstance(rule[field], bool)):
+                raise SystemExit(f"whitelist rule[{index}].{field} 必须是整数")
+        if rule.get("tick_min", -2**63) > rule.get("tick_max", 2**63 - 1):
+            raise SystemExit(f"whitelist rule[{index}] tick_min 不能大于 tick_max")
+        pattern = rule.get("path_pattern", "")
+        if pattern:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise SystemExit(f"whitelist rule[{index}] path_pattern 非法：{exc}") from exc
     return rules
 
 
-def is_whitelisted(rules: list[dict], category: str, path: str, kind: str) -> bool:
-    """规则放行：category + path_pattern(re) + difference 全匹配。"""
+def is_whitelisted(
+    rules: list[dict],
+    key: tuple,
+    category: str,
+    path: str,
+    kind: str,
+) -> bool:
+    """规则放行：复合 key 作用域 + category + path + difference 必须全部匹配。"""
+    dataset_id, tenant_id, segment_id, tick = key
     for rule in rules:
         if rule.get("category") != category:
             continue
         if rule.get("difference") and rule["difference"] != kind:
+            continue
+        if rule.get("dataset_id") is not None and rule["dataset_id"] != dataset_id:
+            continue
+        if rule.get("tenant_id") is not None and rule["tenant_id"] != tenant_id:
+            continue
+        if rule.get("segment_id") is not None and rule["segment_id"] != segment_id:
+            continue
+        if tick < rule.get("tick_min", tick) or tick > rule.get("tick_max", tick):
             continue
         pattern = rule.get("path_pattern", "")
         if pattern and not re.match(pattern, path):
@@ -180,7 +225,7 @@ def main() -> None:
     ap.add_argument("--ts", required=True)
     ap.add_argument("--report", help="人类可读报告路径（默认 stdout）")
     ap.add_argument("--json", help="机器可读报告路径")
-    ap.add_argument("--whitelist", help="白名单 rules JSON：{rules: [{category, path_pattern, difference, reason}]}")
+    ap.add_argument("--whitelist", help="有界白名单 JSON；可按 dataset/tenant/segment/tick 范围限域")
     args = ap.parse_args()
 
     py_records = load_records(args.py)
@@ -265,7 +310,7 @@ def main() -> None:
     # 白名单规则过滤（W3.1：类别+路径+形态全匹配才放行）
     unexplained = [
         d for d in soft_diffs
-        if not is_whitelisted(rules, d["category"], d["path"], d["difference"])
+        if not is_whitelisted(rules, tuple(d["key"]), d["category"], d["path"], d["difference"])
     ]
     by_cat = {}
     for d in soft_diffs:

@@ -15,7 +15,8 @@
 | 项目目标与商店战略 | `GOAL.md` |
 | 限流与并发边界 | `LIMITS.md` |
 | 架构（Python 退役参考 + TS 主线） | `ARCHITECTURE.md`、`ts-architecture.md` |
-| 本地模拟器计划（Digital Twin） | `archives/spec-driven-2026-08-03-sim/`（分支 `sim-digital-twin`） |
+| 本地模拟器运行 / 校准 / A-B / benchmark | `simulator.md` |
+| 本地模拟器历史计划（Digital Twin） | `archives/spec-driven-2026-08-03-sim/` |
 | 模拟器验收清单 | `digital-twin-acceptance.md`（S8/S9 逐项核验） |
 | 历史归档（评审/交接/旧记录） | `archives/history-2026-08-03/`（索引见该目录 README） |
 | 生成状态（测试数单源） | `generated/status.md`（gen-status 生成，勿手改） |
@@ -37,7 +38,7 @@
 - SDK：`sdk-quickstart.md`、`sdk-reference.md`、`tactic-authoring.md`、`direct-play.md`
 - Agent/API：`agent-quickstart.md`、`agent-command-loop.md`、`api-overview.md`、`api-websocket.md`、`api-commands.md`、`api-state-model.md`、`api-resolution-results.md`、`api-errors.md`
 - 版本：`reference-source-and-version.md`、`reference-changelog.md`
-- 项目自管：`GOAL.md`、`LIMITS.md`、`migration-plan.md`、`roadmap-long-term.md`、`ARCHITECTURE.md`、`ts-architecture.md`、`progress/MASTER.md`、`archives/`
+- 项目自管：`GOAL.md`、`LIMITS.md`、`migration-plan.md`、`roadmap-long-term.md`、`ARCHITECTURE.md`、`ts-architecture.md`、`simulator.md`、`digital-twin-acceptance.md`、`progress/MASTER.md`、`archives/`
 
 ## 更新方式
 

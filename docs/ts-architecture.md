@@ -91,7 +91,7 @@ client.turns() → Turn（SDK）
 npm run check                # tsc --noEmit
 npm test                     # arena-agent 编排层测试（tsx --test）
 npm run schema:check         # contracts 契约零漂移
-npm run replay:check         # W3 Golden Replay 差分
+npm run replay:check         # 冻结 W3 fixture：state/metadata 严格，legacy plan 豁免有界
 uv run pytest tests/ -q      # Python 回滚链测试
 uv run python scripts/gen-status.py --check   # status.md 防漂移
 ```

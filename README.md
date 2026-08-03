@@ -91,7 +91,7 @@ npm install
 npm run check
 npm test
 npm run schema:check
-npm run replay:check
+npm run replay:check       # 冻结 W3 fixture 兼容门禁（非当前策略等价门禁）
 uv run pytest tests/ -q
 uv run python scripts/gen-status.py --check
 ```
@@ -161,7 +161,9 @@ Replay 用于验证兼容性；真实收益需要交替窗口或高保真模拟�
 - [Arena Hero v0.11 规则](docs/game-rules.md)
 - [目标与资源兑换](docs/GOAL.md)
 - [限制与速率分析](docs/LIMITS.md)
-- [本地模拟器计划（Digital Twin，分支 `sim-digital-twin`）](docs/archives/spec-driven-2026-08-03-sim/plan/README.md)
+- [本地模拟器运行、校准、A/B 与 benchmark](docs/simulator.md)
+- [Digital Twin 验收清单](docs/digital-twin-acceptance.md)
+- [Digital Twin 历史计划归档](docs/archives/spec-driven-2026-08-03-sim/plan/README.md)
 
 旧的 Python RPC、Debug API 和 handoff 文档属于迁移参考；执行当前任务前先核对 MASTER 和 open issues。
 
