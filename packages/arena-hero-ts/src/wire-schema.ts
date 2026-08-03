@@ -137,7 +137,7 @@ export type ResolutionEvent = Static<typeof ResolutionEventSchema>;
 export const PlayerStateSchema = Type.Object(
   {
     status: PlayerStatusSchema,
-    respawn_at_tick: Nullable(Type.Integer({ minimum: 1 })),
+    respawn_at_tick: Type.Optional(Nullable(Type.Integer({ minimum: 1 }))),
     resources: Type.Integer({ minimum: 0 }),
     population: Type.Integer({ minimum: 0 }),
     population_tier: Type.Integer({ minimum: 0 }),

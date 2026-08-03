@@ -186,17 +186,6 @@ test("S8a: schema is strict and tick relationship fails closed", () => {
   );
 });
 
-test("S8a: real wire permits RESPAWNING with hidden respawn_at_tick=null", () => {
-  const calibrationCase = structuredClone(buildCase(makeWorld(), waitPlan(1)));
-  calibrationCase.before.state.status = "RESPAWNING";
-  calibrationCase.before.state.respawn_at_tick = null;
-  calibrationCase.after.state.status = "RESPAWNING";
-  calibrationCase.after.state.respawn_at_tick = null;
-  const parsed = parseCalibrationCase(calibrationCase);
-  assert.equal(parsed.before.state.status, "RESPAWNING");
-  assert.equal(parsed.before.state.respawn_at_tick, null);
-});
-
 test("S8a: stale rules case is rejected before replay", () => {
   const calibrationCase = buildCase(makeWorld(), waitPlan(1));
   assert.throws(

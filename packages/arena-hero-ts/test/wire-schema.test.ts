@@ -47,6 +47,12 @@ test("wire: 数值字段拒绝字符串/NaN/负数/小数（GPT P1 清单）", (
   assert.equal(stateValidator.Check(makeState({ objects: [{ kind: "UNIT", id: "u1", controlled: true, position: [0, 0], hp: 2, unit_type: "WORKER", cargo: 1 }] })), true);
 });
 
+test("wire: ACTIVE state 可省略 respawn_at_tick（protocol 再归一化）", () => {
+  const state = makeState();
+  delete state.respawn_at_tick;
+  assert.equal(stateValidator.Check(state), true);
+});
+
 test("wire: 未知字段拒绝（additionalProperties: false）", () => {
   assert.equal(stateValidator.Check(makeState({ hacker: true })), false);
 });
@@ -83,6 +89,7 @@ test("contracts: toJsonSchema 生成标准 JSON Schema 且可写盘", () => {
   const parsed = JSON.parse(readFileSync(path, "utf-8"));
   assert.equal(parsed.type, "object");
   assert.equal(parsed.required.includes("objects"), true);
+  assert.equal(parsed.required.includes("respawn_at_tick"), false);
   assert.deepEqual(parsed.properties.status.enum, ["ACTIVE", "RESPAWNING"]);
   rmSync(dir, { recursive: true, force: true });
 });

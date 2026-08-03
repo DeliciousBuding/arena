@@ -49,7 +49,14 @@ export function parseStreamMessage(raw: string | Uint8Array): Tick | PlayerState
     return { tick: envelope.data as number } satisfies Tick;
   }
   if (envelope.type === "state") {
-    const state = envelope.data as PlayerState;
+    const wireState = envelope.data as Omit<PlayerState, "respawn_at_tick"> & {
+      respawn_at_tick?: number | null;
+    };
+    // 真实 ACTIVE wire 允许省略 respawn_at_tick；domain 层始终归一为显式 null。
+    const state: PlayerState = {
+      ...wireState,
+      respawn_at_tick: wireState.respawn_at_tick ?? null,
+    };
     checkPlayerStateRelations(state); // domain 关系约束
     return state;
   }

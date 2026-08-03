@@ -87,6 +87,43 @@ test("parseStreamMessage: state 信封解析 PlayerState", () => {
   assert.equal(state.events[0].event_type, "HARVEST_SUCCEEDED");
 });
 
+test("parseStreamMessage: ACTIVE wire 可省略 respawn_at_tick，domain 归一为 null", () => {
+  const raw = JSON.stringify({
+    type: "state",
+    data: {
+      status: "ACTIVE",
+      resources: 0,
+      population: 0,
+      population_tier: 0,
+      upkeep_next_tick: 0,
+      champion_beacon: { position: [0, 0], status: "GROUND", carrier_id: null },
+      objects: [],
+      events: [],
+    },
+  });
+  const state = parseStreamMessage(raw);
+  assert.ok("status" in state);
+  assert.equal(state.respawn_at_tick, null);
+  assert.equal(Object.hasOwn(state, "respawn_at_tick"), true, "domain object 必须补齐字段");
+});
+
+test("parseStreamMessage: RESPAWNING wire 省略 respawn_at_tick 仍拒绝", () => {
+  const raw = JSON.stringify({
+    type: "state",
+    data: {
+      status: "RESPAWNING",
+      resources: 0,
+      population: 0,
+      population_tier: 0,
+      upkeep_next_tick: 0,
+      champion_beacon: { position: [0, 0], status: "GROUND", carrier_id: null },
+      objects: [],
+      events: [],
+    },
+  });
+  assert.throws(() => parseStreamMessage(raw), /RESPAWNING state requires respawn_at_tick/);
+});
+
 test("parseStreamMessage: MOVING Core 缺字段拒绝", () => {
   const raw = JSON.stringify({
     type: "state",

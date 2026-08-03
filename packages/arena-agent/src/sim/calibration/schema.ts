@@ -154,8 +154,12 @@ function parsePlayerState(value: unknown, path: string): PlayerState {
     nonNegativeInt(raw[field], `${path}.${field}`);
   }
   if (raw.respawn_at_tick !== null) safePositiveInt(raw.respawn_at_tick, `${path}.respawn_at_tick`);
-  // 真实服务端可在 RESPawning 可见但精确复活 Tick 尚未提供时返回 null；
-  // SDK wire schema 也允许该状态。非 null 时仍必须是正整数，避免伪造时间。
+  if (raw.status === "ACTIVE" && raw.respawn_at_tick !== null) {
+    throw new CalibrationCaseError(`${path}.respawn_at_tick must be null while ACTIVE`);
+  }
+  if (raw.status === "RESPAWNING" && raw.respawn_at_tick === null) {
+    throw new CalibrationCaseError(`${path}.respawn_at_tick is required while RESPAWNING`);
+  }
   const beacon = record(raw.champion_beacon, `${path}.champion_beacon`);
   exactKeys(beacon, ["position", "status", "carrier_id"], `${path}.champion_beacon`);
   position(beacon.position, `${path}.champion_beacon.position`);
