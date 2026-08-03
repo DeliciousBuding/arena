@@ -1,9 +1,8 @@
 # Arena Bot 架构（Python 版，legacy）
 
-> ⚠️ **本文件描述 Python 运行时架构，仅作退役参考（legacy）**。当前主线是 TS 编排层——
-> 权威架构见 [ts-architecture.md](ts-architecture.md)（domain/ + runtime/loop.ts + strategies/）。
-> Python 侧只跑数据收集与回滚链，直到 W6 门禁通过后删除。
-> 迁移方案见 [migration-plan.md](migration-plan.md)。
+> ⚠️ **本文件描述已删除的 Python runtime，只是不可执行的历史快照。**
+> 当前权威架构见 [ts-architecture.md](ts-architecture.md)，运维见 [ops/supervisor-runbook.md](ops/supervisor-runbook.md)。
+> 不要按本文命令恢复 Python 运行链。
 
 最后更新：2026-08-02（重构后）
 
@@ -87,4 +86,4 @@ PATROL ⇄ GO_HARVEST（跨 Tick 目标记忆）→ cargo>0 → RETURN → DEPOS
 
 - 规则 v0.10 / SDK 0.2.6（2026-08-02 核对，上游 commit ad6fc27 / 4a29585）
 - 契约文档 `docs/game-rules.md`；数值速查 `docs/reference-numbers.md`
-- 升级路径：`uv sync` 更新 SDK → `scripts/sync_docs.py` 同步文档 → 对比测试
+- 升级路径：更新官方源码镜像/文档 → `python scripts/sync_docs.py` → 同步 TS schema/实现 → Runtime-Golden 门禁

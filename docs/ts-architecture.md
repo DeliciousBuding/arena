@@ -4,7 +4,7 @@
 > 见 `ARCHITECTURE.md`（退役参考）。迁移方案与切片见 `migration-plan.md`，
 > 长期路线见 `roadmap-long-term.md`，进度与门禁以 `docs/progress/MASTER.md` 为准。
 
-最后更新：2026-08-03
+最后更新：2026-08-04
 
 ## 三层边界（不可违反）
 
@@ -19,7 +19,7 @@ arena-hero-ts（wire 协议 / WS / Turn / 提交）
 - Arena Hero 当前状态是唯一权威事实；
 - **Pi 永远不应持有游戏提交权**——`arena_plan` 只向当前 DecisionLease 提交候选，不直接操作游戏；
 - arena-agent 保留最终合法性校验、deadline 裁决和 submit 权；
-- Python 不属于目标架构（W6 前作为生产回滚链保留）。
+- Python 实时 runtime 已删除；`reference/arena-hero-python/` 只用于追上游对照。
 
 ## 仓库结构
 
@@ -29,7 +29,7 @@ arena-hero-ts（wire 协议 / WS / Turn / 提交）
 | `packages/arena-agent/` | 编排层：domain/ + runtime/ + strategies/ + telemetry/ + map-store |
 | `packages/pi-arena/` | Pi 原生 extension：`arena_plan` / `arena_map` 工具（registerTool） |
 | `reference/arena-hero-python/` | 官方 Python SDK 镜像（追上游对照，不执行） |
-| `src/arena_bot/` | legacy Python runtime（退役中，数据收集/回滚链） |
+| `src/arena_bot/` | 已删除；仅 Git 历史保留迁移取证 |
 
 ## 每 Tick 决策链路（W4 coordinator 路径）
 
@@ -79,7 +79,7 @@ client.turns() → Turn（SDK）
 
 ## 关键设计约束
 
-- **单写者锁**：同一租户 Python / TS 只能一个 live writer（`wx` / O_CREAT|O_EXCL 原子创建）；
+- **单写者锁**：同一租户只能有一个 live writer（`wx` / O_CREAT|O_EXCL 原子创建）；
 - **DecisionLease 是第二道隔离**：Provider stream 必须响应 AbortSignal，lease 仍校验 runId/tick/stateHash；
 - **决策确定性**：同一输入 state → 同一 plan（Golden Replay / Differential Record 门禁保护）；
 - **Telemetry**：runtime / decision / outcome / pi JSONL（append-only），递归脱敏，凭据不落盘；
@@ -91,9 +91,9 @@ client.turns() → Turn（SDK）
 npm run check                # tsc --noEmit
 npm test                     # arena-agent 编排层测试（tsx --test）
 npm run schema:check         # contracts 契约零漂移
-npm run replay:check         # 冻结 W3 fixture：state/metadata 严格，legacy plan 豁免有界
-uv run pytest tests/ -q      # Python 回滚链测试
-uv run python scripts/gen-status.py --check   # status.md 防漂移
+npm run replay:ts            # 冻结 W3 fixture 的 TS 回放
+python scripts/gen-status.py --check
+python scripts/docs_health.py --check
 ```
 
 测试数以 `docs/generated/status.md`（gen-status 生成）为准，不在文档手工维护。

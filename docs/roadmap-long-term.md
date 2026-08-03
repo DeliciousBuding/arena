@@ -26,7 +26,7 @@
 - Supervisor：四租户**进程隔离**（LLM 卡死/内存泄漏只影响单租户；逐租户发布/回滚）。
 - Control plane（只控制不绕过提交链）：`GET /health /ready /tenants /tenants/:id/status /recent-decisions`；`POST /tenants/:id/pause|resume|rotate-session|reload-config`。提交仍只能走 `Turn → Coordinator → Validator → SDK submit`。
 - 自动降级链：`macro-hybrid → deterministic → safety → emergency → pause`（如 Provider 连续失败 3 次关 LLM 10 分钟；Pi 连续 rotation 退 deterministic；SDK submit 连续失败暂停并报警）。
-- W7 闸门：单租户 10,000 Tick 零错误提交；四租户 2,000 Tick 零跨租户污染；SIGTERM 无孤儿；子进程崩溃自动拉起；热更新错误配置不破坏当前运行；日志零凭据。
+- W7 闸门：单租户 10,000 Tick 零错误提交；四租户 2,000 Tick 零跨租户污染；SIGTERM 无孤儿；shadow/disabled 子进程可在状态边界明确后有限拉起；live writer 自动拉起需先完成跨进程幂等恢复；热更新错误配置不破坏当前运行；日志零凭据。
 
 ### W7 首批实施切片（2026-08-03 规划，hard 层增强）
 

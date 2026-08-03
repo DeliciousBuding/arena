@@ -14,9 +14,12 @@ W3.1 加固：
 
 契约：docs/differential-record-v1.md + contracts/differential/record-v1.schema.json。
 
-用法：
-    uv run python scripts/diff_replay.py --py /tmp/replay-py.jsonl --ts /tmp/replay-ts.jsonl \
+用法（历史 W3 比较器，不属于生产门禁）：
+    uv run --with 'jsonschema>=4.26' python scripts/diff_replay.py \
+        --py /tmp/replay-py.jsonl --ts /tmp/replay-ts.jsonl \
         [--report /tmp/diff-report.txt] [--json /tmp/diff.json] [--whitelist scripts/differential/whitelist.json]
+
+仓库不维护 Python project/lockfile；该历史工具按需使用 one-shot 依赖。
 
 退出码：硬差异（state/record_metadata）> 0 → 1；未解释差异 > 0 → 1；其余 → 0。
 """

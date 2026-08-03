@@ -1,7 +1,7 @@
 # experiments/ — legacy Python 实验定义
 
-> **状态：legacy（迁移期间保留）。** 这些 YAML 驱动 `src/arena_bot` Python 运行时。
-> 迁移主线是 TS（`packages/arena-agent`），Python 侧只做数据收集与回滚链，W6 后删除。
+> **状态：只读历史归档。** 这些 YAML 曾驱动已删除的 `src/arena_bot` Python runtime。
+> 新实验必须显式迁移到 TS config、Planner benchmark 或 simulator A/B。
 
 ## 重要裁决（#8）
 
@@ -19,4 +19,4 @@
 | `exp-llm-4.yaml` | 4 账号 LLM 并发（RPC 桥） | legacy，路线已否决 |
 | `exp-llm-t4.yaml` | t4 LLM 单账号（pi 工具） | legacy，路线已否决 |
 
-运行：`uv run python -m arena_bot.run --experiment exp-accumulate`
+不要直接运行这些 YAML；复现实验时重新建立 TS 配置和证据。
