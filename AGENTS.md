@@ -1,14 +1,12 @@
 # AGENTS.md — Arena Hero 游戏接管项目
 
-最后更新：2026-08-03
+最后更新：2026-08-04
 
-用官方 Python SDK 自动游玩 Arena Hero 的独立工作区（uv 管理）。规则契约 **v0.11**（2026-08-02 changelog），SDK **arena-hero 0.2.6**。
+TS 编排层（arena-agent）已接管游戏接管主线；Python 运行时已于 2026-08-04 退役（`src/arena_bot/` 删除）。规则契约 **v0.11**（2026-08-02 changelog）。
 
-> **TS 迁移进行中**：主线是把 Python 运行时退役，改由 TS 编排层（arena-agent）直接嵌入 pi-coding-agent。
-> - TS SDK：本仓库 `packages/arena-hero-ts/`（wire schema 单源；原 public fork 已合并入仓，追上游镜像在 `reference/arena-hero-python/`）
-> - TS 编排层：本仓库 `packages/arena-agent/`（domain/ + runtime/loop.ts 最小闭环，已合并进 main）
-> - Python 版继续跑 4 租户 burn-in 收集数据（供 TS 差分验证），不再加新功能
-> - 迁移方案与进度：`docs/migration-plan.md`（W0 嵌入闸门 ✅ · W1 wire schema+Golden Replay ✅ · 最小闭环 ✅ · W4 决策桥 → W6 删 Python）
+> **迁移状态**：切片 4（真实 Pi Adapter）✅ 验收通过；切片 5（supervisor/debug API）✅ 完成；
+> 切片 6（真机切换 + Python 删除）进行中——Python 运行链已删，单租户 TS live 验证中。
+> 进度权威：`docs/migration-plan.md`。
 
 ## 项目目标（GOAL）
 
@@ -20,64 +18,55 @@
 - 限流结论（`docs/LIMITS.md`）：4 账号并行安全，唯一硬规则是**每账号同时只跑一个提交方**
 - 4 账号：delicious233 / buding / delicious23333 / deliciousbuding（互为盟友，绝不互攻）
 
-## 结构速查（Python 运行时，退役中）
+## 结构速查（TS 主线）
 
 | 路径 | 用途 |
 |------|------|
-| `src/arena_bot/run.py` | 调度器：YAML 实验定义 → 多租户进程（`--experiment`） |
-| `src/arena_bot/main.py` | 主循环：连接 + 决策链路 + 调试端点 |
-| `src/arena_bot/strategies/` | 策略注册表：`balance`（确定性）/ `llm`（LLM 指挥官） |
-| `src/arena_bot/llm/` | LLM 桥：PiRpcBackend（进程自愈）、RULES 三变体、严格解析 |
-| `src/arena_bot/map_store.py` | 共享地图（SQLite WAL）：障碍/盟友，4 进程协同测绘 |
-| `src/arena_bot/debug_api.py` | 外部控制：/state /command /map/query（8123-8126 各租户） |
-| `src/arena_bot/watchdog.py` | 停滞告警（alerts/*.jsonl） |
-| `src/arena_bot/telemetry.py` | 遥测 JSONL（runs/<run_id>/telemetry/）+ evaluate.py 报告 |
-| `tests/` | 无凭据 Python 测试（Fake TickState，零网络）；**数量以 `docs/generated/status.md` 为准** |
-| `packages/arena-agent/` | TS 编排层（domain/ + runtime/loop.ts + strategies/，TS 迁移主线） |
 | `packages/arena-hero-ts/` | TS SDK（wire schema 单源 + client/turn + contracts/ 契约产物） |
+| `packages/arena-agent/src/domain/` | 领域层：state-reducer / world / plan-validator / phase-machine / nav |
+| `packages/arena-agent/src/runtime/` | 决策核心：DecisionCoordinator / LeaseRegistry / loop.ts |
+| `packages/arena-agent/src/strategies/` | 策略：safety-planner（确定性）/ deterministic |
+| `packages/arena-agent/src/infrastructure/pi/` | 真实 Pi 决策桥（createAgentSession，仅 arena_plan/arena_map 工具） |
+| `packages/arena-agent/src/app/` | 运行层：tenant-runtime / tenant-supervisor / debug-server / dotenv |
+| `packages/arena-agent/src/cli/` | run-tenant（单租户）/ run-supervisor（四租户管家）/ run-sim / doctor |
+| `packages/arena-agent/src/sim/` | Digital Twin 模拟器（15-phase 结算，含 combat/beacon/migration/respawn） |
+| `runtime/configs/t1-4.json` | 租户配置（tenantId/token env 名/decisionMode/模型/deadlines） |
+| `runtime/<tenant>/telemetry/` | runtime/decision/pi/outcome.jsonl（append-only） |
+| `runtime/<tenant>/runs/<runId>/` | 每 run manifest + 产物 |
+| `~/.secrets/arena.env` | 4 租户 Agent Token（仓外 secrets，public 化免疫；绝不入仓） |
 | `reference/arena-hero-python/` | 官方 Python SDK 源码镜像（追上游对照，sync-log.md） |
-| `experiments/*.yaml` | 实验定义（租户/策略/参数覆盖） |
-| `runs/<run_id>/` | 每实验运行产物：manifest.json + telemetry/ + raw-state/ |
-| `.env` | API key（**已 gitignore，永不入仓**） |
 
 ## 命令
 
 ```bash
-uv run python -m arena_bot.run --experiment exp-llm-4   # 4 账号 LLM 并发实验（legacy，见 experiments/README.md）
-uv run pytest tests/ -q             # Python 测试；数量以 docs/generated/status.md 为准
-uv run python -m arena_bot.evaluate --run <run_id>      # JSONL 评估报告
-python scripts/sync_docs.py         # skill 文档 → docs/
-python scripts/docs_health.py --check   # docs 健康门禁（CI 同款）
-curl http://127.0.0.1:8123/state    # 调试端点：t1 状态快照
+npx tsx packages/arena-agent/src/cli/run-tenant.ts --config=runtime/configs/t1.json --mode=deterministic --live --live-ticks=100   # 单租户真机 live（仓库根跑，缺省 repoRoot）
+npx tsx packages/arena-agent/src/cli/run-tenant.ts --doctor --config=...      # 环境检查（只读）
+npx tsx packages/arena-agent/src/cli/run-supervisor.ts --configs=t1,t2,t3,t4 --live --port=8120   # 四租户管家 + debug API
+npx tsx --test "test/*.test.ts"      # TS 全测试（数量以 docs/generated/status.md 为准）
+uv run python scripts/gen-status.py --check   # 状态门禁（CI 同款）
+uv run python scripts/docs_health.py --check   # docs 健康门禁（CI 同款）
+curl http://127.0.0.1:8120/health    # supervisor debug API（/health /state?tenant=t1 /events /tenants）
 ```
 
 ## 调试与人工介入
 
-- 端点 `http://127.0.0.1:8123`：`GET /state`、`GET /strategies`、`POST /command`
-- 指令白名单：`pause`（暂停提交=观察）、`resume`、`set_param {name,value}`、`set_phase {phase}`
-- 阶段：early_expansion / balanced / military；参数：explore_radius、worker_target、pop_ceiling 等（config.py）
+- supervisor debug API（`--port` 缺省 8120）：`GET /health`（租户存活）、`GET /state?tenant=t1`（最新决策）、`GET /events`
+- 决策模式：`safety`（确定性兜底）/ `deterministic` / `agent-shadow`（LLM 只观察）/ `hybrid`
+- 提交模式：`--live`（提交）/ `--shadow`（只观察，互斥）
+- 阶段/参数：TS 侧由策略实现（SafetyPlanner 确定性）；`docs/ts-architecture.md` 权威
 
-## 架构（TS 主线 + Python legacy）
+## 架构（TS 主线）
 
-- **权威架构**：TS 主线见 `docs/ts-architecture.md`；Python 退役参考见 `docs/ARCHITECTURE.md`
-- Python 每 Tick：TickState → 事件→world → 阶段机 → Strategy.decide→Plan → apply_plan → submit
+- 权威架构：`docs/ts-architecture.md`；迁移方案：`docs/migration-plan.md`（切片 1-5 ✅，6 进行中）
+- 每 Tick：TickState → 决策核心（Safety 预计算 + deadline race + arbiter）→ validatePlan → submit
 - 决策确定性：UUID 排序、固定轴优先、记忆只做线索、当前 Turn 永远权威
-- Worker 意图状态机（PATROL/GO_HARVEST）跨 Tick；HARVEST_FAILED 格冷却 4 tick
-- 策略接口可插拔：新策略继承 `Strategy` 实现 `decide()`
-
-## TS 侧参考（迁移主线）
-
-- SDK 事实：`arena-hero-ts`（wire schema 单源 → contracts/generated/*.schema.json；client/turn/协议）
-- 编排层事实：本仓库 `packages/arena-agent/`（domain/ + runtime/loop.ts + strategies/safety-planner.ts）
-- 测试：`npx tsx --test "test/*.test.ts"`（node --test 只能跑 12/21，勿用）
-- **本地模拟器（Digital Twin，W10）**：分支 `sim-digital-twin`（worktree `.worktrees/sim-digital-twin`），
-  `packages/arena-agent/src/sim/`；策略改动先跑模拟器验证（秒级），再上线上；计划见
-  `docs/archives/spec-driven-2026-08-03-sim/`
+- 真实 LLM（agent-shadow）：PiAgentRuntime 生命周期机（warmup/abort/rotation），稳定期 4-6s/决策
 
 ## 红线
 
-- 秘钥只在 `.env`；改代码后 grep 确认无 `ah_live` 字样
-- 提交前自动拦截隐私内容：`scripts/hooks/pre-commit`（.env/密钥值/本机路径/个人邮箱/运行时产物，见 `scripts/hooks/README.md`）；clone 后先跑 `sh scripts/hooks/install-hooks.sh`
-- 不重建 SDK 的 WebSocket/重连/回执；协议异常先升 SDK（`uv sync` 后对比测试）
+- 秘钥只在 `~/.secrets/arena.env`（或 .env 本地）；改代码后 grep 确认无 `ah_live` 字样
+- 提交前自动拦截隐私内容：`scripts/hooks/pre-commit`（.env/密钥值/本机路径/个人邮箱/运行时产物，见 `scripts/hooks/README.md`）；clone/新 worktree 后先装 hook（`sh scripts/hooks/install-hooks.sh` 或复制 pre-commit 到对应 `.git/hooks/`）
+- 不重建 SDK 的 WebSocket/重连/回执；协议异常先升 SDK
 - 规则数值改动必须对照 `docs/game-rules.md`，禁止凭记忆猜
-- Python 侧只做数据收集/参考，新功能一律走 TS 编排层（避免双轨分裂）
+- 新功能一律走 TS 编排层；Python 运行链已退役，不复活
+- 模拟器改动先跑 Digital Twin 验证（`packages/arena-agent/src/sim/`，策略改动秒级验证）再上线上
