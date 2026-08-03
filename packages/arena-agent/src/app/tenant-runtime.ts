@@ -356,6 +356,9 @@ async function createPiRuntime(
     tenantId: config.tenantId,
     promptBuilder: buildDecisionPrompt,
     mapSnapshotBuilder: (state) => mapSnapshotOf(state),
+    // 预热：LLM 冷启动 12s+ 会让首 tick 超时 → abort 残留恶性循环；预热后 2-4s 稳定。
+    // 实测依据：无 abort 连续调用 2.3-3.4s（latency2 诊断），冷启动首调用 12-19s。
+    warmupPrompt: "预热：请用一句话确认你已就绪（无需调用工具）。",
     onTelemetry,
   });
 }

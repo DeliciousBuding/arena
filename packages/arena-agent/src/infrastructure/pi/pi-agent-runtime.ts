@@ -76,6 +76,12 @@ export interface PiAgentRuntimeOptions {
   readonly consecutiveErrorThreshold?: number;
   /** 生命周期/异常 telemetry。 */
   readonly onTelemetry?: (event: PiRuntimeTelemetry) => void;
+  /** 启动预热 prompt（缺省无）。真实 LLM 冷启动 12s+（首调用）会让首 tick
+   *  在 soft deadline 超时 → abort 残留 → 恶性循环；预热后 2-4s/轮稳定。 */
+  readonly warmupPrompt?: string;
+  /** 主动重置阈值（缺省 40）：每 N 个 run 主动 rotate 一次——对抗会话历史累积
+   *  （每 tick prompt 追加，上下文增长让 LLM 变慢；rotate 后重新预热 1-2 tick）。 */
+  readonly maxRunsBeforeRotate?: number;
 }
 
 interface ActiveRun {
@@ -107,10 +113,15 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
   private lifecycleEpoch = 0;
   private closing = false;
   private abortTimers = new Set<ReturnType<typeof setTimeout>>();
+  /** 主动重置阈值（每 N 个 run rotate 一次——对抗会话历史累积）。 */
+  private maxRunsBeforeRotate = 40;
+  /** 自上次 rotate 以来的 run 数。 */
+  private runsSinceRotate = 0;
 
   private constructor(options: PiAgentRuntimeOptions) {
     this.options = options;
     this.memory = options.memory ?? new StrategyMemory();
+    this.maxRunsBeforeRotate = options.maxRunsBeforeRotate ?? 40;
     // 工具定义持有 ctxRef getter：session 创建时注册一次，每 run 替换 ctx 对象
     this.factory = new PiSessionFactory({
       ...options.session,
@@ -119,10 +130,14 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     });
   }
 
-  /** 异步工厂：创建 session 完成后 runtime 才进入 ready。 */
+  /** 异步工厂：创建 session 完成后 runtime 才进入 ready（含可选预热）。 */
   static async create(options: PiAgentRuntimeOptions): Promise<PiAgentRuntime> {
     const runtime = new PiAgentRuntime(options);
     await runtime.initialize();
+    // 预热：让 LLM 首调用（冷启动 12s+）在首 tick 前完成——首 tick 就 2-4s 稳定
+    if (options.warmupPrompt !== undefined && options.warmupPrompt.length > 0) {
+      await runtime.artifacts?.session.prompt(options.warmupPrompt).catch(() => {});
+    }
     return runtime;
   }
 
@@ -289,7 +304,8 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     return this.artifacts.session.prompt(text);
   }
 
-  /** 同步返回；后台等待 prompt 终止 → ready；超时 → unhealthy → rotate（总任务书 3.4）。 */
+  /** 同步返回；后台等待 prompt 终止 → ready；超时 → unhealthy → rotate（总任务书 3.4）。
+   *  主动重置检查：runsSinceRotate 达到阈值 → 立即 rotate（对抗会话历史累积）。 */
   private abortRun(run: ActiveRun, reason: string): void {
     if (this.active !== run || run.aborted) {
       return;
@@ -298,7 +314,15 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
     run.abortReason = reason;
     this.state = "aborting";
     this.onTelemetry("abort_requested", run.runId, undefined, reason);
+    this.runsSinceRotate += 1;
     // 不 await：void 后台完成（coordinator 永不阻塞在 abort 上）
+    if (this.runsSinceRotate >= this.maxRunsBeforeRotate) {
+      // 主动重置：会话历史累积到阈值——rotate 清空上下文（LLM 恢复 2-4s）
+      this.onTelemetry("rotating", undefined, "periodic_reset", undefined, this.generation + 1);
+      this.runsSinceRotate = 0;
+      void this.rotate();
+      return;
+    }
     void this.abortAndSettle(run, reason);
   }
 
@@ -360,6 +384,10 @@ export class PiAgentRuntime implements AgentDecisionRuntime {
         new Promise((resolve) => setTimeout(resolve, 100)),
       ]);
       await this.initialize();
+      // 新 session 同样预热（rotate 后首 tick 不冷启动超时）
+      if (this.options.warmupPrompt !== undefined && this.options.warmupPrompt.length > 0) {
+        await this.artifacts?.session.prompt(this.options.warmupPrompt).catch(() => {});
+      }
       this.consecutiveErrors = 0;
       this.onTelemetry("rotated", undefined, undefined, undefined, this.generation);
     } catch (error) {
