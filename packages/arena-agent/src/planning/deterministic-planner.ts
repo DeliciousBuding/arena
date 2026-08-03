@@ -314,6 +314,10 @@ export class DeterministicPlanner implements PlanProvider {
     if (unit === undefined) {
       return { type: "WAIT" };
     }
+    const movementObstacles = this.fallbackPlanner.world.movementObstacles(
+      assignment.unitId,
+      snapshot.obstacleCells,
+    );
     const task = assignment.task;
     switch (task.type) {
       case "HARVEST_CURRENT":
@@ -327,7 +331,7 @@ export class DeterministicPlanner implements PlanProvider {
         if (unit.position[0] === core[0] && unit.position[1] === core[1]) {
           return task.type === "DEPOSIT" ? { type: "DEPOSIT" } : { type: "WAIT" };
         }
-        const direction = stepTowardAvoiding(unit.position, core, snapshot.obstacleCells);
+        const direction = stepTowardAvoiding(unit.position, core, movementObstacles);
         return direction === null ? { type: "WAIT" } : { type: "MOVE", direction };
       }
       case "GO_RESOURCE": {
@@ -339,7 +343,7 @@ export class DeterministicPlanner implements PlanProvider {
           const targetKey = task.targetCellKey ?? cellKey(target);
           return snapshot.resourceCells.has(targetKey) ? { type: "HARVEST" } : { type: "WAIT" };
         }
-        const direction = stepTowardAvoiding(unit.position, target, snapshot.obstacleCells);
+        const direction = stepTowardAvoiding(unit.position, target, movementObstacles);
         return direction === null ? { type: "WAIT" } : { type: "MOVE", direction };
       }
       default:

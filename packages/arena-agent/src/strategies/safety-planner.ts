@@ -144,12 +144,13 @@ export class SafetyPlanner {
   ): void {
     const memory = this.world.unitMemory(unit.id, index);
     const home = state.core?.position ?? null;
+    const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
 
     if (unit.cargo > 0) {
       if (home !== null && samePosition(unit.position, home)) {
         if (state.resourceSpace > 0) set(unit, { type: "DEPOSIT" }, "deposit");
       } else if (home !== null) {
-        const direction = stepToward(unit.position, home, obstacles);
+        const direction = stepToward(unit.position, home, movementObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "return_home");
       }
       return;
@@ -168,7 +169,7 @@ export class SafetyPlanner {
       memory.workerMode = "go_harvest";
       memory.harvestTarget = target;
       if (target !== null && !samePosition(target, unit.position)) {
-        const direction = stepToward(unit.position, target, obstacles);
+        const direction = stepToward(unit.position, target, movementObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "go_harvest");
       }
       return;
@@ -180,7 +181,7 @@ export class SafetyPlanner {
       memory.harvestTarget !== null &&
       hints.some((hint) => samePosition(hint, memory.harvestTarget!))
     ) {
-      const direction = stepToward(unit.position, memory.harvestTarget, obstacles);
+      const direction = stepToward(unit.position, memory.harvestTarget, movementObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "go_harvest_mem");
       return;
     }
@@ -226,7 +227,7 @@ export class SafetyPlanner {
     }
 
     if (target !== null && !samePosition(target, unit.position)) {
-      const direction = stepToward(unit.position, target, obstacles);
+      const direction = stepToward(unit.position, target, movementObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "patrol");
     }
   }
@@ -238,6 +239,7 @@ export class SafetyPlanner {
     enemies: readonly VisibleEntity[],
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
   ): void {
+    const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
     const adjacent = enemies.find((enemy) => manhattan(unit.position, enemy.position) === 1);
     if (adjacent !== undefined) {
       const direction = directionToAdjacent(unit.position, adjacent.position);
@@ -257,7 +259,7 @@ export class SafetyPlanner {
       ? nearestEnemy(nearby, unit.position)?.position ?? null
       : state.core?.position ?? null;
     if (target !== null && !samePosition(unit.position, target)) {
-      const direction = stepToward(unit.position, target, obstacles);
+      const direction = stepToward(unit.position, target, movementObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_move");
     }
   }
@@ -269,6 +271,7 @@ export class SafetyPlanner {
     enemies: readonly VisibleEntity[],
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
   ): void {
+    const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
     const target = enemies.find((enemy) => canShoot(unit.position, enemy.position, obstacles));
     if (target !== undefined) {
       set(unit, { type: "SHOOT", targetId: target.id, expectedCell: target.position }, "shoot");
@@ -279,7 +282,7 @@ export class SafetyPlanner {
       ? nearestEnemy(enemies, unit.position)?.position ?? null
       : state.core?.position ?? null;
     if (moveTarget !== null && !samePosition(unit.position, moveTarget)) {
-      const direction = stepToward(unit.position, moveTarget, obstacles);
+      const direction = stepToward(unit.position, moveTarget, movementObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_move");
     }
   }
