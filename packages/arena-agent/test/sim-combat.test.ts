@@ -289,15 +289,24 @@ test("S10: Core 伤害先护盾后 HP，摧毁时掉落 cargo + 击杀者得资�
     ]),
     ctx,
   );
-  // p1 Core hp 1 → 摧毁；fleet 移除 → RESPAWNING；cargo 掉落 [0,1]
+  // p1 Core hp 1 → 摧毁；fleet 移除 → cargo 掉落 [0,1]；击杀者 p2 得资源；
+  // 同 Tick P12 respawn resolver 立即放置 replacement → 发布状态已 ACTIVE
   const p1 = result.world.players.get("p1")!;
-  assert.equal(p1.core, null);
-  assert.equal(p1.status, "RESPAWNING");
-  assert.equal(p1.units.length, 0);
+  assert.equal(p1.status, "ACTIVE", "same-tick respawn returns player to ACTIVE");
+  assert.ok(p1.core !== null, "p1 has respawned core");
+  assert.notEqual(p1.core!.id, P1_CORE, "fresh core UUID");
+  assert.equal(p1.core!.hp, 5);
+  assert.equal(p1.core!.shield, 5);
+  assert.equal(p1.units.length, 1, "starting worker count");
+  assert.equal(p1.units[0].unitType, "WORKER");
+  assert.equal(p1.units[0].hp, 2);
+  assert.equal(p1.units[0].cargo, 0);
+  assert.equal(p1.resources, 5, "starting resources after respawn");
   assert.equal(result.world.terrain.piles.get("0,1")?.amount, 2);
   // 击杀者 p2 获得 p1 资源
   assert.equal(result.world.players.get("p2")!.resources, 5 + 10);
   assert.ok(result.events.some((e) => e.eventType === "CORE_DESTROYED" && e.targetId === P1_CORE));
+  assert.ok(result.events.some((e) => e.eventType === "CORE_RESPAWNED"), "CORE_RESPAWNED missing");
 });
 
 test("S10: 护盾吸收 Core 伤害——hp 不变", () => {

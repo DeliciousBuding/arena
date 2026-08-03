@@ -160,6 +160,10 @@ export function validateWorld(world: SimWorld): string[] {
   const HP_MAX: Record<string, number> = { WORKER: 2, VANGUARD: 4, RANGER: 2 };
   for (const player of world.players.values()) {
     if (player.resources < 0) problems.push(`player ${player.id} negative resources`);
+    // RESPAWNING = 舰队已移除（combat 摧毁或待重生）；core/units 必须为空
+    if (player.status === "RESPAWNING" && (player.core !== null || player.units.length > 0)) {
+      problems.push(`player ${player.id} RESPAWNING must have no core or units`);
+    }
     if (player.core !== null) {
       if (player.core.hp < 0 || player.core.hp > 5) problems.push(`core ${player.core.id} hp out of range`);
       // 持有 Beacon 的玩家盾上限 10（maxShieldWithBeacon），否则 5

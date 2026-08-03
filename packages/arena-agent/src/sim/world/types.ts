@@ -52,6 +52,15 @@ export interface SimPlayer {
   readonly username: string;
   readonly status: PlayerStatus;
   readonly resources: number;
+  /**
+   * 重生进度（wire PlayerState.respawn_at_tick 等价源）。
+   * - ACTIVE：恒 null；
+   * - RESPAWNING：下一次 spawn 尝试所在 Tick。combat 摧毁时置为当前结算
+   *   Tick（"本 Tick 内立即尝试"），P12 延迟后置为下一 Tick（重试）；
+   * - null 且 RESPAWNING（裸 RESPAWNING）：外部快照带入、重试进度未知，
+   *   不得猜测解析——settlement 标记 unsupported，visibility fail closed。
+   */
+  readonly respawnAtTick: number | null;
   readonly core: SimCore | null;
   readonly units: readonly SimUnit[];
 }

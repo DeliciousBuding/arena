@@ -230,7 +230,7 @@ export function projectPlayerState(
 
   return {
     status: player.status,
-    respawn_at_tick: null,
+    respawn_at_tick: player.respawnAtTick,
     resources: player.resources,
     population,
     population_tier: tier,

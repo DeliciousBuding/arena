@@ -19,6 +19,7 @@ import { combatPhase } from "./combat.ts";
 import { coreMigrationPhase } from "./core-migration.ts";
 import { economyPhases } from "./economy.ts";
 import { movementPhase } from "./movement.ts";
+import { respawnPhase } from "./respawn.ts";
 import { EMPTY_OUTCOME, outcome, type Phase, type PhaseContext, type PhaseOutcome, type ResolutionEvent, type UnknownEffect } from "./phase.ts";
 
 export interface SettlementContext {
@@ -86,7 +87,12 @@ function scanUnsupported(world: SimWorld, plans: ReadonlyMap<string, Plan>): Sim
       }
     }
     if (player.status === "RESPAWNING") {
-      hit.add("respawn");
+      // 裸 RESPAWNING（缺 respawnAtTick）：外部快照带入、重试进度未知，
+      // 无法确定性推进，仍算 unsupported；Sim 自产 RESPAWNING（combat 摧毁
+      // 后由 P12 处理；延迟则带 respawnAtTick）不算 unsupported。
+      if (player.respawnAtTick === null) {
+        hit.add("respawn");
+      }
     }
   }
   return [...hit].sort();
@@ -115,16 +121,7 @@ const PHASES: readonly Phase[] = [
   ...economyPhases.slice(3, 4), // P08 harvest-and-deposit
   combatPhase, // P09 combat（SWEEP/SHOOT 快照结算；伤害累积 → 同时应用）
   ...economyPhases.slice(4, 6), // P10 unit-heal / P11 core-action
-  {
-    id: "P12-unsupported-respawn-check",
-    officialPhase: 12,
-    run: (draft, ctx) => {
-      if (ctx.features.has("respawn")) {
-        return outcome({ unsupported: ["respawn"] });
-      }
-      return EMPTY_OUTCOME;
-    },
-  },
+  respawnPhase, // P12 respawn（combat 摧毁/延迟重试；同 Tick 放置 replacement）
   {
     id: "P13-refill-policy",
     officialPhase: 13,
