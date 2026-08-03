@@ -14,8 +14,9 @@
     "arena:shadow": "tsx src/cli/run-tenant.ts",
     "arena:live": "tsx src/cli/run-tenant.ts --live",
     "arena:sim": "tsx src/cli/run-sim.ts",
+    "sim:doctor": "tsx src/cli/run-sim.ts doctor",
     "sim:isolation-check": "node scripts/check-sim-isolation.mjs",
-    "sim:test": "tsx --test test/sim-isolation.test.ts"
+    "sim:test": "tsx --test \"test/sim-*.test.ts\""
   },
   "dependencies": {
     "@arena/arena-hero-ts": "*",

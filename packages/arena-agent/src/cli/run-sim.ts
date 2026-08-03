@@ -1,147 +1,399 @@
-/**
- * sim CLI 最小骨架（S1）：无网络提交能力的模拟器入口。
- *
- * S1 阶段仅支持 no-op scenario：加载规则 manifest → 校验输出路径策略 →
- * 写 runs/sim-<id>/manifest.json（schema sim.v1）→ 退出。
- * 结算引擎（S2+）接入后在同一入口扩展。
- *
- * 隔离边界（S1 起即强制）：
- * - 不读 .env、不 import SDK client、不创建 writer lock、不监听端口；
- * - 输出只允许写入 runs/sim-*（拒绝绝对路径与路径穿越）；
- * - 凭据只可能来自环境变量——本入口根本不读它们。
- */
+/** Offline simulator CLI (S9): doctor, episode, ab, benchmark and calibrate. */
 
-import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { loadRulesManifest, assertRulesSupported } from "../sim/contracts/rules-manifest.ts";
+import { runCalibrationCase } from "../sim/calibration/calibrate.ts";
+import {
+  assertRulesSupported,
+  loadRulesManifest,
+  manifestHash,
+} from "../sim/contracts/rules-manifest.ts";
+import { compareCodeUnit } from "../sim/deterministic/uuid.ts";
+import { runEpisode, type EpisodeConfig, type PlannerKind } from "../sim/harness/episode.ts";
+import {
+  atomicWriteJson,
+  atomicWriteJsonl,
+  atomicWriteText,
+  defaultRunId,
+  prepareRunDir,
+  readJsonFile,
+  resolveInputPath,
+  resolveOutputBase,
+  sha256Json,
+  sha256Text,
+} from "../sim/tools/artifacts.ts";
+import {
+  episodePerformance,
+  runAB,
+  runBenchmark,
+  summarizeEpisode,
+} from "../sim/tools/experiments.ts";
+import { canonicalWorldJson } from "../sim/world/canonical.ts";
+import { worldFromScenario } from "../sim/world/loaders.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, "..", "..");
 const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
-const MANIFEST_PATH = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
-
+const DEFAULT_RULES_PATH = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
 const SUPPORTED_RULES_VERSION = "v0.11";
-const DEFAULT_WORKERS = 1;
-const MAX_WORKERS = 8;
-const SIM_SCHEMA_PREFIX = "sim.v1";
 
-interface CliArgs {
-  readonly scenario: string | null;
-  readonly ticks: number;
-  readonly seed: number;
-  readonly output: string | null;
-  readonly workers: number;
+type Command = "doctor" | "episode" | "ab" | "benchmark" | "calibrate";
+
+interface ParsedArgs {
+  readonly command: Command;
+  readonly values: ReadonlyMap<string, string>;
+  readonly booleans: ReadonlySet<string>;
 }
 
-function parseArgs(argv: readonly string[]): CliArgs {
-  const args: CliArgs = { scenario: null, ticks: 1, seed: 1, output: null, workers: DEFAULT_WORKERS };
-  const mutable: {
-    scenario: string | null;
-    ticks: number;
-    seed: number;
-    output: string | null;
-    workers: number;
-  } = { ...args };
-  for (let i = 0; i < argv.length; i += 1) {
-    const flag = argv[i];
-    const value = argv[i + 1];
-    switch (flag) {
-      case "--scenario":
-        if (value === undefined) throw new Error("--scenario requires a path");
-        mutable.scenario = value;
-        i += 1;
-        break;
-      case "--ticks": {
-        const n = Number(value);
-        if (!Number.isInteger(n) || n < 1) throw new Error("--ticks must be a positive integer");
-        mutable.ticks = n;
-        i += 1;
-        break;
-      }
-      case "--seed": {
-        const n = Number(value);
-        if (!Number.isInteger(n) || n < 0) throw new Error("--seed must be a non-negative integer");
-        mutable.seed = n;
-        i += 1;
-        break;
-      }
-      case "--output":
-        if (value === undefined) throw new Error("--output requires a path");
-        mutable.output = value;
-        i += 1;
-        break;
-      case "--workers": {
-        const n = Number(value);
-        if (!Number.isInteger(n) || n < 1) throw new Error("--workers must be a positive integer");
-        if (n > MAX_WORKERS) throw new Error(`--workers exceeds conservative cap ${MAX_WORKERS}`);
-        mutable.workers = n;
-        i += 1;
-        break;
-      }
-      default:
-        throw new Error(`unknown flag: ${flag}`);
+const BOOLEAN_FLAGS = new Set(["--force", "--help"]);
+const KNOWN_FLAGS: Readonly<Record<Command, ReadonlySet<string>>> = {
+  doctor: new Set(["--rules", "--help"]),
+  episode: new Set([
+    "--scenario", "--rules", "--ticks", "--seed", "--planner", "--output", "--run-id", "--force", "--help",
+  ]),
+  ab: new Set([
+    "--scenario", "--rules", "--ticks", "--seeds", "--planners", "--output", "--run-id", "--force", "--help",
+  ]),
+  benchmark: new Set([
+    "--scenario", "--rules", "--ticks", "--seed", "--planner", "--warmup", "--repeats", "--output", "--run-id", "--force", "--help",
+  ]),
+  calibrate: new Set(["--case", "--rules", "--output", "--run-id", "--force", "--help"]),
+};
+
+function parseArgs(argv: readonly string[]): ParsedArgs {
+  const first = argv[0];
+  const command: Command = first === undefined || first.startsWith("--")
+    ? "doctor"
+    : parseCommand(first);
+  const rest = first !== undefined && !first.startsWith("--") ? argv.slice(1) : argv;
+  const values = new Map<string, string>();
+  const booleans = new Set<string>();
+  for (let index = 0; index < rest.length; index += 1) {
+    const flag = rest[index];
+    if (!flag.startsWith("--")) throw new Error(`unexpected positional argument: ${flag}`);
+    if (!KNOWN_FLAGS[command].has(flag)) throw new Error(`unknown flag for ${command}: ${flag}`);
+    if (values.has(flag) || booleans.has(flag)) throw new Error(`duplicate flag: ${flag}`);
+    if (BOOLEAN_FLAGS.has(flag)) {
+      booleans.add(flag);
+      continue;
     }
+    const value = rest[index + 1];
+    if (value === undefined || value.startsWith("--")) throw new Error(`${flag} requires a value`);
+    values.set(flag, value);
+    index += 1;
   }
-  return { ...mutable };
+  return { command, values, booleans };
 }
 
-/** 输出路径策略：只允许 runs/sim-*（相对仓库根）；拒绝绝对路径与 .. 穿越。 */
-function resolveOutputDir(raw: string | null): string {
-  if (raw === null) {
-    return join(REPO_ROOT, "runs", "sim-default");
-  }
-  if (isAbsolute(raw)) {
-    throw new Error("output must be relative to repo root (absolute paths rejected: isolation policy)");
-  }
-  if (raw.includes("..")) {
-    throw new Error("output path traversal rejected (.. not allowed)");
-  }
-  const resolved = resolve(REPO_ROOT, raw);
-  const runsSim = resolve(REPO_ROOT, "runs", "sim");
-  if (!resolved.startsWith(runsSim)) {
-    throw new Error(`output must be under runs/sim-* (got ${raw})`);
-  }
-  return resolved;
+function parseCommand(value: string): Command {
+  if (["doctor", "episode", "ab", "benchmark", "calibrate"].includes(value)) return value as Command;
+  throw new Error(`unknown sim command: ${value}`);
 }
 
-function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+function usage(): string {
+  return [
+    "arena:sim commands:",
+    "  doctor [--rules PATH]",
+    "  episode --scenario PATH [--planner deterministic|safety] [--ticks N] [--seed N]",
+    "  ab --scenario PATH [--planners deterministic,safety] [--seeds 1,2,3] [--ticks N]",
+    "  benchmark --scenario PATH [--planner deterministic|safety] [--ticks N] [--warmup N] [--repeats N]",
+    "  calibrate --case PATH",
+    "common output flags: --output runs/sim[/subdir] --run-id ID --force",
+  ].join("\n");
+}
 
-  const manifest = loadRulesManifest(MANIFEST_PATH);
-  assertRulesSupported(manifest, SUPPORTED_RULES_VERSION);
+function required(args: ParsedArgs, flag: string): string {
+  const value = args.values.get(flag);
+  if (value === undefined) throw new Error(`${flag} is required for ${args.command}`);
+  return value;
+}
 
-  const outputDir = resolveOutputDir(args.output);
-  const runId = `sim-${args.seed}-${Date.now().toString(36)}`;
-  const runDir = join(outputDir, runId);
-  mkdirSync(runDir, { recursive: true });
+function value(args: ParsedArgs, flag: string, fallback: string): string {
+  return args.values.get(flag) ?? fallback;
+}
 
-  const manifestRecord = {
-    schema: SIM_SCHEMA_PREFIX,
-    kind: "run-manifest",
-    runId,
-    rulesVersion: manifest.rulesVersion,
-    rulesManifestHash: createHash("sha256").update(JSON.stringify(manifest)).digest("hex").slice(0, 16),
-    scenario: args.scenario,
-    ticks: args.ticks,
-    seed: args.seed,
-    workers: args.workers,
-    status: "no-op",
-    note: "S1 skeleton: settlement engine not yet attached",
+function integer(args: ParsedArgs, flag: string, fallback: number, minimum: number): number {
+  const raw = args.values.get(flag);
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+    throw new Error(`${flag} must be a safe integer >= ${minimum}`);
+  }
+  return parsed;
+}
+
+function planner(valueToParse: string): PlannerKind {
+  if (valueToParse === "deterministic" || valueToParse === "safety") return valueToParse;
+  throw new Error(`invalid planner: ${valueToParse}`);
+}
+
+function plannerList(raw: string): PlannerKind[] {
+  const parsed = raw.split(",").filter((entry) => entry.length > 0).map(planner);
+  const unique = [...new Set(parsed)].sort(compareCodeUnit);
+  if (unique.length === 0) throw new Error("planner list cannot be empty");
+  return unique;
+}
+
+function integerList(raw: string, flag: string): number[] {
+  const parsed = raw.split(",").map((entry) => Number(entry));
+  if (parsed.length === 0 || parsed.some((entry) => !Number.isSafeInteger(entry) || entry < 0)) {
+    throw new Error(`${flag} must be a comma-separated list of non-negative safe integers`);
+  }
+  return [...new Set(parsed)].sort((a, b) => a - b);
+}
+
+function rulesPath(args: ParsedArgs): string {
+  return args.values.has("--rules")
+    ? resolveInputPath(REPO_ROOT, args.values.get("--rules")!)
+    : DEFAULT_RULES_PATH;
+}
+
+function checkedRules(path: string) {
+  const rules = loadRulesManifest(path);
+  assertRulesSupported(rules, SUPPORTED_RULES_VERSION);
+  return rules;
+}
+
+function outputSettings(args: ParsedArgs, kind: string, identity: unknown): {
+  readonly outputBase: string;
+  readonly runId: string;
+  readonly force: boolean;
+} {
+  const outputBase = resolveOutputBase(REPO_ROOT, args.values.get("--output") ?? null);
+  const runId = args.values.get("--run-id") ?? defaultRunId(kind, identity);
+  return { outputBase, runId, force: args.booleans.has("--force") };
+}
+
+function sourceLabel(path: string): string {
+  const rel = relative(REPO_ROOT, path);
+  return rel.startsWith("..") ? `external:${basename(path)}` : rel.replaceAll("\\", "/");
+}
+
+function writeManifest(
+  runDir: string,
+  record: Record<string, unknown>,
+  deterministicArtifacts: Readonly<Record<string, string>>,
+  performanceArtifact: string | null,
+): void {
+  atomicWriteJson(join(runDir, "manifest.json"), {
+    schema: "sim.run.v1",
+    ...record,
+    deterministicArtifacts,
+    performanceArtifact,
+  });
+}
+
+function runDoctor(args: ParsedArgs): number {
+  const path = rulesPath(args);
+  const rules = checkedRules(path);
+  console.log(`sim doctor ok: rules=${rules.rulesVersion} manifest=${manifestHash(rules)}`);
+  return 0;
+}
+
+function runEpisodeCommand(args: ParsedArgs): number {
+  const scenarioPath = resolveInputPath(REPO_ROOT, required(args, "--scenario"));
+  const scenario = readJsonFile(scenarioPath);
+  const pathToRules = rulesPath(args);
+  const rules = checkedRules(pathToRules);
+  const ticks = integer(args, "--ticks", 100, 1);
+  const seed = integer(args, "--seed", 1, 0);
+  const selectedPlanner = planner(value(args, "--planner", "deterministic"));
+  const playerIds = [...worldFromScenario(scenario).players.keys()].sort(compareCodeUnit);
+  const config: EpisodeConfig = {
+    scenario,
+    rulesPath: pathToRules,
+    ticks,
+    seed,
+    tenants: playerIds.map((id) => ({ id, planner: selectedPlanner })),
   };
-  writeFileSync(join(runDir, "manifest.json"), JSON.stringify(manifestRecord, null, 2) + "\n");
-
-  console.log(
-    `sim no-op ok: rules=${manifest.rulesVersion} ticks=${args.ticks} seed=${args.seed} ` +
-      `workers=${args.workers} out=${runDir}`,
+  const result = runEpisode(config);
+  const summary = summarizeEpisode(config, result);
+  const performance = episodePerformance(config, result);
+  const identity = {
+    kind: "episode",
+    scenarioHash: sha256Json(scenario),
+    rulesManifestHash: manifestHash(rules),
+    ticks,
+    seed,
+    planner: selectedPlanner,
+  };
+  const output = outputSettings(args, "episode", identity);
+  const runDir = prepareRunDir(output.outputBase, output.runId, output.force);
+  const recordsHash = atomicWriteJsonl(join(runDir, "records.jsonl"), result.records);
+  const finalWorld = canonicalWorldJson(result.finalWorld);
+  atomicWriteText(join(runDir, "final-world.json"), finalWorld);
+  const finalWorldFileHash = sha256Text(finalWorld);
+  const summaryHash = atomicWriteJson(join(runDir, "summary.json"), summary);
+  atomicWriteJson(join(runDir, "performance.json"), performance);
+  writeManifest(
+    runDir,
+    {
+      kind: "episode",
+      runId: output.runId,
+      status: "completed",
+      source: sourceLabel(scenarioPath),
+      sourceHash: sha256Json(scenario),
+      rulesVersion: rules.rulesVersion,
+      rulesManifestHash: manifestHash(rules),
+      config: { ticks, seed, planner: selectedPlanner, tenants: playerIds },
+    },
+    {
+      "records.jsonl": recordsHash,
+      "final-world.json": finalWorldFileHash,
+      "summary.json": summaryHash,
+    },
+    "performance.json",
   );
+  console.log(`sim episode ok: hash=${summary.semanticHash} ticks=${ticks} out=${runDir}`);
+  return 0;
+}
+
+function runABCommand(args: ParsedArgs): number {
+  const scenarioPath = resolveInputPath(REPO_ROOT, required(args, "--scenario"));
+  const scenario = readJsonFile(scenarioPath);
+  const pathToRules = rulesPath(args);
+  const rules = checkedRules(pathToRules);
+  const ticks = integer(args, "--ticks", 100, 1);
+  const seeds = integerList(value(args, "--seeds", "1,2,3"), "--seeds");
+  const planners = plannerList(value(args, "--planners", "deterministic,safety"));
+  const { report, performance } = runAB({ scenario, rulesPath: pathToRules, ticks, seeds, planners });
+  const identity = {
+    kind: "ab",
+    scenarioHash: sha256Json(scenario),
+    rulesManifestHash: manifestHash(rules),
+    ticks,
+    seeds,
+    planners,
+  };
+  const output = outputSettings(args, "ab", identity);
+  const runDir = prepareRunDir(output.outputBase, output.runId, output.force);
+  const reportHash = atomicWriteJson(join(runDir, "ab-report.json"), report);
+  atomicWriteJson(join(runDir, "performance.json"), performance);
+  writeManifest(
+    runDir,
+    {
+      kind: "ab",
+      runId: output.runId,
+      status: "completed",
+      source: sourceLabel(scenarioPath),
+      sourceHash: sha256Json(scenario),
+      rulesVersion: rules.rulesVersion,
+      rulesManifestHash: manifestHash(rules),
+      config: { ticks, seeds, planners },
+    },
+    { "ab-report.json": reportHash },
+    "performance.json",
+  );
+  console.log(
+    `sim ab ok: status=${report.rankingStatus} ranking=${report.ranking.join(",")} out=${runDir}`,
+  );
+  return 0;
+}
+
+function runBenchmarkCommand(args: ParsedArgs): number {
+  const scenarioPath = resolveInputPath(REPO_ROOT, required(args, "--scenario"));
+  const scenario = readJsonFile(scenarioPath);
+  const pathToRules = rulesPath(args);
+  const rules = checkedRules(pathToRules);
+  const ticks = integer(args, "--ticks", 1000, 1);
+  const seed = integer(args, "--seed", 1, 0);
+  const selectedPlanner = planner(value(args, "--planner", "deterministic"));
+  const warmupRuns = integer(args, "--warmup", 1, 0);
+  const measuredRuns = integer(args, "--repeats", 5, 1);
+  const report = runBenchmark({
+    scenario,
+    rulesPath: pathToRules,
+    planner: selectedPlanner,
+    seed,
+    ticks,
+    warmupRuns,
+    measuredRuns,
+  });
+  const identity = {
+    kind: "benchmark",
+    scenarioHash: sha256Json(scenario),
+    rulesManifestHash: manifestHash(rules),
+    ticks,
+    seed,
+    planner: selectedPlanner,
+    warmupRuns,
+    measuredRuns,
+  };
+  const output = outputSettings(args, "benchmark", identity);
+  const runDir = prepareRunDir(output.outputBase, output.runId, output.force);
+  atomicWriteJson(join(runDir, "benchmark.json"), report);
+  writeManifest(
+    runDir,
+    {
+      kind: "benchmark",
+      runId: output.runId,
+      status: "completed",
+      source: sourceLabel(scenarioPath),
+      sourceHash: sha256Json(scenario),
+      rulesVersion: rules.rulesVersion,
+      rulesManifestHash: manifestHash(rules),
+      config: { ticks, seed, planner: selectedPlanner, warmupRuns, measuredRuns },
+    },
+    {},
+    "benchmark.json",
+  );
+  console.log(
+    `sim benchmark ok: status=${report.semanticStatus} median=${report.medianTicksPerSecond.toFixed(1)} tick/s out=${runDir}`,
+  );
+  return 0;
+}
+
+function runCalibrationCommand(args: ParsedArgs): number {
+  const casePath = resolveInputPath(REPO_ROOT, required(args, "--case"));
+  const calibrationCase = readJsonFile(casePath);
+  const pathToRules = rulesPath(args);
+  const rules = checkedRules(pathToRules);
+  const report = runCalibrationCase(calibrationCase, pathToRules);
+  const identity = {
+    kind: "calibration",
+    caseHash: sha256Json(calibrationCase),
+    rulesManifestHash: manifestHash(rules),
+  };
+  const output = outputSettings(args, "calibration", identity);
+  const runDir = prepareRunDir(output.outputBase, output.runId, output.force);
+  const reportHash = atomicWriteJson(join(runDir, "calibration-report.json"), report);
+  writeManifest(
+    runDir,
+    {
+      kind: "calibration",
+      runId: output.runId,
+      status: report.status,
+      source: sourceLabel(casePath),
+      sourceHash: sha256Json(calibrationCase),
+      rulesVersion: rules.rulesVersion,
+      rulesManifestHash: manifestHash(rules),
+    },
+    { "calibration-report.json": reportHash },
+    null,
+  );
+  console.log(`sim calibrate ${report.status}: differences=${report.differences.length} out=${runDir}`);
+  return report.status === "MATCH" ? 0 : report.status === "INCONCLUSIVE" ? 2 : 3;
+}
+
+function main(): number {
+  const args = parseArgs(process.argv.slice(2));
+  if (args.booleans.has("--help")) {
+    console.log(usage());
+    return 0;
+  }
+  switch (args.command) {
+    case "doctor": return runDoctor(args);
+    case "episode": return runEpisodeCommand(args);
+    case "ab": return runABCommand(args);
+    case "benchmark": return runBenchmarkCommand(args);
+    case "calibrate": return runCalibrationCommand(args);
+  }
 }
 
 try {
-  main();
+  process.exitCode = main();
 } catch (error) {
   console.error(`sim: ${(error as Error).message}`);
-  process.exit(1);
+  process.exitCode = 1;
 }

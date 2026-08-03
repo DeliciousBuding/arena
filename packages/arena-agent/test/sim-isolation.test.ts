@@ -3,16 +3,30 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, "..");
 const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
 const CHECKER = join(PKG_ROOT, "scripts", "check-sim-isolation.mjs");
+const SCENARIO = join(PKG_ROOT, "test", "fixtures", "sim", "scenario-basic.json");
+const createdRunIds = new Set<string>();
+
+function testRunId(label: string): string {
+  const id = `${label}-${process.pid}`;
+  createdRunIds.add(id);
+  return id;
+}
+
+after(() => {
+  for (const id of createdRunIds) {
+    rmSync(join(REPO_ROOT, "runs", "sim", id), { recursive: true, force: true });
+  }
+});
 
 function runChecker(args: readonly string[] = []): { code: number; stdout: string; stderr: string } {
   try {
@@ -60,14 +74,18 @@ test("S1: isolation checker 对当前 sim 目录通过", () => {
   assert.match(result.stdout, /sim isolation OK/);
 });
 
-test("S1: no-op CLI 在无凭据环境下成功（无 .env 依赖）", () => {
-  const result = runSim(["--ticks", "10", "--seed", "42"]);
+test("S1/S9: doctor CLI 在无凭据环境下成功（无 .env 依赖）", () => {
+  const result = runSim(["doctor"]);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /sim no-op ok: rules=v0\.11/);
+  assert.match(result.stdout, /sim doctor ok: rules=v0\.11/);
 });
 
-test("S1: 输出落 runs/sim-* 且 manifest 为 sim.v1 schema", () => {
-  const result = runSim(["--seed", "7"]);
+test("S9: episode 输出落 runs/sim 且 manifest 为 sim.run.v1", () => {
+  const id = testRunId("isolation");
+  const result = runSim([
+    "episode", "--scenario", SCENARIO, "--seed", "7", "--ticks", "5",
+    "--run-id", id, "--force",
+  ]);
   assert.equal(result.code, 0, result.stderr);
   const match = result.stdout.match(/out=(\S+)/);
   assert.ok(match, "output dir not reported");
@@ -76,40 +94,41 @@ test("S1: 输出落 runs/sim-* 且 manifest 为 sim.v1 schema", () => {
   const manifestPath = join(runDir, "manifest.json");
   assert.ok(existsSync(manifestPath), "manifest.json missing");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  assert.equal(manifest.schema, "sim.v1");
+  assert.equal(manifest.schema, "sim.run.v1");
   assert.equal(manifest.rulesVersion, "v0.11");
-  assert.equal(manifest.status, "no-op");
+  assert.equal(manifest.status, "completed");
+  assert.equal(manifest.kind, "episode");
 });
 
 test("S1: 输出路径策略——绝对路径拒绝", () => {
-  const result = runSim(["--output", resolve(REPO_ROOT, "runs", "sim-forbidden-abs")]);
+  const result = runSim(["episode", "--scenario", SCENARIO, "--output", resolve(REPO_ROOT, "runs", "sim-forbidden-abs")]);
   assert.equal(result.code, 1);
   assert.match(result.stderr, /absolute paths rejected/);
 });
 
 test("S1: 输出路径策略——路径穿越拒绝", () => {
-  const result = runSim(["--output", "runs/sim/../run-other"]);
+  const result = runSim(["episode", "--scenario", SCENARIO, "--output", "runs/sim/../run-other"]);
   assert.equal(result.code, 1);
   assert.match(result.stderr, /path traversal rejected/);
 });
 
 test("S1: 输出路径策略——非 runs/sim-* 拒绝", () => {
-  const result = runSim(["--output", "runs/run-other"]);
+  const result = runSim(["episode", "--scenario", SCENARIO, "--output", "runs/run-other"]);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /must be under runs\/sim-\*/);
+  assert.match(result.stderr, /must be under runs\/sim/);
 });
 
-test("S1: workers 边界——0 与超上限拒绝", () => {
-  assert.equal(runSim(["--workers", "0"]).code, 1);
-  assert.equal(runSim(["--workers", "9"]).code, 1);
-  assert.equal(runSim(["--workers", "8"]).code, 0);
+test("S9: 未实现的 workers 参数不再被静默接受", () => {
+  const result = runSim(["episode", "--scenario", SCENARIO, "--workers", "8"]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /unknown flag/);
 });
 
 test("S1: 非法参数拒绝", () => {
-  assert.equal(runSim(["--ticks", "0"]).code, 1);
-  assert.equal(runSim(["--ticks", "-1"]).code, 1);
-  assert.equal(runSim(["--unknown"]).code, 1);
-  assert.match(runSim(["--unknown"]).stderr, /unknown flag/);
+  assert.equal(runSim(["episode", "--scenario", SCENARIO, "--ticks", "0"]).code, 1);
+  assert.equal(runSim(["episode", "--scenario", SCENARIO, "--ticks", "-1"]).code, 1);
+  assert.equal(runSim(["episode", "--scenario", SCENARIO, "--unknown"]).code, 1);
+  assert.match(runSim(["episode", "--scenario", SCENARIO, "--unknown"]).stderr, /unknown flag/);
 });
 
 test("S1: 运行前后 fixtures/mapstore 不被修改", () => {
@@ -130,7 +149,11 @@ test("S1: 运行前后 fixtures/mapstore 不被修改", () => {
       .join("|");
   };
   const before = [snapshot(fixtureDir), snapshot(mapstore)];
-  const result = runSim(["--ticks", "5"]);
+  const id = testRunId("immutability");
+  const result = runSim([
+    "episode", "--scenario", SCENARIO, "--ticks", "5",
+    "--run-id", id, "--force",
+  ]);
   assert.equal(result.code, 0, result.stderr);
   const after = [snapshot(fixtureDir), snapshot(mapstore)];
   assert.deepEqual(after, before, "fixtures/mapstore modified by sim run");
