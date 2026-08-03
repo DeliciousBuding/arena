@@ -467,14 +467,17 @@ test("X4: combat 摧毁 Core → CORE_DESTROYED/cargo 掉落正确，P12 标记 
   assert.equal(destroyed!.values?.winner, "p2");
   assert.equal(destroyed!.values?.loot, 10);
   const p1 = result.world.players.get("p1")!;
-  assert.equal(p1.status, "RESPAWNING");
-  assert.equal(p1.core, null);
-  assert.equal(p1.units.length, 0, "fleet removed");
+  // respawn 已实现：P12 同 tick 放置 replacement → ACTIVE
+  assert.equal(p1.status, "ACTIVE");
+  assert.ok(p1.core !== null, "replacement core placed same tick");
+  assert.equal(p1.core.hp, 5);
+  assert.equal(p1.resources, 5);
+  assert.equal(p1.units.length, 1, "replacement worker");
   assert.equal(result.world.terrain.piles.get("0,1")?.amount, 2, "worker cargo dropped in place");
   assert.equal(result.world.players.get("p2")!.resources, 15, "winner loot");
-  // respawn 未实现 → 本 tick 即 fail-closed，不得静默
-  assert.ok(result.unsupported.includes("respawn"), "respawn unsupported must be reported same tick");
-  assert.ok(result.world.unsupportedFeatures.includes("respawn"));
+  // respawn 已实现 → 不再 fail-closed unsupported
+  assert.ok(!result.unsupported.includes("respawn"), "respawn resolver handles destruction");
+  assert.ok(result.events.some((event) => event.eventType === "CORE_RESPAWNED"));
 });
 
 /* ---------------- 5. beacon ↔ economy：同 tick harvest 加成 + combat 互不干扰 ---------------- */
@@ -579,7 +582,7 @@ test("X6: 摧毁携带 Beacon 的迁移 Core → Beacon 落地于 Core 最终实
       (event) => event.eventType === "BEACON_DROPPED" && event.actorId === P1_CORE && event.position?.[0] === 0,
     ),
   );
-  assert.equal(mid.world.players.get("p1")!.status, "RESPAWNING");
+  assert.equal(mid.world.players.get("p1")!.status, "ACTIVE", "respawn resolver places replacement same tick");
 
   // 变体 B：第 4 Tick 真实移动先成功（P06，Beacon 跟随到 [1,0]），随后被摧毁（P09）
   // → Beacon 落地于 Core 的新位置 [1,0]（"final actual position"）。
@@ -634,5 +637,5 @@ test("X0: 结算顺序 P05 movement → P06 core-migration → P07 beacon → P0
   assert.ok(indexOf("P07-beacon") > indexOf("P06-core-migration"));
   assert.ok(indexOf("P08-harvest-and-deposit") > indexOf("P07-beacon"));
   assert.ok(indexOf("P09-combat") > indexOf("P08-harvest-and-deposit"));
-  assert.ok(indexOf("P12-unsupported-respawn-check") > indexOf("P09-combat"));
+  assert.ok(indexOf("P12-respawn") > indexOf("P09-combat"));
 });
