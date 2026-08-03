@@ -11,7 +11,9 @@ import {
   type VisibleEntity,
 } from "../domain/model.ts";
 import {
+  chebyshev,
   directionToAdjacent,
+  EXPLORE_DIRECTION_COUNT,
   exploreTarget,
   lineBlocked,
   manhattan,
@@ -187,11 +189,13 @@ export class SafetyPlanner {
     if (home !== null) {
       const beacon = state.beacon.position ?? home;
       let patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, this.config.exploreRadius);
-      if (manhattan(unit.position, home) > this.config.exploreRadius) {
+      if (chebyshev(unit.position, home) > this.config.exploreRadius) {
         memory.patrolReturning = true;
         target = home;
       } else if (samePosition(unit.position, home)) {
-        if (memory.patrolStarted) memory.patrolDirection = (memory.patrolDirection + 1) % 4;
+        if (memory.patrolStarted) {
+          memory.patrolDirection = (memory.patrolDirection + 1) % EXPLORE_DIRECTION_COUNT;
+        }
         else memory.patrolStarted = true;
         memory.patrolReturning = false;
         patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, this.config.exploreRadius);

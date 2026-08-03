@@ -1,6 +1,18 @@
 import { cellKey, type Direction, type Position } from "./model.ts";
 
 const DIRECTION_ORDER: readonly Direction[] = ["RIGHT", "DOWN", "LEFT", "UP"];
+export const EXPLORE_DIRECTION_COUNT = 8;
+/** 顺时针 8 方位：东、东南、南、西南、西、西北、北、东北。 */
+const EXPLORE_DELTAS: readonly Position[] = [
+  [1, 0],
+  [1, 1],
+  [0, 1],
+  [-1, 1],
+  [-1, 0],
+  [-1, -1],
+  [0, -1],
+  [1, -1],
+];
 const DELTA: Readonly<Record<Direction, Position>> = {
   UP: [0, -1],
   DOWN: [0, 1],
@@ -10,6 +22,10 @@ const DELTA: Readonly<Record<Direction, Position>> = {
 
 export function manhattan(a: Position, b: Position): number {
   return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
+}
+
+export function chebyshev(a: Position, b: Position): number {
+  return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
 }
 
 export function lineBlocked(a: Position, b: Position, obstacles: ReadonlySet<string>): boolean {
@@ -113,10 +129,15 @@ export function exploreTarget(
 ): Position {
   const dx = beacon[0] - home[0];
   const dy = beacon[1] - home[1];
-  const base = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 0 : 2) : dy >= 0 ? 1 : 3;
-  const direction = DIRECTION_ORDER[(base + index) % DIRECTION_ORDER.length];
-  const [mx, my] = DELTA[direction];
+  const base = exploreOctant(dx, dy);
+  const [mx, my] = EXPLORE_DELTAS[(base + index) % EXPLORE_DIRECTION_COUNT];
   return [home[0] + mx * radius, home[1] + my * radius];
+}
+
+function exploreOctant(dx: number, dy: number): number {
+  if (dx === 0 && dy === 0) return 0;
+  const angle = Math.atan2(dy, dx);
+  return (Math.round(angle / (Math.PI / 4)) + EXPLORE_DIRECTION_COUNT) % EXPLORE_DIRECTION_COUNT;
 }
 
 export function nearest(targets: Iterable<Position>, position: Position): Position | null {

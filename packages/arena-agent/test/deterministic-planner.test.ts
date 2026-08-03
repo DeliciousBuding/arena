@@ -18,7 +18,12 @@ import {
 } from "../src/planning/deterministic-planner.ts";
 import { reduceTurn, type TurnLike } from "../src/domain/state-reducer.ts";
 import { validatePlan } from "../src/domain/plan-validator.ts";
-import { move } from "../src/domain/nav.ts";
+import {
+  chebyshev,
+  EXPLORE_DIRECTION_COUNT,
+  exploreTarget,
+  move,
+} from "../src/domain/nav.ts";
 import type { Position, TickState, UnitAction } from "../src/domain/model.ts";
 
 function makeState(tick: number, objects: PlayerState["objects"], resources = 6): TickState {
@@ -65,6 +70,25 @@ test("stepToward：先 x 后 y 确定性方向", () => {
   assert.equal(stepToward([0, 3], [0, 0]), "UP");
   assert.equal(stepToward([0, 0], [2, 1]), "RIGHT"); // 先 x
   assert.equal(stepToward([1, 0], [1, 0]), "UP"); // 同格退化（调用方不触发）
+});
+
+test("exploreTarget：8 个 Worker 获得 8 个独立方位且保持同一 Chebyshev 半径", () => {
+  const home: Position = [0, 0];
+  const targets = Array.from({ length: EXPLORE_DIRECTION_COUNT }, (_, index) =>
+    exploreTarget(home, [10, 0], index, 8),
+  );
+  assert.deepEqual(targets, [
+    [8, 0],
+    [8, 8],
+    [0, 8],
+    [-8, 8],
+    [-8, 0],
+    [-8, -8],
+    [0, -8],
+    [8, -8],
+  ]);
+  assert.equal(new Set(targets.map((target) => `${target[0]},${target[1]}`)).size, 8);
+  assert.ok(targets.every((target) => chebyshev(home, target) === 8));
 });
 
 test("DeterministicPlanner：decide 输出合法 Plan（validatePlan 过）", () => {
