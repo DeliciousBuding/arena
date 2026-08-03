@@ -65,6 +65,24 @@ test("S9: A/B emits same-seed paired deltas", () => {
   assert.deepEqual(report.pairedDeltas.map((pair) => pair.seed), [1, 2]);
 });
 
+test("S9: benchmark marks emergency spawn UUID as inconclusive", () => {
+  const recoveryScenario = structuredClone(SCENARIO) as {
+    players: Array<{ resources: number }>;
+  };
+  recoveryScenario.players[0]!.resources = 5;
+  const report = runBenchmark({
+    scenario: recoveryScenario,
+    rulesPath: RULES,
+    planner: "deterministic",
+    seed: 7,
+    ticks: 1,
+    warmupRuns: 0,
+    measuredRuns: 1,
+  });
+  assert.equal(report.semanticStatus, "inconclusive");
+  assert.equal(report.unknownEffectCount, 1);
+});
+
 test("S9: benchmark locks final world, trace and semantic summary", () => {
   const report = runBenchmark({
     scenario: SCENARIO,
