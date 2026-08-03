@@ -3,6 +3,13 @@ import { cellKey, parseCellKey, type Position, type TickState, type UnitType } f
 export type ResourceState = "visible" | "stale" | "harvested";
 export type WorkerMode = "patrol" | "go_harvest";
 
+const TRANSIENT_MOVE_FAILURE_REASONS = new Set([
+  "MOVE_CONTESTED",
+  "MOVE_SWAP_BLOCKED",
+  "MOVE_DESTINATION_OCCUPIED",
+  "CELL_UNIT_LIMIT",
+]);
+
 export interface ResourceMemory {
   readonly cell: Position;
   state: ResourceState;
@@ -52,6 +59,7 @@ export class World {
   private readonly resourceMemory = new Map<string, ResourceMemory>();
   private readonly enemyMemory = new Map<string, EnemyMemory>();
   private readonly failedCells = new Map<string, number>();
+  private readonly unitMoveFailures = new Map<string, Map<string, number>>();
   private readonly unitMemories = new Map<string, UnitMemory>();
 
   observe(state: TickState): void {
@@ -90,6 +98,18 @@ export class World {
           firstSeenTick: previous?.firstSeenTick ?? state.tick,
           lastSeenTick: state.tick,
         });
+      } else if (
+        event.eventType === "UNIT_MOVE_FAILED" &&
+        event.actorId !== null &&
+        event.reasonCode !== null &&
+        TRANSIENT_MOVE_FAILURE_REASONS.has(event.reasonCode)
+      ) {
+        let failures = this.unitMoveFailures.get(event.actorId);
+        if (failures === undefined) {
+          failures = new Map<string, number>();
+          this.unitMoveFailures.set(event.actorId, failures);
+        }
+        failures.set(cell, state.tick);
       }
     }
 
@@ -106,6 +126,9 @@ export class World {
     const liveUnits = new Set(state.units.map((unit) => unit.id));
     for (const unitId of this.unitMemories.keys()) {
       if (!liveUnits.has(unitId)) this.unitMemories.delete(unitId);
+    }
+    for (const unitId of this.unitMoveFailures.keys()) {
+      if (!liveUnits.has(unitId)) this.unitMoveFailures.delete(unitId);
     }
   }
 
@@ -129,6 +152,26 @@ export class World {
 
   obstacles(extra: ReadonlySet<string> = new Set()): ReadonlySet<string> {
     return new Set([...this.obstacleMemory, ...extra]);
+  }
+
+  /**
+   * 单位级动态避让：服务端 MOVE_CONTESTED 等失败不代表永久地形障碍，
+   * 只在短冷却内阻止同一 actor 立即重试同一目的格。
+   */
+  movementObstacles(
+    unitId: string,
+    base: ReadonlySet<string> = new Set(),
+    cooldownTicks = 3,
+  ): ReadonlySet<string> {
+    const result = new Set(base);
+    const failures = this.unitMoveFailures.get(unitId);
+    if (failures === undefined) return result;
+    for (const [cell, failedAt] of failures) {
+      if (this.tick - failedAt < cooldownTicks) result.add(cell);
+      else failures.delete(cell);
+    }
+    if (failures.size === 0) this.unitMoveFailures.delete(unitId);
+    return result;
   }
 
   resourceHints(options: { maxAge?: number; failedCooldown?: number } = {}): readonly Position[] {

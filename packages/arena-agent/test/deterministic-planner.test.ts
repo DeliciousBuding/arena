@@ -13,6 +13,7 @@ import { Turn, type PlayerState } from "@arena/arena-hero-ts";
 import {
   DeterministicPlanner,
   resolveMoveCapacity,
+  selectDeterministicCoreAction,
   stepToward,
   stepTowardAvoiding,
 } from "../src/planning/deterministic-planner.ts";
@@ -28,6 +29,7 @@ import {
   move,
 } from "../src/domain/nav.ts";
 import type { Position, TickState, UnitAction } from "../src/domain/model.ts";
+import { World } from "../src/domain/world.ts";
 
 function makeState(tick: number, objects: PlayerState["objects"], resources = 6): TickState {
   const turn = new Turn(
@@ -146,6 +148,80 @@ test("巡逻目标是障碍：到达相邻格即返航，不在障碍旁二格�
     nextPlan.unitActions["w1"]?.type === "MOVE" ? nextPlan.unitActions["w1"].direction : null,
     "DOWN",
   );
+});
+
+test("World：MOVE_CONTESTED 失败格仅对对应 actor 短期生效", () => {
+  const base = makeState(100, [core(), unit("w1", 0, 0), unit("w2", 1, 0)]);
+  const world = new World();
+  world.observe({
+    ...base,
+    events: [{
+      eventId: "move-failed-1",
+      tick: 100,
+      eventType: "UNIT_MOVE_FAILED",
+      reasonCode: "MOVE_CONTESTED",
+      actorId: "w1",
+      targetId: null,
+      position: [0, 1],
+      values: {},
+    }],
+  });
+
+  assert.equal(world.movementObstacles("w1").has("0,1"), true);
+  assert.equal(world.movementObstacles("w2").has("0,1"), false);
+
+  world.observe(makeState(103, [core(), unit("w1", 0, 0), unit("w2", 1, 0)]));
+  assert.equal(world.movementObstacles("w1").has("0,1"), false, "3 Tick 后释放动态争用格");
+});
+
+test("DeterministicPlanner：资源路径 MOVE_CONTESTED 后绕行，不连续重试同一格", () => {
+  const planner = new DeterministicPlanner();
+  const first = {
+    ...makeState(100, [core(), unit("w1", 0, 0)]),
+    resourceCells: new Set(["0,3"]),
+  };
+  const firstPlan = planner.decide({ state: first });
+  assert.deepEqual(firstPlan.unitActions["w1"], { type: "MOVE", direction: "DOWN" });
+
+  const contested: TickState = {
+    ...makeState(101, [core(), unit("w1", 0, 0)]),
+    resourceCells: new Set(["0,3"]),
+    events: [{
+      eventId: "move-failed-1",
+      tick: 101,
+      eventType: "UNIT_MOVE_FAILED",
+      reasonCode: "MOVE_CONTESTED",
+      actorId: "w1",
+      targetId: null,
+      position: [0, 1],
+      values: {},
+    }],
+  };
+  const rerouted = planner.decide({ state: contested });
+  assert.equal(rerouted.unitActions["w1"]?.type, "MOVE");
+  assert.notDeepEqual(
+    rerouted.unitActions["w1"],
+    { type: "MOVE", direction: "DOWN" },
+    "争用目的格冷却期间不得原样重试",
+  );
+
+  for (const tick of [102, 103]) {
+    const cooling = planner.decide({
+      state: {
+        ...makeState(tick, [core(), unit("w1", 0, 0)]),
+        resourceCells: new Set(["0,3"]),
+      },
+    });
+    assert.notDeepEqual(cooling.unitActions["w1"], { type: "MOVE", direction: "DOWN" });
+  }
+
+  const released = planner.decide({
+    state: {
+      ...makeState(104, [core(), unit("w1", 0, 0)]),
+      resourceCells: new Set(["0,3"]),
+    },
+  });
+  assert.deepEqual(released.unitActions["w1"], { type: "MOVE", direction: "DOWN" });
 });
 
 test("DeterministicPlanner：decide 输出合法 Plan（validatePlan 过）", () => {
@@ -278,6 +354,42 @@ test("容量裁决：两个 cargo Worker 同时回 Core 时仅一个进入，另
   assert.deepEqual(result.unitActions["0002"], { type: "WAIT" });
   assert.equal(result.waitCount, 1);
   assert.equal(result.intents["0002"], "capacity_wait:return_home");
+});
+
+test("deterministic Core：Worker 少于 2 且 Core 格空闲时紧急补员", () => {
+  const state = makeState(100, [core(0, 0), unit("w1", 2, 0)], 5);
+  const plan = new DeterministicPlanner().decide({ state });
+  assert.deepEqual(plan.coreAction, { type: "SPAWN", unitType: "WORKER" });
+  assert.equal(plan.intents.core, "emergency_spawn_worker");
+});
+
+test("deterministic Core：Core 格已有 Unit 时不冒险 SPAWN", () => {
+  const state = makeState(100, [core(0, 0), unit("w1", 0, 0)], 5);
+  const decision = selectDeterministicCoreAction(state, null);
+  assert.equal(decision.action, null);
+  assert.equal(decision.intent, null);
+});
+
+test("deterministic Core：正常人口继续积累，不保留被压制的 spawn intent", () => {
+  const state = makeState(100, [core(0, 0), unit("w1", 1, 0), unit("w2", 2, 0)], 20);
+  const plan = new DeterministicPlanner().decide({ state });
+  assert.equal(plan.coreAction, null);
+  assert.equal(plan.intents.core, undefined);
+});
+
+test("deterministic Core：生存动作 HEAL / REPAIR_SHIELD 继续执行", () => {
+  const healthyBase = makeState(100, [core(0, 0), unit("w1", 1, 0), unit("w2", 2, 0)], 3);
+  const damaged: TickState = {
+    ...healthyBase,
+    core: { ...healthyBase.core!, hp: 4 },
+  };
+  assert.deepEqual(new DeterministicPlanner().decide({ state: damaged }).coreAction, { type: "HEAL" });
+
+  const unshielded: TickState = {
+    ...healthyBase,
+    core: { ...healthyBase.core!, shield: 4 },
+  };
+  assert.deepEqual(new DeterministicPlanner().decide({ state: unshielded }).coreAction, { type: "REPAIR_SHIELD" });
 });
 
 test("DeterministicPlanner：DEPOSIT——cargo>0 回 Core；到位 DEPOSIT", () => {
