@@ -1,14 +1,13 @@
-/**
- * S7 planner 闭环 harness 测试：
- * deterministic replay、two-tenant 隔离、1000 Tick smoke、非法计划拦截。
- */
+/** S7 planner 闭环 harness：replay、事件反馈、validator、tenant 隔离与 fail-closed。 */
 
-import { test } from "node:test";
 import assert from "node:assert/strict";
-
 import { dirname, join } from "node:path";
+import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { runEpisode, type EpisodeConfig } from "../src/sim/harness/episode.ts";
+
+import type { Plan, TickState } from "../src/domain/model.ts";
+import type { PlanProvider } from "../src/runtime/decision-types.ts";
+import { hashPlan, runEpisode, type EpisodeConfig } from "../src/sim/harness/episode.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = join(here, "..", "src", "sim", "contracts", "rules-v0.11.json");
@@ -45,6 +44,7 @@ const SCENARIO = {
     obstacles: [[2, 0]],
     resources: [[3, 0]],
   },
+  beacon: { position: [100, 100], status: "GROUND", carrierId: null },
 };
 
 function baseConfig(overrides: Partial<EpisodeConfig> = {}): EpisodeConfig {
@@ -58,41 +58,106 @@ function baseConfig(overrides: Partial<EpisodeConfig> = {}): EpisodeConfig {
   };
 }
 
-test("S7: deterministic replay——同 config 两次运行 final hash 一致", () => {
+function metricsWithoutWall(result: ReturnType<typeof runEpisode>): Omit<typeof result.metrics, "wallMs"> {
+  const { wallMs: _wallMs, ...stable } = result.metrics;
+  return stable;
+}
+
+test("S7: deterministic replay——world/records/稳定 metrics 逐字节等价", () => {
   const a = runEpisode(baseConfig());
   const b = runEpisode(baseConfig());
   assert.equal(a.finalWorldHash, b.finalWorldHash);
-  const { wallMs: _wa, ...metricsA } = a.metrics;
-  const { wallMs: _wb, ...metricsB } = b.metrics;
-  assert.deepEqual(metricsA, metricsB);
+  assert.deepEqual(a.records, b.records);
+  assert.deepEqual(metricsWithoutWall(a), metricsWithoutWall(b));
+  assert.equal(a.finalWorld.seed, 42, "EpisodeConfig.seed 是唯一 episode seed");
 });
 
-test("S7: 1000 Tick 闭环成功（经济闭环运行）", () => {
+test("S7: plan hash 是 canonical SHA-256，不受对象 key 插入顺序影响", () => {
+  const a: Plan = {
+    tick: 1,
+    unitActions: {
+      "22222222-2222-2222-2222-222222222222": { type: "WAIT" },
+      "11111111-1111-1111-1111-111111111111": { type: "MOVE", direction: "UP" },
+    },
+    coreAction: null,
+    intents: { b: "B", a: "A" },
+  };
+  const b: Plan = {
+    tick: 1,
+    unitActions: {
+      "11111111-1111-1111-1111-111111111111": { type: "MOVE", direction: "UP" },
+      "22222222-2222-2222-2222-222222222222": { type: "WAIT" },
+    },
+    coreAction: null,
+    intents: { a: "A", b: "B" },
+  };
+  assert.equal(hashPlan(a), hashPlan(b));
+  assert.match(hashPlan(a), /^[0-9a-f]{64}$/);
+});
+
+test("S7: 1000 Tick 闭环成功", () => {
   const result = runEpisode(baseConfig({ ticks: 1000 }));
   assert.equal(result.metrics.ticks, 1000);
-  assert.equal(result.finalWorld.tick, 1 + 1000);
+  assert.equal(result.finalWorld.tick, 1001);
   assert.equal(result.finalWorld.resolvedTickCount, 1000);
   assert.equal(result.records.length, 1000);
-  assert.ok(result.metrics.wallMs >= 0);
+  assert.ok(result.records.every((record) => /^[0-9a-f]{64}$/.test(record.aggregatePlanHash)));
 });
 
-test("S7: 非法计划拦截——tick 错配被 validator 修复", () => {
-  // 通过一个会产出 tick 错配的路径验证：直接验证 harness 记录合法
-  // （deterministic planner 输出 tick 恒匹配；这里验证 records 无非法）
-  const result = runEpisode(baseConfig());
-  assert.equal(result.metrics.illegalPlans, 0, "deterministic planner plans are valid");
-  for (const record of result.records) {
-    assert.equal(record.validation.valid, true);
-  }
+test("S7: 非法计划真实进入 validator 并被修复", () => {
+  const wrongTickPlanner: PlanProvider = {
+    decide: ({ state }) => ({
+      tick: state.tick + 1,
+      unitActions: {},
+      coreAction: null,
+      intents: {},
+    }),
+  };
+  const result = runEpisode(
+    baseConfig({ ticks: 1, plannerFactory: () => wrongTickPlanner }),
+  );
+  assert.equal(result.metrics.illegalPlans, 1);
+  assert.equal(result.metrics.repairedPlans, 1);
+  assert.deepEqual(result.records[0].validations.p1, {
+    valid: false,
+    repaired: true,
+    issueCount: 1,
+  });
+  assert.equal(result.records[0].plans.p1.tick, 1);
 });
 
-test("S7: two-tenant 隔离——独立 planner 记忆不串扰", () => {
+test("S7: 上一 Tick 私有事件回灌 Planner", () => {
+  const observed: TickState[] = [];
+  const planner: PlanProvider = {
+    decide: ({ state }) => {
+      observed.push(state);
+      const worker = state.workers[0];
+      return {
+        tick: state.tick,
+        unitActions: {
+          [worker.id]: state.tick === 1 ? { type: "HARVEST" } : { type: "WAIT" },
+        },
+        coreAction: null,
+        intents: {},
+      };
+    },
+  };
+  const scenario = {
+    ...SCENARIO,
+    terrain: { obstacles: [], resources: [[1, 0]] },
+  };
+  runEpisode(baseConfig({ scenario, ticks: 2, plannerFactory: () => planner }));
+  assert.equal(observed.length, 2);
+  assert.ok(observed[1].events.some((event) => event.eventType === "HARVEST_SUCCEEDED"));
+});
+
+test("S7: two-tenant 计划/验证记录不互相覆盖", () => {
   const result = runEpisode(
     baseConfig({
-      ticks: 200,
+      ticks: 50,
       tenants: [
-        { id: "p1", planner: "deterministic" },
         { id: "p2", planner: "safety" },
+        { id: "p1", planner: "deterministic" },
       ],
       scenario: {
         ...SCENARIO,
@@ -124,22 +189,49 @@ test("S7: two-tenant 隔离——独立 planner 记忆不串扰", () => {
       },
     }),
   );
-  assert.equal(result.metrics.ticks, 200);
   assert.equal(result.finalWorld.players.size, 2);
-  // 双方 planner 均正常产出（无跨租户崩溃）
-  assert.ok(result.finalWorld.players.get("p1")!.units.length >= 1);
-  assert.ok(result.finalWorld.players.get("p2")!.units.length >= 1);
+  for (const record of result.records) {
+    assert.deepEqual(Object.keys(record.plans), ["p1", "p2"]);
+    assert.deepEqual(Object.keys(record.validations), ["p1", "p2"]);
+    assert.match(record.planHashes.p1, /^[0-9a-f]{64}$/);
+    assert.match(record.planHashes.p2, /^[0-9a-f]{64}$/);
+  }
 });
 
-test("S7: planner memory reset——两次独立 episode 无状态泄漏", () => {
+test("S7: planner memory reset——独立 episode 无状态泄漏", () => {
   const first = runEpisode(baseConfig({ ticks: 50 }));
   const second = runEpisode(baseConfig({ ticks: 50 }));
-  // 每次 runEpisode 新建 planner 实例 → 结果确定可复现（等同 replay）
   assert.equal(first.finalWorldHash, second.finalWorldHash);
+  assert.deepEqual(first.records, second.records);
 });
 
-test("S7: safety planner 也可闭环", () => {
-  const result = runEpisode(baseConfig({ tenants: [{ id: "p1", planner: "safety" }], ticks: 200 }));
+test("S7: safety planner 可闭环", () => {
+  const result = runEpisode(
+    baseConfig({ tenants: [{ id: "p1", planner: "safety" }], ticks: 200 }),
+  );
   assert.equal(result.metrics.ticks, 200);
   assert.equal(result.metrics.illegalPlans, 0);
+});
+
+test("S7: tenant/rules/beacon 契约 fail closed", () => {
+  assert.throws(
+    () => runEpisode(baseConfig({ tenants: [] })),
+    /tenants must exactly match players/,
+  );
+  assert.throws(
+    () => runEpisode(baseConfig({ tenants: [
+      { id: "p1", planner: "safety" },
+      { id: "p1", planner: "safety" },
+    ] })),
+    /duplicate tenant id/,
+  );
+  assert.throws(
+    () => runEpisode(baseConfig({ scenario: { ...SCENARIO, rulesVersion: "v0.10" } })),
+    /scenario rules v0.10 != manifest v0.11/,
+  );
+  const { beacon: _beacon, ...withoutBeacon } = SCENARIO;
+  assert.throws(
+    () => runEpisode(baseConfig({ scenario: withoutBeacon })),
+    /beacon state is required/,
+  );
 });

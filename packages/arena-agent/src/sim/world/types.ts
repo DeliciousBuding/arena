@@ -67,6 +67,8 @@ export interface SimTerrain {
 
 export interface SimBeacon {
   readonly position: Position;
+  readonly status: "GROUND" | "CARRIED";
+  readonly carrierId: string | null;
 }
 
 export interface SimWorld {

@@ -90,6 +90,32 @@ export function validateWorld(world: SimWorld): string[] {
     }
     if (cellKey(pile.cell) !== key) problems.push(`resource pile key mismatch: ${key}`);
   }
+  if (world.beacon !== null) {
+    try {
+      assertSafeCoordinate(world.beacon.position);
+    } catch (error) {
+      problems.push((error as Error).message);
+    }
+    if (world.beacon.status === "CARRIED" && world.beacon.carrierId === null) {
+      problems.push("carried beacon requires carrierId");
+    }
+    if (world.beacon.status === "GROUND" && world.beacon.carrierId !== null) {
+      problems.push("ground beacon cannot have carrierId");
+    }
+    if (world.beacon.carrierId !== null) {
+      let carrierFound = false;
+      for (const player of world.players.values()) {
+        if (
+          player.core?.id === world.beacon.carrierId ||
+          player.units.some((unit) => unit.id === world.beacon!.carrierId)
+        ) {
+          carrierFound = true;
+          break;
+        }
+      }
+      if (!carrierFound) problems.push(`beacon carrier not found: ${world.beacon.carrierId}`);
+    }
+  }
 
   // 3. id 全局唯一（units + cores）
   const seenIds = new Set<string>();

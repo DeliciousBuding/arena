@@ -6,14 +6,19 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { reduceTurn } from "../src/domain/state-reducer.ts";
 import { cellKey, type Position } from "../src/domain/model.ts";
+import { loadRulesManifest } from "../src/sim/contracts/rules-manifest.ts";
 import { projectPlayerState, simTurnLike, supercoverLine, visibleCellSet } from "../src/sim/visibility/visibility.ts";
 import { worldFromScenario } from "../src/sim/world/loaders.ts";
 import type { SimWorld } from "../src/sim/world/types.ts";
 
 const uuid = (n: number): string => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+const here = dirname(fileURLToPath(import.meta.url));
+const rules = loadRulesManifest(join(here, "..", "src", "sim", "contracts", "rules-v0.11.json"));
 
 interface UnitSpec {
   readonly id: string;
@@ -29,6 +34,7 @@ function makeWorld(opts: {
   enemyUnits?: readonly UnitSpec[];
   obstacles?: readonly Position[];
   resources?: readonly Position[];
+  piles?: readonly { readonly cell: Position; readonly amount: number }[];
 }): SimWorld {
   const units = (opts.units ?? []).map((u, i) => ({
     id: u.id ?? uuid(i + 1),
@@ -65,7 +71,12 @@ function makeWorld(opts: {
         units: enemyUnits,
       },
     ],
-    terrain: { obstacles: opts.obstacles ?? [], resources: opts.resources ?? [] },
+    terrain: {
+      obstacles: opts.obstacles ?? [],
+      resources: opts.resources ?? [],
+      piles: opts.piles ?? [],
+    },
+    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
   });
 }
 
@@ -99,7 +110,7 @@ test("S6: 障碍遮挡——障碍格可见，其后不可见", () => {
     units: [{ id: uuid(1), position: [0, 0] }],
     obstacles: [[1, 0]],
   });
-  const visible = visibleCellSet(world, "p1");
+  const visible = visibleCellSet(world, "p1", rules);
   assert.ok(visible.has("1,0"), "obstacle cell itself visible");
   assert.ok(!visible.has("2,0"), "cell behind obstacle hidden");
   assert.ok(!visible.has("3,0"), "cell far behind obstacle hidden");
@@ -112,7 +123,7 @@ test("S6: corner-touch——过角线任一侧障碍阻挡", () => {
     units: [{ id: uuid(1), position: [0, 0] }],
     obstacles: [[1, 0]],
   });
-  const visible = visibleCellSet(world, "p1");
+  const visible = visibleCellSet(world, "p1", rules);
   assert.ok(!visible.has("2,2"), "diagonal line blocked by corner-side obstacle");
 });
 
@@ -123,12 +134,25 @@ test("S6: 视野半径——Worker 3 / Core 5", () => {
   const world = makeWorld({
     units: [{ id: uuid(1), position: [5, 0] }],
   });
-  const visible = visibleCellSet(world, "p1");
+  const visible = visibleCellSet(world, "p1", rules);
   assert.ok(visible.has("5,3"), "worker radius 3 sees (5,3)");
   assert.ok(!visible.has("5,4"), "worker radius 3 cannot see (5,4)");
   assert.ok(!visible.has("9,0"), "worker cannot see x+4");
   // Core 在 (0,0) 半径 5 → (0,5) 可见
   assert.ok(visible.has("0,5"), "core radius 5 sees (0,5)");
+});
+
+test("S6: 视野半径从 rules manifest 读取而非硬编码", () => {
+  const customRules = structuredClone(rules) as typeof rules & {
+    rules: { core: { visionRadius: number }; units: { workerVisionRadius: number } };
+  };
+  customRules.rules.core.visionRadius = 0;
+  customRules.rules.units.workerVisionRadius = 1;
+  const world = makeWorld({ units: [{ id: uuid(1), position: [5, 0] }] });
+  const visible = visibleCellSet(world, "p1", customRules);
+  assert.ok(visible.has("5,1"));
+  assert.ok(!visible.has("5,2"));
+  assert.ok(!visible.has("0,1"), "Core radius override must take effect");
 });
 
 /* ---------------- union ---------------- */
@@ -140,7 +164,7 @@ test("S6: 多 observer 视野并集", () => {
       { id: uuid(2), position: [10, 0] },
     ],
   });
-  const visible = visibleCellSet(world, "p1");
+  const visible = visibleCellSet(world, "p1", rules);
   assert.ok(visible.has("0,3"), "observer 1 range");
   assert.ok(visible.has("10,3"), "observer 2 range");
 });
@@ -152,7 +176,7 @@ test("S6: 敌方在视野内出现、离开视野后从 state 消失（完整替
   const world = makeWorld({
     enemyUnits: [{ id: uuid(100), position: [0, 2] }],
   });
-  const state1 = projectPlayerState(world, "p1");
+  const state1 = projectPlayerState(world, "p1", rules);
   const enemy1 = state1.objects.filter((o) => "controlled" in o && o.controlled === false);
   assert.equal(enemy1.length, 1);
   assert.equal((enemy1[0] as { position?: Position }).position?.[0], 0);
@@ -162,7 +186,7 @@ test("S6: 敌方在视野内出现、离开视野后从 state 消失（完整替
   const moved = makeWorld({
     enemyUnits: [{ id: uuid(100), position: [0, 10] }],
   });
-  const state2 = projectPlayerState(moved, "p1");
+  const state2 = projectPlayerState(moved, "p1", rules);
   const enemy2 = state2.objects.filter((o) => "controlled" in o && o.controlled === false);
   assert.equal(enemy2.length, 0, "enemy outside vision disappears from state");
 });
@@ -174,7 +198,7 @@ test("S6: 己方对象恒全量（含视野外）", () => {
       { id: uuid(2), position: [50, 51] }, // 远超视野
     ],
   });
-  const state = projectPlayerState(world, "p1");
+  const state = projectPlayerState(world, "p1", rules);
   const controlled = state.objects.filter((o) => "controlled" in o && o.controlled === true);
   assert.equal(controlled.length, 3, "core + 2 units all present regardless of vision");
 });
@@ -187,11 +211,48 @@ test("S6: 投影对象排序稳定（canonical batching）", () => {
     ],
     resources: [[2, 2]],
   });
-  const a = projectPlayerState(world, "p1");
-  const b = projectPlayerState(world, "p1");
+  const a = projectPlayerState(world, "p1", rules);
+  const b = projectPlayerState(world, "p1", rules);
   assert.deepEqual(a, b, "same world projects identically");
   const units = a.objects.filter((o) => o.kind === "UNIT");
   assert.ok(units.length >= 2);
+});
+
+test("S6: dropped cargo pile 投影为 RESOURCE，Planner 可继续回收", () => {
+  const world = makeWorld({
+    units: [{ id: uuid(1), position: [1, 0] }],
+    piles: [{ cell: [1, 0], amount: 2 }],
+  });
+  const state = projectPlayerState(world, "p1", rules);
+  const resources = state.objects.find((object) => object.kind === "RESOURCE");
+  assert.ok(resources !== undefined && resources.kind === "RESOURCE");
+  assert.ok(resources.positions.some((position: Position) => cellKey(position) === "1,0"));
+  const tickState = reduceTurn(simTurnLike(world, "p1", rules));
+  assert.ok(tickState.resourceCells.has("1,0"));
+});
+
+test("S6: MOVING Core 细节未建模时 fail closed，不伪造 wire 字段", () => {
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 5,
+        core: {
+          id: "11111111-1111-1111-1111-111111111111",
+          position: [0, 0],
+          hp: 5,
+          shield: 5,
+          state: "MOVING",
+        },
+        units: [],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+  });
+  assert.throws(() => projectPlayerState(world, "p1", rules), /MOVING Core fields are not modeled/);
 });
 
 /* ---------------- reduceTurn 兼容 ---------------- */
@@ -206,7 +267,7 @@ test("S6: simTurnLike → reduceTurn → TickState 可被 Planner 消费", () =>
     obstacles: [[2, 2]],
     resources: [[3, 0]],
   });
-  const turn = simTurnLike(world, "p1");
+  const turn = simTurnLike(world, "p1", rules);
   const tickState = reduceTurn(turn);
   assert.equal(tickState.tick, 1);
   assert.equal(tickState.units.length, 2);

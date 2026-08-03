@@ -145,7 +145,28 @@ function normalizeScenario(raw: unknown): ScenarioFile {
           })
         : [],
     },
-    beacon: root.beacon === null || root.beacon === undefined ? null : { position: asPosition((root.beacon as any).position, "beacon.position") },
+    beacon:
+      root.beacon === null || root.beacon === undefined
+        ? null
+        : (() => {
+            const beacon = assertRecord(root.beacon, "beacon");
+            const status = beacon.status === "CARRIED" ? "CARRIED" : "GROUND";
+            const carrierId = beacon.carrierId ?? beacon.carrier_id ?? null;
+            if (carrierId !== null && typeof carrierId !== "string") {
+              throw new ScenarioLoadError("beacon.carrierId must be string or null");
+            }
+            if (status === "CARRIED" && carrierId === null) {
+              throw new ScenarioLoadError("carried beacon requires carrierId");
+            }
+            if (status === "GROUND" && carrierId !== null) {
+              throw new ScenarioLoadError("ground beacon cannot have carrierId");
+            }
+            return {
+              position: asPosition(beacon.position, "beacon.position"),
+              status,
+              carrierId,
+            };
+          })(),
   };
 }
 
@@ -232,7 +253,11 @@ interface RawPlayerState {
   readonly status: string;
   readonly resources: number;
   readonly objects: readonly RawObject[];
-  readonly champion_beacon?: { readonly position: Position } | null;
+  readonly champion_beacon?: {
+    readonly position: Position;
+    readonly status?: "GROUND" | "CARRIED" | null;
+    readonly carrier_id?: string | null;
+  } | null;
 }
 
 /**
@@ -314,7 +339,14 @@ export function worldFromRawState(raw: RawPlayerState, playerId: string, rulesVe
     rulesVersion,
     players: new Map([[playerId, player]]),
     terrain: { obstacles, resources: resourceCells, piles: new Map() },
-    beacon: raw.champion_beacon === null || raw.champion_beacon === undefined ? null : { position: raw.champion_beacon.position },
+    beacon:
+      raw.champion_beacon === null || raw.champion_beacon === undefined
+        ? null
+        : {
+            position: raw.champion_beacon.position,
+            status: raw.champion_beacon.status === "CARRIED" ? "CARRIED" : "GROUND",
+            carrierId: raw.champion_beacon.carrier_id ?? null,
+          },
     seed: 1,
     rngStreamPosition: 0,
     unsupportedFeatures: [],

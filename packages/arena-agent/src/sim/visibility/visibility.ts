@@ -1,22 +1,21 @@
 /**
  * Visibility 与 observation adapter（S6）：SimWorld → PlayerState（wire 等价）。
  *
- * 规则（game-rules.md §219）：Manhattan 视野并集 + integer supercover 遮挡；
- * 障碍格自身可见；己方对象恒全量（含视野外）；敌方/terrain 仅当前可见；
- * 完整 state 替换（非增量 patch）。
+ * 规则：Manhattan 视野并集 + integer supercover 遮挡；障碍格自身可见；
+ * 己方对象恒全量；敌方/terrain 仅当前可见；完整 state 替换。
  */
 
 import type { PlayerState, WorldObject } from "@arena/arena-hero-ts";
 import { cellKey, type Position, type UnitType } from "../../domain/model.ts";
 import type { TurnLike } from "../../domain/state-reducer.ts";
+import type { RulesManifest } from "../contracts/rules-manifest.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
+import type { ResolutionEvent } from "../engine/phase.ts";
 import type { SimWorld } from "../world/types.ts";
 
-/* ---------------- integer supercover ---------------- */
-
 /**
- * from→to 的 supercover 格子集合（含 from、to 与过角时的两侧邻格）。
- * 纯整数运算（无浮点）；与官方 "corner-touch 两侧都算、任一侧障碍阻挡" 一致。
+ * from→to 的 supercover 格子集合（含端点与过角时的两侧邻格）。
+ * 纯整数运算；corner-touch 任一侧障碍均可阻挡。
  */
 export function supercoverLine(from: Position, to: Position): Position[] {
   const cells: Position[] = [[from[0], from[1]]];
@@ -30,6 +29,7 @@ export function supercoverLine(from: Position, to: Position): Position[] {
   let y = from[1];
   let ix = 0;
   let iy = 0;
+
   while (ix < nx || iy < ny) {
     const cross = nx * (iy + 1) - ny * (ix + 1);
     if (cross > 0) {
@@ -41,7 +41,6 @@ export function supercoverLine(from: Position, to: Position): Position[] {
       iy += 1;
       cells.push([x, y]);
     } else {
-      // 精确过角：两侧格都计入
       cells.push([x + sx, y], [x, y + sy]);
       x += sx;
       y += sy;
@@ -50,11 +49,11 @@ export function supercoverLine(from: Position, to: Position): Position[] {
       cells.push([x, y]);
     }
   }
-  // 去重（过角路径可能重复）
+
   const seen = new Set<string>();
   const unique: Position[] = [];
   for (const cell of cells) {
-    const key = `${cell[0]},${cell[1]}`;
+    const key = cellKey(cell);
     if (!seen.has(key)) {
       seen.add(key);
       unique.push(cell);
@@ -63,21 +62,15 @@ export function supercoverLine(from: Position, to: Position): Position[] {
   return unique;
 }
 
-/* ---------------- 视野计算 ---------------- */
-
-const VISION_RADIUS: Readonly<Record<string, number>> = {
-  CORE: 5,
-  WORKER: 3,
-  VANGUARD: 4,
-  RANGER: 5,
-};
-
-function observerRadius(unitType: UnitType | "CORE"): number {
-  return VISION_RADIUS[unitType] ?? 0;
+function observerRadius(rules: RulesManifest, unitType: UnitType | "CORE"): number {
+  if (unitType === "CORE") return rules.rules.core.visionRadius;
+  if (unitType === "WORKER") return rules.rules.units.workerVisionRadius;
+  if (unitType === "VANGUARD") return rules.rules.units.vanguardVisionRadius;
+  return rules.rules.units.rangerVisionRadius;
 }
 
 /** 玩家当前可见格集合（Manhattan 并集 + supercover 遮挡）。 */
-export function visibleCellSet(world: SimWorld, playerId: string): Set<string> {
+export function visibleCellSet(world: SimWorld, playerId: string, rules: RulesManifest): Set<string> {
   const player = world.players.get(playerId);
   if (player === undefined) return new Set();
   const obstacles = world.terrain.obstacles;
@@ -91,71 +84,70 @@ export function visibleCellSet(world: SimWorld, playerId: string): Set<string> {
         const key = cellKey(target);
         if (seen.has(key)) continue;
         const line = supercoverLine(origin, target);
-        // 除 target 自身外线上有障碍 → 遮挡；障碍格自身可见
-        const blocked = line.some((c, i) => i < line.length - 1 && obstacles.has(cellKey(c)));
-        if (!blocked) {
-          seen.add(key);
-        }
+        const blocked = line.some((cell, index) =>
+          index < line.length - 1 && obstacles.has(cellKey(cell)),
+        );
+        if (!blocked) seen.add(key);
       }
     }
   };
 
-  if (player.core !== null) {
-    observe(player.core.position, observerRadius("CORE"));
-  }
-  for (const unit of player.units) {
-    observe(unit.position, observerRadius(unit.unitType));
-  }
+  if (player.core !== null) observe(player.core.position, observerRadius(rules, "CORE"));
+  for (const unit of player.units) observe(unit.position, observerRadius(rules, unit.unitType));
   return seen;
 }
 
-/* ---------------- PlayerState 投影 ---------------- */
+/** Sim ResolutionEvent → SDK wire event；event_id 由稳定事件顺序派生。 */
+export function toWireEvents(events: readonly ResolutionEvent[]): PlayerState["events"] {
+  return events.map((event, index) => ({
+    event_id: `sim:${event.tick}:${index}:${event.eventType}:${event.actorId ?? event.targetId ?? "none"}`,
+    tick: event.tick,
+    event_type: event.eventType,
+    reason_code: event.reasonCode,
+    actor_id: event.actorId,
+    target_id: event.targetId,
+    position: event.position,
+    values: event.values === null ? null : { ...event.values },
+  }));
+}
 
 /** 投影当前玩家的私有视图（与线上 PlayerState 同构；完整替换语义）。 */
 export function projectPlayerState(
   world: SimWorld,
   playerId: string,
-  events: readonly unknown[] = [],
+  rules: RulesManifest,
+  events: readonly ResolutionEvent[] = [],
 ): PlayerState {
   const player = world.players.get(playerId);
-  if (player === undefined) {
-    throw new Error(`projectPlayerState: unknown player ${playerId}`);
+  if (player === undefined) throw new Error(`projectPlayerState: unknown player ${playerId}`);
+  if (world.beacon === null) {
+    throw new Error("projectPlayerState: beacon state is required for wire-equivalent projection");
   }
-  const visible = visibleCellSet(world, playerId);
+
+  const visible = visibleCellSet(world, playerId, rules);
   const population = player.units.length;
-  const tier = Math.floor(population / 20);
+  const tier = Math.floor(population / rules.rules.upkeep.tierSize);
   const upkeepNext = (tier * (tier + 1)) / 2;
 
-  // terrain batching（canonical：positions 排序）
-  const visibleObstacles: Position[] = [];
-  const visibleResources: Position[] = [];
-  for (const key of visible) {
-    if (world.terrain.obstacles.has(key)) {
-      visibleObstacles.push(parseKey(key));
-    }
-    if (world.terrain.resources.has(key)) {
-      visibleResources.push(parseKey(key));
-    }
-  }
-  const sortPositions = (a: Position, b: Position): number =>
-    a[0] - b[0] || a[1] - b[1];
+  const visibleObstacleKeys = [...visible]
+    .filter((key) => world.terrain.obstacles.has(key))
+    .sort(compareCodeUnit);
+  const visibleResourceKeys = [...visible]
+    .filter((key) => world.terrain.resources.has(key) || world.terrain.piles.has(key))
+    .sort(compareCodeUnit);
 
   const objects: WorldObject[] = [];
-  if (visibleObstacles.length > 0) {
-    objects.push({
-      kind: "OBSTACLE",
-      positions: visibleObstacles.sort(sortPositions),
-    } as WorldObject);
+  if (visibleObstacleKeys.length > 0) {
+    objects.push({ kind: "OBSTACLE", positions: visibleObstacleKeys.map(parseKey) });
   }
-  if (visibleResources.length > 0) {
-    objects.push({
-      kind: "RESOURCE",
-      positions: visibleResources.sort(sortPositions),
-    } as WorldObject);
+  if (visibleResourceKeys.length > 0) {
+    objects.push({ kind: "RESOURCE", positions: visibleResourceKeys.map(parseKey) });
   }
 
-  // 己方 Core/Units：恒全量（含视野外）
   if (player.core !== null) {
+    if (player.core.state === "MOVING") {
+      throw new Error("projectPlayerState: MOVING Core fields are not modeled yet");
+    }
     objects.push({
       kind: "CORE",
       id: player.core.id,
@@ -169,10 +161,10 @@ export function projectPlayerState(
       move_progress: null,
       move_required_ticks: null,
       destination: null,
-    } as WorldObject);
+    });
   }
-  const sortedUnits = [...player.units].sort((a, b) => compareCodeUnit(a.id, b.id));
-  for (const unit of sortedUnits) {
+
+  for (const unit of [...player.units].sort((a, b) => compareCodeUnit(a.id, b.id))) {
     objects.push({
       kind: "UNIT",
       id: unit.id,
@@ -180,15 +172,17 @@ export function projectPlayerState(
       position: unit.position,
       hp: unit.hp,
       unit_type: unit.unitType,
-      cargo: unit.unitType === "WORKER" ? unit.cargo : undefined,
-    } as WorldObject);
+      cargo: unit.unitType === "WORKER" ? unit.cargo : null,
+    });
   }
 
-  // 敌方：仅可见格
   const enemies: WorldObject[] = [];
   for (const [enemyId, enemy] of world.players) {
     if (enemyId === playerId) continue;
     if (enemy.core !== null && visible.has(cellKey(enemy.core.position))) {
+      if (enemy.core.state === "MOVING") {
+        throw new Error("projectPlayerState: visible MOVING enemy Core fields are not modeled yet");
+      }
       enemies.push({
         kind: "CORE",
         id: enemy.core.id,
@@ -202,22 +196,23 @@ export function projectPlayerState(
         move_progress: null,
         move_required_ticks: null,
         destination: null,
-      } as WorldObject);
+      });
     }
     for (const unit of enemy.units) {
-      if (visible.has(cellKey(unit.position))) {
-        enemies.push({
-          kind: "UNIT",
-          id: unit.id,
-          controlled: false,
-          position: unit.position,
-          hp: unit.hp,
-          unit_type: unit.unitType,
-        } as WorldObject);
-      }
+      if (!visible.has(cellKey(unit.position))) continue;
+      enemies.push({
+        kind: "UNIT",
+        id: unit.id,
+        controlled: false,
+        position: unit.position,
+        hp: unit.hp,
+        unit_type: unit.unitType,
+        cargo: null,
+      });
     }
   }
-  objects.push(...enemies.sort((a, b) => compareCodeUnit((a as { id?: string }).id ?? "", (b as { id?: string }).id ?? "")));
+  enemies.sort((a, b) => compareCodeUnit("id" in a ? a.id : "", "id" in b ? b.id : ""));
+  objects.push(...enemies);
 
   return {
     status: player.status,
@@ -227,12 +222,12 @@ export function projectPlayerState(
     population_tier: tier,
     upkeep_next_tick: upkeepNext,
     champion_beacon: {
-      position: world.beacon?.position ?? [0, 0],
-      status: null,
-      carrier_id: null,
+      position: world.beacon.position,
+      status: world.beacon.status,
+      carrier_id: world.beacon.carrierId,
     },
     objects,
-    events: [...events] as unknown as PlayerState["events"],
+    events: toWireEvents(events),
   };
 }
 
@@ -241,63 +236,76 @@ function parseKey(key: string): Position {
   return [x, y];
 }
 
-/* ---------------- TurnLike 适配（复用 domain/state-reducer） ---------------- */
-
-/** SimWorld → TurnLike（鸭子类型，可直接喂 reduceTurn）。 */
-export function simTurnLike(world: SimWorld, playerId: string, events: readonly unknown[] = []): TurnLike {
+/** SimWorld → TurnLike（可直接喂 reduceTurn）。 */
+export function simTurnLike(
+  world: SimWorld,
+  playerId: string,
+  rules: RulesManifest,
+  events: readonly ResolutionEvent[] = [],
+): TurnLike {
   const player = world.players.get(playerId);
-  if (player === undefined) {
-    throw new Error(`simTurnLike: unknown player ${playerId}`);
-  }
-  const state = projectPlayerState(world, playerId, events);
+  if (player === undefined) throw new Error(`simTurnLike: unknown player ${playerId}`);
+  const state = projectPlayerState(world, playerId, rules, events);
   const core = player.core;
+  const resourceCapacity = Math.max(
+    rules.rules.core.minCapacity,
+    player.units.length * rules.rules.core.capacityPerUnit,
+  );
+
   return {
     tick: world.tick,
     resources: player.resources,
-    resourceCapacity: Math.max(10, player.units.length * 5),
-    resourceSpace: Math.max(0, Math.max(10, player.units.length * 5) - player.resources),
-    units: player.units.map((u) => ({
-      id: u.id,
-      position: u.position,
-      hp: u.hp,
-      unitType: u.unitType,
-      cargo: u.cargo,
+    resourceCapacity,
+    resourceSpace: Math.max(0, resourceCapacity - player.resources),
+    units: player.units.map((unit) => ({
+      id: unit.id,
+      position: unit.position,
+      hp: unit.hp,
+      unitType: unit.unitType,
+      cargo: unit.cargo,
     })),
-    workers: player.units.filter((u) => u.unitType === "WORKER").map((u) => ({ ...u })),
-    vanguards: player.units.filter((u) => u.unitType === "VANGUARD").map((u) => ({ ...u })),
-    rangers: player.units.filter((u) => u.unitType === "RANGER").map((u) => ({ ...u })),
+    workers: player.units.filter((unit) => unit.unitType === "WORKER").map((unit) => ({ ...unit })),
+    vanguards: player.units.filter((unit) => unit.unitType === "VANGUARD").map((unit) => ({ ...unit })),
+    rangers: player.units.filter((unit) => unit.unitType === "RANGER").map((unit) => ({ ...unit })),
     core: core === null ? null : { ...core, ownerUsername: player.username },
     visibleEnemies: state.objects
-      .filter((o) => o.kind === "UNIT" || o.kind === "CORE")
-      .filter((o) => "controlled" in o && o.controlled === false)
-      .map((o) => ({
-        id: o.id ?? "",
-        kind: o.kind as "UNIT" | "CORE",
-        position: o.position ?? ([0, 0] as Position),
-        hp: o.hp ?? 0,
-        unit_type: o.kind === "UNIT" ? (o as { unit_type?: UnitType }).unit_type : undefined,
-        owner_username: o.kind === "CORE" ? (o as { owner_username?: string }).owner_username : undefined,
+      .filter((object) => object.kind === "UNIT" || object.kind === "CORE")
+      .filter((object) => object.controlled === false)
+      .map((object) => ({
+        id: object.id,
+        kind: object.kind,
+        position: object.position,
+        hp: object.hp,
+        unit_type: object.kind === "UNIT" ? object.unit_type : undefined,
+        owner_username: object.kind === "CORE" ? object.owner_username : undefined,
       })),
     obstacleCells: new Set(
-      state.objects
-        .filter((o) => o.kind === "OBSTACLE")
-        .flatMap((o) => (o as { positions: readonly Position[] }).positions.map((p) => cellKey(p))),
+      state.objects.flatMap((object) =>
+        object.kind === "OBSTACLE"
+          ? object.positions.map((position: Position) => cellKey(position))
+          : [],
+      ),
     ),
     resourceCells: new Set(
-      state.objects
-        .filter((o) => o.kind === "RESOURCE")
-        .flatMap((o) => (o as { positions: readonly Position[] }).positions.map((p) => cellKey(p))),
+      state.objects.flatMap((object) =>
+        object.kind === "RESOURCE"
+          ? object.positions.map((position: Position) => cellKey(position))
+          : [],
+      ),
     ),
     beacon: {
-      position: world.beacon?.position ?? ([0, 0] as Position),
-      status: "GROUND",
-      carrier_id: null,
+      position: world.beacon!.position,
+      status: world.beacon!.status,
+      carrier_id: world.beacon!.carrierId,
     },
-    events: [...events] as unknown as TurnLike["events"],
+    events: state.events.map((event) => ({
+      ...event,
+      values: event.values ?? undefined,
+    })),
     state: {
       status: player.status,
       population: player.units.length,
-      objects: state.objects as unknown[],
+      objects: state.objects,
     },
   };
 }

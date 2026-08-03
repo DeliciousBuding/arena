@@ -1,31 +1,28 @@
 /**
  * Planner 闭环 harness（S7）：现有 deterministic/safety Planner 在模拟器上连续运行。
  *
- * 每 Tick 流水线：SimWorld → simTurnLike → reduceTurn → Planner.decide →
- * validatePlan（可选）→ settleTick → 下一 Tick。
- *
- * 约束：
- * - 不复制策略逻辑（现有 planning/strategies 零 fork）；
- * - 依赖方向单向 sim → domain/planning（线上代码不反向 import sim）；
- * - 每个 simulated tenant 独立 planner 实例（跨 Tick 记忆不串扰）；
- * - 不调用 runTenantLoop / Client / Turn.submit。
+ * SimWorld → private observation → reduceTurn → Planner.decide → validatePlan →
+ * settleTick → per-tenant previous-tick events → next observation。
  */
 
+import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { reduceTurn, type TurnLike } from "../../domain/state-reducer.ts";
-import { validatePlan, type ValidationResult } from "../../domain/plan-validator.ts";
 import type { Plan, TickState } from "../../domain/model.ts";
-import type { PlanProvider } from "../../runtime/decision-types.ts";
+import { validatePlan, type ValidationResult } from "../../domain/plan-validator.ts";
+import { reduceTurn, type TurnLike } from "../../domain/state-reducer.ts";
 import { DeterministicPlanner } from "../../planning/deterministic-planner.ts";
-import { SafetyPlanner, DEFAULT_SAFETY_CONFIG } from "../../strategies/safety-planner.ts";
+import type { PlanProvider } from "../../runtime/decision-types.ts";
+import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../../strategies/safety-planner.ts";
 import { loadRulesManifest, type RulesManifest } from "../contracts/rules-manifest.ts";
 import { createSeededRng } from "../deterministic/rng.ts";
-import { settleTick, type SettlementContext } from "../engine/settlement.ts";
+import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { ResolutionEvent, UnknownEffect } from "../engine/phase.ts";
+import { settleTick, type SettlementContext } from "../engine/settlement.ts";
 import { simTurnLike } from "../visibility/visibility.ts";
-import { worldFromScenario } from "../world/loaders.ts";
 import { worldHash } from "../world/canonical.ts";
+import { worldFromScenario } from "../world/loaders.ts";
 import type { SimFeature, SimWorld } from "../world/types.ts";
+import { assertWorldInvariants } from "../world/world.ts";
 
 export type PlannerKind = "deterministic" | "safety";
 
@@ -35,20 +32,31 @@ export interface EpisodeTenant {
 }
 
 export interface EpisodeConfig {
-  /** 内置 scenario 对象（worldFromScenario 输入）。 */
+  /** worldFromScenario 输入；config.seed 会覆盖 scenario.seed，避免双 seed 语义。 */
   readonly scenario: unknown;
   readonly rulesPath: string;
   readonly seed: number;
   readonly ticks: number;
+  /** 必须与 scenario players 一一对应；缺失/重复/额外 tenant 均 fail closed。 */
   readonly tenants: readonly EpisodeTenant[];
-  /** 每 tick 对 planner 输出做 validatePlan（默认 true）。 */
   readonly validatePlans?: boolean;
+  /** 测试/实验注入；默认复用线上 DeterministicPlanner/SafetyPlanner。 */
+  readonly plannerFactory?: (tenant: EpisodeTenant) => PlanProvider;
+}
+
+export interface ValidationSummary {
+  readonly valid: boolean;
+  readonly repaired: boolean;
+  readonly issueCount: number;
 }
 
 export interface EpisodeRecord {
   readonly tick: number;
-  readonly planHash: string;
-  readonly validation: { readonly valid: boolean; readonly repaired: boolean; readonly issueCount: number };
+  /** tenantId → 实际送入 settlement 的完整计划。 */
+  readonly plans: Readonly<Record<string, Plan>>;
+  readonly planHashes: Readonly<Record<string, string>>;
+  readonly validations: Readonly<Record<string, ValidationSummary>>;
+  readonly aggregatePlanHash: string;
   readonly events: readonly ResolutionEvent[];
   readonly unsupported: readonly SimFeature[];
   readonly unknownEffects: readonly UnknownEffect[];
@@ -69,29 +77,95 @@ export interface EpisodeResult {
 }
 
 function createPlanner(kind: PlannerKind): PlanProvider {
-  if (kind === "deterministic") {
-    return new DeterministicPlanner();
+  return kind === "deterministic"
+    ? new DeterministicPlanner()
+    : new SafetyPlanner(DEFAULT_SAFETY_CONFIG);
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (typeof value !== "object" || value === null) return value;
+  const source = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const key of Object.keys(source).sort(compareCodeUnit)) {
+    output[key] = canonicalize(source[key]);
   }
-  return new SafetyPlanner(DEFAULT_SAFETY_CONFIG);
+  return output;
 }
 
-function hashPlan(plan: Plan): string {
-  return JSON.stringify(plan);
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
 }
 
-/**
- * 运行一个 episode：加载 scenario → 每 tick 决策+结算 → 返回最终世界与记录。
- * 确定性：同 config（scenario/seed/ticks/tenants）输出逐字节一致。
- */
+export function hashPlan(plan: Plan): string {
+  return createHash("sha256").update(canonicalJson(plan)).digest("hex");
+}
+
+function hashPlanSet(plans: Readonly<Record<string, Plan>>): string {
+  return createHash("sha256").update(canonicalJson(plans)).digest("hex");
+}
+
+function entityIds(world: SimWorld, playerId: string): Set<string> {
+  const ids = new Set<string>();
+  const player = world.players.get(playerId);
+  if (player?.core !== null && player?.core !== undefined) ids.add(player.core.id);
+  for (const unit of player?.units ?? []) ids.add(unit.id);
+  return ids;
+}
+
+/** 只把与己方实体相关的私有事件回灌给该 tenant。 */
+function privateEventsForPlayer(
+  before: SimWorld,
+  after: SimWorld,
+  playerId: string,
+  events: readonly ResolutionEvent[],
+): ResolutionEvent[] {
+  const ids = entityIds(before, playerId);
+  for (const id of entityIds(after, playerId)) ids.add(id);
+  return events.filter((event) =>
+    (event.actorId !== null && ids.has(event.actorId)) ||
+    (event.targetId !== null && ids.has(event.targetId)),
+  );
+}
+
+function validateConfig(config: EpisodeConfig, world: SimWorld, rules: RulesManifest): EpisodeTenant[] {
+  if (!Number.isSafeInteger(config.seed)) throw new Error(`episode: invalid seed ${config.seed}`);
+  if (!Number.isSafeInteger(config.ticks) || config.ticks < 1) {
+    throw new Error(`episode: ticks must be a positive safe integer, got ${config.ticks}`);
+  }
+  if (world.rulesVersion !== rules.rulesVersion) {
+    throw new Error(`episode: scenario rules ${world.rulesVersion} != manifest ${rules.rulesVersion}`);
+  }
+
+  const tenants = [...config.tenants].sort((a, b) => compareCodeUnit(a.id, b.id));
+  const tenantIds = tenants.map((tenant) => tenant.id);
+  if (new Set(tenantIds).size !== tenantIds.length) throw new Error("episode: duplicate tenant id");
+  const playerIds = [...world.players.keys()].sort(compareCodeUnit);
+  if (canonicalJson(tenantIds) !== canonicalJson(playerIds)) {
+    throw new Error(`episode: tenants must exactly match players (${tenantIds.join(",")} != ${playerIds.join(",")})`);
+  }
+  return tenants;
+}
+
+/** 运行一个确定性 episode。wallMs 是唯一非确定字段，不参与 replay 等价。 */
 export function runEpisode(config: EpisodeConfig): EpisodeResult {
   const started = performance.now();
-  const rules: RulesManifest = loadRulesManifest(config.rulesPath);
-  const rng = createSeededRng(config.seed);
-  const ctx: SettlementContext = { rules, rng: () => rng.next() };
-  const validate = config.validatePlans ?? true;
+  const rules = loadRulesManifest(config.rulesPath);
+  const loaded = worldFromScenario(config.scenario);
+  const tenants = validateConfig(config, loaded, rules);
+  let world: SimWorld = { ...loaded, seed: config.seed };
+  assertWorldInvariants(world);
 
-  let world = worldFromScenario(config.scenario);
-  const planners = new Map(config.tenants.map((t) => [t.id, createPlanner(t.planner)]));
+  const rng = createSeededRng(config.seed);
+  const context: SettlementContext = { rules, rng: () => rng.next() };
+  const validate = config.validatePlans ?? true;
+  const planners = new Map(
+    tenants.map((tenant) => [
+      tenant.id,
+      config.plannerFactory?.(tenant) ?? createPlanner(tenant.planner),
+    ]),
+  );
+  const previousEvents = new Map<string, readonly ResolutionEvent[]>();
   const records: EpisodeRecord[] = [];
   const seenUnsupported = new Set<string>();
   let illegalPlans = 0;
@@ -99,55 +173,62 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
   let totalEvents = 0;
 
   for (let step = 0; step < config.ticks; step += 1) {
-    const plans = new Map<string, Plan>();
-    const record: {
-      tick: number;
-      planHash: string;
-      validation: { valid: boolean; repaired: boolean; issueCount: number };
-      events: ResolutionEvent[];
-      unsupported: SimFeature[];
-      unknownEffects: UnknownEffect[];
-    } = {
-      tick: world.tick,
-      planHash: "",
-      validation: { valid: true, repaired: false, issueCount: 0 },
-      events: [],
-      unsupported: [],
-      unknownEffects: [],
-    };
+    const before = world;
+    const settlementPlans = new Map<string, Plan>();
+    const plans: Record<string, Plan> = {};
+    const planHashes: Record<string, string> = {};
+    const validations: Record<string, ValidationSummary> = {};
 
-    for (const tenant of config.tenants) {
+    for (const tenant of tenants) {
       const planner = planners.get(tenant.id)!;
-      const turn: TurnLike = simTurnLike(world, tenant.id);
+      const turn: TurnLike = simTurnLike(
+        world,
+        tenant.id,
+        rules,
+        previousEvents.get(tenant.id) ?? [],
+      );
       const state: TickState = reduceTurn(turn);
-      const plan = planner.decide({ state });
-      let finalPlan = plan;
+      const proposed = planner.decide({ state });
+      let finalPlan = proposed;
+      let summary: ValidationSummary = { valid: true, repaired: false, issueCount: 0 };
 
       if (validate) {
-        const result: ValidationResult = validatePlan(state, plan);
+        const result: ValidationResult = validatePlan(state, proposed);
+        summary = {
+          valid: result.valid,
+          repaired: result.repaired,
+          issueCount: result.issues.length,
+        };
         if (!result.valid) {
           illegalPlans += 1;
-          record.validation = {
-            valid: false,
-            repaired: result.repaired,
-            issueCount: result.issues.length,
-          };
-          if (result.repaired) {
-            repairedPlans += 1;
-            finalPlan = result.plan;
-          }
+          if (!result.repaired) throw new Error(`episode: invalid unrepaired plan for ${tenant.id}`);
+          repairedPlans += 1;
+          finalPlan = result.plan;
         }
       }
-      plans.set(tenant.id, finalPlan);
-      record.planHash = hashPlan(finalPlan);
+
+      settlementPlans.set(tenant.id, finalPlan);
+      plans[tenant.id] = finalPlan;
+      planHashes[tenant.id] = hashPlan(finalPlan);
+      validations[tenant.id] = summary;
     }
 
-    const result = settleTick(world, plans, ctx);
+    const result = settleTick(world, settlementPlans, context);
     world = result.world;
+    for (const tenant of tenants) {
+      previousEvents.set(
+        tenant.id,
+        privateEventsForPlayer(before, world, tenant.id, result.events),
+      );
+    }
     for (const feature of result.unsupported) seenUnsupported.add(feature);
     totalEvents += result.events.length;
     records.push({
-      ...record,
+      tick: before.tick,
+      plans,
+      planHashes,
+      validations,
+      aggregatePlanHash: hashPlanSet(plans),
       events: result.events,
       unsupported: result.unsupported,
       unknownEffects: result.unknownEffects,
@@ -162,7 +243,7 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
       ticks: config.ticks,
       illegalPlans,
       repairedPlans,
-      unsupported: [...seenUnsupported].sort(),
+      unsupported: [...seenUnsupported].sort(compareCodeUnit),
       totalEvents,
       wallMs: performance.now() - started,
     },
