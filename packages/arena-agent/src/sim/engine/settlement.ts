@@ -14,6 +14,7 @@ import type { RulesManifest } from "../contracts/rules-manifest.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { SimFeature, SimWorld } from "../world/types.ts";
 import { assertWorldInvariants } from "../world/world.ts";
+import { combatPhase } from "./combat.ts";
 import { economyPhases } from "./economy.ts";
 import { movementPhase } from "./movement.ts";
 import { EMPTY_OUTCOME, outcome, type Phase, type PhaseContext, type PhaseOutcome, type ResolutionEvent, type UnknownEffect } from "./phase.ts";
@@ -119,16 +120,7 @@ const PHASES: readonly Phase[] = [
     },
   },
   ...economyPhases.slice(3, 4), // P08 harvest-and-deposit
-  {
-    id: "P09-unsupported-combat-check",
-    officialPhase: 9,
-    run: (draft, ctx) => {
-      if (ctx.features.has("combat")) {
-        return outcome({ unsupported: ["combat"] });
-      }
-      return EMPTY_OUTCOME;
-    },
-  },
+  combatPhase, // P09 combat（SWEEP/SHOOT 快照结算；伤害累积 → 同时应用）
   ...economyPhases.slice(4, 6), // P10 unit-heal / P11 core-action
   {
     id: "P12-unsupported-respawn-check",

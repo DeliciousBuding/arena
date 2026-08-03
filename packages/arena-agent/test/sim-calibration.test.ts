@@ -258,7 +258,7 @@ test("S8a: server-generated spawn UUID is normalized and reported INCONCLUSIVE",
   );
 });
 
-test("S8a: unsupported combat is INCONCLUSIVE, never a false MATCH", () => {
+test("S8a: combat 已实现——SWEEP 无目标时预测与真实差异如实分类 MISMATCH", () => {
   const vanguardId = "33333333-3333-3333-3333-333333333333";
   const world = makeWorld({
     units: [{ id: vanguardId, position: [1, 0], unitType: "VANGUARD", hp: 4 }],
@@ -279,9 +279,51 @@ test("S8a: unsupported combat is INCONCLUSIVE, never a false MATCH", () => {
     { ...calibrationCase, after: { ...calibrationCase.after, state: after } },
     MANIFEST_PATH,
   );
+  // 单玩家可见世界：SWEEP 目标格无对象 → 模拟器预测 hp 不变；真实 hp 掉 1 无解释 → MISMATCH
+  assert.equal(report.status, "MISMATCH");
+  assert.ok(report.differences.some((difference) => difference.class === "ENTITY"));
+  // combat 不再作为 unsupported feature
+  assert.ok(!report.unsupported.includes("combat"));
+});
+
+test("S8a: 对手不可观测时 combat 伤害差异是 EXPECTED_UNKNOWN，不误报 MISMATCH", () => {
+  const vanguardId = "33333333-3333-3333-3333-333333333333";
+  const opponentId = "99999999-9999-9999-9999-999999999999";
+  const world = makeWorld({
+    units: [{ id: vanguardId, position: [1, 0], unitType: "VANGUARD", hp: 4 }],
+    terrainResources: [],
+  });
+  const plan: Plan = {
+    tick: 1,
+    unitActions: { [vanguardId]: { type: "SWEEP", direction: "RIGHT" } },
+    coreAction: null,
+    intents: {},
+  };
+  const calibrationCase = buildCase(world, plan, "case-combat-opponent");
+  const after = structuredClone(calibrationCase.after.state);
+  const vanguard = after.objects.find((object) => object.kind === "UNIT" && object.controlled === true);
+  assert.ok(vanguard !== undefined && vanguard.kind === "UNIT");
+  vanguard.hp = 3;
+  // 注入不可观测对手单位（before 中 uncontrolled 对象）→ opponentUnknown=true
+  const mutableCase = calibrationCase as unknown as {
+    before: { state: { objects: Array<Record<string, unknown>> } };
+  };
+  mutableCase.before.state.objects.push({
+    kind: "UNIT",
+    id: opponentId,
+    controlled: false,
+    position: [2, 0],
+    hp: 2,
+    unit_type: "WORKER",
+    cargo: null,
+  });
+  const report = runCalibrationCase(
+    { ...calibrationCase, after: { ...calibrationCase.after, state: after } },
+    MANIFEST_PATH,
+  );
+  // 对手动作不可观测 → 差异降级 EXPECTED_UNKNOWN，整体 INCONCLUSIVE 而非 MISMATCH
   assert.equal(report.status, "INCONCLUSIVE");
-  assert.ok(report.unsupported.includes("combat"));
-  assert.ok(report.differences.some((difference) => difference.class === "UNSUPPORTED"));
+  assert.ok(report.differences.some((difference) => difference.class === "EXPECTED_UNKNOWN"));
   assert.equal(report.differences.some((difference) => difference.class === "ENTITY"), false);
 });
 

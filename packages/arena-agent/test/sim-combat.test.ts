@@ -1,0 +1,349 @@
+/**
+ * S10 combat resolver 测试：
+ * SWEEP 相邻格多目标伤害、SHOOT 八方向线/射程/障碍阻断、快照同时应用（互杀）、
+ * Core 摧毁（护盾优先 → 掉落 cargo → 击杀者资源归属）、确定性排序。
+ */
+
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import type { Plan, UnitAction } from "../src/domain/model.ts";
+import { loadRulesManifest } from "../src/sim/contracts/rules-manifest.ts";
+import { resolveCombat } from "../src/sim/engine/combat.ts";
+import { idlePlans, settleTick } from "../src/sim/engine/settlement.ts";
+import { worldFromScenario } from "../src/sim/world/loaders.ts";
+import type { SimWorld } from "../src/sim/world/types.ts";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const MANIFEST_PATH = join(here, "..", "src", "sim", "contracts", "rules-v0.11.json");
+const rules = loadRulesManifest(MANIFEST_PATH);
+const ctx = { rules, rng: null };
+
+const P1_CORE = "11111111-1111-1111-1111-111111111111";
+const P1_VANGUARD = "22222222-2222-2222-2222-222222222222";
+const P1_WORKER = "33333333-3333-3333-3333-333333333333";
+const P2_CORE = "44444444-4444-4444-4444-444444444444";
+const P2_VANGUARD = "55555555-5555-5555-5555-555555555555";
+const P2_RANGER = "66666666-6666-6666-6666-666666666666";
+
+/** 双玩家场景：p1 Core[0,0] + Vanguard[2,0]；p2 Core[6,6] + Vanguard[3,0] + Ranger[1,4]。 */
+function makeWorld(): SimWorld {
+  return worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: P1_CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [
+          { id: P1_VANGUARD, owner: "p1", position: [2, 0], hp: 4, unitType: "VANGUARD", cargo: 0 },
+          { id: P1_WORKER, owner: "p1", position: [0, 1], hp: 2, unitType: "WORKER", cargo: 2 },
+        ],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [
+          { id: P2_VANGUARD, owner: "p2", position: [3, 0], hp: 4, unitType: "VANGUARD", cargo: 0 },
+          { id: P2_RANGER, owner: "p2", position: [1, 4], hp: 2, unitType: "RANGER", cargo: 0 },
+        ],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+}
+
+function planOf(world: SimWorld, unitActions: Record<string, UnitAction>): Plan {
+  return { tick: world.tick, unitActions, coreAction: null, intents: {} };
+}
+
+test("S10: SWEEP 对相邻目标格内所有敌方对象造成 1 伤害", () => {
+  const world = makeWorld();
+  // p1 Vanguard[2,0] SWEEP LEFT → 目标格 [1,0]（空）→ 无命中
+  const miss = settleTick(world, new Map([["p1", planOf(world, { [P1_VANGUARD]: { type: "SWEEP", direction: "LEFT" } })]]), ctx);
+  assert.equal(miss.events.length, 0);
+  assert.equal(miss.world.players.get("p1")!.units.find((u) => u.id === P1_VANGUARD)!.hp, 4);
+
+  // p1 Vanguard SWEEP RIGHT → [3,0]（p2 Vanguard 在）→ p2 Vanguard -1
+  const hit = settleTick(world, new Map([["p1", planOf(world, { [P1_VANGUARD]: { type: "SWEEP", direction: "RIGHT" } })]]), ctx);
+  assert.equal(hit.world.players.get("p2")!.units.find((u) => u.id === P2_VANGUARD)!.hp, 3);
+  assert.ok(hit.events.some((e) => e.eventType === "UNIT_DAMAGED" && e.targetId === P2_VANGUARD && e.values?.damage === 1));
+});
+
+test("S10: 多 SWEEP 叠加伤害，杀死满 hp 单位", () => {
+  const world = makeWorld();
+  // p2 两个 Vanguard 都在 [3,0]？不——只用一个：p2 Vanguard 被 p1 Vanguard 杀
+  // 构造：p1 Vanguard[2,0] SWEEP RIGHT 攻击 [3,0]；p2 Vanguard[3,0] 4hp 需要 4 次
+  // 简化：直接验证叠加——p1 两个 Vanguard 围攻同一目标
+  const p1Second = "77777777-7777-7777-7777-777777777777";
+  const world2 = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: P1_CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [
+          { id: P1_VANGUARD, owner: "p1", position: [2, 0], hp: 4, unitType: "VANGUARD", cargo: 0 },
+          { id: p1Second, owner: "p1", position: [3, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
+        ],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P2_VANGUARD, owner: "p2", position: [3, 0], hp: 2, unitType: "VANGUARD", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world2,
+    new Map([
+      ["p1", planOf(world2, {
+        [P1_VANGUARD]: { type: "SWEEP", direction: "RIGHT" },
+        [p1Second]: { type: "SWEEP", direction: "UP" },
+      })],
+    ]),
+    ctx,
+  );
+  // p2 Vanguard 2hp 收到 2 伤害 → 死亡
+  assert.equal(result.world.players.get("p2")!.units.find((u) => u.id === P2_VANGUARD), undefined);
+  assert.ok(result.events.some((e) => e.eventType === "UNIT_DESTROYED" && e.targetId === P2_VANGUARD));
+});
+
+test("S10: SHOOT 八方向线 1-3 格、障碍阻断、非直线无效", () => {
+  const world = makeWorld();
+  // p2 Ranger[1,4] SHOOT p1 Vanguard[2,0]：dx=1, dy=-4 非八方向 → 无效
+  const notLine = settleTick(
+    world,
+    new Map([["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: P1_VANGUARD, expectedCell: [2, 0] } })]]),
+    ctx,
+  );
+  assert.equal(notLine.world.players.get("p1")!.units.find((u) => u.id === P1_VANGUARD)!.hp, 4);
+
+  // p2 Ranger[1,4] SHOOT p1 Worker[0,1]：dx=-1, dy=-3 非八方向 → 无效
+  const notLine2 = settleTick(
+    world,
+    new Map([["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: P1_WORKER, expectedCell: [0, 1] } })]]),
+    ctx,
+  );
+  assert.equal(notLine2.world.players.get("p1")!.units.find((u) => u.id === P1_WORKER)!.hp, 2);
+
+  // p2 Ranger[1,4] SHOOT 45° 线到 [3,2]（空）——目标不存在 → 无效
+  const noTarget = settleTick(
+    world,
+    new Map([["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: "99999999-9999-9999-9999-999999999999", expectedCell: [3, 2] } })]]),
+    ctx,
+  );
+  assert.ok(noTarget.events.length === 0);
+});
+
+test("S10: SHOOT 沿八方向线命中并造成 1 伤害", () => {
+  const world = makeWorld();
+  // 重新摆放：p2 Ranger[0,4]，p1 Worker[0,1] 在同一竖线 dx=0 距离 3 → 命中
+  const world2 = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: P1_CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P1_WORKER, owner: "p1", position: [0, 1], hp: 2, unitType: "WORKER", cargo: 0 }],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P2_RANGER, owner: "p2", position: [0, 4], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world2,
+    new Map([["p2", planOf(world2, { [P2_RANGER]: { type: "SHOOT", targetId: P1_WORKER, expectedCell: [0, 1] } })]]),
+    ctx,
+  );
+  assert.equal(result.world.players.get("p1")!.units.find((u) => u.id === P1_WORKER)!.hp, 1);
+  assert.ok(result.events.some((e) => e.eventType === "UNIT_DAMAGED" && e.targetId === P1_WORKER && e.values?.damage === 1));
+
+  // 障碍阻断：加障碍 [0,2] → 中间格阻断 → 无效
+  const world3 = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: P1_CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P1_WORKER, owner: "p1", position: [0, 1], hp: 2, unitType: "WORKER", cargo: 0 }],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P2_RANGER, owner: "p2", position: [0, 4], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [[0, 2]], resources: [] },
+    beacon: null,
+  });
+  const blocked = settleTick(
+    world3,
+    new Map([["p2", planOf(world3, { [P2_RANGER]: { type: "SHOOT", targetId: P1_WORKER, expectedCell: [0, 1] } })]]),
+    ctx,
+  );
+  assert.equal(blocked.world.players.get("p1")!.units.find((u) => u.id === P1_WORKER)!.hp, 2);
+});
+
+test("S10: 快照同时应用——互杀合法", () => {
+  // p1 Vanguard[1,0] 与 p2 Vanguard[2,0] 各 SWEEP 对方格；双方 hp 1 → 互杀
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: P1_CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P1_VANGUARD, owner: "p1", position: [1, 0], hp: 1, unitType: "VANGUARD", cargo: 0 }],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P2_VANGUARD, owner: "p2", position: [2, 0], hp: 1, unitType: "VANGUARD", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world,
+    new Map([
+      ["p1", planOf(world, { [P1_VANGUARD]: { type: "SWEEP", direction: "RIGHT" } })],
+      ["p2", planOf(world, { [P2_VANGUARD]: { type: "SWEEP", direction: "LEFT" } })],
+    ]),
+    ctx,
+  );
+  assert.equal(result.world.players.get("p1")!.units.length, 0);
+  assert.equal(result.world.players.get("p2")!.units.length, 0);
+});
+
+test("S10: Core 伤害先护盾后 HP，摧毁时掉落 cargo + 击杀者得资源", () => {
+  // p1 Worker[0,1] cargo=2（被 p2 摧毁时掉落 [0,1]）
+  // p2 Vanguard[1,4]（含 3 个）SHOOT p1 Core[0,0]：竖线距离 4？不——重新设计
+  // p2 Ranger[0,4] SHOOT p1 Core[0,0]：dx=0 dy=-4 距离 4 > 3 → 无效。改放 [0,3]。
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: P1_CORE, position: [0, 0], hp: 1, shield: 0, state: "NORMAL" },
+        units: [{ id: P1_WORKER, owner: "p1", position: [0, 1], hp: 2, unitType: "WORKER", cargo: 2 }],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P2_RANGER, owner: "p2", position: [0, 3], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world,
+    new Map([
+      ["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: P1_CORE, expectedCell: [0, 0] } })],
+    ]),
+    ctx,
+  );
+  // p1 Core hp 1 → 摧毁；fleet 移除 → RESPAWNING；cargo 掉落 [0,1]
+  const p1 = result.world.players.get("p1")!;
+  assert.equal(p1.core, null);
+  assert.equal(p1.status, "RESPAWNING");
+  assert.equal(p1.units.length, 0);
+  assert.equal(result.world.terrain.piles.get("0,1")?.amount, 2);
+  // 击杀者 p2 获得 p1 资源
+  assert.equal(result.world.players.get("p2")!.resources, 5 + 10);
+  assert.ok(result.events.some((e) => e.eventType === "CORE_DESTROYED" && e.targetId === P1_CORE));
+});
+
+test("S10: 护盾吸收 Core 伤害——hp 不变", () => {
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: P1_CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P2_RANGER, owner: "p2", position: [0, 3], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world,
+    new Map([
+      ["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: P1_CORE, expectedCell: [0, 0] } })],
+    ]),
+    ctx,
+  );
+  const p1 = result.world.players.get("p1")!;
+  assert.equal(p1.core!.hp, 5);
+  assert.equal(p1.core!.shield, 4);
+  assert.ok(result.events.some((e) => e.eventType === "CORE_DAMAGED" && e.targetId === P1_CORE));
+});
+
+test("S10: resolveCombat 纯函数——原 world 不变", () => {
+  const world = makeWorld();
+  const before = JSON.stringify(world);
+  const plans = new Map([
+    ["p1", planOf(world, { [P1_VANGUARD]: { type: "SWEEP", direction: "RIGHT" } })],
+  ]);
+  const resolution = resolveCombat(world, plans);
+  assert.equal(JSON.stringify(world), before);
+  assert.ok(resolution.damageByTarget.get(P2_VANGUARD) === 1);
+});

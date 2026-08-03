@@ -85,7 +85,7 @@ test("S3: 空 plans 拒绝", () => {
   assert.throws(() => settleTick(world, new Map(), ctx), SettlementError);
 });
 
-test("S3: combat 输入触发 unsupported 且不静默跳过", () => {
+test("S3: combat 已实现——SHOOT/SWEEP 不再触发 unsupported", () => {
   const world = makeWorld();
   const plans = idlePlans(world);
   const unit = world.players.get("p1")!.units[0];
@@ -96,9 +96,9 @@ test("S3: combat 输入触发 unsupported 且不静默跳过", () => {
     intents: {},
   };
   const result = settleTick(world, new Map([["p1", combatPlan]]), ctx);
-  assert.deepEqual(result.unsupported, ["combat"]);
-  // feature 记录持久化到 world
-  assert.ok(result.world.unsupportedFeatures.includes("combat"));
+  assert.deepEqual(result.unsupported, []);
+  // feature 不再被标记为 unsupported
+  assert.ok(!result.world.unsupportedFeatures.includes("combat"));
 });
 
 test("S3: core-migration / beacon 输入各自触发 unsupported", () => {
