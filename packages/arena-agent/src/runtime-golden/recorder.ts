@@ -168,15 +168,21 @@ export class RuntimeGoldenRecorder {
 
   private async processOutcome(outcome: TickOutcome): Promise<void> {
     if (this.pending !== null) {
-      if (outcome.tick === this.pending.tick + 1) {
-        await this.writeCase(this.pending, outcome.rawState);
+      // 先解除 pending 再做可能失败的 I/O/parser；单个坏 case 不得污染下一对状态。
+      const pending = this.pending;
+      this.pending = null;
+      if (outcome.tick === pending.tick + 1) {
+        try {
+          await this.writeCase(pending, outcome.rawState);
+        } catch (error) {
+          this.recordError(`case:${pending.tick}`, error);
+        }
       } else {
         this.droppedPending += 1;
         this.warn(
-          `non-consecutive raw states: pending=${this.pending.tick}, next=${outcome.tick}; case dropped`,
+          `non-consecutive raw states: pending=${pending.tick}, next=${outcome.tick}; case dropped`,
         );
       }
-      this.pending = null;
     }
 
     if (!outcome.submitAttempted) return;
