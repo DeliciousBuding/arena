@@ -1,11 +1,11 @@
 # MASTER — Arena 当前进度与门禁
 
 > 当前执行入口。历史设计见 `docs/migration-plan.md`，长期路线见 `docs/roadmap-long-term.md`。
-> 最后整理：2026-08-03。代码、运行 manifest、JSONL 证据和 GitHub issue 优先于聊天记录。
+> 最后整理：2026-08-03 16:30。代码、运行 manifest、JSONL 证据和 GitHub issue 优先于聊天记录。
 
 ## 当前阶段
 
-**W4 收口：单租户 TS 链已真实运行，正在完成 agent-shadow live、DeterministicPlanner live 和仓库 SSOT 门禁。**
+**W4 收口：经济闭环已跑通（HARVEST → cargo → DEPOSIT → Core 增长），t1 deterministic live burn-in 进行中。**
 
 固定优先级：
 
@@ -22,7 +22,7 @@
 
 ## 当前主干事实
 
-最新整理时 HEAD：`9814f0f`（之后的文档整理提交不改变运行结论）。
+最新整理时 HEAD：`4f5151a`（本地 = 远端，无未推送提交）。
 
 已完成：
 
@@ -31,9 +31,25 @@
 - `DecisionMode` / `SubmissionMode` 两轴，以及 execution / observation 分离；
 - Pi `createAgentSession` 真实嵌入，builtin tools 全禁用，仅开放 `arena_plan` / `arena_map`；
 - ActiveToolContextSlot、严格工具参数、runId/tick/stateHash 校验；
-- 单租户 runtime config、原子单写者锁、manifest、doctor、优雅关闭；
+- 单租户 runtime config、原子单写者锁（`wx` / O_CREAT|O_EXCL）、manifest、doctor、优雅关闭；
 - runtime / decision / outcome / pi JSONL 与递归脱敏；
-- DeterministicPlanner 骨架、任务唯一性、sticky assignment 和基础障碍避让。
+- **经济闭环（2026-08-03 真机验证）**：有界 BFS 绕障寻路（修复长墙两格振荡）、资源格全局唯一分配、无资源时八方向分层巡逻、跨 Tick 资源记忆、cargo 回仓状态机；
+- **经济遥测**：MOVE/HARVEST/DEPOSIT/WAIT 动作数、可见资源格数、cargo Worker 数/总量、意图混合（intent mix）、探索覆盖、submit 失败明细、失败动作归因（prior plan attribution）。
+
+### 近期提交（3c3161a → 4f5151a，10 个）
+
+```text
+4f5151a feat(ops): add executable burn-in quality gates
+5db5313 perf(planner): expand patrol through layered rings
+d78df90 perf(planner): expand patrol coverage to eight directions
+511c6d9 fix(runtime): synchronize before first live submission
+75249ed fix(map-store): retry concurrent WAL initialization
+5964354 feat(telemetry): measure intent mix and exploration spread
+2d3bc72 fix(planner): resolve cell capacity before submit
+4e78224 feat(telemetry): retain submit failure details
+9baeb1f feat(runtime): add bounded graceful burn-in runs
+40989b9 feat(telemetry): attribute failed actions to prior plans
+```
 
 ## 已通过的线上门禁
 
@@ -59,45 +75,65 @@
 - 租户：t2
 - 33 tick
 - blocked move 系统性问题修复后 repair=0
-- 结论：合法性观察通过；尚无 live 与收益证据
+- 结论：合法性观察通过
 - 证据：`runs/run-20260802T133504-7b42dd/ts-deterministic/`
+
+### Deterministic live 经济闭环 Canary（2026-08-03 新增）
+
+第一轮（run `7a0f9b0a`，tick 43974→44009）：
+
+| 指标 | 结果 |
+|---|---|
+| accepted | 37/37 |
+| rejected | 0 |
+| repair | 0 |
+| HARVEST_SUCCEEDED | 3 |
+| DEPOSIT_SUCCEEDED | 2 |
+| Core 资源 | 6 → 8 |
+
+完整链路已证明：巡逻发现资源 → 前往 → HARVEST → cargo=1 → 绕障回 Core → DEPOSIT → Core 增长。
+
+第二轮效率（run `f38102de`，commit 3c3161a，tick 44010→44032）：
+
+| 指标 | 结果 |
+|---|---|
+| accepted | 14/14 |
+| decisionSource | deterministic |
+| deadlineOutcome | not_applicable |
+| WAIT | 0 |
+| DEPOSIT_SUCCEEDED | 1 |
+| Core 资源 | 8 → 9 |
+
+修复：一个资源格只分配一个 Worker，其余继续巡逻（不再 WAIT）。
+
+> 移动失败率对比（修复价值量级）：旧导航 39.7%（4450 次移动 1765 次失败）→ 新导航 run1 0%、run2 1.8%。
+
+### t1 deterministic live burn-in（进行中）
+
+- 活跃进程：pid 39064，run `9ec7b2c7`，gitSha `4f5151a`，16:12:29 启动
+- 观察点：tick 44322+，Core 资源 10，visibleResourceCellCount 0→1（巡逻重新发现资源）
+- 门禁：accepted 100%、repair=0、无连续 20 tick 经济停滞、移动失败率低位
 
 ## 当前未通过门禁
 
-### 1. Agent-shadow live
+### 1. Agent-shadow live（架构暂停）
 
-首轮 Safety 真提交 + Agent observation 曾出现 Agent 候选全 rejected。诊断显示：
+`#8` 裁决：per-tick 完整 LLM 决策（冷启动 22.8s）与 15s 游戏窗口结构性不兼容。agent-shadow live / hybrid live 禁止，直至离线延迟基准与 MacroPolicy 转向完成。`#4` 生命周期修复（b9515aa）已完成但**不自动解锁**。
 
-```text
-冷启动首调用 12–19s
-→ 首 tick 超 soft deadline
-→ abort 残留历史
-→ session 上下文持续膨胀
-→ 后续调用接近 14s
-→ candidate tick mismatch / rejected
-```
+### 2. 100 Tick burn-in 完成
 
-`9814f0f` 已加入 warmup 与周期 rotation，但仍需完成 #4：
+t1 正在积累 burn-in 证据。完成后需要：
 
-- 周期计数必须覆盖所有成功 run，而不是只统计 abort；
-- rotation 在 idle/settled 边界执行；
-- warmup timeout / failure 必须可观测；
-- 重新跑 ≥100 tick live，建议跨过两次 periodic rotation。
+- 移动冲突与失败原因分析（unit 下一格预约）；
+- 逐租户迁移（先 t2，再 t3/t4，不四租户同时开闸）。
 
-在 #4 通过前禁止 hybrid live。
+### 3. MacroPolicy（#8 第二阶段，暂停中）
 
-### 2. Deterministic live
+- LLM 只异步输出战略指令（accumulate target / worker target / reserve / explore radius / defensive mode），每 20–50 tick 或事件触发；
+- LLM 永不直接控制每 Tick 单位动作；
+- 离线延迟 benchmark 未开始（暂停，优先经济闭环）。
 
-完成 #5：
-
-- 单租户 3 → 20 tick live Canary；
-- SIGTERM / 锁 / 回滚完整验证；
-- Safety 与 Deterministic 多组交替窗口；
-- 比较资源收益、单位损失、upkeep、idle/travel waste。
-
-合法性不等于收益，不能只凭 33 tick repair=0 扩到四租户。
-
-### 3. 仓库 SSOT
+### 4. 仓库 SSOT
 
 完成 #6：
 
@@ -107,15 +143,14 @@
 - `gen-status.py` + CI 防漂移；
 - 文档 current / plans / reference / legacy 分层。
 
-> 注意：当前 `docs/generated/status.md` 仍显示旧的 TS 测试数量。最新运行提交自报 216/216，但在生成器重新运行并通过 CI 前，不应继续复制测试数字。
-
 ## 当前 issues
 
 - #3 — 2026-08-03 下午到午夜 Leader 总控
-- #4 — Pi 周期重置与 agent-shadow live 复验
-- #5 — Deterministic live 与 Safety A/B
+- #4 — Pi 周期重置（已提交 b9515aa，审计项待清理）
+- #5 — Deterministic live 与 Safety A/B（经济闭环已过，A/B 收益验证待做）
 - #6 — 仓库 SSOT 整理
 - #7 — W5 Supervisor / health / rollout
+- #8 — Per-tick LLM 硬实时不成立 → 延迟基准 + MacroPolicy 转向
 
 已完成的上午总控 #2 已关闭，不再作为进度入口。
 
@@ -125,8 +160,9 @@
 
 - Safety live 证据：已完成；
 - Pi 真实嵌入：已完成；
-- agent-shadow live ≥100 tick，跨周期 rotation，P0 全 0；
-- Deterministic live Canary P0 全 0；
+- Deterministic live Canary P0 全 0：已完成（两轮）；
+- **t1 100 Tick burn-in 完成（进行中）**；
+- 移动失败率低位 + 失败归因分析；
 - runtime / decision / outcome / pi 证据可关联；
 - README / MASTER / generated status 不冲突；
 - clean clone 全量门禁通过；
@@ -150,8 +186,8 @@ per-tenant process supervisor
 
 ```text
 单租户 safety
-→ 单租户 deterministic / agent-shadow
-→ 逐租户扩展
+→ 单租户 deterministic（t1 已跑，burn-in 中）
+→ 逐租户扩展（t2 → t3 → t4，逐个切换）
 → 长期 soak
 → hybrid 独立门禁
 → W6 才讨论 Python 删除
