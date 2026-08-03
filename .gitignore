@@ -20,6 +20,9 @@ mapstore/
 # pi 二开 worktree（独立 git 仓库，pi 主 clone 在 [pi-repo]）
 pi-dev/
 
+# 本仓库并行开发 worktree（独立分支/索引，不纳入主工作区）
+.worktrees/
+
 # Node（monorepo：根 + 各包）
 node_modules/
 packages/*/node_modules/
