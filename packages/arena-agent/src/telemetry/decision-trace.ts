@@ -13,6 +13,7 @@
  */
 
 import type { DecisionResult, DecisionSource } from "../runtime/decision-types.ts";
+import type { Position } from "../domain/model.ts";
 import { validateTraceRecord } from "./schema.ts";
 
 /** run 提交结果（对应 decision-lease.ts 的 LeaseSubmission：accepted/rejected/无提交）。 */
@@ -74,11 +75,23 @@ export interface OutcomeTraceRecord {
   readonly workerCount?: number;
   readonly workersWithCargo?: number;
   readonly workerCargoTotal?: number;
+  /** 服务端失败事件 + 上一 Tick 实际提交动作，用于精确归因而非猜测。 */
+  readonly failedEvents?: readonly FailedEventTrace[];
   readonly grossDeposit?: number;
   readonly spawnCount?: number;
   readonly healCount?: number;
   readonly unitLossCount?: number;
   readonly events: string[];
+}
+
+export interface FailedEventTrace {
+  readonly eventType: string;
+  readonly reasonCode: string | null;
+  readonly actorId: string | null;
+  readonly targetId: string | null;
+  readonly position?: Position;
+  readonly priorAction?: string;
+  readonly priorIntent?: string;
 }
 
 /** 三种遥测记录的统一类型（JsonlWriter 的写入面）。 */

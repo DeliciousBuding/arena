@@ -40,6 +40,9 @@ export interface ResolutionEventSnapshot {
   readonly eventId: string;
   readonly tick: number;
   readonly eventType: string;
+  readonly reasonCode: string | null;
+  readonly actorId: string | null;
+  readonly targetId: string | null;
   readonly position?: Position;
   readonly values: Readonly<Record<string, unknown>>;
 }

@@ -48,6 +48,15 @@ const OT: Omit<OutcomeTraceRecord, "processRunId" | "tenantId"> = {
   coreResourcesBefore: 5,
   coreResourcesAfter: 7,
   coreResourceDelta: 2,
+  failedEvents: [{
+    eventType: "UNIT_MOVE_FAILED",
+    reasonCode: "blocked",
+    actorId: "w1",
+    targetId: null,
+    position: [2, 3],
+    priorAction: '{"type":"MOVE","direction":"RIGHT"}',
+    priorIntent: "return_home",
+  }],
   events: ["DEPOSIT 2"],
 };
 
@@ -74,6 +83,8 @@ test("outcomeTrace 字段齐全", () => {
   const record = outcomeTrace(OT);
   assert.equal(record.coreResourceDelta, 2);
   assert.deepEqual(record.events, ["DEPOSIT 2"]);
+  assert.equal(record.failedEvents?.[0]?.reasonCode, "blocked");
+  assert.equal(record.failedEvents?.[0]?.priorIntent, "return_home");
 });
 
 test("工厂缺必填字段 → 抛错（fail-fast 不静默）", () => {

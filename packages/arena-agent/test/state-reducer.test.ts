@@ -38,7 +38,16 @@ test("reduceTurn creates an immutable normalized state", () => {
     obstacleCells: new Set(["2,2"]),
     resourceCells: new Set(["1,0"]),
     beacon: { position: [5, 5], status: "GROUND", carrier_id: null },
-    events: [{ event_id: "e1", tick: 8, event_type: "HARVEST_SUCCEEDED", position: [1, 0], values: {} }],
+    events: [{
+      event_id: "e1",
+      tick: 8,
+      event_type: "HARVEST_SUCCEEDED",
+      reason_code: null,
+      actor_id: worker.id,
+      target_id: null,
+      position: [1, 0],
+      values: {},
+    }],
     state: {
       status: "ACTIVE",
       population: 1,
@@ -57,6 +66,9 @@ test("reduceTurn creates an immutable normalized state", () => {
   assert.equal(state.workers[0].cargo, 1);
   assert.equal(state.visibleEnemies[0].ownerUsername, "other");
   assert.deepEqual(state.events[0].position, [1, 0]);
+  assert.equal(state.events[0].reasonCode, null);
+  assert.equal(state.events[0].actorId, worker.id);
+  assert.equal(state.events[0].targetId, null);
   assert.notEqual(state.resourceCells, turn.resourceCells);
   assert.throws(() => {
     (state.units[0].position as [number, number])[0] = 99;

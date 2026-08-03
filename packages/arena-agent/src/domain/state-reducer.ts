@@ -38,6 +38,9 @@ interface EventLike {
   readonly event_id?: string;
   readonly tick?: number;
   readonly event_type?: string;
+  readonly reason_code?: string | null;
+  readonly actor_id?: string | null;
+  readonly target_id?: string | null;
   readonly position?: Position | null;
   readonly values?: Readonly<Record<string, unknown>>;
 }
@@ -161,6 +164,9 @@ function reduceEvent(event: EventLike, currentTick: number, index: number): Reso
     eventId: event.event_id ?? `synthetic:${currentTick}:${index}`,
     tick: event.tick ?? currentTick,
     eventType: event.event_type ?? "UNKNOWN",
+    reasonCode: event.reason_code ?? null,
+    actorId: event.actor_id ?? null,
+    targetId: event.target_id ?? null,
     position: event.position == null ? undefined : freezePosition(event.position),
     values: Object.freeze({ ...(event.values ?? {}) }),
   });

@@ -218,7 +218,14 @@ export async function runTenant(
     });
 
     // 7) outcome trace 的资源对比基准（t-1 → t）；holder 包装防 CFA 闭包窄化
-    const holder: { prev: { tick: number; resources: number } | null } = { prev: null };
+    const holder: {
+      prev: {
+        tick: number;
+        resources: number;
+        plan: TickOutcome["plan"];
+        coreId: string | null;
+      } | null;
+    } = { prev: null };
 
     const onTick = (outcome: TickOutcome): void => {
       const decision = outcome.decision;
@@ -259,6 +266,32 @@ export async function runTenant(
       }
       // outcome trace：t-1 决策时资源 → t 决策时资源（提交执行后的净变化）
       if (holder.prev !== null) {
+        const failedEvents = outcome.state.events
+          .filter((event) => event.eventType.endsWith("_FAILED") || event.reasonCode !== null)
+          .map((event) => {
+            const actorId = event.actorId;
+            const priorAction =
+              actorId === null
+                ? undefined
+                : actorId === holder.prev?.coreId
+                  ? holder.prev.plan.coreAction
+                  : holder.prev?.plan.unitActions[actorId];
+            const priorIntent =
+              actorId === null
+                ? undefined
+                : actorId === holder.prev?.coreId
+                  ? holder.prev.plan.intents.core
+                  : holder.prev?.plan.intents[actorId];
+            return {
+              eventType: event.eventType,
+              reasonCode: event.reasonCode,
+              actorId,
+              targetId: event.targetId,
+              position: event.position,
+              priorAction: priorAction === undefined || priorAction === null ? undefined : JSON.stringify(priorAction),
+              priorIntent,
+            };
+          });
         const outcomeRecord: OutcomeTraceRecord = {
           processRunId,
           tenantId: config.tenantId,
@@ -270,11 +303,17 @@ export async function runTenant(
           workerCount: outcome.state.workers.length,
           workersWithCargo: outcome.state.workers.filter((worker) => worker.cargo > 0).length,
           workerCargoTotal: outcome.state.workers.reduce((total, worker) => total + worker.cargo, 0),
+          failedEvents,
           events: outcome.state.events.map((e) => e.eventType),
         };
         outcomeWriter.write(outcomeRecord);
       }
-      holder.prev = { tick: outcome.tick, resources: outcome.state.resources };
+      holder.prev = {
+        tick: outcome.tick,
+        resources: outcome.state.resources,
+        plan: outcome.plan,
+        coreId: outcome.state.core?.id ?? null,
+      };
     };
 
     // 8) 主循环（signal 到达 → 终止 turns → 提交路径随 Turn 关闭自然停止）
