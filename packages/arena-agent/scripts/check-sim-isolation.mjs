@@ -50,6 +50,7 @@ const FORBIDDEN_TOKENS = [
   "process.env.API_KEY",
   "process.env.BASE_URL",
   "process.env.WEBSOCKET_URL",
+  ".localeCompare(",
 ];
 
 /** 允许的裸包 import：arena-hero-ts 只允许 type-only。 */
@@ -85,6 +86,11 @@ function classifyImports(files) {
   for (const file of files) {
     const text = readFileSync(file, "utf8");
     for (const token of FORBIDDEN_TOKENS) {
+      // locale-sensitive 排序是 sim 自身的确定性禁令；依赖闭包中的既有
+      // domain 代码由其自己的迁移计划负责，不能在 S5 中误伤线上路径。
+      if (token === ".localeCompare(" && !file.startsWith(`${SIM_DIR}\\`) && !file.startsWith(`${SIM_DIR}/`)) {
+        continue;
+      }
       if (text.includes(token)) {
         textScan.push({ file, token });
       }

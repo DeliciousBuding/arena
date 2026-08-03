@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CoreAction, Plan, Position, UnitType } from "../src/domain/model.ts";
+import type { CoreAction, Plan, Position, UnitAction, UnitType } from "../src/domain/model.ts";
 import { loadRulesManifest } from "../src/sim/contracts/rules-manifest.ts";
 import { createSeededRng } from "../src/sim/deterministic/rng.ts";
 import { idlePlans, settleTick, type SettlementContext } from "../src/sim/engine/settlement.ts";
@@ -34,7 +34,14 @@ interface PlayerSpec {
   readonly units: readonly { id: string; position: Position; hp?: number; unitType?: UnitType; cargo?: number }[];
 }
 
-function makeWorld(players: readonly PlayerSpec[], terrain?: { obstacles?: readonly Position[]; resources?: readonly Position[] }): SimWorld {
+function makeWorld(
+  players: readonly PlayerSpec[],
+  terrain?: {
+    obstacles?: readonly Position[];
+    resources?: readonly Position[];
+    piles?: readonly { readonly cell: Position; readonly amount: number }[];
+  },
+): SimWorld {
   return worldFromScenario({
     rulesVersion: "v0.11",
     tick: 1,
@@ -55,7 +62,11 @@ function makeWorld(players: readonly PlayerSpec[], terrain?: { obstacles?: reado
         cargo: u.cargo ?? 0,
       })),
     })),
-    terrain: { obstacles: terrain?.obstacles ?? [], resources: terrain?.resources ?? [] },
+    terrain: {
+      obstacles: terrain?.obstacles ?? [],
+      resources: terrain?.resources ?? [],
+      piles: terrain?.piles ?? [],
+    },
   });
 }
 
@@ -67,12 +78,17 @@ function coreUuid(playerId: string): string {
   return table[playerId] ?? "33333333-3333-3333-3333-333333333333";
 }
 
-function planFor(world: SimWorld, playerId: string, actions: Record<string, { type: string; [k: string]: unknown }>, coreAction: CoreAction | null = null): Plan {
-  const unitActions: Record<string, { type: string; [k: string]: unknown }> = {};
+function planFor(
+  world: SimWorld,
+  playerId: string,
+  actions: Readonly<Record<string, UnitAction>>,
+  coreAction: CoreAction | null = null,
+): Plan {
+  const unitActions: Record<string, UnitAction> = {};
   for (const [unitId, action] of Object.entries(actions)) {
     unitActions[unitId] = action;
   }
-  return { tick: world.tick, unitActions, coreAction, intents: {} } as unknown as Plan;
+  return { tick: world.tick, unitActions, coreAction, intents: {} };
 }
 
 function settle(world: SimWorld, plans: ReadonlyMap<string, Plan>): ReturnType<typeof settleTick> {
@@ -108,13 +124,17 @@ test("S5: upkeep 不足——最近的 19 保护，最远的受伤（v0.11）", 
   assert.equal(farUnit.hp, 1, "farthest unit should take 1 deficit damage");
   const damaged = result.events.filter((e) => e.eventType === "UNIT_DAMAGED");
   assert.equal(damaged.length, 1);
-  assert.equal(damaged[0].actorId, far.id);
+  assert.equal(damaged[0].targetId, far.id);
   assert.equal(damaged[0].reasonCode, "UPKEEP_DEFICIT");
   // 近的 units 全部存活满血
   for (const u of near) {
     const unit = player.units.find((x) => x.id === u.id)!;
     assert.equal(unit.hp, 2);
   }
+  assert.ok(
+    result.unknownEffects.some((effect) => effect.kind === "rule-assumption"),
+    "PENDING-VERIFICATION deficit 语义不得伪装成已验证 MATCH",
+  );
 });
 
 test("S5: deficit 同距按 raw UUID 序受伤", () => {
@@ -128,7 +148,7 @@ test("S5: deficit 同距按 raw UUID 序受伤", () => {
   const damaged = result.events.filter((e) => e.eventType === "UNIT_DAMAGED");
   assert.equal(damaged.length, 1);
   // 同距（5）→ 较低 raw UUID（uuid(40)）先受伤
-  assert.equal(damaged[0].actorId, uuid(40));
+  assert.equal(damaged[0].targetId, uuid(40));
 });
 
 /* ---------------- capacity / self-destruct ---------------- */
@@ -147,7 +167,7 @@ test("S5: self-destruct 后容量收缩 → overflow 销毁", () => {
   // 构造：3 workers（cap 15）+ 资源 15 → self-destruct 2 个 → population 1 → cap 10 → 销毁 5
   const units = Array.from({ length: 3 }, (_, i) => ({ id: uuid(i + 1), position: [1 + i, 0] as Position }));
   const world = makeWorld([{ id: "p1", resources: 15, core: [0, 0], units }]);
-  const actions: Record<string, { type: string }> = {
+  const actions: Record<string, UnitAction> = {
     [uuid(2)]: { type: "SELF_DESTRUCT" },
     [uuid(3)]: { type: "SELF_DESTRUCT" },
   };
@@ -159,6 +179,38 @@ test("S5: self-destruct 后容量收缩 → overflow 销毁", () => {
   const overflow = result.events.find((e) => e.eventType === "CORE_RESOURCE_OVERFLOW_DESTROYED");
   assert.ok(overflow, "overflow event missing");
   assert.deepEqual(overflow!.values, { amount: 5, capacity: 10 });
+  assert.ok(
+    result.events.findIndex((event) => event.eventType === "UNIT_SELF_DESTRUCTED") <
+      result.events.findIndex((event) => event.eventType === "CORE_RESOURCE_OVERFLOW_DESTROYED"),
+    "事件必须保留 phase 顺序",
+  );
+});
+
+test("S5: self-destruct Worker cargo 形成持久资源堆并发事件", () => {
+  const worker = { id: uuid(1), position: [3, 0] as Position, cargo: 2 };
+  const world = makeWorld([{ id: "p1", resources: 5, core: [0, 0], units: [worker] }]);
+  const result = settle(
+    world,
+    new Map([["p1", planFor(world, "p1", { [worker.id]: { type: "SELF_DESTRUCT" } })]]),
+  );
+  assert.equal(result.world.terrain.piles.get("3,0")?.amount, 2);
+  const dropped = result.events.find((event) => event.eventType === "WORKER_CARGO_DROPPED");
+  assert.deepEqual(dropped?.values, { amount: 2 });
+  assert.ok(eventTypes(result).includes("UNIT_SELF_DESTRUCTED"));
+});
+
+test("S5: upkeep 杀死 Worker 只产生 damage/cargo-drop，不伪造 self-destruct", () => {
+  const near = Array.from({ length: 19 }, (_, i) => ({
+    id: uuid(i + 1),
+    position: [1 + Math.floor(i / 2), i % 2] as Position,
+  }));
+  const far = { id: uuid(30), position: [30, 0] as Position, hp: 1, cargo: 2 };
+  const world = makeWorld([{ id: "p1", resources: 0, core: [0, 0], units: [...near, far] }]);
+  const result = settle(world, new Map([["p1", idlePlans(world).get("p1")!]]));
+  assert.equal(result.world.players.get("p1")!.units.some((unit) => unit.id === far.id), false);
+  assert.equal(result.world.terrain.piles.get("30,0")?.amount, 2);
+  assert.ok(eventTypes(result).includes("WORKER_CARGO_DROPPED"));
+  assert.equal(eventTypes(result).includes("UNIT_SELF_DESTRUCTED"), false);
 });
 
 /* ---------------- harvest ---------------- */
@@ -209,6 +261,34 @@ test("S5: 多 Worker 同资源格——最低 UUID 赢", () => {
   assert.equal(failed.reasonCode, "RESOURCE_DEPLETED");
 });
 
+test("S5: 未提交 HARVEST 的低 UUID Worker 不参与争抢", () => {
+  const actor = uuid(10);
+  const idle = uuid(1);
+  const world = makeWorld(
+    [{ id: "p1", resources: 5, core: [0, 0], units: [{ id: actor, position: [3, 0] }, { id: idle, position: [3, 0] }] }],
+    { resources: [[3, 0]] },
+  );
+  const result = settle(world, new Map([["p1", planFor(world, "p1", { [actor]: { type: "HARVEST" } })]]));
+  assert.equal(result.world.players.get("p1")!.units.find((unit) => unit.id === actor)!.cargo, 1);
+  assert.equal(result.world.players.get("p1")!.units.find((unit) => unit.id === idle)!.cargo, 0);
+});
+
+test("S5: dropped cargo 优先于自然节点，单次最多恢复 Worker 容量", () => {
+  const worker = uuid(1);
+  const world = makeWorld(
+    [{ id: "p1", resources: 5, core: [0, 0], units: [{ id: worker, position: [3, 0] }] }],
+    { resources: [[3, 0]], piles: [{ cell: [3, 0], amount: 3 }] },
+  );
+  const result = settle(world, new Map([["p1", planFor(world, "p1", { [worker]: { type: "HARVEST" } })]]));
+  assert.equal(result.world.players.get("p1")!.units[0].cargo, 2);
+  assert.equal(result.world.terrain.piles.get("3,0")?.amount, 1);
+  assert.equal(result.world.terrain.resources.has("3,0"), true, "回收 pile 不应消耗自然节点");
+  assert.deepEqual(result.events.find((event) => event.eventType === "HARVEST_SUCCEEDED")?.values, {
+    amount: 2,
+    source: "DROPPED_CARGO",
+  });
+});
+
 /* ---------------- deposit ---------------- */
 
 test("S5: deposit 成功/partial/full", () => {
@@ -241,6 +321,8 @@ test("S5: spawn 成功（扣费 + 新单位在 Core 格）", () => {
   assert.deepEqual(player.units[0].position, [0, 0]);
   const ev = result.events.find((e) => e.eventType === "CORE_SPAWN_SUCCEEDED")!;
   assert.deepEqual(ev.values, { unit_type: "WORKER", cost: 5 });
+  assert.match(ev.targetId!, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.ok(result.unknownEffects.some((effect) => effect.kind === "server-generated-id"));
 });
 
 test("S5: spawn 失败——资源不足 / Core 格满", () => {
@@ -271,6 +353,26 @@ test("S5: unit heal 成功/HP_FULL/不在 Core 格", () => {
   assert.equal(result2.events.find((e) => e.eventType === "UNIT_HEAL_FAILED")!.reasonCode, "HP_FULL");
 });
 
+test("S5: Vanguard HEAL 使用 Vanguard HP 上限而非 Worker 上限", () => {
+  const vanguard = uuid(1);
+  const world = makeWorld([
+    {
+      id: "p1",
+      resources: 5,
+      core: [0, 0],
+      units: [{ id: vanguard, position: [0, 0], hp: 1, unitType: "VANGUARD" }],
+    },
+  ]);
+  const result = settle(world, new Map([["p1", planFor(world, "p1", { [vanguard]: { type: "HEAL" } })]]));
+  assert.equal(result.world.players.get("p1")!.units[0].hp, 4);
+  assert.equal(result.world.players.get("p1")!.resources, 2);
+  assert.deepEqual(result.events.find((event) => event.eventType === "UNIT_HEAL_SUCCEEDED")?.values, {
+    amount: 3,
+    hp: 4,
+    cost: 3,
+  });
+});
+
 test("S5: repair shield 成功", () => {
   const world = worldFromScenario({
     rulesVersion: "v0.11",
@@ -288,7 +390,37 @@ test("S5: repair shield 成功", () => {
   const result = settle(world, new Map([["p1", planFor(world, "p1", {}, { type: "REPAIR_SHIELD" })]]));
   assert.equal(result.world.players.get("p1")!.core!.shield, 5);
   assert.equal(result.world.players.get("p1")!.resources, 4);
-  assert.ok(eventTypes(result).includes("CORE_SHIELD_REPAIRED"));
+  assert.ok(eventTypes(result).includes("CORE_REPAIR_SUCCEEDED"));
+});
+
+test("S5: MOVING Core 拒绝 deposit/heal/Core action，并标记 migration unsupported", () => {
+  const worker = uuid(1);
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: coreUuid("p1"), position: [0, 0], hp: 4, shield: 4, state: "MOVING" },
+        units: [{ id: worker, owner: "p1", position: [0, 0], hp: 1, unitType: "WORKER", cargo: 1 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+  });
+  const deposit = settle(
+    world,
+    new Map([["p1", planFor(world, "p1", { [worker]: { type: "DEPOSIT" } }, { type: "HEAL" })]]),
+  );
+  assert.equal(deposit.events.find((event) => event.eventType === "DEPOSIT_FAILED")?.reasonCode, "CORE_MOVING");
+  assert.equal(deposit.events.find((event) => event.eventType === "CORE_ACTION_FAILED")?.reasonCode, "CORE_ALREADY_MOVING");
+  assert.ok(deposit.unsupported.includes("core-migration"));
+
+  const heal = settle(
+    world,
+    new Map([["p1", planFor(world, "p1", { [worker]: { type: "HEAL" } })]]),
+  );
+  assert.equal(heal.events.find((event) => event.eventType === "UNIT_HEAL_FAILED")?.reasonCode, "CORE_MOVING");
 });
 
 /* ---------------- 经济闭环 + soak ---------------- */

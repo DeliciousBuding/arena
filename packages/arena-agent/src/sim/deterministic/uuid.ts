@@ -22,12 +22,17 @@ export function assertCanonicalUuid(value: string): void {
   }
 }
 
+/** 跨 locale 的稳定 code-unit 序；适用于 playerId、cellKey、eventType 等普通字符串。 */
+export function compareCodeUnit(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
 /** raw UUID byte 序比较：a < b → -1；a > b → 1；相等 → 0。 */
 export function compareUuidRaw(a: string, b: string): number {
   assertCanonicalUuid(a);
   assertCanonicalUuid(b);
-  if (a === b) return 0;
-  return a < b ? -1 : 1;
+  return compareCodeUnit(a, b);
 }
 
 /**

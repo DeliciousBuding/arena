@@ -24,7 +24,12 @@ export interface ResolutionEvent {
 /** unknown/不可预测效应（refill、对手动作）——不得伪装成 MATCH。 */
 export interface UnknownEffect {
   readonly tick: number;
-  readonly kind: "refill" | "opponent-action" | "fog-of-war";
+  readonly kind:
+    | "refill"
+    | "opponent-action"
+    | "fog-of-war"
+    | "rule-assumption"
+    | "server-generated-id";
   readonly note: string;
 }
 

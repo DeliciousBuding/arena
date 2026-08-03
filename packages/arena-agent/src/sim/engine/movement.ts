@@ -14,7 +14,7 @@
  */
 
 import { cellKey, type Direction, type Plan, type Position } from "../../domain/model.ts";
-import { sortByUuidRaw } from "../deterministic/uuid.ts";
+import { compareUuidRaw, sortByUuidRaw } from "../deterministic/uuid.ts";
 import type { SimWorld } from "../world/types.ts";
 import { CELL_ENTITY_CAPACITY } from "../world/world.ts";
 import { eventOf, outcome, type Phase, type PhaseContext, type ResolutionEvent } from "./phase.ts";
@@ -73,7 +73,7 @@ function collectMoves(world: SimWorld, plans: ReadonlyMap<string, Plan>): { move
     }
   }
   // 确定性顺序：结果与输入插入顺序无关（容器迭代顺序不是规则）
-  moves.sort((a, b) => a.unitId.localeCompare(b.unitId));
+  moves.sort((a, b) => compareUuidRaw(a.unitId, b.unitId));
   return { moves, units };
 }
 

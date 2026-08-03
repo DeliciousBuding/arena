@@ -74,6 +74,22 @@ export function validateWorld(world: SimWorld): string[] {
       problems.push(`terrain obstacle unsafe coordinate: ${key}`);
     }
   }
+  for (const [key, node] of world.terrain.resources) {
+    try {
+      assertSafeCoordinate(node.cell);
+    } catch (error) {
+      problems.push((error as Error).message);
+    }
+    if (cellKey(node.cell) !== key) problems.push(`resource node key mismatch: ${key}`);
+  }
+  for (const [key, pile] of world.terrain.piles) {
+    try {
+      assertSafeCoordinate(pile.cell);
+    } catch (error) {
+      problems.push((error as Error).message);
+    }
+    if (cellKey(pile.cell) !== key) problems.push(`resource pile key mismatch: ${key}`);
+  }
 
   // 3. id 全局唯一（units + cores）
   const seenIds = new Set<string>();
@@ -121,11 +137,17 @@ export function validateWorld(world: SimWorld): string[] {
       const max = HP_MAX[unit.unitType];
       if (unit.hp < 0 || unit.hp > max) problems.push(`unit ${unit.id} hp out of range`);
       if (unit.cargo < 0 || unit.cargo > 2) problems.push(`unit ${unit.id} cargo out of range`);
+      if (!Number.isInteger(unit.cargo)) problems.push(`unit ${unit.id} cargo must be an integer`);
+      if (unit.unitType !== "WORKER" && unit.cargo !== 0) {
+        problems.push(`non-worker unit ${unit.id} carries cargo`);
+      }
     }
   }
-  // 5b. 资源堆非负
+  // 5b. 资源堆必须是正整数；0 数量应删除 key，避免幽灵资源格。
   for (const [key, pile] of world.terrain.piles) {
-    if (pile.amount < 0) problems.push(`pile ${key} negative amount`);
+    if (!Number.isInteger(pile.amount) || pile.amount <= 0) {
+      problems.push(`pile ${key} amount must be a positive integer`);
+    }
   }
 
   // 6. occupancy 与对象位置一致 + 每格容量 + 敌我（跨玩家）不共格

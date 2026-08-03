@@ -1,24 +1,28 @@
 /**
  * Economy resolver（S5）：self-destruct / capacity / upkeep / harvest / deposit /
- * unit-heal / core-action（SPAWN/HEAL/REPAIR_SHIELD）。
+ * unit-heal / stationary Core action（SPAWN/HEAL/REPAIR_SHIELD）。
  *
- * 事件与 reason codes 对齐官方 resolution-results.md 与 v0.11 changelog：
- * - UPKEEP_PAID {due, paid, deficit}；UNIT_DAMAGED/UPKEEP_DEFICIT（v0.11：打多余单位）
- * - HARVEST_SUCCEEDED {amount, source}；HARVEST_FAILED（NOT_RESOURCE_CELL/CARGO_FULL/RESOURCE_DEPLETED）
- * - DEPOSIT_SUCCEEDED {amount, capacity, remaining}；DEPOSIT_FAILED（WORKER_EMPTY/CORE_NOT_PRESENT/CORE_RESOURCE_FULL）
- * - CORE_SPAWN_SUCCEEDED {unit_type, cost}；CORE_SPAWN_FAILED（INSUFFICIENT_RESOURCES/CELL_UNIT_LIMIT）
- * - CORE_HEAL_SUCCEEDED / UNIT_HEAL_SUCCEEDED；CORE_ACTION_FAILED
- *
- * 所有资源变化只读 rules contract（ctx.rules），不在代码散落 magic numbers。
+ * 约束：
+ * - 所有数值只读 rules manifest；
+ * - 所有竞争按稳定 raw UUID 序，而不是容器插入顺序；
+ * - v0.11 deficit 仍处于 PENDING-VERIFICATION 时，照 manifest 假设执行但
+ *   同时产生 rule-assumption unknown，禁止把该窗口计为已验证 MATCH；
+ * - 本地 spawn UUID 只保证确定性/唯一性，不冒充服务端真实 UUID。
  */
 
+import { createHash } from "node:crypto";
 import { cellKey, type Plan, type Position, type UnitType } from "../../domain/model.ts";
-import { compareUuidRaw, sortByUuidRaw } from "../deterministic/uuid.ts";
-import { eventOf, outcome, type Phase, type PhaseContext, type ResolutionEvent } from "./phase.ts";
+import { compareCodeUnit, compareUuidRaw } from "../deterministic/uuid.ts";
 import { CELL_ENTITY_CAPACITY } from "../world/world.ts";
 import type { SimPlayer, SimUnit, SimWorld } from "../world/types.ts";
-
-/* ---------------- 数值（读 rules contract） ---------------- */
+import {
+  eventOf,
+  outcome,
+  type Phase,
+  type PhaseContext,
+  type ResolutionEvent,
+  type UnknownEffect,
+} from "./phase.ts";
 
 function capacityOf(ctx: PhaseContext, population: number): number {
   const core = ctx.rules.rules.core;
@@ -30,14 +34,35 @@ function upkeepOf(ctx: PhaseContext, population: number): number {
   return (tier * (tier + 1)) / 2;
 }
 
+function unitCost(ctx: PhaseContext, unitType: UnitType): number {
+  const production = ctx.rules.rules.production;
+  if (unitType === "WORKER") return production.workerCost;
+  if (unitType === "VANGUARD") return production.vanguardCost;
+  return production.rangerCost;
+}
+
+function unitHp(ctx: PhaseContext, unitType: UnitType): number {
+  const units = ctx.rules.rules.units;
+  if (unitType === "WORKER") return units.workerHp;
+  if (unitType === "VANGUARD") return units.vanguardHp;
+  return units.rangerHp;
+}
+
 function manhattan(a: Position, b: Position): number {
   return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
 }
 
-/* ---------------- draft 更新 helper ---------------- */
+function updatePlayers(draft: SimWorld, fn: (players: Map<string, SimPlayer>) => void): void {
+  const players = new Map(draft.players);
+  fn(players);
+  (draft as unknown as { players: Map<string, SimPlayer> }).players = players;
+}
 
-function updatePlayers(draft: SimWorld, fn: (players: Map<string, SimPlayer>) => Map<string, SimPlayer>): void {
-  (draft as unknown as { players: Map<string, SimPlayer> }).players = fn(new Map(draft.players));
+function updatePlayer(draft: SimWorld, playerId: string, fn: (player: SimPlayer) => SimPlayer): void {
+  updatePlayers(draft, (players) => {
+    const player = players.get(playerId);
+    if (player !== undefined) players.set(playerId, fn(player));
+  });
 }
 
 function updatePlayerUnits(
@@ -45,106 +70,131 @@ function updatePlayerUnits(
   playerId: string,
   fn: (units: readonly SimUnit[]) => readonly SimUnit[],
 ): void {
-  updatePlayers(draft, (players) => {
-    const player = players.get(playerId);
-    if (player === undefined) return players;
-    players.set(playerId, { ...player, units: fn(player.units) });
-    return players;
-  });
+  updatePlayer(draft, playerId, (player) => ({ ...player, units: fn(player.units) }));
 }
 
 function updateTerrainPiles(
   draft: SimWorld,
-  fn: (piles: Map<string, { readonly cell: Position; readonly amount: number }>) => Map<string, { readonly cell: Position; readonly amount: number }>,
+  fn: (piles: Map<string, { readonly cell: Position; readonly amount: number }>) => void,
 ): void {
-  (draft as { terrain: SimWorld["terrain"] }).terrain = {
-    ...draft.terrain,
-    piles: fn(new Map(draft.terrain.piles)),
-  };
+  const piles = new Map(draft.terrain.piles);
+  fn(piles);
+  (draft as unknown as { terrain: SimWorld["terrain"] }).terrain = { ...draft.terrain, piles };
 }
 
-function removeUnit(draft: SimWorld, playerId: string, unit: SimUnit, tick: number, events: ResolutionEvent[]): void {
-  updatePlayerUnits(draft, playerId, (units) => units.filter((u) => u.id !== unit.id));
-  if (unit.cargo > 0) {
-    const key = cellKey(unit.position);
-    updateTerrainPiles(draft, (piles) => {
-      const existing = piles.get(key)?.amount ?? 0;
-      piles.set(key, { cell: unit.position, amount: existing + unit.cargo });
-      return piles;
-    });
+function findUnit(draft: SimWorld, playerId: string, unitId: string): SimUnit | null {
+  return draft.players.get(playerId)?.units.find((unit) => unit.id === unitId) ?? null;
+}
+
+function removeUnitOnly(draft: SimWorld, playerId: string, unitId: string): void {
+  updatePlayerUnits(draft, playerId, (units) => units.filter((unit) => unit.id !== unitId));
+}
+
+function dropWorkerCargo(draft: SimWorld, unit: SimUnit, events: ResolutionEvent[]): void {
+  if (unit.unitType !== "WORKER" || unit.cargo <= 0) return;
+  const key = cellKey(unit.position);
+  updateTerrainPiles(draft, (piles) => {
+    const existing = piles.get(key)?.amount ?? 0;
+    piles.set(key, { cell: unit.position, amount: existing + unit.cargo });
+  });
+  events.push(
+    eventOf(draft.tick, "WORKER_CARGO_DROPPED", {
+      actorId: unit.id,
+      position: unit.position,
+      values: { amount: unit.cargo },
+    }),
+  );
+}
+
+function removeUnitAndDropCargo(
+  draft: SimWorld,
+  playerId: string,
+  unit: SimUnit,
+  events: ResolutionEvent[],
+): void {
+  removeUnitOnly(draft, playerId, unit.id);
+  dropWorkerCargo(draft, unit, events);
+}
+
+function sortedPlayerIds(draft: SimWorld): string[] {
+  return [...draft.players.keys()].sort(compareCodeUnit);
+}
+
+interface UnitRequest {
+  readonly playerId: string;
+  readonly unitId: string;
+}
+
+function collectUnitRequests(
+  draft: SimWorld,
+  plans: ReadonlyMap<string, Plan>,
+  actionType: string,
+): UnitRequest[] {
+  const requests: UnitRequest[] = [];
+  for (const [playerId, plan] of plans) {
+    if (!draft.players.has(playerId)) continue;
+    for (const [unitId, action] of Object.entries(plan.unitActions)) {
+      if (action.type === actionType && findUnit(draft, playerId, unitId) !== null) {
+        requests.push({ playerId, unitId });
+      }
+    }
   }
-  events.push(eventOf(tick, "UNIT_SELF_DESTRUCTED", { actorId: unit.id, position: unit.position }));
+  return requests.sort((a, b) => compareUuidRaw(a.unitId, b.unitId));
 }
-
-/* ---------------- P02 self-destruct ---------------- */
 
 const selfDestructPhase: Phase = {
   id: "P02-self-destruct",
   officialPhase: 2,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
-    for (const [playerId, plan] of ctx.plans) {
-      for (const [unitId, action] of Object.entries(plan.unitActions)) {
-        if (action.type !== "SELF_DESTRUCT") continue;
-        const player = draft.players.get(playerId);
-        if (player === undefined) continue;
-        const unit = player.units.find((u) => u.id === unitId);
-        if (unit === undefined) continue;
-        removeUnit(draft, playerId, unit, draft.tick, events);
-      }
+    for (const request of collectUnitRequests(draft, ctx.plans, "SELF_DESTRUCT")) {
+      const unit = findUnit(draft, request.playerId, request.unitId);
+      if (unit === null) continue;
+      removeUnitAndDropCargo(draft, request.playerId, unit, events);
+      events.push(eventOf(draft.tick, "UNIT_SELF_DESTRUCTED", { actorId: unit.id, position: unit.position }));
     }
     return outcome({ events });
   },
 };
-
-/* ---------------- P03 capacity-shrink ---------------- */
 
 const capacityShrinkPhase: Phase = {
   id: "P03-capacity-shrink-after-removal",
   officialPhase: 2,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
-    for (const player of [...draft.players.values()]) {
-      const cap = capacityOf(ctx, player.units.length);
-      if (player.resources > cap) {
-        const amount = player.resources - cap;
-        updatePlayers(draft, (players) => {
-          const p = players.get(player.id)!;
-          players.set(player.id, { ...p, resources: cap });
-          return players;
-        });
-        if (player.core !== null) {
-          events.push(
-            eventOf(draft.tick, "CORE_RESOURCE_OVERFLOW_DESTROYED", {
-              actorId: player.core.id,
-              position: player.core.position,
-              values: { amount, capacity: cap },
-            }),
-          );
-        }
+    for (const playerId of sortedPlayerIds(draft)) {
+      const player = draft.players.get(playerId)!;
+      const capacity = capacityOf(ctx, player.units.length);
+      if (player.resources <= capacity) continue;
+      const amount = player.resources - capacity;
+      updatePlayer(draft, playerId, (current) => ({ ...current, resources: capacity }));
+      if (player.core !== null) {
+        events.push(
+          eventOf(draft.tick, "CORE_RESOURCE_OVERFLOW_DESTROYED", {
+            actorId: player.core.id,
+            position: player.core.position,
+            values: { amount, capacity },
+          }),
+        );
       }
     }
     return outcome({ events });
   },
 };
 
-/* ---------------- P04 upkeep-and-deficit（v0.11） ---------------- */
-
 const upkeepPhase: Phase = {
   id: "P04-upkeep-and-deficit",
   officialPhase: 3,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
-    for (const player of [...draft.players.values()]) {
+    const unknownEffects: UnknownEffect[] = [];
+    for (const playerId of sortedPlayerIds(draft)) {
+      const player = draft.players.get(playerId)!;
       const due = upkeepOf(ctx, player.units.length);
       if (due === 0) continue;
       const paid = Math.min(player.resources, due);
       const deficit = due - paid;
-      updatePlayers(draft, (players) => {
-        const p = players.get(player.id)!;
-        players.set(player.id, { ...p, resources: p.resources - paid });
-        return players;
-      });
+      updatePlayer(draft, playerId, (current) => ({ ...current, resources: current.resources - paid }));
       if (player.core !== null) {
         events.push(
           eventOf(draft.tick, "UPKEEP_PAID", {
@@ -155,14 +205,20 @@ const upkeepPhase: Phase = {
         );
       }
       if (deficit > 0) {
-        applyDeficitDamage(draft, ctx, player.id, deficit, events);
+        applyDeficitDamage(draft, ctx, playerId, deficit, events);
+        if (ctx.rules.rules.upkeep.deficitDamage.status !== "VERIFIED") {
+          unknownEffects.push({
+            tick: draft.tick,
+            kind: "rule-assumption",
+            note: `upkeep deficit applied using ${ctx.rules.rules.upkeep.deficitDamage.status} v0.11 semantics`,
+          });
+        }
       }
     }
-    return outcome({ events });
+    return outcome({ events, unknownEffects });
   },
 };
 
-/** v0.11 deficit：最近的 protectionCount 个受保护；其余从远到近受伤，同距 raw UUID 序。 */
 function applyDeficitDamage(
   draft: SimWorld,
   ctx: PhaseContext,
@@ -172,118 +228,141 @@ function applyDeficitDamage(
 ): void {
   const player = draft.players.get(playerId);
   if (player === undefined || player.core === null) return;
-  const corePos = player.core.position;
-  const protection = ctx.rules.rules.upkeep.deficitProtectionCount;
-
-  // 排序：距离从远到近；同距 ascending raw UUID
+  const corePosition = player.core.position;
+  const protectedCount = ctx.rules.rules.upkeep.deficitProtectionCount;
   const ordered = [...player.units].sort((a, b) => {
-    const da = manhattan(a.position, corePos);
-    const db = manhattan(b.position, corePos);
-    if (da !== db) return db - da;
-    return compareUuidRaw(a.id, b.id);
+    const distanceDelta = manhattan(b.position, corePosition) - manhattan(a.position, corePosition);
+    return distanceDelta !== 0 ? distanceDelta : compareUuidRaw(a.id, b.id);
   });
-  const atRisk = ordered.slice(0, Math.max(0, ordered.length - protection));
+  const atRisk = ordered.slice(0, Math.max(0, ordered.length - protectedCount));
 
   let remaining = deficit;
-  for (const unit of atRisk) {
+  for (const snapshot of atRisk) {
     if (remaining <= 0) break;
+    const unit = findUnit(draft, playerId, snapshot.id);
+    if (unit === null) continue;
     const damage = Math.min(remaining, unit.hp);
+    const hp = unit.hp - damage;
     remaining -= damage;
-    const hpAfter = unit.hp - damage;
     events.push(
       eventOf(draft.tick, "UNIT_DAMAGED", {
         reasonCode: "UPKEEP_DEFICIT",
-        actorId: unit.id,
+        targetId: unit.id,
         position: unit.position,
-        values: { damage, hp: Math.max(0, hpAfter) },
+        values: { damage, hp: Math.max(0, hp) },
       }),
     );
-    if (hpAfter <= 0) {
-      removeUnit(draft, playerId, unit, draft.tick, events);
+    if (hp <= 0) {
+      removeUnitAndDropCargo(draft, playerId, unit, events);
     } else {
       updatePlayerUnits(draft, playerId, (units) =>
-        units.map((u) => (u.id === unit.id ? { ...u, hp: hpAfter } : u)),
+        units.map((current) => (current.id === unit.id ? { ...current, hp } : current)),
       );
     }
   }
 }
-
-/* ---------------- P08 harvest-and-deposit ---------------- */
 
 const harvestDepositPhase: Phase = {
   id: "P08-harvest-and-deposit",
   officialPhase: 8,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
-    for (const [playerId, plan] of ctx.plans) {
-      const player = draft.players.get(playerId);
-      if (player === undefined) continue;
-      for (const [unitId, action] of Object.entries(plan.unitActions)) {
-        const unit = player.units.find((u) => u.id === unitId);
-        if (unit === undefined) continue;
-        if (action.type === "HARVEST") {
-          resolveHarvest(draft, ctx, playerId, unit, events);
-        } else if (action.type === "DEPOSIT") {
-          resolveDeposit(draft, ctx, playerId, unit, events);
-        }
-      }
-    }
+    resolveHarvestRequests(draft, ctx, events);
+    resolveDepositRequests(draft, ctx, events);
     return outcome({ events });
   },
 };
 
-function resolveHarvest(
+function resolveHarvestRequests(draft: SimWorld, ctx: PhaseContext, events: ResolutionEvent[]): void {
+  const byCell = new Map<string, UnitRequest[]>();
+  for (const request of collectUnitRequests(draft, ctx.plans, "HARVEST")) {
+    const unit = findUnit(draft, request.playerId, request.unitId);
+    if (unit === null || unit.unitType !== "WORKER") continue;
+    const key = cellKey(unit.position);
+    byCell.set(key, [...(byCell.get(key) ?? []), request]);
+  }
+
+  for (const key of [...byCell.keys()].sort(compareCodeUnit)) {
+    const requests = byCell.get(key)!;
+    const eligible: UnitRequest[] = [];
+    for (const request of requests) {
+      const unit = findUnit(draft, request.playerId, request.unitId);
+      if (unit === null) continue;
+      if (unit.cargo > 0) {
+        events.push(
+          eventOf(draft.tick, "HARVEST_FAILED", {
+            reasonCode: "CARGO_FULL",
+            actorId: unit.id,
+            position: unit.position,
+          }),
+        );
+      } else {
+        eligible.push(request);
+      }
+    }
+    if (eligible.length === 0) continue;
+
+    const hasPile = draft.terrain.piles.has(key);
+    const hasNode = draft.terrain.resources.has(key);
+    if (!hasPile && !hasNode) {
+      for (const request of eligible) {
+        const unit = findUnit(draft, request.playerId, request.unitId)!;
+        events.push(
+          eventOf(draft.tick, "HARVEST_FAILED", {
+            reasonCode: "NOT_RESOURCE_CELL",
+            actorId: unit.id,
+            position: unit.position,
+          }),
+        );
+      }
+      continue;
+    }
+
+    eligible.sort((a, b) => compareUuidRaw(a.unitId, b.unitId));
+    const winner = eligible[0];
+    const winnerUnit = findUnit(draft, winner.playerId, winner.unitId)!;
+    applyHarvest(draft, ctx, winner.playerId, winnerUnit, key, events);
+    for (const loser of eligible.slice(1)) {
+      const unit = findUnit(draft, loser.playerId, loser.unitId)!;
+      events.push(
+        eventOf(draft.tick, "HARVEST_FAILED", {
+          reasonCode: "RESOURCE_DEPLETED",
+          actorId: unit.id,
+          position: unit.position,
+        }),
+      );
+    }
+  }
+}
+
+function applyHarvest(
   draft: SimWorld,
   ctx: PhaseContext,
   playerId: string,
   unit: SimUnit,
+  key: string,
   events: ResolutionEvent[],
 ): void {
-  const key = cellKey(unit.position);
-  if (unit.cargo > 0) {
-    events.push(eventOf(draft.tick, "HARVEST_FAILED", { reasonCode: "CARGO_FULL", actorId: unit.id, position: unit.position }));
-    return;
-  }
   const pile = draft.terrain.piles.get(key);
-  const node = draft.terrain.resources.get(key);
-  if (pile === undefined && node === undefined) {
-    events.push(eventOf(draft.tick, "HARVEST_FAILED", { reasonCode: "NOT_RESOURCE_CELL", actorId: unit.id, position: unit.position }));
-    return;
-  }
-  // 同格多 Worker 争抢：最低 UUID 赢（含 pile 与节点统一竞争）
-  const player = draft.players.get(playerId)!;
-  const contenders = player.units.filter(
-    (u) =>
-      u.id !== unit.id &&
-      u.cargo === 0 &&
-      cellKey(u.position) === key &&
-      (draft.terrain.piles.has(key) || draft.terrain.resources.has(key)),
-  );
-  for (const contender of contenders) {
-    if (compareUuidRaw(unit.id, contender.id) > 0) {
-      events.push(eventOf(draft.tick, "HARVEST_FAILED", { reasonCode: "RESOURCE_DEPLETED", actorId: unit.id, position: unit.position }));
-      return;
-    }
-  }
-  // 成功：先回收 pile（DROPPED_CARGO），否则自然节点；消耗节点
   const fromPile = pile !== undefined;
-  const amount = ctx.rules.rules.economy.harvestAmount;
-  updatePlayerUnits(draft, playerId, (units) => units.map((u) => (u.id === unit.id ? { ...u, cargo: amount } : u)));
+  const amount = fromPile
+    ? Math.min(ctx.rules.rules.units.workerCargoCapacity, pile.amount)
+    : Math.min(ctx.rules.rules.units.workerCargoCapacity, ctx.rules.rules.economy.harvestAmount);
+
+  updatePlayerUnits(draft, playerId, (units) =>
+    units.map((current) => (current.id === unit.id ? { ...current, cargo: amount } : current)),
+  );
   if (fromPile) {
     updateTerrainPiles(draft, (piles) => {
-      const p = piles.get(key)!;
-      if (p.amount - amount <= 0) {
-        piles.delete(key);
-      } else {
-        piles.set(key, { cell: p.cell, amount: p.amount - amount });
-      }
-      return piles;
+      const current = piles.get(key)!;
+      const remaining = current.amount - amount;
+      if (remaining === 0) piles.delete(key);
+      else piles.set(key, { cell: current.cell, amount: remaining });
     });
   } else {
-    (draft as unknown as { terrain: SimWorld["terrain"] }).terrain = {
-      ...draft.terrain,
-      resources: new Map([...draft.terrain.resources].filter(([k]) => k !== key)),
-    };
+    const resources = new Map(draft.terrain.resources);
+    resources.delete(key);
+    (draft as unknown as { terrain: SimWorld["terrain"] }).terrain = { ...draft.terrain, resources };
   }
   events.push(
     eventOf(draft.tick, "HARVEST_SUCCEEDED", {
@@ -292,6 +371,14 @@ function resolveHarvest(
       values: { amount, source: fromPile ? "DROPPED_CARGO" : "RESOURCE_NODE" },
     }),
   );
+}
+
+function resolveDepositRequests(draft: SimWorld, ctx: PhaseContext, events: ResolutionEvent[]): void {
+  for (const request of collectUnitRequests(draft, ctx.plans, "DEPOSIT")) {
+    const unit = findUnit(draft, request.playerId, request.unitId);
+    if (unit === null || unit.unitType !== "WORKER") continue;
+    resolveDeposit(draft, ctx, request.playerId, unit, events);
+  }
 }
 
 function resolveDeposit(
@@ -311,58 +398,31 @@ function resolveDeposit(
     events.push(eventOf(draft.tick, "DEPOSIT_FAILED", { reasonCode: "CORE_NOT_PRESENT", actorId: unit.id, position: unit.position }));
     return;
   }
-  const cap = capacityOf(ctx, player.units.length);
-  const space = Math.max(0, cap - player.resources);
+  if (core.state === "MOVING") {
+    events.push(eventOf(draft.tick, "DEPOSIT_FAILED", { reasonCode: "CORE_MOVING", actorId: unit.id, targetId: core.id, position: unit.position }));
+    return;
+  }
+  const capacity = capacityOf(ctx, player.units.length);
+  const space = Math.max(0, capacity - player.resources);
   if (space === 0) {
-    events.push(
-      eventOf(draft.tick, "DEPOSIT_FAILED", {
-        reasonCode: "CORE_RESOURCE_FULL",
-        actorId: unit.id,
-        targetId: core.id,
-        position: unit.position,
-        values: { capacity: cap },
-      }),
-    );
+    events.push(eventOf(draft.tick, "DEPOSIT_FAILED", { reasonCode: "CORE_RESOURCE_FULL", actorId: unit.id, targetId: core.id, position: unit.position, values: { capacity } }));
     return;
   }
   const amount = Math.min(unit.cargo, space);
   const remaining = unit.cargo - amount;
-  updatePlayers(draft, (players) => {
-    const p = players.get(playerId)!;
-    players.set(playerId, { ...p, resources: p.resources + amount });
-    return players;
-  });
-  updatePlayerUnits(draft, playerId, (units) => units.map((u) => (u.id === unit.id ? { ...u, cargo: remaining } : u)));
-  events.push(
-    eventOf(draft.tick, "DEPOSIT_SUCCEEDED", {
-      actorId: unit.id,
-      targetId: core.id,
-      position: unit.position,
-      values: { amount, capacity: cap, remaining },
-    }),
-  );
+  updatePlayer(draft, playerId, (current) => ({ ...current, resources: current.resources + amount }));
+  updatePlayerUnits(draft, playerId, (units) => units.map((current) => (current.id === unit.id ? { ...current, cargo: remaining } : current)));
+  events.push(eventOf(draft.tick, "DEPOSIT_SUCCEEDED", { actorId: unit.id, targetId: core.id, position: unit.position, values: { amount, capacity, remaining } }));
 }
-
-/* ---------------- P10 unit-heal ---------------- */
 
 const unitHealPhase: Phase = {
   id: "P10-unit-heal",
   officialPhase: 10,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
-    const healers: { playerId: string; unit: SimUnit }[] = [];
-    for (const [playerId, plan] of ctx.plans) {
-      const player = draft.players.get(playerId);
-      if (player === undefined) continue;
-      for (const [unitId, action] of Object.entries(plan.unitActions)) {
-        if (action.type !== "HEAL") continue;
-        const unit = player.units.find((u) => u.id === unitId);
-        if (unit !== undefined) healers.push({ playerId, unit });
-      }
-    }
-    healers.sort((a, b) => compareUuidRaw(a.unit.id, b.unit.id));
-    for (const { playerId, unit } of healers) {
-      resolveUnitHeal(draft, ctx, playerId, unit, events);
+    for (const request of collectUnitRequests(draft, ctx.plans, "HEAL")) {
+      const unit = findUnit(draft, request.playerId, request.unitId);
+      if (unit !== null) resolveUnitHeal(draft, ctx, request.playerId, unit, events);
     }
     return outcome({ events });
   },
@@ -381,58 +441,49 @@ function resolveUnitHeal(
     events.push(eventOf(draft.tick, "UNIT_HEAL_FAILED", { reasonCode: "NOT_AT_OWN_CORE", actorId: unit.id, position: unit.position }));
     return;
   }
-  if (unit.hp >= ctx.rules.rules.units.workerHp) {
+  if (core.state === "MOVING") {
+    events.push(eventOf(draft.tick, "UNIT_HEAL_FAILED", { reasonCode: "CORE_MOVING", actorId: unit.id, position: unit.position }));
+    return;
+  }
+  const maxHp = unitHp(ctx, unit.unitType);
+  if (unit.hp >= maxHp) {
     events.push(eventOf(draft.tick, "UNIT_HEAL_FAILED", { reasonCode: "HP_FULL", actorId: unit.id, position: unit.position }));
     return;
   }
-  const missing = ctx.rules.rules.units.workerHp - unit.hp;
-  const cost = Math.min(missing, player.resources);
-  if (cost === 0) {
+  const costPerHp = ctx.rules.rules.economy.healCostPerHp;
+  const affordable = costPerHp === 0 ? maxHp - unit.hp : Math.floor(player.resources / costPerHp);
+  if (affordable <= 0) {
     events.push(eventOf(draft.tick, "UNIT_HEAL_FAILED", { reasonCode: "INSUFFICIENT_RESOURCES", actorId: unit.id, position: unit.position }));
     return;
   }
-  updatePlayers(draft, (players) => {
-    const p = players.get(playerId)!;
-    players.set(playerId, { ...p, resources: p.resources - cost });
-    return players;
-  });
-  updatePlayerUnits(draft, playerId, (units) => units.map((u) => (u.id === unit.id ? { ...u, hp: unit.hp + cost } : u)));
-  events.push(
-    eventOf(draft.tick, "UNIT_HEAL_SUCCEEDED", {
-      actorId: unit.id,
-      position: unit.position,
-      values: { amount: cost, hp: unit.hp + cost, cost },
-    }),
-  );
+  const amount = Math.min(maxHp - unit.hp, affordable);
+  const cost = amount * costPerHp;
+  updatePlayer(draft, playerId, (current) => ({ ...current, resources: current.resources - cost }));
+  updatePlayerUnits(draft, playerId, (units) => units.map((current) => (current.id === unit.id ? { ...current, hp: unit.hp + amount } : current)));
+  events.push(eventOf(draft.tick, "UNIT_HEAL_SUCCEEDED", { actorId: unit.id, position: unit.position, values: { amount, hp: unit.hp + amount, cost } }));
 }
-
-/* ---------------- P11 stationary-core-action ---------------- */
 
 const coreActionPhase: Phase = {
   id: "P11-stationary-core-action",
   officialPhase: 11,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
-    for (const [playerId, plan] of ctx.plans) {
-      const player = draft.players.get(playerId);
-      if (player === undefined || player.core === null) continue;
+    const unknownEffects: UnknownEffect[] = [];
+    for (const playerId of sortedPlayerIds(draft)) {
+      const plan = ctx.plans.get(playerId);
+      const player = draft.players.get(playerId)!;
+      if (plan?.coreAction === null || plan?.coreAction === undefined || player.core === null) continue;
       const action = plan.coreAction;
-      if (action === null) continue;
-      switch (action.type) {
-        case "SPAWN":
-          resolveSpawn(draft, ctx, playerId, player, action.unitType, events);
-          break;
-        case "HEAL":
-          resolveCoreHeal(draft, ctx, playerId, events);
-          break;
-        case "REPAIR_SHIELD":
-          resolveRepairShield(draft, ctx, playerId, events);
-          break;
-        default:
-          break; // WAIT 等无操作
+      if (action.type === "WAIT") continue;
+      if (player.core.state === "MOVING") {
+        events.push(eventOf(draft.tick, "CORE_ACTION_FAILED", { reasonCode: "CORE_ALREADY_MOVING", actorId: player.core.id, position: player.core.position }));
+        continue;
       }
+      if (action.type === "SPAWN") resolveSpawn(draft, ctx, playerId, action.unitType, events, unknownEffects);
+      else if (action.type === "HEAL") resolveCoreHeal(draft, ctx, playerId, events);
+      else if (action.type === "REPAIR_SHIELD") resolveRepairShield(draft, ctx, playerId, events);
     }
-    return outcome({ events });
+    return outcome({ events, unknownEffects });
   },
 };
 
@@ -440,59 +491,31 @@ function resolveSpawn(
   draft: SimWorld,
   ctx: PhaseContext,
   playerId: string,
-  player: SimPlayer,
   unitType: UnitType,
   events: ResolutionEvent[],
+  unknownEffects: UnknownEffect[],
 ): void {
+  const player = draft.players.get(playerId)!;
   const core = player.core!;
   const cost = unitCost(ctx, unitType);
-  // Core 格容量：Core 占 1 槽 → 同格 Unit 数 ≤ 1
-  const colocated = player.units.filter((u) => cellKey(u.position) === cellKey(core.position)).length;
+  const colocated = player.units.filter((unit) => cellKey(unit.position) === cellKey(core.position)).length;
   if (colocated >= CELL_ENTITY_CAPACITY - 1) {
-    events.push(
-      eventOf(draft.tick, "CORE_SPAWN_FAILED", {
-        reasonCode: "CELL_UNIT_LIMIT",
-        actorId: core.id,
-        position: core.position,
-        values: { limit: CELL_ENTITY_CAPACITY },
-      }),
-    );
+    events.push(eventOf(draft.tick, "CORE_SPAWN_FAILED", { reasonCode: "CELL_UNIT_LIMIT", actorId: core.id, position: core.position, values: { limit: CELL_ENTITY_CAPACITY } }));
     return;
   }
   if (player.resources < cost) {
-    events.push(
-      eventOf(draft.tick, "CORE_SPAWN_FAILED", {
-        reasonCode: "INSUFFICIENT_RESOURCES",
-        actorId: core.id,
-        position: core.position,
-        values: { required: cost },
-      }),
-    );
+    events.push(eventOf(draft.tick, "CORE_SPAWN_FAILED", { reasonCode: "INSUFFICIENT_RESOURCES", actorId: core.id, position: core.position, values: { required: cost } }));
     return;
   }
-  const newId = deterministicUnitId(ctx, playerId);
-  const maxHp = unitHp(ctx, unitType);
-  const newUnit: SimUnit = {
-    id: newId,
-    owner: playerId,
-    position: core.position,
-    hp: maxHp,
-    unitType,
-    cargo: 0,
-  };
-  updatePlayers(draft, (players) => {
-    const p = players.get(playerId)!;
-    players.set(playerId, { ...p, resources: p.resources - cost, units: [...p.units, newUnit] });
-    return players;
-  });
-  events.push(
-    eventOf(draft.tick, "CORE_SPAWN_SUCCEEDED", {
-      actorId: core.id,
-      targetId: newId,
-      position: core.position,
-      values: { unit_type: unitType, cost },
-    }),
-  );
+  const newId = deterministicUnitId(draft, playerId, unitType);
+  if (entityIdExists(draft, newId)) {
+    events.push(eventOf(draft.tick, "CORE_SPAWN_FAILED", { reasonCode: "DETERMINISTIC_ID_COLLISION", actorId: core.id, position: core.position }));
+    return;
+  }
+  const newUnit: SimUnit = { id: newId, owner: playerId, position: core.position, hp: unitHp(ctx, unitType), unitType, cargo: 0 };
+  updatePlayer(draft, playerId, (current) => ({ ...current, resources: current.resources - cost, units: [...current.units, newUnit] }));
+  events.push(eventOf(draft.tick, "CORE_SPAWN_SUCCEEDED", { actorId: core.id, targetId: newId, position: core.position, values: { unit_type: unitType, cost } }));
+  unknownEffects.push({ tick: draft.tick, kind: "server-generated-id", note: `spawned ${unitType} uses deterministic local UUID ${newId}; server UUID algorithm is not public` });
 }
 
 function resolveCoreHeal(draft: SimWorld, ctx: PhaseContext, playerId: string, events: ResolutionEvent[]): void {
@@ -503,89 +526,53 @@ function resolveCoreHeal(draft: SimWorld, ctx: PhaseContext, playerId: string, e
     events.push(eventOf(draft.tick, "CORE_HEAL_FAILED", { reasonCode: "HP_FULL", actorId: core.id, position: core.position }));
     return;
   }
-  const missing = maxHp - core.hp;
-  const cost = Math.min(missing, player.resources);
-  if (cost === 0) {
-    events.push(
-      eventOf(draft.tick, "CORE_HEAL_FAILED", { reasonCode: "INSUFFICIENT_RESOURCES", actorId: core.id, position: core.position }),
-    );
+  const costPerHp = ctx.rules.rules.economy.healCostPerHp;
+  const affordable = costPerHp === 0 ? maxHp - core.hp : Math.floor(player.resources / costPerHp);
+  if (affordable <= 0) {
+    events.push(eventOf(draft.tick, "CORE_HEAL_FAILED", { reasonCode: "INSUFFICIENT_RESOURCES", actorId: core.id, position: core.position }));
     return;
   }
-  updatePlayers(draft, (players) => {
-    const p = players.get(playerId)!;
-    players.set(playerId, { ...p, resources: p.resources - cost, core: { ...p.core!, hp: core.hp + cost } });
-    return players;
-  });
-  events.push(
-    eventOf(draft.tick, "CORE_HEAL_SUCCEEDED", {
-      actorId: core.id,
-      position: core.position,
-      values: { amount: cost, hp: core.hp + cost, cost },
-    }),
-  );
+  const amount = Math.min(maxHp - core.hp, affordable);
+  const cost = amount * costPerHp;
+  updatePlayer(draft, playerId, (current) => ({ ...current, resources: current.resources - cost, core: { ...current.core!, hp: core.hp + amount } }));
+  events.push(eventOf(draft.tick, "CORE_HEAL_SUCCEEDED", { actorId: core.id, position: core.position, values: { amount, hp: core.hp + amount, cost } }));
 }
 
 function resolveRepairShield(draft: SimWorld, ctx: PhaseContext, playerId: string, events: ResolutionEvent[]): void {
   const player = draft.players.get(playerId)!;
   const core = player.core!;
-  const cap = ctx.rules.rules.core.maxShield;
-  if (core.shield >= cap) {
-    events.push(eventOf(draft.tick, "CORE_SHIELD_REPAIR_FAILED", { reasonCode: "SHIELD_FULL", actorId: core.id, position: core.position }));
-    return;
-  }
-  if (player.resources < ctx.rules.rules.economy.repairShieldCost) {
-    events.push(
-      eventOf(draft.tick, "CORE_SHIELD_REPAIR_FAILED", {
-        reasonCode: "INSUFFICIENT_RESOURCES",
-        actorId: core.id,
-        position: core.position,
-      }),
-    );
+  const maxShield = ctx.rules.rules.core.maxShield;
+  if (core.shield >= maxShield) {
+    events.push(eventOf(draft.tick, "CORE_REPAIR_FAILED", { reasonCode: "SHIELD_FULL", actorId: core.id, position: core.position }));
     return;
   }
   const cost = ctx.rules.rules.economy.repairShieldCost;
-  updatePlayers(draft, (players) => {
-    const p = players.get(playerId)!;
-    players.set(playerId, { ...p, resources: p.resources - cost, core: { ...p.core!, shield: core.shield + 1 } });
-    return players;
-  });
-  events.push(
-    eventOf(draft.tick, "CORE_SHIELD_REPAIRED", {
-      actorId: core.id,
-      position: core.position,
-      values: { shield: core.shield + 1, cost },
-    }),
-  );
+  if (player.resources < cost) {
+    events.push(eventOf(draft.tick, "CORE_REPAIR_FAILED", { reasonCode: "INSUFFICIENT_RESOURCES", actorId: core.id, position: core.position }));
+    return;
+  }
+  updatePlayer(draft, playerId, (current) => ({ ...current, resources: current.resources - cost, core: { ...current.core!, shield: core.shield + 1 } }));
+  events.push(eventOf(draft.tick, "CORE_REPAIR_SUCCEEDED", { actorId: core.id, position: core.position, values: { shield: core.shield + 1, cost } }));
 }
 
-/* ---------------- helpers ---------------- */
-
-function unitCost(ctx: PhaseContext, unitType: UnitType): number {
-  const p = ctx.rules.rules.production;
-  return unitType === "WORKER" ? p.workerCost : unitType === "VANGUARD" ? p.vanguardCost : p.rangerCost;
+function deterministicUnitId(draft: SimWorld, playerId: string, unitType: UnitType): string {
+  const digest = createHash("sha256")
+    .update(`${draft.rulesVersion}\0${draft.seed}\0${draft.tick}\0${playerId}\0${unitType}`)
+    .digest("hex")
+    .slice(0, 32)
+    .split("");
+  digest[12] = "4";
+  digest[16] = ["8", "9", "a", "b"][Number.parseInt(digest[16], 16) & 3];
+  const hex = digest.join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function unitHp(ctx: PhaseContext, unitType: UnitType): number {
-  const u = ctx.rules.rules.units;
-  return unitType === "WORKER" ? u.workerHp : unitType === "VANGUARD" ? u.vanguardHp : u.rangerHp;
+function entityIdExists(draft: SimWorld, id: string): boolean {
+  for (const player of draft.players.values()) {
+    if (player.core?.id === id || player.units.some((unit) => unit.id === id)) return true;
+  }
+  return false;
 }
-
-/** 确定性 spawn ID：seeded RNG 生成 canonical UUID（服务端为 deterministic 校验；客户端可预测）。 */
-function deterministicUnitId(ctx: PhaseContext, playerId: string): string {
-  const rng = ctx.rng;
-  const hex = (): string =>
-    Math.floor((rng !== null ? rng() : 0.5) * 0x100000000)
-      .toString(16)
-      .padStart(8, "0");
-  const a = hex();
-  const b = hex().slice(0, 4);
-  const c = hex().slice(0, 4);
-  const d = hex().slice(0, 4);
-  const e = hex() + hex().slice(0, 4); // 12 位
-  return `${a}-${b}-${c}-${d}-${e}`.toLowerCase();
-}
-
-/* ---------------- 导出 ---------------- */
 
 export const economyPhases: readonly Phase[] = [
   selfDestructPhase,
@@ -595,5 +582,3 @@ export const economyPhases: readonly Phase[] = [
   unitHealPhase,
   coreActionPhase,
 ];
-
-export { sortByUuidRaw };

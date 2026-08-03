@@ -11,6 +11,7 @@
 
 import type { Plan } from "../../domain/model.ts";
 import type { RulesManifest } from "../contracts/rules-manifest.ts";
+import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { SimFeature, SimWorld } from "../world/types.ts";
 import { assertWorldInvariants } from "../world/world.ts";
 import { economyPhases } from "./economy.ts";
@@ -73,6 +74,9 @@ function scanUnsupported(world: SimWorld, plans: ReadonlyMap<string, Plan>): Sim
     }
   }
   for (const player of world.players.values()) {
+    if (player.core?.state === "MOVING") {
+      hit.add("core-migration");
+    }
     if (player.status === "RESPAWNING") {
       hit.add("respawn");
     }
@@ -197,7 +201,9 @@ export function settleTick(
 
   for (const phase of PHASES) {
     const out = (phase.run as unknown as PhaseRunner)(draft, ctx);
-    events.push(...out.events);
+    // 保留官方 phase 顺序，只在 phase 内稳定排序；不能把后阶段事件
+    // 全局排到前阶段之前，否则 trace 不再反映真实结算时序。
+    events.push(...sortEvents(out.events));
     unknownEffects.push(...out.unknownEffects);
     unsupported.push(...out.unsupported);
   }
@@ -213,7 +219,7 @@ export function settleTick(
 
   return {
     world: next,
-    events: sortEvents(events),
+    events,
     unknownEffects,
     unsupported: [...new Set(unsupported)].sort(),
   };
@@ -222,9 +228,9 @@ export function settleTick(
 /** 稳定事件排序：phase 内按 (actorId, eventType) —— 与对象插入顺序无关。 */
 function sortEvents(events: readonly ResolutionEvent[]): readonly ResolutionEvent[] {
   return [...events].sort((a, b) => {
-    const byActor = (a.actorId ?? "").localeCompare(b.actorId ?? "");
+    const byActor = compareCodeUnit(a.actorId ?? a.targetId ?? "", b.actorId ?? b.targetId ?? "");
     if (byActor !== 0) return byActor;
-    return a.eventType.localeCompare(b.eventType);
+    return compareCodeUnit(a.eventType, b.eventType);
   });
 }
 

@@ -7,6 +7,7 @@
 
 import { createHash } from "node:crypto";
 import { cellKey } from "../../domain/model.ts";
+import { compareCodeUnit, compareUuidRaw } from "../deterministic/uuid.ts";
 import type { SimWorld } from "./types.ts";
 
 function sortRecord(value: unknown): unknown {
@@ -27,7 +28,7 @@ function sortRecord(value: unknown): unknown {
 /** SimWorld → canonical JSON 字符串（key 排序 + 定长缩进）。 */
 export function canonicalWorldJson(world: SimWorld): string {
   const players = [...world.players.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => compareCodeUnit(a, b))
     .map(([id, player]) => ({
       id,
       username: player.username,
@@ -35,12 +36,12 @@ export function canonicalWorldJson(world: SimWorld): string {
       resources: player.resources,
       core: player.core === null ? null : sortRecord(player.core),
       units: [...player.units]
-        .sort((a, b) => a.id.localeCompare(b.id))
+        .sort((a, b) => compareUuidRaw(a.id, b.id))
         .map((unit) => sortRecord(unit)),
     }));
   const obstacles = [...world.terrain.obstacles].sort();
   const resources = [...world.terrain.resources.keys()].sort();
-  const piles = [...world.terrain.piles.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const piles = [...world.terrain.piles.entries()].sort(([a], [b]) => compareCodeUnit(a, b));
   const serializable = {
     tick: world.tick,
     resolvedTickCount: world.resolvedTickCount,

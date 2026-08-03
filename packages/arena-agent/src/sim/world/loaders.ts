@@ -53,6 +53,7 @@ interface ScenarioFile {
   readonly terrain: {
     readonly obstacles: readonly Position[];
     readonly resources: readonly Position[];
+    readonly piles: readonly { readonly cell: Position; readonly amount: number }[];
   };
   readonly beacon: SimBeacon | null;
 }
@@ -133,6 +134,16 @@ function normalizeScenario(raw: unknown): ScenarioFile {
       resources: Array.isArray(terrain.resources)
         ? (terrain.resources as unknown[]).map((p, i) => asPosition(p, `terrain.resources[${i}]`))
         : [],
+      piles: Array.isArray(terrain.piles)
+        ? (terrain.piles as unknown[]).map((rawPile, i) => {
+            const pile = assertRecord(rawPile, `terrain.piles[${i}]`);
+            const amount = Number(pile.amount);
+            if (!Number.isInteger(amount) || amount <= 0) {
+              throw new ScenarioLoadError(`terrain.piles[${i}].amount must be a positive integer`);
+            }
+            return { cell: asPosition(pile.cell, `terrain.piles[${i}].cell`), amount };
+          })
+        : [],
     },
     beacon: root.beacon === null || root.beacon === undefined ? null : { position: asPosition((root.beacon as any).position, "beacon.position") },
   };
@@ -169,8 +180,14 @@ export function worldFromScenario(raw: unknown): SimWorld {
   for (const p of scenario.terrain.obstacles) obstacles.add(cellKey(p));
   const resources = new Map<string, { readonly cell: Position }>();
   for (const p of scenario.terrain.resources) resources.set(cellKey(p), { cell: p });
+  const piles = new Map<string, { readonly cell: Position; readonly amount: number }>();
+  for (const pile of scenario.terrain.piles) {
+    const key = cellKey(pile.cell);
+    const existing = piles.get(key)?.amount ?? 0;
+    piles.set(key, { cell: pile.cell, amount: existing + pile.amount });
+  }
 
-  const terrain: SimTerrain = { obstacles, resources, piles: new Map() };
+  const terrain: SimTerrain = { obstacles, resources, piles };
   const world: SimWorld = {
     tick: scenario.tick,
     resolvedTickCount: 0,
