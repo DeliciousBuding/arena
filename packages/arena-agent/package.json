@@ -15,6 +15,10 @@
     "arena:live": "tsx src/cli/run-tenant.ts --live",
     "arena:sim": "tsx src/cli/run-sim.ts",
     "sim:doctor": "tsx src/cli/run-sim.ts doctor",
+    "sim:run": "tsx src/cli/run-sim.ts episode",
+    "sim:ab": "tsx src/cli/run-sim.ts ab",
+    "sim:bench": "tsx src/cli/run-sim.ts benchmark",
+    "sim:calibrate": "tsx src/cli/run-sim.ts calibrate",
     "sim:isolation-check": "node scripts/check-sim-isolation.mjs",
     "sim:test": "tsx --test \"test/sim-*.test.ts\""
   },

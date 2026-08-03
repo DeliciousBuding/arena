@@ -31,6 +31,20 @@ export interface EpisodeTenant {
   readonly planner: PlannerKind;
 }
 
+export interface EpisodeTickPlayerMeasurement {
+  readonly playerId: string;
+  readonly resources: number;
+  readonly population: number;
+}
+
+export interface EpisodeTickMeasurement {
+  /** Tick that was just settled. */
+  readonly tick: number;
+  /** Decision + validation + settlement wall time; observer callback time is excluded. */
+  readonly wallMs: number;
+  readonly players: readonly EpisodeTickPlayerMeasurement[];
+}
+
 export interface EpisodeConfig {
   /** worldFromScenario 输入；config.seed 会覆盖 scenario.seed，避免双 seed 语义。 */
   readonly scenario: unknown;
@@ -42,6 +56,8 @@ export interface EpisodeConfig {
   readonly validatePlans?: boolean;
   /** 测试/实验注入；默认复用线上 DeterministicPlanner/SafetyPlanner。 */
   readonly plannerFactory?: (tenant: EpisodeTenant) => PlanProvider;
+  /** Optional read-only performance observer; never participates in simulation semantics. */
+  readonly onTickSettled?: (measurement: EpisodeTickMeasurement) => void;
 }
 
 export interface ValidationSummary {
@@ -173,6 +189,7 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
   let totalEvents = 0;
 
   for (let step = 0; step < config.ticks; step += 1) {
+    const tickStarted = performance.now();
     const before = world;
     const settlementPlans = new Map<string, Plan>();
     const plans: Record<string, Plan> = {};
@@ -233,6 +250,20 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
       unsupported: result.unsupported,
       unknownEffects: result.unknownEffects,
     });
+    if (config.onTickSettled !== undefined) {
+      const players = [...world.players.values()]
+        .sort((a, b) => compareCodeUnit(a.id, b.id))
+        .map((player) => Object.freeze({
+          playerId: player.id,
+          resources: player.resources,
+          population: player.units.length,
+        }));
+      config.onTickSettled(Object.freeze({
+        tick: before.tick,
+        wallMs: performance.now() - tickStarted,
+        players: Object.freeze(players),
+      }));
+    }
   }
 
   return {

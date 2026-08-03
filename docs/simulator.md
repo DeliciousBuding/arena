@@ -27,6 +27,17 @@ npm run sim:isolation-check -w packages/arena-agent
 npm run sim:test -w packages/arena-agent
 ```
 
+快捷命令：
+
+```bash
+npm run sim:run -w packages/arena-agent -- --scenario <path>
+npm run sim:ab -w packages/arena-agent -- --scenario <path>
+npm run sim:bench -w packages/arena-agent -- --scenario <path>
+npm run sim:calibrate -w packages/arena-agent -- --case <path>
+```
+
+episode、A/B、benchmark 默认串行；`--workers` 当前只接受 `1`。这不是伪并行开关，而是显式 CPU 隔离上限。
+
 ## 2. 输入路径与规则版本
 
 CLI 输入路径相对**仓库根目录**解析，也允许显式绝对只读输入路径。外部输入的本机绝对路径不会写入 manifest，只记录 `external:<filename>` 与内容 SHA-256。
@@ -90,7 +101,12 @@ npm run arena:sim -w packages/arena-agent -- ab \
   --ticks 1000
 ```
 
-`ab-report.json` 包含每个 Planner × seed 的语义摘要与聚合。排名采用词典序，不把机器速度揉进策略优劣：
+`ab-report.json` 包含每个 Planner × seed 的语义摘要与聚合，并输出同 seed 的：
+
+- `pairedDeltas`：candidate − baseline；
+- `pairedAggregates`：配对均值与合法性差值。
+
+baseline 为稳定排序后的第一个 Planner。排名采用词典序，不把机器速度揉进策略优劣：
 
 1. 平均 Core 资源增量更高；
 2. 非法计划更少；
@@ -118,11 +134,19 @@ npm run arena:sim -w packages/arena-agent -- benchmark \
   --seed 42
 ```
 
-`benchmark.json` 记录每轮 wall time、ticks/s、min/median/max throughput。所有测量轮次必须同时产生相同：
+`benchmark.json` 记录：
+
+- wall time、ticks/s、min/median/max throughput；
+- 每 Tick latency 的 p50/p95/max；
+- heap start/end/delta/peak；
+- 每 Tick、每玩家的 resources/population 经济曲线及 `economicCurveHash`。
+
+所有测量轮次必须同时产生相同：
 
 - `finalWorldHash`；
 - 完整 `records` 的 `traceHash`；
 - episode `semanticHash`。
+- `economicCurveHash`。
 
 任一漂移都会使 benchmark 失败，避免用计划/事件漂移换速度。`semanticStatus=inconclusive` 表示该 benchmark 覆盖了 refill、unsupported 或其他 unknown，其吞吐量仍可测，但不能作为完整规则 Golden。
 

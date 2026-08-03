@@ -128,10 +128,12 @@ Golden fixture 必须包含 rules/sdk 版本并脱敏；按完整 Tick 序列比
 > ✅ **已完成（2026-08-03）**：契约 v1.0.1 + 机器 Schema（contracts/differential/）+ fixture
 > burnin-20260802-a（100 tick 连续 segment，manifest 驱动，config 单源注入）+
 > E1/E2 回放器（scripts/replay_py.py / packages/arena-agent/scripts/replay-ts.ts）+
-> E3 差分比较器（scripts/diff_replay.py + 白名单）。实测 100 tick：**STATE_CLEAN ·
-> 未解释差异 0 条 · plan 内容差异 0/100**（memory/units 差异为已解释设计差异：
-> TS 清理死亡单位记忆 vs Python 保留，进白名单）。CI 新增 W3 replay job（npm run replay:check
-> + 报告 artifact）。Python 策略层自此正式冻结，不再参与新功能。
+> E3 差分比较器（scripts/diff_replay.py + 有界白名单）。W3 关单时实测 100 tick：
+> **STATE_CLEAN · 未解释差异 0 条 · plan 内容差异 0/100**。此后 Python 策略层冻结，
+> TS planner 经真机验证继续演进；冻结 fixture 中随之出现的单位 MOVE 参数差异只在
+> `burnin-20260802-a / unknown / unknown-001 / 40437–40536` 范围内豁免。该豁免不覆盖
+> state/metadata、动作类型、缺动作、Core 动作或其他 record key。当前策略由单测、
+> Digital Twin 与 live burn-in 门禁负责，W3 不再作为“复刻退役 Python 策略”的门禁。
 
 ### 切片 3 — W4 决策核心，不接真实 Provider（4-5 天）
 

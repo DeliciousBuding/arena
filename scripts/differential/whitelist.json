@@ -5,6 +5,17 @@
       "path_pattern": "^memory/units/[^/]+$",
       "difference": "py_present_ts_missing",
       "reason": "TS World 主动清理已消失/死亡单位记忆（world.ts observe liveUnits 清理，当前 Tick 权威设计）；Python UnitStateTracker 永久保留历史单位。实测 plan 内容差异 0/100，决策不受影响。仅放行 py 有 ts 无的单条单位记忆；memory/resources、memory/enemies、单位 mode 值变化一律不放行。"
+    },
+    {
+      "category": "plan_action_param",
+      "path_pattern": "^plan/unit_actions/[^/]+$",
+      "difference": "value_mismatch",
+      "dataset_id": "burnin-20260802-a",
+      "tenant_id": "unknown",
+      "segment_id": "unknown-001",
+      "tick_min": 40437,
+      "tick_max": 40536,
+      "reason": "冻结的 W3 legacy fixture 记录的是退役 Python planner；当前 TS planner 已在后续真机迁移中有意更改 MOVE 路径（BFS 绕障、扩圈、容量与动态争用退避）。仅放行该固定 100 Tick 数据集的单位 MOVE 参数差异；state/metadata、动作类型、缺动作、Core 动作及其他 key 仍必须一致。当前策略语义由 deterministic 单测、Digital Twin 与严格 live burn-in 门禁负责。"
     }
   ]
 }

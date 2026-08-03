@@ -5,6 +5,7 @@
 > 背景与完整规划见 `docs/archives/history-2026-08-03/architecture-review-gpt-2026-08-02.md` 切片 2。
 > v1.0.1 勘误：hash 魔法字符串 "none" → null；UUID 描述澄清；"逐字节一致"改为 canonicalization 语义；记录句法示例修正。
 > 机器可验证 Schema：`contracts/differential/record-v1.schema.json`、`manifest-v1.schema.json`（**契约的机器部分，人工文档只作说明**）。
+> 当前定位：这是 **2026-08-02 冻结的 legacy 迁移 fixture**，用于继续保护 reducer/state/metadata/协议兼容性；它不再要求后续已上线的 TS 策略逐 MOVE 复刻退役 Python planner。已知策略差异只能通过带 `dataset_id/tenant_id/segment_id/tick` 范围和非空 reason 的有界白名单放行。
 
 ## 每 Tick 输出结构（JSONL，一行一个 Tick）
 
@@ -86,11 +87,11 @@
 
 - state 硬错误 > 0 → exit 1（任何白名单都不得覆盖硬错误）
 - 其余差异：报告分类计数，不挡退出码（白名单内的差异标 `whitelisted`）
-- 未解释差异（unexplained）非零 → exit 1（W3 完成标准：零未解释语义差异）
+- 未解释差异（unexplained）非零 → exit 1；白名单必须同时匹配复合 record key、类别、路径与差异形态，且不得覆盖硬差异
 
 ## 与资源效率评测的边界（职责分离）
 
-- Differential Record v1 **只用于迁移一致性**（W3 Compatibility Gate：TS 是否忠实替代 Python）。
-- 策略效果评测（哪个计划能获得更多资源）是**独立的 Efficiency Trace v1**（见 `docs/efficiency-trace-v1.md`），不得把效率字段塞进本 record。
+- Differential Record v1 **只用于冻结迁移证据的兼容性保护**：state/metadata/协议仍要求严格一致；当前策略的路径与收益正确性不由 legacy Python 决定。
+- 当前策略语义由 deterministic 单测 + Digital Twin 校准/soak 证明，生产晋级由严格 live burn-in 证明；策略效果评测见独立的 Efficiency Trace v1。
 - 反事实警告：固定历史 raw-state 序列由历史真实行动产生，不能用来评价不同计划的长期收益（拿 MOVE RIGHT 的结果评估 MOVE LEFT 的历史是反事实污染）。
 

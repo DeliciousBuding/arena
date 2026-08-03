@@ -2,7 +2,13 @@
 
 import { performance } from "node:perf_hooks";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
-import { runEpisode, type EpisodeConfig, type EpisodeResult, type PlannerKind } from "../harness/episode.ts";
+import {
+  runEpisode,
+  type EpisodeConfig,
+  type EpisodeResult,
+  type EpisodeTickPlayerMeasurement,
+  type PlannerKind,
+} from "../harness/episode.ts";
 import { worldFromScenario } from "../world/loaders.ts";
 import { sha256Json } from "./artifacts.ts";
 
@@ -103,6 +109,29 @@ export interface ABAggregate {
   readonly inconclusiveRuns: number;
 }
 
+export interface ABPairedDelta {
+  readonly seed: number;
+  readonly baseline: PlannerKind;
+  readonly candidate: PlannerKind;
+  /** Candidate minus baseline. */
+  readonly resourceDelta: number;
+  readonly finalPopulationDelta: number;
+  readonly illegalPlansDelta: number;
+  readonly repairedPlansDelta: number;
+  readonly status: "conclusive" | "exploratory";
+}
+
+export interface ABPairedAggregate {
+  readonly baseline: PlannerKind;
+  readonly candidate: PlannerKind;
+  readonly pairs: number;
+  readonly meanResourceDelta: number;
+  readonly meanFinalPopulationDelta: number;
+  readonly illegalPlansDelta: number;
+  readonly repairedPlansDelta: number;
+  readonly exploratoryPairs: number;
+}
+
 export interface ABReport {
   readonly schema: "sim.ab-report.v1";
   readonly ticks: number;
@@ -110,6 +139,8 @@ export interface ABReport {
   readonly planners: readonly PlannerKind[];
   readonly runs: readonly ABRunSummary[];
   readonly aggregates: readonly ABAggregate[];
+  readonly pairedDeltas: readonly ABPairedDelta[];
+  readonly pairedAggregates: readonly ABPairedAggregate[];
   readonly rankingStatus: "conclusive" | "exploratory";
   /** Lexicographic: resource delta desc, illegal plans asc, population desc, planner id. */
   readonly ranking: readonly PlannerKind[];
@@ -119,6 +150,10 @@ export interface ABReport {
 export interface ABPerformance {
   readonly schema: "sim.ab-performance.v1";
   readonly wallMs: number;
+}
+
+function summaryIsInconclusive(summary: EpisodeSemanticSummary): boolean {
+  return summary.unsupported.length > 0 || summary.unknownEffectCount > 0;
 }
 
 export function runAB(config: {
@@ -161,11 +196,50 @@ export function runAB(config: {
         meanFinalPopulation: matching.reduce((sum, run) => sum + run.summary.totalFinalPopulation, 0) / divisor,
         illegalPlans: matching.reduce((sum, run) => sum + run.summary.illegalPlans, 0),
         repairedPlans: matching.reduce((sum, run) => sum + run.summary.repairedPlans, 0),
-        inconclusiveRuns: matching.filter((run) =>
-          run.summary.unsupported.length > 0 || run.summary.unknownEffectCount > 0,
-        ).length,
+        inconclusiveRuns: matching.filter((run) => summaryIsInconclusive(run.summary)).length,
       };
     });
+  const baseline = planners[0];
+  const pairedDeltas: ABPairedDelta[] = [];
+  for (const candidate of planners.slice(1)) {
+    for (const seed of seeds) {
+      const baselineRun = runs.find((run) => run.planner === baseline && run.seed === seed);
+      const candidateRun = runs.find((run) => run.planner === candidate && run.seed === seed);
+      if (baselineRun === undefined || candidateRun === undefined) {
+        throw new Error(`A/B pairing missing run for seed=${seed}, ${baseline} vs ${candidate}`);
+      }
+      pairedDeltas.push({
+        seed,
+        baseline,
+        candidate,
+        resourceDelta:
+          candidateRun.summary.totalResourceDelta - baselineRun.summary.totalResourceDelta,
+        finalPopulationDelta:
+          candidateRun.summary.totalFinalPopulation - baselineRun.summary.totalFinalPopulation,
+        illegalPlansDelta: candidateRun.summary.illegalPlans - baselineRun.summary.illegalPlans,
+        repairedPlansDelta: candidateRun.summary.repairedPlans - baselineRun.summary.repairedPlans,
+        status:
+          summaryIsInconclusive(baselineRun.summary) || summaryIsInconclusive(candidateRun.summary)
+            ? "exploratory"
+            : "conclusive",
+      });
+    }
+  }
+  const pairedAggregates: ABPairedAggregate[] = planners.slice(1).map((candidate) => {
+    const pairs = pairedDeltas.filter((pair) => pair.candidate === candidate);
+    const divisor = pairs.length || 1;
+    return {
+      baseline,
+      candidate,
+      pairs: pairs.length,
+      meanResourceDelta: pairs.reduce((sum, pair) => sum + pair.resourceDelta, 0) / divisor,
+      meanFinalPopulationDelta:
+        pairs.reduce((sum, pair) => sum + pair.finalPopulationDelta, 0) / divisor,
+      illegalPlansDelta: pairs.reduce((sum, pair) => sum + pair.illegalPlansDelta, 0),
+      repairedPlansDelta: pairs.reduce((sum, pair) => sum + pair.repairedPlansDelta, 0),
+      exploratoryPairs: pairs.filter((pair) => pair.status === "exploratory").length,
+    };
+  });
   const ranking = [...aggregates]
     .sort((a, b) =>
       b.meanResourceDelta - a.meanResourceDelta ||
@@ -184,6 +258,8 @@ export function runAB(config: {
     planners,
     runs,
     aggregates,
+    pairedDeltas,
+    pairedAggregates,
     rankingStatus,
     ranking,
   };
@@ -205,10 +281,37 @@ export interface BenchmarkReport {
   readonly semanticStatus: "supported" | "inconclusive";
   readonly unsupported: readonly string[];
   readonly unknownEffectCount: number;
-  readonly samples: readonly { readonly wallMs: number; readonly ticksPerSecond: number }[];
+  readonly economicCurveHash: string;
+  readonly economicCurve: readonly {
+    readonly tick: number;
+    readonly players: readonly EpisodeTickPlayerMeasurement[];
+  }[];
+  readonly tickLatencyMs: {
+    readonly p50: number;
+    readonly p95: number;
+    readonly max: number;
+  };
+  readonly samples: readonly {
+    readonly wallMs: number;
+    readonly ticksPerSecond: number;
+    readonly tickLatencyP50Ms: number;
+    readonly tickLatencyP95Ms: number;
+    readonly tickLatencyMaxMs: number;
+    readonly heapStartBytes: number;
+    readonly heapEndBytes: number;
+    readonly heapDeltaBytes: number;
+    readonly peakHeapBytes: number;
+  }[];
   readonly medianTicksPerSecond: number;
   readonly minTicksPerSecond: number;
   readonly maxTicksPerSecond: number;
+}
+
+function percentile(values: readonly number[], ratio: number): number {
+  if (values.length === 0) throw new Error("percentile requires at least one value");
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.max(0, Math.ceil(ratio * sorted.length) - 1);
+  return sorted[index];
 }
 
 export function runBenchmark(config: {
@@ -234,27 +337,62 @@ export function runBenchmark(config: {
   };
   for (let index = 0; index < config.warmupRuns; index += 1) runEpisode(episodeConfig);
 
-  const samples: { wallMs: number; ticksPerSecond: number }[] = [];
+  const samples: Array<BenchmarkReport["samples"][number]> = [];
   const hashes = new Set<string>();
   const traceHashes = new Set<string>();
+  const economicCurveHashes = new Set<string>();
+  const allTickLatencies: number[] = [];
   let referenceSummary: EpisodeSemanticSummary | null = null;
+  let referenceEconomicCurve: BenchmarkReport["economicCurve"] | null = null;
   for (let index = 0; index < config.measuredRuns; index += 1) {
-    const result = runEpisode(episodeConfig);
+    const tickLatencies: number[] = [];
+    const economicCurve: Array<BenchmarkReport["economicCurve"][number]> = [];
+    const heapStartBytes = process.memoryUsage().heapUsed;
+    let peakHeapBytes = heapStartBytes;
+    const result = runEpisode({
+      ...episodeConfig,
+      onTickSettled: (measurement) => {
+        tickLatencies.push(measurement.wallMs);
+        economicCurve.push({ tick: measurement.tick, players: measurement.players });
+        peakHeapBytes = Math.max(peakHeapBytes, process.memoryUsage().heapUsed);
+      },
+    });
+    const heapEndBytes = process.memoryUsage().heapUsed;
+    if (tickLatencies.length !== config.ticks || economicCurve.length !== config.ticks) {
+      throw new Error(
+        `benchmark instrumentation mismatch: expected ${config.ticks} ticks, got ${tickLatencies.length}`,
+      );
+    }
     hashes.add(result.finalWorldHash);
     traceHashes.add(sha256Json(result.records));
+    const economicCurveHash = sha256Json(economicCurve);
+    economicCurveHashes.add(economicCurveHash);
+    if (referenceEconomicCurve === null) referenceEconomicCurve = economicCurve;
     const summary = summarizeEpisode(episodeConfig, result);
     if (referenceSummary === null) referenceSummary = summary;
     else if (summary.semanticHash !== referenceSummary.semanticHash) {
       throw new Error("benchmark semantic drift: measured runs produced different semantic summaries");
     }
+    allTickLatencies.push(...tickLatencies);
     samples.push({
       wallMs: result.metrics.wallMs,
       ticksPerSecond: result.metrics.wallMs <= 0 ? 0 : config.ticks / (result.metrics.wallMs / 1000),
+      tickLatencyP50Ms: percentile(tickLatencies, 0.5),
+      tickLatencyP95Ms: percentile(tickLatencies, 0.95),
+      tickLatencyMaxMs: Math.max(...tickLatencies),
+      heapStartBytes,
+      heapEndBytes,
+      heapDeltaBytes: heapEndBytes - heapStartBytes,
+      peakHeapBytes,
     });
   }
   if (hashes.size !== 1) throw new Error("benchmark semantic drift: measured runs produced different final hashes");
   if (traceHashes.size !== 1) throw new Error("benchmark semantic drift: measured runs produced different traces");
+  if (economicCurveHashes.size !== 1) {
+    throw new Error("benchmark semantic drift: measured runs produced different economic curves");
+  }
   if (referenceSummary === null) throw new Error("benchmark produced no measured summary");
+  if (referenceEconomicCurve === null) throw new Error("benchmark produced no economic curve");
   const sorted = samples.map((sample) => sample.ticksPerSecond).sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   const median = sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
@@ -273,6 +411,13 @@ export function runBenchmark(config: {
         : "supported",
     unsupported: referenceSummary.unsupported,
     unknownEffectCount: referenceSummary.unknownEffectCount,
+    economicCurveHash: [...economicCurveHashes][0],
+    economicCurve: referenceEconomicCurve,
+    tickLatencyMs: {
+      p50: percentile(allTickLatencies, 0.5),
+      p95: percentile(allTickLatencies, 0.95),
+      max: Math.max(...allTickLatencies),
+    },
     samples,
     medianTicksPerSecond: median,
     minTicksPerSecond: sorted[0],

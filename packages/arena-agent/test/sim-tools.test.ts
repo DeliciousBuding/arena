@@ -46,6 +46,23 @@ test("S9: direct A/B API normalizes duplicate seeds and planners", () => {
   assert.deepEqual(report.planners, ["safety"]);
   assert.equal(report.runs.length, 2);
   assert.equal(report.rankingStatus, "conclusive");
+  assert.deepEqual(report.pairedDeltas, []);
+  assert.deepEqual(report.pairedAggregates, []);
+});
+
+test("S9: A/B emits same-seed paired deltas", () => {
+  const { report } = runAB({
+    scenario: SCENARIO,
+    rulesPath: RULES,
+    ticks: 1,
+    seeds: [1, 2],
+    planners: ["safety", "deterministic"],
+  });
+  assert.equal(report.pairedDeltas.length, 2);
+  assert.equal(report.pairedAggregates.length, 1);
+  assert.ok(report.pairedDeltas.every((pair) => pair.baseline === "deterministic"));
+  assert.ok(report.pairedDeltas.every((pair) => pair.candidate === "safety"));
+  assert.deepEqual(report.pairedDeltas.map((pair) => pair.seed), [1, 2]);
 });
 
 test("S9: benchmark locks final world, trace and semantic summary", () => {
@@ -60,6 +77,12 @@ test("S9: benchmark locks final world, trace and semantic summary", () => {
   });
   assert.match(report.finalWorldHash, /^[0-9a-f]{64}$/);
   assert.match(report.traceHash, /^[0-9a-f]{64}$/);
+  assert.match(report.economicCurveHash, /^[0-9a-f]{64}$/);
   assert.equal(report.semanticStatus, "supported");
   assert.equal(report.samples.length, 2);
+  assert.equal(report.economicCurve.length, 1);
+  assert.equal(report.economicCurve[0].tick, 1);
+  assert.ok(report.tickLatencyMs.p50 >= 0);
+  assert.ok(report.tickLatencyMs.p95 >= report.tickLatencyMs.p50);
+  assert.ok(report.samples.every((sample) => sample.peakHeapBytes >= sample.heapStartBytes));
 });

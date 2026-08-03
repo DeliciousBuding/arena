@@ -138,6 +138,8 @@ test("S9: A/B report is semantic and excludes performance from ranking", () => {
     seeds: number[];
     planners: string[];
     runs: unknown[];
+    pairedDeltas: unknown[];
+    pairedAggregates: unknown[];
     rankingStatus: string;
     ranking: string[];
     semanticHash: string;
@@ -146,6 +148,8 @@ test("S9: A/B report is semantic and excludes performance from ranking", () => {
   assert.deepEqual(report.seeds, [1, 2]);
   assert.deepEqual(report.planners, ["deterministic", "safety"]);
   assert.equal(report.runs.length, 4);
+  assert.equal(report.pairedDeltas.length, 2, "one same-seed pair per seed");
+  assert.equal(report.pairedAggregates.length, 1);
   assert.equal(report.rankingStatus, "exploratory", "refill unknown makes ranking advisory");
   assert.match(report.semanticHash, /^[0-9a-f]{64}$/);
   assert.deepEqual([...report.ranking].sort(), ["deterministic", "safety"]);
@@ -163,16 +167,23 @@ test("S9: benchmark detects semantic stability and reports throughput", () => {
     schema: string;
     finalWorldHash: string;
     traceHash: string;
+    economicCurveHash: string;
+    economicCurve: unknown[];
+    tickLatencyMs: { p50: number; p95: number; max: number };
     semanticStatus: string;
-    samples: { ticksPerSecond: number }[];
+    samples: { ticksPerSecond: number; peakHeapBytes: number; heapStartBytes: number }[];
     medianTicksPerSecond: number;
   }>(id, "benchmark.json");
   assert.equal(report.schema, "sim.benchmark.v1");
   assert.match(report.finalWorldHash, /^[0-9a-f]{64}$/);
   assert.match(report.traceHash, /^[0-9a-f]{64}$/);
+  assert.match(report.economicCurveHash, /^[0-9a-f]{64}$/);
+  assert.equal(report.economicCurve.length, 100);
   assert.equal(report.semanticStatus, "inconclusive", "refill cadence is explicit unknown");
   assert.equal(report.samples.length, 2);
   assert.ok(report.samples.every((sample) => sample.ticksPerSecond > 0));
+  assert.ok(report.samples.every((sample) => sample.peakHeapBytes >= sample.heapStartBytes));
+  assert.ok(report.tickLatencyMs.p95 >= report.tickLatencyMs.p50);
   assert.ok(report.medianTicksPerSecond > 0);
 });
 

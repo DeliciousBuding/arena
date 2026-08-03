@@ -50,13 +50,13 @@ const BOOLEAN_FLAGS = new Set(["--force", "--help"]);
 const KNOWN_FLAGS: Readonly<Record<Command, ReadonlySet<string>>> = {
   doctor: new Set(["--rules", "--help"]),
   episode: new Set([
-    "--scenario", "--rules", "--ticks", "--seed", "--planner", "--output", "--run-id", "--force", "--help",
+    "--scenario", "--rules", "--ticks", "--seed", "--planner", "--workers", "--output", "--run-id", "--force", "--help",
   ]),
   ab: new Set([
-    "--scenario", "--rules", "--ticks", "--seeds", "--planners", "--output", "--run-id", "--force", "--help",
+    "--scenario", "--rules", "--ticks", "--seeds", "--planners", "--workers", "--output", "--run-id", "--force", "--help",
   ]),
   benchmark: new Set([
-    "--scenario", "--rules", "--ticks", "--seed", "--planner", "--warmup", "--repeats", "--output", "--run-id", "--force", "--help",
+    "--scenario", "--rules", "--ticks", "--seed", "--planner", "--workers", "--warmup", "--repeats", "--output", "--run-id", "--force", "--help",
   ]),
   calibrate: new Set(["--case", "--rules", "--output", "--run-id", "--force", "--help"]),
 };
@@ -95,9 +95,9 @@ function usage(): string {
   return [
     "arena:sim commands:",
     "  doctor [--rules PATH]",
-    "  episode --scenario PATH [--planner deterministic|safety] [--ticks N] [--seed N]",
-    "  ab --scenario PATH [--planners deterministic,safety] [--seeds 1,2,3] [--ticks N]",
-    "  benchmark --scenario PATH [--planner deterministic|safety] [--ticks N] [--warmup N] [--repeats N]",
+    "  episode --scenario PATH [--planner deterministic|safety] [--ticks N] [--seed N] [--workers 1]",
+    "  ab --scenario PATH [--planners deterministic,safety] [--seeds 1,2,3] [--ticks N] [--workers 1]",
+    "  benchmark --scenario PATH [--planner deterministic|safety] [--ticks N] [--warmup N] [--repeats N] [--workers 1]",
     "  calibrate --case PATH",
     "common output flags: --output runs/sim[/subdir] --run-id ID --force",
   ].join("\n");
@@ -141,6 +141,14 @@ function integerList(raw: string, flag: string): number[] {
     throw new Error(`${flag} must be a comma-separated list of non-negative safe integers`);
   }
   return [...new Set(parsed)].sort((a, b) => a - b);
+}
+
+function serialWorkers(args: ParsedArgs): 1 {
+  const workers = integer(args, "--workers", 1, 1);
+  if (workers !== 1) {
+    throw new Error("--workers is capped at 1 by the simulator CPU-isolation policy");
+  }
+  return 1;
 }
 
 function rulesPath(args: ParsedArgs): string {
@@ -199,6 +207,7 @@ function runEpisodeCommand(args: ParsedArgs): number {
   const ticks = integer(args, "--ticks", 100, 1);
   const seed = integer(args, "--seed", 1, 0);
   const selectedPlanner = planner(value(args, "--planner", "deterministic"));
+  const workers = serialWorkers(args);
   const playerIds = [...worldFromScenario(scenario).players.keys()].sort(compareCodeUnit);
   const config: EpisodeConfig = {
     scenario,
@@ -217,6 +226,7 @@ function runEpisodeCommand(args: ParsedArgs): number {
     ticks,
     seed,
     planner: selectedPlanner,
+    workers,
   };
   const output = outputSettings(args, "episode", identity);
   const runDir = prepareRunDir(output.outputBase, output.runId, output.force);
@@ -236,7 +246,7 @@ function runEpisodeCommand(args: ParsedArgs): number {
       sourceHash: sha256Json(scenario),
       rulesVersion: rules.rulesVersion,
       rulesManifestHash: manifestHash(rules),
-      config: { ticks, seed, planner: selectedPlanner, tenants: playerIds },
+      config: { ticks, seed, planner: selectedPlanner, workers, tenants: playerIds },
     },
     {
       "records.jsonl": recordsHash,
@@ -257,6 +267,7 @@ function runABCommand(args: ParsedArgs): number {
   const ticks = integer(args, "--ticks", 100, 1);
   const seeds = integerList(value(args, "--seeds", "1,2,3"), "--seeds");
   const planners = plannerList(value(args, "--planners", "deterministic,safety"));
+  const workers = serialWorkers(args);
   const { report, performance } = runAB({ scenario, rulesPath: pathToRules, ticks, seeds, planners });
   const identity = {
     kind: "ab",
@@ -265,6 +276,7 @@ function runABCommand(args: ParsedArgs): number {
     ticks,
     seeds,
     planners,
+    workers,
   };
   const output = outputSettings(args, "ab", identity);
   const runDir = prepareRunDir(output.outputBase, output.runId, output.force);
@@ -280,7 +292,7 @@ function runABCommand(args: ParsedArgs): number {
       sourceHash: sha256Json(scenario),
       rulesVersion: rules.rulesVersion,
       rulesManifestHash: manifestHash(rules),
-      config: { ticks, seeds, planners },
+      config: { ticks, seeds, planners, workers },
     },
     { "ab-report.json": reportHash },
     "performance.json",
@@ -301,6 +313,7 @@ function runBenchmarkCommand(args: ParsedArgs): number {
   const selectedPlanner = planner(value(args, "--planner", "deterministic"));
   const warmupRuns = integer(args, "--warmup", 1, 0);
   const measuredRuns = integer(args, "--repeats", 5, 1);
+  const workers = serialWorkers(args);
   const report = runBenchmark({
     scenario,
     rulesPath: pathToRules,
@@ -317,6 +330,7 @@ function runBenchmarkCommand(args: ParsedArgs): number {
     ticks,
     seed,
     planner: selectedPlanner,
+    workers,
     warmupRuns,
     measuredRuns,
   };
@@ -333,7 +347,7 @@ function runBenchmarkCommand(args: ParsedArgs): number {
       sourceHash: sha256Json(scenario),
       rulesVersion: rules.rulesVersion,
       rulesManifestHash: manifestHash(rules),
-      config: { ticks, seed, planner: selectedPlanner, warmupRuns, measuredRuns },
+      config: { ticks, seed, planner: selectedPlanner, workers, warmupRuns, measuredRuns },
     },
     {},
     "benchmark.json",

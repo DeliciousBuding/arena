@@ -118,10 +118,19 @@ test("S1: 输出路径策略——非 runs/sim-* 拒绝", () => {
   assert.match(result.stderr, /must be under runs\/sim/);
 });
 
-test("S9: 未实现的 workers 参数不再被静默接受", () => {
-  const result = runSim(["episode", "--scenario", SCENARIO, "--workers", "8"]);
-  assert.equal(result.code, 1);
-  assert.match(result.stderr, /unknown flag/);
+test("S9: workers 默认串行且上限固定为 1", () => {
+  const id = testRunId("workers");
+  assert.equal(
+    runSim([
+      "episode", "--scenario", SCENARIO, "--ticks", "1", "--workers", "1",
+      "--run-id", id, "--force",
+    ]).code,
+    0,
+  );
+  assert.equal(runSim(["episode", "--scenario", SCENARIO, "--workers", "0"]).code, 1);
+  const over = runSim(["episode", "--scenario", SCENARIO, "--workers", "2"]);
+  assert.equal(over.code, 1);
+  assert.match(over.stderr, /capped at 1/);
 });
 
 test("S1: 非法参数拒绝", () => {
