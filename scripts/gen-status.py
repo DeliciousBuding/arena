@@ -127,6 +127,7 @@ def main() -> None:
         proc = subprocess.run(
             ["git", "diff", "--no-index", "--", str(OUT), str(tmp_path)],
             cwd=ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
         )
         tmp_path.unlink()
         if proc.returncode != 0:
