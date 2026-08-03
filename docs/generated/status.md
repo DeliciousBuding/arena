@@ -6,10 +6,10 @@
 
 | 指标 | 数值 | 来源命令 |
 |---|---|---|
-| Python 测试 | 170 passed / 0 failed / 0 skipped | `uv run pytest tests/ -q`（实际执行输出解析） |
+| Python 测试 | 0 passed / 0 failed / 0 skipped | `uv run pytest tests/ -q`（实际执行输出解析） |
 | SDK 测试 | 53 pass / 0 fail（共 53） | `node --experimental-transform-types --test --test-reporter=tap test/*.test.ts` |
-| 编排层测试 | 458 pass / 0 fail（共 458） | `npx tsx --test --test-reporter=tap test/*.test.ts` |
+| 编排层测试 | 465 pass / 0 fail（共 465） | `npx tsx --test --test-reporter=tap test/*.test.ts` |
 | schema 契约文件数 | 6 | `ls packages/arena-hero-ts/contracts/generated/*.schema.json` 计数 |
-| Python 待退役模块数 | 23 | `find src/arena_bot -name '*.py'` 计数 |
+| Python 待退役模块数 | 0 | `find src/arena_bot -name '*.py'` 计数 |
 
 数值与文档不一致时，以实测为准：先重跑本脚本，再修文档。
