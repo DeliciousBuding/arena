@@ -116,6 +116,38 @@ test("分层扩圈：半径按 8→16→24→32 循环，Worker 完成一趟后�
   assert.equal(memory.patrolDirection, 1);
 });
 
+test("巡逻目标是障碍：到达相邻格即返航，不在障碍旁二格振荡", () => {
+  const planner = new SafetyPlanner();
+  const state = makeState(100, [
+    { kind: "OBSTACLE", positions: [[8, 8]] },
+    core(0, 0),
+    unit("w1", 7, 7),
+  ]);
+
+  const plan = planner.decide({ state });
+  const memory = planner.world.unitMemory("w1");
+  assert.equal(memory.patrolReturning, true);
+  assert.equal(plan.unitActions["w1"]?.type, "MOVE");
+  assert.ok(
+    plan.unitActions["w1"]?.type === "MOVE" &&
+      ["LEFT", "UP"].includes(plan.unitActions["w1"].direction),
+    "到达障碍邻格后必须朝 Core 返航，而不是继续贴近障碍目标",
+  );
+
+  const next = makeState(101, [
+    { kind: "OBSTACLE", positions: [[8, 8]] },
+    core(0, 0),
+    unit("w1", 7, 6),
+  ]);
+  const nextPlan = planner.decide({ state: next });
+  assert.equal(planner.world.unitMemory("w1").patrolReturning, true);
+  assert.equal(nextPlan.unitActions["w1"]?.type, "MOVE");
+  assert.notEqual(
+    nextPlan.unitActions["w1"]?.type === "MOVE" ? nextPlan.unitActions["w1"].direction : null,
+    "DOWN",
+  );
+});
+
 test("DeterministicPlanner：decide 输出合法 Plan（validatePlan 过）", () => {
   const state = makeState(100, [core(), unit("w1", 1, 0), unit("w2", 2, 0)]);
   // 注入资源格（reduceTurn 不推导——直接改 resourceCells）

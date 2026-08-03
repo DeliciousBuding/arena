@@ -192,6 +192,7 @@ export class SafetyPlanner {
       const beacon = state.beacon.position ?? home;
       let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
       let patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+      const patrolPointBlocked = obstacles.has(cellKey(patrolPoint));
       if (chebyshev(unit.position, home) > patrolRadius) {
         memory.patrolReturning = true;
         target = home;
@@ -207,7 +208,14 @@ export class SafetyPlanner {
         target = patrolPoint;
       } else if (memory.patrolReturning) {
         target = home;
-      } else if (samePosition(unit.position, patrolPoint)) {
+      } else if (
+        samePosition(unit.position, patrolPoint) ||
+        (patrolPointBlocked && chebyshev(unit.position, patrolPoint) <= 1)
+      ) {
+        // 探索目标可能恰好落在已知障碍格。此时精确到达不可能，若仍持续
+        // stepToward(target)，导航会在障碍旁的两个合法格之间反复摆动。
+        // 巡逻的目标是覆盖该方向的视野，不是占据精确坐标；到达障碍邻格
+        // 已完成这条射线的有效探索，立即返航并在下一圈换方向。
         memory.patrolReturning = true;
         target = home;
       } else {
