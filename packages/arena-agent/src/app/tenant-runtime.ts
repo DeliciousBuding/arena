@@ -26,7 +26,7 @@ import { newProcessRunId, readGitSha, writeRunManifest, type RunManifest } from 
 import { DecisionCoordinator } from "../runtime/decision-coordinator.ts";
 import { LeaseRegistry } from "../runtime/lease-registry.ts";
 import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
-import { SafetyPlanner, DEFAULT_SAFETY_CONFIG } from "../strategies/safety-planner.ts";
+import { AGGRESSIVE_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
 import { buildDecisionPrompt } from "../infrastructure/pi/prompt-builder.ts";
@@ -321,7 +321,7 @@ export async function runTenant(
     //    coordinator 短路语义同 safety——不启动 Agent）
     const coordinator = new DecisionCoordinator({
       runtime,
-      planner: decisionMode === "deterministic" ? new DeterministicPlanner() : new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
+      planner: decisionMode === "deterministic" ? new DeterministicPlanner() : new SafetyPlanner(AGGRESSIVE_SAFETY_CONFIG),
       registry: new LeaseRegistry(),
       clock: { now: () => performance.now() },
       budgetConfig: deadlines,
