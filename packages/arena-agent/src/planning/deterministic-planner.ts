@@ -30,6 +30,7 @@ import {
 } from "../domain/model.ts";
 import { stepToward as pathStepToward } from "../domain/nav.ts";
 import type { PlanProvider } from "../runtime/decision-types.ts";
+import type { MacroPolicy } from "../runtime/macro-policy.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snapshot.ts";
 import { WorkerTaskPlanner, type Assignment } from "./worker-task-planner.ts";
@@ -307,13 +308,15 @@ export class DeterministicPlanner implements PlanProvider {
     this.patrolPlanner = patrolPlanner;
   }
 
-  decide(input: { readonly state: TickState }): Plan {
+  decide(input: { readonly state: TickState; readonly policy?: MacroPolicy }): Plan {
     // SafetyPlanner 已包含跨 Tick World（障碍/资源线索/Worker 巡逻状态）。先生成完整
     // 基线计划，再用 WorkerTaskPlanner 覆盖可见资源的全局唯一分配。这样 deterministic
     // 不再是“看不到资源就 WAIT”的骨架，也不会复制第二套脆弱状态机。
+    // policy（低频 MacroPolicy）透传给内部 SafetyPlanner——deterministic 执行 + LLM 战略。
     const fallback = this.fallbackPlanner.decide(input);
     const patrolFallback = this.patrolPlanner.decide({
       state: { ...input.state, resourceCells: new Set<string>() },
+      policy: input.policy,
     });
     const rawSnapshot = extractPlanningSnapshot(input.state);
     const snapshot: PlanningSnapshot = {
