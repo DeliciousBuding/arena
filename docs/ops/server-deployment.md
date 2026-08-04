@@ -2,7 +2,7 @@
 
 > 目标：让 Arena 的纯 TypeScript Supervisor 在 Linux 服务器上长期常驻，同时保留单写者、可观测、可停止、可回滚和无孤儿进程的安全边界。
 >
-> 部署形态：**Docker 镜像（GHCR）+ systemd 编排**。镜像由 GitHub Actions 在每次 main push 时构建推送（`ghcr.io/deliciousbuding/arena:<sha>` 与 `:main`）；systemd 是进程生命周期唯一权威（shadow `Restart=on-failure`，live `Restart=no`），Docker 只做隔离与不可变发布。容器 stop 会销毁整个 PID namespace，因此不存在孤儿进程逃逸。
+> 部署形态：**Docker 镜像（GHCR）+ systemd 编排**。镜像由 GitHub Actions 在每次 main push 时构建推送（`ghcr.io/deliciousbuding/arena:<sha>` 与 `:main`），版本 tag push（`v*`）额外推送 `ghcr.io/deliciousbuding/arena:vX.Y.Z`；systemd 是进程生命周期唯一权威（shadow `Restart=on-failure`，live `Restart=no`），Docker 只做隔离与不可变发布。容器 stop 会销毁整个 PID namespace，因此不存在孤儿进程逃逸。
 >
 > 当前策略：shadow 可以自动恢复；deterministic live 在跨进程幂等键和 last accepted tick 恢复完成前，**只告警、不自动重启**。
 
@@ -57,12 +57,17 @@ sudo install -d -o arena -g arena -m 0700 /var/lib/arena /var/cache/arena
 
 ## 3. 不可变 release（Docker 镜像）
 
-release 由 GitHub Actions 在 main push 时构建推送：
+release 由 GitHub Actions 构建推送：
 
 ```text
-ghcr.io/deliciousbuding/arena:<git-sha>   精确镜像
-ghcr.io/deliciousbuding/arena:main        滚动标签
+ghcr.io/deliciousbuding/arena:<git-sha>   精确镜像（main push 与 v* tag push 均推送）
+ghcr.io/deliciousbuding/arena:main        滚动标签（仅 main push）
+ghcr.io/deliciousbuding/arena:vX.Y.Z      语义化版本标签（仅 v* tag push，如 v0.1.1）
 ```
+
+版本 tag 推送流程：`git tag v0.1.1 && git push origin v0.1.1` → CI 全量门禁通过后构建并推送
+`:v0.1.1`。live 部署应引用固定的 `:vX.Y.Z`（可复现），shadow 可跟随 `:main` 滚动；回滚时
+`rollback.sh` 接受版本 tag 或 sha。
 
 镜像不可变：源代码 + `node_modules`（tsx）+ lockfile 全部烘焙，secret 永不进镜像。
 全量门禁（check/test/schema/replay/server:check/status/docs）在 CI 的 `quality` job 跑完后
