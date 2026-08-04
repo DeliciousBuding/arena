@@ -8,7 +8,8 @@
  * - HARVEST_CURRENT：已在资源格 → HARVEST
  * - DEPOSIT：cargo>0 → 已回 Core 格则 DEPOSIT，否则朝 Core 移动一步
  * - RETURN_FOR_HEAL：朝 Core 移动一步（到位后 HEAL 由 Safety 兜底/下 Tick 处理）
- * - WAIT/EXPLORE/PICKUP_BEACON（骨架未产出）→ WAIT
+ * - PICKUP_BEACON：与 GROUND Beacon 同格 → PICKUP_BEACON（2x 采集加成；不派专人去抢）
+ * - WAIT/EXPLORE → WAIT
  *
  * 非 Worker 单位（Vanguard/Ranger）无 assignment → WAIT（确定性骨架只分配 Worker；
  * 战斗单位策略是后续里程碑）。
@@ -373,6 +374,9 @@ export class DeterministicPlanner implements PlanProvider {
     );
     const task = assignment.task;
     switch (task.type) {
+      case "PICKUP_BEACON":
+        // 只有与 GROUND Beacon 同格才可能拿到该任务；直接发出拾取动作。
+        return { type: "PICKUP_BEACON" };
       case "HARVEST_CURRENT":
         return { type: "HARVEST" };
       case "DEPOSIT":

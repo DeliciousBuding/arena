@@ -475,3 +475,56 @@ test("DeterministicPlanner：障碍避让——MOVE 不再被挡（blocked_move 
   const w1 = plan.unitActions["w1"] as { type: string; direction?: string };
   assert.ok(w1.type === "MOVE" || w1.type === "WAIT", "被挡时允许 WAIT（validator 语义）");
 });
+
+test("DeterministicPlanner：与 GROUND Beacon 同格的 Worker → PICKUP_BEACON", () => {
+  // w1 与 Beacon 同格 (2,2)，w2 在别处
+  const state = makeState(100, [core(), unit("w1", 2, 2), unit("w2", 5, 5)], 6);
+  const withBeacon: TickState = {
+    ...state,
+    beacon: { position: [2, 2], status: "GROUND", carrierId: null },
+  };
+  const planner = new DeterministicPlanner();
+  const plan = planner.decide({ state: withBeacon });
+  const validation = validatePlan(withBeacon, plan);
+  assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+  assert.deepEqual(plan.unitActions["w1"], { type: "PICKUP_BEACON" });
+  assert.equal(plan.intents["w1"], "PICKUP_BEACON");
+});
+
+test("DeterministicPlanner：Beacon 已被他人持有（CARRIED）→ 不拾取，正常行为", () => {
+  const state = makeState(100, [core(), unit("w1", 2, 2)], 6);
+  const withCarried: TickState = {
+    ...state,
+    beacon: { position: [9, 9], status: "CARRIED", carrierId: "other" },
+  };
+  const planner = new DeterministicPlanner();
+  const plan = planner.decide({ state: withCarried });
+  const w1 = plan.unitActions["w1"];
+  assert.notDeepEqual(w1, { type: "PICKUP_BEACON" }, "CARRIED Beacon 不得拾取");
+});
+
+test("DeterministicPlanner：载货 Worker 路过 Beacon 格 → 优先回仓（DEPOSIT），不拾取", () => {
+  const state = makeState(100, [core(), unit("w1", 2, 2, "WORKER", 1)], 6);
+  const withBeacon: TickState = {
+    ...state,
+    beacon: { position: [2, 2], status: "GROUND", carrierId: null },
+  };
+  const planner = new DeterministicPlanner();
+  const plan = planner.decide({ state: withBeacon });
+  const w1 = plan.unitActions["w1"];
+  assert.notDeepEqual(w1, { type: "PICKUP_BEACON" }, "载货时先 DEPOSIT，不拾取 Beacon");
+  assert.notEqual(w1.type, "PICKUP_BEACON");
+});
+
+test("DeterministicPlanner：Beacon 拾取不破坏计划合法性（含容量裁决）", () => {
+  const state = makeState(100, [core(), unit("w1", 2, 2), unit("w2", 2, 2)], 6);
+  const withBeacon: TickState = {
+    ...state,
+    beacon: { position: [2, 2], status: "GROUND", carrierId: null },
+  };
+  const planner = new DeterministicPlanner();
+  const plan = planner.decide({ state: withBeacon });
+  const validation = validatePlan(withBeacon, plan);
+  assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+  assert.deepEqual(plan.unitActions["w1"], { type: "PICKUP_BEACON" });
+});
