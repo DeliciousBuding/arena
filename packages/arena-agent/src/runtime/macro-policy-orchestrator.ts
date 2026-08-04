@@ -21,6 +21,8 @@ export interface MacroPolicyOrchestratorOptions {
   readonly requestPolicy: (prompt: string) => Promise<string>;
   /** 策略更新回调（telemetry 落盘用；参数 = 新策略与产出 tick）。 */
   readonly onPolicyUpdate?: (policy: MacroPolicy, tick: number) => void;
+  /** 策略决策失败回调（telemetry 落盘用；参数 = 失败原因与 tick）。 */
+  readonly onPolicyError?: (message: string, tick: number) => void;
   /** 决策超时（ms，缺省 60000）。 */
   readonly timeoutMs?: number;
   /** 时钟注入（测试用；缺省 performance.now）。 */
@@ -35,6 +37,7 @@ export class MacroPolicyOrchestrator {
   private readonly promptBuilder: (state: TickState) => string;
   private readonly requestPolicy: (prompt: string) => Promise<string>;
   private readonly onPolicyUpdate?: (policy: MacroPolicy, tick: number) => void;
+  private readonly onPolicyError?: (message: string, tick: number) => void;
   private readonly timeoutMs: number;
   private lastPolicyTick = Number.NEGATIVE_INFINITY;
   private inFlight = false;
@@ -48,6 +51,7 @@ export class MacroPolicyOrchestrator {
     this.promptBuilder = options.promptBuilder;
     this.requestPolicy = options.requestPolicy;
     this.onPolicyUpdate = options.onPolicyUpdate;
+    this.onPolicyError = options.onPolicyError;
     this.timeoutMs = options.timeoutMs ?? 60000;
   }
 
@@ -60,6 +64,7 @@ export class MacroPolicyOrchestrator {
           // 决策失败：sticky 上次策略；记录失败原因；推进周期（下一个 intervalTicks 再试，不轰炸）
           this.lastError = error instanceof Error ? error.message : String(error);
           this.lastPolicyTick = state.tick;
+          this.onPolicyError?.(this.lastError, state.tick);
         })
         .finally(() => {
           this.inFlight = false;

@@ -324,6 +324,8 @@ export async function runTenant(
     // 5b) 低频 MacroPolicy 策略层（独立 Pi session，异步产出不占 tick 窗口）：
     //     非 noAgent 模式启用；失败/超时 → sticky 默认策略，不阻断执行层。
     let policyOrchestrator: MacroPolicyOrchestrator | null = null;
+    // 经济趋势缓冲（最近 32 ticks 的 coreResourceDelta；策略 prompt 输入）
+    const recentResourceDeltas: number[] = [];
     if (!noAgent && options.runtime === undefined) {
       try {
         const policyFactory = new PiSessionFactory({
@@ -336,25 +338,30 @@ export async function runTenant(
         const policySession = await policyFactory.createSession(config.tenantId);
         cleanupStack.push(() => policySession.close());
         const policyPath = join(dirs.telemetryDir, "policy.jsonl");
+        const appendPolicyTelemetry = (record: Record<string, unknown>): void => {
+          try {
+            appendJsonlLine(
+              policyPath,
+              JSON.stringify(sanitizeValue({
+                at: new Date().toISOString(),
+                tenantId: config.tenantId,
+                ...record,
+              })),
+            );
+          } catch {}
+        };
         policyOrchestrator = new MacroPolicyOrchestrator({
           intervalTicks: config.policyIntervalTicks ?? 32,
-          promptBuilder: buildMacroPolicyPrompt,
+          promptBuilder: (state) => buildMacroPolicyPrompt(state, { recentResourceDeltas }),
           requestPolicy: async (prompt) => {
             await policySession.session.prompt(prompt);
             return readLastAssistantText(policySession.session);
           },
           onPolicyUpdate: (policy, tick) => {
-            try {
-              appendJsonlLine(
-                policyPath,
-                JSON.stringify(sanitizeValue({
-                  at: new Date().toISOString(),
-                  tenantId: config.tenantId,
-                  tick,
-                  policy: serializeMacroPolicy(policy),
-                })),
-              );
-            } catch {}
+            appendPolicyTelemetry({ type: "policy_update", tick, policy: serializeMacroPolicy(policy) });
+          },
+          onPolicyError: (message, tick) => {
+            appendPolicyTelemetry({ type: "policy_error", tick, message });
           },
           timeoutMs: 60000,
         });
@@ -450,8 +457,7 @@ export async function runTenant(
         const corePosition = outcome.state.core?.position;
         const workerDistances = corePosition === undefined
           ? []
-          : outcome.state.workers.map((worker) => manhattan(worker.position, corePosition));
-        const failedEvents = outcome.state.events
+          : outcome.state.workers.map((worker) => manhattan(worker.position, corePosition));        const failedEvents = outcome.state.events
           .filter((event) => event.eventType.endsWith("_FAILED") || event.reasonCode !== null)
           .map((event) => {
             const actorId = event.actorId;
@@ -497,6 +503,9 @@ export async function runTenant(
           events: outcome.state.events.map((e) => e.eventType),
         };
         outcomeWriter.write(outcomeRecord);
+        // 经济趋势缓冲（策略 prompt 输入；保留最近 32 ticks）
+        recentResourceDeltas.push(outcome.state.resources - holder.prev.resources);
+        if (recentResourceDeltas.length > 32) recentResourceDeltas.shift();
       }
       holder.prev = {
         tick: outcome.tick,

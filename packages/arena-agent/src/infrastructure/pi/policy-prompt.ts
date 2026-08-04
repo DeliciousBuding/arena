@@ -9,11 +9,18 @@
 import type { TickState } from "../../domain/model.ts";
 
 /** 宏观状态摘要 → 策略 prompt（模型输出策略 JSON 后直接结束）。 */
-export function buildMacroPolicyPrompt(state: TickState): string {
+export function buildMacroPolicyPrompt(
+  state: TickState,
+  extras: { readonly recentResourceDeltas?: readonly number[] } = {},
+): string {
   const coreLine = state.core === null
     ? "core: null"
     : `core: [${state.core.position[0]},${state.core.position[1]}] hp=${state.core.hp} shield=${state.core.shield}`;
   const military = state.vanguards.length + state.rangers.length;
+  const deltas = extras.recentResourceDeltas ?? [];
+  const trendLine = deltas.length === 0
+    ? "resource trend: (no recent data)"
+    : `resource trend (last ${deltas.length} ticks, sum ${deltas.reduce((sum, d) => sum + d, 0)}): ${deltas.join(" ")}`;
   return [
     "你是 Arena Hero 的战略指挥官，只做低频宏观决策，不做逐 Tick 战术。",
     "根据以下宏观状态，输出一个策略 JSON 对象（不要输出任何其他内容，不要 markdown 围栏）：",
@@ -30,6 +37,7 @@ export function buildMacroPolicyPrompt(state: TickState): string {
     `visible enemies: ${state.visibleEnemies.length}`,
     `beacon: ${state.beacon.status}${state.beacon.carrierId !== null ? " (carried)" : ""}`,
     `visible resource cells: ${state.resourceCells.size}`,
+    trendLine,
   ].join("\n");
 }
 
