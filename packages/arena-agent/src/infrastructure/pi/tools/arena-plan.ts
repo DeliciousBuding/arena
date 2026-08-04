@@ -76,6 +76,7 @@ const coreSchema = Type.Union(
     Type.Object({ kind: Type.Literal("CANCEL_MOVE") }, { additionalProperties: false }),
     Type.Object({ kind: Type.Literal("PICKUP_BEACON") }, { additionalProperties: false }),
     Type.Object({ kind: Type.Literal("DROP_BEACON") }, { additionalProperties: false }),
+    Type.Object({ kind: Type.Literal("SELF_DESTRUCT") }, { additionalProperties: false }),
     Type.Object({ kind: Type.Literal("WAIT") }, { additionalProperties: false }),
     Type.Null(),
   ],

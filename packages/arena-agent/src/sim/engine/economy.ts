@@ -150,6 +150,47 @@ const selfDestructPhase: Phase = {
   officialPhase: 2,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
+
+    // v0.12: every living Core may self-destruct unconditionally. Movement and
+    // combat resolve first (this phase runs before them); a surviving Core
+    // destroys its inventory and all owned Units. Cargo and a carried Beacon
+    // drop at each carrier's actual position. No damage/participation/loot.
+    // The private CORE_DESTROYED uses reason_code SELF_DESTRUCT without
+    // destroyed_by, then follows the normal same-Tick respawn flow (P12).
+    const coreRequests = [...draft.players.keys()]
+      .filter((playerId) => draft.players.get(playerId)?.core !== null)
+      .filter((playerId) => ctx.plans.get(playerId)?.coreAction?.type === "SELF_DESTRUCT")
+      .sort(compareCodeUnit);
+    for (const playerId of coreRequests) {
+      const player = draft.players.get(playerId)!;
+      const core = player.core!;
+      for (const unit of player.units) {
+        removeUnitAndDropCargo(draft, playerId, unit, events, ctx.beaconPickupLockedCells);
+        events.push(eventOf(draft.tick, "UNIT_SELF_DESTRUCTED", { actorId: unit.id, position: unit.position }));
+      }
+      updatePlayers(draft, (players) => {
+        players.set(playerId, {
+          ...player,
+          status: "RESPAWNING",
+          respawnAtTick: draft.tick, // P12 同 Tick 立即尝试放置 replacement
+          resources: 0,
+          core: null,
+          units: [],
+        });
+      });
+      dropBeaconOnDeath(draft, core.id, core.position, events, {
+        clampShield: false, // Core 已销毁，无盾可 clamp
+        pickupLockedCells: ctx.beaconPickupLockedCells,
+      });
+      events.push(
+        eventOf(draft.tick, "CORE_DESTROYED", {
+          reasonCode: "SELF_DESTRUCT",
+          actorId: core.id,
+          position: core.position,
+        }),
+      );
+    }
+
     for (const request of collectUnitRequests(draft, ctx.plans, "SELF_DESTRUCT")) {
       const unit = findUnit(draft, request.playerId, request.unitId);
       if (unit === null) continue;

@@ -196,7 +196,7 @@ export const CoreActionSchema = Type.Union(
   [
     WaitActionSchema, SpawnActionSchema, RepairShieldActionSchema,
     StartMoveActionSchema, CancelMoveActionSchema, PickupBeaconActionSchema,
-    DropBeaconActionSchema, HealActionSchema,
+    DropBeaconActionSchema, HealActionSchema, SelfDestructActionSchema,
   ],
   { discriminator: "type" },
 );

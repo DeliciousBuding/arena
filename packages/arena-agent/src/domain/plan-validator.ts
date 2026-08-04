@@ -197,6 +197,9 @@ function validateCoreAction(state: TickState, action: CoreAction): ValidationIss
       return state.beacon.carrierId === state.core.id
         ? null
         : issue("invalid_beacon", "Core is not carrying the Beacon");
+    case "SELF_DESTRUCT":
+      // v0.12: every living Core may self-destruct unconditionally.
+      return null;
   }
 }
 

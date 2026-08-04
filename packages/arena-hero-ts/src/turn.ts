@@ -234,6 +234,11 @@ export class Core {
     this._set({ type: "CANCEL_MOVE" } satisfies CancelMoveAction);
   }
 
+  /** 无条件自毁（v0.12）：摧毁本 Core 与全部 Units；随后正常同 Tick respawn。 */
+  selfDestruct(): void {
+    this._set({ type: "SELF_DESTRUCT" } satisfies SelfDestructAction);
+  }
+
   pickupBeacon(): void {
     this._set({ type: "PICKUP_BEACON" } satisfies PickupBeaconAction);
   }

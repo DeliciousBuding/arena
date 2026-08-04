@@ -104,7 +104,8 @@ export type CoreAction =
   | CancelMoveAction
   | PickupBeaconAction
   | DropBeaconAction
-  | HealAction;
+  | HealAction
+  | SelfDestructAction;
 
 /** A complete replacement plan for one source and Tick. */
 export interface CommandPlan {
