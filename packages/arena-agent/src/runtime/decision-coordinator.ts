@@ -23,6 +23,7 @@ import type { Clock } from "./clock.ts";
 import { DecisionLease } from "./decision-lease.ts";
 import { LeaseRegistry } from "./lease-registry.ts";
 import { PlanArbiter, type ArbitrateResult } from "./plan-arbiter.ts";
+import type { MacroPolicy } from "./macro-policy.ts";
 import type {
   AgentDecisionRequest,
   AgentDecisionRuntime,
@@ -57,6 +58,8 @@ export interface DecisionCoordinatorOptions {
   readonly onRunSettled?: (info: { readonly runId: string; readonly result: AgentRunResult }) => void;
   /** P0-1：决策模式（缺省 "hybrid"）。deterministic 使用确定性 planner 热路径。 */
   readonly decisionMode?: DecisionModeName;
+  /** 低频 MacroPolicy 提供器（每 tick 调用；返回 undefined 时不覆盖 planner 默认）。 */
+  readonly policyProvider?: (state: TickState) => MacroPolicy | undefined;
 }
 
 /** runtime 候选投递口：契约正式化（GPT 审核）——AgentDecisionRuntime.bindCandidateSink
@@ -86,6 +89,7 @@ export class DecisionCoordinator {
   private readonly processRunId: string;
   /** P0-1：决策模式（"hybrid" 缺省；"safety" 短路；"agent-shadow" execution 恒 Safety）。 */
   private readonly decisionMode: DecisionModeName;
+  private readonly policyProvider: DecisionCoordinatorOptions["policyProvider"];
   /** 3.2：进程内 run 序号（runId = processRunId:tenantId:tick:sequence）。 */
   private runSeq = 0;
 
@@ -107,6 +111,7 @@ export class DecisionCoordinator {
     this.onRunSettled = options.onRunSettled;
     this.processRunId = options.processRunId ?? "local";
     this.decisionMode = options.decisionMode ?? "hybrid";
+    this.policyProvider = options.policyProvider;
     // 候选投递口：runId 精确索引——旧 run 的迟到调用命中旧 Lease（已终结 → 拒绝），
     // 永不漏到新 Tick；结构化结果原样返回（LeaseSubmission）。
     this.sink = (envelope) => this.registry.submit(envelope.runId, envelope);
@@ -133,11 +138,14 @@ export class DecisionCoordinator {
     //（不用浮点性能时间：跨进程可追踪、跨 rotation 唯一、不暴露给模型）
     const runId = `${this.processRunId}:${this.tenantId}:${tick}:${this.runSeq++}`;
 
-    // 1) Safety 预计算（立即，不等待 Agent）
+    // 1) Safety 预计算（立即，不等待 Agent）；低频 MacroPolicy 只注入 SafetyPlanner
     let safetyPlan: Plan;
     let safetyError: string | null = null;
     try {
-      safetyPlan = this.planner.decide({ state });
+      const policy = this.policyProvider?.(state);
+      safetyPlan = policy !== undefined && this.planner instanceof SafetyPlanner
+        ? this.planner.decide({ state, policy })
+        : this.planner.decide({ state });
     } catch (exc) {
       safetyError = exc instanceof Error ? exc.message : String(exc);
       safetyPlan = this.arbiter.emergencyPlan(state);
