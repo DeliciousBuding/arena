@@ -284,11 +284,19 @@ export function selectDeterministicCoreAction(
     // 目标补员带 reserve 保护，不因扩编掏空国库。
     state.resources >= WORKER_SPAWN_COST + (emergency ? 0 : WORKER_SPAWN_RESERVE)
   ) {
-    const unitsOnCore = state.units.filter(
-      (unit) => unit.position[0] === core.position[0] && unit.position[1] === core.position[1],
+    // 满载 Worker 在 Core 格是"卸货等待"（资源满时 DEPOSIT 暂不合法，
+    // 但 SPAWN 消耗资源后立即可卸）——不把它当占位，否则资源满 + 占格 +
+    // 无法卸货会形成永久经济死锁（生产实测：repair 每 tick 移除 DEPOSIT，
+    // SPAWN 被抑制 → 资源永不消耗 → 永远满）。只有空载/非 Worker 单位占
+    // Core 格才阻塞生成（那种情况下生成会叠加容量）。
+    const permanentOccupantsOnCore = state.units.filter(
+      (unit) =>
+        unit.position[0] === core.position[0] &&
+        unit.position[1] === core.position[1] &&
+        !(unit.unitType === "WORKER" && unit.cargo > 0),
     ).length;
-    // Core 自身占一个容量位；只有没有 Unit 站在 Core 格时才安全生成。
-    if (unitsOnCore === 0) {
+    // Core 自身占一个容量位；只有没有永久占位单位站在 Core 格时才安全生成。
+    if (permanentOccupantsOnCore === 0) {
       return {
         action: { type: "SPAWN", unitType: "WORKER" },
         intent: emergency ? "emergency_spawn_worker" : "spawn_worker_target",
