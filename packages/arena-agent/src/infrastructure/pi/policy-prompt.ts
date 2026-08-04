@@ -37,6 +37,8 @@ export function buildMacroPolicyPrompt(
     "workerTarget=目标 Worker 数量；militaryRatio=军事单位占比目标；",
     "focusRegion=探索/攻坚聚焦坐标（null 不聚焦）；attackPriority=攻击优先级（core 拆家掠夺资源/workers 断敌经济/null 不主动攻击）。",
     "策略是低频演进而非重掷：优先在 previous policy 基础上做小幅调整（workerTarget 变化幅度建议 ≤4/周期）。",
+    "军事单位价值：敌方单位/Core 群会阻挡 Worker 回仓与采集（经济停滞的直接原因，生产实测）；",
+    "适当 militaryRatio（>0）配前压清场能显著提升经济（生产 A/B 实测：清场方资源均值 20 满仓 vs 被压方 5）。",
     "",
     "宏观状态：",
     `tick: ${state.tick}`,
