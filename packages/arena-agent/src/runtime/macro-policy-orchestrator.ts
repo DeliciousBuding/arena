@@ -27,6 +27,8 @@ export interface MacroPolicyOrchestratorOptions {
   readonly timeoutMs?: number;
   /** 时钟注入（测试用；缺省 performance.now）。 */
   readonly nowMs?: () => number;
+  /** 固定策略覆盖（实验框架）：非 null 时 onTick 恒返回该策略，不触发 LLM 决策。 */
+  readonly override?: MacroPolicy | null;
 }
 
 /** Core 被摧毁/重生期间的强制经济重建策略（覆盖 sticky/LLM 决策，避免激进前压送死）。 */
@@ -53,6 +55,8 @@ export class MacroPolicyOrchestrator {
   private readonly onPolicyUpdate?: (policy: MacroPolicy, tick: number) => void;
   private readonly onPolicyError?: (message: string, tick: number) => void;
   private readonly timeoutMs: number;
+  /** 固定策略覆盖（实验框架）：非 null 时恒返回该策略，不触发 LLM 决策。 */
+  private readonly override: MacroPolicy | null;
   private lastPolicyTick = Number.NEGATIVE_INFINITY;
   private inFlight = false;
   private lastError: string | null = null;
@@ -69,13 +73,21 @@ export class MacroPolicyOrchestrator {
     this.onPolicyUpdate = options.onPolicyUpdate;
     this.onPolicyError = options.onPolicyError;
     this.timeoutMs = options.timeoutMs ?? 60000;
+    this.override = options.override ?? null;
+    if (this.override !== null) {
+      this.current = this.override;
+    }
   }
 
   /** 每次决策 Tick 调用：返回当前生效策略；到周期且空闲时异步触发一次策略产出。
    *  重生覆盖：Core 不存在或 status=RESPAWNING 时强制返回经济重建策略
    *  （RESPAWN_OVERRIDE_POLICY），不消费 LLM 决策；恢复 ACTIVE 且 pop>=3 后
-   *  立即触发一次新决策（重置周期边沿）。 */
+   *  立即触发一次新决策（重置周期边沿）。
+   *  实验覆盖（override）：恒返回固定策略，不触发 LLM 决策。 */
   onTick(state: TickState): MacroPolicy {
+    if (this.override !== null) {
+      return this.override;
+    }
     const respawning = state.core === null || state.status === "RESPAWNING";
     if (respawning) {
       this.wasRespawning = true;

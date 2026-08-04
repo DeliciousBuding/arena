@@ -251,16 +251,20 @@ function compareWorstMoveFirst(a: MoveCandidate, b: MoveCandidate): number {
 
 const WORKER_RECOVERY_FLOOR = 2;
 const WORKER_SPAWN_COST = 5;
+/** 补员保留资源（不因扩编掏空国库；emergency 时也可用满额 5）。 */
+const WORKER_SPAWN_RESERVE = 2;
 
 /**
  * deterministic 的长期目标仍是积累资源，但不能因此失去自恢复能力：
  * - Core HEAL / REPAIR_SHIELD 属于生存动作，直接沿用 Safety 的合法裁决；
- * - Worker 少于 2 时允许紧急补员，即使只剩刚好 5 资源；
- * - 其余 SPAWN / 战略动作继续关闭，交给后续 MacroPolicy。
+ * - 补员按 policy.workerTarget 驱动（MacroPolicy 低频战略的消费点之一）：
+ *   workerTarget 缺省/过低时用 emergency floor=2 兜底；
+ * - 补员带 reserve 保护（至少保留 2 资源），不因扩编掏空国库。
  */
 export function selectDeterministicCoreAction(
   state: TickState,
   fallbackAction: CoreAction | null,
+  policy?: MacroPolicy,
 ): { readonly action: CoreAction | null; readonly intent: string | null } {
   if (fallbackAction?.type === "HEAL") {
     return { action: fallbackAction, intent: "core_heal" };
@@ -269,12 +273,16 @@ export function selectDeterministicCoreAction(
     return { action: fallbackAction, intent: "repair_shield" };
   }
 
+  const workerTarget = Math.max(policy?.workerTarget ?? WORKER_RECOVERY_FLOOR, WORKER_RECOVERY_FLOOR);
   const core = state.core;
+  const emergency = state.workers.length < WORKER_RECOVERY_FLOOR;
   if (
     core !== null &&
     core.state === "NORMAL" &&
-    state.workers.length < WORKER_RECOVERY_FLOOR &&
-    state.resources >= WORKER_SPAWN_COST
+    state.workers.length < workerTarget &&
+    // emergency（< floor）保命优先：只剩刚好 5 资源也补员；
+    // 目标补员带 reserve 保护，不因扩编掏空国库。
+    state.resources >= WORKER_SPAWN_COST + (emergency ? 0 : WORKER_SPAWN_RESERVE)
   ) {
     const unitsOnCore = state.units.filter(
       (unit) => unit.position[0] === core.position[0] && unit.position[1] === core.position[1],
@@ -283,7 +291,7 @@ export function selectDeterministicCoreAction(
     if (unitsOnCore === 0) {
       return {
         action: { type: "SPAWN", unitType: "WORKER" },
-        intent: "emergency_spawn_worker",
+        intent: emergency ? "emergency_spawn_worker" : "spawn_worker_target",
       };
     }
   }
@@ -355,7 +363,7 @@ export class DeterministicPlanner implements PlanProvider {
     // fallback 可能提出被 deterministic 故意压制的普通 spawn；不要留下“有 intent
     // 但 coreAction=null”的误导遥测。只有实际执行的恢复/生存动作才记录 core intent。
     delete finalIntents.core;
-    const coreDecision = selectDeterministicCoreAction(input.state, fallback.coreAction);
+    const coreDecision = selectDeterministicCoreAction(input.state, fallback.coreAction, input.policy);
     if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;
 
     return {

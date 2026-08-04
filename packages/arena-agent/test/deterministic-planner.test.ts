@@ -363,6 +363,29 @@ test("deterministic Core：Worker 少于 2 且 Core 格空闲时紧急补员", (
   assert.equal(plan.intents.core, "emergency_spawn_worker");
 });
 
+test("deterministic Core：policy.workerTarget 驱动目标补员（spawn_worker_target）", () => {
+  // workers=2（非 emergency），policy 目标 6，资源足够（5+reserve2）→ 目标补员
+  const state = makeState(100, [core(0, 0), unit("w1", 1, 0), unit("w2", 2, 0)], 10);
+  const policy = { posture: "harvest" as const, workerTarget: 6, militaryRatio: 0, focusRegion: null, attackPriority: null };
+  const plan = new DeterministicPlanner().decide({ state, policy });
+  assert.deepEqual(plan.coreAction, { type: "SPAWN", unitType: "WORKER" });
+  assert.equal(plan.intents.core, "spawn_worker_target");
+
+  // 资源不足 reserve（5+2=7 门槛，只有 6）→ 不补员
+  const poor = makeState(100, [core(0, 0), unit("w1", 1, 0), unit("w2", 2, 0)], 6);
+  const poorPlan = new DeterministicPlanner().decide({ state: poor, policy });
+  assert.equal(poorPlan.coreAction, null);
+
+  // workers 已达 workerTarget → 不再补员
+  const full = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0),
+    unit("w4", 4, 0), unit("w5", 5, 0), unit("w6", 6, 0),
+  ], 20);
+  const fullPlan = new DeterministicPlanner().decide({ state: full, policy });
+  assert.equal(fullPlan.coreAction, null);
+});
+
 test("deterministic Core：Core 格已有 Unit 时不冒险 SPAWN", () => {
   const state = makeState(100, [core(0, 0), unit("w1", 0, 0)], 5);
   const decision = selectDeterministicCoreAction(state, null);
