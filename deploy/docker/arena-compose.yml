@@ -1,0 +1,90 @@
+# Arena server deployment via Docker.
+#
+#   sudo docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml \
+#     --env-file /etc/arena/health.env up shadow
+#
+# Secrets never enter the image: arena.env is injected by the container runtime.
+# /var/lib/arena holds locks/manifests/telemetry and must be owned by uid 1001.
+#
+# Restart policy: systemd owns the process lifecycle (arena-supervisor-*.service
+# units with Restart=on-failure / Restart=no). Compose restart is disabled so the
+# two managers cannot fight. The systemd health timers gate readiness and drive
+# recovery via arena-shadow-recover.service.
+
+name: arena
+
+services:
+  shadow:
+    image: ghcr.io/deliciousbuding/arena:main
+    restart: "no"
+    stop_grace_period: 30s
+    init: true
+    user: "1001:1001"
+    environment:
+      ARENA_REPO_ROOT: /app
+      ARENA_CONFIG_DIR: /etc/arena/configs
+      ARENA_RUNTIME_DIR: /var/lib/arena
+      ARENA_CONFIGS: ${ARENA_CONFIGS:-t1}
+      ARENA_DEBUG_PORT: ${ARENA_DEBUG_PORT:-8120}
+      ARENA_SHUTDOWN_TIMEOUT_MS: ${ARENA_SHUTDOWN_TIMEOUT_MS:-15000}
+      ARENA_STARTUP_SYNC_TICKS: ${ARENA_STARTUP_SYNC_TICKS:-1}
+      NODE_ENV: production
+    env_file:
+      - /etc/arena/arena.env
+    volumes:
+      - /etc/arena/configs:/etc/arena/configs:ro
+      - /var/lib/arena:/var/lib/arena
+    ports:
+      - "127.0.0.1:8120:8120"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Docker-internal health probe; the systemd timer remains the authoritative gate.
+    healthcheck:
+      test: ["CMD", "node", "scripts/server/healthcheck.mjs", "--url=http://127.0.0.1:8120/ready", "--skip-disk"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    command: ["shadow"]
+
+  live:
+    image: ghcr.io/deliciousbuding/arena:main
+    restart: "no"
+    stop_grace_period: 30s
+    init: true
+    user: "1001:1001"
+    environment:
+      ARENA_REPO_ROOT: /app
+      ARENA_CONFIG_DIR: /etc/arena/configs
+      ARENA_RUNTIME_DIR: /var/lib/arena
+      ARENA_CONFIGS: ${ARENA_CONFIGS:-t1}
+      ARENA_DEBUG_PORT: ${ARENA_DEBUG_PORT:-8120}
+      ARENA_SHUTDOWN_TIMEOUT_MS: ${ARENA_SHUTDOWN_TIMEOUT_MS:-15000}
+      ARENA_STARTUP_SYNC_TICKS: ${ARENA_STARTUP_SYNC_TICKS:-1}
+      NODE_ENV: production
+    env_file:
+      - /etc/arena/arena.env
+    volumes:
+      - /etc/arena/configs:/etc/arena/configs:ro
+      - /var/lib/arena:/var/lib/arena
+    ports:
+      - "127.0.0.1:8120:8120"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "scripts/server/healthcheck.mjs", "--url=http://127.0.0.1:8120/ready", "--skip-disk"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    command: ["live"]

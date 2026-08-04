@@ -1,6 +1,8 @@
-# Linux 服务器长期运行部署
+# Linux 服务器长期运行部署（Docker）
 
 > 目标：让 Arena 的纯 TypeScript Supervisor 在 Linux 服务器上长期常驻，同时保留单写者、可观测、可停止、可回滚和无孤儿进程的安全边界。
+>
+> 部署形态：**Docker 镜像（GHCR）+ systemd 编排**。镜像由 GitHub Actions 在每次 main push 时构建推送（`ghcr.io/deliciousbuding/arena:<sha>` 与 `:main`）；systemd 是进程生命周期唯一权威（shadow `Restart=on-failure`，live `Restart=no`），Docker 只做隔离与不可变发布。容器 stop 会销毁整个 PID namespace，因此不存在孤儿进程逃逸。
 >
 > 当前策略：shadow 可以自动恢复；deterministic live 在跨进程幂等键和 last accepted tick 恢复完成前，**只告警、不自动重启**。
 
@@ -9,13 +11,13 @@
 固定目录：
 
 ```text
-/opt/arena/releases/<git-sha>/   不可变代码发布
-/opt/arena/current               指向当前 release 的原子 symlink
+/opt/arena/releases/<git-sha>/   不可变代码发布（旧版，bare-metal 遗留）
+/opt/arena/current               指向当前 release 的原子 symlink（compose 引用 deploy/docker/arena-compose.yml）
 /etc/arena/arena.env             0600，root:root，Supervisor 参数与 tenant secret
 /etc/arena/health.env            0640，root:arena，无密钥健康参数
 /etc/arena/configs/*.json        0640，root:arena，租户配置
-/var/lib/arena/                  0700，arena:arena，锁/manifest/telemetry
-/var/cache/arena/                npm cache
+/var/lib/arena/                  0700，uid 1001（容器内 arena 用户），锁/manifest/telemetry
+/var/cache/arena/                npm cache（bare-metal 遗留）
 ```
 
 不要把 token、完成后的 `arena.env`、租户真实配置或运行 JSONL 放进 Git。
@@ -26,60 +28,54 @@
 "baseDir": "/var/lib/arena"
 ```
 
-Supervisor 使用显式参数：
+Supervisor 使用显式参数（容器内环境变量，见 compose）：
 
 ```text
---config-dir=/etc/arena/configs
---runtime-dir=/var/lib/arena
+ARENA_REPO_ROOT=/app
+ARENA_CONFIG_DIR=/etc/arena/configs
+ARENA_RUNTIME_DIR=/var/lib/arena
 ```
 
 当显式 `runtime-dir` 与任一 tenant `baseDir` 不一致时，Supervisor 在第一个 child spawn 前 fail closed。
 
 ## 2. 服务器前置条件
 
-- Linux + systemd；
-- Node.js 24；
-- npm；
-- Git；
+- Linux + systemd + Docker Engine（含 compose v2）；
+- Node.js 24（可选，用于健康探针脚本；推荐保留）；
 - 至少 1 GiB 运行盘剩余空间，生产建议预留更多；
-- 一个无登录权限的 `arena` 系统用户；
+- 一个无登录权限的 `arena` 系统用户（容器内固定 uid 1001）；
 - 时间同步和稳定出网。
 
 创建用户与目录：
 
 ```bash
-sudo useradd --system --home /var/lib/arena --shell /usr/sbin/nologin arena || true
+sudo useradd --system --uid 1001 --home /var/lib/arena --shell /usr/sbin/nologin arena || true
 sudo install -d -o root -g root -m 0755 /opt/arena/releases
 sudo install -d -o root -g arena -m 0750 /etc/arena/configs
 sudo install -d -o arena -g arena -m 0700 /var/lib/arena /var/cache/arena
 ```
 
-## 3. 不可变 release
+## 3. 不可变 release（Docker 镜像）
 
-示例：
+release 由 GitHub Actions 在 main push 时构建推送：
 
-```bash
-SHA=$(git rev-parse HEAD)
-sudo git clone --no-local /path/to/verified-repo "/opt/arena/releases/$SHA"
-cd "/opt/arena/releases/$SHA"
-sudo npm ci
-sudo npm run check
-sudo npm test
-sudo npm run schema:check
-sudo npm run replay:ts
-sudo npm run server:check
-sudo python3 scripts/gen-status.py --check
-sudo python3 scripts/docs_health.py --check
+```text
+ghcr.io/deliciousbuding/arena:<git-sha>   精确镜像
+ghcr.io/deliciousbuding/arena:main        滚动标签
 ```
 
-所有门禁通过后，才切换 symlink：
+镜像不可变：源代码 + `node_modules`（tsx）+ lockfile 全部烘焙，secret 永不进镜像。
+全量门禁（check/test/schema/replay/server:check/status/docs）在 CI 的 `quality` job 跑完后
+`docker` job 才构建推送；`deploy/docker/Dockerfile` 与 `arena-compose.yml` 的契约由
+`npm run server:check` 门禁守护。
+
+本地手动构建验证：
 
 ```bash
-sudo ln -sfn "/opt/arena/releases/$SHA" /opt/arena/current.next
-sudo mv -Tf /opt/arena/current.next /opt/arena/current
+cd /opt/arena/current
+sudo docker build -f deploy/docker/Dockerfile -t arena:local .
+sudo docker run --rm --entrypoint node arena:local -e "console.log(process.version, process.getuid())"
 ```
-
-不要在 `/opt/arena/current` 内直接编辑代码或配置。
 
 ## 4. 配置与 secret
 
@@ -119,14 +115,11 @@ sudo systemctl daemon-reload
 
 单元共同提供：
 
-- `KillMode=control-group`：systemd 对整棵进程树负责；
-- 30 秒有界停止，超时后 cgroup 强制清理；
-- `ProtectSystem=strict`：release 目录只读；
-- `ProtectProc=invisible`：同机非特权用户不可枚举服务进程环境；
-- `NoNewPrivileges`、`PrivateTmp`、内核/控制组保护；
-- CPU、内存、进程数和文件描述符上限；
+- shadow：`Restart=on-failure` + `RestartPreventExitStatus=64 78`；live：`Restart=no`；
+- `ExecStart` = `docker compose ... up shadow|live`（前台附着），`ExecStop` = `docker compose ... down`；
 - stdout/stderr 进入 journald；
-- runtime 使用 systemd 管理目录；服务直接 exec 本地 `tsx`，不在运行期经过 npm。
+- 容器 stop 会销毁整个 PID namespace，无孤儿进程逃逸（无需 cgroup 手工清理）；
+- 容器安全（非 root uid 1001、read-only rootfs、cap_drop ALL、no-new-privileges、loopback-only 端口）由 compose 声明，`server:check` 门禁守护。
 
 ## 6. 先运行 shadow
 
@@ -140,9 +133,10 @@ sudo systemctl daemon-reload
 3. 使用官方 npm registry 的 audit 不再报告该链路；
 4. Pi session、stream、abort、rotation、circuit breaker 和全量测试重新通过。
 
-启用 shadow 与健康计时器：
+首次部署：先拉取镜像，再启用 shadow 与健康计时器：
 
 ```bash
+sudo docker pull ghcr.io/deliciousbuding/arena:main
 sudo systemctl disable --now arena-supervisor-live.service arena-live-health.timer 2>/dev/null || true
 sudo systemctl enable --now arena-supervisor-shadow.service
 sudo systemctl enable --now arena-shadow-health.timer
@@ -154,6 +148,7 @@ sudo systemctl enable --now arena-disk-health.timer
 ```bash
 systemctl status arena-supervisor-shadow.service
 systemctl status arena-shadow-health.timer
+sudo docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml ps
 curl -fsS http://127.0.0.1:8120/health
 curl -fsS http://127.0.0.1:8120/ready
 journalctl -u arena-supervisor-shadow.service -f
@@ -239,22 +234,24 @@ live service 退出或 `/ready` 失败时：
 
 ## 10. 更新与回滚
 
-更新：
+更新：GitHub Actions 在 main push 时自动构建并推送新镜像；服务器只做两件事：
 
-```text
-新 release clone → npm ci → 全量门禁 → shadow → Canary → 切 current symlink
+```bash
+sudo docker pull ghcr.io/deliciousbuding/arena:main
+sudo systemctl restart arena-supervisor-shadow.service
 ```
 
-回滚：
+回滚（切回已知良好 sha 的镜像）：
 
 ```bash
 sudo systemctl stop arena-supervisor-live.service
-sudo ln -sfn /opt/arena/releases/<known-good-sha> /opt/arena/current.next
-sudo mv -Tf /opt/arena/current.next /opt/arena/current
+sudo sed -i "s|ghcr.io/deliciousbuding/arena:main|ghcr.io/deliciousbuding/arena:<known-good-sha>|" \
+  /opt/arena/current/deploy/docker/arena-compose.yml
+sudo systemctl daemon-reload
 sudo systemctl start arena-supervisor-live.service
 ```
 
-回滚前后都必须确认锁、进程树和最后 accepted tick，不能只切 symlink 后立即启动。
+回滚前后都必须确认锁、进程树和最后 accepted tick，不能只切镜像后立即启动。
 
 ## 11. 长期稳定验收
 
