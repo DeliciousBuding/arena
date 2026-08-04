@@ -33,6 +33,9 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 - **优雅停机/重启演练通过**：`systemctl stop` → 容器移除、0 残留进程、0 锁残留；`start` → 四租户 ready、数据持续产出；
 - **磁盘告警演练通过**：模拟磁盘满（临时抬高 `ARENA_MIN_FREE_BYTES`）→ disk-health fail-closed → OnFailure 触发 daemon.crit 告警 → **writer 未被重启**（红线验证）；恢复门槛后 disk-health 恢复 exit=0；
 - Digital Twin S0–S12 / P06 / P12 与首份 Runtime-Golden 已落地。
+- **Pi 模型网关链路已验证（2026-08-04）**：`~/.pi/agent/{models.json, auth.json}` 原生配置（内置 openai provider + baseUrl 覆盖 newapi 网关 `api.tokendancelab.com`）；本地实测网关 200 OK 1.1s、简单 prompt 5.6s、生产形态 prompt 18–57s（agent 模型多步推理，超出 15s tick 窗口——印证 per-tick LLM 关闭路线）。
+- **低频 MacroPolicy 已实现（PR #16/#17，v0.1.7）**：`MacroPolicy`（posture/workerTarget/militaryRatio/focusRegion/attackPriority）+ `MacroPolicyOrchestrator`（每 32 ticks 异步 Pi 产出，60s 超时不占 tick 窗口，失败 sticky 不轰炸）+ 独立策略 Pi session + `policy.jsonl` telemetry；SafetyPlanner 消费 posture→aggression（激进分支含 Vanguard 前压攻坚、Ranger 断经济）。
+- **激进战斗策略已上线（PR #13）**：SafetyPlanner `aggression` 配置 + STABLE_RULES 攻击导向 prompt + A/B 对打证据（6 seeds×500 ticks：aggressive pop=6 存活 vs defensive 军队全灭，0 illegal）。
 
 ## 自动化证据
 
@@ -67,12 +70,12 @@ combat、第四 Tick Unit/Core 争抢、Beacon pickup/drop/death、Core destruct
 ## 尚未完成
 
 1. Provider/Pi 真实 agent-shadow 故障注入与 circuit telemetry 证据；
-2. 四租户 Supervisor 分级真机运行与长期 soak（us1 Docker shadow 已起，24h soak 进行中）；
+2. 四租户 Supervisor 分级真机运行与长期 soak（us1 live 已四租户常驻，长期 soak 证据持续累积中）；
 3. 稳定 TS commit/config 回滚演练（Docker 镜像 tag 回滚流程已文档化，待演练）；
 4. combat、Core migration、Beacon、respawn 专项 Runtime-Golden；
-5. 服务器 shadow 长期运行观察（已部署 us1，待 24h+ 稳定证据）；
-6. 升级或受控修补 Pi 依赖链中的 undici，再开放服务器 `agent-shadow` / `hybrid`；
-7. 基于真实净收益决定是否允许单租户 hybrid canary。
+5. 服务器长期运行观察（us1 live 运行中，持续验证）；
+6. ~~升级或受控修补 Pi 依赖链中的 undici 再开放 per-tick `agent-shadow`/`hybrid`~~：per-tick LLM 已确认关闭路线（agent 模型 18–57s/决策 > 15s 窗口），低频 MacroPolicy 用独立 session 落地，无需 per-tick hybrid；
+7. 基于真实净收益决定是否允许单租户 hybrid canary（当前低频策略层替代该需求）。
 
 ## 生产晋级顺序
 
