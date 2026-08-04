@@ -948,7 +948,7 @@ func TestSubmitRejectsBadIdempotencyKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err = client.Submit(ctx, samplePlan(7), "too-short")
+	_, err = client.Submit(ctx, samplePlan(7), "short") // 5 字节 < 8
 	var confErr *ConfigurationError
 	if !asError(err, &confErr) {
 		t.Fatalf("Submit err = %v, want ConfigurationError", err)
@@ -989,7 +989,7 @@ func TestSubmitAfterCloseRejected(t *testing.T) {
 	}
 }
 
-func TestSubmitInvalidAcceptedBodyIsProtocolError(t *testing.T) {
+func TestSubmitInvalidAcceptedBodyRetriesThenTransportError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = fmt.Fprint(w, `{"accepted":true}`) // 缺 tick/source/received_at，校验失败
@@ -1001,10 +1001,12 @@ func TestSubmitInvalidAcceptedBodyIsProtocolError(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// 与 TS 版一致：202 但回执校验失败属协议错误，按安全重试语义重试，
+	// 重试耗尽后归为 TransportError。
 	_, err = client.Submit(ctx, samplePlan(7), "")
-	var protoErr *ProtocolError
-	if !asError(err, &protoErr) {
-		t.Fatalf("Submit err = %v, want ProtocolError", err)
+	var transportErr *TransportError
+	if !asError(err, &transportErr) {
+		t.Fatalf("Submit err = %v, want TransportError", err)
 	}
 }
 
