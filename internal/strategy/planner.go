@@ -1,6 +1,7 @@
 // Package strategy 实现确定性规划器（SafetyPlanner 语义子集）。
-// 当前为纵向闭环的最小合法实现：spawn/harvest/deposit/巡逻/防御，
-// 与 TS 版 SafetyPlanner 的差分对齐在阶段 A 验收进行。
+// 当前为纵向闭环的最小合法实现：spawn/harvest/deposit/巡逻/防御 +
+// Lane 2 经济化（worker 全局分配/移动容量仲裁/workerTarget reserve/
+// respawn override），与 TS 版确定性规划的差分对齐在阶段 A 验收进行。
 package strategy
 
 import (
@@ -15,7 +16,7 @@ type Config struct {
 	PopulationCeiling int // 人口上限
 	ExploreRadius     int // 探索半径
 	ThreatDistance    int // 威胁判定距离（Manhattan）
-	SpawnReserve      int // 正常扩张的预留资源（reserve guard；恢复期忽略）
+	SpawnReserve      int // 正常扩张的预留资源（reserve guard；紧急/恢复期忽略）
 }
 
 // DefaultConfig 返回默认配置。
@@ -40,7 +41,11 @@ func NewPlanner(config Config) *Planner {
 	return &Planner{config: config}
 }
 
-// Decide 产出确定性计划（同输入同输出）。
+// Decide 产出确定性计划（同输入同输出）：
+//  1. Core 决策（workerTarget + reserve guard + 紧急/恢复期通道）；
+//  2. worker 全局资源分配（assignWorkers，每格至多一个 worker）→ 各单位动作；
+//  3. 移动目标冲突仲裁（arbitrateMoveCapacity）→ 冲突格只留最高优先级
+//     单位，其余降级 WAIT。
 func (p *Planner) Decide(state *domain.TickState) *domain.Plan {
 	plan := &domain.Plan{
 		Tick:        state.Tick,
@@ -53,29 +58,51 @@ func (p *Planner) Decide(state *domain.TickState) *domain.Plan {
 		plan.Intents["core"] = "spawn"
 	}
 
-	// 全局资源分配（每格至多一个 worker）+ 移动目标冲突认领表。
-	assignments := resourceAssignments(state)
-	claims := make(map[string]targetClaim)
+	assignments := assignWorkers(state)
 
 	unitIDs := make([]string, 0, len(state.Units))
 	for _, unit := range state.Units {
 		unitIDs = append(unitIDs, unit.ID)
 	}
 	sort.Strings(unitIDs)
+
+	var candidates []moveCandidate
 	for _, id := range unitIDs {
-		if action, intent, ok := p.decideUnit(state, id, assignments, claims); ok {
-			plan.UnitActions[id] = action
-			plan.Intents[id] = intent
+		unit := findUnitSnapshot(state, id)
+		if unit == nil {
+			continue
 		}
+		action, intent, ok := p.decideUnit(state, unit, assignments)
+		if !ok {
+			continue
+		}
+		plan.UnitActions[id] = action
+		plan.Intents[id] = intent
+		if action.Kind == domain.ActionMove && action.Direction != nil {
+			candidates = append(candidates, moveCandidate{
+				unitID:      id,
+				destination: domain.Move(unit.Position, *action.Direction),
+				priority:    movePriorityFor(intent),
+				intent:      intent,
+			})
+		}
+	}
+
+	// 一次性仲裁：冲突格只保留最高优先级单位，其余降级 WAIT。
+	for _, loser := range arbitrateMoveCapacity(candidates) {
+		plan.UnitActions[loser.unitID] = domain.UnitAction{Kind: domain.ActionWait}
+		plan.Intents[loser.unitID] = "capacity_wait:" + loser.intent
 	}
 	return plan
 }
 
-// decideCore：workerTarget 消费 + reserve guard + 恢复期紧急通道。
-//   - Core 缺失/非 NORMAL（MOVING 等）：无 core 动作（validator 亦拒绝）；
-//   - 恢复期（Status==RESPAWNING）：紧急通道，resources >= cost 即 spawn；
+// decideCore：workerTarget 消费 + reserve guard + 紧急/恢复期通道。
+//   - Core 缺失或非 NORMAL：无 core 动作（validator 亦拒绝）；
 //   - 正常扩张：resources >= cost + SpawnReserve 才 spawn（reserve guard）；
-//   - 紧急通道与正常扩张都遵守 population ceiling 与 workerTarget。
+//   - 紧急通道：worker 数低于 emergencyWorkerFloor（<2，对齐 TS 版
+//     WORKER_RECOVERY_FLOOR）或处于恢复期（respawnOverride）时，
+//     resources >= cost 即 spawn（不攒 reserve）；
+//   - 同 tick 至多一个 spawn（Core 动作天然单数）。
 func (p *Planner) decideCore(state *domain.TickState) *domain.CoreAction {
 	if state.Core == nil || state.Core.State != domain.CoreNormal {
 		return nil
@@ -83,12 +110,11 @@ func (p *Planner) decideCore(state *domain.TickState) *domain.CoreAction {
 	workers := len(state.Workers)
 	if workers < p.config.WorkerTarget && state.Population < p.config.PopulationCeiling {
 		cost := domain.SpawnCost(domain.UnitWorker)
-		emergency := state.Status == domain.PlayerStatusRespawning
-		affordable := state.Resources >= cost
-		if !emergency {
-			affordable = state.Resources >= cost+p.config.SpawnReserve
+		reserve := p.config.SpawnReserve
+		if workers < emergencyWorkerFloor || respawnOverride(state) {
+			reserve = 0
 		}
-		if affordable {
+		if state.Resources >= cost+reserve {
 			unitType := domain.UnitWorker
 			return &domain.CoreAction{Kind: domain.CoreSpawn, UnitType: &unitType}
 		}
@@ -99,18 +125,7 @@ func (p *Planner) decideCore(state *domain.TickState) *domain.CoreAction {
 	return nil
 }
 
-func (p *Planner) decideUnit(state *domain.TickState, unitID string, assignments map[string]domain.Position, claims map[string]targetClaim) (domain.UnitAction, string, bool) {
-	var unit *domain.UnitSnapshot
-	for i := range state.Units {
-		if state.Units[i].ID == unitID {
-			unit = &state.Units[i]
-			break
-		}
-	}
-	if unit == nil {
-		return domain.UnitAction{}, "", false
-	}
-
+func (p *Planner) decideUnit(state *domain.TickState, unit *domain.UnitSnapshot, assignments map[string]domain.Position) (domain.UnitAction, string, bool) {
 	// 信标拾取优先。
 	if state.Beacon.Status == domain.BeaconGround && state.Beacon.CarrierID == nil &&
 		unit.Position == state.Beacon.Position {
@@ -119,16 +134,16 @@ func (p *Planner) decideUnit(state *domain.TickState, unitID string, assignments
 
 	switch unit.UnitType {
 	case domain.UnitWorker:
-		return p.decideWorker(state, unit, assignments, claims)
+		return p.decideWorker(state, unit, assignments)
 	case domain.UnitVanguard:
-		return p.decideVanguard(state, unit, claims)
+		return p.decideVanguard(state, unit)
 	case domain.UnitRanger:
-		return p.decideRanger(state, unit, claims)
+		return p.decideRanger(state, unit)
 	}
 	return domain.UnitAction{}, "", false
 }
 
-func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapshot, assignments map[string]domain.Position, claims map[string]targetClaim) (domain.UnitAction, string, bool) {
+func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapshot, assignments map[string]domain.Position) (domain.UnitAction, string, bool) {
 	if unit.Cargo >= 1 {
 		if state.ResourceSpace <= 0 {
 			// Core 容量已满（resources == capacity）：无处可存，
@@ -139,7 +154,7 @@ func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapsho
 			return domain.UnitAction{Kind: domain.ActionDeposit}, "deposit", true
 		}
 		if state.Core != nil {
-			return p.moveToward(state, unit, state.Core.Position, claims, priorityReturn), "return_core", true
+			return p.moveToward(state, unit, state.Core.Position), "return_core", true
 		}
 		return domain.UnitAction{Kind: domain.ActionWait}, "wait", true
 	}
@@ -148,29 +163,36 @@ func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapsho
 	}
 	// 全局分配：目标是"分给我的"资源格（每格唯一，消除抢格）。
 	if target, ok := assignments[unit.ID]; ok {
-		return p.moveToward(state, unit, target, claims, priorityHarvest), "to_resource", true
+		return p.moveToward(state, unit, target), "to_resource", true
 	}
-	// 无可见资源格：恢复期原地待命，正常期巡逻探索。
+	// 无可见资源格：恢复期原地待命（不探索远处），正常期巡逻探索。
 	if respawnOverride(state) {
-		return domain.UnitAction{Kind: domain.ActionWait}, "wait_respawn", true
+		return domain.UnitAction{Kind: domain.ActionWait}, "defend", true
 	}
-	return p.patrol(state, unit, claims), "explore", true
+	return p.patrol(state, unit), "explore", true
 }
 
-func (p *Planner) decideVanguard(state *domain.TickState, unit *domain.UnitSnapshot, claims map[string]targetClaim) (domain.UnitAction, string, bool) {
+func (p *Planner) decideVanguard(state *domain.TickState, unit *domain.UnitSnapshot) (domain.UnitAction, string, bool) {
 	if enemy := nearestEnemy(state, unit.Position, p.config.ThreatDistance); enemy != nil {
-		return p.moveToward(state, unit, enemy.Position, claims, priorityCombat), "engage", true
+		return p.moveToward(state, unit, enemy.Position), "engage", true
 	}
 	if state.Core != nil && unit.HP < domain.UnitMaxHP(unit.UnitType) {
 		if unit.Position == state.Core.Position {
 			return domain.UnitAction{Kind: domain.ActionHeal}, "heal", true
 		}
-		return p.moveToward(state, unit, state.Core.Position, claims, priorityReturn), "to_core_heal", true
+		return p.moveToward(state, unit, state.Core.Position), "to_core_heal", true
 	}
-	return p.patrol(state, unit, claims), "patrol", true
+	if respawnOverride(state) {
+		// 恢复期：回核心防守，不巡逻远处。
+		if state.Core != nil && unit.Position != state.Core.Position {
+			return p.moveToward(state, unit, state.Core.Position), "defend", true
+		}
+		return domain.UnitAction{Kind: domain.ActionWait}, "defend", true
+	}
+	return p.patrol(state, unit), "patrol", true
 }
 
-func (p *Planner) decideRanger(state *domain.TickState, unit *domain.UnitSnapshot, claims map[string]targetClaim) (domain.UnitAction, string, bool) {
+func (p *Planner) decideRanger(state *domain.TickState, unit *domain.UnitSnapshot) (domain.UnitAction, string, bool) {
 	if enemy := nearestEnemy(state, unit.Position, 3); enemy != nil {
 		if !domain.LineBlocked(unit.Position, enemy.Position, state.ObstacleCells) {
 			targetID := enemy.ID
@@ -182,35 +204,34 @@ func (p *Planner) decideRanger(state *domain.TickState, unit *domain.UnitSnapsho
 		if unit.Position == state.Core.Position {
 			return domain.UnitAction{Kind: domain.ActionHeal}, "heal", true
 		}
-		return p.moveToward(state, unit, state.Core.Position, claims, priorityReturn), "to_core_heal", true
+		return p.moveToward(state, unit, state.Core.Position), "to_core_heal", true
 	}
-	return p.patrol(state, unit, claims), "patrol", true
+	if respawnOverride(state) {
+		// 恢复期：回核心防守，不巡逻远处。
+		if state.Core != nil && unit.Position != state.Core.Position {
+			return p.moveToward(state, unit, state.Core.Position), "defend", true
+		}
+		return domain.UnitAction{Kind: domain.ActionWait}, "defend", true
+	}
+	return p.patrol(state, unit), "patrol", true
 }
 
-// moveToward 带冲突仲裁：**下一步移动到的格**已被更高优先级单位认领
-// → WAIT（仲裁粒度是实际移动目标格，只有路径真正冲突的单位让路；
-// 最终目标格相同但路径不交错的单位可以并行移动）。
-func (p *Planner) moveToward(state *domain.TickState, unit *domain.UnitSnapshot, target domain.Position, claims map[string]targetClaim, priority movePriority) domain.UnitAction {
-	direction, ok := domain.StepToward(unit.Position, target, state.ObstacleCells)
-	if !ok {
-		return domain.UnitAction{Kind: domain.ActionWait}
+func (p *Planner) moveToward(state *domain.TickState, unit *domain.UnitSnapshot, target domain.Position) domain.UnitAction {
+	if direction, ok := domain.StepToward(unit.Position, target, state.ObstacleCells); ok {
+		dir := direction
+		return domain.UnitAction{Kind: domain.ActionMove, Direction: &dir}
 	}
-	next := domain.Move(unit.Position, direction)
-	if !claimTarget(claims, unit.ID, next, priority) {
-		return domain.UnitAction{Kind: domain.ActionWait}
-	}
-	dir := direction
-	return domain.UnitAction{Kind: domain.ActionMove, Direction: &dir}
+	return domain.UnitAction{Kind: domain.ActionWait}
 }
 
-func (p *Planner) patrol(state *domain.TickState, unit *domain.UnitSnapshot, claims map[string]targetClaim) domain.UnitAction {
+func (p *Planner) patrol(state *domain.TickState, unit *domain.UnitSnapshot) domain.UnitAction {
 	home := domain.Position{0, 0}
 	if state.Core != nil {
 		home = state.Core.Position
 	}
 	target := domain.ExploreTarget(home, state.Beacon.Position, p.exploreIndex%8, p.config.ExploreRadius)
 	p.exploreIndex++
-	return p.moveToward(state, unit, target, claims, priorityExplore)
+	return p.moveToward(state, unit, target)
 }
 
 func nearestEnemy(state *domain.TickState, from domain.Position, radius int) *domain.VisibleEntity {
