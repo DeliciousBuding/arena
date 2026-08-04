@@ -1,8 +1,8 @@
 [Unit]
-Description=Arena multi-tenant supervisor (deterministic live, manual recovery)
+Description=Arena multi-tenant supervisor (deterministic live, Docker, manual recovery)
 Documentation=file:/opt/arena/current/docs/ops/server-deployment.md
-Wants=network-online.target
-After=network-online.target
+Wants=network-online.target docker.service
+After=network-online.target docker.service
 Conflicts=arena-supervisor-shadow.service
 ConditionPathIsDirectory=/opt/arena/current
 ConditionPathIsDirectory=/etc/arena/configs
@@ -10,46 +10,16 @@ OnFailure=arena-live-alert.service
 
 [Service]
 Type=simple
-User=arena
-Group=arena
 WorkingDirectory=/opt/arena/current
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/var/lib/arena
+Environment=PATH=/usr/bin:/bin
 EnvironmentFile=/etc/arena/arena.env
 EnvironmentFile=-/etc/arena/health.env
-ExecStart=/opt/arena/current/scripts/server/run-supervisor.sh live
+# Docker CLI runs as root; the container itself drops to uid 1001 (arena) via compose.
+ExecStart=/usr/bin/docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml up live
+ExecStop=/usr/bin/docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml down
 Restart=no
-TimeoutStartSec=60
-TimeoutStopSec=30
-KillMode=control-group
-SendSIGKILL=yes
-UMask=0077
-StateDirectory=arena
-StateDirectoryMode=0700
-RuntimeDirectory=arena
-RuntimeDirectoryMode=0700
-NoNewPrivileges=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectProc=invisible
-ProtectClock=true
-ProtectHostname=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictNamespaces=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-LockPersonality=true
-RemoveIPC=true
-TasksMax=256
-LimitNOFILE=65536
-MemoryMax=2G
-CPUQuota=200%
+TimeoutStartSec=120
+TimeoutStopSec=60
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=arena-supervisor-live

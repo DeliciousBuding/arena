@@ -27,25 +27,20 @@ mustContain(shadowUnit, "RestartPreventExitStatus=64 78", "shadow wrapper errors
 mustContain(liveUnit, "Restart=no", "live service must not auto-restart before durable idempotency");
 mustNotContain(liveUnit, "Restart=on-failure", "live service must not inherit shadow restart policy");
 for (const [name, unit] of [["shadow", shadowUnit], ["live", liveUnit]]) {
-  mustContain(unit, "KillMode=control-group", `${name} service must own the full process tree`);
-  mustContain(unit, "ProtectSystem=strict", `${name} service must keep the release immutable`);
-  mustContain(unit, "ProtectProc=invisible", `${name} service must hide process metadata from other users`);
+  mustContain(unit, "docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml up", `${name} service must start the Docker container`);
+  mustContain(unit, "docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml down", `${name} service must stop the Docker container`);
   mustContain(unit, "EnvironmentFile=/etc/arena/arena.env", `${name} service must use external secrets`);
 }
 mustContain(shadowHealth, "OnFailure=arena-shadow-recover.service", "shadow readiness failures must recover");
 mustContain(liveHealth, "OnFailure=arena-live-alert.service", "live readiness failures must alert only");
-mustContain(shadowHealth, "--systemd-unit=arena-supervisor-shadow.service", "shadow timer must skip inactive service");
-mustContain(liveHealth, "--systemd-unit=arena-supervisor-live.service", "live timer must skip inactive service");
+mustContain(shadowHealth, "check-readiness.sh arena-supervisor-shadow.service shadow", "shadow timer must probe the shadow container");
+mustContain(liveHealth, "check-readiness.sh arena-supervisor-live.service live", "live timer must probe the live container");
 mustNotContain(shadowHealth, "EnvironmentFile=/etc/arena/arena.env", "shadow health must not receive tenant secrets");
 mustNotContain(liveHealth, "EnvironmentFile=/etc/arena/arena.env", "live health must not receive tenant secrets");
 mustContain(shadowHealth, "EnvironmentFile=-/etc/arena/health.env", "shadow health must read non-secret settings");
 mustContain(liveHealth, "EnvironmentFile=-/etc/arena/health.env", "live health must read non-secret settings");
-mustContain(shadowHealth, "--skip-disk", "shadow readiness failure must not be coupled to disk recovery");
-mustContain(liveHealth, "--skip-disk", "live readiness failure must not be coupled to disk recovery");
-mustNotContain(shadowHealth, "--disk-only", "shadow readiness unit must not be disk-only");
-mustNotContain(liveHealth, "--disk-only", "live readiness unit must not be disk-only");
 mustContain(diskHealth, "OnFailure=arena-disk-alert.service", "disk pressure must alert without restarting writers");
-mustContain(diskHealth, "--disk-only", "disk health must not depend on supervisor readiness");
+mustContain(diskHealth, "check-disk.sh", "disk health must run the host-side disk gate");
 mustContain(diskHealth, "EnvironmentFile=-/etc/arena/health.env", "disk health must use non-secret settings");
 mustNotContain(diskHealth, "--systemd-unit", "disk health must run even when supervisors are inactive");
 mustNotContain(diskHealth, "/etc/arena/arena.env", "disk health must not inherit tenant secrets");
@@ -59,6 +54,27 @@ mustContain(wrapper, 'args+=("--mode=deterministic" "--shadow")', "server shadow
 mustContain(wrapper, 'args+=("--mode=deterministic" "--live")', "live wrapper must pin deterministic mode");
 mustContain(wrapper, 'exec "$tsx_bin" packages/arena-agent/src/cli/run-supervisor.ts', "wrapper must exec the native TS entry directly");
 mustNotContain(wrapper, "npm run arena:supervisor", "server wrapper must not add an npm process layer");
+
+// Docker deployment contract (deploy/docker). The image must not carry secrets;
+// the compose file must keep shadow auto-recoverable and live manual-only.
+const dockerDir = join(root, "deploy", "docker");
+const dockerfile = readFileSync(join(dockerDir, "Dockerfile"), "utf-8");
+const compose = readFileSync(join(dockerDir, "arena-compose.yml"), "utf-8");
+const arenaEnvExample = readFileSync(join(systemdDir, "arena.env.example"), "utf-8");
+
+mustContain(dockerfile, "FROM node:24-slim", "image must pin Node 24 LTS");
+mustContain(dockerfile, "USER arena:arena", "image must not run as root");
+mustContain(dockerfile, "ENTRYPOINT", "image must use the supervisor wrapper as entrypoint");
+mustNotContain(dockerfile, "ARENA_HERO_API_KEY", "image must not embed tenant secrets");
+mustContain(compose, 'env_file:\n      - /etc/arena/arena.env', "compose must inject secrets from host file only");
+mustContain(compose, "read_only: true", "compose must keep the root filesystem read-only");
+mustContain(compose, "cap_drop:\n      - ALL", "compose must drop all capabilities");
+mustContain(compose, "no-new-privileges:true", "compose must block privilege escalation");
+mustContain(compose, "restart: \"no\"", "compose must defer restart policy to systemd units");
+mustContain(compose, "user: \"1001:1001\"", "container must run as the arena uid");
+mustContain(compose, "127.0.0.1:8120:8120", "debug API must bind loopback only");
+mustContain(compose, "--skip-disk", "container healthcheck must not own the disk gate");
+mustNotContain(compose, "ARENA_HERO_API_KEY", "compose must not inline tenant secrets");
 if (typeof piUndiciVersion !== "string") {
   throw new Error("cannot resolve pi-coding-agent nested undici version from package-lock.json");
 }
