@@ -98,7 +98,7 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm run check
 npm test
 npm run schema:check
-npm run replay:check      # 冻结 W3 fixture：严格 state/metadata + 有界 legacy plan 豁免
+npm run replay:ts        # 冻结 W3 fixture：严格 state/metadata + 有界 legacy plan 豁免
 npm run sim:test -w packages/arena-agent
 npm run sim:calibrate-dataset -w packages/arena-agent -- --manifest runtime/t3/calibration/26600fea-e8c7-45da-98e8-5a4bc03919f9/manifest.json --run-id runtime-golden-t3-26600fea --force
 python scripts/gen-status.py --check
