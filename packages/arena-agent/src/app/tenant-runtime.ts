@@ -334,6 +334,7 @@ export async function runTenant(
           model: resolvePiModel(config),
           thinkingLevel: config.model.thinkingLevel,
           configHash: `sha256:cfg:${config.tenantId}`,
+          // 策略层不调用工具：空 customTools（factory 接受空数组 = 零 custom tool）。
           customTools: [],
         });
         const policySession = await policyFactory.createSession(config.tenantId);
@@ -366,8 +367,20 @@ export async function runTenant(
           },
           timeoutMs: 60000,
         });
-      } catch {
-        // 策略层初始化失败（认证/网络）：执行层用默认策略继续，不阻断启动。
+      } catch (error) {
+        // 策略层初始化失败（认证/网络/配置）：执行层用默认策略继续，不阻断启动。
+        // 失败必须可见（telemetry 首条即 init 失败告警），否则"策略层静默未运行"。
+        try {
+          appendJsonlLine(
+            join(dirs.telemetryDir, "policy.jsonl"),
+            JSON.stringify(sanitizeValue({
+              at: new Date().toISOString(),
+              tenantId: config.tenantId,
+              type: "policy_init_error",
+              message: error instanceof Error ? error.message : String(error),
+            })),
+          );
+        } catch {}
       }
     }
 
