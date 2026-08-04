@@ -27,8 +27,10 @@
 
 | 日期 | 步骤 | 证据（run/manifest/JSONL 路径） | 结果 |
 |---|---|---|---|
-| 2026-08-05 | t3 真机 shadow（首轮，10 tick） | `runtime/t3/telemetry/{runtime,decision}.jsonl` | ✅ 连接成功，tick 52455–52460 连续处理，每 tick 1 action + core，全部 valid、0 repair；进程在 6 tick 后结束（无 stopped 日志，疑正常断流，待 debug 轮确认） |
-| 2026-08-05 | t3 真机 shadow（debug 轮，12 tick） | `runtime/t3/shadow-debug.log` + `runtime/t3/telemetry/decision.jsonl` | 🔄 运行中：tick 52464+ 每 ~15s 稳定推进（见差异日志/运行观察） |
+| 2026-08-05 | t3 真机 shadow（首轮，10 tick） | `runtime/t3/telemetry/{runtime,decision}.jsonl` | ✅ 连接成功，tick 52455–52460 连续处理，每 tick 1 action + core，全部 valid、0 repair |
+| 2026-08-05 | t3 真机 shadow（debug 轮，15 tick） | `runtime/t3/shadow-debug.log` + telemetry | ✅ 15/15 完整跑完，`tenant stopped ticks=15 submits=0 rejected=0 repaired=0`，干净退出 |
+| 2026-08-05 | t4 真机 shadow（15 tick） | `runtime/t4/telemetry/` | ✅ 15/15（tick 52523–52537，零提交）；**暴露 capacity 满 deposit bug**（repaired=15 → 已修：ResourceSpace<=0 → WAIT） |
+| 2026-08-05 | t3 真机 shadow（50 tick 实验） | `runtime/t3/shadow-50t.log` + run-scoped telemetry | 🔄 运行中（tick 52582，World 记忆/workers 观测字段已加） |
 
 ## 差异日志（行为漂移唯一记录）
 
@@ -46,7 +48,19 @@
       04-test-strategy / 05-delivery-plan（2026-08-05）
 - [x] B1 地基（`229fa77`）、B2 契约（`8a322b4`，192 用例/95.9%）、B4-B mapstore
 - [x] B3-A/B3-B/B4-A 纵向切片（`f39c662`+）：domain/hero/strategy + replay/tenant 命令
-- [x] 分支改名 `go-rewrite`（worktree 移至 `.worktrees/go-rewrite`）
+- [x] 分支改名 `go-rewrite`（worktree 移至 `.worktrees/go-rewrite`，正式远端 `origin/go-rewrite` 已建 upstream，`03e8c8c`）
 - [x] 阶段 A 验收：100/100 tick 回放合法、0 repair、动作分布与 TS 完全一致（MOVE=317）
-- [ ] B5-A lease/coordinator（Loop 已接，lease 待补）
-- [ ] B8 真机 t3 shadow（t3/t4 已授权；replay 已通过，下一步真机）
+- [x] 阶段 B 真机 shadow：t3 三轮（10/15/50t）+ t4 一轮（15t）全部连续处理零提交；
+      deposit 容量满 bug 已修（t4 暴露）；debug 日志/重连可观测性补齐
+- [x] Lane1 收口（`1c0cc39`/`7b61f25`/`03e8c8c`）：World 接主链、run-scoped telemetry、
+      稳定幂等键、事件流错误传播、live 双确认 + 单写者锁、gitignore 根锚定修复
+- [x] DecisionLease/LeaseRegistry/DeadlineBudget（`7b61f25`，subagent lane，审查通过）
+- [x] 单写者锁（`1c0cc39`，subagent lane，含 PID 复用陷阱防护）
+- [x] MacroPolicy 纯函数（`7b4946e`，23 函数/65 用例 98.3%）
+- [x] TS↔Go 语义同步表 + Canonical Policy（`03e8c8c`）
+- [ ] Lane 2 经济 Planner：worker 全局分配/move capacity/workerTarget/respawn override（subagent 执行中）
+- [ ] 50-tick shadow 实验结果收口（运行中）
+- [ ] workerTarget=2/8/16 固定策略 shadow（Lane 2 后）
+- [ ] 3→10→30 tick bounded live（live 三件套已就绪）
+- [ ] 统一固定 Policy TS/Go 交叉赛马（Canonical Policy 已定义）
+- [ ] 低频 LLM MacroPolicy 接线（最后）
