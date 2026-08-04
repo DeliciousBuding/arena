@@ -28,6 +28,7 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 - 服务器部署基线：不可变 release、外置 config/runtime、systemd cgroup、shadow readiness 有界自恢复、live `Restart=no`、无密钥 health env、独立磁盘告警不重启 writer、有限 JSONL 轮转；
 - **部署形态升级为 Docker（GHCR）+ systemd 编排**：CI 在 main push 构建推送 `ghcr.io/deliciousbuding/arena:<sha>/:main`；systemd 为生命周期唯一权威（shadow `Restart=on-failure`、live `Restart=no`）；容器 stop 销毁 PID namespace 无孤儿；健康探针宿主零 Node 依赖（compose exec + df）；
 - **us1 生产 Docker shadow 已部署**：容器 healthy，`/health`/`/ready` 均 ready:true，t1 持续产出 run 与 telemetry，shadow/disk 健康计时器全绿；
+- **us1 四租户 Docker shadow 已上线**：t1–t4 各自独立进程（pid 38/44/50/52）、独立锁（`/var/lib/arena/<t>/locks/<t>.lock`）、独立 run/manifest/telemetry；supervisor.jsonl 记录四租户 ready；健康 timer 验证四租户 ready=true（149ms）；
 - Digital Twin S0–S12 / P06 / P12 与首份 Runtime-Golden 已落地。
 
 ## 自动化证据
