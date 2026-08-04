@@ -207,6 +207,43 @@ test("空载单位占 Core 格仍阻塞 SPAWN（容量安全）", () => {
   assert.notEqual(plan.coreAction?.type, "SPAWN", "空载占位仍应抑制 SPAWN");
 });
 
+test("militaryRatio 消费：workers 达 target 后按策略产兵（VANGUARD）", () => {
+  const planner = new DeterministicPlanner();
+  // v0.2.11：生产 A/B 实测清场方经济 2-4× 优于被压方（敌群挡回仓/采集）。
+  // militaryRatio=0.4 + workers 已达 target（4）→ 应 SPAWN VANGUARD。
+  const policyWithMilitary: MacroPolicy = { posture: "balanced", workerTarget: 4, militaryRatio: 0.4, focusRegion: null, attackPriority: null };
+  const state: TickState = {
+    ...makeState(100, [coreObj, unit("w1", 1, 0, "WORKER", 1), unit("w2", 2, 0, "WORKER", 1), unit("w3", 3, 0, "WORKER", 1), unit("w4", 4, 0, "WORKER", 1)], 15),
+    resourceCells: RESOURCE_CELLS,
+  };
+  const plan = planner.decide({ state, policy: policyWithMilitary });
+  assert.equal(plan.coreAction?.type, "SPAWN", "workers 达 target 且 militaryRatio>0 应产兵");
+  assert.equal(plan.coreAction?.unitType, "VANGUARD", "vanguards 少时先产 VANGUARD");
+  assert.equal(plan.intents.core, "spawn_vanguard_military_ratio");
+});
+
+test("militaryRatio=0：workers 达 target 后不产兵", () => {
+  const planner = new DeterministicPlanner();
+  const state: TickState = {
+    ...makeState(100, [coreObj, unit("w1", 1, 0, "WORKER", 1), unit("w2", 2, 0, "WORKER", 1), unit("w3", 3, 0, "WORKER", 1), unit("w4", 4, 0, "WORKER", 1)], 15),
+    resourceCells: RESOURCE_CELLS,
+  };
+  const plan = planner.decide({ state, policy: POLICY });
+  assert.notEqual(plan.coreAction?.type, "SPAWN", "militaryRatio=0 时达 target 不产兵");
+});
+
+test("militaryRatio 消费：workers 未达 target 仍补 Worker（经济优先）", () => {
+  const planner = new DeterministicPlanner();
+  const policyWithMilitary: MacroPolicy = { posture: "balanced", workerTarget: 6, militaryRatio: 0.4, focusRegion: null, attackPriority: null };
+  const state: TickState = {
+    ...makeState(100, [coreObj, unit("w1", 1, 0, "WORKER", 1), unit("w2", 2, 0, "WORKER", 1)], 15),
+    resourceCells: RESOURCE_CELLS,
+  };
+  const plan = planner.decide({ state, policy: policyWithMilitary });
+  assert.equal(plan.coreAction?.type, "SPAWN", "workers 未达 target 应补员");
+  assert.equal(plan.coreAction?.unitType, "WORKER", "经济优先：先补 Worker 不产兵");
+});
+
 test("回仓绕行：满载 Worker 回 Core 路径上的敌方格并入障碍（不 capacity_wait 死锁）", () => {
   const planner = new DeterministicPlanner();
   // 生产实测：w1 满载在 [-316,57]（dist 32），回 Core 直线路径被敌方 Worker

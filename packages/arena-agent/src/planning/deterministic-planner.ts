@@ -290,31 +290,48 @@ export function selectDeterministicCoreAction(
   const workerTarget = Math.max(policy?.workerTarget ?? WORKER_RECOVERY_FLOOR, WORKER_RECOVERY_FLOOR);
   const core = state.core;
   const emergency = state.workers.length < WORKER_RECOVERY_FLOOR;
-  if (
-    core !== null &&
-    core.state === "NORMAL" &&
-    state.workers.length < workerTarget &&
-    // emergency（< floor）保命优先：只剩刚好 5 资源也补员；
-    // 目标补员带 reserve 保护，不因扩编掏空国库。
-    state.resources >= WORKER_SPAWN_COST + (emergency ? 0 : WORKER_SPAWN_RESERVE)
-  ) {
-    // 满载 Worker 在 Core 格是"卸货等待"（资源满时 DEPOSIT 暂不合法，
-    // 但 SPAWN 消耗资源后立即可卸）——不把它当占位，否则资源满 + 占格 +
-    // 无法卸货会形成永久经济死锁（生产实测：repair 每 tick 移除 DEPOSIT，
-    // SPAWN 被抑制 → 资源永不消耗 → 永远满）。只有空载/非 Worker 单位占
-    // Core 格才阻塞生成（那种情况下生成会叠加容量）。
+  // militaryRatio 消费点（v0.2.11）：workers 达 target 后按策略产兵——
+  // 生产 A/B 实测清场方经济 2-4× 优于被压方（敌群挡回仓/采集）。经济优先：
+  // workers 未达 target 或 militaryRatio=0 时仍只产 Worker。
+  const militaryRatio = policy?.militaryRatio ?? 0;
+  const military = state.vanguards.length + state.rangers.length;
+  const populationTotal = state.workers.length + military;
+  const needMilitary =
+    state.workers.length >= workerTarget &&
+    militaryRatio > 0 &&
+    populationTotal > 0 &&
+    military / populationTotal < militaryRatio;
+
+  if (core !== null && core.state === "NORMAL") {
+    // Core 格被空载/非 Worker 单位占位时阻塞生成（SPAWN 会叠加容量）；
+    // 满载 Worker 是"卸货等待"不阻塞（资源满时 DEPOSIT 暂不合法，但 SPAWN
+    // 消耗资源后立即可卸——资源满 + 占格 + 无法卸货会形成永久经济死锁）。
     const permanentOccupantsOnCore = state.units.filter(
       (unit) =>
         unit.position[0] === core.position[0] &&
         unit.position[1] === core.position[1] &&
         !(unit.unitType === "WORKER" && unit.cargo > 0),
     ).length;
-    // Core 自身占一个容量位；只有没有永久占位单位站在 Core 格时才安全生成。
     if (permanentOccupantsOnCore === 0) {
-      return {
-        action: { type: "SPAWN", unitType: "WORKER" },
-        intent: emergency ? "emergency_spawn_worker" : "spawn_worker_target",
-      };
+      if (state.workers.length < workerTarget && !needMilitary) {
+        if (state.resources >= WORKER_SPAWN_COST + (emergency ? 0 : WORKER_SPAWN_RESERVE)) {
+          return {
+            action: { type: "SPAWN", unitType: "WORKER" },
+            intent: emergency ? "emergency_spawn_worker" : "spawn_worker_target",
+          };
+        }
+      } else if (needMilitary) {
+        // 军事单位交替产出（VANGUARD ↔ RANGER），资源门禁：VANGUARD 10 / RANGER 12 + reserve
+        const unitType: "VANGUARD" | "RANGER" =
+          state.vanguards.length <= state.rangers.length ? "VANGUARD" : "RANGER";
+        const cost = unitType === "VANGUARD" ? 10 : 12;
+        if (state.resources >= cost + WORKER_SPAWN_RESERVE) {
+          return {
+            action: { type: "SPAWN", unitType },
+            intent: `spawn_${unitType.toLowerCase()}_military_ratio`,
+          };
+        }
+      }
     }
   }
   return { action: null, intent: null };
