@@ -14,6 +14,7 @@ import (
 
 	"github.com/deliciousbuding/arena/internal/domain"
 	"github.com/deliciousbuding/arena/internal/hero"
+	"github.com/deliciousbuding/arena/internal/ops"
 	"github.com/deliciousbuding/arena/internal/runtime"
 	"github.com/deliciousbuding/arena/internal/strategy"
 	"github.com/deliciousbuding/arena/internal/telemetry"
@@ -61,6 +62,12 @@ func runTenantCmd(args []string) int {
 	}
 	submissionMode := runtime.ModeShadow
 	if *live {
+		// live 双确认：--live flag 与配置 submitEnabled=true 必须同时成立，
+		// 防止误传 flag 或配置漂移导致意外提交。
+		if !configFile.SubmitEnabled {
+			fmt.Fprintln(os.Stderr, "arena tenant: --live requires submitEnabled=true in config (double confirmation)")
+			return exitConfig
+		}
 		submissionMode = runtime.ModeLive
 	}
 
@@ -82,6 +89,27 @@ func runTenantCmd(args []string) int {
 		baseDir = "runtime"
 	}
 	tenantDir := filepath.Join(baseDir, configFile.TenantID)
+
+	// live 单写者锁：同租户只能一个 live writer，拿不到锁直接失败退出。
+	// stale 锁只报告不自动清理（红线：不自动删除；operator 显式处理）。
+	var liveLock *ops.Lock
+	if submissionMode == runtime.ModeLive {
+		lockDir := filepath.Join(tenantDir, "locks")
+		if err := os.MkdirAll(lockDir, 0o700); err != nil {
+			fmt.Fprintf(os.Stderr, "arena tenant: create lock dir: %v\n", err)
+			return exitError
+		}
+		lockPath := filepath.Join(lockDir, configFile.TenantID+".lock")
+		lock, err := ops.New().Acquire(lockPath, configFile.TenantID+"-live")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "arena tenant: single-writer lock: %v (tenant %s already has a live writer; stale locks are NOT auto-removed)\n", err, configFile.TenantID)
+			return exitError
+		}
+		liveLock = lock
+		defer func() { _ = liveLock.Release() }()
+		logger.Info("live lock acquired", "path", lockPath)
+	}
+
 	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102T150405"))
 	runDir := filepath.Join(tenantDir, "runs", runID)
 	if err := os.MkdirAll(runDir, 0o700); err != nil {

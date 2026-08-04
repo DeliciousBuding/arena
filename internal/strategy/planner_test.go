@@ -607,30 +607,39 @@ func TestConfigCombinationsDoNotPanic(t *testing.T) {
 	}
 }
 
-// TestLargeUnitListPerformance：150 单位决策 < 100ms（防 O(n²) 爆炸）。
+// TestLargeUnitListPerformance：200 单位决策 < 100ms（防 O(n²) 查找与
+// 导航搜索爆炸）。单位散布在资源格附近，BFS 边界框小，测的是真实热点：
+// decideUnit 的逐单位线性查找。
 func TestLargeUnitListPerformance(t *testing.T) {
 	state := baseState()
-	state.Units = make([]domain.UnitSnapshot, 0, 150)
-	state.Workers = make([]domain.UnitSnapshot, 0, 150)
-	for i := 0; i < 150; i++ {
+	unitCount := 200
+	state.Units = make([]domain.UnitSnapshot, 0, unitCount)
+	state.Workers = make([]domain.UnitSnapshot, 0, unitCount)
+	resourcePosition := domain.Position{20, 20}
+	for i := 0; i < unitCount; i++ {
 		id := fmt.Sprintf("worker-%03d", i)
 		unit := domain.UnitSnapshot{
-			ID: id, Position: domain.Position{i % 20, i / 20}, HP: 2, UnitType: domain.UnitWorker,
+			ID: id,
+			Position: domain.Position{
+				resourcePosition[0] + i%9,
+				resourcePosition[1] + i/9,
+			},
+			HP: 2, UnitType: domain.UnitWorker,
 		}
 		state.Units = append(state.Units, unit)
 		state.Workers = append(state.Workers, unit)
 	}
-	state.ResourceCells = domain.NewSet(domain.CellKey(30, 30))
+	state.ResourceCells = domain.NewSet(domain.CellKey(resourcePosition[0], resourcePosition[1]))
 
 	start := time.Now()
 	plan := NewPlanner(DefaultConfig()).Decide(state)
 	elapsed := time.Since(start)
 
-	if len(plan.UnitActions) != 150 {
-		t.Fatalf("expected actions for all 150 units, got %d", len(plan.UnitActions))
+	if len(plan.UnitActions) != unitCount {
+		t.Fatalf("expected actions for all %d units, got %d", unitCount, len(plan.UnitActions))
 	}
 	if elapsed >= 100*time.Millisecond {
-		t.Errorf("decide on 150 units took %v, want < 100ms", elapsed)
+		t.Errorf("decide on %d units took %v, want < 100ms", unitCount, elapsed)
 	}
 }
 
