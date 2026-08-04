@@ -407,12 +407,12 @@ export class DeterministicPlanner implements PlanProvider {
     if (unit === undefined) {
       return { type: "WAIT" };
     }
-    // 敌方格并入绕行障碍（生产实测：满载 Worker 回仓路线被敌方单位占位时，
-    // 容量裁决保守拒绝 → capacity_wait:DEPOSIT 永久等待）。Worker 不主动进敌
-    // 方格，路线绕行而非等待。
+    // 可见敌人全部占用格并入绕行障碍（含敌方 CORE——生产实测：Worker 回仓
+    // 路线被敌方 CORE 挡时，BFS 不知道它是障碍 → 反复 capacity_wait:DEPOSIT）。
+    // Worker 不主动进敌方格，路线绕行而非等待。
     const avoidCells = new Set(snapshot.obstacleCells);
-    for (const enemy of snapshot.enemyUnits) {
-      avoidCells.add(cellKey(enemy.position));
+    for (const enemyCell of snapshot.enemyCells) {
+      avoidCells.add(enemyCell);
     }
     // 容量预检：本 tick 已占满（≥2 实体，Core 占 1）的格也视为障碍——MOVE
     // 目标格若已满必被 resolveMoveCapacity 拒绝转 WAIT（capacity_wait 循环

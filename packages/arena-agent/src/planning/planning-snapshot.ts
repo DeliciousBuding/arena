@@ -48,6 +48,9 @@ export interface PlanningSnapshot {
   /** 已知资源格：key "x,y" → 格信息。 */
   readonly resourceCells: ReadonlyMap<string, ResourceCellInfo>;
   readonly obstacleCells: ReadonlySet<string>;
+  /** 所有可见敌人占用格（含敌方 CORE——CORE 是永久障碍，Worker 回仓路线
+   *  被敌方 CORE 挡时会反复 capacity_wait:DEPOSIT，生产实测）。 */
+  readonly enemyCells: ReadonlySet<string>;
   readonly enemyUnits: readonly EnemyUnit[];
   readonly corePosition: Position | null;
   readonly coreHp: number | null;
@@ -100,6 +103,7 @@ export function extractPlanningSnapshot(state: TickState): PlanningSnapshot {
   const enemyUnits: EnemyUnit[] = state.visibleEnemies
     .filter((enemy) => enemy.kind === "UNIT")
     .map((enemy) => ({ id: enemy.id, position: enemy.position, unitType: enemy.unitType }));
+  const enemyCells = new Set(state.visibleEnemies.map((enemy) => cellKey(enemy.position)));
   const resourceCells = new Map<string, ResourceCellInfo>();
   for (const key of state.resourceCells) {
     resourceCells.set(key, { position: parseCellKey(key) });
@@ -113,6 +117,7 @@ export function extractPlanningSnapshot(state: TickState): PlanningSnapshot {
     units,
     resourceCells,
     obstacleCells: new Set(state.obstacleCells),
+    enemyCells,
     enemyUnits,
     corePosition: state.core?.position ?? null,
     coreHp: state.core?.hp ?? null,
