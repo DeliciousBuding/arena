@@ -72,7 +72,7 @@ export type UnitAction =
   | { readonly type: "HARVEST" }
   | { readonly type: "DEPOSIT" }
   | { readonly type: "SWEEP"; readonly direction: Direction }
-  | { readonly type: "SHOOT"; readonly targetId: string; readonly expectedCell: Position }
+  | { readonly type: "SHOOT"; readonly targetId: string | null; readonly expectedCell: Position }
   | { readonly type: "PICKUP_BEACON" }
   | { readonly type: "DROP_BEACON" }
   | { readonly type: "SELF_DESTRUCT" }

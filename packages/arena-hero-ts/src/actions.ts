@@ -30,10 +30,13 @@ export interface SweepAction {
   direction: Direction;
 }
 
-/** Shoot an expected target cell with a Ranger in an eight-direction line. */
+/** Shoot an expected target cell with a Ranger in an eight-direction line.
+ *  Cell fire (upstream v0.12): target_id is optional. Without it the shot hits
+ *  the lowest-HP hostile then present in expected_cell (raw UUID breaks ties);
+ *  with it, precision mode hits only the named object if still hostile there. */
 export interface ShootAction {
   type: "SHOOT";
-  target_id: string;
+  target_id: string | null;
   expected_cell: Position;
 }
 

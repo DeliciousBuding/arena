@@ -220,6 +220,61 @@ test("S10: SHOOT 沿八方向线命中并造成 1 伤害", () => {
   assert.equal(blocked.world.players.get("p1")!.units.find((u) => u.id === P1_WORKER)!.hp, 2);
 });
 
+test("S10 v0.12: cell fire——无 target_id 命中该格最低 HP 敌对单位", () => {
+  // p2 Ranger[0,4] 向 [0,1] 格 cell fire；该格有 p1 Worker(2hp) 与 p1 另一 Worker(1hp)
+  const lowHpWorker = "88888888-8888-8888-8888-888888888888";
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: P1_CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [
+          { id: P1_WORKER, owner: "p1", position: [0, 1], hp: 2, unitType: "WORKER", cargo: 0 },
+          { id: lowHpWorker, owner: "p1", position: [0, 1], hp: 1, unitType: "WORKER", cargo: 0 },
+        ],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P2_RANGER, owner: "p2", position: [0, 4], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world,
+    new Map([["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: null, expectedCell: [0, 1] } })]]),
+    ctx,
+  );
+  // 低 HP Worker(1hp) 被命中并死亡；满 HP Worker(2hp) 无损
+  assert.equal(result.world.players.get("p1")!.units.find((u) => u.id === lowHpWorker), undefined);
+  assert.equal(result.world.players.get("p1")!.units.find((u) => u.id === P1_WORKER)!.hp, 2);
+  const hit = result.events.find((e) => e.eventType === "SHOT_HIT");
+  assert.ok(hit !== undefined);
+  assert.equal(hit.targetId, lowHpWorker);
+});
+
+test("S10 v0.12: cell fire 空格——SHOT_MISSED 且 target_id 为 null", () => {
+  const world = makeWorld();
+  // p2 Ranger[1,4] 向空格 [3,2]（八方向线内）cell fire → 空格无目标 → SHOT_MISSED
+  const result = settleTick(
+    world,
+    new Map([["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: null, expectedCell: [3, 2] } })]]),
+    ctx,
+  );
+  const missed = result.events.find((e) => e.eventType === "SHOT_MISSED");
+  assert.ok(missed !== undefined);
+  assert.equal(missed.targetId, null);
+});
+
 test("S10: 快照同时应用——互杀合法", () => {
   // p1 Vanguard[1,0] 与 p2 Vanguard[2,0] 各 SWEEP 对方格；双方 hp 1 → 互杀
   const world = worldFromScenario({

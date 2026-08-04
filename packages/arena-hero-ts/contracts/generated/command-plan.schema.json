@@ -96,7 +96,6 @@
               "type": "object",
               "required": [
                 "type",
-                "target_id",
                 "expected_cell"
               ],
               "properties": {
@@ -105,7 +104,14 @@
                   "const": "SHOOT"
                 },
                 "target_id": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "expected_cell": {
                   "type": "array",
