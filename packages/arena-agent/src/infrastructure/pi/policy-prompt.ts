@@ -8,10 +8,15 @@
 
 import type { TickState } from "../../domain/model.ts";
 
-/** 宏观状态摘要 → 策略 prompt（模型输出策略 JSON 后直接结束）。 */
+/** 宏观状态摘要 → 策略 prompt（模型输出策略 JSON 后直接结束）。
+ *  previousPolicy（当前生效策略）注入为基线：策略是低频调整不是每周期重掷——
+ *  模型应对比基线做小幅演进（workerTarget 尤其要连续，防止 16→3 跳变）。 */
 export function buildMacroPolicyPrompt(
   state: TickState,
-  extras: { readonly recentResourceDeltas?: readonly number[] } = {},
+  extras: {
+    readonly recentResourceDeltas?: readonly number[];
+    readonly previousPolicy?: string | null;
+  } = {},
 ): string {
   const coreLine = state.core === null
     ? "core: null"
@@ -21,6 +26,9 @@ export function buildMacroPolicyPrompt(
   const trendLine = deltas.length === 0
     ? "resource trend: (no recent data)"
     : `resource trend (last ${deltas.length} ticks, sum ${deltas.reduce((sum, d) => sum + d, 0)}): ${deltas.join(" ")}`;
+  const baselineLine = extras.previousPolicy === undefined || extras.previousPolicy === null
+    ? "previous policy: (none, first decision)"
+    : `previous policy: ${extras.previousPolicy}`;
   return [
     "你是 Arena Hero 的战略指挥官，只做低频宏观决策，不做逐 Tick 战术。",
     "根据以下宏观状态，输出一个策略 JSON 对象（不要输出任何其他内容，不要 markdown 围栏）：",
@@ -28,6 +36,7 @@ export function buildMacroPolicyPrompt(
     "字段含义：posture=战略姿态（harvest 纯经济/balanced 均衡/aggressive 主动进攻）；",
     "workerTarget=目标 Worker 数量；militaryRatio=军事单位占比目标；",
     "focusRegion=探索/攻坚聚焦坐标（null 不聚焦）；attackPriority=攻击优先级（core 拆家掠夺资源/workers 断敌经济/null 不主动攻击）。",
+    "策略是低频演进而非重掷：优先在 previous policy 基础上做小幅调整（workerTarget 变化幅度建议 ≤4/周期）。",
     "",
     "宏观状态：",
     `tick: ${state.tick}`,
@@ -38,6 +47,7 @@ export function buildMacroPolicyPrompt(
     `beacon: ${state.beacon.status}${state.beacon.carrierId !== null ? " (carried)" : ""}`,
     `visible resource cells: ${state.resourceCells.size}`,
     trendLine,
+    baselineLine,
   ].join("\n");
 }
 

@@ -354,7 +354,12 @@ export async function runTenant(
         };
         policyOrchestrator = new MacroPolicyOrchestrator({
           intervalTicks: config.policyIntervalTicks ?? 32,
-          promptBuilder: (state) => buildMacroPolicyPrompt(state, { recentResourceDeltas }),
+          promptBuilder: (state) => buildMacroPolicyPrompt(state, {
+            recentResourceDeltas,
+            // 策略历史基线（低频演进，防 workerTarget 16→3 跳变）；
+            // promptBuilder 在 orchestrator 创建前不触发（首次决策 previous=null）
+            previousPolicy: policyOrchestrator === null ? null : serializeMacroPolicy(policyOrchestrator.current),
+          }),
           requestPolicy: async (prompt) => {
             await policySession.session.prompt(prompt);
             return readLastAssistantText(policySession.session);
@@ -366,7 +371,15 @@ export async function runTenant(
             appendPolicyTelemetry({ type: "policy_error", tick, message });
           },
           timeoutMs: 60000,
+          // 实验框架：config.policyOverride 非空时绕过 LLM 恒用固定策略
+          override: config.policyOverride ?? null,
         });
+        if (config.policyOverride !== undefined) {
+          appendPolicyTelemetry({
+            type: "policy_override",
+            policy: serializeMacroPolicy(config.policyOverride),
+          });
+        }
       } catch (error) {
         // 策略层初始化失败（认证/网络/配置）：执行层用默认策略继续，不阻断启动。
         // 失败必须可见（telemetry 首条即 init 失败告警），否则"策略层静默未运行"。
