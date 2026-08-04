@@ -14,7 +14,7 @@ import {
   normalizeMacroPolicy,
   serializeMacroPolicy,
 } from "../src/runtime/macro-policy.ts";
-import { MacroPolicyOrchestrator, parsePolicyText } from "../src/runtime/macro-policy-orchestrator.ts";
+import { MacroPolicyOrchestrator, RESPAWN_OVERRIDE_POLICY, parsePolicyText } from "../src/runtime/macro-policy-orchestrator.ts";
 import { buildMacroPolicyPrompt, readLastAssistantText } from "../src/infrastructure/pi/policy-prompt.ts";
 import { SafetyPlanner } from "../src/strategies/safety-planner.ts";
 
@@ -182,6 +182,37 @@ test("MacroPolicyOrchestrator: 决策失败 sticky 保持上次策略", async ()
   orchestrator.onTick(makeState(33));
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(orchestrator.current.posture, "harvest", "恢复后更新策略");
+});
+
+test("MacroPolicyOrchestrator: 重生覆盖（RESPAWNING → 强制 harvest，不触发 LLM）", async () => {
+  let calls = 0;
+  const orchestrator = new MacroPolicyOrchestrator({
+    intervalTicks: 32,
+    promptBuilder: buildMacroPolicyPrompt,
+    requestPolicy: async () => {
+      calls += 1;
+      return '{"posture":"aggressive","workerTarget":8,"militaryRatio":0.4,"focusRegion":null,"attackPriority":"core"}';
+    },
+  });
+  const respawningState = { ...makeState(100), status: "RESPAWNING" as const };
+  const overridden = orchestrator.onTick(respawningState);
+  assert.equal(overridden, RESPAWN_OVERRIDE_POLICY, "重生中强制经济重建策略");
+  assert.equal(overridden.posture, "harvest");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls, 0, "重生期不消费 LLM 决策");
+
+  // 无 Core 也触发覆盖
+  const noCoreState = { ...makeState(110), core: null };
+  assert.equal(orchestrator.onTick(noCoreState), RESPAWN_OVERRIDE_POLICY);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls, 0);
+
+  // 恢复 ACTIVE 后立即触发一次新决策
+  const recovered = makeState(120);
+  orchestrator.onTick(recovered);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls, 1, "重生恢复后立即决策");
+  assert.equal(orchestrator.current.posture, "aggressive");
 });
 
 test("SafetyPlanner: policy.posture=aggressive 覆盖 config（Vanguard 前压）", () => {
