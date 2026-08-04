@@ -20,6 +20,7 @@ async function main(): Promise<void> {
       "startup-sync-ticks": { type: "string" },
       "shutdown-timeout-ms": { type: "string" },
       port: { type: "string" },
+      "debug-host": { type: "string" },
     },
   });
 
@@ -63,7 +64,12 @@ async function main(): Promise<void> {
       console.log(`[supervisor] ${event.at} ${event.type} ${event.tenantId}${event.detail ? `: ${event.detail}` : ""}`);
     },
   });
-  const debugServer = new DebugServer({ repoRoot, supervisor, port });
+  const debugServer = new DebugServer({
+    repoRoot,
+    supervisor,
+    port,
+    ...(values["debug-host"] !== undefined ? { host: values["debug-host"] } : {}),
+  });
 
   // Port conflicts must fail with zero spawned tenant processes.
   await debugServer.listen();
