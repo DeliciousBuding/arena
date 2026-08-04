@@ -15,7 +15,7 @@ name: arena
 
 services:
   shadow:
-    image: ghcr.io/deliciousbuding/arena:main
+    image: ${ARENA_SHADOW_IMAGE:-ghcr.io/deliciousbuding/arena:main}
     restart: "no"
     stop_grace_period: 30s
     init: true
@@ -54,7 +54,7 @@ services:
       start_period: 30s
 
   live:
-    image: ghcr.io/deliciousbuding/arena:main
+    image: ${ARENA_LIVE_IMAGE:-ghcr.io/deliciousbuding/arena:main}
     restart: "no"
     stop_grace_period: 30s
     init: true
