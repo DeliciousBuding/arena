@@ -139,6 +139,11 @@ func (l *Loop) handleState(ctx context.Context, state *contracts.PlayerState) er
 	step("validate")
 	if validation.Repaired {
 		l.Stats.RepairedPlans.Add(1)
+		// 红线（赛马裁决）：deterministic 模式产出非法动作 = planner bug，
+		// 立即停止并回 shadow，不提交任何 repair 后的计划。
+		if l.Config.DecisionMode == "deterministic" {
+			return fmt.Errorf("deterministic planner produced invalid actions at tick %d: %v", tickState.Tick, validation.Issues)
+		}
 	}
 
 	if l.RuntimeLog != nil {
