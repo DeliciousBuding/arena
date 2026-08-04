@@ -1,12 +1,14 @@
-# Arena Hero v0.11 game rules
+# Arena Hero v0.13 game rules
 
 This is the complete gameplay contract bundled with the Arena Hero skill. Read
 the whole file before writing a tactic or controlling a live Turn.
 
 This contract was reviewed against the rules changelog
-(`docs/reference/changelog.md`, arena-hero-doc repo) on 2 August 2026.
+(`docs/reference/changelog.md`, arena-hero-doc repo) on 4 August 2026.
 **规则变更源：https://github.com/arena-hero/arena-hero-doc/blob/main/docs/reference/changelog.md
-——检查日期 2026-08-02（v0.11 已合入）；规则更新时同步检查 `balance.py` / LLM RULES prompt 适配。**
+——检查日期 2026-08-04（v0.13 true Ranger cell fire 已合入：`SHOOT.target_id` 可选，
+空格射击命中该格最低 HP 敌对单位；来源 server 57c2a5b / SDK e32ff94）；
+规则更新时同步检查 `balance.py` / LLM RULES prompt 适配。**
 If a live server reports newer or incompatible rules, stop rule-dependent play
 and update this bundle instead of mixing versions.
 
@@ -502,25 +504,34 @@ The Vanguard-specific action is `SWEEP` with one cardinal `direction`.
 
 ### Ranger
 
-The Ranger-specific action is `SHOOT` with `target_id` and `expected_cell`.
+The Ranger-specific action is `SHOOT` with `expected_cell`; `target_id` is
+optional (upstream v0.12 cell fire).
+
+A Ranger may fire at any cell 1-3 cells away along a horizontal, vertical, or
+exact 45-degree diagonal line, even when the cell is currently empty. Movement
+resolves first. Without `target_id`, the shot hits the lowest-HP hostile then
+present in `expected_cell`, with raw UUID order breaking HP ties.
+
+With `target_id` (precision mode, kept for older clients), the shot hits only
+the named object if it remains hostile and at `expected_cell`; it does not
+retarget another occupant.
 
 A shot succeeds only when:
 
-1. the target is an enemy Unit or Core;
-2. the target is still at `expected_cell`;
-3. Ranger and target share a horizontal, vertical, or exact 45-degree diagonal line;
-4. distance along that line is 1, 2, or 3 — relative offset `(3, 3)` is range 3, while `(2, 1)` is not aligned;
-5. no intermediate cell contains an obstacle.
+1. the target cell is in range (distance 1-3 on an aligned line);
+2. no intermediate cell contains an obstacle.
 
 Units and Cores never block Ranger fire, regardless of owner. An object
-colocated in the target cell does not block the shot to the selected `target_id`;
-there is no front-to-back ordering inside one cell. For diagonal fire, only the
-intermediate diagonal cells are checked; obstacles beside the line do not block it.
+colocated in the target cell does not block the shot; there is no front-to-back
+ordering inside one cell. For diagonal fire, only the intermediate diagonal
+cells are checked; obstacles beside the line do not block it.
 
-The command endpoint intentionally accepts an unseen or nonexistent target UUID
-so it cannot be used as a fog-of-war oracle. At resolution, a missing target,
-friendly target, moved target, non-aligned or out-of-range target, and blocked
-line all produce the same private `SHOT_MISSED` result.
+The command endpoint intentionally accepts an unseen cell or nonexistent target
+UUID so it cannot be used as a fog-of-war oracle. At resolution, an empty cell,
+a missing/friendly/moved precision target, a non-aligned or out-of-range shot,
+and a blocked line all produce the same private `SHOT_MISSED` result. A
+cell-shot miss omits `target_id`; a hit reports the actual object selected by
+the server.
 
 An action may contain only the fields allowed for its type. An unrelated field,
 including `null`, rejects the entire plan with `UNEXPECTED_ACTION_FIELDS`.

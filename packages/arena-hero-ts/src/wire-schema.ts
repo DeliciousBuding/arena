@@ -165,7 +165,8 @@ export const SweepActionSchema = Type.Object({
 });
 export const ShootActionSchema = Type.Object({
   type: Type.Literal("SHOOT"),
-  target_id: Type.String(),
+  // Upstream v0.12 cell fire: target_id is optional (null = fire at cell).
+  target_id: Nullable(Type.String()),
   expected_cell: PositionSchema,
 });
 export const PickupBeaconActionSchema = Type.Object({ type: Type.Literal("PICKUP_BEACON") });

@@ -127,16 +127,21 @@ function validateUnitAction(
         : issue("wrong_capability", "only Vanguards can sweep");
     case "SHOOT": {
       if (unit.unitType !== "RANGER") return issue("wrong_capability", "only Rangers can shoot");
-      const target = state.visibleEnemies.find((enemy) => enemy.id === action.targetId);
-      if (target === undefined || !samePosition(target.position, action.expectedCell)) {
-        return issue("invalid_shot", "target is not visible at expected_cell");
-      }
-      const dx = target.position[0] - unit.position[0];
-      const dy = target.position[1] - unit.position[1];
+      const dx = action.expectedCell[0] - unit.position[0];
+      const dy = action.expectedCell[1] - unit.position[1];
       const distance = Math.max(Math.abs(dx), Math.abs(dy));
       const aligned = dx === 0 || dy === 0 || Math.abs(dx) === Math.abs(dy);
-      if (distance < 1 || distance > 3 || !aligned || lineBlocked(unit.position, target.position, obstacles)) {
-        return issue("invalid_shot", "target is out of line-of-sight range");
+      if (distance < 1 || distance > 3 || !aligned || lineBlocked(unit.position, action.expectedCell, obstacles)) {
+        return issue("invalid_shot", "target cell is out of line-of-sight range");
+      }
+      // Upstream v0.12 cell fire: targetId null fires at the cell itself and is
+      // always legal (server resolves the lowest-HP hostile there). Precision
+      // mode still requires the named enemy to be visible at expected_cell.
+      if (action.targetId !== null) {
+        const target = state.visibleEnemies.find((enemy) => enemy.id === action.targetId);
+        if (target === undefined || !samePosition(target.position, action.expectedCell)) {
+          return issue("invalid_shot", "target is not visible at expected_cell");
+        }
       }
       return null;
     }
