@@ -11,8 +11,9 @@
  * - PICKUP_BEACON：与 GROUND Beacon 同格 → PICKUP_BEACON（2x 采集加成；不派专人去抢）
  * - WAIT/EXPLORE → WAIT
  *
- * 非 Worker 单位（Vanguard/Ranger）无 assignment → WAIT（确定性骨架只分配 Worker；
- * 战斗单位策略是后续里程碑）。
+ * 非 Worker 单位（Vanguard/Ranger）无 assignment：保留 SafetyPlanner fallback 的
+ * 战斗动作（SWEEP 近战 / SHOOT 直线射击 / 追击 / 无目标回防 Core）。
+ * WorkerTaskPlanner 只覆盖 Worker 单位的资源分配。
  *
  * sticky：applyStickyBonus 在 WorkerTaskPlanner.plan() 内部按 previousAssignments
  * 计算——本类缓存上一 Tick 分配结果传入。
