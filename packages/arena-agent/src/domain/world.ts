@@ -97,7 +97,9 @@ export class World {
     }
     for (const [cell, memory] of this.resourceMemory) {
       if (visibleResources.has(cell)) continue;
-      if (memory.state === "visible" || memory.state === "harvested") {
+      // harvested（自采成功）保持负记忆不进 hints，不降级 stale——
+      // 自采空格若 refill 会重新可见，未 refill 说明已耗尽（TTL 后删除）。
+      if (memory.state === "visible") {
         memory.state = "stale";
       }
     }
@@ -106,9 +108,13 @@ export class World {
       if (event.position === undefined) continue;
       const cell = cellKey(event.position);
       if (event.eventType === "HARVEST_FAILED") {
-        this.failedCells.set(cell, state.tick);
-        const memory = this.resourceMemory.get(cell);
-        if (memory?.state === "visible") memory.state = "stale";
+        // reasonCode 分流：CARGO_FULL 表示格子仍有资源（cargo 满）——不写失败
+        // 冷却、不降级；RESOURCE_DEPLETED 表示格子已耗尽——写失败冷却 + 降级 stale。
+        if (event.reasonCode === "RESOURCE_DEPLETED") {
+          this.failedCells.set(cell, state.tick);
+          const memory = this.resourceMemory.get(cell);
+          if (memory?.state === "visible") memory.state = "stale";
+        }
       } else if (event.eventType === "HARVEST_SUCCEEDED") {
         const previous = this.resourceMemory.get(cell);
         this.resourceMemory.set(cell, {
