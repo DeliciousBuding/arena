@@ -29,12 +29,13 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 - **部署形态升级为 Docker（GHCR）+ systemd 编排**：CI 在 main push 构建推送 `ghcr.io/deliciousbuding/arena:<sha>/:main`；systemd 为生命周期唯一权威（shadow `Restart=on-failure`、live `Restart=no`）；容器 stop 销毁 PID namespace 无孤儿；健康探针宿主零 Node 依赖（compose exec + df）；
 - **us1 生产 Docker shadow 已部署**：容器 healthy，`/health`/`/ready` 均 ready:true，t1 持续产出 run 与 telemetry，shadow/disk 健康计时器全绿；
 - **us1 四租户 Docker shadow 已上线**：t1–t4 各自独立进程（pid 38/44/50/52）、独立锁（`/var/lib/arena/<t>/locks/<t>.lock`）、独立 run/manifest/telemetry；supervisor.jsonl 记录四租户 ready；健康 timer 验证四租户 ready=true（149ms）；
+- **kill -9 故障注入演练完成并自愈**：演练暴露两个真实缺陷——(1) 单写者锁 PID 复用陷阱（旧容器锁残留 + 新容器同号 PID 误判活锁，PR #4 starttime 修复）；(2) compose 前台容器退出返回 exit 0 导致 systemd 不重启（PR #5 `--abort-on-container-exit --exit-code-from` 修复）；修复后重演 kill -9 → systemd 自动拉起 → 四租户自动 ready → 锁自动回收 → 数据恢复；
 - Digital Twin S0–S12 / P06 / P12 与首份 Runtime-Golden 已落地。
 
 ## 自动化证据
 
 - SDK：53/53；
-- arena-agent：490/490；
+- arena-agent：493/493（含锁 PID 复用回归测试 +3）；
 - Supervisor Windows：19/19；
 - Linux Node 24 定向：86/86；
 - schema：6；
