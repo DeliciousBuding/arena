@@ -1,38 +1,33 @@
-# 秘钥与环境配置
+# 密钥与环境配置（绝不入仓）
 .env
+.env.local
+.env.*.local
 
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
-.pytest_cache/
-
-# 运行时产物
+# 运行时产物（遥测/manifest 含脱敏数据，仍不进 git）
+runtime/
+runs/
 logs/
 alerts/
-/telemetry/
-
-# 外部克隆的 skill 仓库（独立版本管理）
-.agents/
+telemetry/
 mapstore/
+*.jsonl
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
 
-# pi 二开 worktree（独立 git 仓库，pi 主 clone 在 [pi-repo]）
-pi-dev/
+# 构建产物
+bin/
+dist/
 
-# 本仓库并行开发 worktree（独立分支/索引，不纳入主工作区）
+# 外部克隆/并行开发 worktree（独立分支/索引）
 .worktrees/
+.agents/
 
-# Node（monorepo：根 + 各包）
-node_modules/
-packages/*/node_modules/
-runs/
-
-# 运行时产物（Canary/真机）——配置只含 env 名，遥测/manifest 脱敏后仍不进 git
-runtime/
-runs/run-*/n/
-# 例外：arena-agent 源码目录 src/runtime/ 不是运行时产物（gitignore 的 runtime/ 会误匹配任意层级）
-!packages/arena-agent/src/runtime/
-
-# 模拟器 worktree（独立分支，模拟器工程专用）
-.worktrees/
+# 本地临时与 IDE
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

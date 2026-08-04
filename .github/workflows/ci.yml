@@ -12,25 +12,20 @@ permissions:
 
 jobs:
   quality:
-    name: Check, test, contracts and docs
+    name: Go checks, tests, contracts and docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-go@v5
         with:
-          node-version: 24
-          cache: npm
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: npm ci
-      - run: npm run check
-      - run: npm test
-      - run: npm run schema:check
-      - run: npm run replay:ts
-      - run: npm run server:check
-      - run: python scripts/gen-status.py --check
-      - run: python scripts/docs_health.py --check
+          go-version: "1.26"
+          cache: true
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Run full gate
+        run: bash scripts/go-check.sh
 
   docker:
     name: Build and push release image
@@ -67,10 +62,7 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Smoke-test image contents (tsx, entrypoint, uid, no secrets)
+      - name: Smoke-test binary (version, uid, static)
         run: |
-          docker run --rm --entrypoint node ghcr.io/deliciousbuding/arena:${{ github.sha }} -e "const fs=require('fs'); if(!fs.existsSync('/app/node_modules/.bin/tsx')) process.exit(1); if(!fs.existsSync('/app/packages/arena-agent/src/cli/run-supervisor.ts')) process.exit(1); if(process.getuid()!==1001) process.exit(1); console.log('image ok', process.version)"
-      - name: Smoke-test native entrypoint (ARENA_SERVICE_MODE wiring)
-        run: |
-          docker run --rm ghcr.io/deliciousbuding/arena:${{ github.sha }} 2>&1 | head -3 | grep -qE "run-supervisor 失败|missing|usage" || true
-          docker run --rm --env ARENA_SERVICE_MODE=shadow --env ARENA_CONFIGS=t1 --env ARENA_CONFIG_DIR=/nonexistent --env ARENA_RUNTIME_DIR=/tmp ghcr.io/deliciousbuding/arena:${{ github.sha }} 2>&1 | head -3
+          docker run --rm --entrypoint /app/arena ghcr.io/deliciousbuding/arena:${{ github.sha }} version
+          docker run --rm --entrypoint /app/arena ghcr.io/deliciousbuding/arena:${{ github.sha }} 2>&1 | grep -q "usage: arena" || exit 1
