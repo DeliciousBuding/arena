@@ -138,13 +138,14 @@ export class DecisionCoordinator {
     //（不用浮点性能时间：跨进程可追踪、跨 rotation 唯一、不暴露给模型）
     const runId = `${this.processRunId}:${this.tenantId}:${tick}:${this.runSeq++}`;
 
-    // 1) Safety 预计算（立即，不等待 Agent）；低频 MacroPolicy 只注入 SafetyPlanner
+    // 1) Safety 预计算（立即，不等待 Agent）；低频 MacroPolicy 注入 planner
+    //    （SafetyPlanner 与 DeterministicPlanner 均接受 policy 参数）
     let safetyPlan: Plan;
     let safetyError: string | null = null;
     try {
       const policy = this.policyProvider?.(state);
-      safetyPlan = policy !== undefined && this.planner instanceof SafetyPlanner
-        ? this.planner.decide({ state, policy })
+      safetyPlan = policy !== undefined
+        ? (this.planner as SafetyPlanner).decide({ state, policy })
         : this.planner.decide({ state });
     } catch (exc) {
       safetyError = exc instanceof Error ? exc.message : String(exc);
