@@ -30,7 +30,9 @@
 | 2026-08-05 | t3 真机 shadow（首轮，10 tick） | `runtime/t3/telemetry/{runtime,decision}.jsonl` | ✅ 连接成功，tick 52455–52460 连续处理，每 tick 1 action + core，全部 valid、0 repair |
 | 2026-08-05 | t3 真机 shadow（debug 轮，15 tick） | `runtime/t3/shadow-debug.log` + telemetry | ✅ 15/15 完整跑完，`tenant stopped ticks=15 submits=0 rejected=0 repaired=0`，干净退出 |
 | 2026-08-05 | t4 真机 shadow（15 tick） | `runtime/t4/telemetry/` | ✅ 15/15（tick 52523–52537，零提交）；**暴露 capacity 满 deposit bug**（repaired=15 → 已修：ResourceSpace<=0 → WAIT） |
-| 2026-08-05 | t3 真机 shadow（50 tick 实验） | `runtime/t3/shadow-50t.log` + run-scoped telemetry | 🔄 运行中（tick 52582，World 记忆/workers 观测字段已加） |
+| 2026-08-05 | t3 真机 shadow（50 tick 实验） | `runtime/t3/shadow-50t.log` + run-scoped telemetry | ⚠️ 判定修正：**无挂死**。服务器偶发停顿 30–90s 后自动恢复（v7/v8 完整收口证实） |
+| 2026-08-05 | t3 真机 shadow v7（25 tick） | `runtime/t3/shadow-25t-v7.log` + run-...193725 | ✅ **25/25 完整**：`tenant stopped ticks=25 submits=0 rejected=0 repaired=0`，干净退出 |
+| 2026-08-05 | t3 真机 shadow v8（20 tick，--log-file） | `runtime/t3/shadow-20t-v8.log` + run-...194013 | ✅ **20/20 完整**：`ticks=20 submits=0 rejected=0 repaired=0`；经历 2 次服务器停顿（含 90s）自动恢复；零缓冲日志与 decision.jsonl 交叉一致 |
 
 ## 差异日志（行为漂移唯一记录）
 
@@ -63,8 +65,11 @@
       （下一步格粒度）/workerTarget+reserve/respawn override（管理者接管，
       subagent 后台 40min 无产出）；economic_test.go 9 项专项，strategy 97.6%
 - [x] hero idle watchdog（`ced8a4d`）：服务器停推不关连接 → 60s 自动断流
-      重连（t3 50-tick 挂死根因修复，TestIdleTimeoutForcesReconnect）
-- [ ] 50-tick shadow v2 实验结果收口（运行中，tick 52626）
+      重连（TestIdleTimeoutForcesReconnect）；真机证实服务器偶发停顿
+      30–90s 自动恢复，watchdog 为超阈值兜底
+- [x] 可观测性诊断链（`9653930`）：连接/消息/阶段计时/30s 静默栈 dump/
+      --log-file 零缓冲日志
+- [x] 阶段 B 真机完整收口：v7 25/25 + v8 20/20 tick 零提交零 repair 干净退出
 - [ ] workerTarget=2/8/16 固定策略 shadow（Lane 2 后）
 - [ ] 3→10→30 tick bounded live（live 三件套已就绪）
 - [ ] 统一固定 Policy TS/Go 交叉赛马（Canonical Policy 已定义）
