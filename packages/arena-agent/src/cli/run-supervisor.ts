@@ -39,8 +39,11 @@ async function main(): Promise<void> {
 
   // CLI 参数优先，其次 ARENA_* 环境变量（容器/服务器注入），最后内置默认。
   // 同一份代码同时服务本地开发与 Docker 部署，不再需要 bash 胶水层。
-  const option = (key: keyof typeof ENV_DEFAULTS): string | undefined =>
-    values[key] ?? process.env[ENV_DEFAULTS[key]];
+  // 空字符串 env（compose ${VAR:-} 缺省展开）视为未设置。
+  const option = (key: keyof typeof ENV_DEFAULTS): string | undefined => {
+    const raw = values[key] ?? process.env[ENV_DEFAULTS[key]];
+    return raw === undefined || raw === "" ? undefined : raw;
+  };
 
   if (values.live && values.shadow) throw new Error("--live and --shadow are mutually exclusive");
   const repoRoot = option("repo-root") ?? process.cwd();

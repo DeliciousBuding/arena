@@ -520,6 +520,46 @@ test("run-supervisor reads ARENA_* env vars and ARENA_SERVICE_MODE", async () =>
   }
 });
 
+test("run-supervisor treats empty ARENA_* env as unset", async () => {
+  const repo = makeTempRepo();
+  const blocker = createNetServer();
+  await new Promise<void>((resolvePromise) => blocker.listen(0, "127.0.0.1", resolvePromise));
+  const address = blocker.address();
+  assert.notEqual(typeof address, "string");
+  const port = (address as { port: number }).port;
+  try {
+    const cli = resolve(PACKAGE_ROOT, "src", "cli", "run-supervisor.ts");
+    const child = spawn(process.execPath, ["--import", "tsx", cli], {
+      cwd: PACKAGE_ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        ARENA_SERVICE_MODE: "shadow",
+        ARENA_REPO_ROOT: repo.root,
+        ARENA_CONFIG_DIR: join(repo.root, "configs"),
+        ARENA_RUNTIME_DIR: join(repo.root, "runtime"),
+        ARENA_CONFIGS: "t1",
+        ARENA_DEBUG_PORT: String(port),
+        // Empty values (compose ${VAR:-} expansion) must not fail arg validation.
+        ARENA_LIVE_TICKS: "",
+        ARENA_MAX_TICKS: "",
+        ARENA_STARTUP_SYNC_TICKS: "",
+        ARENA_SHUTDOWN_TIMEOUT_MS: "",
+      },
+    });
+    let output = "";
+    child.stdout!.on("data", (chunk) => { output += String(chunk); });
+    child.stderr!.on("data", (chunk) => { output += String(chunk); });
+    const code = await new Promise<number | null>((resolvePromise) => child.once("exit", resolvePromise));
+    assert.equal(code, 1);
+    assert.match(output, /EADDRINUSE|address already in use/i);
+    assert.doesNotMatch(output, /invalid value/);
+  } finally {
+    await new Promise<void>((resolvePromise) => blocker.close(() => resolvePromise()));
+    repo.cleanup();
+  }
+});
+
 test("shutdown request bridge is idempotent and disposer removes listeners", () => {
   const source = new EventEmitter();
   let calls = 0;
