@@ -228,3 +228,27 @@ test("回仓绕行：满载 Worker 回 Core 路径上的敌方格并入障碍（
   assert.notDeepEqual(destination, [15, 0], "不得走入敌方格");
 });
 
+test("敌方 CORE 挡路：回仓路径被敌方 CORE 占位时绕行（生产实测最后一层死锁）", () => {
+  const planner = new DeterministicPlanner();
+  // 生产实测：w1 满载 @[-316,57]，敌方 CORE @[-317,57] 挡在 LEFT 一步——BFS
+  // 的 enemyUnits 只含 kind=UNIT，敌方 CORE 未并入障碍 → 走 LEFT → 容量裁决
+  // hostile 拒 → capacity_wait:DEPOSIT 循环。修复：可见敌人全部（含 CORE）
+  // 占用格并入绕行障碍。
+  const state: TickState = {
+    ...makeState(100, [coreObj, unit("w1", -316, 57, "WORKER", 1)]),
+    resourceCells: new Set<string>(),
+    visibleEnemies: [
+      { id: "enemyCore", kind: "CORE", position: [-317, 57], hp: 5, ownerUsername: "enemy" },
+      { id: "enemyW1", kind: "UNIT", position: [-313, 57], hp: 2, unitType: "WORKER", ownerUsername: "enemy" },
+    ],
+  };
+  const plan = planner.decide({ state, policy: POLICY });
+  const action = plan.unitActions["w1"];
+  assert.equal(action?.type, "MOVE", "敌方 CORE 挡路时绕行而非 capacity_wait");
+  const destination: Position = action?.type === "MOVE"
+    ? action.direction === "UP" ? [-316, 56] : action.direction === "DOWN" ? [-316, 58] : action.direction === "LEFT" ? [-317, 57] : [-315, 57]
+    : [0, 0];
+  assert.notDeepEqual(destination, [-317, 57], "不得走入敌方 CORE 格");
+  assert.notDeepEqual(destination, [-313, 57], "不得走入敌方 Worker 格");
+});
+
