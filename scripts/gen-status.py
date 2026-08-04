@@ -15,9 +15,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs" / "generated" / "status.md"
-SDK_TEST_DIR = ROOT / "packages" / "arena-hero-ts" / "test"
-AGENT_TEST_DIR = ROOT / "packages" / "arena-agent" / "test"
-CONTRACTS_DIR = ROOT / "packages" / "arena-hero-ts" / "contracts" / "generated"
+SDK_PKG_DIR = ROOT / "packages" / "arena-hero-ts"
+AGENT_PKG_DIR = ROOT / "packages" / "arena-agent"
+SDK_TEST_DIR = SDK_PKG_DIR / "test"
+AGENT_TEST_DIR = AGENT_PKG_DIR / "test"
+CONTRACTS_DIR = SDK_PKG_DIR / "contracts" / "generated"
 PYTHON_RUNTIME_DIR = ROOT / "src" / "arena_bot"
 
 
@@ -26,12 +28,12 @@ def die(message: str) -> None:
     raise SystemExit(1)
 
 
-def run(cmd: list[str], note: str) -> str:
+def run(cmd: list[str], note: str, cwd: Path = ROOT) -> str:
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     try:
         proc = subprocess.run(
             cmd,
-            cwd=ROOT,
+            cwd=cwd,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -46,8 +48,8 @@ def run(cmd: list[str], note: str) -> str:
     return proc.stdout
 
 
-def node_tap_counts(cmd: list[str], note: str) -> tuple[int, int, int, int]:
-    output = run(cmd, note)
+def node_tap_counts(cmd: list[str], note: str, cwd: Path = ROOT) -> tuple[int, int, int, int]:
+    output = run(cmd, note, cwd=cwd)
     def value(name: str) -> int:
         match = re.search(rf"^# {name} (\d+)", output, re.MULTILINE)
         if match is None:
@@ -64,14 +66,17 @@ def node_tap_counts(cmd: list[str], note: str) -> tuple[int, int, int, int]:
 
 
 def main() -> None:
+    # 计数命令与各包 npm test 脚本同形（glob 由 node 展开、cwd = 包目录），
+    # 保证 status.md 口径与标准门禁 `npm test` 一致（跨平台不因调用形式产生差异）。
     sdk_tests, sdk_passed, sdk_failed, _sdk_skipped = node_tap_counts(
         [
             "node",
             "--test",
             "--test-reporter=tap",
-            *[str(path) for path in sorted(SDK_TEST_DIR.glob("*.test.ts"))],
+            "test/*.test.ts",
         ],
         "SDK 测试",
+        cwd=SDK_PKG_DIR,
     )
     agent_tests, agent_passed, agent_failed, _agent_skipped = node_tap_counts(
         [
@@ -79,9 +84,10 @@ def main() -> None:
             "--test",
             "--test-force-exit",
             "--test-reporter=tap",
-            *[str(path) for path in sorted(AGENT_TEST_DIR.glob("*.test.ts"))],
+            "test/*.test.ts",
         ],
         "编排层测试",
+        cwd=AGENT_PKG_DIR,
     )
     schemas = len(list(CONTRACTS_DIR.glob("*.schema.json")))
     python_runtime_modules = (
