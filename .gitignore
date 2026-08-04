@@ -3,11 +3,12 @@
 .env.local
 .env.*.local
 
-# 运行时产物（遥测/manifest 含脱敏数据，仍不进 git）
-runtime/
-runs/
-logs/
-alerts/
+# 运行时产物（遥测/manifest 含脱敏数据，仍不进 git）。
+# 根锚定（/runtime/）防止误匹配 internal/runtime/ 源码包。
+/runtime/
+/runs/
+/logs/
+/alerts/
 *.jsonl
 *.sqlite
 *.sqlite-wal
