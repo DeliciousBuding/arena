@@ -55,8 +55,8 @@ export class PiSessionFactory {
     if (typeof options.baseDir !== "string" || options.baseDir.trim().length === 0) {
       throw new RangeError("PiSessionFactoryOptions.baseDir must be a non-empty path");
     }
-    if (!Array.isArray(options.customTools) || options.customTools.length === 0) {
-      throw new RangeError("PiSessionFactoryOptions.customTools must be a non-empty ToolDefinition[]");
+    if (!Array.isArray(options.customTools)) {
+      throw new RangeError("PiSessionFactoryOptions.customTools must be a ToolDefinition[]");
     }
     if (typeof options.configHash !== "string" || options.configHash.trim().length === 0) {
       throw new RangeError("PiSessionFactoryOptions.configHash must be a non-empty string");

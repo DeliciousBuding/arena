@@ -145,10 +145,13 @@ test("artifacts 记录 piVersion/modelId/provider/configHash 非空", async () =
   assert.equal(artifacts.configHash, "sha256:cfg-test");
 });
 
-test("非法配置直接抛错（空 baseDir / 空 customTools / 空 configHash）", async () => {
+test("非法配置直接抛错（空 baseDir / 非数组 customTools / 空 configHash）", async () => {
   assert.throws(() => new PiSessionFactory(baseOptions({ baseDir: "  " })), RangeError);
-  assert.throws(() => new PiSessionFactory(baseOptions({ customTools: [] })), RangeError);
+  assert.throws(() => new PiSessionFactory(baseOptions({ customTools: undefined as never })), RangeError);
   assert.throws(() => new PiSessionFactory(baseOptions({ configHash: "" })), RangeError);
+  // 空 customTools 合法：策略层（无工具）原生支持零 custom tool
+  const empty = new PiSessionFactory(baseOptions({ customTools: [] }));
+  assert.deepEqual(empty.options.customTools, []);
 });
 
 // ---------- compat：真实 createAgentSession 嵌入（零网络，10s 超时保护） ----------
