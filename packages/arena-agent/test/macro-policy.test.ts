@@ -107,6 +107,10 @@ test("MacroPolicy: prompt 构建确定性 + readLastAssistantText 提取文本",
   const p1 = buildMacroPolicyPrompt(makeState(100));
   const p2 = buildMacroPolicyPrompt(makeState(100));
   assert.equal(p1, p2);
+  // 经济趋势注入：确定性 + 内容包含
+  const withTrend = buildMacroPolicyPrompt(makeState(100), { recentResourceDeltas: [1, 2, 3] });
+  assert.ok(withTrend.includes("resource trend (last 3 ticks, sum 6): 1 2 3"));
+  assert.notEqual(withTrend, p1);
   assert.ok(p1.includes("posture"));
   const session = {
     state: {
@@ -195,4 +199,74 @@ test("SafetyPlanner: policy.posture=harvest 强制 defensive（不改历史行�
   const plan = planner.decide({ state, policy: { posture: "harvest", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: null } });
   const vanguard = plan.unitActions["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"];
   assert.ok(vanguard === undefined || vanguard.type !== "MOVE" || plan.intents["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"] !== "vanguard_pressure");
+});
+
+test("SafetyPlanner: focusRegion 接线（Worker go_focus、无敌人时军事单位朝聚焦区）", () => {
+  const planner = new SafetyPlanner();
+  const state = makeState(1);
+  const focusState: TickState = {
+    ...state,
+    visibleEnemies: [], // 无敌人
+    resourceCells: new Set(), // 无可见资源
+    units: [
+      ...state.units,
+      { id: "dddddddd-dddd-dddd-dddd-dddddddddddd", position: [3, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+    ],
+    workers: [
+      { id: "dddddddd-dddd-dddd-dddd-dddddddddddd", position: [3, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+    ],
+  };
+  const plan = planner.decide({
+    state: focusState,
+    policy: { posture: "balanced", workerTarget: 8, militaryRatio: 0.4, focusRegion: [8, 4], attackPriority: null },
+  });
+  // Worker 朝聚焦区（intent go_focus）
+  const worker = plan.unitActions["dddddddd-dddd-dddd-dddd-dddddddddddd"];
+  assert.equal(worker?.type, "MOVE");
+  assert.equal(plan.intents["dddddddd-dddd-dddd-dddd-dddddddddddd"], "go_focus");
+  // Vanguard 无敌人时朝聚焦区（vanguard_move 且目标是聚焦方向）
+  const vanguard = plan.unitActions["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"];
+  assert.equal(vanguard?.type, "MOVE");
+});
+
+test("SafetyPlanner: attackPriority 接线（workers → Vanguard 追 Worker，core → 追 Core）", () => {
+  const planner = new SafetyPlanner();
+  const state = makeState(1); // 敌人：CORE [6,0]
+  const workersPolicy = { posture: "aggressive" as const, workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "workers" as const };
+  const corePolicy = { posture: "aggressive" as const, workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" as const };
+
+  // 场景含敌人 Worker（不相邻，避免 SWEEP 分支）与敌人 Core
+  const enemyWorkers: TickState = {
+    ...state,
+    visibleEnemies: [
+      ...state.visibleEnemies,
+      { id: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", kind: "UNIT", position: [4, 0], hp: 2, unitType: "WORKER" },
+    ],
+  };
+  const workersPlan = planner.decide({ state: enemyWorkers, policy: workersPolicy });
+  const vanguardWorkers = workersPlan.unitActions["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"];
+  assert.equal(vanguardWorkers?.type, "MOVE");
+  assert.equal(workersPlan.intents["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"], "vanguard_pressure");
+
+  const corePlan = planner.decide({ state: enemyWorkers, policy: corePolicy });
+  const vanguardCore = corePlan.unitActions["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"];
+  assert.equal(vanguardCore?.type, "MOVE");
+  assert.equal(corePlan.intents["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"], "vanguard_pressure");
+});
+
+test("MacroPolicyOrchestrator: onPolicyError 回调（失败 telemetry）", async () => {
+  const errors: Array<{ tick: number; message: string }> = [];
+  const orchestrator = new MacroPolicyOrchestrator({
+    intervalTicks: 32,
+    promptBuilder: buildMacroPolicyPrompt,
+    requestPolicy: async () => {
+      throw new Error("gateway down");
+    },
+    onPolicyError: (message, tick) => errors.push({ tick, message }),
+  });
+  orchestrator.onTick(makeState(1));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].tick, 1);
+  assert.ok(errors[0].message.includes("gateway down"));
 });
