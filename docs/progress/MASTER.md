@@ -48,6 +48,7 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 3. **v0.2.5 资源满让位**：`resourceSpace=0` 时 DEPOSIT 不合法（validator 每 tick 修复移除，repairCount=1），满载 Worker 让出 Core 格（`yieldDirection`）→ SPAWN 消耗 5 资源 → 卸货通道恢复。**完整破锁闭环，生产验证：SPAWN 执行（res 10→5）、workerCount 2→3、cargo 卸下、delta>0**。
 4. **v0.2.6 敌格绕行**：敌方格并入 `taskAction` 绕行障碍，回仓/采集路径自动绕开敌占格。
 5. **v0.2.7 半径受限确定性 BFS**：`nav.stepTowardPath`（半径 24/预算 4096/3× 距离剪枝）——旧扩框 BFS 在敌群围堵时走出包围盒或给出必被容量拒绝的 MOVE；新 BFS 局部绕行输出第一步，`stepToward` = 新 BFS → 旧扩框 BFS → fail-safe 回退链。另加容量预检：本 tick 已占满（≥2 实体）格并入绕行障碍（capacity_wait 循环的另一来源）。
+6. **v0.2.8 敌方 CORE 并入障碍**：`planning-snapshot.enemyCells`（全部可见敌人占用格，含敌方 CORE）——生产实测最后一层：w1 满载 @[-316,57] 被敌方 CORE @[-317,57] 挡在一步内，旧 avoidCells 只含 kind=UNIT 的敌方单位 → BFS 走被容量裁决拒绝的格 → capacity_wait 循环 300+ ticks。修复后生产验证：**maxDist 32→14 持续推进（w1 绕行回家）、capacity_wait 消失、DEPOSIT×2 正常回仓**。残余：w1 在敌区边缘 14-16 格徘徊（战场阻塞非死锁，BFS 剪枝 3× 放弃更长绕行——等敌群移动/清场，不调参防局部最优）。
 
 **检测设施（同步落地）**：
 - `stall detector`（v0.2.4+）：连续 16 ticks `delta=0 且满载滞留` → runtime.jsonl `stall_warning`（生产已触发 3 次，自动告警替代人工发现）。
