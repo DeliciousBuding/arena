@@ -7,6 +7,7 @@ Arena 正式运行链为 TS-only。遵循原生设计：优先 Node 标准能力
 ## 权威入口
 
 - 当前状态：`docs/progress/MASTER.md`
+- 协作快照（跨 Agent 通信文件，仓外）：`D:\Code\Projects\arena-mail.md`
 - 运维：`docs/ops/supervisor-runbook.md`
 - 服务器：`docs/ops/server-deployment.md`
 - 架构：`docs/ts-architecture.md`
