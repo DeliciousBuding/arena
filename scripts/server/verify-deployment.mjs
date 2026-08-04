@@ -55,7 +55,8 @@ mustContain(liveUnit, "EnvironmentFile=-/etc/arena/health.env", "live supervisor
 // server settings flow through ARENA_* env vars (CLI args override env when given).
 mustContain(supervisorCli, "ARENA_SERVICE_MODE", "supervisor CLI must accept the service-mode env var");
 mustContain(supervisorCli, 'process.env[ENV_DEFAULTS[key]]', "supervisor CLI must read ARENA_* env vars");
-mustContain(supervisorCli, '"--mode=deterministic"', "server supervisor must stay deterministic");
+mustContain(supervisorCli, "ARENA_DECISION_MODE", "decision mode must be env-overridable (Pi agent opt-in)");
+mustContain(supervisorCli, '?? "deterministic"', "server supervisor must default to deterministic");
 mustContain(supervisorCli, '"--shadow"', "shadow mode must be explicit");
 mustContain(supervisorCli, '"--live"', "live mode must be explicit");
 mustContain(supervisorCli, "ARENA_LIVE_TICKS", "canary window must be env-driven");
