@@ -81,9 +81,10 @@ def main() -> None:
     )
     # 与各包 npm test 脚本完全同形（tsx --test）——node --test 原生跑 .ts 的
     # 测试发现与 tsx 不一致（CI/本地/平台间计数漂移），必须走同一执行链。
+    npx_bin = "npx.cmd" if os.name == "nt" else "npx"
     agent_tests, agent_passed, agent_failed, _agent_skipped = node_tap_counts(
         [
-            "npx",
+            npx_bin,
             "tsx",
             "--test",
             "test/*.test.ts",
