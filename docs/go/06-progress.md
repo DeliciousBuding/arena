@@ -40,6 +40,7 @@
 | 日期 | 分类 | 区间/字段 | 描述 | 处置 |
 |---|---|---|---|---|
 | 2026-08-05 | 对齐确认 | burnin-a 全 100 tick | 动作分布与 TS 期望**完全一致**：MOVE=317、Core 无（Go 317 / TS 317） | 阶段 A 验收通过 ✅ |
+| 2026-08-05 | 有意变更 | burnin-a 全 100 tick | Lane 2 move capacity 仲裁后动作分布 MOVE=317 → MOVE=230+WAIT=87（路径冲突让路）；**valid_plans 保持 100/100、0 repair** | 已记录，仲裁语义见 03-module-spec M4 |
 
 ## 当前焦点
 
@@ -58,8 +59,12 @@
 - [x] 单写者锁（`1c0cc39`，subagent lane，含 PID 复用陷阱防护）
 - [x] MacroPolicy 纯函数（`7b4946e`，23 函数/65 用例 98.3%）
 - [x] TS↔Go 语义同步表 + Canonical Policy（`03e8c8c`）
-- [ ] Lane 2 经济 Planner：worker 全局分配/move capacity/workerTarget/respawn override（subagent 执行中）
-- [ ] 50-tick shadow 实验结果收口（运行中）
+- [x] Lane 2 经济 Planner（`705e13b`）：worker 全局分配/move capacity 仲裁
+      （下一步格粒度）/workerTarget+reserve/respawn override（管理者接管，
+      subagent 后台 40min 无产出）；economic_test.go 9 项专项，strategy 97.6%
+- [x] hero idle watchdog（`ced8a4d`）：服务器停推不关连接 → 60s 自动断流
+      重连（t3 50-tick 挂死根因修复，TestIdleTimeoutForcesReconnect）
+- [ ] 50-tick shadow v2 实验结果收口（运行中，tick 52626）
 - [ ] workerTarget=2/8/16 固定策略 shadow（Lane 2 后）
 - [ ] 3→10→30 tick bounded live（live 三件套已就绪）
 - [ ] 统一固定 Policy TS/Go 交叉赛马（Canonical Policy 已定义）
