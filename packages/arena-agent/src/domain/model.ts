@@ -86,7 +86,8 @@ export type CoreAction =
   | { readonly type: "START_MOVE"; readonly direction: Direction }
   | { readonly type: "CANCEL_MOVE" }
   | { readonly type: "PICKUP_BEACON" }
-  | { readonly type: "DROP_BEACON" };
+  | { readonly type: "DROP_BEACON" }
+  | { readonly type: "SELF_DESTRUCT" };
 
 export interface Plan {
   readonly tick: number;

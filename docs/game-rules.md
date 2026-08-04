@@ -6,8 +6,9 @@ the whole file before writing a tactic or controlling a live Turn.
 This contract was reviewed against the rules changelog
 (`docs/reference/changelog.md`, arena-hero-doc repo) on 4 August 2026.
 **规则变更源：https://github.com/arena-hero/arena-hero-doc/blob/main/docs/reference/changelog.md
-——检查日期 2026-08-04（v0.13 true Ranger cell fire 已合入：`SHOOT.target_id` 可选，
-空格射击命中该格最低 HP 敌对单位；来源 server 57c2a5b / SDK e32ff94）；
+——检查日期 2026-08-04（v0.12 unconditional Core self-destruction + v0.13 true
+Ranger cell fire 均已合入：Core 可无条件 SELF_DESTRUCT（来源 server bdd68e8）；
+`SHOOT.target_id` 可选、空格射击命中该格最低 HP 敌对单位（来源 server 57c2a5b））；
 规则更新时同步检查 `balance.py` / LLM RULES prompt 适配。**
 If a live server reports newer or incompatible rules, stop rule-dependent play
 and update this bundle instead of mixing versions.
@@ -451,6 +452,18 @@ action for the Tick. It gives no production-cost refund, deals no area damage,
 and awards no destruction participation. Worker cargo drops on the final cell. A carried
 Beacon drops at the Unit's cell and cannot be picked up until the next Tick.
 The owner receives `UNIT_SELF_DESTRUCTED`, and `units_lost` increases by one.
+
+### Core self-destruct (v0.12)
+
+Every living Core can submit `{"type":"SELF_DESTRUCT"}` as its Core action with
+no resource, Unit, movement-state, or cooldown restriction. Movement and combat
+resolve first. A lethal enemy attack keeps normal destruction participation and
+resource capture; otherwise the surviving Core destroys its inventory and all
+owned Units before healing, repair, or spawn. Worker cargo and a carried
+Champion Beacon drop at each carrier's actual position. Core self-destruction
+awards no damage, destruction participation, or loot. The private
+`CORE_DESTROYED` result uses `reason_code: SELF_DESTRUCT` without
+`destroyed_by`, then follows the normal same-Tick respawn flow.
 
 ### Unit healing
 
