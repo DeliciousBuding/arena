@@ -76,6 +76,14 @@ mustContain(compose, "ARENA_DEBUG_HOST", "compose must allow loopback-exposed de
 mustContain(compose, "127.0.0.1:8120:8120", "debug API must bind loopback only");
 mustContain(compose, "--skip-disk", "container healthcheck must not own the disk gate");
 mustNotContain(compose, "ARENA_HERO_API_KEY", "compose must not inline tenant secrets");
+
+// Rollback helper contract (deploy/docker/rollback.sh): dry-run default, GHCR
+// tag verification, compose backup, and post-restart image verification.
+const rollbackScript = readFileSync(join(dockerDir, "rollback.sh"), "utf-8");
+mustContain(rollbackScript, "--apply", "rollback must refuse to mutate without --apply");
+mustContain(rollbackScript, "docker manifest inspect", "rollback must verify the tag exists in GHCR before mutating");
+mustContain(rollbackScript, "cp -p \"$compose\" \"$backup\"", "rollback must back up the compose file before editing");
+mustContain(rollbackScript, "docker inspect --format", "rollback must verify the container image after restart");
 if (typeof piUndiciVersion !== "string") {
   throw new Error("cannot resolve pi-coding-agent nested undici version from package-lock.json");
 }
