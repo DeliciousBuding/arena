@@ -5,6 +5,19 @@ import { TenantSupervisor } from "../app/tenant-supervisor.ts";
 import { DebugServer } from "../app/debug-server.ts";
 import { loadDotEnv } from "../app/dotenv.ts";
 
+const ENV_DEFAULTS = {
+  "repo-root": "ARENA_REPO_ROOT",
+  "config-dir": "ARENA_CONFIG_DIR",
+  "runtime-dir": "ARENA_RUNTIME_DIR",
+  configs: "ARENA_CONFIGS",
+  "live-ticks": "ARENA_LIVE_TICKS",
+  "max-ticks": "ARENA_MAX_TICKS",
+  "startup-sync-ticks": "ARENA_STARTUP_SYNC_TICKS",
+  "shutdown-timeout-ms": "ARENA_SHUTDOWN_TIMEOUT_MS",
+  port: "ARENA_DEBUG_PORT",
+  "debug-host": "ARENA_DEBUG_HOST",
+} as const;
+
 async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
@@ -24,25 +37,31 @@ async function main(): Promise<void> {
     },
   });
 
+  // CLI 参数优先，其次 ARENA_* 环境变量（容器/服务器注入），最后内置默认。
+  // 同一份代码同时服务本地开发与 Docker 部署，不再需要 bash 胶水层。
+  const option = (key: keyof typeof ENV_DEFAULTS): string | undefined =>
+    values[key] ?? process.env[ENV_DEFAULTS[key]];
+
   if (values.live && values.shadow) throw new Error("--live and --shadow are mutually exclusive");
-  const repoRoot = values["repo-root"] ?? process.cwd();
+  const repoRoot = option("repo-root") ?? process.cwd();
   loadDotEnv(repoRoot);
-  const configNames = (values.configs ?? "t1,t2,t3,t4")
+  const configNames = (option("configs") ?? "t1,t2,t3,t4")
     .split(",")
     .map((name) => name.trim())
     .filter(Boolean)
     .map((name) => name.endsWith(".json") ? name : `${name}.json`);
 
+  const serviceMode = values.shadow ? "shadow" : values.live ? "live" : process.env.ARENA_SERVICE_MODE;
   const tenantArgs: string[] = [];
-  if (values.live) tenantArgs.push("--live");
-  if (values.shadow) tenantArgs.push("--shadow");
+  if (serviceMode === "shadow") tenantArgs.push("--mode=deterministic", "--shadow");
+  if (serviceMode === "live") tenantArgs.push("--mode=deterministic", "--live");
   if (values.mode !== undefined) tenantArgs.push(`--mode=${values.mode}`);
   for (const [key, flag] of [
     ["live-ticks", "--live-ticks"],
     ["max-ticks", "--max-ticks"],
     ["startup-sync-ticks", "--startup-sync-ticks"],
   ] as const) {
-    const raw = values[key];
+    const raw = option(key);
     if (raw !== undefined) {
       const number = Number(raw);
       const minimum = key === "startup-sync-ticks" ? 0 : 1;
@@ -51,12 +70,12 @@ async function main(): Promise<void> {
     }
   }
 
-  const shutdownTimeoutMs = parseInteger(values["shutdown-timeout-ms"], 8000, 1, "--shutdown-timeout-ms");
-  const port = parseInteger(values.port, 8120, 0, "--port");
+  const shutdownTimeoutMs = parseInteger(option("shutdown-timeout-ms"), 8000, 1, "--shutdown-timeout-ms");
+  const port = parseInteger(option("port"), 8120, 0, "--port");
   const supervisor = new TenantSupervisor({
     repoRoot,
-    ...(values["config-dir"] !== undefined ? { configRoot: values["config-dir"] } : {}),
-    ...(values["runtime-dir"] !== undefined ? { runtimeRoot: values["runtime-dir"] } : {}),
+    ...(option("config-dir") !== undefined ? { configRoot: option("config-dir") } : {}),
+    ...(option("runtime-dir") !== undefined ? { runtimeRoot: option("runtime-dir") } : {}),
     configs: configNames,
     tenantArgs,
     shutdownTimeoutMs,
@@ -68,7 +87,7 @@ async function main(): Promise<void> {
     repoRoot,
     supervisor,
     port,
-    ...(values["debug-host"] !== undefined ? { host: values["debug-host"] } : {}),
+    ...(option("debug-host") !== undefined ? { host: option("debug-host") } : {}),
   });
 
   // Port conflicts must fail with zero spawned tenant processes.

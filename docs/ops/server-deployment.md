@@ -4,6 +4,8 @@
 >
 > 部署形态：**Docker 镜像（GHCR）+ systemd 编排**。镜像由 GitHub Actions 在每次 main push 时构建推送（`ghcr.io/deliciousbuding/arena:<sha>` 与 `:main`），版本 tag push（`v*`）额外推送 `ghcr.io/deliciousbuding/arena:vX.Y.Z`；systemd 是进程生命周期唯一权威（shadow `Restart=on-failure`，live `Restart=no`），Docker 只做隔离与不可变发布。容器 stop 会销毁整个 PID namespace，因此不存在孤儿进程逃逸。
 >
+> 入口是原生 TS CLI（`packages/arena-agent/src/cli/run-supervisor.ts`，无 bash 胶水层）：Docker ENTRYPOINT 与本地 `npm run arena:supervisor` 是同一份代码。所有服务器参数通过 `ARENA_*` 环境变量注入（`ARENA_SERVICE_MODE=shadow|live`、`ARENA_CONFIGS`、`ARENA_LIVE_TICKS` 等），优先级：CLI 参数 > env > 内置默认。
+>
 > 当前策略：shadow 可以自动恢复；deterministic live 在跨进程幂等键和 last accepted tick 恢复完成前，**只告警、不自动重启**。
 
 ## 1. 目录与权限
@@ -185,10 +187,20 @@ sudo systemctl enable --now arena-disk-health.timer
 `arena-supervisor-live.service` 固定使用：
 
 ```text
---mode=deterministic --live
+ARENA_SERVICE_MODE=live → --mode=deterministic --live
 ```
 
 不会因为 Provider 恢复自动开启 hybrid。
+
+Canary 窗口（有界提交）由环境变量控制，不改代码：
+
+```bash
+# 单租户 3 Tick 验收：只跑 t1，最多 3 次 live submit
+ARENA_CONFIGS=t1 ARENA_LIVE_TICKS=3 docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml up live
+# 20 → 100 Tick 扩窗同理；去掉 ARENA_LIVE_TICKS 即常驻
+```
+
+窗口用尽后 tenant 自然退出，supervisor 随之退出（live `Restart=no`），适合作为人工验收步骤；验收通过后去掉 env 进入常驻。
 
 ## 8. 健康与磁盘门禁
 
