@@ -72,6 +72,7 @@ def main() -> None:
         [
             "node",
             "--test",
+            "--test-force-exit",
             "--test-reporter=tap",
             "test/*.test.ts",
         ],
