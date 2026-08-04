@@ -3,26 +3,21 @@
 > 状态：设计定稿。Go 版全量门禁 = 静态检查 + 漏洞检查 + 测试矩阵 + 契约对齐 +
 > fixture 回放 + 差分 + 故障注入 + 黑盒验证。全部命令化、可一键跑、CI 强制执行。
 
-## 1. 门禁命令（唯一入口）
+## 1. 门禁分层（开发循环不被重门禁拖慢）
 
 ```bash
-# 单命令全量门禁（本地与 CI 同一命令）
-./scripts/go-check.sh          # Windows: powershell scripts\go-check.ps1
+# 快速循环（开发反复跑，几十秒内反馈）
+scripts/check-fast.sh      # gofmt + 受影响包 go test + go build
 
-# 分解（go-check.sh 依次执行）
-go mod tidy && go mod verify              # 依赖图一致
-gofmt -l .                                # 格式零告警
-go vet ./...                              # 静态检查
-staticcheck ./...                         # 深度静态分析（如未安装则 CI 必装，本地提示）
-govulncheck ./...                         # 供应链漏洞（undici 教训的 Go 版对位）
-go build -o bin/arena ./cmd/arena         # 构建
-go test -race -count=1 ./...              # 全部测试 + race detector
-go test -cover ./internal/...             # 覆盖率报告（关键包 ≥80%，见 §4）
-python3 scripts/check-consistency.py      # 仓库一致性（docs↔代码声明，替代旧 gen-status）
+# Commit 级（每次提交）
+scripts/check.sh           # gofmt + go vet + 全量 go test + go build + fixture smoke
+
+# Merge / Nightly / Release（CI quality job 执行）
+scripts/check-full.sh      # check.sh + go test -race（Linux）+ staticcheck + govulncheck
+                           # + 完整 fixture replay + Docker build + 秘密扫描 + 进程黑盒 + 覆盖率报告
 ```
 
-CI（GitHub Actions `quality` job）执行同一脚本，分支 PR 即跑；`release` job 在
-quality 全绿后构建并推送 `ghcr.io/deliciousbuding/arena:<sha>/:main`（对齐主线部署模型）。
+三份脚本是同一检查集合的切片，内容单调递增；`check-full.sh` 是唯一发布门禁。
 
 ## 2. 测试分层
 
@@ -48,20 +43,28 @@ quality 全绿后构建并推送 `ghcr.io/deliciousbuding/arena:<sha>/:main`（�
 4. **豁免区间**：TS 版既有豁免（burnin-20260802-a / unknown / 40437–40536 的 MOVE
    参数差异）继承，但豁免不覆盖 state/metadata、动作类型、缺动作、Core 动作。
 
-## 4. 覆盖率目标（关键包）
+## 4. 关键场景清单（替代硬覆盖率/测试数量门禁）
 
-| 包 | 目标 |
-|---|---|
-| contracts | ≥85%（枚举/校验全覆盖） |
-| domain（reducer/nav/validator/hash） | ≥90%（确定性逻辑） |
-| strategy | ≥85% |
-| runtime（lease/coordinator/arbiter） | ≥90%（含故障注入路径） |
-| llm（SSE 解析/熔断） | ≥85% |
-| agent（loop/session/harness） | ≥80% |
-| ops（锁/supervisor） | ≥75%（黑盒难覆盖部分以 L6 补） |
-| telemetry | ≥80%（脱敏/轮转必须 100% 覆盖关键路径） |
+覆盖率是信号不是完成定义。硬性测试要求收敛为以下**关键场景**（每个场景至少一个
+自动化测试，缺失即不合格）：
 
-覆盖率不达标 = 批未完成，不允许合批（防"测试绿但没测到"的作弊达标）。
+```text
+1. 正常 Tick：完整决策链输出合法 Plan
+2. 空资源：planner 不崩溃、产出可执行计划（spawn 欠费→跳过）
+3. Core respawn：respawn_at_tick 语义正确
+4. 世界 Tick 回退：state 回退检测/重置
+5. 非法 LLM plan：validator 拒绝或 repair
+6. LLM 超时：sticky 沿用上次策略，不阻塞 tick
+7. WS 断线：重连恢复、无重复提交
+8. 重复 submit：幂等键去重语义
+9. 密钥脱敏：构造含密钥样本，落盘零密钥
+10. 单写者锁：同租户第二进程拿锁失败
+11. DecisionLease：stale/late 候选拒绝
+12. 熔断器反向验证：3 连败 → open → half-open 恢复
+```
+
+强制审查仅限：submit / lock / lease / 密钥 / live deployment（L3 独立审查），
+其余包按 L2 diff 审查。
 
 ## 5. 防作弊条款（对齐 leader 规则）
 

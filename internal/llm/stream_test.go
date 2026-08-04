@@ -440,7 +440,9 @@ func TestMidStreamTruncationClassified(t *testing.T) {
 
 func TestMidStreamResetRSTClassified(t *testing.T) {
 	t.Parallel()
-	// 真实 RST：SO_LINGER=0 后关闭连接
+	// 真实 RST：SO_LINGER=0 后关闭连接。
+	// RST 可能出现在响应头读取前（Complete 直接失败）或流中（Next 失败），
+	// 两条路径都必须分类为 network。
 	srv := newFakeProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		hijacker, ok := w.(http.Hijacker)
 		if !ok {
@@ -461,20 +463,21 @@ func TestMidStreamResetRSTClassified(t *testing.T) {
 		}
 	})
 	stream, err := srv.newClient(nil).Complete(context.Background(), srv.req())
-	if err != nil {
-		t.Fatalf("建立流失败: %v", err)
-	}
-	defer stream.Close()
 
 	var gotErr error
-	for {
-		chunk, err := stream.Next()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				t.Fatalf("RST 断流不应以 io.EOF 结束（已收到 %q）", chunk.Delta.Content)
+	if err != nil {
+		gotErr = err // RST 在响应头到达前生效
+	} else {
+		defer stream.Close()
+		for {
+			chunk, err := stream.Next()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					t.Fatalf("RST 断流不应以 io.EOF 结束（已收到 %q）", chunk.Delta.Content)
+				}
+				gotErr = err
+				break
 			}
-			gotErr = err
-			break
 		}
 	}
 	if gotErr == nil {

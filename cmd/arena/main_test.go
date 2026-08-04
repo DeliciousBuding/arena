@@ -39,7 +39,7 @@ func TestRunNotImplementedReportsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stderr = writer
-	code := run([]string{"tenant"})
+	code := run([]string{"supervisor"})
 	_ = writer.Close()
 	os.Stderr = oldStderr
 	if code != exitError {

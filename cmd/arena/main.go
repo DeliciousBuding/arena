@@ -53,6 +53,10 @@ func run(args []string) int {
 	switch name {
 	case "version":
 		return runVersion(args[1:])
+	case "tenant":
+		return runTenantCmd(args[1:])
+	case "replay":
+		return runReplayCmd(args[1:])
 	default:
 		// 后续批次实现；当前给出明确未实现提示（不静默成功）。
 		fmt.Fprintf(os.Stderr, "arena: %s not implemented yet (see docs/go/05-delivery-plan.md)\n", name)
