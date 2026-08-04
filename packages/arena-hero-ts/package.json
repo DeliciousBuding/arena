@@ -9,7 +9,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test \"test/*.test.ts\""
+    "test": "node --test --test-force-exit \"test/*.test.ts\""
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -4,7 +4,7 @@
 > 见 `ARCHITECTURE.md`（退役参考）。迁移方案与切片见 `migration-plan.md`，
 > 长期路线见 `roadmap-long-term.md`，进度与门禁以 `docs/progress/MASTER.md` 为准。
 
-最后更新：2026-08-04
+最后更新：2026-08-05
 
 ## 三层边界（不可违反）
 
