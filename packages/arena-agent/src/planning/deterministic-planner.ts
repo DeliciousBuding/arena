@@ -414,6 +414,20 @@ export class DeterministicPlanner implements PlanProvider {
     for (const enemy of snapshot.enemyUnits) {
       avoidCells.add(cellKey(enemy.position));
     }
+    // 容量预检：本 tick 已占满（≥2 实体，Core 占 1）的格也视为障碍——MOVE
+    // 目标格若已满必被 resolveMoveCapacity 拒绝转 WAIT（capacity_wait 循环
+    // 的另一个来源），BFS 直接绕开这类格。
+    const occupancy = new Map<string, number>();
+    if (snapshot.corePosition !== null) {
+      occupancy.set(cellKey(snapshot.corePosition), 1);
+    }
+    for (const ally of snapshot.units) {
+      const key = cellKey(ally.position);
+      occupancy.set(key, (occupancy.get(key) ?? 0) + 1);
+    }
+    for (const [key, count] of occupancy) {
+      if (count >= 2) avoidCells.add(key);
+    }
     const movementObstacles = this.fallbackPlanner.world.movementObstacles(
       assignment.unitId,
       avoidCells,

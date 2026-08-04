@@ -54,6 +54,68 @@ export function lineBlocked(a: Position, b: Position, obstacles: ReadonlySet<str
   return false;
 }
 
+/** 半径受限确定性 BFS 的搜索参数（生产实测：满载 Worker 回仓路线被敌方
+ *  单位群挡路时，旧扩框 BFS 要么走出包围盒、要么给出必被容量拒绝的 MOVE。
+ *  新 BFS 在有限半径内找最短路并输出第一步，绕行是局部的（走廊宽度量级）。 */
+export interface PathSearchOptions {
+  /** 展开节点上限（含起点）。默认 4096（> 半径 24 的 2401 格覆盖，安全网）。 */
+  readonly nodeBudget: number;
+  /** Chebyshev 搜索半径（不依赖地图边界，负坐标天然支持）。默认 24。 */
+  readonly searchRadius: number;
+  /** 距离增长剪枝：g + h > 直线距 × factor 即放弃该分支（绕行 > 2× 直线距
+   *  的通道已实质封死，WAIT 等敌群散开比绕 60+ tick 更优）。默认 3。 */
+  readonly abandonFactor: number;
+}
+
+export const DEFAULT_PATH_SEARCH_OPTIONS: Readonly<PathSearchOptions> = Object.freeze({
+  nodeBudget: 4096,
+  searchRadius: 24,
+  abandonFactor: 3,
+});
+
+interface SearchNode {
+  readonly position: Position;
+  readonly firstDirection: Direction | null;
+  readonly depth: number;
+}
+
+/** 半径受限确定性 BFS：返回从 start 到 target 最短路的第一步方向。
+ *  确定性（邻居按 orderedDirections 固定顺序展开、FIFO 首达即最优）、
+ *  无状态（不缓存路径）、不走进 obstacles（含敌方格）。预算/半径内不可达
+ *  返回 null，调用方回退到旧扩框 BFS 与 fail-safe。 */
+export function stepTowardPath(
+  start: Position,
+  target: Position,
+  obstacles: ReadonlySet<string>,
+  options: PathSearchOptions = DEFAULT_PATH_SEARCH_OPTIONS,
+): Direction | null {
+  if (start[0] === target[0] && start[1] === target[1]) return null;
+  if (obstacles.has(cellKey(target))) return null;
+
+  const directDistance = manhattan(start, target);
+  const abandonAt = directDistance * options.abandonFactor;
+  const queue: SearchNode[] = [{ position: start, firstDirection: null, depth: 0 }];
+  const visited = new Set<string>([cellKey(start)]);
+  let head = 0;
+
+  while (head < queue.length && head < options.nodeBudget) {
+    const node = queue[head++];
+    for (const direction of orderedDirections(node.position, target)) {
+      const next = move(node.position, direction);
+      if (chebyshev(start, next) > options.searchRadius) continue;
+      const key = cellKey(next);
+      if (visited.has(key) || obstacles.has(key)) continue;
+      const depth = node.depth + 1;
+      if (depth + manhattan(next, target) > abandonAt) continue;
+      const firstDirection = node.firstDirection ?? direction;
+      if (next[0] === target[0] && next[1] === target[1]) return firstDirection;
+      visited.add(key);
+      queue.push({ position: next, firstDirection, depth });
+    }
+  }
+  return null;
+}
+
 export function stepToward(
   position: Position,
   target: Position,
@@ -61,25 +123,23 @@ export function stepToward(
 ): Direction | null {
   if (position[0] === target[0] && position[1] === target[1]) return null;
 
-  // 旧实现只看下一格：遇到墙时会在两个格之间来回摆动，永远无法绕到目标。
-  // 这里做有界 BFS，直接返回一条最短路的第一步。地图无显式边界，因此逐级
-  // 扩大搜索框；已知障碍视为永久阻塞，未知格允许探索。
+  // ① 半径受限 BFS（首选）：局部绕行（敌群/墙）最短路径的第一步，确定性。
+  const direction = stepTowardPath(position, target, obstacles);
+  if (direction !== null) return direction;
+
+  // ② 旧扩框长程 BFS（回退）：绕行点距起点 > 24 时兜底。地图无显式边界，
+  // 逐级扩大搜索框；已知障碍视为永久阻塞，未知格允许探索。
   for (const margin of [4, 8, 16, 32] as const) {
     const direction = shortestPathFirstStep(position, target, obstacles, margin);
     if (direction !== null) return direction;
   }
 
-  // 极端情况下（目标被超长障碍完全包围）保持 fail-safe：只走一个不会撞墙、
+  // ③ 极端情况下（目标被超长障碍完全包围）保持 fail-safe：只走一个不会撞墙、
   // 且方向尽量朝向目标的格；若四周全堵则 WAIT。
   for (const direction of orderedDirections(position, target)) {
     if (!obstacles.has(cellKey(move(position, direction)))) return direction;
   }
   return null;
-}
-
-interface SearchNode {
-  readonly position: Position;
-  readonly firstDirection: Direction | null;
 }
 
 function shortestPathFirstStep(
@@ -92,7 +152,7 @@ function shortestPathFirstStep(
   const maxX = Math.max(start[0], target[0]) + margin;
   const minY = Math.min(start[1], target[1]) - margin;
   const maxY = Math.max(start[1], target[1]) + margin;
-  const queue: SearchNode[] = [{ position: start, firstDirection: null }];
+  const queue: Array<{ position: Position; firstDirection: Direction | null }> = [{ position: start, firstDirection: null }];
   const visited = new Set<string>([cellKey(start)]);
   let head = 0;
 
