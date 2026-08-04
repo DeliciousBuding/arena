@@ -48,7 +48,7 @@ const actionSchema = Type.Object(
         { description: "方向（MOVE/SWEEP 必需）" },
       ),
     ),
-    target_id: Type.Optional(Type.String({ description: "射击目标 UUID（SHOOT 必需）" })),
+    target_id: Type.Optional(Type.String({ description: "射击目标 UUID（SHOOT 可选：缺省为 cell fire 射向 expected_cell 格）" })),
     expected_cell: Type.Optional(Type.Array(Type.Number(), { minItems: 2, maxItems: 2 })),
   },
   { additionalProperties: false },
@@ -125,9 +125,6 @@ function toDomainAction(action: ArenaPlanParams["actions"][number]): UnitAction 
     case "SWEEP":
       return { type: action.kind, direction: requireDirection(action) };
     case "SHOOT": {
-      if (action.target_id === undefined || action.target_id.length === 0) {
-        throw new ToolArgError("invalid_tool_arguments", `action ${action.unit} SHOOT 缺少 target_id`);
-      }
       const cell = action.expected_cell;
       if (
         cell === undefined ||
@@ -137,7 +134,9 @@ function toDomainAction(action: ArenaPlanParams["actions"][number]): UnitAction 
       ) {
         throw new ToolArgError("invalid_tool_arguments", `action ${action.unit} SHOOT 缺少整数 expected_cell`);
       }
-      return { type: "SHOOT", targetId: action.target_id, expectedCell: [cell[0], cell[1]] };
+      // Upstream v0.12 cell fire: target_id 可选；缺省时对 expected_cell 格射击。
+      const targetId = action.target_id === undefined || action.target_id.length === 0 ? null : action.target_id;
+      return { type: "SHOOT", targetId, expectedCell: [cell[0], cell[1]] };
     }
     case "HARVEST":
     case "DEPOSIT":

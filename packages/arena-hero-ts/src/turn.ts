@@ -154,6 +154,13 @@ export class Vanguard extends Unit {
 
 /** Control interface for an owned Ranger. */
 export class Ranger extends Unit {
+  /** Fire at a cell (upstream v0.12 cell fire), or precision-shoot a specific target.
+   *  - cell fire: `shootAt(cell)` — hits the lowest-HP hostile then present there;
+   *  - precision: `shoot(target[, expectedCell])` — hits only that object if still there. */
+  shootAt(expectedCell: Position): void {
+    this._set({ type: "SHOOT", target_id: null, expected_cell: expectedCell } satisfies ShootAction);
+  }
+
   shoot(target: string | Unit | Core | UnitView | CoreView, expectedCell?: Position): void {
     let targetId: string;
     let targetCell: Position;

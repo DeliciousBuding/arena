@@ -181,14 +181,27 @@ function shotTarget(
   attack: LockedAttack,
   actor: CombatTarget,
 ): CombatTarget | null {
-  const target = targets.find((candidate) => candidate.id === attack.targetId);
-  if (target === undefined || target.playerId === attack.playerId) return null;
-  if (attack.expectedCell === null || !sameCell(target.position, attack.expectedCell)) return null;
-  if (!isEightDirectionLine(actor.position, target.position, 3)) return null;
-  if (intermediateCells(actor.position, target.position).some((cell) => isObstacleCell(world, cell))) {
+  const expected = attack.expectedCell;
+  if (expected === null) return null;
+  if (!isEightDirectionLine(actor.position, expected, 3)) return null;
+  if (intermediateCells(actor.position, expected).some((cell) => isObstacleCell(world, cell))) {
     return null;
   }
-  return target;
+  // Upstream v0.12 cell fire: with a target_id, precision mode hits only the
+  // named object if it remains hostile and at expected_cell. Without one, the
+  // shot hits the lowest-HP hostile then present in the cell (raw UUID breaks
+  // HP ties).
+  if (attack.targetId !== null) {
+    const target = targets.find((candidate) => candidate.id === attack.targetId);
+    if (target === undefined || target.playerId === attack.playerId) return null;
+    if (!sameCell(target.position, expected)) return null;
+    return target;
+  }
+  const occupants = targets.filter(
+    (candidate) => candidate.playerId !== attack.playerId && sameCell(candidate.position, expected),
+  );
+  if (occupants.length === 0) return null;
+  return occupants.sort((a, b) => a.hp - b.hp || compareUuidRaw(a.id, b.id))[0];
 }
 
 function addContribution(

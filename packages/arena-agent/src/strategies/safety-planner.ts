@@ -272,10 +272,28 @@ export class SafetyPlanner {
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
   ): void {
     const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
+
+    // Precision shot at a visible enemy in range.
     const target = enemies.find((enemy) => canShoot(unit.position, enemy.position, obstacles));
     if (target !== undefined) {
       set(unit, { type: "SHOOT", targetId: target.id, expectedCell: target.position }, "shoot");
       return;
+    }
+
+    // Upstream v0.12 cell fire: fire at the predicted next cell of the nearest
+    // visible enemy that is out of range. A unit in range 4-5 can be hit next
+    // tick if it keeps advancing toward us along the same line.
+    const nearest = nearestEnemy(enemies, unit.position);
+    if (nearest !== null) {
+      const predicted = predictedEnemyCell(unit.position, nearest.position);
+      if (
+        predicted !== null &&
+        canShoot(unit.position, predicted, obstacles) &&
+        !samePosition(predicted, nearest.position)
+      ) {
+        set(unit, { type: "SHOOT", targetId: null, expectedCell: predicted }, "shoot_cell");
+        return;
+      }
     }
 
     const moveTarget = enemies.length > 0
@@ -344,6 +362,18 @@ function canShoot(from: Position, target: Position, obstacles: ReadonlySet<strin
     distance <= 3 &&
     (dx === 0 || dy === 0 || Math.abs(dx) === Math.abs(dy)) &&
     !lineBlocked(from, target, obstacles);
+}
+
+/** 预测敌人下一 Tick 位置：朝攻击者逼近一格（八方向切比雪夫步进）。
+ *  仅当敌人当前不在射程内（4-5 格）时用于 cell fire 预判；已在射程内
+ *  由 precision shoot 覆盖。返回 null 表示无法预测（已在身边）。 */
+function predictedEnemyCell(actor: Position, enemy: Position): Position | null {
+  const dx = enemy[0] - actor[0];
+  const dy = enemy[1] - actor[1];
+  const stepX = dx === 0 ? 0 : Math.sign(dx);
+  const stepY = dy === 0 ? 0 : Math.sign(dy);
+  const next = [enemy[0] - stepX, enemy[1] - stepY] as Position;
+  return samePosition(next, enemy) ? null : next;
 }
 
 function parseCell(value: string): Position {
