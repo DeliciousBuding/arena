@@ -63,6 +63,18 @@ test("四面围死：目标不可达时返回 null（WAIT 是正确行为）", (
   assert.equal(stepToward(start, target, encircle), null, "回退链也找不到路");
 });
 
+test("fail-safe 不横跳：接近方向被墙挡时返回 null（WAIT）而非走远离方向的格", () => {
+  // 生产实测：w1 在敌区边缘（接近方向被敌群墙挡死、远离方向空）——旧 fail-safe
+  // 每 tick 走一格远离方向 → 在墙前左右横跳（12↔16 格徘徊）不接近目标。
+  // 修复：fail-safe 只走"离目标更近"的格，否则 WAIT（敌群/障碍会移动）。
+  const start: Position = [0, 0];
+  const target: Position = [5, 0];
+  // 接近方向（RIGHT/UP/DOWN）与目标格全被墙挡，只有 LEFT（远离）空——
+  // BFS 短路（目标被占）、扩框 BFS 无路，落到 fail-safe：不得横跳 LEFT。
+  const wall = obstaclesOf([[1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [0, -1], [0, 1]]);
+  assert.equal(stepToward(start, target, wall), null, "无接近方向时必须 WAIT 而非横跳远离");
+});
+
 test("目标格本身被占：提前短路返回 null", () => {
   const start: Position = [0, 0];
   const target: Position = [5, 0];
