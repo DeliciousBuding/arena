@@ -285,7 +285,7 @@ func TestNewClientRejectsInvalidParameters(t *testing.T) {
 		{APIKey: testAPIKey, ReconnectMinDelay: -time.Second},
 		{APIKey: testAPIKey, ReconnectMaxDelay: time.Second, ReconnectMinDelay: 2 * time.Second},
 		{APIKey: testAPIKey, HandshakeTimeout: -time.Second},
-		{APIKey: testAPIKey, MaxMessageSize: 0},
+		{APIKey: testAPIKey, MaxMessageSize: -1},
 	}
 	for _, config := range invalid {
 		if _, err := NewClient(config); err == nil {

@@ -115,9 +115,6 @@ func applyConfigDefaults(config Config) Config {
 	if config.HandshakeTimeout == 0 {
 		config.HandshakeTimeout = defaultHandshakeTimeout
 	}
-	if config.MaxMessageSize == 0 {
-		config.MaxMessageSize = defaultMaxMessageSize
-	}
 	return config
 }
 
@@ -293,10 +290,13 @@ func (c *ArenaHeroClient) eventLoop(ctx context.Context, ch chan<- Event) {
 		if streamCtx.Err() != nil {
 			return
 		}
-		conn, resp, err := websocket.Dial(streamCtx, c.wsURL, &websocket.DialOptions{
+		// 握手超时：超过 HandshakeTimeout 视为连接失败进入重连。
+		dialCtx, dialCancel := context.WithTimeout(streamCtx, c.config.HandshakeTimeout)
+		conn, resp, err := websocket.Dial(dialCtx, c.wsURL, &websocket.DialOptions{
 			HTTPClient: c.httpClient,
 			HTTPHeader: c.authHeaders(),
 		})
+		dialCancel()
 		if err != nil {
 			if streamCtx.Err() != nil {
 				return
