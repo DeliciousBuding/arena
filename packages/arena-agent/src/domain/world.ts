@@ -10,6 +10,10 @@ const TRANSIENT_MOVE_FAILURE_REASONS = new Set([
   "CELL_UNIT_LIMIT",
 ]);
 
+/** 资源记忆 TTL：stale/harvested 超过 64 ticks（≈4 个 refill 周期）删除，
+ *  防"幽灵资源"——记忆中的资源格实际已被采空/不再 refill。 */
+const RESOURCE_MEMORY_TTL_TICKS = 64;
+
 export interface ResourceMemory {
   readonly cell: Position;
   state: ResourceState;
@@ -61,8 +65,23 @@ export class World {
   private readonly failedCells = new Map<string, number>();
   private readonly unitMoveFailures = new Map<string, Map<string, number>>();
   private readonly unitMemories = new Map<string, UnitMemory>();
+  /** 世界重置计数（tick 回退检测触发；决策层 telemetry/测试可读）。 */
+  worldResetCount = 0;
+  /** 最近一次世界重置发生时的 tick（从未重置 = null）。 */
+  lastWorldResetTick: number | null = null;
 
   observe(state: TickState): void {
+    // 世界重置检测：tick 回退（服务器世界重置/异常）→ 全清本地记忆，避免幽灵障碍/资源
+    if (this.tick > state.tick) {
+      this.obstacleMemory.clear();
+      this.resourceMemory.clear();
+      this.enemyMemory.clear();
+      this.failedCells.clear();
+      this.unitMoveFailures.clear();
+      this.unitMemories.clear();
+      this.worldResetCount += 1;
+      this.lastWorldResetTick = state.tick;
+    }
     this.tick = state.tick;
     for (const cell of state.obstacleCells) this.obstacleMemory.add(cell);
 
@@ -129,6 +148,15 @@ export class World {
     }
     for (const unitId of this.unitMoveFailures.keys()) {
       if (!liveUnits.has(unitId)) this.unitMoveFailures.delete(unitId);
+    }
+
+    // 资源记忆过期：stale/harvested 超过 TTL（≈4 个 refill 周期）删除——
+    // 若 refill 会重新可见（重新入记忆），未恢复说明已被采空/不再生成。
+    for (const [cell, memory] of this.resourceMemory) {
+      if (memory.state !== "visible" && state.tick - memory.lastSeenTick > RESOURCE_MEMORY_TTL_TICKS) {
+        this.resourceMemory.delete(cell);
+        this.failedCells.delete(cell);
+      }
     }
   }
 
