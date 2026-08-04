@@ -33,6 +33,8 @@
 | 2026-08-05 | t3 真机 shadow（50 tick 实验） | `runtime/t3/shadow-50t.log` + run-scoped telemetry | ⚠️ 判定修正：**无挂死**。服务器偶发停顿 30–90s 后自动恢复（v7/v8 完整收口证实） |
 | 2026-08-05 | t3 真机 shadow v7（25 tick） | `runtime/t3/shadow-25t-v7.log` + run-...193725 | ✅ **25/25 完整**：`tenant stopped ticks=25 submits=0 rejected=0 repaired=0`，干净退出 |
 | 2026-08-05 | t3 真机 shadow v8（20 tick，--log-file） | `runtime/t3/shadow-20t-v8.log` + run-...194013 | ✅ **20/20 完整**：`ticks=20 submits=0 rejected=0 repaired=0`；经历 2 次服务器停顿（含 90s）自动恢复；零缓冲日志与 decision.jsonl 交叉一致 |
+| 2026-08-05 | t4 固定策略实验 wt=2（shadow） | `runtime/t4/policy-wt2.log` + run-...194805 | ✅ **spawn 意图 0%**（7 tick；2 workers >= workerTarget=2 不 spawn）——workerTarget 接线验证 |
+| 2026-08-05 | t4 固定策略实验 wt=8（shadow） | `runtime/t4/policy-wt8.log` + run-...195009 | ✅ **spawn 意图 100%**（7 tick；2 workers < workerTarget=8 且 resources>=cost+reserve 持续 spawn）——**接线对比成立** |
 
 ## 差异日志（行为漂移唯一记录）
 
@@ -70,7 +72,10 @@
 - [x] 可观测性诊断链（`9653930`）：连接/消息/阶段计时/30s 静默栈 dump/
       --log-file 零缓冲日志
 - [x] 阶段 B 真机完整收口：v7 25/25 + v8 20/20 tick 零提交零 repair 干净退出
-- [ ] workerTarget=2/8/16 固定策略 shadow（Lane 2 后）
-- [ ] 3→10→30 tick bounded live（live 三件套已就绪）
+- [x] 固定策略接线验证（`b84a688`）：t4 wt=2 spawn 0% vs wt=8 spawn 100%
+      （workerTarget 参数真实驱动决策，config→planner→遥测全链路）
+- [x] ops health 检查（subagent lane，85% 覆盖）：env/配置/可写性/live 锁
+- [ ] sim 结算引擎（subagent 执行中）
+- [ ] 3→10→30 tick bounded live（live 三件套已就绪，待用户授权执行）
 - [ ] 统一固定 Policy TS/Go 交叉赛马（Canonical Policy 已定义）
 - [ ] 低频 LLM MacroPolicy 接线（最后）
