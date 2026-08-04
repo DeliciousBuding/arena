@@ -1030,3 +1030,40 @@ func TestSubmitLargeResponseRejected(t *testing.T) {
 		t.Fatalf("Submit err = %v, want TransportError", err)
 	}
 }
+
+// TestIdleTimeoutForcesReconnect 验证 idle watchdog：服务器接受连接后
+// 不再推送消息，静默超过 IdleTimeout 必须断流重连（真机"服务器停止
+// 推送但不关连接"场景的韧性保障）。
+func TestIdleTimeoutForcesReconnect(t *testing.T) {
+	fs := newFakeWSServer(t, testAPIKey, func(t *testing.T, index int, conn *websocket.Conn) {
+		// 连接建立后保持静默（不推任何消息）。
+	})
+	config := testConfig(fs.url())
+	config.IdleTimeout = 200 * time.Millisecond
+	config.ReconnectMinDelay = 50 * time.Millisecond
+	config.ReconnectMaxDelay = 100 * time.Millisecond
+	client, err := NewClient(config)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events := client.Events(ctx)
+	deadline := time.After(4 * time.Second)
+	for {
+		select {
+		case _, ok := <-events:
+			if !ok {
+				return // 流结束：不满足断言时 fail
+			}
+		case <-deadline:
+			conns := fs.connectionCount()
+			if conns < 2 {
+				t.Fatalf("idle watchdog did not force reconnect: connections = %d, want >= 2", conns)
+			}
+			return
+		}
+	}
+}
+

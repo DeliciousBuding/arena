@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -36,6 +37,7 @@ const (
 	defaultReconnectMaxDelay = 5 * time.Second
 	defaultHandshakeTimeout  = 15 * time.Second
 	defaultMaxMessageSize    = 2 * 1024 * 1024
+	defaultIdleTimeout       = 60 * time.Second
 
 	eventBufferSize = 16
 )
@@ -81,6 +83,10 @@ type Config struct {
 	HandshakeTimeout time.Duration
 	// MaxMessageSize 是 WS 单条消息与提交响应体的上限。
 	MaxMessageSize int64
+	// IdleTimeout 是事件流静默阈值：超过该时长未收到任何消息视为
+	// 断流，强制关闭连接并进入重连（服务器可能停止推送但不关连接）。
+	// 0 表示禁用 watchdog（测试/调试用）；默认 60s。
+	IdleTimeout time.Duration
 	// Logger 是可选的调试日志（nil 时静默）；用于观察连接/
 	// 重连/断流事件，不影响任何行为语义。
 	Logger *slog.Logger
@@ -97,6 +103,7 @@ func DefaultConfig(apiKey string) Config {
 		ReconnectMaxDelay: defaultReconnectMaxDelay,
 		HandshakeTimeout:  defaultHandshakeTimeout,
 		MaxMessageSize:    defaultMaxMessageSize,
+		IdleTimeout:       defaultIdleTimeout,
 	}
 }
 
@@ -374,11 +381,39 @@ func (c *ArenaHeroClient) logDebug(msg string, args ...any) {
 func (c *ArenaHeroClient) readLoop(ctx context.Context, conn *websocket.Conn, ch chan<- Event) (websocket.StatusCode, error) {
 	var currentTick int
 	haveTick := false
+
+	// idle watchdog：服务器可能停止推送但不关闭连接（真机观察到的
+	// 现象），静默超过 IdleTimeout 视为断流，强制关闭连接触发重连。
+	var lastReadAt atomic.Int64
+	lastReadAt.Store(time.Now().UnixNano())
+	if c.config.IdleTimeout > 0 {
+		stopWatchdog := make(chan struct{})
+		defer close(stopWatchdog)
+		go func() {
+			ticker := time.NewTicker(c.config.IdleTimeout / 4)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopWatchdog:
+					return
+				case <-ticker.C:
+					last := lastReadAt.Load()
+					if last > 0 && time.Since(time.Unix(0, last)) > c.config.IdleTimeout {
+						c.logDebug("ws idle timeout, forcing reconnect", "idleTimeout", c.config.IdleTimeout)
+						_ = conn.CloseNow()
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	for {
 		messageType, data, err := conn.Read(ctx)
 		if err != nil {
 			return websocket.CloseStatus(err), err
 		}
+		lastReadAt.Store(time.Now().UnixNano())
 		if messageType != websocket.MessageText {
 			return websocket.StatusCode(-1), newProtocolError("the server sent a binary WebSocket message")
 		}
