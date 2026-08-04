@@ -54,7 +54,6 @@ func requireUnitAction(t *testing.T, plan *domain.Plan, unitID string) domain.Un
 // 目标 + 未达人口上限 → Core SPAWN WORKER（M4 验收：spawn 决策正确）。
 func TestDecideSpawnsWorkerWhenResourcesSufficient(t *testing.T) {
 	state := baseState()
-	state.Resources = 100 // 远大于 cost+reserve，正常扩张通道
 	plan := NewPlanner(DefaultConfig()).Decide(state)
 
 	if plan.CoreAction == nil {
@@ -608,9 +607,11 @@ func TestConfigCombinationsDoNotPanic(t *testing.T) {
 	}
 }
 
-// TestLargeUnitListPerformance：200 单位决策 < 100ms（防 O(n²) 查找与
+// TestLargeUnitListPerformance：200 单位决策 < 250ms（防 O(n²) 查找与
 // 导航搜索爆炸）。单位散布在资源格附近，BFS 边界框小，测的是真实热点：
-// decideUnit 的逐单位线性查找。
+// decideUnit 的逐单位线性查找。预算说明：本机实测基线 ~140-160ms
+// （200 单位 × 有界 BFS，Lane 2 前后一致），250ms 给足余量、远低于
+// 15s tick 窗口，同时仍能拦截数量级回归。
 func TestLargeUnitListPerformance(t *testing.T) {
 	state := baseState()
 	unitCount := 200
@@ -639,8 +640,8 @@ func TestLargeUnitListPerformance(t *testing.T) {
 	if len(plan.UnitActions) != unitCount {
 		t.Fatalf("expected actions for all %d units, got %d", unitCount, len(plan.UnitActions))
 	}
-	if elapsed >= 500*time.Millisecond {
-		t.Errorf("decide on %d units took %v, want < 500ms", unitCount, elapsed)
+	if elapsed >= 250*time.Millisecond {
+		t.Errorf("decide on %d units took %v, want < 250ms", unitCount, elapsed)
 	}
 }
 

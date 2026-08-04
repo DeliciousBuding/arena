@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -58,14 +59,33 @@ type Loop struct {
 // Run 运行循环直到 ctx 取消或达到 MaxTicks。
 // 每收到 state 事件：reduce → world observe → decide → validate →
 // （live 时）submit。事件流异常终止（携带错误）时向上返回错误。
+// 30s 无任何事件时 dump 全 goroutine 栈（诊断静默挂起：readLoop/
+// watchdog/消费者卡点一目了然）。
 func (l *Loop) Run(ctx context.Context) error {
 	events := l.Client.Events(ctx)
+	idleDump := time.NewTimer(30 * time.Second)
+	defer idleDump.Stop()
+	resetIdleDump := func() {
+		if !idleDump.Stop() {
+			select {
+			case <-idleDump.C:
+			default:
+			}
+		}
+		idleDump.Reset(30 * time.Second)
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-idleDump.C:
+			buf := make([]byte, 64<<10)
+			n := runtime.Stack(buf, true)
+			l.Logger.Warn("loop idle 30s, dumping goroutine stacks", "stack", string(buf[:n]))
+			idleDump.Reset(30 * time.Second)
 		case event, ok := <-events:
+			resetIdleDump()
 			if !ok {
 				if err := l.Client.Err(); err != nil {
 					return fmt.Errorf("game event stream ended: %w", err)
@@ -96,17 +116,27 @@ func (l *Loop) handleState(ctx context.Context, state *contracts.PlayerState) er
 		return nil // 尚未收到 tick 信封，等待
 	}
 
+	stepStart := time.Now()
+	step := func(name string) {
+		l.Logger.Debug("handleState step", "tick", tick, "step", name, "elapsed_ms", time.Since(stepStart).Milliseconds())
+	}
+
 	tickState, err := domain.Reduce(state, int(tick))
 	if err != nil {
 		return fmt.Errorf("reduce tick state: %w", err)
 	}
+	step("reduce")
 
 	if l.World != nil {
 		l.World.Observe(tickState)
 	}
+	step("observe")
 
 	plan := l.Planner.Decide(tickState)
+	step("decide")
+
 	validation := domain.ValidatePlan(tickState, *plan)
+	step("validate")
 	if validation.Repaired {
 		l.Stats.RepairedPlans.Add(1)
 	}

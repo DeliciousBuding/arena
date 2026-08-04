@@ -389,6 +389,7 @@ func (c *ArenaHeroClient) readLoop(ctx context.Context, conn *websocket.Conn, ch
 	if c.config.IdleTimeout > 0 {
 		stopWatchdog := make(chan struct{})
 		defer close(stopWatchdog)
+		c.logDebug("ws idle watchdog armed", "idleTimeout", c.config.IdleTimeout)
 		go func() {
 			ticker := time.NewTicker(c.config.IdleTimeout / 4)
 			defer ticker.Stop()
@@ -414,6 +415,7 @@ func (c *ArenaHeroClient) readLoop(ctx context.Context, conn *websocket.Conn, ch
 			return websocket.CloseStatus(err), err
 		}
 		lastReadAt.Store(time.Now().UnixNano())
+		c.logDebug("ws message", "type", messageType, "bytes", len(data))
 		if messageType != websocket.MessageText {
 			return websocket.StatusCode(-1), newProtocolError("the server sent a binary WebSocket message")
 		}

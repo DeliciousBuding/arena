@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -43,6 +44,7 @@ func runTenantCmd(args []string) int {
 	maxTicks := fs.Int("max-ticks", 0, "stop after N processed ticks (0 = unlimited)")
 	baseURL := fs.String("base-url", "", "override game server base URL")
 	debug := fs.Bool("debug", false, "enable debug logging (per-tick and reconnect)")
+	logFile := fs.String("log-file", "", "write logs to file (direct, no shell redirection buffering)")
 	if err := fs.Parse(args); err != nil {
 		return exitConfig
 	}
@@ -81,7 +83,19 @@ func runTenantCmd(args []string) int {
 	if *debug {
 		logLevel = slog.LevelDebug
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+	logSink := io.Writer(os.Stderr)
+	var logFileHandle *os.File
+	if *logFile != "" {
+		var err error
+		logFileHandle, err = os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "arena tenant: open log file: %v\n", err)
+			return exitError
+		}
+		logSink = logFileHandle
+		defer logFileHandle.Close()
+	}
+	logger := slog.New(slog.NewTextHandler(logSink, &slog.HandlerOptions{Level: logLevel}))
 
 	// 遥测与 manifest（baseDir 下 tenant 目录，gitignored）。
 	baseDir := configFile.BaseDir
