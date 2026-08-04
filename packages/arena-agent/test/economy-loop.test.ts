@@ -207,3 +207,24 @@ test("空载单位占 Core 格仍阻塞 SPAWN（容量安全）", () => {
   assert.notEqual(plan.coreAction?.type, "SPAWN", "空载占位仍应抑制 SPAWN");
 });
 
+test("回仓绕行：满载 Worker 回 Core 路径上的敌方格并入障碍（不 capacity_wait 死锁）", () => {
+  const planner = new DeterministicPlanner();
+  // 生产实测：w1 满载在 [-316,57]（dist 32），回 Core 直线路径被敌方 Worker
+  // 占位 → 容量裁决保守拒绝 → capacity_wait:DEPOSIT 永久等待。修复：敌方格
+  // 并入绕行障碍，回仓路线自动绕开。
+  const state: TickState = {
+    ...makeState(100, [coreObj, unit("w1", 16, 0, "WORKER", 1)]),
+    resourceCells: new Set<string>(),
+    visibleEnemies: [
+      { id: "enemy1", kind: "UNIT", position: [15, 0], hp: 2, unitType: "WORKER", ownerUsername: "enemy" },
+    ],
+  };
+  const plan = planner.decide({ state, policy: POLICY });
+  const action = plan.unitActions["w1"];
+  assert.equal(action?.type, "MOVE", "回仓路径被敌占时绕行而非等待");
+  const destination: Position = action?.type === "MOVE"
+    ? action.direction === "UP" ? [16, -1] : action.direction === "DOWN" ? [16, 1] : action.direction === "LEFT" ? [15, 0] : [17, 0]
+    : [0, 0];
+  assert.notDeepEqual(destination, [15, 0], "不得走入敌方格");
+});
+

@@ -407,9 +407,16 @@ export class DeterministicPlanner implements PlanProvider {
     if (unit === undefined) {
       return { type: "WAIT" };
     }
+    // 敌方格并入绕行障碍（生产实测：满载 Worker 回仓路线被敌方单位占位时，
+    // 容量裁决保守拒绝 → capacity_wait:DEPOSIT 永久等待）。Worker 不主动进敌
+    // 方格，路线绕行而非等待。
+    const avoidCells = new Set(snapshot.obstacleCells);
+    for (const enemy of snapshot.enemyUnits) {
+      avoidCells.add(cellKey(enemy.position));
+    }
     const movementObstacles = this.fallbackPlanner.world.movementObstacles(
       assignment.unitId,
-      snapshot.obstacleCells,
+      avoidCells,
     );
     const task = assignment.task;
     switch (task.type) {
