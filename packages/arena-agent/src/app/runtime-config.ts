@@ -55,6 +55,24 @@ export const RuntimeConfigSchema = Type.Object(
     costLimitUsd: Type.Optional(Type.Number({ minimum: 0 })),
     /** 低频 MacroPolicy 策略决策周期（ticks，缺省 32；0/缺省 = 不启用策略层）。 */
     policyIntervalTicks: Type.Optional(Type.Integer({ minimum: 1 })),
+    /** 固定策略覆盖（实验框架）：非空时绕过 LLM 决策，恒用该策略
+     *  （posture/workerTarget/militaryRatio/focusRegion/attackPriority 全量）。 */
+    policyOverride: Type.Optional(
+      Type.Object(
+        {
+          posture: Type.Union([Type.Literal("harvest"), Type.Literal("balanced"), Type.Literal("aggressive")]),
+          workerTarget: Type.Integer({ minimum: 1, maximum: 16 }),
+          militaryRatio: Type.Number({ minimum: 0, maximum: 1 }),
+          focusRegion: Type.Union([Type.Null(), Type.Tuple([Type.Integer(), Type.Integer()])]),
+          attackPriority: Type.Union([
+            Type.Null(),
+            Type.Literal("core"),
+            Type.Literal("workers"),
+          ]),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     /** Pi/Provider 熔断器（Track B）：连续失败阈值 + open 冷却时长。 */
     circuitBreaker: Type.Optional(
       Type.Object(
