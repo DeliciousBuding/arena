@@ -12,7 +12,6 @@
     "schema:check": "node packages/arena-hero-ts/scripts/generate-schemas.mjs && git diff --exit-code -- packages/arena-hero-ts/contracts/",
     "replay:ts": "npx tsx packages/arena-agent/scripts/replay-ts.ts --manifest fixtures/differential/burnin-20260802-a/manifest.json --fixture-dir fixtures/differential/burnin-20260802-a --out /tmp/replay-ts.jsonl",
     "arena:supervisor": "tsx packages/arena-agent/src/cli/run-supervisor.ts",
-    "replay:check": "npx tsx packages/arena-agent/scripts/replay-ts.ts --manifest fixtures/differential/burnin-20260802-a/manifest.json --fixture-dir fixtures/differential/burnin-20260802-a --out /tmp/replay-ts.jsonl",
     "server:healthcheck": "node scripts/server/healthcheck.mjs",
     "server:check": "node scripts/server/verify-deployment.mjs"
   },

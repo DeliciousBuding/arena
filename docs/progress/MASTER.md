@@ -36,15 +36,10 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 
 ## 自动化证据
 
-- SDK：53/53；
-- arena-agent：495/495（含锁 PID 复用回归 +3、Runtime-Golden 覆盖工具 +2）；
-- Supervisor Windows：19/19；
-- Linux Node 24 定向：86/86；
-- schema：6；
+- SDK、arena-agent、schema、Python 模块计数：`docs/generated/status.md`（唯一生成源，勿手改；arena-agent 495 含锁 PID 复用回归与 Runtime-Golden 覆盖工具用例）；
+- Supervisor Windows：19/19；Linux Node 24 定向：86/86（专项跑测记录，非 status.md 覆盖项）；
 - TS replay：100 records；
 - simulator economy 10,000 Tick 与 movement 随机 10,000 cases invariant 通过。
-
-测试数的唯一生成源是 `docs/generated/status.md`。
 
 ## 真机证据边界
 

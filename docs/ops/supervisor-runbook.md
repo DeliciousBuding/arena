@@ -4,6 +4,7 @@
 
 ## 1. 前置条件
 
+- 首次克隆：`runtime/` 不入 git，先从 `deploy/systemd/tenant-config.json.example` 复制出 `runtime/configs/t1.json`（t2–t4 按需复制），并设置 token env；
 - Node.js 24；
 - `npm ci`、`npm run check`、`npm test` 全绿；
 - `runtime/configs/t1.json` 等文件只包含 env 名，不包含 token 值；

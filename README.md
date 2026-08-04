@@ -67,6 +67,10 @@ npm run arena:supervisor -- \
   --configs=t1,t2,t3,t4 --mode=deterministic --shadow --port=8120
 ```
 
+> 首次克隆：`runtime/` 不入 git，先复制模板再运行：
+> `cp deploy/systemd/tenant-config.json.example runtime/configs/t1.json`（t2–t4 按需复制），
+> token 值放 `.env` / `.env.local` / `~/.secrets/arena.env`。
+
 只有取得明确真机授权、doctor 通过并确认无第二 writer 后，才可增加 `--live` 和有界 `--live-ticks=N`。
 
 ## 观测
