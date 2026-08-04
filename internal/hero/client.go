@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	mrand "math/rand"
 	"net/http"
 	"net/url"
@@ -80,6 +81,9 @@ type Config struct {
 	HandshakeTimeout time.Duration
 	// MaxMessageSize 是 WS 单条消息与提交响应体的上限。
 	MaxMessageSize int64
+	// Logger 是可选的调试日志（nil 时静默）；用于观察连接/
+	// 重连/断流事件，不影响任何行为语义。
+	Logger *slog.Logger
 }
 
 // DefaultConfig 返回默认配置（与 hero SDK buildConfig 默认值一致）。
@@ -312,6 +316,7 @@ func (c *ArenaHeroClient) eventLoop(ctx context.Context, ch chan<- Event) {
 			} else {
 				sleepFor = jitter(delay)
 			}
+			c.logDebug("ws dial failed, reconnecting", "delay", sleepFor, "err", err)
 			if !c.sleep(streamCtx, sleepFor) {
 				return
 			}
@@ -321,9 +326,11 @@ func (c *ArenaHeroClient) eventLoop(ctx context.Context, ch chan<- Event) {
 		conn.SetReadLimit(c.config.MaxMessageSize)
 		c.setConn(conn)
 		delay = c.config.ReconnectMinDelay
+		c.logDebug("ws connected")
 
 		closeStatus, readErr := c.readLoop(streamCtx, conn, ch)
 		c.clearConn(conn)
+		c.logDebug("ws read ended", "closeStatus", closeStatus, "err", readErr)
 		if closeStatus == websocket.StatusNormalClosure {
 			_ = conn.Close(websocket.StatusNormalClosure, "")
 		} else {
@@ -341,6 +348,7 @@ func (c *ArenaHeroClient) eventLoop(ctx context.Context, ch chan<- Event) {
 		}
 		switch closeStatus {
 		case websocket.StatusNormalClosure:
+			c.logDebug("ws closed normal, stream ends")
 			return // 服务端正常结束：不重连
 		case websocket.StatusPolicyViolation:
 			c.setErr(&PolicyViolationError{msg: "WebSocket closed with 1008 Policy Violation"})
@@ -351,6 +359,13 @@ func (c *ArenaHeroClient) eventLoop(ctx context.Context, ch chan<- Event) {
 			return
 		}
 		delay = min(delay*2, c.config.ReconnectMaxDelay)
+	}
+}
+
+// logDebug 输出调试日志（Config.Logger 为 nil 时静默）。
+func (c *ArenaHeroClient) logDebug(msg string, args ...any) {
+	if c.config.Logger != nil {
+		c.config.Logger.Debug(msg, args...)
 	}
 }
 

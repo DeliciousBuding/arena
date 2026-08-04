@@ -40,6 +40,7 @@ func runTenantCmd(args []string) int {
 	live := fs.Bool("live", false, "submit real plans (requires explicit approval)")
 	maxTicks := fs.Int("max-ticks", 0, "stop after N processed ticks (0 = unlimited)")
 	baseURL := fs.String("base-url", "", "override game server base URL")
+	debug := fs.Bool("debug", false, "enable debug logging (per-tick and reconnect)")
 	if err := fs.Parse(args); err != nil {
 		return exitConfig
 	}
@@ -68,7 +69,11 @@ func runTenantCmd(args []string) int {
 		return exitConfig
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logLevel := slog.LevelInfo
+	if *debug {
+		logLevel = slog.LevelDebug
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
 
 	// 遥测与 manifest（baseDir 下 tenant 目录，gitignored）。
 	baseDir := configFile.BaseDir
@@ -84,6 +89,7 @@ func runTenantCmd(args []string) int {
 	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102T150405"))
 
 	heroConfig := hero.DefaultConfig(apiKey)
+	heroConfig.Logger = logger
 	if *baseURL != "" {
 		heroConfig.BaseURL = *baseURL
 	}

@@ -27,7 +27,8 @@
 
 | 日期 | 步骤 | 证据（run/manifest/JSONL 路径） | 结果 |
 |---|---|---|---|
-| — | — | — | — |
+| 2026-08-05 | t3 真机 shadow（首轮，10 tick） | `runtime/t3/telemetry/{runtime,decision}.jsonl` | ✅ 连接成功，tick 52455–52460 连续处理，每 tick 1 action + core，全部 valid、0 repair；进程在 6 tick 后结束（无 stopped 日志，疑正常断流，待 debug 轮确认） |
+| 2026-08-05 | t3 真机 shadow（debug 轮，12 tick） | `runtime/t3/shadow-debug.log` + `runtime/t3/telemetry/decision.jsonl` | 🔄 运行中：tick 52464+ 每 ~15s 稳定推进（见差异日志/运行观察） |
 
 ## 差异日志（行为漂移唯一记录）
 
