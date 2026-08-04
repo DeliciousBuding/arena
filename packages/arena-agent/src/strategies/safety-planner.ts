@@ -27,6 +27,8 @@ import { countEnemiesNearCore } from "../domain/plan-validator.ts";
 import { PhaseMachine, type PhaseConfig } from "../domain/phase-machine.ts";
 import { World } from "../domain/world.ts";
 
+export type AggressionLevel = "defensive" | "aggressive";
+
 export interface SafetyPlannerConfig {
   readonly reserveWealthy: number;
   readonly reserveEarly: number;
@@ -39,6 +41,13 @@ export interface SafetyPlannerConfig {
   readonly guardResources: number;
   readonly guardForce: number;
   readonly phase?: PhaseConfig;
+  /**
+   * 战斗激进级别（默认 defensive，与历史行为一致）：
+   * - defensive：Vanguard 仅在邻近威胁时应对，靠近 Core 留守；
+   * - aggressive：Vanguard 前压攻坚（优先敌人 Core），Ranger 优先断敌经济
+   *   （射 WORKER）并保持射程站定。
+   */
+  readonly aggression?: AggressionLevel;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -52,6 +61,12 @@ export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
   accumulateTarget: 0,
   guardResources: 30,
   guardForce: 4,
+});
+
+/** 激进战斗配置：完整默认值 + aggressive 战斗行为（供 tenant-runtime 注入）。 */
+export const AGGRESSIVE_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
+  ...DEFAULT_SAFETY_CONFIG,
+  aggression: "aggressive",
 });
 
 export interface SafetyPlannerInput {
@@ -247,6 +262,18 @@ export class SafetyPlanner {
       return;
     }
 
+    if (this.config.aggression === "aggressive") {
+      // 激进：主动前压。敌人 Core 是最高价值目标（拆 Core 掠夺资源，v0.9
+      // capture）；否则追击最近可见敌人。不再因靠近自家 Core 而留守。
+      const enemyCore = enemies.find((enemy) => enemy.kind === "CORE");
+      const target = enemyCore?.position ?? nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+      if (target !== null && !samePosition(unit.position, target)) {
+        const direction = stepToward(unit.position, target, movementObstacles);
+        if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_pressure");
+      }
+      return;
+    }
+
     const nearby = enemies.filter((enemy) => manhattan(unit.position, enemy.position) <= 4);
     if (
       nearby.length > 0 &&
@@ -273,8 +300,12 @@ export class SafetyPlanner {
   ): void {
     const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
 
-    // Precision shot at a visible enemy in range.
-    const target = enemies.find((enemy) => canShoot(unit.position, enemy.position, obstacles));
+    // Precision shot at a visible enemy in range. Aggressive mode prioritizes
+    // enemy Workers to cut their economy (cargo never reaches their Core).
+    const inRange = enemies.filter((enemy) => canShoot(unit.position, enemy.position, obstacles));
+    const target = this.config.aggression === "aggressive"
+      ? inRange.sort(aggressiveShotPriority)[0]
+      : inRange[0];
     if (target !== undefined) {
       set(unit, { type: "SHOOT", targetId: target.id, expectedCell: target.position }, "shoot");
       return;
@@ -300,8 +331,14 @@ export class SafetyPlanner {
       ? nearestEnemy(enemies, unit.position)?.position ?? null
       : state.core?.position ?? null;
     if (moveTarget !== null && !samePosition(unit.position, moveTarget)) {
-      const direction = stepToward(unit.position, moveTarget, movementObstacles);
-      if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_move");
+      // 激进：保持 1-3 射程站定，不冲脸（近身会让 Ranger 失去射程优势且易被
+      // SWEEP）。已在射程内但没有合法射击目标（被障碍挡住）时原地待机。
+      const distance = manhattan(unit.position, moveTarget);
+      const keepRange = this.config.aggression === "aggressive" && distance <= 3;
+      if (!keepRange) {
+        const direction = stepToward(unit.position, moveTarget, movementObstacles);
+        if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_move");
+      }
     }
   }
 
@@ -352,6 +389,17 @@ function nearestEnemy(enemies: readonly VisibleEntity[], position: Position): Vi
   return [...enemies].sort(
     (a, b) => manhattan(position, a.position) - manhattan(position, b.position) || a.id.localeCompare(b.id),
   )[0] ?? null;
+}
+
+/** 激进射击目标优先级：断敌经济（WORKER）优先，其次远程单位，最后 Core。
+ *  排序稳定：同优先级按 raw id 字典序（nearestEnemy 的调用方约束）。 */
+function aggressiveShotPriority(a: VisibleEntity, b: VisibleEntity): number {
+  return shotTargetRank(a) - shotTargetRank(b) || a.id.localeCompare(b.id);
+}
+
+function shotTargetRank(enemy: VisibleEntity): number {
+  if (enemy.kind === "CORE") return 3;
+  return enemy.unitType === "WORKER" ? 0 : enemy.unitType === "RANGER" ? 1 : 2;
 }
 
 function canShoot(from: Position, target: Position, obstacles: ReadonlySet<string>): boolean {
