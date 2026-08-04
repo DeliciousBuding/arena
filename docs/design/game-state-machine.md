@@ -32,7 +32,7 @@
 | RESPAWNING → RESPAWNING | respawn 延迟 | 放置格被占/无可选格 | respawnAtTick += 1 | `RESPAWN_DELAYED` |
 
 **关键规则（2026-08-04 与上游 game-rules.md 核对，§9 + v0.12）**：
-- respawn 放置：距最近活 Core 20-30 Manhattan 的合法格（确定性选择）
+- respawn 放置：距相邻活 Core 20-30 Manhattan 的合法格（确定性选择）
 - respawn 起始：1 Worker + Core 满血满盾；**起始资源 = 5**
 - SELF_DESTRUCT 摧毁走**正常 respawn 流**（同 Tick）
 
