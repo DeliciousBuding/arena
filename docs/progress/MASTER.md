@@ -49,6 +49,8 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 4. **v0.2.6 敌格绕行**：敌方格并入 `taskAction` 绕行障碍，回仓/采集路径自动绕开敌占格。
 5. **v0.2.7 半径受限确定性 BFS**：`nav.stepTowardPath`（半径 24/预算 4096/3× 距离剪枝）——旧扩框 BFS 在敌群围堵时走出包围盒或给出必被容量拒绝的 MOVE；新 BFS 局部绕行输出第一步，`stepToward` = 新 BFS → 旧扩框 BFS → fail-safe 回退链。另加容量预检：本 tick 已占满（≥2 实体）格并入绕行障碍（capacity_wait 循环的另一来源）。
 6. **v0.2.8 敌方 CORE 并入障碍**：`planning-snapshot.enemyCells`（全部可见敌人占用格，含敌方 CORE）——生产实测最后一层：w1 满载 @[-316,57] 被敌方 CORE @[-317,57] 挡在一步内，旧 avoidCells 只含 kind=UNIT 的敌方单位 → BFS 走被容量裁决拒绝的格 → capacity_wait 循环 300+ ticks。修复后生产验证：**maxDist 32→14 持续推进（w1 绕行回家）、capacity_wait 消失、DEPOSIT×2 正常回仓**。残余：w1 在敌区边缘 14-16 格徘徊（战场阻塞非死锁，BFS 剪枝 3× 放弃更长绕行——等敌群移动/清场，不调参防局部最优）。
+7. **v0.2.9 fail-safe 不横跳**：旧 fail-safe 在墙前选第一个非障碍方向（含远离目标方向）→ w1 在敌区边缘 12↔16 格来回横跳。修复：fail-safe 只走"离目标更近"的格，否则 WAIT（敌群/障碍会移动）。生产验证：w1 dist 12→9 持续推进、waitCount=0、tick 53441 cargoTot=0（300+ tick 死锁的满载 Worker 全部卸完）+ delta=+1——经济循环完全恢复。
+8. **v0.2.10 策略层清场证据**：生产 A/B 实测（500 ticks）——t2 aggressive 清场方资源均值 20 满仓 vs t1 defensive 被敌群压制 5（Worker 被赶远卡货、maxDistAvg 28.5 vs 1.9）。LLM 策略层 militaryRatio=0 不造兵 → 无清场能力 → 经济被压。policy prompt 注入军事价值证据，引导策略层产出合理 militaryRatio（执行层不变）。
 
 **检测设施（同步落地）**：
 - `stall detector`（v0.2.4+）：连续 16 ticks `delta=0 且满载滞留` → runtime.jsonl `stall_warning`（生产已触发 3 次，自动告警替代人工发现）。
