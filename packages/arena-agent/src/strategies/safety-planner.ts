@@ -86,6 +86,8 @@ export class SafetyPlanner {
   private effectiveAggression: AggressionLevel = "defensive";
   /** 本 decide 生效的 workerTarget（policy 优先，其次 config.workerTarget）。 */
   private effectiveWorkerTarget = 8;
+  /** 本 decide 生效的 policy（focusRegion/attackPriority 消费）。 */
+  private effectivePolicy: MacroPolicy | null = null;
 
   constructor(
     readonly config: SafetyPlannerConfig = DEFAULT_SAFETY_CONFIG,
@@ -97,6 +99,7 @@ export class SafetyPlanner {
 
   decide(input: SafetyPlannerInput): Plan {
     const { state } = input;
+    this.effectivePolicy = input.policy ?? null;
     this.effectiveAggression =
       input.policy !== undefined ? aggressionOf(input.policy) : (this.config.aggression ?? "defensive");
     this.effectiveWorkerTarget = input.policy?.workerTarget ?? this.config.workerTarget;
@@ -213,6 +216,15 @@ export class SafetyPlanner {
 
     memory.workerMode = "patrol";
     memory.harvestTarget = null;
+
+    // focusRegion：战略聚焦区优先于无差别巡逻（探索方向由策略层决定）
+    const focus = this.effectivePolicy?.focusRegion ?? null;
+    if (focus !== null && !samePosition(unit.position, focus)) {
+      const direction = stepToward(unit.position, focus, movementObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, "go_focus");
+      return;
+    }
+
     let target: Position | null = null;
     if (home !== null) {
       const beacon = state.beacon.position ?? home;
@@ -273,10 +285,19 @@ export class SafetyPlanner {
     }
 
     if (this.effectiveAggression === "aggressive") {
-      // 激进：主动前压。敌人 Core 是最高价值目标（拆 Core 掠夺资源，v0.9
-      // capture）；否则追击最近可见敌人。不再因靠近自家 Core 而留守。
-      const enemyCore = enemies.find((enemy) => enemy.kind === "CORE");
-      const target = enemyCore?.position ?? nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+      // 激进：主动前压。attackPriority 决定攻坚目标（v0.9 拆 Core 掠夺资源 vs
+      // 断敌经济）；无特攻目标时追击最近可见敌人。不再因靠近自家 Core 而留守。
+      const attackPriority = this.effectivePolicy?.attackPriority ?? null;
+      let target: Position | null = null;
+      if (attackPriority === "workers") {
+        const enemyWorker = enemies.find((enemy) => enemy.kind === "UNIT" && enemy.unitType === "WORKER");
+        target = enemyWorker?.position ?? nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+      } else if (attackPriority === "core") {
+        const enemyCore = enemies.find((enemy) => enemy.kind === "CORE");
+        target = enemyCore?.position ?? nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+      } else {
+        target = nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+      }
       if (target !== null && !samePosition(unit.position, target)) {
         const direction = stepToward(unit.position, target, movementObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_pressure");
@@ -292,9 +313,11 @@ export class SafetyPlanner {
     ) {
       return;
     }
+    // focusRegion：无敌人时朝策略聚焦区推进（侦察/占位），否则回 Core 或追击邻近敌人
+    const focus = this.effectivePolicy?.focusRegion ?? null;
     const target = nearby.length > 0
       ? nearestEnemy(nearby, unit.position)?.position ?? null
-      : state.core?.position ?? null;
+      : focus ?? state.core?.position ?? null;
     if (target !== null && !samePosition(unit.position, target)) {
       const direction = stepToward(unit.position, target, movementObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_move");
@@ -339,7 +362,7 @@ export class SafetyPlanner {
 
     const moveTarget = enemies.length > 0
       ? nearestEnemy(enemies, unit.position)?.position ?? null
-      : state.core?.position ?? null;
+      : this.effectivePolicy?.focusRegion ?? state.core?.position ?? null;
     if (moveTarget !== null && !samePosition(unit.position, moveTarget)) {
       // 激进：保持 1-3 射程站定，不冲脸（近身会让 Ranger 失去射程优势且易被
       // SWEEP）。已在射程内但没有合法射击目标（被障碍挡住）时原地待机。
