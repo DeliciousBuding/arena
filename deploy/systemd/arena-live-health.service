@@ -1,21 +1,12 @@
 [Unit]
-Description=Arena deterministic-live readiness check
+Description=Arena live readiness check (Docker)
 After=arena-supervisor-live.service
 OnFailure=arena-live-alert.service
 
 [Service]
 Type=oneshot
-User=arena
-Group=arena
-WorkingDirectory=/opt/arena/current
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/usr/bin:/bin
 Environment=ARENA_DEBUG_PORT=8120
-Environment=ARENA_RUNTIME_DIR=/var/lib/arena
-Environment=ARENA_MIN_FREE_BYTES=1073741824
 EnvironmentFile=-/etc/arena/health.env
-ExecStart=/usr/bin/env node scripts/server/healthcheck.mjs --skip-disk --systemd-unit=arena-supervisor-live.service --url=http://127.0.0.1:${ARENA_DEBUG_PORT}/ready
+ExecStart=/usr/bin/env bash /opt/arena/current/scripts/server/check-readiness.sh arena-supervisor-live.service live
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
