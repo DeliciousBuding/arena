@@ -46,18 +46,25 @@ def run(cmd: list[str], note: str) -> str:
     return proc.stdout
 
 
-def node_tap_counts(cmd: list[str], note: str) -> tuple[int, int, int]:
+def node_tap_counts(cmd: list[str], note: str) -> tuple[int, int, int, int]:
     output = run(cmd, note)
     def value(name: str) -> int:
         match = re.search(rf"^# {name} (\d+)", output, re.MULTILINE)
         if match is None:
             die(f"{note} 未找到 TAP 字段 # {name}")
         return int(match.group(1))
-    return value("tests"), value("pass"), value("fail")
+    tests = value("tests")
+    failed = value("fail")
+    # TAP 的 pass 计数不含 skipped；skipped 是显式跳过而非失败，跨平台（Windows/Linux
+    # 有无 /proc 等差异）会产生不同的 pass/skip 拆分。为了 status.md 在 Windows 与
+    # Ubuntu 上一致，pass 口径 = pass + skipped（= tests - fail）。
+    skipped = value("skipped")
+    passed = tests - failed
+    return tests, passed, failed, skipped
 
 
 def main() -> None:
-    sdk_tests, sdk_passed, sdk_failed = node_tap_counts(
+    sdk_tests, sdk_passed, sdk_failed, _sdk_skipped = node_tap_counts(
         [
             "node",
             "--experimental-transform-types",
@@ -67,7 +74,7 @@ def main() -> None:
         ],
         "SDK 测试",
     )
-    agent_tests, agent_passed, agent_failed = node_tap_counts(
+    agent_tests, agent_passed, agent_failed, _agent_skipped = node_tap_counts(
         [
             "npx.cmd" if sys.platform == "win32" else "npx",
             "tsx",
