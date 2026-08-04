@@ -15,7 +15,9 @@ Environment=PATH=/usr/bin:/bin
 EnvironmentFile=/etc/arena/arena.env
 EnvironmentFile=-/etc/arena/health.env
 # Docker CLI runs as root; the container itself drops to uid 1001 (arena) via compose.
-ExecStart=/usr/bin/docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml up live
+# --abort-on-container-exit --exit-code-from: propagate the container's exit code to
+# systemd so failures surface (live stays Restart=no, manual recovery).
+ExecStart=/usr/bin/docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml up --abort-on-container-exit --exit-code-from live live
 ExecStop=/usr/bin/docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml down
 Restart=no
 TimeoutStartSec=120

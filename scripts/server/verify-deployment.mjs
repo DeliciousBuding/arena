@@ -27,7 +27,7 @@ mustContain(shadowUnit, "RestartPreventExitStatus=64 78", "shadow wrapper errors
 mustContain(liveUnit, "Restart=no", "live service must not auto-restart before durable idempotency");
 mustNotContain(liveUnit, "Restart=on-failure", "live service must not inherit shadow restart policy");
 for (const [name, unit] of [["shadow", shadowUnit], ["live", liveUnit]]) {
-  mustContain(unit, "docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml up", `${name} service must start the Docker container`);
+  mustContain(unit, "docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml up --abort-on-container-exit --exit-code-from", `${name} service must propagate container exit codes to systemd`);
   mustContain(unit, "docker compose -f /opt/arena/current/deploy/docker/arena-compose.yml down", `${name} service must stop the Docker container`);
   mustContain(unit, "EnvironmentFile=/etc/arena/arena.env", `${name} service must use external secrets`);
 }
