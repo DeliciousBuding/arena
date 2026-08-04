@@ -137,3 +137,29 @@ test("守家锚点：Vanguard 无敌人时回防到 Core 相邻格而非 Core �
   assert.notDeepEqual(destination, [0, 0], "回防目标不得是 Core 格本身");
 });
 
+test("资源满破锁：满载 Worker 在 Core 格不阻塞 SPAWN（卸货等待非永久占位）", () => {
+  const planner = new DeterministicPlanner();
+  // 生产死锁闭环（2026-08-05 实测）：res=10 资源满 → resourceSpace=0 →
+  // DEPOSIT 被 validator 修复移除 → 满载 Worker 占 Core 格 → SPAWN 被
+  // unitsOnCore 抑制 → 资源永不消耗 → 永远满。修复：满载 Worker 不算占位，
+  // SPAWN 消耗资源后卸货通道恢复。
+  const state: TickState = {
+    ...makeState(100, [coreObj, unit("w1", 0, 0, "WORKER", 1), unit("w2", 5, 0, "WORKER", 1)]),
+    resourceCells: RESOURCE_CELLS,
+  };
+  const plan = planner.decide({ state, policy: POLICY });
+  assert.equal(plan.coreAction?.type, "SPAWN", "满载 Worker 在 Core 格不得阻塞补员（资源满死锁破除）");
+  assert.equal(plan.intents.core, "spawn_worker_target");
+});
+
+test("空载单位占 Core 格仍阻塞 SPAWN（容量安全）", () => {
+  const planner = new DeterministicPlanner();
+  // 空载 Worker 在 Core 格是正常占位（SPAWN 会叠加容量）——必须仍被抑制。
+  const state: TickState = {
+    ...makeState(100, [coreObj, unit("w1", 0, 0, "WORKER", 0), unit("w2", 5, 0, "WORKER", 1)]),
+    resourceCells: RESOURCE_CELLS,
+  };
+  const plan = planner.decide({ state, policy: POLICY });
+  assert.notEqual(plan.coreAction?.type, "SPAWN", "空载占位仍应抑制 SPAWN");
+});
+
