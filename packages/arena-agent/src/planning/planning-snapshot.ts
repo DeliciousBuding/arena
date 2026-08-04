@@ -40,6 +40,8 @@ export interface PlanningSnapshot {
   /** 当前资源余额。 */
   readonly resources: number;
   readonly resourceCapacity: number;
+  /** 剩余可卸货空间（DEPOSIT 合法性判断；0 = 资源满，卸货通道关闭）。 */
+  readonly resourceSpace: number;
   readonly population: number;
   /** 受控单位全量快照（planner 只取 WORKER 分配）。 */
   readonly units: readonly PlanningUnit[];
@@ -106,6 +108,7 @@ export function extractPlanningSnapshot(state: TickState): PlanningSnapshot {
     tick: state.tick,
     resources: state.resources,
     resourceCapacity: state.resourceCapacity,
+    resourceSpace: state.resourceSpace,
     population: state.population,
     units,
     resourceCells,

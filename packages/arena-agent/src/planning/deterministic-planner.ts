@@ -89,6 +89,20 @@ export function stepTowardAvoiding(from: Position, target: Position, obstacles: 
   return pathStepToward(from, target, obstacles);
 }
 
+/** 满载 Worker 资源满时让出 Core 格的移动方向：Core 四邻中第一个非障碍格
+ *  （确定性 UP→RIGHT→DOWN→LEFT，与守家锚点 homeCell 同序）。
+ *  资源满时 DEPOSIT 不合法，原地等待会永久占住 Core 格（SPAWN 被拒 → 资源
+ *  永不消耗 → 永远满）；让位后 SPAWN 消耗资源、卸货通道恢复，Worker 再回来。 */
+function yieldDirection(position: Position, obstacles: ReadonlySet<string>): Direction | null {
+  const order: readonly Direction[] = ["UP", "RIGHT", "DOWN", "LEFT"];
+  for (const direction of order) {
+    if (!obstacles.has(cellKey(stepCell(position, direction)))) {
+      return direction;
+    }
+  }
+  return null;
+}
+
 /**
  * 按服务端全局移动规则做客户端侧容量预裁决：单格最多 2 个占用实体；所有已选 MOVE
  * 先组成最终占用图，超容量格逐步淘汰最低优先级的到达动作，直到固定点。这样保留
@@ -411,7 +425,18 @@ export class DeterministicPlanner implements PlanProvider {
           return { type: "WAIT" };
         }
         if (unit.position[0] === core[0] && unit.position[1] === core[1]) {
-          return task.type === "DEPOSIT" ? { type: "DEPOSIT" } : { type: "WAIT" };
+          if (task.type === "RETURN_FOR_HEAL") {
+            return { type: "WAIT" };
+          }
+          if (snapshot.resourceSpace > 0) {
+            return { type: "DEPOSIT" };
+          }
+          // 资源满（resourceSpace=0）时 DEPOSIT 不合法（validator 会移除），
+          // 满载 Worker 若原地等待会永久占住 Core 格：SPAWN 被服务端容量拒、
+          // 资源永不消耗、永远满。让位到 Core 相邻格——SPAWN 成功后资源消耗、
+          // 卸货通道恢复，Worker 下一轮回来卸货（生产实测死锁闭环的根治）。
+          const leave = yieldDirection(unit.position, movementObstacles);
+          return leave === null ? { type: "WAIT" } : { type: "MOVE", direction: leave };
         }
         const direction = stepTowardAvoiding(unit.position, core, movementObstacles);
         return direction === null ? { type: "WAIT" } : { type: "MOVE", direction };
