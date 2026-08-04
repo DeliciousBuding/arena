@@ -33,8 +33,20 @@ export function canDeposit(unit: PlanningUnit, snapshot: PlanningSnapshot): bool
   return unit.cargo > 0 && snapshot.corePosition !== null;
 }
 
-/** 强制任务判定：命中 RP2 规则返回对应 Task，否则 null（走代价矩阵）。 */
+/** 强制任务判定：命中 RP2 规则返回对应 Task，否则 null（走代价矩阵）。
+ *  规则 0：与 GROUND Beacon 同格（且无人持有）→ PICKUP_BEACON。
+ *  只拾取"路径上恰好经过"的 Beacon，不派 Worker 专门去抢——采集优先级不被干扰，
+ *  行为保持确定性（同 Tick 同状态 → 同动作）。 */
 export function forcedTaskFor(unit: PlanningUnit, snapshot: PlanningSnapshot): Task | null {
+  const beacon = snapshot.beacon;
+  if (
+    unit.cargo === 0 &&
+    beacon.status === "GROUND" &&
+    beacon.carrierId === null &&
+    cellKey(unit.position) === cellKey(beacon.position)
+  ) {
+    return { type: "PICKUP_BEACON", target: beacon.position, targetCellKey: cellKey(beacon.position) };
+  }
   const core = snapshot.corePosition;
   if (unit.cargo > 0 && core !== null) {
     return { type: "DEPOSIT", target: core };
