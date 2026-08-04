@@ -88,10 +88,19 @@ MacroPolicy.focusRegion ──► Worker patrol 目标（go_focus，PR #20 已�
 - **做**：进程内 World 记忆 + 世界重置检测（tick 回退全清）
 - 理由：服务器是唯一权威；我们每 tick 都有完整可见 state 可重建记忆；持久化增加一致性负担且无净收益
 
+## 6b. 补充研究结论（2026-08-05 只读核对）
+
+- **stale 语义混淆（高优先）**：World 不维护视野区域，把"视野内 EMPTY"与"视野外未知"混为一谈。服务器可见格全集（`obstacleCells ∪ resourceCells ∪ 己方占位格 ∪ beacon 格`）中非资源格 = "确认 EMPTY"的零近似证据——资源被他人采空的确定性失效通道。
+- **HARVEST_FAILED 未按 reasonCode 分流**：`CARGO_FULL`（不代表格子无资源）也写失败冷却 → 应按 reasonCode 分流（RESOURCE_DEPLETED 才写负记忆）。
+- **HARVEST_SUCCEEDED 不写负记忆**：自采空格在 8 ticks 内会再次作为资源线索返回 → 自采成功应写 harvested 负记忆。
+- **refill 约束**：被确认耗尽的格可能在下个 4-tick cadence 原位重生成 → 负记忆 TTL 必须 ≥ 1 个 cadence（当前 64-tick TTL 满足）。
+- **MapStore 已实现但未连通**：`sharedObstacles`/`allyUsernames` 无生产者，arena_map 工具仍用每 Tick 冻结快照（切片 5 接入，红线内不做）。
+
 ## 7. 实施建议（优先级）
 
-1. **P0**：tick 单调检测 + 世界重置全清（世界状态完整性）
-2. **P0**：资源记忆过期（64-tick 窗口移除）——防幽灵资源
-3. **P1**：events 校正（HARVEST_FAILED RESOURCE_DEPLETED → 移除缓存）
-4. **P1**：go_focus 到达后转巡逻（探索效率）
-5. **P2**：军事单位巡逻贡献资源记忆（视野复用）
+1. **P0**：tick 单调检测 + 世界重置全清（世界状态完整性）——**已实施（#23）**
+2. **P0**：资源记忆过期（64-tick 窗口移除）——防幽灵资源——**已实施（#23）**
+3. **P1**：HARVEST_FAILED reasonCode 分流（CARGO_FULL 不写失败冷却；RESOURCE_DEPLETED 写负记忆）
+4. **P1**：HARVEST_SUCCEEDED 写 harvested 负记忆（自采空格不再作为资源线索）
+5. **P2**：go_focus 到达后转巡逻（探索效率）
+6. **P2**：军事单位巡逻贡献资源记忆（视野复用）
