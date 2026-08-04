@@ -181,3 +181,83 @@ test("S3: phase 内事件排序稳定（actorId 序，与对象插入顺序无�
     [low, high],
   );
 });
+
+test("S3 v0.12: Core SELF_DESTRUCT destroys fleet and respawns same Tick", () => {
+  // 需要第二个活 Core 作为 respawn 距离参照（P12 在 20-30 Manhattan 放置）
+  const world = worldFromScenario({
+    ...SCENARIO,
+    players: [
+      ...SCENARIO.players,
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: {
+          id: "44444444-4444-4444-4444-444444444444",
+          position: [50, 50],
+          hp: 5,
+          shield: 5,
+          state: "NORMAL",
+        },
+        units: [],
+      },
+    ],
+  });
+  const coreId = SCENARIO.players[0].core.id;
+  const workerId = SCENARIO.players[0].units[0].id;
+  const plan: Plan = {
+    tick: world.tick,
+    unitActions: {},
+    coreAction: { type: "SELF_DESTRUCT" },
+    intents: {},
+  };
+  const result = settleTick(world, new Map([["p1", plan]]), ctx);
+  const events = result.events;
+  // CORE_DESTROYED with reason SELF_DESTRUCT, no destroyed_by
+  const destroyed = events.find((e) => e.eventType === "CORE_DESTROYED" && e.actorId === coreId);
+  assert.ok(destroyed !== undefined);
+  assert.equal(destroyed.reasonCode, "SELF_DESTRUCT");
+  assert.equal(destroyed.values?.destroyed_by, undefined);
+  // Units removed; CORE_RESPAWNED appears (same-Tick respawn flow)
+  assert.ok(events.some((e) => e.eventType === "UNIT_SELF_DESTRUCTED" && e.actorId === workerId));
+  assert.ok(events.some((e) => e.eventType === "CORE_RESPAWNED"));
+  const player = result.world.players.get("p1")!;
+  assert.equal(player.status, "ACTIVE"); // respawned this Tick
+  assert.notEqual(player.core?.id, coreId); // fresh Core UUID
+  assert.equal(player.core?.hp, 5);
+  assert.equal(player.units.length, 1); // respawn Worker
+});
+
+test("S3 v0.12: Core SELF_DESTRUCT drops carried Beacon at Core cell", () => {
+  const world = worldFromScenario({
+    ...SCENARIO,
+    players: [
+      ...SCENARIO.players,
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: {
+          id: "44444444-4444-4444-4444-444444444444",
+          position: [50, 50],
+          hp: 5,
+          shield: 5,
+          state: "NORMAL",
+        },
+        units: [],
+      },
+    ],
+    beacon: { position: [0, 0], status: "CARRIED", carrierId: SCENARIO.players[0].core.id },
+  });
+  const plan: Plan = {
+    tick: world.tick,
+    unitActions: {},
+    coreAction: { type: "SELF_DESTRUCT" },
+    intents: {},
+  };
+  const result = settleTick(world, new Map([["p1", plan]]), ctx);
+  const beacon = result.world.beacon!;
+  assert.equal(beacon.status, "GROUND");
+  assert.deepEqual(beacon.position, [0, 0]); // dropped at Core position
+  assert.ok(result.events.some((e) => e.eventType === "BEACON_DROPPED_ON_DEATH"));
+});

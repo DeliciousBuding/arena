@@ -320,6 +320,18 @@
                       "const": "HEAL"
                     }
                   }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "SELF_DESTRUCT"
+                    }
+                  }
                 }
               ],
               "discriminator": "type"
