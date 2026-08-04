@@ -56,9 +56,11 @@ async function main(): Promise<void> {
 
   const serviceMode = values.shadow ? "shadow" : values.live ? "live" : process.env.ARENA_SERVICE_MODE;
   const tenantArgs: string[] = [];
-  if (serviceMode === "shadow") tenantArgs.push("--mode=deterministic", "--shadow");
-  if (serviceMode === "live") tenantArgs.push("--mode=deterministic", "--live");
-  if (values.mode !== undefined) tenantArgs.push(`--mode=${values.mode}`);
+  // 决策模式：显式 CLI --mode 优先；其次 ARENA_DECISION_MODE env（生产切
+  // Pi agent 用）；否则 live/shadow 沿用确定性兜底（历史行为，向后兼容）。
+  const decisionMode = values.mode ?? process.env.ARENA_DECISION_MODE ?? "deterministic";
+  if (serviceMode === "shadow") tenantArgs.push(`--mode=${decisionMode}`, "--shadow");
+  if (serviceMode === "live") tenantArgs.push(`--mode=${decisionMode}`, "--live");
   for (const [key, flag] of [
     ["live-ticks", "--live-ticks"],
     ["max-ticks", "--max-ticks"],
