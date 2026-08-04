@@ -7,6 +7,7 @@ config_dir="${ARENA_CONFIG_DIR:-/etc/arena/configs}"
 runtime_dir="${ARENA_RUNTIME_DIR:-/var/lib/arena}"
 configs="${ARENA_CONFIGS:-t1,t2,t3,t4}"
 debug_port="${ARENA_DEBUG_PORT:-8120}"
+debug_host="${ARENA_DEBUG_HOST:-}"
 shutdown_timeout_ms="${ARENA_SHUTDOWN_TIMEOUT_MS:-15000}"
 tsx_bin="$repo_root/node_modules/.bin/tsx"
 
@@ -40,6 +41,9 @@ args=(
 
 if [[ -n "${ARENA_STARTUP_SYNC_TICKS:-}" ]]; then
   args+=("--startup-sync-ticks=${ARENA_STARTUP_SYNC_TICKS}")
+fi
+if [[ -n "$debug_host" ]]; then
+  args+=("--debug-host=$debug_host")
 fi
 
 case "$mode" in

@@ -72,6 +72,7 @@ mustContain(compose, "cap_drop:\n      - ALL", "compose must drop all capabiliti
 mustContain(compose, "no-new-privileges:true", "compose must block privilege escalation");
 mustContain(compose, "restart: \"no\"", "compose must defer restart policy to systemd units");
 mustContain(compose, "user: \"1001:1001\"", "container must run as the arena uid");
+mustContain(compose, "ARENA_DEBUG_HOST", "compose must allow loopback-exposed debug host inside container");
 mustContain(compose, "127.0.0.1:8120:8120", "debug API must bind loopback only");
 mustContain(compose, "--skip-disk", "container healthcheck must not own the disk gate");
 mustNotContain(compose, "ARENA_HERO_API_KEY", "compose must not inline tenant secrets");
