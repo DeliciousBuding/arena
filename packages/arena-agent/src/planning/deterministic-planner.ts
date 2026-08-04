@@ -298,6 +298,11 @@ export function selectDeterministicCoreAction(
   return { action: null, intent: null };
 }
 
+export interface DeterministicPlannerInput {
+  readonly state: TickState;
+  readonly policy?: MacroPolicy;
+}
+
 export class DeterministicPlanner implements PlanProvider {
   private readonly planner: WorkerTaskPlanner;
   private readonly fallbackPlanner: SafetyPlanner;
@@ -316,7 +321,7 @@ export class DeterministicPlanner implements PlanProvider {
     this.patrolPlanner = patrolPlanner;
   }
 
-  decide(input: { readonly state: TickState; readonly policy?: MacroPolicy }): Plan {
+  decide(input: DeterministicPlannerInput): Plan {
     // SafetyPlanner 已包含跨 Tick World（障碍/资源线索/Worker 巡逻状态）。先生成完整
     // 基线计划，再用 WorkerTaskPlanner 覆盖可见资源的全局唯一分配。这样 deterministic
     // 不再是“看不到资源就 WAIT”的骨架，也不会复制第二套脆弱状态机。

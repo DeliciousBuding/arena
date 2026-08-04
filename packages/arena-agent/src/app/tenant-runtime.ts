@@ -53,6 +53,11 @@ import {
 
 export const RULES_VERSION = "v0.11";
 
+/** 经济停滞告警阈值：连续 N 个 tick 满载 Worker 无法回仓（delta=0 + cargoTot>0）即告警。
+ *  生产实测 t1 capacity_wait:DEPOSIT 死锁 60+ ticks 才被人工发现，16 ticks（≈2 个
+ *  MacroPolicy 周期）是"足够确认异常、又不会频繁误报"的折中。 */
+export const STALL_WARNING_TICKS = 16;
+
 /** safety 模式占位 runtime：coordinator 短路不会调用（P0-1），
  *  避免 Pi session 创建（模型认证）成为 safety Canary 的前置失败点。 */
 class NoopAgentRuntime implements AgentDecisionRuntime {
@@ -430,6 +435,8 @@ export async function runTenant(
     } = { prev: null };
     let processedTickCount = 0;
     let liveSubmitCount = 0;
+    // 经济停滞连续计数（cargo_blocked：delta=0 且满载 Worker 滞留；达阈值写 stall_warning）
+    let stallStreak = 0;
 
     const onTick = (outcome: TickOutcome): void => {
       const decision = outcome.decision;
@@ -530,6 +537,29 @@ export async function runTenant(
           events: outcome.state.events.map((e) => e.eventType),
         };
         outcomeWriter.write(outcomeRecord);
+        // 停滞检测（2026-08-05 生产死锁回归）：满载 Worker 长期无法回仓 DEPOSIT
+        // 时，coreResourceDelta 持续为 0 且 workerCargoTotal 持续 >0（t1 实测
+        // capacity_wait:DEPOSIT 死锁 60+ ticks 才被人工发现）。连续阈值达到即写
+        // runtime.jsonl 的 stall_warning 记录，供监控查询/人工介入，不等自然暴露。
+        const cargoBlocked = outcomeRecord.coreResourceDelta === 0 && (outcomeRecord.workerCargoTotal ?? 0) > 0;
+        stallStreak = cargoBlocked ? stallStreak + 1 : 0;
+        if (stallStreak === STALL_WARNING_TICKS) {
+          // stall_warning 是运行时健康事件（非 turn 级 runtime trace），走宽松
+          // append 流：不参与 TraceRecord schema 校验，监控直接查 runtime.jsonl。
+          appendJsonlLine(
+            join(dirs.telemetryDir, "runtime.jsonl"),
+            JSON.stringify(sanitizeValue({
+              processRunId,
+              tenantId: config.tenantId,
+              tick: outcome.tick,
+              telemetryType: "stall_warning",
+              stallKind: "cargo_blocked",
+              stallStreak,
+              workerCargoTotal: outcomeRecord.workerCargoTotal,
+              workersWithCargo: outcomeRecord.workersWithCargo,
+            })),
+          );
+        }
         // 经济趋势缓冲（策略 prompt 输入；保留最近 32 ticks）
         recentResourceDeltas.push(outcome.state.resources - holder.prev.resources);
         if (recentResourceDeltas.length > 32) recentResourceDeltas.shift();

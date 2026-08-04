@@ -315,11 +315,26 @@ export class SafetyPlanner {
     ) {
       return;
     }
-    // focusRegion：无敌人时朝策略聚焦区推进（侦察/占位），否则回 Core 或追击邻近敌人
+    // 守家/回防锚点 = Core 相邻格（绝不站 Core 格本身——Core 格是 Worker 回仓
+    // 通道，被军事单位长期占用会造成 capacity_wait:DEPOSIT 经济死锁，生产实测）。
+    const home = state.core === null ? null : homeCell(state.core.position, movementObstacles);
+    // 已在 Core 格且满血：移出到守家锚点（治疗是短时占格，治疗完必须让出回仓通道）
+    if (
+      state.core !== null &&
+      unit.hp >= UNIT_MAX_HP[unit.unitType] &&
+      samePosition(unit.position, state.core.position) &&
+      home !== null &&
+      !samePosition(unit.position, home)
+    ) {
+      const direction = stepToward(unit.position, home, movementObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_home");
+      return;
+    }
+    // focusRegion：无敌人时朝策略聚焦区推进（侦察/占位），否则回守家锚点或追击邻近敌人
     const focus = this.effectivePolicy?.focusRegion ?? null;
     const target = nearby.length > 0
       ? nearestEnemy(nearby, unit.position)?.position ?? null
-      : focus ?? state.core?.position ?? null;
+      : focus ?? home;
     if (target !== null && !samePosition(unit.position, target)) {
       const direction = stepToward(unit.position, target, movementObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_move");
@@ -418,6 +433,24 @@ function nextSpawn(state: TickState, workerTarget: number): UnitType {
 
 function nextMilitary(state: TickState): UnitType {
   return state.vanguards.length <= state.rangers.length ? "VANGUARD" : "RANGER";
+}
+
+/** Core 的守家锚点：四邻中第一个非障碍格（确定性 UP→RIGHT→DOWN→LEFT）。
+ *  军事单位守家站此格而非 Core 格本身——Core 格是 Worker 回仓通道，
+ *  被长期占用会造成 capacity_wait:DEPOSIT 经济死锁。 */
+function homeCell(core: Position, obstacles: ReadonlySet<string>): Position | null {
+  const order: readonly Direction[] = ["UP", "RIGHT", "DOWN", "LEFT"];
+  for (const dir of order) {
+    const cell: Position = dir === "UP"
+      ? [core[0], core[1] - 1]
+      : dir === "RIGHT"
+        ? [core[0] + 1, core[1]]
+        : dir === "DOWN"
+          ? [core[0], core[1] + 1]
+          : [core[0] - 1, core[1]];
+    if (!obstacles.has(cellKey(cell))) return cell;
+  }
+  return null;
 }
 
 function nearestEnemy(enemies: readonly VisibleEntity[], position: Position): VisibleEntity | null {
