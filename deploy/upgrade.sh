@@ -49,7 +49,9 @@ apply_pin() {
 }
 
 restart_live() {
-  docker compose -f "$COMPOSE_FILE" up -d --pull always live
+  # --env-file 显式注入版本 pin（手动运行/sudo 场景环境被清空，systemd
+  # EnvironmentFile 的变量不会自动到达 compose 替换）。
+  docker compose --env-file "$VERSION_ENV" -f "$COMPOSE_FILE" up -d --pull always live
 }
 
 wait_healthy() {
