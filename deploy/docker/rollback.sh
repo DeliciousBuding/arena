@@ -2,12 +2,12 @@
 # Arena release rollback helper (Docker image tag).
 #
 # Switches /opt/arena/current/deploy/docker/arena-compose.yml from the rolling
-# :main tag to a pinned git-sha tag (or back), atomically and with a backup.
-# Designed for the systemd-managed shadow/live services:
+# :main tag to a pinned git-sha or semantic version tag (or back), atomically
+# and with a backup. Designed for the systemd-managed shadow/live services:
 #   systemctl stop  →  switch tag  →  systemctl start
 #
 # Usage:
-#   bash deploy/docker/rollback.sh --to=<git-sha>|main [--compose=/path/to/arena-compose.yml] [--service=shadow|live|both] [--apply]
+#   bash deploy/docker/rollback.sh --to=<git-sha>|vX.Y.Z|main [--compose=/path/to/arena-compose.yml] [--service=shadow|live|both] [--apply]
 #
 # Safety:
 #   - refuses to run without --apply (dry-run by default)
@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 if [[ -z "${target:-}" ]]; then
-  echo "usage: rollback.sh --to=<git-sha>|main [--service=shadow|live|both] [--apply]" >&2
+  echo "usage: rollback.sh --to=<git-sha>|vX.Y.Z|main [--service=shadow|live|both] [--apply]" >&2
   exit 64
 fi
 case "$service" in
@@ -51,7 +51,7 @@ target_image="$image_base:$target"
 # Dry-run default: report what would change without touching anything.
 echo "compose: $compose"
 echo "target:  $target_image"
-if grep -q "image: $image_base:[A-Za-z0-9]*$" "$compose"; then
+if grep -q "image: $image_base:[A-Za-z0-9.-]*$" "$compose"; then
   echo "current image refs will be replaced by $target_image"
 fi
 if [[ "$apply" != true ]]; then
@@ -72,7 +72,7 @@ echo "backup: $backup"
 
 # 3. Replace every rolling image reference with the pinned target.
 tmp="${compose}.rollback-tmp"
-sed "s|image: $image_base:[A-Za-z0-9]*|image: $target_image|g" "$backup" > "$tmp"
+sed "s|image: $image_base:[A-Za-z0-9.-]*|image: $target_image|g" "$backup" > "$tmp"
 mv -f "$tmp" "$compose"
 echo "compose updated: $(grep -c "image: $target_image" "$compose") image ref(s) → $target_image"
 
