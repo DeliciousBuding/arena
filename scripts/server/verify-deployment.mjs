@@ -85,6 +85,16 @@ mustContain(compose, "ARENA_DEBUG_HOST", "compose must allow loopback-exposed de
 mustContain(compose, "127.0.0.1:8120:8120", "debug API must bind loopback only");
 mustContain(compose, "--skip-disk", "container healthcheck must not own the disk gate");
 mustNotContain(compose, "ARENA_HERO_API_KEY", "compose must not inline tenant secrets");
+// 版本 pin 单源（docs/design/deploy-fast-upgrade.md）：镜像版本必须由 env 驱动，
+// 禁止硬编码 tag（release 目录重建会丢失 sed pin——已两次实测）。
+mustContain(compose, "image: ${ARENA_LIVE_IMAGE:-ghcr.io/deliciousbuding/arena:main}", "live image must be env-pinned (ARENA_LIVE_IMAGE)");
+mustContain(compose, "image: ${ARENA_SHADOW_IMAGE:-ghcr.io/deliciousbuding/arena:main}", "shadow image must be env-pinned (ARENA_SHADOW_IMAGE)");
+
+// 一键升级契约（deploy/upgrade.sh）：健康门禁 + 自动回滚。
+const upgradeScript = readFileSync(join(root, "deploy", "upgrade.sh"), "utf-8");
+mustContain(upgradeScript, "ARENA_LIVE_IMAGE", "upgrade must pin via ARENA_LIVE_IMAGE (single source)");
+mustContain(upgradeScript, '"ready":true', "upgrade must gate on the /ready health endpoint");
+mustContain(upgradeScript, "rolling back", "upgrade must auto-rollback on health failure");
 
 // Rollback helper contract (deploy/docker/rollback.sh): dry-run default, GHCR
 // tag verification, compose backup, and post-restart image verification.
