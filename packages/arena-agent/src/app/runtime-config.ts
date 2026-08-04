@@ -53,6 +53,8 @@ export const RuntimeConfigSchema = Type.Object(
       ),
     ),
     costLimitUsd: Type.Optional(Type.Number({ minimum: 0 })),
+    /** 低频 MacroPolicy 策略决策周期（ticks，缺省 32；0/缺省 = 不启用策略层）。 */
+    policyIntervalTicks: Type.Optional(Type.Integer({ minimum: 1 })),
     /** Pi/Provider 熔断器（Track B）：连续失败阈值 + open 冷却时长。 */
     circuitBreaker: Type.Optional(
       Type.Object(

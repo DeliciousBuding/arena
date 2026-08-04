@@ -29,7 +29,11 @@ import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
 import { AGGRESSIVE_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
+import { PiSessionFactory } from "../infrastructure/pi/pi-session-factory.ts";
 import { buildDecisionPrompt } from "../infrastructure/pi/prompt-builder.ts";
+import { buildMacroPolicyPrompt, readLastAssistantText } from "../infrastructure/pi/policy-prompt.ts";
+import { MacroPolicyOrchestrator } from "../runtime/macro-policy-orchestrator.ts";
+import { serializeMacroPolicy } from "../runtime/macro-policy.ts";
 import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
 import { manhattan } from "../domain/nav.ts";
@@ -317,6 +321,48 @@ export async function runTenant(
         : (options.runtime ?? (await createPiRuntime(config, dirs.piBaseDir, onRuntimeTelemetry)));
     cleanupStack.push(() => runtime.close());
 
+    // 5b) 低频 MacroPolicy 策略层（独立 Pi session，异步产出不占 tick 窗口）：
+    //     非 noAgent 模式启用；失败/超时 → sticky 默认策略，不阻断执行层。
+    let policyOrchestrator: MacroPolicyOrchestrator | null = null;
+    if (!noAgent && options.runtime === undefined) {
+      try {
+        const policyFactory = new PiSessionFactory({
+          baseDir: dirs.piBaseDir,
+          model: resolvePiModel(config),
+          thinkingLevel: config.model.thinkingLevel,
+          configHash: `sha256:cfg:${config.tenantId}`,
+          customTools: [],
+        });
+        const policySession = await policyFactory.createSession(config.tenantId);
+        cleanupStack.push(() => policySession.close());
+        const policyPath = join(dirs.telemetryDir, "policy.jsonl");
+        policyOrchestrator = new MacroPolicyOrchestrator({
+          intervalTicks: config.policyIntervalTicks ?? 32,
+          promptBuilder: buildMacroPolicyPrompt,
+          requestPolicy: async (prompt) => {
+            await policySession.session.prompt(prompt);
+            return readLastAssistantText(policySession.session);
+          },
+          onPolicyUpdate: (policy, tick) => {
+            try {
+              appendJsonlLine(
+                policyPath,
+                JSON.stringify(sanitizeValue({
+                  at: new Date().toISOString(),
+                  tenantId: config.tenantId,
+                  tick,
+                  policy: serializeMacroPolicy(policy),
+                })),
+              );
+            } catch {}
+          },
+          timeoutMs: 60000,
+        });
+      } catch {
+        // 策略层初始化失败（认证/网络）：执行层用默认策略继续，不阻断启动。
+      }
+    }
+
     // 6) coordinator（P0-1：decisionMode 传递；deterministic = planner 注入 DeterministicPlanner，
     //    coordinator 短路语义同 safety——不启动 Agent）
     const coordinator = new DecisionCoordinator({
@@ -330,6 +376,9 @@ export async function runTenant(
       configHash: manifest.configHash,
       processRunId,
       decisionMode,
+      policyProvider: policyOrchestrator === null
+        ? undefined
+        : (state) => policyOrchestrator!.onTick(state),
       onRunSettled: (info) => {
         // runtime trace 的 settle 补充事件（不阻塞决策路径）
         void info;

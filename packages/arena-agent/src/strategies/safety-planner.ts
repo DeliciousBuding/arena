@@ -26,6 +26,7 @@ import { UNIT_MAX_HP } from "../domain/plan-validator.ts";
 import { countEnemiesNearCore } from "../domain/plan-validator.ts";
 import { PhaseMachine, type PhaseConfig } from "../domain/phase-machine.ts";
 import { World } from "../domain/world.ts";
+import { aggressionOf, type MacroPolicy } from "../runtime/macro-policy.ts";
 
 export type AggressionLevel = "defensive" | "aggressive";
 
@@ -73,12 +74,18 @@ export interface SafetyPlannerInput {
   readonly state: TickState;
   readonly sharedObstacles?: ReadonlySet<string>;
   readonly allyUsernames?: ReadonlySet<string>;
+  /** 低频 MacroPolicy（orchestrator 每 K ticks 产出）；提供时覆盖静态 config。 */
+  readonly policy?: MacroPolicy;
 }
 
 /** Deterministic, side-effect-free with respect to the game. World memory is local to this planner. */
 export class SafetyPlanner {
   readonly world: World;
   readonly phase: PhaseMachine;
+  /** 本 decide 生效的 aggression（policy 优先，其次 config.aggression）。 */
+  private effectiveAggression: AggressionLevel = "defensive";
+  /** 本 decide 生效的 workerTarget（policy 优先，其次 config.workerTarget）。 */
+  private effectiveWorkerTarget = 8;
 
   constructor(
     readonly config: SafetyPlannerConfig = DEFAULT_SAFETY_CONFIG,
@@ -90,6 +97,9 @@ export class SafetyPlanner {
 
   decide(input: SafetyPlannerInput): Plan {
     const { state } = input;
+    this.effectiveAggression =
+      input.policy !== undefined ? aggressionOf(input.policy) : (this.config.aggression ?? "defensive");
+    this.effectiveWorkerTarget = input.policy?.workerTarget ?? this.config.workerTarget;
     this.world.observe(state);
     this.phase.update({
       population: state.population,
@@ -262,7 +272,7 @@ export class SafetyPlanner {
       return;
     }
 
-    if (this.config.aggression === "aggressive") {
+    if (this.effectiveAggression === "aggressive") {
       // 激进：主动前压。敌人 Core 是最高价值目标（拆 Core 掠夺资源，v0.9
       // capture）；否则追击最近可见敌人。不再因靠近自家 Core 而留守。
       const enemyCore = enemies.find((enemy) => enemy.kind === "CORE");
@@ -303,7 +313,7 @@ export class SafetyPlanner {
     // Precision shot at a visible enemy in range. Aggressive mode prioritizes
     // enemy Workers to cut their economy (cargo never reaches their Core).
     const inRange = enemies.filter((enemy) => canShoot(unit.position, enemy.position, obstacles));
-    const target = this.config.aggression === "aggressive"
+    const target = this.effectiveAggression === "aggressive"
       ? inRange.sort(aggressiveShotPriority)[0]
       : inRange[0];
     if (target !== undefined) {
@@ -334,7 +344,7 @@ export class SafetyPlanner {
       // 激进：保持 1-3 射程站定，不冲脸（近身会让 Ranger 失去射程优势且易被
       // SWEEP）。已在射程内但没有合法射击目标（被障碍挡住）时原地待机。
       const distance = manhattan(unit.position, moveTarget);
-      const keepRange = this.config.aggression === "aggressive" && distance <= 3;
+      const keepRange = this.effectiveAggression === "aggressive" && distance <= 3;
       if (!keepRange) {
         const direction = stepToward(unit.position, moveTarget, movementObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_move");
@@ -365,7 +375,7 @@ export class SafetyPlanner {
       state.resources >= this.config.guardResources &&
       military < this.config.guardForce
         ? nextMilitary(state)
-        : nextSpawn(state, this.config.workerTarget);
+        : nextSpawn(state, this.effectiveWorkerTarget);
     const cost = unitType === "WORKER" ? 5 : unitType === "VANGUARD" ? 10 : 12;
     const reserve = state.resources >= this.config.wealthyThreshold
       ? this.config.reserveWealthy
