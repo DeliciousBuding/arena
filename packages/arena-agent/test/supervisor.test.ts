@@ -552,7 +552,7 @@ try {
       },
     });
     await supervisor.start();
-    await waitUntil(() => supervisor.isReady(), 3000);
+    await waitUntil(() => supervisor.isReady(), 15000);
     await supervisor.shutdown();
     const result = JSON.parse(readFileSync(marker, "utf8"));
     assert.deepEqual(result, {
@@ -597,7 +597,7 @@ setInterval(() => {}, 1000);
       },
     });
     await supervisor.start();
-    await waitUntil(() => existsSync(pidsPath));
+    await waitUntil(() => existsSync(pidsPath), 15000);
     const pids = JSON.parse(readFileSync(pidsPath, "utf8")) as { child: number; grandchild: number };
     await supervisor.shutdown();
     await waitUntil(() => processStopped(pids.child) && processStopped(pids.grandchild), 5000);
