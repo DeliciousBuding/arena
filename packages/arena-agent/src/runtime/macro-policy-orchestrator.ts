@@ -29,6 +29,20 @@ export interface MacroPolicyOrchestratorOptions {
   readonly nowMs?: () => number;
 }
 
+/** Core 被摧毁/重生期间的强制经济重建策略（覆盖 sticky/LLM 决策，避免激进前压送死）。 */
+export const RESPAWN_OVERRIDE_POLICY: MacroPolicy = {
+  posture: "harvest",
+  workerTarget: 3,
+  militaryRatio: 0,
+  focusRegion: null,
+  attackPriority: null,
+};
+
+/** 重生结束判定：恢复 ACTIVE 且存活 Worker 达到重建阈值（>=3）才释放覆盖。 */
+export function isRespawnRecovered(state: TickState): boolean {
+  return state.status === "ACTIVE" && state.workers.length >= 3;
+}
+
 export class MacroPolicyOrchestrator {
   readonly intervalTicks: number;
   /** 当前生效策略（sticky：失败/未产出时保持）。 */
@@ -42,6 +56,8 @@ export class MacroPolicyOrchestrator {
   private lastPolicyTick = Number.NEGATIVE_INFINITY;
   private inFlight = false;
   private lastError: string | null = null;
+  /** 重生覆盖边沿检测：true = 上一 tick 处于重生/无 Core（恢复后立即决策一次）。 */
+  private wasRespawning = false;
 
   constructor(options: MacroPolicyOrchestratorOptions) {
     if (!Number.isInteger(options.intervalTicks ?? 32) || (options.intervalTicks ?? 32) < 1) {
@@ -55,8 +71,22 @@ export class MacroPolicyOrchestrator {
     this.timeoutMs = options.timeoutMs ?? 60000;
   }
 
-  /** 每次决策 Tick 调用：返回当前生效策略；到周期且空闲时异步触发一次策略产出。 */
+  /** 每次决策 Tick 调用：返回当前生效策略；到周期且空闲时异步触发一次策略产出。
+   *  重生覆盖：Core 不存在或 status=RESPAWNING 时强制返回经济重建策略
+   *  （RESPAWN_OVERRIDE_POLICY），不消费 LLM 决策；恢复 ACTIVE 且 pop>=3 后
+   *  立即触发一次新决策（重置周期边沿）。 */
   onTick(state: TickState): MacroPolicy {
+    const respawning = state.core === null || state.status === "RESPAWNING";
+    if (respawning) {
+      this.wasRespawning = true;
+      // 重生期不触发 LLM 决策（无意义且浪费）；周期持续推进避免恢复后误判超周期
+      this.lastPolicyTick = state.tick;
+      return RESPAWN_OVERRIDE_POLICY;
+    }
+    if (this.wasRespawning) {
+      this.wasRespawning = false;
+      this.lastPolicyTick = Number.NEGATIVE_INFINITY;
+    }
     if (!this.inFlight && state.tick - this.lastPolicyTick >= this.intervalTicks) {
       this.inFlight = true;
       void this.runPolicyDecision(state)
