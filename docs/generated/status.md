@@ -6,7 +6,7 @@
 | 指标 | 数值 | 来源 |
 |---|---|---|
 | SDK 测试 | 53 pass / 0 fail（共 53） | Node TAP 实跑 |
-| 编排层测试 | 507 pass / 0 fail（共 507） | Node TAP 实跑 |
+| 编排层测试 | 516 pass / 0 fail（共 516） | Node TAP 实跑 |
 | schema 契约文件数 | 6 | contracts/generated 计数 |
 | Python 实时运行模块数 | 0 | src/arena_bot/*.py 计数（目标 0） |
 
