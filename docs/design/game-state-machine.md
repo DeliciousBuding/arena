@@ -27,7 +27,7 @@
 |---|---|---|---|---|
 | ACTIVE → RESPAWNING | combat 摧毁 | Core HP ≤ 0 且敌人伤害 ≥ HP+盾 | 资源捕获（v0.9：转移给最高伤害攻击者）、库存销毁、舰队移除、beacon 掉落 | `CORE_DESTROYED`(reason=ATTACK) + `CORE_RESOURCE_TRANSFERRED` |
 | ACTIVE → RESPAWNING | SELF_DESTRUCT | Core 存活即可（无条件） | 库存/舰队销毁、无捕获、无 loot、beacon 掉落 | `CORE_DESTROYED`(reason=SELF_DESTRUCT) |
-| ACTIVE → RESPAWNING | upkeep deficit | 资源不足以支付 upkeep | 按 deficit 伤害最远单位；Core 死亡才触发 | `UPKEEP_PAID` + `CORE_DESTROYED` |
+| ACTIVE → RESPAWNING | upkeep deficit | ~~资源不足以支付 upkeep~~ **v0.11+ 已消灭**（见下） | — | — |
 | RESPAWNING → ACTIVE | P12 respawn | respawnAtTick 到达且合法放置格存在 | 新 Core（新 UUID）、默认 HP/盾、respawn 起始单位 | `CORE_RESPAWNED` |
 | RESPAWNING → RESPAWNING | respawn 延迟 | 放置格被占/无可选格 | respawnAtTick += 1 | `RESPAWN_DELAYED` |
 
@@ -35,6 +35,12 @@
 - respawn 放置：距相邻活 Core 20-30 Manhattan 的合法格（确定性选择）
 - respawn 起始：1 Worker + Core 满血满盾；**起始资源 = 5**
 - SELF_DESTRUCT 摧毁走**正常 respawn 流**（同 Tick）
+
+**补充研究结论（2026-08-05 只读核对）**：
+- **upkeep 不会摧毁 Core（v0.11+）**：deficit 缺口只伤害 excess units（近 Core 19 保护），`deficitDamage.status = PENDING-VERIFICATION` 且结算打 rule-assumption unknown——ACTIVE→RESPAWNING 只有 combat 与 SELF_DESTRUCT 两条活路径。
+- **无重生冷却**：combat/SELF_DESTRUCT 均同 Tick 完成放置（失败才 RESPAWN_DELAYED → tick+1 重试）；裸 RESPAWNING 外部快照 fail-closed 标 unsupported。
+- **rulesVersion 滞后于行为**：manifest 仍是 rules-v0.11.json，但代码已实现 v0.12/v0.13 行为（combat.ts 注释还标 v0.12 属标注漂移）——`rulesVersion` 不能单独当行为基线。
+- **世界重置审计**（4 项建议）：tick 连续性校验（已实施：#23 World.observe 回退全清）、"永久障碍契约被打破"检测、`CORE_DESTROYED`+`CORE_RESPAWNED` 事件配对显式 onCoreCycle 钩子、新 Core 位置锚定 patrol。
 
 ## 2. 规则升级/重置语义（v0.11 → v0.12 → v0.13）
 

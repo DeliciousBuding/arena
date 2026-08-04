@@ -85,9 +85,16 @@ docker compose -f /opt/arena/deploy/arena-compose.yml up -d --pull always live
 ### 3.5 迁移步骤（从现状到目标）
 
 1. PR：compose 双服务 image 改 env 引用 + verify-deployment 契约更新 + upgrade.sh 脚本入库。
-2. 服务器一次性迁移：`sudo mkdir -p /opt/arena/deploy && sudo cp /opt/arena/current/deploy/docker/arena-compose.yml /opt/arena/deploy/` + 写 version.env（当前 v0.1.9）+ systemd unit 改 ExecStart 路径 + daemon-reload。
+2. 服务器一次性迁移：`sudo mkdir -p /opt/arena/deploy && sudo cp /opt/arena/current/deploy/docker/arena-compose.yml /opt/arena/deploy/` + 写 version.env（当前 v0.2.2）+ systemd unit 改 ExecStart 路径 + daemon-reload。
 3. 用 upgrade.sh 演练一次升级 + 一次回滚（对齐 rollback drill 要求）。
-4. 后续发版：`/opt/arena/upgrade.sh v0.2.0` 一条命令。
+4. 后续发版：`/opt/arena/upgrade.sh v0.2.3` 一条命令。
+
+### 3.6 实施记录（2026-08-05 已完成）
+
+- **3.1/3.2/3.3 已落地（PR #24 + 服务器迁移）**：compose env pin、/opt/arena/version.env、/opt/arena/deploy/arena-compose.yml、/opt/arena/upgrade.sh、systemd EnvironmentFile=/opt/arena/version.env + ExecStart 路径切换。v0.2.1/v0.2.2 两次升级 + systemd 重启双路径 pin 保持验证通过。
+- **已修复的坑**：upgrade.sh 手动运行（sudo 清环境）时 compose 拿不到 ARENA_LIVE_IMAGE → restart_live 显式 `--env-file`；systemd unit 必须先加 EnvironmentFile 再重启。
+- **后续增强（研究确认）**：部署面可从镜像抽取（`docker run --entrypoint tar <img> -C /app -cf - deploy scripts/server | tar -C /opt/arena/deploy -xzf -`）——服务器零 git 依赖，唯一网络操作是可断点重试的 docker pull（release git clone 是 bare-metal 遗留，镜像已含 /app 完整代码）。
+- **CI 加速（研究确认）**：docker job 拆 build（与 quality 并行）+ push（needs [quality, build]），gha cache 复用完整生效。
 
 ## 4. 风险与回滚
 
