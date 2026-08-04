@@ -26,6 +26,8 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 - Windows/Linux 真实 child+grandchild 黑盒均为 orphan=0；
 - Python 实时 runtime、仓库级 `pyproject.toml` / `uv.lock` 和失效入口已退役；
 - 服务器部署基线：不可变 release、外置 config/runtime、systemd cgroup、shadow readiness 有界自恢复、live `Restart=no`、无密钥 health env、独立磁盘告警不重启 writer、有限 JSONL 轮转；
+- **部署形态升级为 Docker（GHCR）+ systemd 编排**：CI 在 main push 构建推送 `ghcr.io/deliciousbuding/arena:<sha>/:main`；systemd 为生命周期唯一权威（shadow `Restart=on-failure`、live `Restart=no`）；容器 stop 销毁 PID namespace 无孤儿；健康探针宿主零 Node 依赖（compose exec + df）；
+- **us1 生产 Docker shadow 已部署**：容器 healthy，`/health`/`/ready` 均 ready:true，t1 持续产出 run 与 telemetry，shadow/disk 健康计时器全绿；
 - Digital Twin S0–S12 / P06 / P12 与首份 Runtime-Golden 已落地。
 
 ## 自动化证据
@@ -66,10 +68,10 @@ combat、第四 Tick Unit/Core 争抢、Beacon pickup/drop/death、Core destruct
 ## 尚未完成
 
 1. Provider/Pi 真实 agent-shadow 故障注入与 circuit telemetry 证据；
-2. 四租户 Supervisor 分级真机运行与长期 soak；
-3. 稳定 TS commit/config 回滚演练；
+2. 四租户 Supervisor 分级真机运行与长期 soak（us1 Docker shadow 已起，24h soak 进行中）；
+3. 稳定 TS commit/config 回滚演练（Docker 镜像 tag 回滚流程已文档化，待演练）；
 4. combat、Core migration、Beacon、respawn 专项 Runtime-Golden；
-5. 在目标服务器实际安装 systemd 单元并完成 shadow 长期运行、重启/磁盘告警演练；
+5. 服务器 shadow 长期运行观察（已部署 us1，待 24h+ 稳定证据）；
 6. 升级或受控修补 Pi 依赖链中的 undici，再开放服务器 `agent-shadow` / `hybrid`；
 7. 基于真实净收益决定是否允许单租户 hybrid canary。
 
