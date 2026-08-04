@@ -49,12 +49,20 @@ const unit = (id: string, x: number, y: number, unitType: "WORKER" | "VANGUARD",
   ({ kind: "UNIT", id, controlled: true, position: [x, y], hp, unit_type: unitType, cargo }) as PlayerState["objects"][number];
 
 /** 模拟结算（贴近服务端可观测语义）：MOVE 推进（容量 2，Core 占 1）；
- *  资源格 HARVEST（cargo<max 成功，否则失败）；Core 格 DEPOSIT（cargo→0）。 */
+ *  资源格 HARVEST（cargo<max 成功，否则失败）；Core 格 DEPOSIT（cargo→0）；
+ *  Core SPAWN 消耗 5 资源（资源满破锁闭环的关键：让位 → SPAWN → 消耗 →
+ *  卸货通道恢复）。 */
 function settle(
   actions: Readonly<Record<string, UnitAction>>,
+  coreAction: { type: "SPAWN"; unitType: string } | null,
   objects: PlayerState["objects"],
   resourceCells: Set<string>,
-): PlayerState["objects"] {
+  resources: number,
+): { objects: PlayerState["objects"]; resources: number } {
+  let nextResources = resources;
+  if (coreAction?.type === "SPAWN" && resources >= 5) {
+    nextResources -= 5;
+  }
   const next: Array<PlayerState["objects"][number]> = [coreObj];
   const occupied = new Map<string, number>([["0,0", 1]]);
   for (const o of objects) {
@@ -77,12 +85,13 @@ function settle(
       }
     } else if (a?.type === "HARVEST" && resourceCells.has(`${pos[0]},${pos[1]}`) && cargo < CARGO_MAX) {
       cargo += 1;
-    } else if (a?.type === "DEPOSIT" && pos[0] === 0 && pos[1] === 0) {
+    } else if (a?.type === "DEPOSIT" && pos[0] === 0 && pos[1] === 0 && nextResources < 10) {
       cargo = 0;
+      nextResources += 1;
     }
     next.push(unit(o.id, pos[0], pos[1], o.unit_type as "WORKER" | "VANGUARD", cargo, o.hp ?? 4));
   }
-  return next;
+  return { objects: next, resources: nextResources };
 }
 
 const POLICY: MacroPolicy = { posture: "harvest", workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: null };
@@ -91,14 +100,23 @@ const RESOURCE_CELLS = new Set(["16,0", "32,0"]);
 test("经济闭环：满载 Worker 能回仓 DEPOSIT（无 capacity_wait 死锁）", () => {
   const planner = new DeterministicPlanner();
   let objects: PlayerState["objects"] = [coreObj, unit("w1", 16, 0, "WORKER", CARGO_MAX), unit("w2", 32, 0, "WORKER", CARGO_MAX)];
+  let resources = 10;
   let cargoTot = CARGO_MAX * 2;
   let cleared = false;
   let stuckTicks = 0;
   for (let tick = 100; tick < 300; tick++) {
-    const state = { ...makeState(tick, objects, 10), resourceCells: RESOURCE_CELLS } as TickState;
+    const state = { ...makeState(tick, objects, resources), resourceCells: RESOURCE_CELLS } as TickState;
     const plan = planner.decide({ state, policy: POLICY });
     const waitDeposit = Object.values(plan.intents ?? {}).filter((i) => i === "capacity_wait:DEPOSIT").length;
-    objects = settle(plan.unitActions, objects, RESOURCE_CELLS);
+    const settled = settle(
+      plan.unitActions,
+      plan.coreAction?.type === "SPAWN" ? plan.coreAction : null,
+      objects,
+      RESOURCE_CELLS,
+      resources,
+    );
+    objects = settled.objects;
+    resources = settled.resources;
     const nextCargoTot = objects.reduce((s, o) => s + (o.kind === "UNIT" ? (o.cargo ?? 0) : 0), 0);
     if (nextCargoTot === 0) cleared = true;
     if (nextCargoTot === cargoTot) stuckTicks += 1;
@@ -150,6 +168,32 @@ test("资源满破锁：满载 Worker 在 Core 格不阻塞 SPAWN（卸货等待
   const plan = planner.decide({ state, policy: POLICY });
   assert.equal(plan.coreAction?.type, "SPAWN", "满载 Worker 在 Core 格不得阻塞补员（资源满死锁破除）");
   assert.equal(plan.intents.core, "spawn_worker_target");
+});
+
+test("资源满让位：满载 Worker 在 Core 格且无法卸货时 MOVE 让出 Core 格", () => {
+  const planner = new DeterministicPlanner();
+  // 资源满（resourceSpace=0）时 DEPOSIT 不合法（validator 会移除）——原地等待
+  // 会永久占住 Core 格（SPAWN 被服务端容量拒）。必须让位到 Core 相邻格：
+  // SPAWN 成功后资源消耗、卸货通道恢复，Worker 再回来卸货。
+  const state: TickState = {
+    ...makeState(100, [coreObj, unit("w1", 0, 0, "WORKER", 1)]),
+    resourceCells: RESOURCE_CELLS,
+  };
+  const plan = planner.decide({ state, policy: POLICY });
+  const action = plan.unitActions["w1"];
+  assert.equal(action?.type, "MOVE", "资源满时满载 Worker 在 Core 格必须让位（而非原地等待 DEPOSIT）");
+  assert.equal(plan.intents["w1"], "DEPOSIT", "让位仍是回仓意图（资源恢复后回来卸货）");
+});
+
+test("资源未满：满载 Worker 在 Core 格正常 DEPOSIT", () => {
+  const planner = new DeterministicPlanner();
+  const state: TickState = {
+    ...makeState(100, [coreObj, unit("w1", 0, 0, "WORKER", 1)], 3),
+    resourceCells: RESOURCE_CELLS,
+  };
+  const plan = planner.decide({ state, policy: POLICY });
+  const action = plan.unitActions["w1"];
+  assert.equal(action?.type, "DEPOSIT", "资源未满时满载 Worker 直接卸货");
 });
 
 test("空载单位占 Core 格仍阻塞 SPAWN（容量安全）", () => {
