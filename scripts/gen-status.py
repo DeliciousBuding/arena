@@ -79,12 +79,13 @@ def main() -> None:
         "SDK 测试",
         cwd=SDK_PKG_DIR,
     )
+    # 与各包 npm test 脚本完全同形（tsx --test）——node --test 原生跑 .ts 的
+    # 测试发现与 tsx 不一致（CI/本地/平台间计数漂移），必须走同一执行链。
     agent_tests, agent_passed, agent_failed, _agent_skipped = node_tap_counts(
         [
-            "node",
+            "npx",
+            "tsx",
             "--test",
-            "--test-force-exit",
-            "--test-reporter=tap",
             "test/*.test.ts",
         ],
         "编排层测试",
