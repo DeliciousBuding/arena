@@ -45,6 +45,8 @@ func runTenantCmd(args []string) int {
 	baseURL := fs.String("base-url", "", "override game server base URL")
 	debug := fs.Bool("debug", false, "enable debug logging (per-tick and reconnect)")
 	logFile := fs.String("log-file", "", "write logs to file (direct, no shell redirection buffering)")
+	workerTarget := fs.Int("worker-target", -1, "override planner WorkerTarget (-1 = config default)")
+	spawnReserve := fs.Int("spawn-reserve", -1, "override planner SpawnReserve (-1 = config default; 0 = explicit zero)")
 	if err := fs.Parse(args); err != nil {
 		return exitConfig
 	}
@@ -173,9 +175,19 @@ func runTenantCmd(args []string) int {
 	}
 	_ = telemetry.WriteManifest(filepath.Join(runDir, "manifest.json"), manifest)
 
+	// 固定策略覆盖（赛马实验：workerTarget/spawnReserve 参数化）。
+	plannerConfig := strategy.DefaultConfig()
+	if *workerTarget >= 0 {
+		plannerConfig.WorkerTarget = *workerTarget
+	}
+	if *spawnReserve >= 0 {
+		plannerConfig.SpawnReserve = *spawnReserve
+	}
+	logger.Info("planner config", "workerTarget", plannerConfig.WorkerTarget, "spawnReserve", plannerConfig.SpawnReserve)
+
 	loop := &runtime.Loop{
 		Client:  client,
-		Planner: strategy.NewPlanner(strategy.DefaultConfig()),
+		Planner: strategy.NewPlanner(plannerConfig),
 		World:   domain.NewWorld(),
 		Config: runtime.TenantConfig{
 			TenantID:       configFile.TenantID,

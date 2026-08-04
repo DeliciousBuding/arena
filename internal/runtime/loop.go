@@ -158,6 +158,10 @@ func (l *Loop) handleState(ctx context.Context, state *contracts.PlayerState) er
 		_ = l.RuntimeLog.WriteLine(record)
 	}
 	if l.DecisionLog != nil {
+		spawnIntent := false
+		if validation.Plan.CoreAction != nil && validation.Plan.CoreAction.Kind == domain.CoreSpawn {
+			spawnIntent = true
+		}
 		_ = l.DecisionLog.WriteLine(map[string]any{
 			"at":       time.Now().UTC().Format(time.RFC3339Nano),
 			"tenant":   l.Config.TenantID,
@@ -165,6 +169,7 @@ func (l *Loop) handleState(ctx context.Context, state *contracts.PlayerState) er
 			"tick":     tickState.Tick,
 			"actions":  len(validation.Plan.UnitActions),
 			"core":     validation.Plan.CoreAction != nil,
+			"spawn":    spawnIntent,
 			"repaired": validation.Repaired,
 			"valid":    validation.Valid,
 			"workers":  len(tickState.Workers),
