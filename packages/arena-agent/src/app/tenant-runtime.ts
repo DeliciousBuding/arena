@@ -322,11 +322,12 @@ export async function runTenant(
     cleanupStack.push(() => runtime.close());
 
     // 5b) 低频 MacroPolicy 策略层（独立 Pi session，异步产出不占 tick 窗口）：
-    //     非 noAgent 模式启用；失败/超时 → sticky 默认策略，不阻断执行层。
+    //     所有决策模式启用（deterministic 执行 + LLM 战略 = MASTER.md 设计）；
+    //     失败/超时 → sticky 默认策略，不阻断执行层。
     let policyOrchestrator: MacroPolicyOrchestrator | null = null;
     // 经济趋势缓冲（最近 32 ticks 的 coreResourceDelta；策略 prompt 输入）
     const recentResourceDeltas: number[] = [];
-    if (!noAgent && options.runtime === undefined) {
+    if (options.runtime === undefined) {
       try {
         const policyFactory = new PiSessionFactory({
           baseDir: dirs.piBaseDir,
