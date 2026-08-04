@@ -41,6 +41,7 @@ USER arena:arena
 ENV NODE_ENV=production \
     PATH=/app/node_modules/.bin:$PATH
 
-# Entrypoint is the native TS supervisor wrapper (same contract as bare-metal).
-ENTRYPOINT ["/app/scripts/server/run-supervisor.sh"]
-CMD ["shadow"]
+# Native TS entrypoint: the supervisor CLI reads ARENA_* env vars directly
+# (ARENA_SERVICE_MODE=shadow|live, ARENA_CONFIGS, ARENA_LIVE_TICKS, ...).
+# No bash wrapper layer: same code path as local `npm run arena:supervisor`.
+ENTRYPOINT ["node", "--import", "tsx", "/app/packages/arena-agent/src/cli/run-supervisor.ts"]

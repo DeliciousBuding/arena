@@ -481,6 +481,45 @@ test("run-supervisor binds debug port before preflight and spawns zero children 
   }
 });
 
+test("run-supervisor reads ARENA_* env vars and ARENA_SERVICE_MODE", async () => {
+  const repo = makeTempRepo();
+  const blocker = createNetServer();
+  await new Promise<void>((resolvePromise) => blocker.listen(0, "127.0.0.1", resolvePromise));
+  const address = blocker.address();
+  assert.notEqual(typeof address, "string");
+  const port = (address as { port: number }).port;
+  try {
+    const cli = resolve(PACKAGE_ROOT, "src", "cli", "run-supervisor.ts");
+    const child = spawn(process.execPath, ["--import", "tsx", cli], {
+      cwd: PACKAGE_ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        ARENA_SERVICE_MODE: "shadow",
+        ARENA_REPO_ROOT: repo.root,
+        ARENA_CONFIG_DIR: join(repo.root, "configs"),
+        ARENA_RUNTIME_DIR: join(repo.root, "runtime"),
+        ARENA_CONFIGS: "t1",
+        ARENA_DEBUG_PORT: String(port),
+      },
+    });
+    let output = "";
+    child.stdout!.on("data", (chunk) => { output += String(chunk); });
+    child.stderr!.on("data", (chunk) => { output += String(chunk); });
+    const code = await new Promise<number | null>((resolvePromise) => child.once("exit", resolvePromise));
+    // Port conflict proves env wiring reached the real listener with zero spawns;
+    // a missing env would have used the built-in 8120 default and likely bound it.
+    assert.equal(code, 1);
+    assert.match(output, /EADDRINUSE|address already in use/i);
+    const eventPath = join(repo.root, "runtime", "supervisor.jsonl");
+    const events = existsSync(eventPath) ? readFileSync(eventPath, "utf8") : "";
+    assert.doesNotMatch(events, /"type":"spawned"/);
+  } finally {
+    await new Promise<void>((resolvePromise) => blocker.close(() => resolvePromise()));
+    repo.cleanup();
+  }
+});
+
 test("shutdown request bridge is idempotent and disposer removes listeners", () => {
   const source = new EventEmitter();
   let calls = 0;

@@ -21,6 +21,7 @@ services:
     init: true
     user: "1001:1001"
     environment:
+      ARENA_SERVICE_MODE: shadow
       ARENA_REPO_ROOT: /app
       ARENA_CONFIG_DIR: /etc/arena/configs
       ARENA_RUNTIME_DIR: /var/lib/arena
@@ -51,7 +52,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    command: ["shadow"]
 
   live:
     image: ghcr.io/deliciousbuding/arena:main
@@ -60,6 +60,7 @@ services:
     init: true
     user: "1001:1001"
     environment:
+      ARENA_SERVICE_MODE: live
       ARENA_REPO_ROOT: /app
       ARENA_CONFIG_DIR: /etc/arena/configs
       ARENA_RUNTIME_DIR: /var/lib/arena
@@ -91,4 +92,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    command: ["live"]

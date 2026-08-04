@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -14,9 +14,11 @@ const liveUnit = read("arena-supervisor-live.service");
 const shadowHealth = read("arena-shadow-health.service");
 const liveHealth = read("arena-live-health.service");
 const diskHealth = read("arena-disk-health.service");
-const wrapperPath = join(root, "scripts", "server", "run-supervisor.sh");
-const wrapper = readFileSync(wrapperPath, "utf-8");
 const envExample = read("arena.env.example");
+const supervisorCli = readFileSync(
+  join(root, "packages", "arena-agent", "src", "cli", "run-supervisor.ts"),
+  "utf-8",
+);
 const packageLock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf-8"));
 const piUndiciVersion = packageLock.packages?.[
   "node_modules/@earendil-works/pi-coding-agent/node_modules/undici"
@@ -48,12 +50,18 @@ mustContain(shadowUnit, "EnvironmentFile=/etc/arena/arena.env", "shadow supervis
 mustContain(shadowUnit, "EnvironmentFile=-/etc/arena/health.env", "shadow supervisor must share health settings");
 mustContain(liveUnit, "EnvironmentFile=/etc/arena/arena.env", "live supervisor must receive secrets");
 mustContain(liveUnit, "EnvironmentFile=-/etc/arena/health.env", "live supervisor must share health settings");
-mustContain(wrapper, '"--config-dir=$config_dir"', "wrapper must use external configs");
-mustContain(wrapper, '"--runtime-dir=$runtime_dir"', "wrapper must use external runtime state");
-mustContain(wrapper, 'args+=("--mode=deterministic" "--shadow")', "server shadow must remain deterministic by default");
-mustContain(wrapper, 'args+=("--mode=deterministic" "--live")', "live wrapper must pin deterministic mode");
-mustContain(wrapper, 'exec "$tsx_bin" packages/arena-agent/src/cli/run-supervisor.ts', "wrapper must exec the native TS entry directly");
-mustNotContain(wrapper, "npm run arena:supervisor", "server wrapper must not add an npm process layer");
+// Native supervisor CLI contract (packages/arena-agent/src/cli/run-supervisor.ts).
+// No bash wrapper: the container entrypoint and local dev both run this file, and
+// server settings flow through ARENA_* env vars (CLI args override env when given).
+mustContain(supervisorCli, "ARENA_SERVICE_MODE", "supervisor CLI must accept the service-mode env var");
+mustContain(supervisorCli, 'process.env[ENV_DEFAULTS[key]]', "supervisor CLI must read ARENA_* env vars");
+mustContain(supervisorCli, '"--mode=deterministic"', "server supervisor must stay deterministic");
+mustContain(supervisorCli, '"--shadow"', "shadow mode must be explicit");
+mustContain(supervisorCli, '"--live"', "live mode must be explicit");
+mustContain(supervisorCli, "ARENA_LIVE_TICKS", "canary window must be env-driven");
+mustContain(supervisorCli, "ARENA_MAX_TICKS", "max ticks must be env-driven");
+mustNotContain(supervisorCli, "run-supervisor.sh", "CLI must not depend on a bash wrapper");
+mustNotContain(supervisorCli, "npm run arena:supervisor", "CLI must not add an npm process layer");
 
 // Docker deployment contract (deploy/docker). The image must not carry secrets;
 // the compose file must keep shadow auto-recoverable and live manual-only.
@@ -64,7 +72,7 @@ const arenaEnvExample = readFileSync(join(systemdDir, "arena.env.example"), "utf
 
 mustContain(dockerfile, "FROM node:24-slim", "image must pin Node 24 LTS");
 mustContain(dockerfile, "USER arena:arena", "image must not run as root");
-mustContain(dockerfile, "ENTRYPOINT", "image must use the supervisor wrapper as entrypoint");
+mustContain(dockerfile, "ENTRYPOINT", "image must use the native TS supervisor entrypoint");
 mustNotContain(dockerfile, "ARENA_HERO_API_KEY", "image must not embed tenant secrets");
 mustContain(compose, 'env_file:\n      - /etc/arena/arena.env', "compose must inject secrets from host file only");
 mustContain(compose, "read_only: true", "compose must keep the root filesystem read-only");
@@ -88,16 +96,13 @@ if (typeof piUndiciVersion !== "string") {
   throw new Error("cannot resolve pi-coding-agent nested undici version from package-lock.json");
 }
 if (compareVersions(piUndiciVersion, "8.9.0") < 0) {
-  mustNotContain(wrapper, "--mode=agent-shadow", "vulnerable Pi HTTP stack must not be enabled by server units");
-  mustNotContain(wrapper, "--mode=hybrid", "vulnerable Pi HTTP stack must not be enabled by server units");
+  mustNotContain(supervisorCli, "--mode=agent-shadow", "vulnerable Pi HTTP stack must not be enabled by server units");
+  mustNotContain(supervisorCli, "--mode=hybrid", "vulnerable Pi HTTP stack must not be enabled by server units");
+  mustNotContain(compose, "agent-shadow", "vulnerable Pi HTTP stack must not be enabled by compose");
+  mustNotContain(compose, "hybrid", "vulnerable Pi HTTP stack must not be enabled by compose");
 }
 if (/^ARENA_HERO_API_KEY_\d+=\S+/m.test(envExample)) {
   throw new Error("arena.env.example must not contain tenant secret values");
-}
-
-if (process.platform !== "win32") {
-  const syntax = spawnSync("bash", ["-n", wrapperPath], { encoding: "utf-8" });
-  if (syntax.status !== 0) throw new Error(`run-supervisor.sh syntax invalid: ${syntax.stderr}`);
 }
 
 const runtimeDir = mkdtempSync(join(tmpdir(), "arena-health-"));
