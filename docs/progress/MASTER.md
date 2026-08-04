@@ -38,6 +38,23 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 - **MacroPolicy 全模式启用（PR #21/#22，v0.1.9/v0.2.0）**：策略层在所有决策模式运行（deterministic 执行 + LLM 战略 = 原生设计）；DeterministicPlanner 透传 policy 给 Safety fallback；`PiSessionFactory` 原生支持空 customTools（策略层无工具，不再需要占位 hack）；策略初始化失败写入 `policy_init_error`（不再静默吞掉——修复根因：v0.1.9 生产 policy.jsonl 数小时 0 行）。
 - **激进战斗策略已上线（PR #13）**：SafetyPlanner `aggression` 配置 + STABLE_RULES 攻击导向 prompt + A/B 对打证据（6 seeds×500 ticks：aggressive pop=6 存活 vs defensive 军队全灭，0 illegal）。
 - **MacroPolicy 生产首次真实产出（2026-08-05）**：us1 live v0.2.0，tick 52055 四租户 policy_update（t1: harvest/workerTarget=12；t2-t4: harvest/workerTarget=16，militaryRatio=0）——LLM 战略层在生产 deterministic 模式真实运行（deepseek-v4-flash @ tokendancelab 网关，policy.jsonl 证据）。修复链：customTools:[] 校验拒绝（#22 原生空支持）→ 生产 config provider "newapi" vs auth.json "openai" 不匹配（服务器 config 修正）。
+
+## 死锁攻坚（2026-08-05，v0.2.3 → v0.2.7）
+
+生产 t1 实测 `capacity_wait:DEPOSIT` 死锁（40+ ticks 唯一意图、cargoTot 永不清零、经济停滞），逐层定位并破除：
+
+1. **v0.2.3 守家锚点**：满血 Vanguard 回防目标从 Core 格改为 Core 相邻格（`homeCell`/`vanguard_home`），军事单位永不再占回仓通道。根因：`decideVanguard` 无敌人时 `target = core.position`。
+2. **v0.2.4 SPAWN 解锁**：满载 Worker 在 Core 格不算"永久占位"（卸货等待），补员不再被 `unitsOnCore` 抑制。
+3. **v0.2.5 资源满让位**：`resourceSpace=0` 时 DEPOSIT 不合法（validator 每 tick 修复移除，repairCount=1），满载 Worker 让出 Core 格（`yieldDirection`）→ SPAWN 消耗 5 资源 → 卸货通道恢复。**完整破锁闭环，生产验证：SPAWN 执行（res 10→5）、workerCount 2→3、cargo 卸下、delta>0**。
+4. **v0.2.6 敌格绕行**：敌方格并入 `taskAction` 绕行障碍，回仓/采集路径自动绕开敌占格。
+5. **v0.2.7 半径受限确定性 BFS**：`nav.stepTowardPath`（半径 24/预算 4096/3× 距离剪枝）——旧扩框 BFS 在敌群围堵时走出包围盒或给出必被容量拒绝的 MOVE；新 BFS 局部绕行输出第一步，`stepToward` = 新 BFS → 旧扩框 BFS → fail-safe 回退链。另加容量预检：本 tick 已占满（≥2 实体）格并入绕行障碍（capacity_wait 循环的另一来源）。
+
+**检测设施（同步落地）**：
+- `stall detector`（v0.2.4+）：连续 16 ticks `delta=0 且满载滞留` → runtime.jsonl `stall_warning`（生产已触发 3 次，自动告警替代人工发现）。
+- `test/economy-loop.test.ts`（8 测试）：经济闭环长跑（决策→模拟结算 200 ticks，断言 cargo 周期清零/SPAWN 消耗闭环/守家锚点/资源满让位/敌格绕行）。
+- `test/nav-pathfinding.test.ts`（7 测试）：生产场景复刻（三面围堵绕行/四面围死 null）、直线墙绕行可达性、确定性、性能上限。
+
+**剩余已知卡点**：w1 满载 Worker 在 32 格外被敌方 Worker 群长期围堵（战场阻塞，非 planner 死锁——四面围死时 WAIT 正确；等敌群散开或 Vanguard 清场）。A/B 对照 t2（aggressive）经济更健康佐证防守策略需配合前压。
 - **经济死锁修复 + A/B 实验（v0.2.2，PR #25，2026-08-05）**：生产数据显示 deterministic SPAWN 锁死 emergency floor=2（t1 停 2 worker、策略 workerTarget=16 不生效）→ workerTarget 接线补员（reserve 保护 + emergency 保命优先）+ prompt 注入策略历史基线（防 16→3 跳变）+ config.policyOverride 实验框架。**A/B 第一轮已启动**：t1 = LLM 自主对照，t2 = 固定 aggressive/workerTarget=12/attackPriority=core 实验组（policy.jsonl policy_override 记录为证）。
 - **部署链路/状态机/世界状态设计稿（2026-08-04）**：`docs/design/deploy-fast-upgrade.md`（版本 pin 单源化 /opt/arena/version.env + upgrade.sh 一键升级 + 自动回滚——pin 丢失已两次实测）；`docs/design/game-state-machine.md`（Core 复活/自毁/upkeep 状态机 + 规则升级语义 + 决策层 respawnOverride）；`docs/design/world-state.md`（本地记忆 vs 服务器权威 + 资源记忆过期 + tick 回退世界重置检测）。
 - **工具链升级（2026-08-05）**：TypeScript 5.5 → 7.0.2（Go 原生编译器，`npm run check` 提速约 10x）；两包测试链全面切换 Node 24 原生 `node --test --test-force-exit`（hero-ts 53 + arena-agent 519 tests 全绿，0 fail），`tsx` 仅保留为 CLI 入口；消除 3 处 parameter properties 与 1 处 type-only import，tsconfig 开启 `verbatimModuleSyntax` 固化 erasable-only 规范；`npm run check` / `npm test` / `schema:check` / `replay:ts` / gen-status / docs_health 全绿。
