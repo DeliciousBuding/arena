@@ -42,6 +42,12 @@ args=(
 if [[ -n "${ARENA_STARTUP_SYNC_TICKS:-}" ]]; then
   args+=("--startup-sync-ticks=${ARENA_STARTUP_SYNC_TICKS}")
 fi
+if [[ -n "${ARENA_LIVE_TICKS:-}" ]]; then
+  args+=("--live-ticks=${ARENA_LIVE_TICKS}")
+fi
+if [[ -n "${ARENA_MAX_TICKS:-}" ]]; then
+  args+=("--max-ticks=${ARENA_MAX_TICKS}")
+fi
 if [[ -n "$debug_host" ]]; then
   args+=("--debug-host=$debug_host")
 fi
