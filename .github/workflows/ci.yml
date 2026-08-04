@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   quality:
     name: Check, test, contracts and docs
@@ -26,3 +30,28 @@ jobs:
       - run: npm run server:check
       - run: python scripts/gen-status.py --check
       - run: python scripts/docs_health.py --check
+
+  docker:
+    name: Build and push release image
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/deliciousbuding/arena:${{ github.sha }}
+            ghcr.io/deliciousbuding/arena:main
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
