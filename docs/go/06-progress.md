@@ -7,13 +7,13 @@
 
 | 批 | 内容 | 状态 | 用例数 | 覆盖率 | 差异日志 |
 |---|---|---|---|---|---|
-| B1 | 地基（go.mod/骨架/门禁/CI/version） | ⬜ 待开始 | — | — | — |
-| B2 | contracts + 黄金对齐 | ⬜ | — | — | — |
+| B1 | 地基（go.mod/骨架/门禁/CI/version） | ✅ `229fa77` | 7 | 100%（version） | — |
+| B2 | contracts + 黄金对齐 | 🔄 执行中 | — | — | — |
 | B3-A | hero 协议客户端 | ⬜ | — | — | — |
 | B3-B | domain（reducer/nav/world/validator/hash） | ⬜ | — | — | — |
-| B3-C | telemetry | ⬜ | — | — | — |
+| B3-C | telemetry | 🔄 执行中 | — | — | — |
 | B4-A | strategy（safety/deterministic/policy 类型） | ⬜ | — | — | — |
-| B4-B | mapstore | ⬜ | — | — | — |
+| B4-B | mapstore | ✅ 待提交 | 17（含 6 子用例 23） | 84.9% | — |
 | B5-A | runtime（lease/coordinator/arbiter/loop） | ⬜ | — | — | — |
 | B5-B | llm + agent（AgentLoop/Harness） | ⬜ | — | — | — |
 | B6 | policy 决策 + harness 工具集成 | ⬜ | — | — | — |
@@ -43,6 +43,8 @@
 - [x] 基线：198 个 TS/Python/Node 文件清出（`2caebdb`）
 - [x] 设计定稿：00-intent / 01-architecture / 02-contracts / 03-module-spec /
       04-test-strategy / 05-delivery-plan（2026-08-05）
-- [ ] B1 地基：go.mod、目录骨架、门禁脚本、CI、version 包
-- [ ] B2 契约：contracts 三组结构体 + 黄金对齐测试
-- [ ] B3 三 lane 并行：hero / domain / telemetry
+- [x] B1 地基：go.mod、目录骨架、门禁脚本、CI、version 包（`229fa77`，门禁全绿）
+- [ ] B2 契约：contracts 三组结构体 + 黄金对齐测试（执行中）
+- [ ] B3-C 遥测：JSONL/轮转/脱敏/manifest（执行中）
+- [ ] B3-A/B3-B：等 B2 完成后派发（hero / domain）
+- [x] B4-B mapstore：SQLite WAL 知识层（17 用例 / 84.9% 覆盖，双进程并发验证通过）

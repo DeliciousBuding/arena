@@ -8,8 +8,6 @@ runtime/
 runs/
 logs/
 alerts/
-telemetry/
-mapstore/
 *.jsonl
 *.sqlite
 *.sqlite-wal
