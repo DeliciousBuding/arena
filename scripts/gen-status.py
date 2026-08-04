@@ -87,6 +87,7 @@ def main() -> None:
             npx_bin,
             "tsx",
             "--test",
+            "--test-reporter=tap",
             "test/*.test.ts",
         ],
         "编排层测试",
