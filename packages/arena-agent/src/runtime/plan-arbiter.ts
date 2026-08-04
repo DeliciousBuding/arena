@@ -58,7 +58,11 @@ export interface ArbitrateResult {
 }
 
 export class PlanArbiter {
-  constructor(readonly config: PlanArbiterConfig = DEFAULT_ARBITER_CONFIG) {}
+  readonly config: PlanArbiterConfig;
+
+  constructor(config: PlanArbiterConfig = DEFAULT_ARBITER_CONFIG) {
+    this.config = config;
+  }
 
   arbitrate(input: ArbitrateInput): ArbitrateResult {
     const { state, agentCandidate } = input;

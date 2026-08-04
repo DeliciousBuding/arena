@@ -82,6 +82,7 @@ export interface SafetyPlannerInput {
 export class SafetyPlanner {
   readonly world: World;
   readonly phase: PhaseMachine;
+  readonly config: SafetyPlannerConfig;
   /** 本 decide 生效的 aggression（policy 优先，其次 config.aggression）。 */
   private effectiveAggression: AggressionLevel = "defensive";
   /** 本 decide 生效的 workerTarget（policy 优先，其次 config.workerTarget）。 */
@@ -90,9 +91,10 @@ export class SafetyPlanner {
   private effectivePolicy: MacroPolicy | null = null;
 
   constructor(
-    readonly config: SafetyPlannerConfig = DEFAULT_SAFETY_CONFIG,
+    config: SafetyPlannerConfig = DEFAULT_SAFETY_CONFIG,
     world = new World(),
   ) {
+    this.config = config;
     this.world = world;
     this.phase = new PhaseMachine(config.phase);
   }

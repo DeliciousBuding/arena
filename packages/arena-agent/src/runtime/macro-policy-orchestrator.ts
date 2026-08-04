@@ -9,7 +9,7 @@
  * - telemetry：每次策略更新回调 onPolicyUpdate（tenant-runtime 落盘）。
  */
 
-import { MacroPolicy, DEFAULT_MACRO_POLICY, isValidMacroPolicy, normalizeMacroPolicy } from "./macro-policy.ts";
+import { type MacroPolicy, DEFAULT_MACRO_POLICY, isValidMacroPolicy, normalizeMacroPolicy } from "./macro-policy.ts";
 import type { TickState } from "../domain/model.ts";
 
 export interface MacroPolicyOrchestratorOptions {

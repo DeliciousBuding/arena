@@ -9,12 +9,12 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --experimental-transform-types --test \"test/*.test.ts\""
+    "test": "node --test \"test/*.test.ts\""
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/ws": "^8.5.12",
-    "typescript": "^5.5.0"
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=24.0.0"

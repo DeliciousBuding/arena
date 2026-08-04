@@ -1,6 +1,6 @@
 # Arena 当前执行状态
 
-> 最后更新：2026-08-04。代码、测试、run manifest、JSONL 与 Runtime-Golden 优先于聊天记录。
+> 最后更新：2026-08-05。代码、测试、run manifest、JSONL 与 Runtime-Golden 优先于聊天记录。
 
 ## 当前阶段
 
@@ -35,11 +35,14 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 - Digital Twin S0–S12 / P06 / P12 与首份 Runtime-Golden 已落地。
 - **Pi 模型网关链路已验证（2026-08-04）**：`~/.pi/agent/{models.json, auth.json}` 原生配置（内置 openai provider + baseUrl 覆盖 newapi 网关 `api.tokendancelab.com`）；本地实测网关 200 OK 1.1s、简单 prompt 5.6s、生产形态 prompt 18–57s（agent 模型多步推理，超出 15s tick 窗口——印证 per-tick LLM 关闭路线）。
 - **低频 MacroPolicy 已实现（PR #16/#17，v0.1.7）**：`MacroPolicy`（posture/workerTarget/militaryRatio/focusRegion/attackPriority）+ `MacroPolicyOrchestrator`（每 32 ticks 异步 Pi 产出，60s 超时不占 tick 窗口，失败 sticky 不轰炸）+ 独立策略 Pi session + `policy.jsonl` telemetry；SafetyPlanner 消费 posture→aggression（激进分支含 Vanguard 前压攻坚、Ranger 断经济）。
+- **MacroPolicy 全模式启用（PR #21/#22，v0.1.9/v0.2.0）**：策略层在所有决策模式运行（deterministic 执行 + LLM 战略 = 原生设计）；DeterministicPlanner 透传 policy 给 Safety fallback；`PiSessionFactory` 原生支持空 customTools（策略层无工具，不再需要占位 hack）；策略初始化失败写入 `policy_init_error`（不再静默吞掉——修复根因：v0.1.9 生产 policy.jsonl 数小时 0 行）。
 - **激进战斗策略已上线（PR #13）**：SafetyPlanner `aggression` 配置 + STABLE_RULES 攻击导向 prompt + A/B 对打证据（6 seeds×500 ticks：aggressive pop=6 存活 vs defensive 军队全灭，0 illegal）。
+- **部署链路/状态机/世界状态设计稿（2026-08-04）**：`docs/design/deploy-fast-upgrade.md`（版本 pin 单源化 /opt/arena/version.env + upgrade.sh 一键升级 + 自动回滚——pin 丢失已两次实测）；`docs/design/game-state-machine.md`（Core 复活/自毁/upkeep 状态机 + 规则升级语义 + 决策层 respawnOverride）；`docs/design/world-state.md`（本地记忆 vs 服务器权威 + 资源记忆过期 + tick 回退世界重置检测）。
+- **工具链升级（2026-08-05）**：TypeScript 5.5 → 7.0.2（Go 原生编译器，`npm run check` 提速约 10x）；两包测试链全面切换 Node 24 原生 `node --test --test-force-exit`（hero-ts 53 + arena-agent 519 tests 全绿，0 fail），`tsx` 仅保留为 CLI 入口；消除 3 处 parameter properties 与 1 处 type-only import，tsconfig 开启 `verbatimModuleSyntax` 固化 erasable-only 规范；`npm run check` / `npm test` / `schema:check` / `replay:ts` / gen-status / docs_health 全绿。
 
 ## 自动化证据
 
-- SDK、arena-agent、schema、Python 模块计数：`docs/generated/status.md`（唯一生成源，勿手改；arena-agent 495 含锁 PID 复用回归与 Runtime-Golden 覆盖工具用例）；
+- SDK、arena-agent、schema、Python 模块计数：`docs/generated/status.md`（唯一生成源，勿手改；arena-agent 519 含锁 PID 复用回归与 Runtime-Golden 覆盖工具用例）；
 - Supervisor Windows：19/19；Linux Node 24 定向：86/86（专项跑测记录，非 status.md 覆盖项）；
 - TS replay：100 records；
 - simulator economy 10,000 Tick 与 movement 随机 10,000 cases invariant 通过。

@@ -15,10 +15,13 @@ export const DEFAULT_PHASE_CONFIG: PhaseConfig = Object.freeze({
 });
 
 export class PhaseMachine {
+  private readonly config: PhaseConfig;
   private current: GamePhase = "early_expansion";
   private forced: GamePhase | null = null;
 
-  constructor(private readonly config: PhaseConfig = DEFAULT_PHASE_CONFIG) {}
+  constructor(config: PhaseConfig = DEFAULT_PHASE_CONFIG) {
+    this.config = config;
+  }
 
   get phase(): GamePhase {
     return this.forced ?? this.current;
