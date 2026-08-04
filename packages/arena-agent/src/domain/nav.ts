@@ -135,9 +135,12 @@ export function stepToward(
   }
 
   // ③ 极端情况下（目标被超长障碍完全包围）保持 fail-safe：只走一个不会撞墙、
-  // 且方向尽量朝向目标的格；若四周全堵则 WAIT。
+  // 且**离目标更近**的格（横跳——在墙前左右移动不接近目标——浪费 tick 且
+  // 敌群/障碍会移动，WAIT 让下一 tick 重新评估更优）；没有可接近的格则 WAIT。
   for (const direction of orderedDirections(position, target)) {
-    if (!obstacles.has(cellKey(move(position, direction)))) return direction;
+    const next = move(position, direction);
+    if (obstacles.has(cellKey(next))) continue;
+    if (manhattan(next, target) < manhattan(position, target)) return direction;
   }
   return null;
 }
