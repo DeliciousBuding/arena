@@ -88,8 +88,8 @@ client.turns() → Turn（SDK）
 ## 验证与门禁
 
 ```bash
-npm run check                # tsc --noEmit
-npm test                     # arena-agent 编排层测试（tsx --test）
+npm run check                # tsc --noEmit（TypeScript 7 原生 Go 编译器）
+npm test                     # 两包测试（node --test --test-force-exit，Node 24 原生跑 TS）
 npm run schema:check         # contracts 契约零漂移
 npm run replay:ts            # 冻结 W3 fixture 的 TS 回放
 python scripts/gen-status.py --check

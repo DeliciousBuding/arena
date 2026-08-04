@@ -67,7 +67,6 @@ def main() -> None:
     sdk_tests, sdk_passed, sdk_failed, _sdk_skipped = node_tap_counts(
         [
             "node",
-            "--experimental-transform-types",
             "--test",
             "--test-reporter=tap",
             *[str(path) for path in sorted(SDK_TEST_DIR.glob("*.test.ts"))],
@@ -76,9 +75,9 @@ def main() -> None:
     )
     agent_tests, agent_passed, agent_failed, _agent_skipped = node_tap_counts(
         [
-            "npx.cmd" if sys.platform == "win32" else "npx",
-            "tsx",
+            "node",
             "--test",
+            "--test-force-exit",
             "--test-reporter=tap",
             *[str(path) for path in sorted(AGENT_TEST_DIR.glob("*.test.ts"))],
         ],
