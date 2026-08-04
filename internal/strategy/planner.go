@@ -112,6 +112,11 @@ func (p *Planner) decideUnit(state *domain.TickState, unitID string) (domain.Uni
 
 func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapshot) (domain.UnitAction, string, bool) {
 	if unit.Cargo >= 1 {
+		if state.ResourceSpace <= 0 {
+			// Core 容量已满（resources == capacity）：无处可存，
+			// 原地等待防 deposit 非法动作循环。
+			return domain.UnitAction{Kind: domain.ActionWait}, "wait_full", true
+		}
 		if state.Core != nil && unit.Position == state.Core.Position {
 			return domain.UnitAction{Kind: domain.ActionDeposit}, "deposit", true
 		}

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/deliciousbuding/arena/internal/domain"
 	"github.com/deliciousbuding/arena/internal/hero"
 	"github.com/deliciousbuding/arena/internal/runtime"
 	"github.com/deliciousbuding/arena/internal/strategy"
@@ -81,12 +82,12 @@ func runTenantCmd(args []string) int {
 		baseDir = "runtime"
 	}
 	tenantDir := filepath.Join(baseDir, configFile.TenantID)
-	telemetryDir := filepath.Join(tenantDir, "telemetry")
-	if err := os.MkdirAll(telemetryDir, 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "arena tenant: create telemetry dir: %v\n", err)
+	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102T150405"))
+	runDir := filepath.Join(tenantDir, "runs", runID)
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "arena tenant: create run dir: %v\n", err)
 		return exitError
 	}
-	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102T150405"))
 
 	heroConfig := hero.DefaultConfig(apiKey)
 	heroConfig.Logger = logger
@@ -102,12 +103,15 @@ func runTenantCmd(args []string) int {
 		return exitConfig
 	}
 
-	runtimeLog, err := telemetry.Open(filepath.Join(telemetryDir, "runtime.jsonl"))
+	// 遥测与 manifest 按 run 隔离写入（run-scoped telemetry）：
+	// runtime/<tenant>/runs/<run-id>/{runtime,decision}.jsonl + manifest.json。
+	// 跨运行不再 append 同一文件（避免 tick 赛马数据污染）。
+	runtimeLog, err := telemetry.Open(filepath.Join(runDir, "runtime.jsonl"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "arena tenant: open runtime log: %v\n", err)
 		return exitError
 	}
-	decisionLog, err := telemetry.Open(filepath.Join(telemetryDir, "decision.jsonl"))
+	decisionLog, err := telemetry.Open(filepath.Join(runDir, "decision.jsonl"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "arena tenant: open decision log: %v\n", err)
 		return exitError
@@ -125,14 +129,12 @@ func runTenantCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "arena tenant: build manifest: %v\n", err)
 		return exitError
 	}
-	runDir := filepath.Join(tenantDir, "runs", runID)
-	if err := os.MkdirAll(runDir, 0o700); err == nil {
-		_ = telemetry.WriteManifest(filepath.Join(runDir, "manifest.json"), manifest)
-	}
+	_ = telemetry.WriteManifest(filepath.Join(runDir, "manifest.json"), manifest)
 
 	loop := &runtime.Loop{
 		Client:  client,
 		Planner: strategy.NewPlanner(strategy.DefaultConfig()),
+		World:   domain.NewWorld(),
 		Config: runtime.TenantConfig{
 			TenantID:       configFile.TenantID,
 			BaseURL:        heroConfig.BaseURL,
