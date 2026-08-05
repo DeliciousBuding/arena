@@ -2,7 +2,11 @@ import { cellKey, type Direction, type Position } from "./model.ts";
 
 const DIRECTION_ORDER: readonly Direction[] = ["RIGHT", "DOWN", "LEFT", "UP"];
 export const EXPLORE_DIRECTION_COUNT = 8;
-export const EXPLORE_RING_COUNT = 4;
+/** 巡逻探索环数：半径 × (1..EXPLORE_RING_COUNT)。
+ *  4 → 覆盖 8/16/24/32 格；5 → 覆盖 8/16/24/32/40 格（2026-08-06 生产实证：
+ *  t1 资源枯竭时矿在 Core 40 格外，4 环巡逻永远测绘不到——40 格矿只有
+ *  5 环巡逻（环半径 40 + 视野 5）才能进入视野记忆）。 */
+export const EXPLORE_RING_COUNT = 5;
 /** 顺时针 8 方位：东、东南、南、西南、西、西北、北、东北。 */
 const EXPLORE_DELTAS: readonly Position[] = [
   [1, 0],

@@ -209,8 +209,14 @@ export class World {
   }
 
   resourceHints(options: { maxAge?: number; failedCooldown?: number } = {}): readonly Position[] {
-    const maxAge = options.maxAge ?? 8;
-    const failedCooldown = options.failedCooldown ?? 4;
+    // maxAge 8→32、failedCooldown 4→32（2026-08-06 生产实证配对）：
+    // - 记忆窗口 32 tick：巡逻环升级需要数十 tick（8 worker 分头巡逻一圈），
+    //   stale 记忆 8 tick 就过期导致"刚见过就忘"（t1 生产 40 格矿测绘不到）；
+    // - 耗尽冷却 32 tick：RESOURCE_DEPLETED 确认的矿 32 tick 内不再提示——
+    //   否则 worker 反复试近处空矿（t1 生产 maxDist 12-17 空转近处、巡逻环
+    //   永不推进的证据），冷却与记忆窗口同量级防空转。
+    const maxAge = options.maxAge ?? 32;
+    const failedCooldown = options.failedCooldown ?? 32;
     const visible: ResourceMemory[] = [];
     const recent: ResourceMemory[] = [];
     for (const memory of this.resourceMemory.values()) {

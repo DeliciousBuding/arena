@@ -18,7 +18,8 @@ import type { MacroPolicy } from "../src/runtime/macro-policy.ts";
 const MANIFEST_PATH = "src/sim/contracts/rules-v0.11.json";
 const RESULT_FILE = "resource-scarcity-result.txt";
 
-/** 资源枯竭场景：近处 2 格资源（开局即采），远处 30 格外 6 格资源（巡逻够不到）。 */
+/** 资源枯竭场景：近处 2 格资源（开局即采），远处 40 格外 6 格资源（复刻生产
+ *  t1 实测：矿在 Core 40 格外——4 环巡逻覆盖 32 格永远测绘不到）。 */
 function scarcityScenario(seed: number) {
   return {
     rulesVersion: "v0.11",
@@ -36,7 +37,7 @@ function scarcityScenario(seed: number) {
     ],
     terrain: {
       obstacles: [],
-      resources: [[2, 0], [3, 0], [32, 0], [33, 0], [34, 0], [35, 0], [32, 1], [33, 1]],
+      resources: [[2, 0], [3, 0], [40, 0], [41, 0], [42, 0], [43, 0], [40, 1], [41, 1]],
     },
     beacon: { position: [100, 100], status: "GROUND", carrierId: null },
   };
