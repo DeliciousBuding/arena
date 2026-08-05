@@ -31,6 +31,7 @@ async function main(): Promise<void> {
       "live-ticks": { type: "string" },
       "max-ticks": { type: "string" },
       "startup-sync-ticks": { type: "string" },
+      "record-calibration": { type: "boolean" },
       "shutdown-timeout-ms": { type: "string" },
       port: { type: "string" },
       "debug-host": { type: "string" },
@@ -61,6 +62,8 @@ async function main(): Promise<void> {
   const decisionMode = values.mode ?? process.env.ARENA_DECISION_MODE ?? "deterministic";
   if (serviceMode === "shadow") tenantArgs.push(`--mode=${decisionMode}`, "--shadow");
   if (serviceMode === "live") tenantArgs.push(`--mode=${decisionMode}`, "--live");
+  // S8b 旁路 Runtime-Golden：仅 live 有效（run-tenant 门禁），透传给每个 child
+  if (values["record-calibration"] === true) tenantArgs.push("--record-calibration");
   for (const [key, flag] of [
     ["live-ticks", "--live-ticks"],
     ["max-ticks", "--max-ticks"],
