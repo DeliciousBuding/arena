@@ -186,3 +186,36 @@
 - [ ] t4 真机 100t 验证优化后默认参数（spawnReserve=2, exploreRadius=22, populationCeiling=30）
 - [ ] 杂交：模拟退火最佳 + GA 精英 → 手动调参基线
 - [ ] 多场景评分（多拓扑取最差 score 而非单场景）
+
+## E7 游戏逻辑利用 + 振荡修复（2026-08-05）
+
+### refill 引擎（官方 v0.13 落地）
+- [x] `internal/sim/refill.go`：每 4 tick chunk 配额补满
+      `max(2, floor(128/(8+ring)))`，视野揭示，采空格立即消失
+- [x] `internal/sim/vision.go`：并集视野 Worker 3 / Core 5 /
+      Vanguard 4 / Ranger 5（Chebyshev）
+- [x] `internal/sim/economy.go`：harvest 成功后格从 ResourceCells 移除
+- [x] `internal/sim/engine.go`：Engine.Refill 可选挂载（nil = 纯结算，
+      fixture 回放路径不变）
+- [x] refill_test.go 8 项（reveal/mined/配额/集成/视野数值）
+
+### planner 振荡/死循环修复（refill 真实化后暴露）
+- [x] 排队不绕行：moveToward 不再把己方单位并入 BFS 障碍——拥挤时
+      绕行路径每 tick 变化 → 横跳振荡；理想第一步被占 → WAIT 排队
+- [x] 目标被占走相邻格等待（不横跳远离）
+- [x] 仲裁降级的空载 worker 在 Core 上 → 让位（yield_core_wait）：
+      deposit 完的空载 worker 堵仓库口，满载进不来
+- [x] Core 格路径语义：目标非 Core 时 Core 视为障碍（探索路径不穿越
+      仓库口）
+- [x] 实证：8 格 refill 闭环 60 tick H=17 D=13 S=4 workers 2→6
+      （修复前 t10 后经济冻结）
+- [x] 提交：`fd05415`
+
+### 参数优化升级（refill 评分）
+- [x] optsearch 挂载 refill 引擎（optLatentResources 12 格池）
+- [x] 旧模型 SA/GA 同分（单格场景参数平坦）；refill 模型区分度显现：
+      默认 129 分 → SA `{6,1,16,21}`=174（+35%）、GA `{10,1,22,13}`=174
+- [x] 双算法共识：spawnReserve=1（refill 下资源持续流入）
+- [x] DefaultConfig 落地：workerTarget 8→6、spawnReserve 5→1、
+      populationCeiling 20→21（`c7d22ab`）
+- [x] mapview -vision 视野圈叠加（cmd/mapview/main.go）

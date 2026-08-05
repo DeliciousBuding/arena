@@ -72,7 +72,34 @@ IDLE ──to_resource──▶ TO_RESOURCE ──到达──▶ HARVEST ──
 - 事件：`economy.stagnant`（30 tick 无进展）、`migration.candidate`
   （MIGRATE_CAND 触发）、`unit.stuck_yield`（停滞跳出次数）
 
-## 6. 红线
+## 7. 游戏逻辑利用（refill / 视野揭示）
+
+官方规则（v0.13）落地为 sim 引擎（`internal/sim/refill.go` / `vision.go`）：
+- 资源每 4 tick 每个 chunk 配额补满 `max(2, floor(128/(8+ring)))`；
+- 只有视野扫过的格才 reveal（进入 ResourceCells）——并集视野
+  Worker 3 / Core 5 / Vanguard 4 / Ranger 5；
+- 采空格立即消失（harvest 后从 ResourceCells 移除，markMined）。
+
+planner 侧四条语义（refill 场景真实化后暴露的振荡/死循环修复）：
+
+| 规则 | 场景 | 修复 |
+|---|---|---|
+| 排队不绕行 | 拥挤时 BFS 绕行路径每 tick 变化 → 横跳振荡 | moveToward 不把己方单位并入 BFS 障碍；理想第一步被占 → WAIT 排队 |
+| 目标被占走相邻 | 回仓 worker 目标 Core 格被占 | 走到目标相邻格等待（已在相邻则 WAIT） |
+| 空载让出仓库口 | deposit 完的空载 worker 在 Core 上等分配，仲裁失败原地 WAIT | 仲裁降级 + 空载 + 在 Core 上 → 让位（yield_core_wait） |
+| Core 格路径语义 | 探索 worker 反复穿过 Core 格堵住回仓 | 目标非 Core 时 Core 视为障碍（路径不穿越仓库口） |
+
+### 参数优化升级（refill 评分）
+
+optsearch 挂载 refill 引擎后重新搜索（双算法共识）：
+- 旧模型（资源永不再生）：SA/GA 同分，参数区分度低；
+- refill 模型：默认 129 分 → SA `{6,1,16,21}`=174（+35%）、
+  GA `{10,1,22,13}`=174；**共识 spawnReserve=1**（资源持续流入，
+  攒资源浪费大于 buffer 收益）；
+- DefaultConfig 落地 SA 解：workerTarget 8→6、spawnReserve 5→1、
+  populationCeiling 20→21。
+
+## 8. 红线
 
 - MIGRATE_CAND **只评估不执行**：START_MOVE 需要 operator 显式启用
   （配置 `enableCoreMigration: true`）后才会由 planner 发出。
