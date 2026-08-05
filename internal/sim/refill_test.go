@@ -159,3 +159,73 @@ func TestInUnionVision(t *testing.T) {
 		t.Errorf("(2,2) should be in core vision (core at (0,0), r=5)")
 	}
 }
+
+// TestRefillOverQuotaRestoresLowestCoords：超配额 chunk 时按坐标升序
+// 恢复（确定性）——mined 3 格配额 2 → 恢复坐标最小的 2 格（x 优先，
+// 同 x 取 y 小），与调用顺序无关（回归：map 迭代序漂移修复）。
+// 直接检查 refill 内部状态（远端格不在视野内，reveal 不显示）。
+// ring 35 chunk（x 1120..1152）：配额 floor(128/43)=2 < 3 mined。
+func TestRefillOverQuotaRestoresLowestCoords(t *testing.T) {
+	state := baseState()
+	state.Tick = 4
+	cells := []domain.Position{{1120, 1}, {1120, 3}, {1121, 2}}
+	refill := NewRefillConfig(cells)
+	for _, pos := range cells {
+		refill.markMined(pos)
+	}
+	state.Tick = 8
+	refill.applyRefillAndReveal(state)
+	restored := 0
+	for _, pos := range cells {
+		if refill.latent[domain.CellKey(pos[0], pos[1])].state == refillActive {
+			restored++
+		}
+	}
+	if restored != 2 {
+		t.Fatalf("restored = %d, want 2 (quota)", restored)
+	}
+	// 坐标升序：x=1120 先（y 1、3），x=1121 后。
+	if refill.latent[domain.CellKey(1120, 1)].state != refillActive ||
+		refill.latent[domain.CellKey(1120, 3)].state != refillActive {
+		t.Errorf("expected lowest-x cells restored (1120,1)/(1120,3), got states %v/%v/%v",
+			refill.latent[domain.CellKey(1120, 1)].state,
+			refill.latent[domain.CellKey(1120, 3)].state,
+			refill.latent[domain.CellKey(1121, 2)].state)
+	}
+	if refill.latent[domain.CellKey(1121, 2)].state == refillActive {
+		t.Errorf("(1121,2) should NOT be restored (quota 2, x=1121 last)")
+	}
+}
+
+// TestRefillRestoreOrderDeterministicAcrossInstances：超配额场景两个
+// 独立实例恢复结果一致（确定性，与构造顺序无关）。
+func TestRefillRestoreOrderDeterministicAcrossInstances(t *testing.T) {
+	cells := []domain.Position{{1120, 1}, {1120, 3}, {1121, 2}}
+	restore := func(order []domain.Position) map[string]bool {
+		state := baseState()
+		state.Tick = 4
+		refill := NewRefillConfig(order)
+		for _, pos := range order {
+			refill.markMined(pos)
+		}
+		state.Tick = 8
+		refill.applyRefillAndReveal(state)
+		result := make(map[string]bool)
+		for _, pos := range cells {
+			result[domain.CellKey(pos[0], pos[1])] = refill.latent[domain.CellKey(pos[0], pos[1])].state == refillActive
+		}
+		return result
+	}
+	first := restore(cells)
+	reversed := make([]domain.Position, len(cells))
+	for i := range cells {
+		reversed[i] = cells[len(cells)-1-i]
+	}
+	second := restore(reversed)
+	for _, pos := range cells {
+		key := domain.CellKey(pos[0], pos[1])
+		if first[key] != second[key] {
+			t.Errorf("restore differs by input order for %s: %v vs %v", key, first[key], second[key])
+		}
+	}
+}

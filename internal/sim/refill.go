@@ -2,6 +2,7 @@ package sim
 
 import (
 	"math"
+	"sort"
 
 	"github.com/deliciousbuding/arena/internal/domain"
 )
@@ -105,7 +106,8 @@ func (c *RefillConfig) reveal(state *domain.TickState) {
 }
 
 // refill 每 4 tick 把已采空格恢复为 active（chunk 配额内），
-// 模拟服务器补满配额。
+// 模拟服务器补满配额。确定性：mined 格按坐标升序恢复（注释声称的
+// 语义，实测缺失——超配额 chunk 时 map 迭代序导致评分漂移）。
 func (c *RefillConfig) refill(state *domain.TickState) {
 	byChunk := make(map[domain.Position][]*refillCell)
 	for _, cell := range c.latent {
@@ -123,7 +125,13 @@ func (c *RefillConfig) refill(state *domain.TickState) {
 				mined = append(mined, cell)
 			}
 		}
-		// 补到配额：mined 格按确定性顺序（坐标升序）恢复。
+		// 补到配额：mined 格按坐标升序恢复（确定性，x 优先）。
+		sort.Slice(mined, func(i, j int) bool {
+			if mined[i].position[0] != mined[j].position[0] {
+				return mined[i].position[0] < mined[j].position[0]
+			}
+			return mined[i].position[1] < mined[j].position[1]
+		})
 		for _, cell := range mined {
 			if activeCount >= quota {
 				break
