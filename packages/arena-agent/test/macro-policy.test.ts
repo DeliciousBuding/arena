@@ -17,6 +17,7 @@ import {
 import { MacroPolicyOrchestrator, RESPAWN_OVERRIDE_POLICY, parsePolicyText } from "../src/runtime/macro-policy-orchestrator.ts";
 import { buildMacroPolicyPrompt, readLastAssistantText } from "../src/infrastructure/pi/policy-prompt.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../src/strategies/safety-planner.ts";
+import { PolicyDiscipline } from "../src/runtime/policy-discipline.ts";
 
 function makeState(tick: number): TickState {
   return {
@@ -374,4 +375,58 @@ test("SafetyPlanner: clear-path 清障（TS-009）——满载 Worker 回仓路�
   const clearPlan = clearer.decide({ state: clearState });
   assert.equal(clearPlan.unitActions[vanguardId]?.type, "MOVE");
   assert.equal(clearPlan.intents[vanguardId], "vanguard_clear_path");
+});
+
+test("PolicyDiscipline: 连续远焦点触发禁言（focusRegion 强制 null）", () => {
+  const discipline = new PolicyDiscipline({ invalidFocusThreshold: 2 });
+  const core = { position: [0, 0] as const };
+  const farPolicy = { posture: "balanced" as const, workerTarget: 8, militaryRatio: 0.3, focusRegion: [1500, 1500] as const, attackPriority: null };
+  // 第一次无效焦点：记录但不改（一次可能是失误）
+  const first = discipline.apply(farPolicy, { tick: 100, core });
+  assert.equal(first.event?.kind, "invalid_focus");
+  assert.equal(first.event?.count, 1);
+  assert.deepEqual(first.policy.focusRegion, [1500, 1500]);
+  // 第二次连续无效：触发禁言 + focusRegion 强制 null
+  const second = discipline.apply(farPolicy, { tick: 132, core });
+  assert.equal(second.event?.kind, "silence_started");
+  assert.equal(second.policy.focusRegion, null);
+  assert.equal(discipline.isSilenced(132), true);
+  // 禁言期内：任何焦点都被强制 null（保留其余字段）
+  const nearPolicy = { ...farPolicy, focusRegion: [5, 5] as const };
+  const silenced = discipline.apply(nearPolicy, { tick: 200, core });
+  assert.equal(silenced.policy.focusRegion, null);
+  assert.equal(silenced.event, null);
+  // 期满恢复：合法焦点放行
+  const after = discipline.apply(nearPolicy, { tick: 132 + 128 + 1, core });
+  assert.deepEqual(after.policy.focusRegion, [5, 5]);
+});
+
+test("PolicyDiscipline: 合法焦点清零连续计数（不误伤正常聚焦）", () => {
+  const discipline = new PolicyDiscipline({ invalidFocusThreshold: 2 });
+  const core = { position: [0, 0] as const };
+  const farPolicy = { posture: "balanced" as const, workerTarget: 8, militaryRatio: 0.3, focusRegion: [1500, 1500] as const, attackPriority: null };
+  const nearPolicy = { ...farPolicy, focusRegion: [10, 10] as const };
+  discipline.apply(farPolicy, { tick: 100, core }); // 1 次无效
+  const cleared = discipline.apply(nearPolicy, { tick: 132, core }); // 合法 → 清零
+  assert.equal(cleared.event, null);
+  const again = discipline.apply(farPolicy, { tick: 164, core });
+  assert.equal(again.event?.kind, "invalid_focus");
+  assert.equal(again.event?.count, 1, "合法焦点后重新计数");
+});
+
+test("PolicyDiscipline: 无 Core 时焦点不判无效（防御分支不误伤）", () => {
+  const discipline = new PolicyDiscipline();
+  const farPolicy = { posture: "balanced" as const, workerTarget: 8, militaryRatio: 0.3, focusRegion: [1500, 1500] as const, attackPriority: null };
+  const result = discipline.apply(farPolicy, { tick: 100, core: null });
+  assert.equal(result.event, null);
+  assert.deepEqual(result.policy.focusRegion, [1500, 1500]);
+});
+
+test("PolicyDiscipline: prompt 指挥状态注入（stall_recovery/escalation 行）", () => {
+  const base = buildMacroPolicyPrompt(makeState(100));
+  assert.ok(!base.includes("command state:"), "正常态不注入指挥状态行");
+  const recovery = buildMacroPolicyPrompt(makeState(100), { commandState: "stall_recovery" });
+  assert.ok(recovery.includes("command state: stall_recovery active"), "recovery 态注入配合指引");
+  const escalation = buildMacroPolicyPrompt(makeState(100), { commandState: "escalation" });
+  assert.ok(escalation.includes("command state: escalation active"), "escalation 态注入配合指引");
 });

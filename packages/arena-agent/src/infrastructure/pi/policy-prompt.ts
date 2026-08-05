@@ -18,6 +18,8 @@ export function buildMacroPolicyPrompt(
     readonly previousPolicy?: string | null;
     /** 最近 stall 告警摘要（检测器事件；无则省略该行）。 */
     readonly recentStallEvents?: readonly string[];
+    /** 决策指挥状态（执行层临时接管时策略层必须配合）：policy/stall_recovery/escalation。 */
+    readonly commandState?: string;
   } = {},
 ): string {
   const coreLine = state.core === null
@@ -34,6 +36,12 @@ export function buildMacroPolicyPrompt(
   const stallLine = (extras.recentStallEvents ?? []).length === 0
     ? null
     : `recent stall warnings: ${(extras.recentStallEvents ?? []).join(" | ")}`;
+  const commandLine =
+    extras.commandState === undefined || extras.commandState === "policy"
+      ? null
+      : extras.commandState === "stall_recovery"
+        ? "command state: stall_recovery active（执行层自愈中——你必须 focusRegion=null，配合回仓恢复）"
+        : "command state: escalation active（执行层 all-in 军事翻盘中——不要输出 focusRegion，维持 aggressive 姿态）";
   return [
     "你是 Arena Hero 的战略指挥官，只做低频宏观决策，不做逐 Tick 战术。",
     "根据以下宏观状态，输出一个策略 JSON 对象（不要输出任何其他内容，不要 markdown 围栏）：",
@@ -61,6 +69,7 @@ export function buildMacroPolicyPrompt(
     trendLine,
     baselineLine,
     ...(stallLine === null ? [] : [stallLine]),
+    ...(commandLine === null ? [] : [commandLine]),
   ].join("\n");
 }
 
