@@ -41,11 +41,11 @@ import "unsafe"
 type ffiLibLinux struct {
 	handle unsafe.Pointer // dlopen 句柄
 	// dlsym 返回的函数地址。使用 unsafe.Pointer 保存，由上面的 C trampoline 调用。
-	newPlannerFn      unsafe.Pointer
-	decideFn          unsafe.Pointer
-	applyDirectiveFn  unsafe.Pointer
-	freePlannerFn     unsafe.Pointer
-	stringFreeFn      unsafe.Pointer
+	newPlannerFn     unsafe.Pointer
+	decideFn         unsafe.Pointer
+	applyDirectiveFn unsafe.Pointer
+	freePlannerFn    unsafe.Pointer
+	stringFreeFn     unsafe.Pointer
 }
 
 func openFFILib(path string) (*ffiLibLinux, error) {
