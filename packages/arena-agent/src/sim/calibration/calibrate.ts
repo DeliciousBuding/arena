@@ -58,6 +58,7 @@ interface ComparisonContext {
 }
 
 function canonicalize(value: unknown): unknown {
+  if (value === undefined) return null;
   if (Array.isArray(value)) return value.map(canonicalize);
   if (typeof value !== "object" || value === null) return value;
   const source = value as Record<string, unknown>;
@@ -164,7 +165,7 @@ function normalizeState(state: PlayerState): unknown {
       actor_id: normalizeId(event.actor_id, generatedIds),
       target_id: normalizeId(event.target_id, generatedIds),
       position: event.position === null ? null : parsePosition(event.position),
-      values: event.values,
+      values: event.values ?? null,
     }));
 
   return {
@@ -201,9 +202,7 @@ function classifyDifference(
 ): CalibrationDifferenceClass {
   if (context.beaconUnknown && path.startsWith("$.champion_beacon")) return "EXPECTED_UNKNOWN";
   if (context.refillUnknown && path.startsWith("$.terrain.resources")) return "EXPECTED_UNKNOWN";
-  if (context.dynamicStateUnknown && !path.startsWith("$.terrain.obstacles")) {
-    return "EXPECTED_UNKNOWN";
-  }
+  if (context.dynamicStateUnknown) return "EXPECTED_UNKNOWN";
   if (
     context.harvestSourceUnknown &&
     (path.startsWith("$.events") || path.endsWith(".cargo") || path.startsWith("$.terrain.resources"))
@@ -211,6 +210,10 @@ function classifyDifference(
     return "EXPECTED_UNKNOWN";
   }
   if (path.startsWith("$.terrain.obstacles.") && expected === true && actual === undefined) {
+    const key = path.slice("$.terrain.obstacles.".length);
+    if (!context.beforeObstacles.has(key)) return "EXPECTED_UNKNOWN";
+  }
+  if (path.startsWith("$.terrain.obstacles.") && expected === undefined && actual === true) {
     const key = path.slice("$.terrain.obstacles.".length);
     if (!context.beforeObstacles.has(key)) return "EXPECTED_UNKNOWN";
   }
@@ -252,8 +255,8 @@ function collectDifferences(
   output.push({
     class: classifyDifference(path, expected, actual, context),
     path,
-    expected,
-    actual,
+    expected: expected === undefined ? null : expected,
+    actual: actual === undefined ? null : actual,
     note: null,
   });
   return output;
