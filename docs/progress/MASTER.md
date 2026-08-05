@@ -8,6 +8,8 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 
 固定优先级：正确性 → 可恢复性 → 可观测性 → 确定性收益 → 数据质量 → 模拟器真实性 → ML。
 
+当前 TS 主线不再以 W7-W18 的旧时间切片驱动；**执行 SSOT 为 `docs/ts-execution-plan.md`**。当前主序列：KPI report → TS experiment manifest → named PlannerVariant registry → baseline freeze → CandidateEvaluator → 扩展现有 runAB/ABReport → economy/clear-path candidates。并行上限为可靠性、Planner、评估各一项，生产/服务器轨道默认只占 20%。
+
 ## 已完成事实
 
 - TS SDK、schema、协议归一化和 53 项 SDK 测试；

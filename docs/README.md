@@ -10,8 +10,9 @@
 | 要做什么 | 读 |
 |----------|----|
 | 当前进度 / 门禁 / 未通过项 | `progress/MASTER.md` |
+| **TS 当前执行计划 / 6 周波次 / Issue-ready backlog** | `ts-execution-plan.md` |
 | TS 迁移计划 W0-W6 切片 | `migration-plan.md` |
-| 长期路线图 W7-W18 | `roadmap-long-term.md` |
+| 长期能力愿景 W7-W18（非当前 backlog） | `roadmap-long-term.md` |
 | 项目目标与商店战略 | `GOAL.md` |
 | 限流与并发边界 | `LIMITS.md` |
 | 架构（Python 退役参考 + TS 主线） | `ARCHITECTURE.md`、`ts-architecture.md` |
@@ -38,7 +39,7 @@
 - SDK：`sdk-quickstart.md`、`sdk-reference.md`、`tactic-authoring.md`、`direct-play.md`
 - Agent/API：`agent-quickstart.md`、`agent-command-loop.md`、`api-overview.md`、`api-websocket.md`、`api-commands.md`、`api-state-model.md`、`api-resolution-results.md`、`api-errors.md`
 - 版本：`reference-source-and-version.md`、`reference-changelog.md`
-- 项目自管：`GOAL.md`、`LIMITS.md`、`migration-plan.md`、`roadmap-long-term.md`、`ARCHITECTURE.md`、`ts-architecture.md`、`simulator.md`、`digital-twin-acceptance.md`、`progress/MASTER.md`、`archives/`
+- 项目自管：`GOAL.md`、`LIMITS.md`、`migration-plan.md`、`ts-execution-plan.md`、`roadmap-long-term.md`、`ARCHITECTURE.md`、`ts-architecture.md`、`simulator.md`、`digital-twin-acceptance.md`、`progress/MASTER.md`、`archives/`
 
 ## 更新方式
 
