@@ -129,8 +129,12 @@ func runScenario(scene *Scenario, policy *strategy.Config, ticks int, opt BatchO
 	return result
 }
 
-// policyName 返回策略的可读名（确定性：字段拼接）。
+// policyName 返回策略的可读名：优先 Config.Name（策略文件命名），
+// 否则确定性字段拼接（默认策略/内联策略）。
 func policyName(policy *strategy.Config) string {
+	if policy.Name != "" {
+		return policy.Name
+	}
 	return fmt.Sprintf("wt%d_r%d_er%d_pc%d_m%d",
 		policy.WorkerTarget, policy.SpawnReserve, policy.ExploreRadius,
 		policy.PopulationCeiling, policy.MilitaryRatio)

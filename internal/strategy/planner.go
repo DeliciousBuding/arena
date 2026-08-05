@@ -13,6 +13,8 @@ import (
 
 // Config 是规划器配置（对齐 TS 版 DEFAULT_SAFETY_CONFIG）。
 type Config struct {
+	// Name 是策略可读名（批量评估/赛马/黄金集输出用；规划逻辑忽略）。
+	Name              string
 	WorkerTarget      int // 目标 Worker 数（spawn 阈值）
 	PopulationCeiling int // 人口上限
 	ExploreRadius     int // 探索半径
