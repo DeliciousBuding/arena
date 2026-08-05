@@ -23,17 +23,19 @@ type Config struct {
 	EnableCoreMigration bool
 }
 
-// DefaultConfig 返回默认配置。
-// ExploreRadius=16：视野研究结论（官方规则 v0.13）——Worker 视野半径
-// 仅 3，chunk 32×32；巡逻目标按半 chunk（16 格）量级才能系统性扫过
-// chunk 边界区域，8 格起步覆盖太慢（真机 20t 只见 1 个障碍 batch）。
+// DefaultConfig 返回默认配置（模拟退火优化 cmd/optsearch 结果：
+// 多资源格 sim 闭环 100 tick 评分 +26%——spawnReserve 5→2 减少攒资源
+// 浪费、exploreRadius 16→22 更快发现远处资源格、populationCeiling
+// 20→30 高产能下允许更多工人）。
+// ExploreRadius 注释（视野研究 v0.13）：Worker 视野半径仅 3，chunk
+// 32×32；巡逻目标按半 chunk 量级才能系统性扫过 chunk 边界区域。
 func DefaultConfig() Config {
 	return Config{
 		WorkerTarget:      8,
-		PopulationCeiling: 20,
-		ExploreRadius:     16,
+		PopulationCeiling: 30,
+		ExploreRadius:     22,
 		ThreatDistance:    5,
-		SpawnReserve:      5,
+		SpawnReserve:      2,
 	}
 }
 
