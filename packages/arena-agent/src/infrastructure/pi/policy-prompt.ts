@@ -67,16 +67,23 @@ export function buildMacroPolicyPrompt(
     "focusRegion=探索/攻坚聚焦坐标（null 不聚焦）；attackPriority=攻击优先级（core 拆家掠夺资源/workers 断敌经济/null 不主动攻击）。",
     "focusRegion 约束：必须是非负整数坐标（地图原点 [0,0]），且必须在己方 Core 附近可探索范围内（建议距 Core ≤30 格）；",
     "严禁输出远离己方基地的坐标（如地图角落）——worker 会直线远征导致 0 采集、经济冻结（生产实测教训）；",
-    "资源枯竭/视野 0 资源格时应提高 militaryRatio 转军事压制，而不是把 worker 支去远处找矿。",
+    "资源枯竭时按下方 ⚠ 告警指引行动；绝不把 worker 支去超距远点找矿（直线远征 = 经济冻结）。",
     ...(state.resourceCells.size === 0
-      ? [
-          "⚠ 资源枯竭告警：视野内 0 资源格（生产实测 2026-08-06：t1 长期 res 冻结 4、",
-          "balanced 守家困死；模拟器枯竭实验 400 ticks：focusRegion 定向探索是唯一",
-          "有效应对 res 2→3、探索半径放大反而乱跑 111 格无效）——必须二选一：",
-          "(1) aggressive 前压抢敌方资源区/拆敌 Core 掠夺（militaryRatio 0.3-0.4 +",
-          "attackPriority=core）；或 (2) focusRegion 指向近处可探索方向（距 Core ≤30 格）",
-          "定向探索新资源。禁止输出 balanced/harvest + null 焦点的守家组合。",
-        ]
+      ? state.resources < 10
+        ? [
+            "⚠ 资源枯竭告警：视野内 0 资源格且资源 < 产兵成本（10）——军事压制",
+            "产不起兵（生产实测 res 4 冻结），唯一出路是 focusRegion 定向探索：",
+            "输出 focusRegion 指向近处可探索方向（距 Core ≤30 格）寻找新资源，",
+            "禁止输出 aggressive/军事压制（无资源产兵只会空转）或守家组合。",
+          ]
+        : [
+            "⚠ 资源枯竭告警：视野内 0 资源格（生产实测 2026-08-06：t1 长期 res 冻结 4、",
+            "balanced 守家困死；模拟器枯竭实验 400 ticks：focusRegion 定向探索是唯一",
+            "有效应对 res 2→3、探索半径放大反而乱跑 111 格无效）——必须二选一：",
+            "(1) aggressive 前压抢敌方资源区/拆敌 Core 掠夺（militaryRatio 0.3-0.4 +",
+            "attackPriority=core）；或 (2) focusRegion 指向近处可探索方向（距 Core ≤30 格）",
+            "定向探索新资源。禁止输出 balanced/harvest + null 焦点的守家组合。",
+          ]
       : []),
     "recent stall warnings 出现 = 执行层疑似卡死：必须 focusRegion=null（聚焦区会支走 worker 加剧卡死），",
     "并优先恢复经济（harvest/balanced）或转军事压制（militaryRatio>0）打破僵局。",
