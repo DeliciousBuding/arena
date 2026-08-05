@@ -251,3 +251,22 @@
 - [x] DefaultConfig 落地：workerTarget 8→6、spawnReserve 5→1、
       populationCeiling 20→21（`c7d22ab`）
 - [x] mapview -vision 视野圈叠加（cmd/mapview/main.go）
+
+### Rust+Go 融合线对接准备（2026-08-06，用户裁决：go 侧整理对接、不冲突、届时 merge）
+
+状态：go-rewrite 稳定运行中（t3/t4 双租户 shadow，新激进策略 `2f00793`）；
+rust-rewrite/sim-rs F1（arena-sim-ffi crate）已完成，Go 侧 F2 adapter 半成品
+（执行线 agent 所写，编译失败）备份在 `C:\Users\Ding\tmp\ffi-backup-20260806\`
+（`ffi_planner.go` / `ffi_planner_windows.go` / `ffi_planner_test.go`）。
+
+对接契约兼容性验证（Go 侧零改动即可满足，融合线 fusion-line.md §2）：
+- Planner 接口：`runtime.Planner{Decide(*domain.TickState) *domain.Plan; ApplyDirective(strategy.Directive)}`
+  （loop.go:69）与 FfiPlanner 实现目标一致；
+- TickState JSON：Go 默认字段名 = PascalCase（无标签），`Set[T]` map 序列化为
+  `{"x,y":{}}` 对象形状——与 Rust `StateJsonIn`（PascalCase + BTreeMap 镜像）
+  完全匹配；`ID` 字段 Go 输出 "ID"（Rust 侧已备 alias）；
+- Directive JSON：`{"Mode":"GROWTH","Focus":[0,0]}` 与 Rust serde 期望一致；
+- fail-safe：dll 加载失败/err_out 非空 → 回退 Go planner（F2 待实现）。
+
+merge 注意事项：F2 文件恢复时须对齐当前 strategy 包（激进产兵后的
+MilitarySpawnFloor 等新字段）——Rust `Config` 反序列化需容忍未知字段。
