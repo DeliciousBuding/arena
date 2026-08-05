@@ -168,6 +168,15 @@ var yieldOrder = []domain.Direction{
 // 按固定顺序找第一个安全相邻格（跳过障碍格、资源格、任何已占用格），
 // 返回 MOVE 动作；无可用格时返回 ok=false（调用方降级 WAIT）。
 func (p *Planner) yieldFullCore(state *domain.TickState, unit *domain.UnitSnapshot) (domain.UnitAction, bool) {
+	return p.yieldFromCore(state, unit, true)
+}
+
+// yieldFromCore 让 Worker 离开 Core 格。skipResources=true 时跳过资源格
+// （满载 Worker：踩上资源格会堵住采集格）；false 时允许踩资源格
+// （空载 Worker 被仲裁降级在 Core 上等目标：Core 4 邻域全被资源格
+// 覆盖时（dense 拓扑），不踩资源格永远出不去——环形互堵、
+// 满载进不来 deposit。踩上去下一 tick 顺路 HARVEST，是合理行为）。
+func (p *Planner) yieldFromCore(state *domain.TickState, unit *domain.UnitSnapshot, skipResources bool) (domain.UnitAction, bool) {
 	occupied := make(map[string]struct{}, len(state.Units)+len(state.VisibleEnemies))
 	for _, other := range state.Units {
 		occupied[domain.CellKey(other.Position[0], other.Position[1])] = struct{}{}
@@ -178,7 +187,10 @@ func (p *Planner) yieldFullCore(state *domain.TickState, unit *domain.UnitSnapsh
 	for _, direction := range yieldOrder {
 		next := domain.Move(unit.Position, direction)
 		key := domain.CellKey(next[0], next[1])
-		if state.ObstacleCells.Contains(key) || state.ResourceCells.Contains(key) {
+		if state.ObstacleCells.Contains(key) {
+			continue
+		}
+		if skipResources && state.ResourceCells.Contains(key) {
 			continue
 		}
 		if _, taken := occupied[key]; taken {

@@ -156,7 +156,8 @@ func (p *Planner) Decide(state *domain.TickState) *domain.Plan {
 		if unit := findUnitSnapshot(state, loser.unitID); unit != nil &&
 			unit.UnitType == domain.UnitWorker && unit.Cargo == 0 &&
 			state.Core != nil && unit.Position == state.Core.Position {
-			if yield, ok := p.yieldFullCore(state, unit); ok {
+			// 空载让位允许踩资源格（dense 拓扑 Core 四邻全为资源格）。
+			if yield, ok := p.yieldFromCore(state, unit, false); ok {
 				plan.UnitActions[loser.unitID] = yield
 				plan.Intents[loser.unitID] = "yield_core_wait"
 			}
@@ -275,6 +276,44 @@ func (p *Planner) decideUnit(state *domain.TickState, unit *domain.UnitSnapshot,
 	return domain.UnitAction{}, "", false
 }
 
+// moveTowardOrYield：moveToward 的停滞跳出包装——位置连续不变达
+// stuckYieldThreshold 且路径第一步仍被占（环形互堵：每个单位的
+// BFS 第一步都被另一个单位占着，全员 WAIT 永久互等，经济冻结）→
+// 确定性让位到相邻空格打破环（UP→RIGHT→DOWN→LEFT 优先空位）。
+func (p *Planner) moveTowardOrYield(state *domain.TickState, unit *domain.UnitSnapshot, target domain.Position) domain.UnitAction {
+	action := p.moveToward(state, unit, target)
+	if action.Kind != domain.ActionWait || !p.isStuck(unit.ID) {
+		return action
+	}
+	if aside, ok := p.stepAside(state, unit); ok {
+		return aside
+	}
+	return action
+}
+
+// stepAside 让位：向 4 邻域第一个空位（非障碍/非占用/界内）移动。
+// 确定性：UP→RIGHT→DOWN→LEFT。全部被堵返回 (false, "")。
+func (p *Planner) stepAside(state *domain.TickState, unit *domain.UnitSnapshot) (domain.UnitAction, bool) {
+	const worldBound = 1000
+	for _, direction := range []domain.Direction{
+		domain.DirectionUp, domain.DirectionRight, domain.DirectionDown, domain.DirectionLeft,
+	} {
+		next := domain.Move(unit.Position, direction)
+		if next[0] < -worldBound || next[0] > worldBound || next[1] < -worldBound || next[1] > worldBound {
+			continue
+		}
+		if state.ObstacleCells.Contains(domain.CellKey(next[0], next[1])) {
+			continue
+		}
+		if occupiedByAny(state, unit.ID, next) {
+			continue
+		}
+		dir := direction
+		return domain.UnitAction{Kind: domain.ActionMove, Direction: &dir}, true
+	}
+	return domain.UnitAction{}, false
+}
+
 func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapshot, assignments map[string]domain.Position) (domain.UnitAction, string, bool) {
 	if unit.Cargo >= 1 {
 		if state.ResourceSpace <= 0 {
@@ -294,7 +333,7 @@ func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapsho
 			return domain.UnitAction{Kind: domain.ActionDeposit}, "deposit", true
 		}
 		if state.Core != nil {
-			return p.moveToward(state, unit, state.Core.Position), "return_core", true
+			return p.moveTowardOrYield(state, unit, state.Core.Position), "return_core", true
 		}
 		return domain.UnitAction{Kind: domain.ActionWait}, "wait", true
 	}
@@ -303,13 +342,15 @@ func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapsho
 	}
 	// 全局分配：目标是"分给我的"资源格（每格唯一，消除抢格）。
 	if target, ok := assignments[unit.ID]; ok {
-		action := p.moveToward(state, unit, target)
+		action := p.moveTowardOrYield(state, unit, target)
 		if action.Kind == domain.ActionWait && state.Core != nil && unit.Position == state.Core.Position {
 			// 空载 Worker 在 Core 上排队等资源格时被堵：先让位离开
 			// 仓库口（t4 拓扑 refill 暴露——deposit 完的 worker 站在
 			// Core 等 to_resource，满载 worker 进不来 deposit，
 			// 经济循环卡死）。让位后下一 tick 再前往资源格。
-			if yield, ok := p.yieldFullCore(state, unit); ok {
+			// 允许踩资源格（dense 拓扑 Core 四邻全为资源格，
+			// 踩上去顺路 HARVEST）。
+			if yield, ok := p.yieldFromCore(state, unit, false); ok {
 				return yield, "yield_core_wait", true
 			}
 		}
