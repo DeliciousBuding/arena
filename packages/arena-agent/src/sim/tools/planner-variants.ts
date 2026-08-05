@@ -52,6 +52,12 @@ export const PLANNER_VARIANTS: readonly PlannerVariant[] = Object.freeze([
     create: () => new DeterministicPlanner(),
   }),
   Object.freeze({
+    id: "clear-path-v1",
+    description:
+      "TS-009 候选：清场 ROI——defensive 下 Vanguard 清除满载 Worker 回仓路径上的敌人（生产 A/B：被压方经济 2-4× 差）",
+    create: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, clearPath: true }),
+  }),
+  Object.freeze({
     id: "safety",
     description: "内置 SafetyPlanner（默认配置）",
     create: () => new SafetyPlanner(DEFAULT_SAFETY_CONFIG),

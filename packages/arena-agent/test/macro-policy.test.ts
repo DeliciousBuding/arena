@@ -16,7 +16,7 @@ import {
 } from "../src/runtime/macro-policy.ts";
 import { MacroPolicyOrchestrator, RESPAWN_OVERRIDE_POLICY, parsePolicyText } from "../src/runtime/macro-policy-orchestrator.ts";
 import { buildMacroPolicyPrompt, readLastAssistantText } from "../src/infrastructure/pi/policy-prompt.ts";
-import { SafetyPlanner } from "../src/strategies/safety-planner.ts";
+import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../src/strategies/safety-planner.ts";
 
 function makeState(tick: number): TickState {
   return {
@@ -339,4 +339,39 @@ test("MacroPolicyOrchestrator: onPolicyError 回调（失败 telemetry）", asyn
   assert.equal(errors.length, 1);
   assert.equal(errors[0].tick, 1);
   assert.ok(errors[0].message.includes("gateway down"));
+});
+
+test("SafetyPlanner: clear-path 清障（TS-009）——满载 Worker 回仓路径上的敌人被 Vanguard 主动清除", () => {
+  const state = makeState(1);
+  const clearState: TickState = {
+    ...state,
+    units: [
+      { id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", position: [3, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
+      { id: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 1 },
+    ],
+    vanguards: [
+      { id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", position: [3, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
+    ],
+    workers: [
+      { id: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 1 },
+    ],
+    // 敌人挡在满载 Worker [2,0] 回 Core [0,0] 的路上（[1,0] 距 Core 1 < worker 距 Core 2）
+    visibleEnemies: [
+      { id: "ffffffff-ffff-ffff-ffff-ffffffffffff", kind: "UNIT", position: [1, 0], hp: 4, unitType: "VANGUARD", ownerUsername: "foe" },
+    ],
+  };
+  const vanguardId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  // 默认 defensive：Vanguard 近 Core 留守（无清障动作）
+  const defensive = new SafetyPlanner();
+  const defensivePlan = defensive.decide({ state: clearState });
+  assert.ok(
+    defensivePlan.unitActions[vanguardId] === undefined ||
+      defensivePlan.intents[vanguardId] !== "vanguard_clear_path",
+    "默认 defensive 不主动清障",
+  );
+  // clear-path：Vanguard 追击挡路敌人（intent vanguard_clear_path）
+  const clearer = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, clearPath: true });
+  const clearPlan = clearer.decide({ state: clearState });
+  assert.equal(clearPlan.unitActions[vanguardId]?.type, "MOVE");
+  assert.equal(clearPlan.intents[vanguardId], "vanguard_clear_path");
 });
