@@ -14,20 +14,21 @@ import (
 
 // decisionRecord 是 decision.jsonl 行的子集（未知字段忽略）。
 type decisionRecord struct {
-	Tick             int            `json:"tick"`
-	ActionKinds      map[string]int `json:"actionKinds"`
-	IntentCounts     map[string]int `json:"intentCounts"`
-	CoreAction       string         `json:"coreAction"`
-	CoreUnitType     string         `json:"coreUnitType"`
-	ResourcesBefore  int            `json:"resourcesBefore"`
-	ResourcesAfter   int            `json:"resourcesAfter"`
-	WorkersBefore    int            `json:"workersBefore"`
-	WorkersAfter     int            `json:"workersAfter"`
-	WorkerCargoTotal int            `json:"workerCargoTotal"`
-	EventReasons     []string       `json:"eventReasons"`
-	DirectiveMode    string         `json:"directiveMode"`
-	Valid            bool           `json:"valid"`
-	Repaired         bool           `json:"repaired"`
+	Tick             int               `json:"tick"`
+	ActionKinds      map[string]int    `json:"actionKinds"`
+	IntentCounts     map[string]int    `json:"intentCounts"`
+	CoreAction       string            `json:"coreAction"`
+	CoreUnitType     string            `json:"coreUnitType"`
+	ResourcesBefore  int               `json:"resourcesBefore"`
+	ResourcesAfter   int               `json:"resourcesAfter"`
+	WorkersBefore    int               `json:"workersBefore"`
+	WorkersAfter     int               `json:"workersAfter"`
+	WorkerCargoTotal int               `json:"workerCargoTotal"`
+	EventReasons     []string          `json:"eventReasons"`
+	DirectiveMode    string            `json:"directiveMode"`
+	UnitPositions    map[string]string `json:"unitPositions"`
+	Valid            bool              `json:"valid"`
+	Repaired         bool              `json:"repaired"`
 }
 
 // runtimeRecord 是 runtime.jsonl 行的子集。
@@ -123,6 +124,23 @@ func main() {
 		spawnPlans, deposits, harvests, yields, stagnantEvents)
 	fmt.Print("actions:", formatCounts(actionTotal))
 	fmt.Print("intents:", formatCounts(intentTotal))
+
+	// 移动量：单位位置指纹逐 tick 变化次数（验证真实移动/停滞）。
+	if len(decisions) > 1 && len(decisions[0].UnitPositions) > 0 {
+		moves := 0
+		prev := decisions[0].UnitPositions
+		for _, d := range decisions[1:] {
+			for id, pos := range d.UnitPositions {
+				if last, ok := prev[id]; ok && last != pos {
+					moves++
+				}
+			}
+			prev = d.UnitPositions
+		}
+		fmt.Printf("unit moves (position changes): %d over %d ticks\n", moves, len(decisions)-1)
+	} else {
+		fmt.Println("unit moves: n/a (run predates unitPositions telemetry)")
+	}
 
 	// 世界记忆（资源/敌方可见性）。
 	if len(runtimeRows) > 0 {
