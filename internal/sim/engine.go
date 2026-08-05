@@ -1,6 +1,6 @@
 // Package sim 实现 Digital Twin 规则结算引擎（B7-B 前置）。
 // 输入 TickState + Plan，确定性结算下一 tick 的状态变化。
-// 本批：movement / economy 子系统与 Settle 入口；战斗/信标/自毁后续批次。
+// 本批：movement / economy / combat 子系统与 Settle 入口；信标/自毁后续批次。
 package sim
 
 import (
@@ -23,6 +23,9 @@ type SettleStats struct {
 	Spawns        int
 	SpawnBlocked  int
 	ResourceDelta int
+	Kills         int // 本 tick 击杀的敌方实体数（战斗阶段）
+	ShotsFired    int // 本 tick Ranger SHOOT 攻击数（含未命中）
+	SweepsFired   int // 本 tick Vanguard SWEEP 攻击数（含未命中）
 }
 
 // Engine 是确定性结算引擎（默认无状态，并发安全；挂载 Refill 后
@@ -38,10 +41,12 @@ func NewEngine() *Engine {
 	return &Engine{}
 }
 
-// Settle 结算一个 tick：应用移动、经济活动与 Core 动作，产出下一状态。
+// Settle 结算一个 tick：应用移动、经济活动、战斗与 Core 动作，产出下一状态。
 // 确定性：同输入同输出（无随机、稳定遍历顺序）。
-// 结算顺序（裁决语义）：MOVE（让位）→ HARVEST/DEPOSIT → Core SPAWN——
-// 满载 Worker 本 tick 让位腾空 Core 格后，SPAWN 同 tick 即可结算。
+// 结算顺序（裁决语义）：MOVE（让位）→ HARVEST/DEPOSIT → COMBAT → Core
+// SPAWN——满载 Worker 本 tick 让位腾空 Core 格后，SPAWN 同 tick 即可结算；
+// 战斗按官方顺序第 9-10 步（移动与经济之后、Core 动作之前），基于移动后
+// 的 next 状态冻结战斗快照、同时应用伤害、移除死亡敌方实体。
 // 挂载 Refill 时，settle 末尾执行视野揭示 + 每 4 tick 配额补满。
 func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult {
 	next := cloneState(state)
@@ -73,6 +78,9 @@ func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult
 	depositEvents := applyDeposits(next, depositWorkers, &stats)
 	events = append(events, harvestEvents...)
 	events = append(events, depositEvents...)
+
+	combatEvents := applyCombat(next, plan, &stats)
+	events = append(events, combatEvents...)
 
 	coreEvents := e.applyCoreAction(next, plan.CoreAction)
 	for _, event := range coreEvents {
