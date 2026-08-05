@@ -153,5 +153,36 @@
 - [x] obs idle.dump 落盘验证（服务器 2 分钟停顿期间，dumps/*.stack）
 - [x] cmd/paramscan 参数扫描（reserve=8 死锁发现 + 钳制修复 00447bf）
 - [x] cmd/runwatch 进程/日志监控（e68ea54，8 单测）
-- [ ] migration.candidate 边界验证（105t 运行中：100 no-progress 需
+- [x] migration.candidate 边界验证（105t 运行中：100 no-progress 需
       101 tick，首个 Update 为基线）
+
+## E6 综合优化（2026-08-05，neat-freak）
+
+### 模拟退火参数优化（cmd/optsearch）
+- [x] 智能搜索（模拟退火，400 迭代 × 多资源格 6 格 sim 闭环 100 tick 评分）
+- [x] 默认参数产出 +26%：spawnReserve 5→2（减少攒资源浪费）、
+      exploreRadius 16→22（更快发现远处资源格）、
+      populationCeiling 20→30（高产能下允许更多工人）
+- [x] 确定性种子（20260805）可复现；离线优化运行时零开销
+- [x] 回归：population ceiling 测试边界同步更新（30 而非 20）
+- [x] 提交：`623dec7`（feat）、`81f43ea`（test）
+
+### 螺旋覆盖探索（starved patrol 升级）
+- [x] 从直线扫掠升级为环形螺旋覆盖（64 方位角分辨率）
+- [x] 方位角 = focus 方位 + ID 哈希 + 环进度 angle（个体分散覆盖不同方位）
+- [x] 角步长按 radius 缩放（环越大步长越大，覆盖密度恒定）
+- [x] 走完一圈 ring+1，半径 22→44→66→88（88 后重置环 0）
+- [x] 相比直线扫掠：不漏环间区域，探索覆盖率最大化
+- [x] 提交：`08a98a0`
+
+### 遗传算法参数搜索（cmd/optsearch --ga）
+- [x] 种群 20 个体 × 40 代锦标赛选择 + 均匀交叉 + 变异
+- [x] 同评分函数（多资源格 sim 闭环 100 tick）
+- [x] 结果：`{workerTarget:11 spawnReserve:2 exploreRadius:14 populationCeiling:28} score=142`
+      与模拟退火同分（142），不同局部最优——退火偏探索半径（22），GA 偏工人数（11）
+- [x] 确定性种子可复现
+
+### 待办
+- [ ] t4 真机 100t 验证优化后默认参数（spawnReserve=2, exploreRadius=22, populationCeiling=30）
+- [ ] 杂交：模拟退火最佳 + GA 精英 → 手动调参基线
+- [ ] 多场景评分（多拓扑取最差 score 而非单场景）
