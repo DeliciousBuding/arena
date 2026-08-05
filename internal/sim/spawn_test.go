@@ -206,6 +206,72 @@ func TestFullEconomicLoopPositiveGrowth(t *testing.T) {
 	}
 }
 
+// fixtureObstacles 是 burnin-20260802-a 的真实障碍布局（tick 40480）。
+var fixtureObstacles = []domain.Position{
+	{36, 51}, {36, 52}, {37, 39}, {37, 42}, {37, 44},
+	{38, 34}, {38, 43}, {38, 50}, {39, 41}, {39, 44}, {39, 52}, {40, 40},
+}
+
+// TestFullEconomicLoopRealMapTopology：真实 fixture 地图拓扑（障碍墙环绕
+// Core + 资源格 6 格外）下的 60-tick 经济闭环：满载让位 → SPAWN →
+// 空载 worker 绕过障碍采资源 → DEPOSIT → 持续增长。验证探索/导航在
+// 真实拓扑下不与经济冲突。
+func TestFullEconomicLoopRealMapTopology(t *testing.T) {
+	state := economyBaseState()
+	state.Resources = 10
+	state.ResourceSpace = 0
+	// 真实布局：Core 在 (38,39)，资源格在 (38,45)，障碍环绕。
+	state.Core.Position = domain.Position{38, 39}
+	state.Workers[0].Position = state.Core.Position // 满载在 Core（死锁态）
+	state.Units[0].Position = state.Core.Position
+	state.Workers[1].Position = domain.Position{38, 51} // 空载在资源区下方
+	state.Units[1].Position = domain.Position{38, 51}
+	state.ResourceCells = domain.NewSet[string](domain.CellKey(38, 45))
+	state.ObstacleCells = domain.NewSet[string]()
+	for _, cell := range fixtureObstacles {
+		state.ObstacleCells.Add(domain.CellKey(cell[0], cell[1]))
+	}
+
+	planner := strategy.NewPlanner(strategy.Config{
+		WorkerTarget:      8,
+		PopulationCeiling: 20,
+		ExploreRadius:     8,
+		ThreatDistance:    5,
+		SpawnReserve:      0,
+	})
+	engine := NewEngine()
+
+	spawns := 0
+	deposits := 0
+	harvests := 0
+	maxWorkers := len(state.Workers)
+	for tick := 1; tick <= 60; tick++ {
+		state.Tick = tick
+		plan := planner.Decide(state)
+		result := engine.Settle(state, plan)
+		spawns += result.Stats.Spawns
+		deposits += result.Stats.Deposits
+		harvests += result.Stats.Harvests
+		state = result.NextState
+		if len(state.Workers) > maxWorkers {
+			maxWorkers = len(state.Workers)
+		}
+	}
+
+	if spawns < 2 {
+		t.Errorf("spawns = %d, want >= 2 (deadlock broken on real topology)", spawns)
+	}
+	if maxWorkers <= 2 {
+		t.Errorf("workers stayed at %d, want growth", maxWorkers)
+	}
+	if harvests == 0 {
+		t.Errorf("harvests = 0, want > 0 (worker must reach resource cell around obstacles)")
+	}
+	if deposits == 0 {
+		t.Errorf("deposits = 0, want > 0 (harvested cargo must return through obstacle field)")
+	}
+}
+
 func TestFullEconomicLoopBreakDeadlock(t *testing.T) {
 	state := economyBaseState()
 	planner := strategy.NewPlanner(strategy.Config{
