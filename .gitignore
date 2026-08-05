@@ -43,3 +43,9 @@ Thumbs.db
 .idea/
 .vscode/
 sim-rs/target/
+# replay fixture（TS expected 序列，测试必需）
+!/internal/domain/testdata/
+/internal/domain/testdata/*
+!/internal/domain/testdata/expected/
+/internal/domain/testdata/expected/*
+!/internal/domain/testdata/expected/*.jsonl

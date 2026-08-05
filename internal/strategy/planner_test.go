@@ -674,9 +674,9 @@ func TestVanguardEngagesNearbyEnemy(t *testing.T) {
 	}
 }
 
-// TestVanguardIgnoresDistantEnemy：敌人超出 ThreatDistance → 不 engage，
-// 满血健康 → 巡逻。
-func TestVanguardIgnoresDistantEnemy(t *testing.T) {
+// TestVanguardRaidDistantEnemy：敌人超出 ThreatDistance → 不 engage 防御，
+// 但军事单位主动出击（激进打野：无近敌时朝可见敌人推进压制对手）。
+func TestVanguardRaidDistantEnemy(t *testing.T) {
 	state := baseState()
 	enemyType := domain.UnitVanguard
 	state.Units = append(state.Units, domain.UnitSnapshot{
@@ -692,8 +692,104 @@ func TestVanguardIgnoresDistantEnemy(t *testing.T) {
 	if action.Kind != domain.ActionMove {
 		t.Fatalf("vanguard action = %s, want MOVE", action.Kind)
 	}
-	if intent := plan.Intents["vanguard-1"]; intent != "patrol" {
-		t.Errorf("intent = %q, want patrol", intent)
+	if intent := plan.Intents["vanguard-1"]; intent != "raid" {
+		t.Errorf("intent = %q, want raid", intent)
+	}
+}
+
+// TestVanguardRaidEnemyCore：可见敌方 Core → Vanguard 朝敌方 Core
+// 推进（raid_core——摧毁敌方 Core 捕获其库存资源，官方 v0.9 机制）。
+func TestVanguardRaidEnemyCore(t *testing.T) {
+	state := baseState()
+	state.Units = append(state.Units, domain.UnitSnapshot{
+		ID: "vanguard-1", Position: domain.Position{0, 0}, HP: 4, UnitType: domain.UnitVanguard,
+	})
+	state.Vanguards = append(state.Vanguards, state.Units[1])
+	state.VisibleEnemies = []domain.VisibleEntity{
+		{ID: "enemy-core", Kind: "CORE", Position: domain.Position{20, 0}, HP: 10},
+	}
+	plan := NewPlanner(DefaultConfig()).Decide(state)
+
+	action := requireUnitAction(t, plan, "vanguard-1")
+	if action.Kind != domain.ActionMove || action.Direction == nil {
+		t.Fatalf("vanguard action = %+v, want MOVE toward enemy core", action)
+	}
+	if intent := plan.Intents["vanguard-1"]; intent != "raid_core" {
+		t.Errorf("intent = %q, want raid_core", intent)
+	}
+}
+
+// TestRangerShootsEnemyCoreInRange：敌方 Core 在 Ranger 射程内 →
+// SHOOT（打野远程压制；近敌分支优先，intent=shoot）。
+func TestRangerShootsEnemyCoreInRange(t *testing.T) {
+	state := baseState()
+	state.Units = append(state.Units, domain.UnitSnapshot{
+		ID: "ranger-1", Position: domain.Position{0, 0}, HP: 3, UnitType: domain.UnitRanger,
+	})
+	state.Rangers = append(state.Rangers, state.Units[1])
+	state.VisibleEnemies = []domain.VisibleEntity{
+		{ID: "enemy-core", Kind: "CORE", Position: domain.Position{3, 0}, HP: 10},
+	}
+	plan := NewPlanner(DefaultConfig()).Decide(state)
+
+	action := requireUnitAction(t, plan, "ranger-1")
+	if action.Kind != domain.ActionShoot || action.TargetID == nil || *action.TargetID != "enemy-core" {
+		t.Fatalf("ranger action = %+v, want SHOOT enemy-core", action)
+	}
+	// 3 格内走近敌分支（intent=shoot）；行为等价于打野（攻击敌方 Core）。
+	if intent := plan.Intents["ranger-1"]; intent != "shoot" && intent != "raid_core" {
+		t.Errorf("intent = %q, want shoot or raid_core", intent)
+	}
+}
+
+// TestRangerRaidsDistantEnemyCore：敌方 Core 超出近敌分支但可见 →
+// Ranger 逼近（raid_core 打野出击）。
+func TestRangerRaidsDistantEnemyCore(t *testing.T) {
+	state := baseState()
+	state.Units = append(state.Units, domain.UnitSnapshot{
+		ID: "ranger-1", Position: domain.Position{0, 0}, HP: 3, UnitType: domain.UnitRanger,
+	})
+	state.Rangers = append(state.Rangers, state.Units[1])
+	state.VisibleEnemies = []domain.VisibleEntity{
+		{ID: "enemy-core", Kind: "CORE", Position: domain.Position{20, 0}, HP: 10},
+	}
+	plan := NewPlanner(DefaultConfig()).Decide(state)
+
+	action := requireUnitAction(t, plan, "ranger-1")
+	if action.Kind != domain.ActionMove || action.Direction == nil {
+		t.Fatalf("ranger action = %+v, want MOVE toward enemy core", action)
+	}
+	if intent := plan.Intents["ranger-1"]; intent != "raid_core" {
+		t.Errorf("intent = %q, want raid_core", intent)
+	}
+}
+
+// TestMilitarySpawnsBeforeWorkerTarget：worker 达 MilitarySpawnFloor（6）
+// 即产军事（不等 workerTarget 满编——激进产兵）。
+func TestMilitarySpawnsBeforeWorkerTarget(t *testing.T) {
+	state := baseState()
+	state.Resources = 12
+	state.ResourceSpace = 10
+	state.Population = 7
+	state.Units = []domain.UnitSnapshot{
+		{ID: "w-1", Position: domain.Position{0, 0}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+		{ID: "w-2", Position: domain.Position{1, 0}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+		{ID: "w-3", Position: domain.Position{2, 0}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+		{ID: "w-4", Position: domain.Position{3, 0}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+		{ID: "w-5", Position: domain.Position{4, 0}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+		{ID: "w-6", Position: domain.Position{5, 0}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+	}
+	state.Workers = append([]domain.UnitSnapshot(nil), state.Units...)
+	config := DefaultConfig() // workerTarget=8 > floor=6
+	config.WorkerTarget = 100 // 极端：worker 远未达 target，军事仍应产出
+
+	plan := NewPlanner(config).Decide(state)
+	if plan.CoreAction == nil || plan.CoreAction.Kind != domain.CoreSpawn ||
+		plan.CoreAction.UnitType == nil || *plan.CoreAction.UnitType != domain.UnitVanguard {
+		t.Fatalf("core action = %+v, want SPAWN VANGUARD (floor=6 met, target=100 not)", plan.CoreAction)
+	}
+	if result := domain.ValidatePlan(state, *plan); !result.Valid {
+		t.Errorf("plan invalid: %v", result.Issues)
 	}
 }
 
@@ -810,7 +906,7 @@ func TestRangerShootsVisibleEnemy(t *testing.T) {
 }
 
 // TestRangerSkipsShootWhenLineBlocked：敌人可见但视线被障碍遮挡 → 不
-// SHOOT（转巡逻）。
+// SHOOT（转 raid：逼近敌人绕开障碍再打——激进打野语义）。
 func TestRangerSkipsShootWhenLineBlocked(t *testing.T) {
 	state := baseState()
 	enemyType := domain.UnitVanguard
@@ -828,8 +924,8 @@ func TestRangerSkipsShootWhenLineBlocked(t *testing.T) {
 	if action.Kind == domain.ActionShoot {
 		t.Fatalf("expected no SHOOT through obstacle, got %+v", action)
 	}
-	if intent := plan.Intents["ranger-1"]; intent != "patrol" {
-		t.Errorf("intent = %q, want patrol", intent)
+	if intent := plan.Intents["ranger-1"]; intent != "raid" {
+		t.Errorf("intent = %q, want raid (advance around obstacle)", intent)
 	}
 }
 

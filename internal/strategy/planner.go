@@ -21,28 +21,35 @@ type Config struct {
 	ThreatDistance    int // 威胁判定距离（Manhattan）
 	SpawnReserve      int // 正常扩张的预留资源（reserve guard；紧急/恢复期忽略）
 	// MilitaryRatio 是军事单位占人口比例（百分数 0-100）：worker 达到
-	// WorkerTarget 后按比例补 Vanguard/Ranger（交替，防御优先——
-	// Vanguard SWEEP AOE 守家、Ranger 远程）。0 = 不产军事。
+	// MilitarySpawnFloor 后按比例补 Vanguard/Ranger（交替）。激进策略：
+	// 经济基础一到就产兵出击打野（摧毁敌方 Core 捕获资源压制对手），
+	// 不等枯竭。0 = 不产军事。
 	MilitaryRatio int
+	// MilitarySpawnFloor 是军事产出的 worker 门槛：worker 数达到该值
+	// 即开始产军事（即使未达 WorkerTarget）。激进产兵：6 个 worker
+	// 维持资源循环即可，更多 worker 边际收益低。
+	MilitarySpawnFloor int
 	// EnableCoreMigration 启用 Core 迁移执行（红线：默认 false——
 	// MIGRATE_CAND 只评估，operator 显式开启后才发 START_MOVE）。
 	EnableCoreMigration bool
 }
 
-// DefaultConfig 返回默认配置（多场景最差分评分双算法验证：
-// 三拓扑——base（真实 fixture 6 格）/ dense（Core 周围 8 格）/
-// sparse（远处 3 格 + 障碍）——score 取三场景最低分，鲁棒性优先）。
-// 双算法共识（SA {13,0,17,16} / GA {13,0,10,19} 均 110 分，默认 83，
-// +33%）：workerTarget=13（高工人数覆盖稀疏场景长途）、
-// spawnReserve=0（refill 下资源持续流入，攒资源无益）。
+// DefaultConfig 返回默认配置（激进混合经济：worker 少而精 + 军事
+// 提前产出打野）。
+//   - workerTarget=8：6 格资源循环 + refill 足够维持 spawn/军事，
+//     人口腾给军事（PvP 压制价值 > 第 9+ 个 worker 的边际采集）；
+//   - militarySpawnFloor=6、militaryRatio=40：worker 满 6 即开始
+//     按人口 40% 补军事（pop 10 → 4 军事 + 6 worker），不等枯竭；
+//   - spawnReserve=0：refill 下资源持续流入，攒资源无益。
 func DefaultConfig() Config {
 	return Config{
-		WorkerTarget:      13,
-		PopulationCeiling: 16,
-		ExploreRadius:     17,
-		ThreatDistance:    5,
-		SpawnReserve:      0,
-		MilitaryRatio:     25,
+		WorkerTarget:       8,
+		PopulationCeiling:  16,
+		ExploreRadius:      17,
+		ThreatDistance:     5,
+		SpawnReserve:       0,
+		MilitaryRatio:      40,
+		MilitarySpawnFloor: 6,
 	}
 }
 
@@ -188,8 +195,14 @@ func (p *Planner) isStuck(unitID string) bool {
 	return st != nil && st.stuckTicks >= stuckYieldThreshold
 }
 
-// decideCore：workerTarget 消费 + reserve guard + 紧急/恢复期通道。
+// decideCore：workerTarget 消费 + reserve guard + 紧急/恢复期通道 +
+// 枯竭模式军事优先（打野出击）。
 //   - Core 缺失或非 NORMAL：无 core 动作（validator 亦拒绝）；
+//   - 枯竭/迁移评估模式：军事优先——资源枯竭时 worker 扩张停滞，
+//     转产军事单位主动出击（Ranger 优先：远程打野生存性好），
+//     摧毁敌方 Core 可捕获其库存资源（官方 v0.9 机制），是枯竭
+//     经济的替代收入线；上限 2 个军事（打野小队），不挤占恢复期
+//     worker 生产；
 //   - 正常扩张：resources >= cost + SpawnReserve 才 spawn（reserve guard）；
 //   - 紧急通道：worker 数低于 emergencyWorkerFloor（<2，对齐 TS 版
 //     WORKER_RECOVERY_FLOOR）或处于恢复期（respawnOverride）时，
@@ -207,7 +220,29 @@ func (p *Planner) decideCore(state *domain.TickState) *domain.CoreAction {
 			return &domain.CoreAction{Kind: domain.CoreStartMove, Direction: direction}
 		}
 	}
+	// 枯竭模式军事优先（打野出击）：worker 扩张停滞时先产军事。
+	// 恢复期（respawnOverride）不切军事——先保 worker 恢复。
+	if (p.directive.Mode == ModeExploreStarved || p.directive.Mode == ModeMigrateCand) &&
+		!respawnOverride(state) {
+		if militaryType := p.militarySpawnStarved(state); militaryType != nil {
+			cost := domain.SpawnCost(*militaryType)
+			if state.Resources >= cost {
+				unitType := *militaryType
+				return &domain.CoreAction{Kind: domain.CoreSpawn, UnitType: &unitType}
+			}
+		}
+	}
+	// 军事生产（激进产兵优先）：worker 达 MilitarySpawnFloor 后军事
+	// 分支先于 worker 继续扩张（第 floor+ 个 worker 边际收益低，人口
+	// 腾给军事打野）——Vanguard/Ranger 交替。
 	workers := len(state.Workers)
+	if militaryType := p.militarySpawn(state, workers); militaryType != nil {
+		cost := domain.SpawnCost(*militaryType)
+		if state.Resources >= cost {
+			unitType := *militaryType
+			return &domain.CoreAction{Kind: domain.CoreSpawn, UnitType: &unitType}
+		}
+	}
 	if workers < p.config.WorkerTarget && state.Population < p.config.PopulationCeiling {
 		cost := domain.SpawnCost(domain.UnitWorker)
 		reserve := p.config.SpawnReserve
@@ -224,26 +259,39 @@ func (p *Planner) decideCore(state *domain.TickState) *domain.CoreAction {
 			return &domain.CoreAction{Kind: domain.CoreSpawn, UnitType: &unitType}
 		}
 	}
-	// 军事生产（worker 达到目标后）：按人口比例补 Vanguard/Ranger 交替。
-	if militaryType := p.militarySpawn(state, workers); militaryType != nil {
-		cost := domain.SpawnCost(*militaryType)
-		if state.Resources >= cost {
-			unitType := *militaryType
-			return &domain.CoreAction{Kind: domain.CoreSpawn, UnitType: &unitType}
-		}
-	}
 	if state.Core.HP < domain.CoreMaxHP && workers >= 2 {
 		return &domain.CoreAction{Kind: domain.CoreHeal}
 	}
 	return nil
 }
 
+// militarySpawnStarved 返回枯竭模式的军事生产类型（nil = 不生产）：
+// 资源枯竭时即使 worker 未达 WorkerTarget 也产军事（打野出击），
+// 上限 2 个（打野小队，不无限堆军事拖垮剩余经济）。Ranger 优先
+// （远程打野生存性好、可风筝）；已有 1 个时补 Vanguard（近战开路）。
+func (p *Planner) militarySpawnStarved(state *domain.TickState) *domain.UnitType {
+	if p.config.MilitaryRatio <= 0 {
+		return nil
+	}
+	military := len(state.Vanguards) + len(state.Rangers)
+	if military >= 2 {
+		return nil
+	}
+	unitType := domain.UnitRanger
+	if military%2 == 1 {
+		unitType = domain.UnitVanguard
+	}
+	return &unitType
+}
+
 // militarySpawn 返回需要生产的军事单位类型（nil = 不生产）：
-// worker 达到 WorkerTarget 且军事占比低于 MilitaryRatio 时，
-// Vanguard/Ranger 交替（第偶数个军事 → Vanguard，奇数 → Ranger，
-// 防御优先——Vanguard SWEEP AOE 守家）。
+// worker 达到 MilitarySpawnFloor 且军事占比低于 MilitaryRatio 时，
+// Vanguard/Ranger 交替（第偶数个军事 → Vanguard，奇数 → Ranger）。
+// 激进产兵：经济基础一到（6 worker 维持资源循环）就产军事出击，
+// 不等 worker 满编（WorkerTarget 只是 worker 扩张上限，不是军事
+// 产出的前提）。
 func (p *Planner) militarySpawn(state *domain.TickState, workers int) *domain.UnitType {
-	if p.config.MilitaryRatio <= 0 || workers < p.config.WorkerTarget {
+	if p.config.MilitaryRatio <= 0 || workers < p.config.MilitarySpawnFloor {
 		return nil
 	}
 	military := len(state.Vanguards) + len(state.Rangers)
@@ -432,6 +480,15 @@ func (p *Planner) decideVanguard(state *domain.TickState, unit *domain.UnitSnaps
 		p.engageTicks[unit.ID]++
 		return p.moveToward(state, unit, enemy.Position), "engage", true
 	}
+	// 打野出击（任何模式，近敌已在上方优先防御）：军事单位产出即
+	// 主动进攻——朝可见敌方 Core 推进（摧毁捕获资源，官方 v0.9
+	// 机制）或朝最近敌单位推进（压制对手经济）。无敌人时正常巡逻。
+	if enemyCore := nearestVisibleEnemyCore(state); enemyCore != nil {
+		return p.moveToward(state, unit, enemyCore.Position), "raid_core", true
+	}
+	if enemy := nearestEnemy(state, unit.Position, 1000); enemy != nil {
+		return p.moveToward(state, unit, enemy.Position), "raid", true
+	}
 	// 无敌人：重置 engage 计数。
 	p.engageTicks[unit.ID] = 0
 	if state.Core != nil && unit.HP < domain.UnitMaxHP(unit.UnitType) {
@@ -486,6 +543,28 @@ func (p *Planner) decideRanger(state *domain.TickState, unit *domain.UnitSnapsho
 			return domain.UnitAction{Kind: domain.ActionShoot, TargetID: &targetID, ExpectedCell: &cell}, "shoot", true
 		}
 	}
+	// 打野出击（任何模式，近敌已在上方优先防御）：军事单位产出即
+	// 主动进攻——朝可见敌方 Core 推进（摧毁捕获资源，官方 v0.9
+	// 机制）或朝最近敌单位推进（压制对手经济）。无敌人时正常巡逻。
+	if enemyCore := nearestVisibleEnemyCore(state); enemyCore != nil {
+		// 进入射程（Chebyshev 5）内开火，否则逼近。
+		if domain.Chebyshev(unit.Position, enemyCore.Position) <= 5 &&
+			!domain.LineBlocked(unit.Position, enemyCore.Position, state.ObstacleCells) {
+			targetID := enemyCore.ID
+			cell := enemyCore.Position
+			return domain.UnitAction{Kind: domain.ActionShoot, TargetID: &targetID, ExpectedCell: &cell}, "raid_core", true
+		}
+		return p.moveToward(state, unit, enemyCore.Position), "raid_core", true
+	}
+	if enemy := nearestEnemy(state, unit.Position, 1000); enemy != nil {
+		if domain.Chebyshev(unit.Position, enemy.Position) <= 5 &&
+			!domain.LineBlocked(unit.Position, enemy.Position, state.ObstacleCells) {
+			targetID := enemy.ID
+			cell := enemy.Position
+			return domain.UnitAction{Kind: domain.ActionShoot, TargetID: &targetID, ExpectedCell: &cell}, "raid", true
+		}
+		return p.moveToward(state, unit, enemy.Position), "raid", true
+	}
 	if state.Core != nil && unit.HP < domain.UnitMaxHP(unit.UnitType) {
 		if unit.Position == state.Core.Position {
 			return domain.UnitAction{Kind: domain.ActionHeal}, "heal", true
@@ -500,6 +579,28 @@ func (p *Planner) decideRanger(state *domain.TickState, unit *domain.UnitSnapsho
 		return domain.UnitAction{Kind: domain.ActionWait}, "defend", true
 	}
 	return p.patrol(state, unit), "patrol", true
+}
+
+// nearestVisibleEnemyCore 返回可见敌方 Core（VisibleEnemies 中
+// Kind=="CORE" 的最近者，按 Chebyshev 距离；同距取 ID 升序）。
+// 无则 nil。打野出击的优先目标：摧毁敌方 Core 可捕获其库存资源
+// （官方 v0.9 Core-resource-capture 机制）。
+func nearestVisibleEnemyCore(state *domain.TickState) *domain.VisibleEntity {
+	var best *domain.VisibleEntity
+	bestDistance := 0
+	for i := range state.VisibleEnemies {
+		enemy := &state.VisibleEnemies[i]
+		if enemy.Kind != "CORE" {
+			continue
+		}
+		distance := domain.Chebyshev(state.Core.Position, enemy.Position)
+		if best == nil || distance < bestDistance ||
+			(distance == bestDistance && enemy.ID < best.ID) {
+			best = enemy
+			bestDistance = distance
+		}
+	}
+	return best
 }
 
 // kiteAway 让 Ranger 朝远离敌人的方向撤退一步（保持射程优势）。
@@ -681,11 +782,14 @@ func (p *Planner) starvedPatrol(state *domain.TickState, unit *domain.UnitSnapsh
 
 // nextSpiralTarget 生成下一螺旋扫描目标（覆盖路径规划启发式）：
 //   - 半径：内圈优先（Core 周围是资源最可能的位置），每 ring 半径
-//     步进 6（视野直径 5 + 1 重叠 → 径向扫描带无缝），上限 46 后
-//     重置内圈循环扫；
+//     步进 6（视野直径 5 + 1 重叠 → 径向扫描带无缝），持续外扩到
+//     88（大世界资源可能在远距离，不能扫完内圈就重置回内圈打转），
+//     到顶后重置内圈循环扫；
 //   - 周向：64 方位角分辨率，角步长按半径自适应
-//     （angleStep = max(1, floor(50/radius)) → 相邻扫描点距 ≤ 5，
-//     与视野直径重叠——周向扫描带无缝）；
+//     （angleStep = max(1, floor(36/radius)) → 相邻扫描点距 ≤ 5，
+//     与视野直径重叠——周向扫描带无缝）；半径 > 46 时每 ring 扫
+//     两圈（第二圈角度错位 32，等效 128 采样）——大半径点距
+//     2πr/64 > 5 会出现扫描带缝隙，双圈错位消除缝隙；
 //   - 首方位：focus 方位 + 单位 ID 哈希偏移（多 worker 同时出发
 //     覆盖不同方位，fixture 实测同向出发会挤在一起）。
 //
@@ -696,24 +800,45 @@ func (p *Planner) nextSpiralTarget(home, focus domain.Position, unitID string) d
 	ring := p.patrolRings[unitID]
 	radius := p.patrolScanRadius(ring)
 	step := p.patrolAngleStep(radius)
-	target := spiralPoint(home, focus, unitID, ring, p.patrolDirs[unitID], radius)
+	angle := p.patrolDirs[unitID]
+	if radius > patrolScanRadiusMax/2 {
+		// 大半径双圈扫：第二圈角度错位 32（patrolDirs 0..127，
+		// 高 6 位是圈号，低 6 位加圈号×32 得实际方位角）。
+		pass := p.patrolDirs[unitID] / 64
+		angle = (p.patrolDirs[unitID]%64 + pass*32) % 64
+	}
+	target := spiralPoint(home, focus, unitID, ring, angle, radius)
 	p.patrolDirs[unitID] += step
-	if p.patrolDirs[unitID] >= 64 {
+	if p.patrolDirs[unitID] >= p.patrolRingSpan(radius) {
 		p.patrolDirs[unitID] = 0
 		p.patrolRings[unitID]++
 	}
 	return target
 }
 
+// patrolScanRadiusMax 是螺旋扫描最大半径：持续外扩覆盖大世界（旧
+// starved 上限 88 对齐；旧实现 8 方位上限仅 68，且重置后内圈打转）。
+const patrolScanRadiusMax = 88
+
 // patrolScanRadius 返回 ring 的扫描半径：内圈 4 起步（至少覆盖 Core
-// 邻域），每 ring +6（视野直径 5 + 1 重叠），上限 46 后重置回内圈
+// 邻域），每 ring +6（视野直径 5 + 1 重叠），上限 88 后重置回内圈
 // 循环扫（确定性覆盖，不漏任何径向带）。
 func (p *Planner) patrolScanRadius(ring int) int {
 	radius := 4 + 6*ring
-	if radius > 46 {
+	if radius > patrolScanRadiusMax {
 		return 4
 	}
 	return radius
+}
+
+// patrolRingSpan 返回 ring 的周向扫描点数：半径 ≤ 46 时 64 点一圈；
+// 大半径（>46）时 128 点两圈（第二圈错位 32）——点距保持 ≤ 5，
+// 周向扫描带全程无缝。
+func (p *Planner) patrolRingSpan(radius int) int {
+	if radius > patrolScanRadiusMax/2 {
+		return 128
+	}
+	return 64
 }
 
 // patrolAngleStep 返回半径 r 处的周向角步长（64 方位角分辨率）：

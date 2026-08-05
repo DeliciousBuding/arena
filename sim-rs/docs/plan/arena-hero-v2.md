@@ -40,6 +40,27 @@
 经济雪球指标（对比目标）：deposits/资源增长率/人口终值——后续每个 v0.x 改动用
 `cargo test --release -- --ignored bench_` + simgolden --check 回归 + 上述三场景对比。
 
+## 3.1 真实数据画像（t3/t4 decision.jsonl 学习，2026-08-06）
+
+样本：t3 26 runs/990 行 + t4 38 runs/2740 行（deterministic shadow 记录模式，
+submitEnabled=false；t1/t2 本地 live 未落盘）。关键事实：
+
+- **资源极度稀缺**：t4 resources 0-10 波动、38 runs 全样本仅 **1 次 DEPOSIT**
+  （tick 55866：workers=3、res=5、cargo=1，同 tick 还 spawn+2 explore）；
+  t3 全程 0 deposit、cargo 全 0。真实地图资源比模拟器 sparse 更稀。
+- **explore 绝对主导**：t3 92%（1312/1428）、t4 99.7%（8448/8470）意图为 explore；
+  kinds MOVE 绝对主导（t4 7138/8462）——worker 绝大多数时间空跑巡逻。
+- **人口规模小**：t3 workers 1-2、t4 2-4；spawn 极少（t3 20、t4 8）——资源瓶颈
+  压制经济扩张，符合"经济雪球 > 击杀"前提下的资源受限形态。
+- **capacity_wait 存在**：t3 96、t4 8——容量仲裁在真实形态下可见。
+- **质量**：valid 990/990 + 2740/2740，repaired 0——确定性决策无非法动作。
+- **会话短**：每 run 38-72 tick——服务器会话频繁重置，记忆须会话内尽快生效。
+
+**对 v0.x 的设计输入**：资源记忆（v0.1）与探索 blacklist（v0.2）在真实地图
+价值最高（explore 空跑是最大损失）；sparse 场景是主要对标（30 deposits 基线）；
+v0.5 校准目标 = 模拟器场景意图分布/资源密度向真实画像逼近（explore>90%、
+deposit 每 500 tick 个位数）。
+
 ## 4. 版本路线（模拟器驱动）
 
 ### v0.1 Worker Economy 强化
