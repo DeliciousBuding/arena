@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -47,6 +48,7 @@ func runTenantCmd(args []string) int {
 	logFile := fs.String("log-file", "", "write logs to file (direct, no shell redirection buffering)")
 	workerTarget := fs.Int("worker-target", -1, "override planner WorkerTarget (-1 = config default)")
 	spawnReserve := fs.Int("spawn-reserve", -1, "override planner SpawnReserve (-1 = config default; 0 = explicit zero)")
+	breakStaleLock := fs.Bool("break-stale-lock", false, "live: explicitly break a stale lock (age-guarded) and retry")
 	if err := fs.Parse(args); err != nil {
 		return exitConfig
 	}
@@ -118,8 +120,21 @@ func runTenantCmd(args []string) int {
 		lockPath := filepath.Join(lockDir, configFile.TenantID+".lock")
 		lock, err := ops.New().Acquire(lockPath, configFile.TenantID+"-live")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "arena tenant: single-writer lock: %v (tenant %s already has a live writer; stale locks are NOT auto-removed)\n", err, configFile.TenantID)
-			return exitError
+			var staleErr *ops.StaleLockError
+			if *breakStaleLock && errors.As(err, &staleErr) {
+				// 显式清理 stale 锁（age 守卫在 BreakStale 内）：仅当持有者
+				// 已死且锁龄超阈值才允许；清理后重试一次。
+				logger.Warn("breaking stale lock", "path", lockPath, "pid", staleErr.PID, "age", staleErr.Age)
+				if breakErr := lock.BreakStale(); breakErr != nil {
+					fmt.Fprintf(os.Stderr, "arena tenant: break stale lock: %v\n", breakErr)
+					return exitError
+				}
+				lock, err = ops.New().Acquire(lockPath, configFile.TenantID+"-live")
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "arena tenant: single-writer lock: %v (tenant %s already has a live writer; stale locks are NOT auto-removed)\n", err, configFile.TenantID)
+				return exitError
+			}
 		}
 		liveLock = lock
 		defer func() { _ = liveLock.Release() }()
