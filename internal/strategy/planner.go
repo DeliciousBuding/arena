@@ -20,11 +20,14 @@ type Config struct {
 }
 
 // DefaultConfig 返回默认配置。
+// ExploreRadius=16：视野研究结论（官方规则 v0.13）——Worker 视野半径
+// 仅 3，chunk 32×32；巡逻目标按半 chunk（16 格）量级才能系统性扫过
+// chunk 边界区域，8 格起步覆盖太慢（真机 20t 只见 1 个障碍 batch）。
 func DefaultConfig() Config {
 	return Config{
 		WorkerTarget:      8,
 		PopulationCeiling: 20,
-		ExploreRadius:     8,
+		ExploreRadius:     16,
 		ThreatDistance:    5,
 		SpawnReserve:      5,
 	}
