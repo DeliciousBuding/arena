@@ -270,3 +270,21 @@ rust-rewrite/sim-rs F1（arena-sim-ffi crate）已完成，Go 侧 F2 adapter 半
 
 merge 注意事项：F2 文件恢复时须对齐当前 strategy 包（激进产兵后的
 MilitarySpawnFloor 等新字段）——Rust `Config` 反序列化需容忍未知字段。
+
+### 赛马格局确认 + 融合分支追踪（2026-08-06 用户裁决）
+
+**赛马架构**：TS 正式链（main 分支）是**一队**（t1/t2 live）；Go 重写
+（go-rewrite 分支）是**二队**（t3/t4 shadow 数据线）。两条线独立演进、
+独立迭代、成绩对照——**go-rewrite 不 merge main**（merge 会终结赛马）。
+
+**融合分支追踪（rust-rewrite 执行线进度）**：
+- `456bb8e` Go 宿主 sync 进 rust-rewrite（融合线 dev base）
+- `4f5d652` F1 FFI crate + F2 Go adapter——cross-ABI decision parity proven
+- `7ec3757` F4 decisionMode=deterministic-rust wiring
+- `248ed6e` F3 shadow dual-run tool + PARITY divergence baseline
+- 融合线里程碑 M-F1~F4 全部完成
+
+**merge 预演（go-rewrite → rust-rewrite）**：96 提交，唯一冲突
+`runtime/golden.json`（基线数值，merge 后 `simgolden --update` 重生成）；
+其余干净合并。策略代码（激进产兵/螺旋外扩/快速路径）已在 rust-rewrite
+部分存在，merge 后以合并代码重新生成 golden 为准。
