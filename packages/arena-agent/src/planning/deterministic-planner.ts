@@ -28,7 +28,12 @@ import {
   type TickState,
   type UnitAction,
 } from "../domain/model.ts";
-import { stepToward as pathStepToward } from "../domain/nav.ts";
+import {
+  adaptivePathOptions,
+  manhattan,
+  stepToward as pathStepToward,
+  type PathSearchOptions,
+} from "../domain/nav.ts";
 import type { PlanProvider } from "../runtime/decision-types.ts";
 import type { MacroPolicy } from "../runtime/macro-policy.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
@@ -85,8 +90,13 @@ function stepCell(position: Position, direction: Direction): Position {
 
 /** 障碍感知一步：首选方向被挡 → 依次尝试纯 x / 纯 y 轴；全挡返回 null（调用方 WAIT）。
  *  修正依据：t2 真机观察 repair 率 48.5%（blocked_move 系统性）——骨架不避障导致。 */
-export function stepTowardAvoiding(from: Position, target: Position, obstacles: ReadonlySet<string>): Direction | null {
-  return pathStepToward(from, target, obstacles);
+export function stepTowardAvoiding(
+  from: Position,
+  target: Position,
+  obstacles: ReadonlySet<string>,
+  options?: PathSearchOptions,
+): Direction | null {
+  return pathStepToward(from, target, obstacles, options);
 }
 
 /** 满载 Worker 资源满时让出 Core 格的移动方向：Core 四邻中第一个非障碍格
@@ -476,7 +486,12 @@ export class DeterministicPlanner implements PlanProvider {
           const leave = yieldDirection(unit.position, movementObstacles);
           return leave === null ? { type: "WAIT" } : { type: "MOVE", direction: leave };
         }
-        const direction = stepTowardAvoiding(unit.position, core, movementObstacles);
+        const direction = stepTowardAvoiding(
+          unit.position,
+          core,
+          movementObstacles,
+          adaptivePathOptions(manhattan(unit.position, core)),
+        );
         return direction === null ? { type: "WAIT" } : { type: "MOVE", direction };
       }
       case "GO_RESOURCE": {
@@ -488,7 +503,12 @@ export class DeterministicPlanner implements PlanProvider {
           const targetKey = task.targetCellKey ?? cellKey(target);
           return snapshot.resourceCells.has(targetKey) ? { type: "HARVEST" } : { type: "WAIT" };
         }
-        const direction = stepTowardAvoiding(unit.position, target, movementObstacles);
+        const direction = stepTowardAvoiding(
+          unit.position,
+          target,
+          movementObstacles,
+          adaptivePathOptions(manhattan(unit.position, target)),
+        );
         return direction === null ? { type: "WAIT" } : { type: "MOVE", direction };
       }
       default:

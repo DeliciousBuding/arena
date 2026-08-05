@@ -51,11 +51,15 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 6. **v0.2.8 敌方 CORE 并入障碍**：`planning-snapshot.enemyCells`（全部可见敌人占用格，含敌方 CORE）——生产实测最后一层：w1 满载 @[-316,57] 被敌方 CORE @[-317,57] 挡在一步内，旧 avoidCells 只含 kind=UNIT 的敌方单位 → BFS 走被容量裁决拒绝的格 → capacity_wait 循环 300+ ticks。修复后生产验证：**maxDist 32→14 持续推进（w1 绕行回家）、capacity_wait 消失、DEPOSIT×2 正常回仓**。残余：w1 在敌区边缘 14-16 格徘徊（战场阻塞非死锁，BFS 剪枝 3× 放弃更长绕行——等敌群移动/清场，不调参防局部最优）。
 7. **v0.2.9 fail-safe 不横跳**：旧 fail-safe 在墙前选第一个非障碍方向（含远离目标方向）→ w1 在敌区边缘 12↔16 格来回横跳。修复：fail-safe 只走"离目标更近"的格，否则 WAIT（敌群/障碍会移动）。生产验证：w1 dist 12→9 持续推进、waitCount=0、tick 53441 cargoTot=0（300+ tick 死锁的满载 Worker 全部卸完）+ delta=+1——经济循环完全恢复。
 8. **v0.2.10 策略层清场证据**：生产 A/B 实测（500 ticks）——t2 aggressive 清场方资源均值 20 满仓 vs t1 defensive 被敌群压制 5（Worker 被赶远卡货、maxDistAvg 28.5 vs 1.9）。LLM 策略层 militaryRatio=0 不造兵 → 无清场能力 → 经济被压。policy prompt 注入军事价值证据，引导策略层产出合理 militaryRatio（执行层不变）。
+9. **v0.2.11 militaryRatio 消费接线**：`selectDeterministicCoreAction` 重写——workers 达 target 且军事占比不足时产兵（VANGUARD/RANGER 交替、资源门禁 cost+reserve、经济优先）；满载 Worker 在 Core 格不算永久占位（卸货等待不阻塞 SPAWN）。策略层（0.35-0.4）首次被执行层消费。生产遥测：policy 演进至 `balanced/workerTarget=12/militaryRatio=0.35/attackPriority=workers`，10 Worker 全部 patrol/WAIT（资源采尽终局，非死锁：无 failedEvents、无 capacity_wait、提交 accepted 为主）。
+10. **v0.2.12 模拟器 policy 注入 + 远距离导航自适应**：
+    - `EpisodeTenant.policy`（可选 MacroPolicy）+ `PlanProvider.decide` 扩展 `policy?`——离线策略扫描闭环（root cause：episode.ts 原 decide 不传 policy → workerTarget=floor=2 → 模拟器无补员 → 经济恒死；注入后 SPAWN/采集/回仓正常，res 10→2-4、pop 2→4）。
+    - `nav.adaptivePathOptions`：distance > 24 时放大 BFS 搜索半径（radius=min(64, distance+2)、nodeBudget=radius²×4）——生产实测满载 Worker 在 40+ 格外回仓时默认搜索窗直接不可达，退化为 fail-safe 卡死（stall_warning cargo_blocked 累计 26 次）。回仓/GO_RESOURCE 分支接线（确定性零回归：distance ≤ 24 返回默认对象）。
 
 **检测设施（同步落地）**：
-- `stall detector`（v0.2.4+）：连续 16 ticks `delta=0 且满载滞留` → runtime.jsonl `stall_warning`（生产已触发 3 次，自动告警替代人工发现）。
-- `test/economy-loop.test.ts`（8 测试）：经济闭环长跑（决策→模拟结算 200 ticks，断言 cargo 周期清零/SPAWN 消耗闭环/守家锚点/资源满让位/敌格绕行）。
-- `test/nav-pathfinding.test.ts`（7 测试）：生产场景复刻（三面围堵绕行/四面围死 null）、直线墙绕行可达性、确定性、性能上限。
+- `stall detector`（v0.2.4+）：连续 16 ticks `delta=0 且满载滞留` → runtime.jsonl `stall_warning`（生产累计触发 26 次，自动告警替代人工发现）。
+- `test/economy-loop.test.ts`（12 测试）：经济闭环长跑（决策→模拟结算 200 ticks，断言 cargo 周期清零/SPAWN 消耗闭环/守家锚点/资源满让位/敌格绕行/militaryRatio 产兵门禁）。
+- `test/nav-pathfinding.test.ts`（10 测试）：生产场景复刻（三面围堵绕行/四面围死 null）、直线墙绕行可达性、确定性、性能上限、自适应半径远距离（48 格）可达与绕行。
 
 **剩余已知卡点**：w1 满载 Worker 在 32 格外被敌方 Worker 群长期围堵（战场阻塞，非 planner 死锁——四面围死时 WAIT 正确；等敌群散开或 Vanguard 清场）。A/B 对照 t2（aggressive）经济更健康佐证防守策略需配合前压。
 - **经济死锁修复 + A/B 实验（v0.2.2，PR #25，2026-08-05）**：生产数据显示 deterministic SPAWN 锁死 emergency floor=2（t1 停 2 worker、策略 workerTarget=16 不生效）→ workerTarget 接线补员（reserve 保护 + emergency 保命优先）+ prompt 注入策略历史基线（防 16→3 跳变）+ config.policyOverride 实验框架。**A/B 第一轮已启动**：t1 = LLM 自主对照，t2 = 固定 aggressive/workerTarget=12/attackPriority=core 实验组（policy.jsonl policy_override 记录为证）。

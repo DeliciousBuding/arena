@@ -73,6 +73,19 @@ export const DEFAULT_PATH_SEARCH_OPTIONS: Readonly<PathSearchOptions> = Object.f
   abandonFactor: 3,
 });
 
+/** 远距离目标的 BFS 参数自适应：distance 超过默认半径时放大搜索半径，
+ *  保证远处资源点/回仓目标在搜索窗内（生产实测：满载 Worker 在 40+ 格外
+ *  回仓时，默认 radius 24 搜索窗直接不可达，退化为 fail-safe 卡死）。 */
+export function adaptivePathOptions(distance: number): PathSearchOptions {
+  if (distance <= DEFAULT_PATH_SEARCH_OPTIONS.searchRadius) return DEFAULT_PATH_SEARCH_OPTIONS;
+  const searchRadius = Math.min(64, distance + 2);
+  return {
+    nodeBudget: searchRadius * searchRadius * 4,
+    searchRadius,
+    abandonFactor: DEFAULT_PATH_SEARCH_OPTIONS.abandonFactor,
+  };
+}
+
 interface SearchNode {
   readonly position: Position;
   readonly firstDirection: Direction | null;
@@ -120,11 +133,12 @@ export function stepToward(
   position: Position,
   target: Position,
   obstacles: ReadonlySet<string>,
+  options: PathSearchOptions = DEFAULT_PATH_SEARCH_OPTIONS,
 ): Direction | null {
   if (position[0] === target[0] && position[1] === target[1]) return null;
 
   // ① 半径受限 BFS（首选）：局部绕行（敌群/墙）最短路径的第一步，确定性。
-  const direction = stepTowardPath(position, target, obstacles);
+  const direction = stepTowardPath(position, target, obstacles, options);
   if (direction !== null) return direction;
 
   // ② 旧扩框长程 BFS（回退）：绕行点距起点 > 24 时兜底。地图无显式边界，

@@ -7,6 +7,7 @@
  */
 
 import type { Plan, TickState } from "../domain/model.ts";
+import type { MacroPolicy } from "../runtime/macro-policy.ts";
 import type { LeaseSubmission } from "./decision-lease.ts";
 
 /** 决策来源（4D-pre：统一单类型，5 值——不再有 domain/runtime 两套矛盾定义）。
@@ -21,7 +22,7 @@ export type SubmissionModeName = "disabled" | "live";
 /** 确定性 planner 端口（SafetyPlanner 与 DeterministicPlanner 可互换注入——P0-1：
  *  deterministic 模式 = coordinator 短路 + planner 注入，coordinator 不感知差异）。 */
 export interface PlanProvider {
-  decide(input: { readonly state: TickState }): Plan;
+  decide(input: { readonly state: TickState; readonly policy?: MacroPolicy }): Plan;
 }
 
 /** 决策上下文：不可变，一次决策全程共享（R9：World 必须在 Tick 开始时快照化）。 */
