@@ -114,7 +114,9 @@ policy(LLM 低频 32 tick)
 
 ### 决策指挥闭环生产部署（2026-08-06，用户授权"全部部署全部实测"）
 
-us1 live 已升级 `ghcr.io/deliciousbuding/arena:404c1bcc…`（version.env pin + upgrade.sh 健康门禁通过；systemd 单元同步 active）。实测：t1+t2 ready（新代码首次双租户 live 提交）、manifest submitEnabled=true/decisionMode=deterministic、t1 新 run accepted 446+/rejected 0（历史 TICK_MISMATCH 为停机过渡期）、policy 流产出 aggressive/militaryRatio=0.8/focusRegion=null（无坏焦点）、live-health + disk-health timer active。历史证据：v0.2.16 时代 LLM 真实输出过 `focusRegion:[1500,1500]`（tick 56508）——决策指挥机制正是防御此场景；stall_recovery/policy_discipline telemetry 生产形态待命（无死循环即不触发）。
+us1 live 已升级 `ghcr.io/deliciousbuding/arena:404c1bcc…`（version.env pin + upgrade.sh 健康门禁通过；systemd 单元同步 active）。实测：t1+t2 ready（live 提交中；t3/t4 用户裁决不得使用——config submitEnabled=false 保持，ARENA_CONFIGS=t1,t2）、manifest submitEnabled=true/decisionMode=deterministic、当前 run accepted 持续/rejected 0（历史 TICK_MISMATCH 与 tick 56656 瞬时 submitError 均为过渡/瞬时故障，safe retries 正确记录）、policy 流产出 aggressive/militaryRatio=0.8/focusRegion=null（无坏焦点）、live-health + disk-health timer active。历史证据：v0.2.16 时代 LLM 真实输出过 `focusRegion:[1500,1500]`（tick 56508）——决策指挥机制正是防御此场景；stall_recovery/policy_discipline telemetry 生产形态待命（无死循环即不触发）。
+
+**回滚演练（2026-08-06）**：`upgrade.sh --rollback` 到 v0.2.16 失败（live not healthy）——旧版本 tag 与当前 compose/配置契约不兼容，**不是可行逃生通道**；逃生通道应使用同部署形态的 commit sha 镜像（CI 每次 main push 构建）。演练验证了 rollback 流程本身（pin 恢复/容器重建/健康门禁），失败被正确捕获，已恢复 404c1bc。
 
 ### Deterministic
 
@@ -141,7 +143,7 @@ combat、第四 Tick Unit/Core 争抢、Beacon pickup/drop/death、Core destruct
 
 1. Provider/Pi 真实 agent-shadow 故障注入与 circuit telemetry 证据；
 2. 四租户 Supervisor 分级真机运行与长期 soak（us1 live 已四租户常驻，长期 soak 证据持续累积中）；
-3. 稳定 TS commit/config 回滚演练（Docker 镜像 tag 回滚流程已文档化，待演练）；
+3. ~~稳定 TS commit/config 回滚演练~~：2026-08-06 已演练——`upgrade.sh --rollback` 到 v0.2.16 失败（旧版本 tag 与当前部署形态不兼容），验证了 rollback 流程本身可用但**逃生通道必须用同部署形态的 commit sha 镜像**；
 4. combat、Core migration、Beacon、respawn 专项 Runtime-Golden；
 5. 服务器长期运行观察（us1 live 运行中，持续验证）；
 6. ~~升级或受控修补 Pi 依赖链中的 undici 再开放 per-tick `agent-shadow`/`hybrid`~~：per-tick LLM 已确认关闭路线（agent 模型 18–57s/决策 > 15s 窗口），低频 MacroPolicy 用独立 session 落地，无需 per-tick hybrid；
