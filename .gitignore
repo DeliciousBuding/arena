@@ -26,6 +26,9 @@
 
 # 构建产物
 bin/
+# 例外：sim-rs CLI 源码 bin（Rust cargo bin 目录是源码，非构建产物）
+!sim-rs/crates/cli/src/bin/
+!sim-rs/crates/cli/src/bin/*.rs
 dist/
 
 # 外部克隆/并行开发 worktree（独立分支/索引）
