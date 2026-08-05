@@ -8,6 +8,9 @@
 pub mod commander;
 pub mod economic;
 
+#[cfg(test)]
+mod loop_tests;
+
 use std::collections::BTreeMap;
 
 use arena_sim_domain::{

@@ -15,6 +15,9 @@ pub mod spawn;
 pub mod util;
 pub mod vision;
 
+// 常用类型 re-export（Go 版同为 sim 包顶层）。
+pub use refill::RefillConfig;
+
 #[cfg(test)]
 mod engine_tests;
 
