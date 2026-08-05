@@ -384,3 +384,66 @@ func TestFullEconomicLoopBreakDeadlock(t *testing.T) {
 		t.Errorf("resource space = %d, want > 0 after loop (economy unblocked)", state.ResourceSpace)
 	}
 }
+
+// TestSpawnVanguardSettles：Core 格空 + 资源 10 → SPAWN VANGUARD 结算：
+// 资源 10→0、pop 增、Vanguards 分列落位、新单位在 Core 格。
+func TestSpawnVanguardSettles(t *testing.T) {
+	state := economyBaseState()
+	state.Units[0].Position = domain.Position{0, -1}
+	state.Workers[0].Position = domain.Position{0, -1}
+	unitType := domain.UnitVanguard
+
+	result := NewEngine().Settle(state, &domain.Plan{
+		Tick:       state.Tick,
+		CoreAction: &domain.CoreAction{Kind: domain.CoreSpawn, UnitType: &unitType},
+	})
+
+	if result.Stats.Spawns != 1 {
+		t.Fatalf("spawns = %d, want 1", result.Stats.Spawns)
+	}
+	next := result.NextState
+	if next.Resources != 0 {
+		t.Errorf("resources = %d, want 0 (10 - cost 10)", next.Resources)
+	}
+	if len(next.Vanguards) != 1 {
+		t.Errorf("vanguards = %d, want 1", len(next.Vanguards))
+	}
+	if len(next.Workers) != 2 {
+		t.Errorf("workers = %d, want 2 (unchanged)", len(next.Workers))
+	}
+	if got := next.Vanguards[0].Position; got != state.Core.Position {
+		t.Errorf("vanguard position = %v, want core cell", got)
+	}
+	if got := next.Vanguards[0].HP; got != domain.UnitMaxHP(domain.UnitVanguard) {
+		t.Errorf("vanguard HP = %d, want %d", got, domain.UnitMaxHP(domain.UnitVanguard))
+	}
+}
+
+// TestSpawnRangerSettles：SPAWN RANGER 资源扣除 12 + Rangers 分列落位。
+func TestSpawnRangerSettles(t *testing.T) {
+	state := economyBaseState()
+	state.Resources = 20
+	state.ResourceSpace = 0
+	state.Units[0].Position = domain.Position{0, -1}
+	state.Workers[0].Position = domain.Position{0, -1}
+	unitType := domain.UnitRanger
+
+	result := NewEngine().Settle(state, &domain.Plan{
+		Tick:       state.Tick,
+		CoreAction: &domain.CoreAction{Kind: domain.CoreSpawn, UnitType: &unitType},
+	})
+
+	if result.Stats.Spawns != 1 {
+		t.Fatalf("spawns = %d, want 1", result.Stats.Spawns)
+	}
+	next := result.NextState
+	if next.Resources != 8 {
+		t.Errorf("resources = %d, want 8 (20 - cost 12)", next.Resources)
+	}
+	if len(next.Rangers) != 1 {
+		t.Errorf("rangers = %d, want 1", len(next.Rangers))
+	}
+	if len(next.Workers) != 2 {
+		t.Errorf("workers = %d, want 2", len(next.Workers))
+	}
+}
