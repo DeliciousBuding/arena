@@ -68,6 +68,15 @@ type Planner interface {
 	Decide(state *domain.TickState) *domain.Plan
 }
 
+// tickOutcome 是上一 tick 的决策摘要（下一 state 到达时生成 outcome：
+// 状态间延迟一 tick，结算结果只能在下一快照里观察）。
+type tickOutcome struct {
+	resources             int
+	workers               int
+	plannedSpawn          bool
+	fullWorkerFingerprint map[string]domain.Position // 满载 worker ID → 位置
+}
+
 // Loop 是单租户运行循环。
 type Loop struct {
 	Client      GameClient
@@ -93,6 +102,8 @@ type Loop struct {
 	lastTickAt atomic.Int64
 	// idleDumpSeq 是栈 dump 序号（文件命名）。
 	idleDumpSeq atomic.Int64
+	// prevOutcome 是上一 tick 摘要（outcome 计算，首 tick 为空）。
+	prevOutcome *tickOutcome
 }
 
 // logger 返回有效日志器（Obs 优先；全空时兜底默认 logger）。
@@ -302,22 +313,7 @@ func (l *Loop) handleState(ctx context.Context, state *contracts.PlayerState) er
 		_ = l.RuntimeLog.WriteLine(record)
 	}
 	if l.DecisionLog != nil {
-		spawnIntent := false
-		if validation.Plan.CoreAction != nil && validation.Plan.CoreAction.Kind == domain.CoreSpawn {
-			spawnIntent = true
-		}
-		_ = l.DecisionLog.WriteLine(map[string]any{
-			"at":       time.Now().UTC().Format(time.RFC3339Nano),
-			"tenant":   l.Config.TenantID,
-			"type":     "decision",
-			"tick":     tickState.Tick,
-			"actions":  len(validation.Plan.UnitActions),
-			"core":     validation.Plan.CoreAction != nil,
-			"spawn":    spawnIntent,
-			"repaired": validation.Repaired,
-			"valid":    validation.Valid,
-			"workers":  len(tickState.Workers),
-		})
+		l.writeDecisionRecord(tickState, &validation.Plan, validation.Valid, validation.Repaired)
 	}
 
 	l.Stats.ProcessedTicks.Add(1)
@@ -374,6 +370,107 @@ func (l *Loop) submit(ctx context.Context, tickState *domain.TickState, plan *do
 		return err
 	}
 	l.logger().Info("submit accepted", "tick", accepted.Tick)
+	return nil
+}
+
+// writeDecisionRecord 写决策遥测（含 outcome 证据：动作种类、意图计数、
+// Core 动作、资源/worker/cargo 前后变化、planned_spawn_no_effect 与
+// cargo_blocked 诊断）。状态间延迟一 tick：outcome 对比上一 tick 摘要。
+func (l *Loop) writeDecisionRecord(tickState *domain.TickState, plan *domain.Plan, valid, repaired bool) {
+	record := map[string]any{
+		"at":       time.Now().UTC().Format(time.RFC3339Nano),
+		"tenant":   l.Config.TenantID,
+		"type":     "decision",
+		"tick":     tickState.Tick,
+		"actions":  len(plan.UnitActions),
+		"valid":    valid,
+		"repaired": repaired,
+	}
+
+	// 动作种类与意图计数。
+	actionKinds := make(map[string]int)
+	intentCounts := make(map[string]int)
+	for _, action := range plan.UnitActions {
+		actionKinds[string(action.Kind)]++
+	}
+	for _, intent := range plan.Intents {
+		intentCounts[intent]++
+	}
+	record["actionKinds"] = actionKinds
+	record["intentCounts"] = intentCounts
+
+	// Core 动作证据。
+	if plan.CoreAction != nil {
+		record["coreAction"] = string(plan.CoreAction.Kind)
+		if plan.CoreAction.UnitType != nil {
+			record["coreUnitType"] = string(*plan.CoreAction.UnitType)
+		}
+	} else {
+		record["coreAction"] = "NONE"
+	}
+
+	// 结算 outcome（对比上一 tick 摘要）。
+	workers := len(tickState.Workers)
+	cargoTotal := 0
+	for _, worker := range tickState.Workers {
+		cargoTotal += worker.Cargo
+	}
+	record["workers"] = workers
+	record["workerCargoTotal"] = cargoTotal
+
+	eventReasons := make([]string, 0, 2)
+	if prev := l.prevOutcome; prev != nil {
+		record["resourcesBefore"] = prev.resources
+		record["resourcesAfter"] = tickState.Resources
+		record["workersBefore"] = prev.workers
+		record["workersAfter"] = workers
+		// planned_spawn_no_effect：上一 tick 计划 SPAWN 但 worker 数未增
+		// （服务端未结算：Core 格被永久占位/资源被拒）。
+		if prev.plannedSpawn && workers <= prev.workers {
+			eventReasons = append(eventReasons, "planned_spawn_no_effect")
+		}
+		// cargo_blocked：满载 worker 位置连续不变（位置指纹停滞；
+		// 长途回仓中的满载 worker 位置变化不误报）。
+		for id, position := range prev.fullWorkerFingerprint {
+			unit := findUnitSnapshotByID(tickState, id)
+			if unit == nil || unit.Cargo <= 0 || unit.Position != position {
+				continue
+			}
+			eventReasons = append(eventReasons, "cargo_blocked")
+			break
+		}
+	} else {
+		record["resourcesBefore"] = tickState.Resources
+		record["resourcesAfter"] = tickState.Resources
+		record["workersBefore"] = workers
+		record["workersAfter"] = workers
+	}
+	record["eventReasons"] = eventReasons
+
+	_ = l.DecisionLog.WriteLine(record)
+
+	// 保存本 tick 摘要供下一 tick 生成 outcome。
+	current := &tickOutcome{
+		resources:             tickState.Resources,
+		workers:               workers,
+		plannedSpawn:          plan.CoreAction != nil && plan.CoreAction.Kind == domain.CoreSpawn,
+		fullWorkerFingerprint: make(map[string]domain.Position, len(tickState.Workers)),
+	}
+	for _, worker := range tickState.Workers {
+		if worker.Cargo > 0 {
+			current.fullWorkerFingerprint[worker.ID] = worker.Position
+		}
+	}
+	l.prevOutcome = current
+}
+
+// findUnitSnapshotByID 按 ID 查找单位（outcome 诊断用，位置指纹对比）。
+func findUnitSnapshotByID(state *domain.TickState, unitID string) *domain.UnitSnapshot {
+	for i := range state.Units {
+		if state.Units[i].ID == unitID {
+			return &state.Units[i]
+		}
+	}
 	return nil
 }
 

@@ -20,6 +20,8 @@ type SettleStats struct {
 	Blocked       int
 	Harvests      int
 	Deposits      int
+	Spawns        int
+	SpawnBlocked  int
 	ResourceDelta int
 }
 
@@ -31,8 +33,10 @@ func NewEngine() *Engine {
 	return &Engine{}
 }
 
-// Settle 结算一个 tick：应用移动与经济活动，产出下一状态。
+// Settle 结算一个 tick：应用移动、经济活动与 Core 动作，产出下一状态。
 // 确定性：同输入同输出（无随机、稳定遍历顺序）。
+// 结算顺序（裁决语义）：MOVE（让位）→ HARVEST/DEPOSIT → Core SPAWN——
+// 满载 Worker 本 tick 让位腾空 Core 格后，SPAWN 同 tick 即可结算。
 func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult {
 	next := cloneState(state)
 	events := make([]domain.Event, 0, 8)
@@ -63,6 +67,17 @@ func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult
 	depositEvents := applyDeposits(next, depositWorkers, &stats)
 	events = append(events, harvestEvents...)
 	events = append(events, depositEvents...)
+
+	coreEvents := e.applyCoreAction(next, plan.CoreAction)
+	for _, event := range coreEvents {
+		if event.EventType == "SPAWN" {
+			stats.Spawns++
+		}
+		if event.EventType == "SPAWN_BLOCKED_CORE_OCCUPIED" {
+			stats.SpawnBlocked++
+		}
+	}
+	events = append(events, coreEvents...)
 
 	return SettleResult{NextState: next, Events: events, Stats: stats}
 }
