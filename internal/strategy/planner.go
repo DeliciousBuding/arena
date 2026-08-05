@@ -761,7 +761,18 @@ func (p *Planner) nextPatrolTarget(home, beacon domain.Position, unitID string) 
 		initial = offset
 		p.patrolDirs[unitID] = initial
 	}
-	radius, _ := domain.ExploreRadiusForRing(p.config.ExploreRadius, p.patrolRings[unitID])
+	// 巡逻半径从内圈开始螺旋外扩（真实游戏逻辑：Core 周围是资源
+	// 最可能的位置，先扫内圈再外扩）。首圈用 ExploreRadius/2（至少
+	// 4），后续 ring 逐步放大——simsearch 随机场景实测：稀疏场景
+	// （3 格资源、2 个在 38+ 距离）ring0 半径 17 直接跳过 Core 周围
+	// 内圈 → 0 harvest 经济枯竭；内圈起步后先发现近程资源。
+	radius := p.config.ExploreRadius / 2
+	if radius < 4 {
+		radius = 4
+	}
+	if ring := p.patrolRings[unitID]; ring > 0 {
+		radius, _ = domain.ExploreRadiusForRing(p.config.ExploreRadius, ring)
+	}
 	target := domain.ExploreTarget(home, beacon, initial, radius)
 	p.patrolDirs[unitID] = (initial + 1) % 8
 	if p.patrolDirs[unitID] == 0 {

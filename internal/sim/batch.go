@@ -30,6 +30,7 @@ type TimelinePoint struct {
 	Resources     int
 	ResourceCells int // 视野内可见资源格数（经济冻结诊断：reveal 不足）
 	Workers       int
+	Deposits      int // 累计 deposit 数（冻结检测：连续采样段不变 = 死锁）
 	Kills         int
 	UnitsLost     int
 	Mode          string
@@ -144,6 +145,7 @@ func runScenario(scene *Scenario, policy *strategy.Config, ticks int, opt BatchO
 				Resources:     state.Resources,
 				ResourceCells: len(state.ResourceCells),
 				Workers:       len(state.Workers),
+				Deposits:      result.Stats.Deposits,
 				Kills:         result.Stats.Kills,
 				UnitsLost:     result.Stats.UnitsLost,
 				Mode:          string(planner.DirectiveMode()),
