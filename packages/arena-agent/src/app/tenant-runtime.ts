@@ -36,6 +36,7 @@ import { MacroPolicyOrchestrator } from "../runtime/macro-policy-orchestrator.ts
 import { serializeMacroPolicy } from "../runtime/macro-policy.ts";
 import { StallDetector, type StallEvent } from "../runtime/stall-detector.ts";
 import { StallRecovery } from "../runtime/stall-recovery.ts";
+import { PolicyDiscipline } from "../runtime/policy-discipline.ts";
 import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
 import { manhattan } from "../domain/nav.ts";
@@ -342,13 +343,30 @@ export async function runTenant(
     // 死循环检测与自动跳出（2026-08-05 生产事故后新增）：StallDetector 多模式
     // 发现（含"全巡逻/远征/0 产出"等盲区模式），StallRecovery 在发现后覆盖
     // policy.focusRegion=null 让执行层回仓自愈；恢复验证 + 连续失败升级 all-in
-    // 军事拆敌 CORE。recentStallEvents 供 policy 层感知（低频策略 prompt 摘要）。
+    // 军事拆敌 CORE。PolicyDiscipline 是上游纪律：policy 层连续输出超距焦点时
+    // 禁言（focusRegion 强制 null），防反复产出坏决策。recentStallEvents 供
+    // policy 层感知（低频策略 prompt 摘要）；commandState 告知策略层当前指挥状态。
     const stallDetector = new StallDetector();
     const stallRecovery = new StallRecovery();
+    const policyDiscipline = new PolicyDiscipline();
     const recentStallEvents: string[] = [];
     const appendStallEvent = (event: StallEvent): void => {
       recentStallEvents.push(`kind=${event.kind}@tick=${event.tick}(streak=${event.streak})`);
       if (recentStallEvents.length > 4) recentStallEvents.shift();
+    };
+    // policy 流落盘（策略层事件 + discipline 事件共用；函数级作用域）
+    const policyPath = join(dirs.telemetryDir, "policy.jsonl");
+    const appendPolicyTelemetry = (record: Record<string, unknown>): void => {
+      try {
+        appendJsonlLine(
+          policyPath,
+          JSON.stringify(sanitizeValue({
+            at: new Date().toISOString(),
+            tenantId: config.tenantId,
+            ...record,
+          })),
+        );
+      } catch {}
     };
     if (options.runtime === undefined) {
       try {
@@ -362,25 +380,15 @@ export async function runTenant(
         });
         const policySession = await policyFactory.createSession(config.tenantId);
         cleanupStack.push(() => policySession.close());
-        const policyPath = join(dirs.telemetryDir, "policy.jsonl");
-        const appendPolicyTelemetry = (record: Record<string, unknown>): void => {
-          try {
-            appendJsonlLine(
-              policyPath,
-              JSON.stringify(sanitizeValue({
-                at: new Date().toISOString(),
-                tenantId: config.tenantId,
-                ...record,
-              })),
-            );
-          } catch {}
-        };
         policyOrchestrator = new MacroPolicyOrchestrator({
           intervalTicks: config.policyIntervalTicks ?? 32,
           promptBuilder: (state) => buildMacroPolicyPrompt(state, {
             recentResourceDeltas,
             // 最近 stall 告警摘要：策略层感知死循环并主动调整（见 prompt 应对指引）
             recentStallEvents,
+            // 决策指挥状态：执行层临时接管（stall_recovery/escalation）时策略层
+            // 必须配合（focusRegion=null / 维持 aggressive）
+            commandState: stallRecovery.stateOf(),
             // 策略历史基线（低频演进，防 workerTarget 16→3 跳变）；
             // promptBuilder 在 orchestrator 创建前不触发（首次决策 previous=null）
             previousPolicy: policyOrchestrator === null ? null : serializeMacroPolicy(policyOrchestrator.current),
@@ -435,11 +443,25 @@ export async function runTenant(
       configHash: manifest.configHash,
       processRunId,
       decisionMode,
-      // recovery 覆盖是执行层临时指令（stall 自愈），在 policy 层产物之上包裹：
-      // recovering/escalating 期间下发的 focusRegion=null / all-in 军事。
+      // 决策指挥链：policy 层产物 → PolicyDiscipline（上游纪律：连续坏焦点禁言）→
+      // StallRecovery（下游自愈：卡死时覆盖 focusRegion=null / all-in 军事）。
+      // discipline 事件落盘 policy.jsonl（policy_discipline），供事后审计。
       policyProvider: policyOrchestrator === null
         ? undefined
-        : (state) => stallRecovery.policyFor(policyOrchestrator!.onTick(state)),
+        : (state) => {
+            const base = policyOrchestrator!.onTick(state);
+            const disciplined = policyDiscipline.apply(base, state);
+            if (disciplined.event !== null) {
+              appendPolicyTelemetry({
+                type: "policy_discipline",
+                tick: state.tick,
+                kind: disciplined.event.kind,
+                count: disciplined.event.count,
+                focusRegion: disciplined.event.focusRegion,
+              });
+            }
+            return stallRecovery.policyFor(disciplined.policy);
+          },
       onRunSettled: (info) => {
         // runtime trace 的 settle 补充事件（不阻塞决策路径）
         void info;
