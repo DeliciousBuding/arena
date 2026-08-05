@@ -68,6 +68,19 @@ export interface SafetyPlannerConfig {
    * 模拟器配比实验（military-composition-experiment）决定生产默认是否调整。
    */
   readonly vanguardRatio?: number;
+  /**
+   * 爆兵阈值（2026-08-06 用户导向"积累到一定程度开始爆兵"）：resources 达到
+   * 该值前只产 Worker 积累经济；达到后全力爆兵（交替产 VANGUARD/RANGER，
+   * 不受 militaryRatio 比例限制，人口上限内持续）。默认 0 = 关闭（历史行为
+   * 按 militaryRatio 随产随造）。与 attackForce 配套：爆兵成型后前压打水晶。
+   */
+  readonly accumulateThreshold?: number;
+  /**
+   * 前压兵力门槛（2026-08-06 用户导向"以爆兵为目的打对面水晶"）：军事单位数
+   * 达到该值前 aggressive Vanguard 守家蓄势（不送死）；达标后前压/打野。
+   * 默认 0 = 关闭（历史行为：有可见敌人即前压）。
+   */
+  readonly attackForce?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -109,6 +122,9 @@ export class SafetyPlanner {
   private effectiveWorkerTarget = 8;
   /** 本 decide 生效的 policy（focusRegion/attackPriority 消费）。 */
   private effectivePolicy: MacroPolicy | null = null;
+  /** 爆兵状态（2026-08-06）：accumulateThreshold 达标后置 true 并保持——
+   *  持续爆兵直到资源不足以产兵才回积累期（防止"产 1 兵掉回阈值下"振荡）。 */
+  private surgeActive = false;
 
   constructor(
     config: SafetyPlannerConfig = DEFAULT_SAFETY_CONFIG,
@@ -208,7 +224,7 @@ export class SafetyPlanner {
     obstacles: ReadonlySet<string>,
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
   ): void {
-    const memory = this.world.unitMemory(unit.id, (index * 3) % EXPLORE_DIRECTION_COUNT);
+    const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % EXPLORE_DIRECTION_COUNT);
     const home = state.core?.position ?? null;
     const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
 
@@ -292,12 +308,19 @@ export class SafetyPlanner {
         samePosition(unit.position, patrolPoint) ||
         (patrolPointBlocked && chebyshev(unit.position, patrolPoint) <= 1)
       ) {
-        // 探索目标可能恰好落在已知障碍格。此时精确到达不可能，若仍持续
-        // stepToward(target)，导航会在障碍旁的两个合法格之间反复摆动。
-        // 巡逻的目标是覆盖该方向的视野，不是占据精确坐标；到达障碍邻格
-        // 已完成这条射线的有效探索，立即返航并在下一圈换方向。
-        memory.patrolReturning = true;
-        target = home;
+        // 连续外扩巡逻（2026-08-06 用户导向）：到达当前环点后不回 home——
+        // 同方位直接延伸下一环（8→16→24→32→40 连续外扩，"一直往外探索"；
+        // 旧行为每环往返 home 换环，视觉上来回、推进慢、测绘覆盖滞后）。
+        // 到最远环后回家换方位重头。
+        if (memory.patrolRing < EXPLORE_RING_COUNT - 1) {
+          memory.patrolRing += 1;
+          patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
+          patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+          target = patrolPoint;
+        } else {
+          memory.patrolReturning = true;
+          target = home;
+        }
       } else {
         target = patrolPoint;
       }
@@ -328,6 +351,19 @@ export class SafetyPlanner {
     }
 
     if (this.effectiveAggression === "aggressive") {
+      // 爆兵蓄势 gate（2026-08-06 用户导向"以爆兵为目的打对面水晶"）：军事
+      // 规模未达 attackForce 时守家蓄势（兵力成型再前压，避免零星送死）；
+      // 达标后前压攻坚。默认 attackForce=0 = 关闭（历史行为）。
+      const military = state.vanguards.length + state.rangers.length;
+      const forceGate = (this.config.attackForce ?? 0) > 0 && military < (this.config.attackForce ?? 0);
+      if (forceGate) {
+        const home = state.core === null ? null : homeCell(state.core.position, movementObstacles, index);
+        if (home !== null && !samePosition(unit.position, home)) {
+          const direction = stepToward(unit.position, home, movementObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_hold");
+        }
+        return;
+      }
       // 激进：主动前压。attackPriority 决定攻坚目标（v0.9 拆 Core 掠夺资源 vs
       // 断敌经济）；无特攻目标时追击最近可见敌人。不再因靠近自家 Core 而留守。
       const attackPriority = this.effectivePolicy?.attackPriority ?? null;
@@ -344,6 +380,33 @@ export class SafetyPlanner {
       if (target !== null && !samePosition(unit.position, target)) {
         const direction = stepToward(unit.position, target, movementObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_pressure");
+      }
+      // 军事打野（2026-08-06 用户导向）：aggressive + 无可见敌人 + 资源枯竭
+      // （视野 0 资源格）——军事单位不再守家发呆，巡逻外扩探索（测绘 + 打野）；
+      // 非枯竭仍守家（防止军事单位长期远征离家被端）。
+      if (
+        state.resourceCells.size === 0 &&
+        state.core !== null &&
+        samePosition(unit.position, target ?? state.core.position)
+      ) {
+        const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % EXPLORE_DIRECTION_COUNT);
+        const home = state.core.position;
+        const beacon = state.beacon.position ?? home;
+        let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
+        let patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+        if (samePosition(unit.position, patrolPoint)) {
+          if (memory.patrolRing < EXPLORE_RING_COUNT - 1) {
+            memory.patrolRing += 1;
+            patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
+            patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+          } else {
+            memory.patrolRing = 0;
+            memory.patrolDirection = (memory.patrolDirection + 3) % EXPLORE_DIRECTION_COUNT;
+            patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+          }
+        }
+        const direction = stepToward(unit.position, patrolPoint, movementObstacles);
+        if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_scavenge");
       }
       return;
     }
@@ -478,17 +541,34 @@ export class SafetyPlanner {
     }
 
     const military = state.vanguards.length + state.rangers.length;
-    const unitType =
-      this.config.accumulateTarget > 0 &&
-      state.resources >= this.config.guardResources &&
-      military < this.config.guardForce
+    // 三阶段爆兵状态机（2026-08-06 用户导向"积累到一定程度开始爆兵"）：
+    // 1. 积累期（surgeActive=false 且 res < 阈值）：只产 Worker 积累经济；
+    // 2. 爆兵期（surgeActive=true）：持续全力产兵（交替 VANGUARD/RANGER，
+    //    不受 militaryRatio 限制，人口上限内）——达标即激活并保持，直到
+    //    资源连一个兵都产不起才回积累期（防止"产 1 兵掉回阈值下"振荡）；
+    // 3. 前压期：军事规模达 attackForce 后由 decideVanguard 前压打水晶。
+    // accumulateThreshold 缺省 0 = 关闭（历史行为：按 militaryRatio 随产随造）。
+    const threshold = this.config.accumulateThreshold ?? 0;
+    if (threshold > 0 && !this.surgeActive && state.resources >= threshold) {
+      this.surgeActive = true;
+    }
+    const unitType = threshold > 0
+      ? this.surgeActive
+        ? nextMilitary(state, this.config)
+        : "WORKER"
+      : this.config.accumulateTarget > 0 &&
+          state.resources >= this.config.guardResources &&
+          military < this.config.guardForce
         ? nextMilitary(state, this.config)
         : nextSpawn(state, this.effectiveWorkerTarget, this.config);
     const cost = unitType === "WORKER" ? 5 : unitType === "VANGUARD" ? 10 : 12;
     const reserve = state.resources >= this.config.wealthyThreshold
       ? this.config.reserveWealthy
       : this.config.reserveEarly;
-    if (state.resources < cost + reserve) return null;
+    if (state.resources < cost + reserve) {
+      if (threshold > 0 && this.surgeActive) this.surgeActive = false;
+      return null;
+    }
     intents.core = `spawn_${unitType.toLowerCase()}`;
     return { type: "SPAWN", unitType };
   }

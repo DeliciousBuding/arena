@@ -1,0 +1,5 @@
+=== 爆兵节奏（p2=aggressive/core + accumulateThreshold=30 + attackForce=6 vs p1=balanced 基准；400 ticks × 2 seeds + refill）===
+variant            | p2 res | p1 res | edge  | p2军 | p2工 | 峰值人口 | p1 pop
+爆兵节奏(p2)        |   35.0 |    2.0 |  33.0 |  3.5 |  5.0 |    8.5 |    2.0
+
+说明：积累期 worker 优先（爆兵前经济爬坡）；爆兵期军事跳增；成型后前压拆水晶。
