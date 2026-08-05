@@ -100,3 +100,19 @@
 - bounded live：3/3 → 10/10 → 29/30（409 幂等冲突根因=重连重放重复决策，
   E0-1 exactly-once 修复）
 - sim 经济闭环：t4 死锁状态 20 tick 内完整破锁（离线确定性验证）
+
+## E1 视野研究 + 停滞根因链（2026-08-05）
+
+- [x] 视野研究（官方 v0.13）：并集视野（Worker 3/Core 5/Vanguard 4/Ranger 5）、
+      state 全量快照、资源 4 tick/chunk 配额补满且仅在视野扫过时揭示、
+      采空格立即消失、Core 迁移（START_MOVE 4 tick/格）是资源恢复正解
+- [x] t4 停滞根因链（提交体实证）：worker 排成一排计划互相踩格 →
+      moveToward 占位感知（03e3415）；sim 分列一致性修复（Settle 重建分列）；
+      巡逻半径 8→16（8bfa1ca）；首目标 ID 哈希分散（ecda3d4）
+- [x] 位置实证：占位感知前 4+ tick 不动 → 修复后 10t 扩散 6-8 格
+      （(92-105,76) → (86-111,72)），10/10 accepted 0 repair
+- [x] 工具：cmd/mapview ASCII 地图渲染；提交体 debug 日志
+
+### 待办（视野研究指引）
+- Core 迁移决策（连续 N tick 零资源 → START_MOVE 朝 beacon/未知 chunk）
+- t4 资源发现等待（workers 外扩扫描中）或新地图验证
