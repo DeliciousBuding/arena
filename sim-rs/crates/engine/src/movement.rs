@@ -27,7 +27,11 @@ pub fn apply_move(
         stats.blocked += 1;
         return (false, Some("MOVE_BLOCKED_OBSTACLE".to_string()));
     }
-    if next[0] < -WORLD_BOUND || next[0] > WORLD_BOUND || next[1] < -WORLD_BOUND || next[1] > WORLD_BOUND {
+    if next[0] < -WORLD_BOUND
+        || next[0] > WORLD_BOUND
+        || next[1] < -WORLD_BOUND
+        || next[1] > WORLD_BOUND
+    {
         stats.blocked += 1;
         return (false, Some("MOVE_BLOCKED_BOUNDARY".to_string()));
     }
@@ -44,7 +48,10 @@ pub fn apply_move(
 /// 报告目标格是否被其他己方单位占据（按计划顺序依次移动，
 /// 已移动单位占据新格视为占用）。
 fn occupied_by_other(state: &TickState, unit_id: &str, cell: Position) -> bool {
-    state.units.iter().any(|other| other.id != unit_id && other.position == cell)
+    state
+        .units
+        .iter()
+        .any(|other| other.id != unit_id && other.position == cell)
 }
 
 /// 构造移动结算事件（方向或阻挡原因二选一）。
@@ -68,9 +75,10 @@ pub fn move_event(
         event.event_type = "MOVE_BLOCKED".to_string();
         event.reason_code = Some(reason);
     } else if let Some(direction) = direction {
-        event
-            .values
-            .insert("direction".to_string(), serde_json::json!(direction.as_str()));
+        event.values.insert(
+            "direction".to_string(),
+            serde_json::json!(direction.as_str()),
+        );
     }
     event
 }

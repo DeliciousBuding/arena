@@ -7,6 +7,9 @@
 
 pub mod nav;
 
+// 导航函数 re-export 到 crate 根（Go 版同为 domain 包内函数）。
+pub use nav::*;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};

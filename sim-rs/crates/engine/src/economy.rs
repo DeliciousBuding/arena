@@ -1,6 +1,6 @@
 //! 经济活动结算（从 go-rewrite `internal/sim/economy.go` 移植）。
 
-use arena_sim_domain::{cell_key, Event, Position, TickState, UnitType};
+use arena_sim_domain::{cell_key, Event, TickState, UnitType};
 
 use crate::refill::RefillConfig;
 use crate::SettleStats;
@@ -12,7 +12,7 @@ pub fn apply_harvests(
     state: &mut TickState,
     worker_ids: &[String],
     stats: &mut SettleStats,
-    refill: Option<&mut RefillConfig>,
+    mut refill: Option<&mut RefillConfig>,
 ) -> Vec<Event> {
     let mut events = Vec::with_capacity(worker_ids.len());
     for unit_id in worker_ids {
@@ -23,15 +23,24 @@ pub fn apply_harvests(
             continue;
         }
         let position = state.units[unit_index].position;
-        if !state.resource_cells.contains(&cell_key(position[0], position[1])) {
-            events.push(harvest_event(state.tick, unit_id, Some("HARVEST_FAILED_NO_RESOURCE")));
+        if !state
+            .resource_cells
+            .contains(&cell_key(position[0], position[1]))
+        {
+            events.push(harvest_event(
+                state.tick,
+                unit_id,
+                Some("HARVEST_FAILED_NO_RESOURCE"),
+            ));
             continue;
         }
         state.units[unit_index].cargo += 1;
         stats.harvests += 1;
         // 采空格立即消失（官方规则；refill 由引擎挂载时补回）。
-        state.resource_cells.remove(&cell_key(position[0], position[1]));
-        if let Some(refill) = refill {
+        state
+            .resource_cells
+            .remove(&cell_key(position[0], position[1]));
+        if let Some(ref mut refill) = refill {
             refill.mark_mined(position);
         }
         events.push(harvest_event(state.tick, unit_id, None));
@@ -41,28 +50,46 @@ pub fn apply_harvests(
 
 /// 结算 DEPOSIT 动作：worker 带 cargo 且站在 Core 格，资源入仓并遵守
 /// 容量上限（超出部分丢弃并记 REJECTED）。
-pub fn apply_deposits(state: &mut TickState, worker_ids: &[String], stats: &mut SettleStats) -> Vec<Event> {
+pub fn apply_deposits(
+    state: &mut TickState,
+    worker_ids: &[String],
+    stats: &mut SettleStats,
+) -> Vec<Event> {
     let mut events = Vec::with_capacity(worker_ids.len());
     for unit_id in worker_ids {
         let Some(unit_index) = state.units.iter().position(|u| u.id == *unit_id) else {
             continue;
         };
-        if state.units[unit_index].unit_type != UnitType::Worker || state.units[unit_index].cargo <= 0 {
+        if state.units[unit_index].unit_type != UnitType::Worker
+            || state.units[unit_index].cargo <= 0
+        {
             continue;
         }
         let Some(core_position) = state.core.as_ref().map(|core| core.position) else {
-            events.push(deposit_event(state.tick, unit_id, Some("DEPOSIT_FAILED_NOT_AT_CORE")));
+            events.push(deposit_event(
+                state.tick,
+                unit_id,
+                Some("DEPOSIT_FAILED_NOT_AT_CORE"),
+            ));
             continue;
         };
         if state.units[unit_index].position != core_position {
-            events.push(deposit_event(state.tick, unit_id, Some("DEPOSIT_FAILED_NOT_AT_CORE")));
+            events.push(deposit_event(
+                state.tick,
+                unit_id,
+                Some("DEPOSIT_FAILED_NOT_AT_CORE"),
+            ));
             continue;
         }
         let mut accepted = state.units[unit_index].cargo;
         let overflow = state.resources + accepted - state.resource_capacity;
         if overflow > 0 {
             accepted -= overflow;
-            events.push(deposit_event(state.tick, unit_id, Some("DEPOSIT_REJECTED_CAPACITY")));
+            events.push(deposit_event(
+                state.tick,
+                unit_id,
+                Some("DEPOSIT_REJECTED_CAPACITY"),
+            ));
         }
         if accepted > 0 {
             state.resources += accepted;

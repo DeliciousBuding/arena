@@ -1,5 +1,7 @@
 //! SPAWN 结算（从 go-rewrite `internal/sim/spawn.go` 移植）。
 
+use std::collections::BTreeMap;
+
 use arena_sim_domain::{spawn_cost, unit_max_hp, Event, TickState, UnitSnapshot, UnitType};
 
 /// 资源容量公式（max(minCapacity, pop*capacityPerUnit)）。
@@ -8,15 +10,22 @@ const CORE_CAPACITY_PER_UNIT: i32 = 5;
 
 /// 结算 Core 动作（SPAWN / HEAL / REPAIR_SHIELD）；action 或 Core 缺失时
 /// 返回空（与 Go `applyCoreAction` 一致）。
-pub fn apply_core_action(state: &mut TickState, action: Option<&arena_sim_domain::CoreAction>) -> Vec<Event> {
-    let Some(action) = action else { return Vec::new() };
+pub fn apply_core_action(
+    state: &mut TickState,
+    action: Option<&arena_sim_domain::CoreAction>,
+) -> Vec<Event> {
+    let Some(action) = action else {
+        return Vec::new();
+    };
     if state.core.is_none() {
         return Vec::new();
     }
     match action.kind {
         arena_sim_domain::CoreActionKind::Spawn => apply_spawn(state, action),
         arena_sim_domain::CoreActionKind::Heal => crate::heal::apply_core_heal(state, action),
-        arena_sim_domain::CoreActionKind::RepairShield => crate::heal::apply_core_shield_repair(state, action),
+        arena_sim_domain::CoreActionKind::RepairShield => {
+            crate::heal::apply_core_shield_repair(state, action)
+        }
         _ => Vec::new(),
     }
 }
@@ -85,8 +94,11 @@ pub fn apply_spawn(state: &mut TickState, action: &arena_sim_domain::CoreAction)
     state.population += 1;
     refresh_capacity(state);
 
-    let mut values = Default::default();
-    values.insert("unitType".to_string(), serde_json::json!(unit_type.as_str()));
+    let mut values: BTreeMap<String, serde_json::Value> = Default::default();
+    values.insert(
+        "unitType".to_string(),
+        serde_json::json!(unit_type.as_str()),
+    );
     values.insert("cost".to_string(), serde_json::json!(cost));
     vec![Event {
         event_id: String::new(),

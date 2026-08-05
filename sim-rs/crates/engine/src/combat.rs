@@ -7,7 +7,10 @@
 
 use std::collections::BTreeMap;
 
-use arena_sim_domain::{chebyshev, line_blocked, move_position, Event, Plan, Position, TickState, UnitActionKind, UnitType};
+use arena_sim_domain::{
+    chebyshev, line_blocked, move_position, Event, Plan, Position, TickState, UnitActionKind,
+    UnitType,
+};
 
 use crate::SettleStats;
 
@@ -51,7 +54,8 @@ pub fn apply_combat(state: &mut TickState, plan: &Plan, stats: &mut SettleStats)
 
     // 同时应用伤害：所有攻击累积完成后统一扣血（战斗快照语义）。
     let mut kills = 0;
-    let mut alive: Vec<arena_sim_domain::VisibleEntity> = Vec::with_capacity(state.visible_enemies.len());
+    let mut alive: Vec<arena_sim_domain::VisibleEntity> =
+        Vec::with_capacity(state.visible_enemies.len());
     for mut enemy in state.visible_enemies.drain(..) {
         if let Some(damage) = damage_by_id.get(&enemy.id) {
             enemy.hp -= damage;
@@ -84,7 +88,9 @@ fn collect_shoot(
     }
     let cell = action.expected_cell?;
     let distance = chebyshev(unit.position, cell);
-    if distance < 1 || distance > RANGER_RANGE || line_blocked(unit.position, cell, &state.obstacle_cells) {
+    if !(1..=RANGER_RANGE).contains(&distance)
+        || line_blocked(unit.position, cell, &state.obstacle_cells)
+    {
         return Some(CombatAttack {
             unit_id: unit_id.to_string(),
             event_type: "SHOOT_MISSED".to_string(),
@@ -150,7 +156,11 @@ fn collect_sweep(
 }
 
 /// 按 ID 查找位于指定格的敌方实体。
-fn find_enemy_at(state: &TickState, enemy_id: &str, cell: Position) -> Option<&arena_sim_domain::VisibleEntity> {
+fn find_enemy_at<'a>(
+    state: &'a TickState,
+    enemy_id: &str,
+    cell: Position,
+) -> Option<&'a arena_sim_domain::VisibleEntity> {
     state
         .visible_enemies
         .iter()
@@ -159,7 +169,10 @@ fn find_enemy_at(state: &TickState, enemy_id: &str, cell: Position) -> Option<&a
 
 /// 返回指定格内 HP 最低的敌方实体（同 HP 取 ID 升序：VisibleEnemies
 /// 按 ID 升序，min_by_key 对同值取首个 = 顺序扫描语义与 Go 一致）。
-fn lowest_hp_enemy_at(state: &TickState, cell: Position) -> Option<&arena_sim_domain::VisibleEntity> {
+fn lowest_hp_enemy_at(
+    state: &TickState,
+    cell: Position,
+) -> Option<&arena_sim_domain::VisibleEntity> {
     state
         .visible_enemies
         .iter()
@@ -185,10 +198,14 @@ fn build_combat_events(tick: i32, attacks: &[CombatAttack]) -> Vec<Event> {
         match attack.event_type.as_str() {
             "SHOOT" => {
                 event.target_id = Some(attack.target_id.clone());
-                event.values.insert("damage".to_string(), serde_json::json!(1));
+                event
+                    .values
+                    .insert("damage".to_string(), serde_json::json!(1));
             }
             "SWEEP" => {
-                event.values.insert("hits".to_string(), serde_json::json!(attack.hits));
+                event
+                    .values
+                    .insert("hits".to_string(), serde_json::json!(attack.hits));
             }
             _ => {}
         }

@@ -33,7 +33,10 @@ pub fn apply_enemy_attacks(state: &mut TickState, stats: &mut SettleStats) -> Ve
         }
         if let Some(target) = enemy_attack_target(state, enemy) {
             *damage_by_target.entry(target.clone()).or_insert(0) += 1;
-            attacks.push(AttackInfo { actor_id: enemy.id.clone(), target });
+            attacks.push(AttackInfo {
+                actor_id: enemy.id.clone(),
+                target,
+            });
         }
     }
 
@@ -70,7 +73,10 @@ pub fn apply_enemy_attacks(state: &mut TickState, stats: &mut SettleStats) -> Ve
                 position: None,
                 values: [
                     ("damage".to_string(), serde_json::json!(damage)),
-                    ("shieldRemaining".to_string(), serde_json::json!(core.shield)),
+                    (
+                        "shieldRemaining".to_string(),
+                        serde_json::json!(core.shield),
+                    ),
                     ("hpRemaining".to_string(), serde_json::json!(core.hp)),
                 ]
                 .into(),
@@ -94,7 +100,11 @@ pub fn apply_enemy_attacks(state: &mut TickState, stats: &mut SettleStats) -> Ve
                 actor_id: Some(unit.id.clone()),
                 target_id: None,
                 position: None,
-                values: [("unitType".to_string(), serde_json::json!(unit.unit_type.as_str()))].into(),
+                values: [(
+                    "unitType".to_string(),
+                    serde_json::json!(unit.unit_type.as_str()),
+                )]
+                .into(),
             });
             continue;
         }
@@ -106,11 +116,11 @@ pub fn apply_enemy_attacks(state: &mut TickState, stats: &mut SettleStats) -> Ve
 
 /// 返回敌方单位的目标（None = 无目标）：范围内最近的己方对象——
 /// Core 用固定键 "core"，单位用 ID。目标优先级：Manhattan 距离近者优先；
-/// 同距离单位优先于 Core；同距离同优先级取先序（Units 按 ID 升序）。
+/// 同距离单位优先于 Core（先扫描单位再 Core）；同距离同优先级取先序
+/// （Units 按 ID 升序）。
 fn enemy_attack_target(state: &TickState, enemy: &VisibleEntity) -> Option<String> {
     let mut best_id: Option<String> = None;
     let mut best_distance = i32::MAX;
-    let mut best_is_core = false;
 
     // 己方单位（按 Units 顺序，Manhattan 距离；同距离取先序）。
     for unit in &state.units {
@@ -121,28 +131,17 @@ fn enemy_attack_target(state: &TickState, enemy: &VisibleEntity) -> Option<Strin
         if !enemy_can_hit(enemy, unit.position, distance) {
             continue;
         }
-        if distance > best_distance {
-            continue;
-        }
-        if distance == best_distance && best_is_core {
-            continue; // 同距离单位优先于 Core
-        }
-        if distance < best_distance || !best_is_core {
+        if distance < best_distance {
             best_id = Some(unit.id.clone());
             best_distance = distance;
-            best_is_core = false;
         }
     }
-    // Core（固定键 "core"）。
+    // Core（固定键 "core"）：仅在严格更近时替换（同距单位优先，Go 语义）。
     if let Some(core) = &state.core {
         if core.position != enemy.position {
             let distance = manhattan(enemy.position, core.position);
-            if enemy_can_hit(enemy, core.position, distance) {
-                if distance < best_distance || (distance == best_distance && best_is_core) {
-                    best_id = Some("core".to_string());
-                    best_distance = distance;
-                    best_is_core = true;
-                }
+            if enemy_can_hit(enemy, core.position, distance) && distance < best_distance {
+                best_id = Some("core".to_string());
             }
         }
     }
@@ -151,7 +150,11 @@ fn enemy_attack_target(state: &TickState, enemy: &VisibleEntity) -> Option<Strin
 
 /// 报告敌方单位能否命中目标格（按官方攻击表）：
 /// Vanguard 相邻 1 格（Chebyshev）；Ranger 八方向 1-3 格。
-fn enemy_can_hit(enemy: &VisibleEntity, target: arena_sim_domain::Position, manhattan: i32) -> bool {
+fn enemy_can_hit(
+    enemy: &VisibleEntity,
+    target: arena_sim_domain::Position,
+    manhattan: i32,
+) -> bool {
     let Some(unit_type) = enemy.unit_type else {
         return false;
     };
@@ -159,7 +162,7 @@ fn enemy_can_hit(enemy: &VisibleEntity, target: arena_sim_domain::Position, manh
     match unit_type {
         UnitType::Vanguard => distance == 1,
         UnitType::Ranger => {
-            if manhattan < 1 || manhattan > ENEMY_RANGER_RANGE {
+            if !(1..=ENEMY_RANGER_RANGE).contains(&manhattan) {
                 return false;
             }
             // 八方向：轴向（dx==0 || dy==0）或对角线（|dx|==|dy|）。
@@ -210,7 +213,11 @@ mod tests {
             visible_enemies: Vec::new(),
             resource_cells: Default::default(),
             obstacle_cells: Default::default(),
-            beacon: Beacon { position: [0, 0], status: BeaconStatus::Ground, carrier_id: None },
+            beacon: Beacon {
+                position: [0, 0],
+                status: BeaconStatus::Ground,
+                carrier_id: None,
+            },
             events: Vec::new(),
             state_hash: String::new(),
         }
@@ -231,7 +238,13 @@ mod tests {
         let events = apply_enemy_attacks(&mut state, &mut stats);
         assert_eq!(stats.units_lost, 0);
         assert_eq!(state.units[0].hp, 1);
-        assert_eq!(events.iter().filter(|e| e.event_type == "ENEMY_ATTACK").count(), 1);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.event_type == "ENEMY_ATTACK")
+                .count(),
+            1
+        );
         assert!(events.iter().any(|e| e.event_type == "CORE_DAMAGED") == false);
     }
 
@@ -252,7 +265,13 @@ mod tests {
         let mut stats = SettleStats::default();
         let events = apply_enemy_attacks(&mut state, &mut stats);
         // worker 距离 7 超射程；core 距离 4 超射程 → 无攻击。
-        assert_eq!(events.iter().filter(|e| e.event_type == "ENEMY_ATTACK").count(), 0);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.event_type == "ENEMY_ATTACK")
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -293,7 +312,10 @@ mod tests {
         let mut stats = SettleStats::default();
         let events = apply_enemy_attacks(&mut state, &mut stats);
         // unit (0,2) 距离 1 与 core (0,0) 距离 1 相同 → 单位优先。
-        let attack = events.iter().find(|e| e.event_type == "ENEMY_ATTACK").unwrap();
+        let attack = events
+            .iter()
+            .find(|e| e.event_type == "ENEMY_ATTACK")
+            .unwrap();
         assert_eq!(attack.target_id.as_deref(), Some("worker-1"));
     }
 }

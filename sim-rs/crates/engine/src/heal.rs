@@ -4,7 +4,9 @@
 //! - 单位 HEAL 必须存活且与己方静止 Core 同格（升序 ID 先结算）；
 //! - REPAIR_SHIELD 恰好花费 1 资源恢复 1 盾（不超过当前盾上限）。
 
-use arena_sim_domain::{unit_max_hp, CORE_MAX_HP, CORE_MAX_SHIELD, Event, Plan, TickState, UnitActionKind};
+use arena_sim_domain::{
+    unit_max_hp, Event, Plan, TickState, UnitActionKind, CORE_MAX_HP, CORE_MAX_SHIELD,
+};
 
 /// 结算单位 HEAL 动作（战斗伤害后、Core 动作前；按 ID 升序确定性顺序）。
 pub fn apply_unit_heals(state: &mut TickState, plan: &Plan) -> Vec<Event> {
@@ -49,9 +51,15 @@ pub fn apply_unit_heals(state: &mut TickState, plan: &Plan) -> Vec<Event> {
         state.resources -= amount;
         let hp = state.units[unit_index].hp;
         let mut succeeded = heal_event(state.tick, unit_id, "UNIT_HEAL_SUCCEEDED");
-        succeeded.values.insert("amount".to_string(), serde_json::json!(amount));
-        succeeded.values.insert("hp".to_string(), serde_json::json!(hp));
-        succeeded.values.insert("cost".to_string(), serde_json::json!(amount));
+        succeeded
+            .values
+            .insert("amount".to_string(), serde_json::json!(amount));
+        succeeded
+            .values
+            .insert("hp".to_string(), serde_json::json!(hp));
+        succeeded
+            .values
+            .insert("cost".to_string(), serde_json::json!(amount));
         events.push(succeeded);
     }
     events
@@ -80,14 +88,23 @@ pub fn apply_core_heal(state: &mut TickState, action: &arena_sim_domain::CoreAct
     state.resources -= amount;
     let hp = core.hp;
     let mut succeeded = heal_event(state.tick, "core", "CORE_HEAL_SUCCEEDED");
-    succeeded.values.insert("amount".to_string(), serde_json::json!(amount));
-    succeeded.values.insert("hp".to_string(), serde_json::json!(hp));
-    succeeded.values.insert("cost".to_string(), serde_json::json!(amount));
+    succeeded
+        .values
+        .insert("amount".to_string(), serde_json::json!(amount));
+    succeeded
+        .values
+        .insert("hp".to_string(), serde_json::json!(hp));
+    succeeded
+        .values
+        .insert("cost".to_string(), serde_json::json!(amount));
     vec![succeeded]
 }
 
 /// 结算 REPAIR_SHIELD 动作：恰好 1 资源恢复 1 盾（不超过当前盾上限）。
-pub fn apply_core_shield_repair(state: &mut TickState, action: &arena_sim_domain::CoreAction) -> Vec<Event> {
+pub fn apply_core_shield_repair(
+    state: &mut TickState,
+    action: &arena_sim_domain::CoreAction,
+) -> Vec<Event> {
     if action.kind != arena_sim_domain::CoreActionKind::RepairShield {
         return Vec::new();
     }
@@ -107,8 +124,12 @@ pub fn apply_core_shield_repair(state: &mut TickState, action: &arena_sim_domain
     state.resources -= 1;
     let shield = core.shield;
     let mut succeeded = heal_event(state.tick, "core", "CORE_SHIELD_REPAIRED");
-    succeeded.values.insert("shield".to_string(), serde_json::json!(shield));
-    succeeded.values.insert("cost".to_string(), serde_json::json!(1));
+    succeeded
+        .values
+        .insert("shield".to_string(), serde_json::json!(shield));
+    succeeded
+        .values
+        .insert("cost".to_string(), serde_json::json!(1));
     vec![succeeded]
 }
 

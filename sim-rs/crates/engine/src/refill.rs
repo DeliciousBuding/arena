@@ -59,9 +59,13 @@ impl RefillConfig {
             last_refill: 0,
         };
         for &pos in latent_cells {
-            config
-                .latent
-                .insert(cell_key(pos[0], pos[1]), RefillCell { position: pos, state: RefillState::Active });
+            config.latent.insert(
+                cell_key(pos[0], pos[1]),
+                RefillCell {
+                    position: pos,
+                    state: RefillState::Active,
+                },
+            );
         }
         config
     }
@@ -130,7 +134,7 @@ impl RefillConfig {
                 active_count += 1;
             }
         }
-        let _ = state; // 只用 latent 状态，不读 state
+        let _ = _state; // 只用 latent 状态，不读 state
     }
 
     /// 记录采空格（harvest 成功后调用；服务器语义：采空格立即消失，
@@ -182,7 +186,11 @@ mod tests {
             visible_enemies: Vec::new(),
             resource_cells: Default::default(),
             obstacle_cells: Default::default(),
-            beacon: arena_sim_domain::Beacon { position: [0, 0], status: arena_sim_domain::BeaconStatus::Ground, carrier_id: None },
+            beacon: arena_sim_domain::Beacon {
+                position: [0, 0],
+                status: arena_sim_domain::BeaconStatus::Ground,
+                carrier_id: None,
+            },
             events: Vec::new(),
             state_hash: String::new(),
         }
@@ -216,16 +224,20 @@ mod tests {
 
     #[test]
     fn mined_cells_restore_deterministically() {
-        // 同一 chunk 内 4 个 mined 格、配额 16 → 全部恢复。
+        // 同一 chunk 内 4 个 mined 格、配额 16 → 全部恢复（tick 4 = refill 周期）。
         let latent = vec![[0, 0], [0, 1], [1, 0], [1, 1]];
         let mut config = RefillConfig::new(&latent);
         for pos in &latent {
             config.mark_mined(*pos);
         }
         let mut state = state_with_vision_core([0, 0]);
+        state.tick = 4; // refill 每 4 tick 执行
         config.apply_refill_and_reveal(&mut state);
         for pos in &latent {
-            assert_eq!(config.latent[&cell_key(pos[0], pos[1])].state, RefillState::Active);
+            assert_eq!(
+                config.latent[&cell_key(pos[0], pos[1])].state,
+                RefillState::Active
+            );
         }
     }
 }

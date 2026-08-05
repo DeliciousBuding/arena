@@ -106,13 +106,21 @@ struct BfsNode {
 /// 返回 from→to 的最短路（含两端，逐格相邻），障碍视为永久阻塞。
 /// 有界搜索：margin 边界框 + 20,000 访问上限；框内不可达返回 None。
 /// from==to 返回单元素路径。
-pub fn shortest_path(from: Position, to: Position, obstacles: &CellSet, margin: i32) -> Option<Vec<Position>> {
+pub fn shortest_path(
+    from: Position,
+    to: Position,
+    obstacles: &CellSet,
+    margin: i32,
+) -> Option<Vec<Position>> {
     if from == to {
         return Some(vec![from]);
     }
     let (min_x, max_x, min_y, max_y) = search_bounds(from, to, margin);
     let mut queue: Vec<BfsNode> = Vec::with_capacity(64);
-    queue.push(BfsNode { position: from, parent_index: None });
+    queue.push(BfsNode {
+        position: from,
+        parent_index: None,
+    });
     let mut visited: HashSet<Position> = HashSet::new();
     visited.insert(from);
     let mut head = 0;
@@ -134,7 +142,10 @@ pub fn shortest_path(from: Position, to: Position, obstacles: &CellSet, margin: 
                 return Some(reconstruct_path(&queue, head - 1, next));
             }
             visited.insert(next);
-            queue.push(BfsNode { position: next, parent_index: Some(head - 1) });
+            queue.push(BfsNode {
+                position: next,
+                parent_index: Some(head - 1),
+            });
         }
     }
     None
@@ -172,7 +183,10 @@ fn shortest_path_first_step_keyed(
         first_direction: Option<Direction>,
     }
     let mut queue: Vec<FirstStepNode> = Vec::with_capacity(64);
-    queue.push(FirstStepNode { position: from, first_direction: None });
+    queue.push(FirstStepNode {
+        position: from,
+        first_direction: None,
+    });
     let mut visited: HashSet<Position> = HashSet::new();
     visited.insert(from);
     let mut directions = [Direction::Right; 4];
@@ -197,7 +211,10 @@ fn shortest_path_first_step_keyed(
                 return Some(first_direction);
             }
             visited.insert(next);
-            queue.push(FirstStepNode { position: next, first_direction: Some(first_direction) });
+            queue.push(FirstStepNode {
+                position: next,
+                first_direction: Some(first_direction),
+            });
         }
     }
     None
@@ -222,9 +239,15 @@ pub fn step_toward(position: Position, target: Position, obstacles: &CellSet) ->
     }
     for &margin in &PATH_MARGINS[start_margin..] {
         let (min_x, max_x, min_y, max_y) = search_bounds(position, target, margin);
-        if let Some(direction) =
-            shortest_path_first_step_keyed(position, target, &obstacle_pos, min_x, max_x, min_y, max_y)
-        {
+        if let Some(direction) = shortest_path_first_step_keyed(
+            position,
+            target,
+            &obstacle_pos,
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+        ) {
             return Some(direction);
         }
     }
@@ -398,19 +421,20 @@ mod tests {
     }
 
     #[test]
-    fn step_toward_avoids_ring_obstacle() {
-        // 环形障碍围住目标：{10,0}→{0,0}，margin 4 内不可达。
-        let ring = set_of(&[
-            "1,0", "0,1", "-1,0", "0,-1", "2,0", "0,2", "-2,0", "0,-2",
-        ]);
-        assert!(step_toward([10, 0], [0, 0], &ring).is_none());
+    fn shortest_path_first_step_ring_blocked() {
+        // 环形障碍围住目标：{10,0}→{0,0}，margin 4 内不可达（与 Go
+        // nav_test 同断言；StepToward 另有 fail-safe 兜底不在此测）。
+        let ring = set_of(&["1,0", "0,1", "-1,0", "0,-1", "2,0", "0,2", "-2,0", "0,-2"]);
+        assert!(shortest_path_first_step([10, 0], [0, 0], &ring, 4).is_none());
     }
 
     #[test]
     fn line_blocked_basic() {
+        // 中间格有障碍 → 视线遮挡（与 Go 同语义：steps>1 逐格检查）。
         let obstacles = set_of(&["1,0"]);
         assert!(line_blocked([0, 0], [3, 0], &obstacles));
-        assert!(!line_blocked([0, 0], [2, 0], &obstacles));
+        assert!(line_blocked([0, 0], [2, 0], &obstacles));
+        assert!(!line_blocked([0, 0], [2, 0], &CellSet::new()));
         // 非共线（非整步长）视为遮挡。
         assert!(line_blocked([0, 0], [2, 1], &CellSet::new()));
     }
@@ -439,7 +463,8 @@ mod tests {
 
     #[test]
     fn nearest_uses_manhattan_then_x_then_y() {
+        // 距离 4 的两个目标：同距取 x 小 → [3,1]（与 Go compareTuple 一致）。
         let targets = vec![[5, 0], [3, 1], [4, 0]];
-        assert_eq!(nearest(&targets, [0, 0]), Some([4, 0]));
+        assert_eq!(nearest(&targets, [0, 0]), Some([3, 1]));
     }
 }

@@ -69,7 +69,11 @@ mod tests {
             visible_enemies: Vec::new(),
             resource_cells: Default::default(),
             obstacle_cells: Default::default(),
-            beacon: Beacon { position: [0, 0], status: BeaconStatus::Ground, carrier_id: None },
+            beacon: Beacon {
+                position: [0, 0],
+                status: BeaconStatus::Ground,
+                carrier_id: None,
+            },
             events: Vec::new(),
             state_hash: String::new(),
         }

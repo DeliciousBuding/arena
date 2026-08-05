@@ -18,7 +18,7 @@ pub mod vision;
 #[cfg(test)]
 mod engine_tests;
 
-use arena_sim_domain::{CoreAction, Event, Plan, TickState};
+use arena_sim_domain::{Event, Plan, TickState};
 
 /// 单 tick 结算统计（遥测/赛马指标，与 Go `SettleStats` 一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -65,13 +65,21 @@ impl Engine {
     pub fn settle(&mut self, state: &TickState, plan: &Plan) -> SettleResult {
         let mut next = util::clone_state(state);
         let (events, stats) = self.settle_into(&mut next, plan);
-        SettleResult { next_state: next, events, stats }
+        SettleResult {
+            next_state: next,
+            events,
+            stats,
+        }
     }
 
     /// 原地结算：直接修改传入状态（不克隆——批量评估/长跑热路径，避免
     /// 每 tick 深拷贝分配；等价于 Go `SettleInPlace` + 调用方继续持有
     /// state 的用法）。返回 (事件, 统计)，修改后的状态即传入的 state。
-    pub fn settle_in_place(&mut self, state: &mut TickState, plan: &Plan) -> (Vec<Event>, SettleStats) {
+    pub fn settle_in_place(
+        &mut self,
+        state: &mut TickState,
+        plan: &Plan,
+    ) -> (Vec<Event>, SettleStats) {
         self.settle_into(state, plan)
     }
 
@@ -88,7 +96,12 @@ impl Engine {
                 arena_sim_domain::UnitActionKind::Move => {
                     let (moved, blocked) = movement::apply_move(next, unit_id, action, &mut stats);
                     if moved {
-                        events.push(movement::move_event(next.tick, unit_id, action.direction, None));
+                        events.push(movement::move_event(
+                            next.tick,
+                            unit_id,
+                            action.direction,
+                            None,
+                        ));
                     } else if blocked.is_some() {
                         events.push(movement::move_event(next.tick, unit_id, None, blocked));
                     }
@@ -151,4 +164,3 @@ impl Engine {
         (events, stats)
     }
 }
-
