@@ -35,7 +35,8 @@ fi
 # 3) 清理死锁（进程已确认死透）
 rm -f "$REPO/runtime/t1/locks/"*.lock "$REPO/runtime/t2/locks/"*.lock
 
-# 4) 重启 live supervisor（脱离当前会话，日志追加）
+# 4) 重启 live supervisor（脱离当前会话，日志追加；--record-calibration 旁路
+#    Runtime-Golden dataset 记录）
 cd "$REPO" || exit 1
-nohup npm run arena:supervisor -- --configs=t1,t2 --mode=deterministic --live --port=8120 >> "$LOG" 2>&1 &
+nohup npm run arena:supervisor -- --configs=t1,t2 --mode=deterministic --live --record-calibration --port=8120 >> "$LOG" 2>&1 &
 echo "$(now) supervisor restarted (pid $!)" >> "$LOG"
