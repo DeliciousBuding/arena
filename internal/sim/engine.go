@@ -16,17 +16,19 @@ type SettleResult struct {
 
 // SettleStats 是结算统计（遥测/赛马指标）。
 type SettleStats struct {
-	Moves         int
-	Blocked       int
-	Harvests      int
-	Deposits      int
-	Spawns        int
-	SpawnBlocked  int
-	ResourceDelta int
-	Kills         int // 本 tick 击杀的敌方实体数（战斗阶段）
-	ShotsFired    int // 本 tick Ranger SHOOT 攻击数（含未命中）
-	SweepsFired   int // 本 tick Vanguard SWEEP 攻击数（含未命中）
-	UnitsLost     int // 本 tick 被敌方击杀的己方单位数
+	Moves          int
+	Blocked        int
+	Harvests       int
+	Deposits       int
+	Spawns         int
+	SpawnBlocked   int
+	ResourceDelta  int
+	Kills          int // 本 tick 击杀的敌方实体数（战斗阶段）
+	ShotsFired     int // 本 tick Ranger SHOOT 攻击数（含未命中）
+	SweepsFired    int // 本 tick Vanguard SWEEP 攻击数（含未命中）
+	UnitsLost      int // 本 tick 被敌方击杀的己方单位数
+	HPRecovered    int // 本 tick 恢复的 HP 总量（单位 + Core HEAL）
+	ShieldRepaired int // 本 tick 恢复的护盾量（REPAIR_SHIELD）
 }
 
 // Engine 是确定性结算引擎（默认无状态，并发安全；挂载 Refill 后
@@ -87,6 +89,18 @@ func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult
 	enemyEvents := applyEnemyAttacks(next, &stats)
 	events = append(events, enemyEvents...)
 
+	// 单位 HEAL（战斗伤害后、Core 动作前；升序 UUID 先结算，官方顺序
+	// 第 11 步），随后 Core 动作使用剩余资源。
+	healEvents := applyUnitHeals(next, plan)
+	for _, event := range healEvents {
+		if event.EventType == "UNIT_HEAL_SUCCEEDED" {
+			if amount, ok := event.Values["amount"].(int); ok {
+				stats.HPRecovered += amount
+			}
+		}
+	}
+	events = append(events, healEvents...)
+
 	coreEvents := e.applyCoreAction(next, plan.CoreAction)
 	for _, event := range coreEvents {
 		if event.EventType == "SPAWN" {
@@ -94,6 +108,14 @@ func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult
 		}
 		if event.EventType == "SPAWN_BLOCKED_CORE_OCCUPIED" {
 			stats.SpawnBlocked++
+		}
+		if event.EventType == "CORE_HEAL_SUCCEEDED" {
+			if amount, ok := event.Values["amount"].(int); ok {
+				stats.HPRecovered += amount
+			}
+		}
+		if event.EventType == "CORE_SHIELD_REPAIRED" {
+			stats.ShieldRepaired++
 		}
 	}
 	events = append(events, coreEvents...)

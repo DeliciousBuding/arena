@@ -12,14 +12,34 @@ const (
 	coreCapacityPerUnit = 5
 )
 
-// applyCoreAction 结算 Core 动作（SPAWN WORKER / VANGUARD / RANGER）：
+// applyCoreAction 结算 Core 动作（SPAWN / HEAL / REPAIR_SHIELD）：
+//   - SPAWN：占位语义（满载 Worker 不阻止）、资源扣除、容量刷新、
+//     新单位出生在 Core 格（分列按类型落位）；
+//   - HEAL / REPAIR_SHIELD：按官方顺序第 12 步使用剩余资源
+//     （每 HP 1 资源、每盾 1 资源）。
+func (e *Engine) applyCoreAction(state *domain.TickState, action *domain.CoreAction) []domain.Event {
+	if action == nil || state.Core == nil {
+		return nil
+	}
+	switch action.Kind {
+	case domain.CoreSpawn:
+		return e.applySpawn(state, action)
+	case domain.CoreHeal:
+		return applyCoreHeal(state, action)
+	case domain.CoreRepairShield:
+		return applyCoreShieldRepair(state, action)
+	}
+	return nil
+}
+
+// applySpawn 结算 SPAWN 动作（WORKER / VANGUARD / RANGER）：
 //   - 占位语义（TS 版破锁）：Core 格上的满载 Worker 不阻止 SPAWN；
 //     空载 Worker / Vanguard / Ranger 视为永久占位（permanentOccupant），
 //     阻止 SPAWN 结算（SPAWN_BLOCKED_CORE_OCCUPIED）；
 //   - 资源扣除（resources -= cost）与人口/容量刷新
 //     （capacity = max(10, pop*5)，space = capacity - resources）；
 //   - 新单位出生在 Core 格（ID 确定性生成，分列按类型落位）。
-func (e *Engine) applyCoreAction(state *domain.TickState, action *domain.CoreAction) []domain.Event {
+func (e *Engine) applySpawn(state *domain.TickState, action *domain.CoreAction) []domain.Event {
 	if action == nil || action.Kind != domain.CoreSpawn || action.UnitType == nil {
 		return nil
 	}
