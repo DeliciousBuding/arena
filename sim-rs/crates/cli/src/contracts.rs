@@ -71,8 +71,12 @@ impl Default for TickStateJson {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct CoreJson {
+    /// JSON 里是 "ID"（全大写），见 UnitSnapshotJson 注释。
+    #[serde(alias = "ID")]
     pub id: String,
     pub position: Position,
+    /// JSON 里是 "HP"（全大写）。
+    #[serde(alias = "HP")]
     pub hp: i32,
     pub shield: i32,
     pub state: String,
@@ -96,8 +100,13 @@ impl Default for CoreJson {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct UnitSnapshotJson {
+    /// JSON 里是 "ID"（全大写）——serde PascalCase 转出 "Id"，需 alias
+    /// （Go case-insensitive 匹配掩盖的坑，PARITY §7）。
+    #[serde(alias = "ID")]
     pub id: String,
     pub position: Position,
+    /// JSON 里是 "HP"（全大写）。
+    #[serde(alias = "HP")]
     pub hp: i32,
     pub unit_type: String,
     pub cargo: i32,
@@ -121,6 +130,8 @@ impl Default for UnitSnapshotJson {
 pub struct BeaconJson {
     pub position: Position,
     pub status: String,
+    /// JSON 里是 "CarrierID"（全大写）。
+    #[serde(alias = "CarrierID")]
     pub carrier_id: Option<String>,
 }
 
@@ -340,7 +351,7 @@ pub fn load_policies(pattern: &str) -> Result<Vec<(String, PolicyFile)>, String>
     paths.sort();
     let mut policies = Vec::with_capacity(paths.len());
     for path in &paths {
-        let data = fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
+        let data = fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
         let file: PolicyFile =
             serde_json::from_str(&data).map_err(|e| format!("parse {path}: {e}"))?;
         let name = Path::new(&path)
@@ -392,6 +403,10 @@ mod tests {
         assert_eq!(state.tick, 1);
         assert_eq!(state.resources, 10);
         assert_eq!(state.core.as_ref().unwrap().position, [38, 39]);
+        assert_eq!(state.core.as_ref().unwrap().id, "core-1");
+        assert_eq!(state.core.as_ref().unwrap().hp, 5);
+        assert_eq!(state.units[0].id, "w1");
+        assert_eq!(state.units[0].hp, 2);
         assert_eq!(state.units[0].unit_type, UnitType::Worker);
         assert_eq!(state.units[0].cargo, 1);
         assert!(state.resource_cells.contains("38,45"));

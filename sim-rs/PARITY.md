@@ -44,3 +44,38 @@
   坐标排序修正为确定性实现，否则差分在超配额场景不可复现。
 - Go `internal/sim/batch.go` 的 `policyName → PolicyName` 重命名重构
   完成后才能作为 oracle 基准。
+
+## 7. 场景 JSON 字段名大小写
+
+- 现网场景文件（`runtime/scenes/*.json`）为 **PascalCase 大写字段**
+  （`"ID"/"HP"/"Tick"/"UnitType"`），Go 因 encoding/json case-insensitive
+  解析掩盖；serde 是 case-sensitive。Rust 侧 `contracts.rs` 用
+  `rename_all = "PascalCase"` + 对 `ID/HP/CarrierID` 全大写字段显式
+  alias（serde PascalCase 会转成 `Id/Hp/CarrierId`，不 alias 则解析为
+  空/默认值——曾导致初始单位 ID 丢失、planner patrol 键冲突、
+  经济产出减半；已修复并加测试）。
+- 豁免：无（契约兼容性修复）。
+
+## 8. 随机序列（simsearch/optsearch）
+
+- Go `math/rand`（v1 算法）序列与 Rust 自研 `SplitMix64` 不共用——
+  simsearch/optsearch 的随机生成只保证 **Rust 内部确定性**（同 seed
+  同输出），不与 Go 输出逐字节对齐（随机场景生成是探索工具，非契约）。
+- 豁免：探索工具输出，非差分目标。
+
+## 9. 基准同步：Go fork 后新增螺旋扫描巡逻
+
+- rust-sim fork 于 go-rewrite `b72ff3c`；Go 之后新增 3 个提交
+  （`c10f2d6` 文档、`6e389fb` nav fast-path + **planner 螺旋扫描带
+  巡逻**、`ab1b68a` golden 刷新）。Rust 已同步语义变更：
+  - `nextSpiralTarget`（patrol_scan_radius：4+6*ring，>46 重置 4；
+    patrol_angle_step：max(1, floor(36/radius))；64 方位角 spiralPoint）
+    替代旧八方位 nextPatrolTarget；patrol/starvedPatrol 统一走螺旋。
+  - Go nav.go 的 axial fast-path（L 形无墙直接返回主轴方向）**未移植**
+    ——fast-path 语义保证与 BFS 结果一致，Rust 的 stamped BFS 已是
+    真值（性能已 12x，无需加速路径）。
+- 差分结果（500 tick golden，Go HEAD vs Rust）：dense 逐字段一致；
+  base/sparse 的 deposits/spawns/workers 容差内（±6%）；blocked 残余
+  个位数差异（base 3→8、sparse 0→7，早期 50 tick 逐字节一致，差异
+  出现在 refill 长程演化后，来源疑为 Go map 迭代随机性，见 §1）。
+- 豁免：nav fast-path（性能等价优化）。
