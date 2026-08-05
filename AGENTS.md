@@ -42,12 +42,13 @@ npm run arena:supervisor -- --configs=t1,t2 --mode=deterministic --live --record
 ### 租户始终运行 + 数据收集线保障（2026-08-06）
 
 - **数据收集线 = supervisor `--record-calibration` 旁路**（calibration cases 持续落盘 `runtime/<t>/calibration/<runId>/cases/`，看护重启命令已含该参数）；
+- **计划任务链路（v2，实测验证）**：ArenaWatchdog（每分钟）→ `scripts/arena-watchdog.bat`（PowerShell Start-Process 完全分离）→ `arena-watchdog.sh`（确认死透 → 清死锁 → 带 `--record-calibration` 重启）。**故障注入演练通过**（2026-08-06 23:42 杀 supervisor → 31s 自动恢复 → 超过任务会话杀进程窗口 1.5 分钟仍存活）；v1 直接 `bash -lc` 有缺陷（任务会话结束回收进程树，supervisor 拉起 16s 后被 ^C 杀——实测捕获）；
 - **计划任务丢失恢复**：ArenaWatchdog 曾丢失（2026-08-06 发现）——重建命令：
   ```bash
-  MSYS_NO_PATHCONV=1 schtasks /create /tn ArenaWatchdog /sc minute /mo 1 /ru Ding /f /tr 'C:\Program Files\Git\bin\bash.exe -lc "/d/Code/Projects/arena/scripts/arena-watchdog.sh"'
+  MSYS_NO_PATHCONV=1 schtasks /create /tn ArenaWatchdog /sc minute /mo 1 /ru Ding /f /tr 'ARENA_REPO_ROOT\scripts\arena-watchdog.bat'
   ```
   验证：`MSYS_NO_PATHCONV=1 schtasks /query /tn ArenaWatchdog /fo LIST`；
-- **操作纪律（防误杀数据线）**：清理实验/后台进程只按**命令行匹配**杀特定 PID（`wmic process where "name='node.exe'" get processid,commandline | grep 匹配`），**严禁 `taskkill` 全部 node 进程树**——会误杀 supervisor/tenant 造成数据线中断（2026-08-06 实测教训：误杀后看护 26s 恢复，但产生中断窗口）；需要杀 supervisor 时按 8120 端口找 PID 定向杀。
+- **操作纪律（防误杀数据线）**：清理实验/后台进程只按**命令行匹配**杀特定 PID（`wmic process where "name='node.exe'" get processid,commandline | grep 匹配`），**严禁 `taskkill` 全部 node 进程树**——会误杀 supervisor/tenant 造成数据线中断（2026-08-06 实测教训：误杀后看护恢复，但产生中断窗口）；需要杀 supervisor 时按 8120 端口找 PID 定向杀。
 
 ## 模拟器真实性（稳定知识）
 
