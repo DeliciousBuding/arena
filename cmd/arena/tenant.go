@@ -204,10 +204,11 @@ func runTenantCmd(args []string) int {
 	logger.Info("planner config", "workerTarget", plannerConfig.WorkerTarget, "spawnReserve", plannerConfig.SpawnReserve)
 
 	loop := &runtime.Loop{
-		Client:  client,
-		Planner: strategy.NewPlanner(plannerConfig),
-		World:   domain.NewWorld(),
-		Obs:     obsObj,
+		Client:    client,
+		Planner:   strategy.NewPlanner(plannerConfig),
+		World:     domain.NewWorld(),
+		Obs:       obsObj,
+		Commander: strategy.NewCommander(),
 		Config: runtime.TenantConfig{
 			TenantID:       configFile.TenantID,
 			BaseURL:        heroConfig.BaseURL,

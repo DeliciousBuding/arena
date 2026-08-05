@@ -5,6 +5,7 @@
 package strategy
 
 import (
+	"math"
 	"sort"
 
 	"github.com/deliciousbuding/arena/internal/domain"
@@ -34,25 +35,47 @@ func DefaultConfig() Config {
 }
 
 // Planner 是确定性规划器（无副作用，不接触游戏）。
-// 跨 tick 持久状态：per-unit 巡逻目标与方向（worker 需要走出视野发现
-// 资源格——全局共享索引每 tick 换目标会让单位原地打转，真机 20t 实测
-// 资源枯竭根因）。
+// 跨 tick 持久状态：
+//   - per-unit 巡逻目标/方向/环（worker 需要走出视野发现资源格——
+//     全局共享索引每 tick 换目标会让单位原地打转，真机 20t 实测根因）；
+//   - 停滞指纹（服务器反馈的位置连续不变 → 强制换目标跳出死循环）；
+//   - 指挥指令（Commander 输出的模式，docs/go/08-command-design.md）。
 type Planner struct {
 	config        Config
+	directive     Directive
 	patrolTargets map[string]domain.Position // unitID → 当前巡逻目标
 	patrolDirs    map[string]int             // unitID → 八方位索引
 	patrolRings   map[string]int             // unitID → 探索环（半径扩展）
+	stuck         map[string]*stuckState     // unitID → 位置指纹停滞计数
+}
+
+// stuckState 是单位停滞指纹（基于服务器反馈的位置）。
+type stuckState struct {
+	lastPos    domain.Position
+	stuckTicks int
 }
 
 // NewPlanner 创建规划器。
 func NewPlanner(config Config) *Planner {
 	return &Planner{
 		config:        config,
+		directive:     Directive{Mode: ModeGrowth},
 		patrolTargets: make(map[string]domain.Position),
 		patrolDirs:    make(map[string]int),
 		patrolRings:   make(map[string]int),
+		stuck:         make(map[string]*stuckState),
 	}
 }
+
+// ApplyDirective 应用指挥层指令（每 tick 由 Loop 调用；模式切换
+// 确定性：同输入序列同模式序列）。
+func (p *Planner) ApplyDirective(directive Directive) {
+	p.directive = directive
+}
+
+// 停滞跳出阈值：服务器反馈的位置连续 N tick 不变（且单位有移动
+// 意图）→ 强制换巡逻目标（计划合法但服务器不结算的拥挤/被占场景）。
+const stuckYieldThreshold = 3
 
 // Decide 产出确定性计划（同输入同输出）：
 //  1. Core 决策（workerTarget + reserve guard + 紧急/恢复期通道）；
@@ -85,6 +108,8 @@ func (p *Planner) Decide(state *domain.TickState) *domain.Plan {
 		if unit == nil {
 			continue
 		}
+		// 停滞指纹：基于服务器反馈的位置（连续不变 = 结算未生效）。
+		p.trackStuck(id, unit.Position)
 		action, intent, ok := p.decideUnit(state, unit, assignments)
 		if !ok {
 			continue
@@ -107,6 +132,28 @@ func (p *Planner) Decide(state *domain.TickState) *domain.Plan {
 		plan.Intents[loser.unitID] = "capacity_wait:" + loser.intent
 	}
 	return plan
+}
+
+// trackStuck 更新单位停滞指纹：位置与上次一致则计数 +1（达到阈值后
+// 由 patrol 触发换目标）；位置变化则重置。
+func (p *Planner) trackStuck(unitID string, position domain.Position) {
+	st := p.stuck[unitID]
+	if st == nil {
+		p.stuck[unitID] = &stuckState{lastPos: position}
+		return
+	}
+	if st.lastPos == position {
+		st.stuckTicks++
+		return
+	}
+	st.lastPos = position
+	st.stuckTicks = 0
+}
+
+// isStuck 报告单位是否处于停滞（服务器位置连续不变达阈值）。
+func (p *Planner) isStuck(unitID string) bool {
+	st := p.stuck[unitID]
+	return st != nil && st.stuckTicks >= stuckYieldThreshold
 }
 
 // decideCore：workerTarget 消费 + reserve guard + 紧急/恢复期通道。
@@ -260,14 +307,22 @@ func (p *Planner) moveToward(state *domain.TickState, unit *domain.UnitSnapshot,
 // 到达或受阻，才按八方位 × 递增环半径换下一个目标（对齐 TS 版
 // patrol 语义）。目标是让 worker 真正走出视野发现资源格——全局共享
 // 索引每 tick 换目标会原地打转（真机 20t 资源枯竭根因）。
+// 停滞跳出：服务器反馈的位置连续不变（计划合法但结算未生效）→
+// 强制换目标，避免"合法但无效"的死循环。
 func (p *Planner) patrol(state *domain.TickState, unit *domain.UnitSnapshot) domain.UnitAction {
 	home := domain.Position{0, 0}
 	if state.Core != nil {
 		home = state.Core.Position
 	}
+	// EXPLORE_STARVED / MIGRATE_CAND：所有 worker 朝指挥焦点方向扫掠。
+	if p.directive.Mode == ModeExploreStarved || p.directive.Mode == ModeMigrateCand {
+		return p.starvedPatrol(state, unit, home)
+	}
+
 	target, hasTarget := p.patrolTargets[unit.ID]
-	if !hasTarget || unit.Position == target {
+	if !hasTarget || unit.Position == target || p.isStuck(unit.ID) {
 		target = p.nextPatrolTarget(home, state.Beacon.Position, unit.ID)
+		p.stuck[unit.ID] = &stuckState{lastPos: unit.Position} // 跳出后重置指纹
 	}
 	action := p.moveToward(state, unit, target)
 	if action.Kind == domain.ActionWait {
@@ -276,6 +331,65 @@ func (p *Planner) patrol(state *domain.TickState, unit *domain.UnitSnapshot) dom
 	}
 	p.patrolTargets[unit.ID] = target
 	return p.moveToward(state, unit, target)
+}
+
+// starvedPatrol 是资源枯竭模式的集中扫掠：所有 worker 朝指挥焦点
+// （Beacon 方位）方向直线推进，半径按环扩展（16→32→48→64），
+// 单位按 ID 哈希错开横向偏移形成扫掠线（覆盖走廊更宽）。
+func (p *Planner) starvedPatrol(state *domain.TickState, unit *domain.UnitSnapshot, home domain.Position) domain.UnitAction {
+	target, hasTarget := p.patrolTargets[unit.ID]
+	if !hasTarget || unit.Position == target || p.isStuck(unit.ID) {
+		ring := p.patrolRings[unit.ID]
+		radius := p.config.ExploreRadius * (ring + 1)
+		if radius > 64 {
+			radius = p.config.ExploreRadius // 半径循环：避免无限外扩
+		}
+		target = p.focusTarget(home, p.directive.Focus, unit.ID, radius)
+		p.patrolRings[unit.ID]++
+		p.stuck[unit.ID] = &stuckState{lastPos: unit.Position}
+	}
+	action := p.moveToward(state, unit, target)
+	if action.Kind == domain.ActionWait {
+		target = p.focusTarget(home, p.directive.Focus, unit.ID, p.config.ExploreRadius)
+	}
+	p.patrolTargets[unit.ID] = target
+	return p.moveToward(state, unit, target)
+}
+
+// focusTarget 沿 focus 方位生成扫掠目标：方向 = focus-home 的八方位
+// delta，横向偏移按单位 ID 哈希错开（-2..2），形成扫掠线。
+func (p *Planner) focusTarget(home, focus domain.Position, unitID string, radius int) domain.Position {
+	octant := octantOf(focus[0]-home[0], focus[1]-home[1])
+	delta := exploreDeltas[octant]
+	// 横向偏移：与主方向垂直（旋转 90°）的错开。
+	lateral := 0
+	if radius > 0 {
+		for _, ch := range unitID {
+			lateral = (lateral*31 + int(ch)) % 5
+		}
+		lateral -= 2 // -2..2
+	}
+	perpendicular := domain.Position{-delta[1], delta[0]}
+	return domain.Position{
+		home[0] + delta[0]*radius + perpendicular[0]*lateral,
+		home[1] + delta[1]*radius + perpendicular[1]*lateral,
+	}
+}
+
+// exploreDeltas 是八方位单位向量（与 domain.nav 同布局）。
+var exploreDeltas = []domain.Position{
+	{1, 0}, {1, 1}, {0, 1}, {-1, 1}, {-1, 0}, {-1, -1}, {0, -1}, {1, -1},
+}
+
+// octantOf 将方向向量映射到 0..7 八方位索引（与 domain exploreOctant
+// 同语义：0=E,1=SE,2=S,3=SW,4=W,5=NW,6=N,7=NE，对应 exploreDeltas）。
+func octantOf(dx, dy int) int {
+	if dx == 0 && dy == 0 {
+		return 0
+	}
+	angle := math.Atan2(float64(dy), float64(dx))
+	octant := int(math.Round(angle / (math.Pi / 4)))
+	return ((octant % 8) + 8) % 8
 }
 
 // nextPatrolTarget 生成下一巡逻目标：per-unit 八方位方向索引递增，

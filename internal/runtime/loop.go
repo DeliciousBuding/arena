@@ -16,6 +16,7 @@ import (
 	"github.com/deliciousbuding/arena/internal/domain"
 	"github.com/deliciousbuding/arena/internal/hero"
 	"github.com/deliciousbuding/arena/internal/obs"
+	"github.com/deliciousbuding/arena/internal/strategy"
 	"github.com/deliciousbuding/arena/internal/telemetry"
 )
 
@@ -67,6 +68,7 @@ type GameClient interface {
 // Planner 是决策器接口（strategy.Planner 天然实现）。
 type Planner interface {
 	Decide(state *domain.TickState) *domain.Plan
+	ApplyDirective(directive strategy.Directive)
 }
 
 // tickOutcome 是上一 tick 的决策摘要（下一 state 到达时生成 outcome：
@@ -89,6 +91,10 @@ type Loop struct {
 	RuntimeLog  *telemetry.JsonlWriter
 	DecisionLog *telemetry.JsonlWriter
 	Stats       Stats
+	// Commander 是指挥层（nil 时跳过指令下发，GROWTH 语义）。
+	Commander *strategy.Commander
+	// lastDirective 是最近一次指挥指令（遥测用）。
+	lastDirective strategy.Directive
 
 	// lastHandledTick 记录最近已进入决策的 tick（exactly-once 语义）：
 	// 重连后服务器会重放已处理过的 Tick，任何重复 state 必须在
@@ -284,6 +290,21 @@ func (l *Loop) handleState(ctx context.Context, state *contracts.PlayerState) er
 		}
 	}
 
+	// 指挥层（Command & Control）：全局态势 → 模式指令 → 战术层。
+	// 无进展（资源/工人/资源格）连续 tick 触发 EXPLORE_STARVED 集中
+	// 扫掠、100 tick 触发 MIGRATE_CAND 迁移候选（只评估不执行）。
+	if l.Commander != nil {
+		directive := l.Commander.Update(decideState)
+		l.Planner.ApplyDirective(directive)
+		l.lastDirective = directive
+		if directive.Mode == strategy.ModeExploreStarved {
+			l.event(slog.LevelWarn, "economy.stagnant", "tick", tickState.Tick, "mode", string(directive.Mode))
+		}
+		if directive.Mode == strategy.ModeMigrateCand {
+			l.event(slog.LevelWarn, "migration.candidate", "tick", tickState.Tick, "focus", directive.Focus)
+		}
+	}
+
 	plan := l.Planner.Decide(decideState)
 	step("decide")
 
@@ -402,6 +423,9 @@ func (l *Loop) writeDecisionRecord(tickState *domain.TickState, plan *domain.Pla
 		"valid":    valid,
 		"repaired": repaired,
 	}
+
+	// 指挥模式遥测（诊断全局策略切换）。
+	record["directiveMode"] = string(l.lastDirective.Mode)
 
 	// 动作种类与意图计数。
 	actionKinds := make(map[string]int)

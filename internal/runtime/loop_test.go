@@ -11,6 +11,7 @@ import (
 	"github.com/deliciousbuding/arena/internal/contracts"
 	"github.com/deliciousbuding/arena/internal/domain"
 	"github.com/deliciousbuding/arena/internal/hero"
+	"github.com/deliciousbuding/arena/internal/strategy"
 	"github.com/deliciousbuding/arena/internal/telemetry"
 )
 
@@ -57,6 +58,8 @@ func (p *stubPlanner) Decide(state *domain.TickState) *domain.Plan {
 	}
 	return plan
 }
+
+func (p *stubPlanner) ApplyDirective(strategy.Directive) {}
 
 // validPlan 返回空计划（Validator 通过）。
 func validPlan() *domain.Plan {

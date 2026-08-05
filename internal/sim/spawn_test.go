@@ -272,6 +272,61 @@ func TestFullEconomicLoopRealMapTopology(t *testing.T) {
 	}
 }
 
+// TestCommanderDirectsStarvedExploration：指挥层 + 战术层集成——
+// 无资源场景 30 tick 后模式切 EXPLORE_STARVED，worker 朝 Beacon 焦点
+// 方向集中推进（闭环中指令传递生效）。
+func TestCommanderDirectsStarvedExploration(t *testing.T) {
+	state := economyBaseState()
+	state.Resources = 1
+	state.ResourceCells = domain.NewSet[string]()
+	state.ObstacleCells = domain.NewSet[string]()
+	// Beacon 在正东：焦点方向东。
+	state.Beacon = domain.Beacon{Position: domain.Position{30, 0}, Status: domain.BeaconGround}
+
+	commander := strategy.NewCommander()
+	planner := strategy.NewPlanner(strategy.Config{
+		WorkerTarget:      8,
+		PopulationCeiling: 20,
+		ExploreRadius:     16,
+		ThreatDistance:    5,
+		SpawnReserve:      0,
+	})
+	engine := NewEngine()
+
+	modeSeen := map[string]bool{}
+	eastMoves := 0
+	totalMoves := 0
+	for tick := 1; tick <= 40; tick++ {
+		state.Tick = tick
+		directive := commander.Update(state)
+		planner.ApplyDirective(directive)
+		modeSeen[string(directive.Mode)] = true
+		plan := planner.Decide(state)
+		result := engine.Settle(state, plan)
+		// 统计向东移动（焦点方向）的次数。
+		for _, unitID := range sortedUnitIDs(plan.UnitActions) {
+			action := plan.UnitActions[unitID]
+			if action.Kind == domain.ActionMove && action.Direction != nil {
+				totalMoves++
+				if *action.Direction == domain.DirectionRight {
+					eastMoves++
+				}
+			}
+		}
+		state = result.NextState
+	}
+
+	if !modeSeen["EXPLORE_STARVED"] {
+		t.Errorf("EXPLORE_STARVED mode never triggered in 40 no-resource ticks")
+	}
+	if totalMoves == 0 {
+		t.Errorf("no moves at all in loop")
+	}
+	if eastMoves == 0 {
+		t.Errorf("no eastward (focus) moves in starved mode — directive not applied to patrol")
+	}
+}
+
 func TestFullEconomicLoopBreakDeadlock(t *testing.T) {
 	state := economyBaseState()
 	planner := strategy.NewPlanner(strategy.Config{
