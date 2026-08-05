@@ -149,9 +149,10 @@ func (l *ffiLibLinux) applyDirective(handle unsafe.Pointer, directiveJSON []byte
 		return nil, message
 	}
 	// Rust returns a heap-owned JSON string (currently "ok"); the Go interface
-	// only needs success/failure, so release it immediately and return a sentinel.
+	// only needs success/failure, so release it immediately. The interface caller
+	// ignores the success pointer and keys exclusively on errOut.
 	C.arena_call_free(l.stringFreeFn, unsafe.Pointer(result))
-	return unsafe.Pointer(uintptr(1)), ""
+	return nil, ""
 }
 
 func (l *ffiLibLinux) freePlanner(handle unsafe.Pointer) {
