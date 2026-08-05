@@ -25,7 +25,7 @@ const DIRECTION_ORDER: [Direction; 4] = [
 ];
 
 /// pathMargins 是 step_toward 逐级扩大的搜索边界（与 TS 版一致）。
-const PATH_MARGINS: [i32; 4] = [4, 8, 16, 32];
+pub const PATH_MARGINS: [i32; 4] = [4, 8, 16, 32];
 
 /// exploreDeltas 是顺时针 8 方位：东、东南、南、西南、西、西北、北、东北。
 const EXPLORE_DELTAS: [Position; 8] = [
@@ -276,12 +276,101 @@ fn reconstruct_path(queue: &[BfsNode], target_index: usize, target: Position) ->
 }
 
 /// 返回 margin 边界框。
-fn search_bounds(from: Position, to: Position, margin: i32) -> (i32, i32, i32, i32) {
+pub fn search_bounds(from: Position, to: Position, margin: i32) -> (i32, i32, i32, i32) {
     let min_x = from[0].min(to[0]) - margin;
     let max_x = from[0].max(to[0]) + margin;
     let min_y = from[1].min(to[1]) - margin;
     let max_y = from[1].max(to[1]) + margin;
     (min_x, max_x, min_y, max_y)
+}
+
+/// stamped grid BFS 搜索器：visited 用固定网格 + 世代戳（无哈希、无
+/// 分配——BFS 热路径从 ~100ns/节点降到 ~5ns/节点）。跨多次 BFS 复用
+/// 缓冲。与 HashSet 版语义完全一致（仅成员判断，确定性结果相同）。
+///
+/// 网格尺寸按搜索框动态 resize（保留历史最大容量，避免反复分配）。
+#[derive(Debug, Default)]
+pub struct BfsSearcher {
+    visited: Vec<u32>,
+    stamp: u32,
+    queue: Vec<BfsEntry>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BfsEntry {
+    position: Position,
+    first_direction: Option<Direction>,
+}
+
+impl BfsSearcher {
+    pub fn new() -> BfsSearcher {
+        BfsSearcher::default()
+    }
+
+    /// 在搜索框内做有界 BFS，返回 from→to 最短路的第一步（不可达返回
+    /// None）。obstacle_pos 为 Position-keyed 障碍集合（调用方每 tick
+    /// 缓存一次，避免每调用字符串解析）；extra_obstacle 为动态额外障碍
+    /// （如目标非 Core 时的 Core 格——planner 热路径用，免集合克隆）。
+    pub fn first_step(
+        &mut self,
+        from: Position,
+        to: Position,
+        obstacle_pos: &HashSet<Position>,
+        extra_obstacle: Option<Position>,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+    ) -> Option<Direction> {
+        let width = (max_x - min_x + 1) as usize;
+        let height = (max_y - min_y + 1) as usize;
+        let grid_size = width * height;
+        if self.visited.len() < grid_size {
+            self.visited.resize(grid_size, 0);
+        }
+        self.stamp = self.stamp.wrapping_add(1);
+        if self.stamp == 0 {
+            self.stamp = 1;
+            self.visited.fill(0);
+        }
+        let stamp = self.stamp;
+
+        self.queue.clear();
+        self.queue.push(BfsEntry { position: from, first_direction: None });
+        self.visited[grid_index(from, min_x, min_y, width)] = stamp;
+
+        let mut directions = [Direction::Right; 4];
+        let mut head = 0;
+        while head < self.queue.len() && head < MAX_VISITED_NODES {
+            let current = self.queue[head];
+            head += 1;
+            let count = ordered_directions_into(current.position, to, &mut directions);
+            for direction in &directions[..count] {
+                let next = move_position(current.position, *direction);
+                if next[0] < min_x || next[0] > max_x || next[1] < min_y || next[1] > max_y {
+                    continue;
+                }
+                if self.visited[grid_index(next, min_x, min_y, width)] == stamp {
+                    continue;
+                }
+                if obstacle_pos.contains(&next) || extra_obstacle == Some(next) {
+                    continue;
+                }
+                let first_direction = current.first_direction.unwrap_or(*direction);
+                if next == to {
+                    return Some(first_direction);
+                }
+                self.visited[grid_index(next, min_x, min_y, width)] = stamp;
+                self.queue.push(BfsEntry { position: next, first_direction: Some(first_direction) });
+            }
+        }
+        None
+    }
+}
+
+/// 网格索引（stamped BFS visited 定位）。
+fn grid_index(pos: Position, min_x: i32, min_y: i32, width: usize) -> usize {
+    ((pos[1] - min_y) as usize) * width + ((pos[0] - min_x) as usize)
 }
 
 /// 返回确定性方向顺序（与 TS/Go 版同语义）：优先主轴向（|dx| >= |dy|

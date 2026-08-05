@@ -13,11 +13,12 @@ mod bench_tests;
 #[cfg(test)]
 mod loop_tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use arena_sim_domain::{
-    cell_key, chebyshev, manhattan, move_position, step_toward, Direction, Plan, Position,
-    TickState, UnitAction, UnitActionKind, UnitSnapshot, UnitType, CORE_MAX_HP,
+    cell_key, chebyshev, manhattan, move_position, parse_cell_key, BfsSearcher, Direction, Plan,
+    Position, TickState, UnitAction, UnitActionKind, UnitSnapshot, UnitType, CORE_MAX_HP,
+    PATH_MARGINS,
 };
 
 use commander::{Directive, DirectiveMode};
@@ -79,6 +80,8 @@ pub struct StuckState {
 
 /// 确定性规划器（无副作用，不接触游戏）。跨 tick 持久状态：
 /// per-unit 巡逻目标/方向/环、停滞指纹、engage 计数、指挥指令。
+/// 性能：stamped grid BFS 搜索器 + 每 tick 障碍 Position 缓存
+/// （BFS 热路径零哈希零字符串分配）。
 #[derive(Debug)]
 pub struct Planner {
     pub config: Config,
@@ -88,6 +91,10 @@ pub struct Planner {
     pub patrol_rings: BTreeMap<String, i32>,
     pub stuck: BTreeMap<String, StuckState>,
     pub engage_ticks: BTreeMap<String, i32>,
+    /// stamped grid BFS（跨 tick 复用缓冲）。
+    pub bfs: BfsSearcher,
+    /// 本 tick 障碍 Position 集合（decide 开头刷新一次）。
+    pub obstacle_positions: HashSet<Position>,
 }
 
 impl Planner {
@@ -103,6 +110,8 @@ impl Planner {
             patrol_rings: BTreeMap::new(),
             stuck: BTreeMap::new(),
             engage_ticks: BTreeMap::new(),
+            bfs: BfsSearcher::new(),
+            obstacle_positions: HashSet::new(),
         }
     }
 
@@ -128,6 +137,13 @@ impl Planner {
             core_action: None,
             intents: BTreeMap::new(),
         };
+
+        // 每 tick 刷新障碍 Position 缓存（BFS 热路径零字符串解析）。
+        self.obstacle_positions = state
+            .obstacle_cells
+            .iter()
+            .filter_map(|key| parse_cell_key(key))
+            .collect();
 
         if let Some(core_action) = self.decide_core(state) {
             plan.core_action = Some(core_action);
@@ -712,54 +728,78 @@ impl Planner {
     }
 
     /// moveToward 朝目标走一步：
-    /// - 地形障碍（静态）由 BFS 绕行（step_toward）；
+    /// - 地形障碍（静态）由 stamped grid BFS 绕行（margin 4/8/16/32）；
     /// - 其他己方单位当前位置不并入 BFS（避免拥挤时绕行横跳振荡）——
     ///   理想第一步的目标格被占时 WAIT 排队；
     /// - 目标格被占时同样 WAIT 排队——不绕行到目标相邻格（互卡死锁）；
     /// - Core 格路径语义：目标非 Core 时 Core 格视为障碍（探索/采集
     ///   路径不得穿越仓库口）。
-    fn move_toward(&self, state: &TickState, unit: &UnitSnapshot, target: Position) -> UnitAction {
+    fn move_toward(
+        &mut self,
+        state: &TickState,
+        unit: &UnitSnapshot,
+        target: Position,
+    ) -> UnitAction {
         // 目标格被己方单位占位：WAIT 排队。
         if target != unit.position && economic::occupied_by_any(state, &unit.id, target) {
-            return UnitAction {
-                kind: UnitActionKind::Wait,
-                direction: None,
-                target_id: None,
-                expected_cell: None,
-            };
+            return wait_action();
         }
-        // 地形障碍 + Core 格（目标非 Core 时）作为 BFS 障碍。
-        let mut obstacles = state.obstacle_cells.clone();
-        if let Some(core_pos) = core_position_of(state) {
-            if target != core_pos {
-                obstacles.insert(cell_key(core_pos[0], core_pos[1]));
+        // 动态额外障碍：目标非 Core 时 Core 格视为障碍（免集合克隆）。
+        let extra_obstacle = core_position_of(state).filter(|core_pos| *core_pos != target);
+        // margin 循环：目标在框外时跳过必然失败的 margin（远处目标不
+        // 再白跑 3 个完整 BFS）。
+        let distance = chebyshev(unit.position, target);
+        let mut start_margin = 0;
+        while start_margin < PATH_MARGINS.len() && distance > PATH_MARGINS[start_margin] {
+            start_margin += 1;
+        }
+        for &margin in &PATH_MARGINS[start_margin..] {
+            let (min_x, max_x, min_y, max_y) =
+                arena_sim_domain::search_bounds(unit.position, target, margin);
+            if let Some(direction) = self.bfs.first_step(
+                unit.position,
+                target,
+                &self.obstacle_positions,
+                extra_obstacle,
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+            ) {
+                // 理想第一步的目标格被其他单位占据：WAIT 排队（不绕行——
+                // 拥挤时绕行路径每 tick 变化导致横跳振荡）。
+                let next_cell = move_position(unit.position, direction);
+                if economic::occupied_by_any(state, &unit.id, next_cell) {
+                    return wait_action();
+                }
+                return UnitAction {
+                    kind: UnitActionKind::Move,
+                    direction: Some(direction),
+                    target_id: None,
+                    expected_cell: None,
+                };
             }
         }
-        let Some(direction) = step_toward(unit.position, target, &obstacles) else {
+        // fail-safe：朝目标方向走第一个非障碍格（含 Core 格）；全堵 WAIT。
+        let mut directions = [Direction::Right; 4];
+        let count = arena_sim_domain::ordered_directions_into(
+            unit.position,
+            target,
+            &mut directions,
+        );
+        for direction in &directions[..count] {
+            let next = move_position(unit.position, *direction);
+            if self.obstacle_positions.contains(&next) || extra_obstacle == Some(next) {
+                continue;
+            }
             return UnitAction {
-                kind: UnitActionKind::Wait,
-                direction: None,
-                target_id: None,
-                expected_cell: None,
-            };
-        };
-        // 理想第一步的目标格被其他单位占据：WAIT 排队（不绕行——
-        // 拥挤时绕行路径每 tick 变化导致横跳振荡）。
-        let next_cell = move_position(unit.position, direction);
-        if economic::occupied_by_any(state, &unit.id, next_cell) {
-            return UnitAction {
-                kind: UnitActionKind::Wait,
-                direction: None,
+                kind: UnitActionKind::Move,
+                direction: Some(*direction),
                 target_id: None,
                 expected_cell: None,
             };
         }
-        UnitAction {
-            kind: UnitActionKind::Move,
-            direction: Some(direction),
-            target_id: None,
-            expected_cell: None,
-        }
+        wait_action()
     }
 
     /// patrol 是 per-unit 持久巡逻：同一单位持续朝同一目标直线移动直到
@@ -984,6 +1024,16 @@ fn nearest_enemy(
         .iter()
         .filter(|enemy| manhattan(from, enemy.position) <= radius)
         .min_by_key(|enemy| (manhattan(from, enemy.position), enemy.id.clone()))
+}
+
+/// 构造 WAIT 动作（热路径免重复结构体字面量）。
+fn wait_action() -> UnitAction {
+    UnitAction {
+        kind: UnitActionKind::Wait,
+        direction: None,
+        target_id: None,
+        expected_cell: None,
+    }
 }
 
 /// 返回 Core 位置（None = 无 Core）。
