@@ -129,3 +129,10 @@
 - [x] 遥测：unitPositions（analyze 移动量指标）；cmd/analyze run
       实验报告工具（模式分布/资源趋势/动作统计/移动量）
 - [ ] t4 真机 40t 验证（运行中）
+
+## E2.5 Core 迁移执行路径（2026-08-05，197e0b9）
+
+- [x] PlanToCommandPlan 补 START_MOVE direction（wire 缺口修复）
+- [x] domain.CoreAction 加 Direction；decideCore：MIGRATE_CAND +
+      EnableCoreMigration（默认 false，红线）→ START_MOVE 朝焦点方向
+- [x] Core MOVING 自动停止（不重复发）；3 个迁移测试
