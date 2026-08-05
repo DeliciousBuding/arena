@@ -427,6 +427,17 @@ func (l *Loop) writeDecisionRecord(tickState *domain.TickState, plan *domain.Pla
 	// 指挥模式遥测（诊断全局策略切换）。
 	record["directiveMode"] = string(l.lastDirective.Mode)
 
+	// 单位位置指纹（analyze 移动量指标：ID 短码 → 位置）。
+	positions := make(map[string]string, len(tickState.Units))
+	for _, unit := range tickState.Units {
+		shortID := unit.ID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		positions[shortID] = domain.CellKey(unit.Position[0], unit.Position[1])
+	}
+	record["unitPositions"] = positions
+
 	// 动作种类与意图计数。
 	actionKinds := make(map[string]int)
 	intentCounts := make(map[string]int)
