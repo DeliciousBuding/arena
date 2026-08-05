@@ -182,10 +182,35 @@
       与模拟退火同分（142），不同局部最优——退火偏探索半径（22），GA 偏工人数（11）
 - [x] 确定性种子可复现
 
+## E8 战斗闭环 + 多场景评分（2026-08-05）
+
+### sim 战斗结算（subagent lane，ba2dd68）
+- [x] `internal/sim/combat.go`：Ranger SHOOT（5 格 Chebyshev + LineBlocked
+      视线、target_id 精度/空格最低 HP）、Vanguard SWEEP（相邻格 AOE、
+      敌 Core 受击）、伤害同时应用（战斗快照语义）、死亡移除
+- [x] Settle 顺序：MOVE → HARVEST/DEPOSIT → COMBAT → Core SPAWN
+- [x] SettleStats 新增 Kills/ShotsFired/SweepsFired；8 项测试
+- [x] 集成测试：planner SWEEP 两 tick 击杀闭环、Ranger SHOOT 击杀
+      （combat_integration_test.go，840a101）
+
+### planner 战斗意图（3a281b8）
+- [x] Vanguard 相邻敌 → SWEEP（AOE，比 engage 逼近优先，确定性顺序
+      UP→RIGHT→DOWN→LEFT）；3 项测试
+- [x] 军事生产（2ca2c9b）：worker 达 WorkerTarget 后按 MilitaryRatio
+      （默认 25%）补 Vanguard/Ranger 交替（防御优先）；3 项测试
+
+### 多场景评分（subagent lane，7c89d0d）
+- [x] optsearch 升级三拓扑最差分：base（fixture 6 格）/ dense（8 格）/
+      sparse（3 格 + 障碍），score = 最低分（鲁棒性优先）
+- [x] 冒烟：默认 {8,5,16,20} 三场景 {129,120,83}，最差 83 由 sparse 决定
+- [x] 全量搜索：SA {13,0,17,16}=110、GA {13,0,10,19}=110（默认 83，+33%）
+      ——共识 workerTarget=13、spawnReserve=0
+- [x] DefaultConfig 落地（f124e88）：workerTarget 13、spawnReserve 0、
+      populationCeiling 16、exploreRadius 17、MilitaryRatio 25
+
 ### 待办
-- [ ] t4 真机 100t 验证优化后默认参数（spawnReserve=2, exploreRadius=22, populationCeiling=30）
-- [ ] 杂交：模拟退火最佳 + GA 精英 → 手动调参基线
-- [ ] 多场景评分（多拓扑取最差 score 而非单场景）
+- [ ] t4 真机 100t 完整分析（e7-refill-100t.log 运行中：65/100 tick，
+      EXPLORE_STARVED 模式 + economy.stagnant 事件符合预期）
 
 ## E7 游戏逻辑利用 + 振荡修复（2026-08-05）
 
