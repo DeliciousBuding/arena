@@ -1,0 +1,9 @@
+[package]
+name = "arena-sim-domain"
+version = "0.1.0"
+edition = "2021"
+description = "Arena 模拟器领域模型与导航（从 go-rewrite internal/domain 移植）"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

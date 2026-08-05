@@ -1,0 +1,10 @@
+[package]
+name = "arena-sim-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Arena 模拟器 CLI（simrun/simsearch/optsearch/simgolden 等价命令，待移植）"
+
+[dependencies]
+arena-sim-domain = { path = "../domain" }
+arena-sim-engine = { path = "../engine" }
+arena-sim-strategy = { path = "../strategy" }

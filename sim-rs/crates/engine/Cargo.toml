@@ -1,0 +1,9 @@
+[package]
+name = "arena-sim-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Arena Digital Twin 规则结算引擎（从 go-rewrite internal/sim 移植）"
+
+[dependencies]
+arena-sim-domain = { path = "../domain" }
+serde_json = { workspace = true }

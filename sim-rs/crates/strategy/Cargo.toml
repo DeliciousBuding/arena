@@ -1,0 +1,9 @@
+[package]
+name = "arena-sim-strategy"
+version = "0.1.0"
+edition = "2021"
+description = "Arena 模拟器策略层（planner/commander/economic，从 go-rewrite internal/strategy 移植，待移植）"
+
+[dependencies]
+arena-sim-domain = { path = "../domain" }
+arena-sim-engine = { path = "../engine" }
