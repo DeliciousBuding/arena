@@ -216,8 +216,8 @@ func printSummary(results []sim.BatchResult) {
 		fmt.Printf("  kills=%d unitsLost=%d shots=%d sweeps=%d\n", result.Stats.Kills, result.Stats.UnitsLost, result.Stats.ShotsFired, result.Stats.SweepsFired)
 		fmt.Printf("  timeline:\n")
 		for _, point := range result.Timeline {
-			fmt.Printf("    t%-5d res=%-4d workers=%d kills=%d lost=%d mode=%s\n",
-				point.Tick, point.Resources, point.Workers, point.Kills, point.UnitsLost, point.Mode)
+			fmt.Printf("    t%-5d res=%-4d cells=%-3d workers=%d kills=%d lost=%d mode=%s\n",
+				point.Tick, point.Resources, point.ResourceCells, point.Workers, point.Kills, point.UnitsLost, point.Mode)
 		}
 	}
 }

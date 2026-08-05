@@ -46,8 +46,7 @@ func runTicks(ticks int) {
 	for tick := 1; tick <= ticks; tick++ {
 		state.Tick = tick
 		plan := planner.Decide(state)
-		settled := engine.Settle(state, plan)
-		state = settled.NextState
+		engine.SettleInPlace(state, plan)
 	}
 }
 

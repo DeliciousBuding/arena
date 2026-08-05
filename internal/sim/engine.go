@@ -53,6 +53,20 @@ func NewEngine() *Engine {
 // 挂载 Refill 时，settle 末尾执行视野揭示 + 每 4 tick 配额补满。
 func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult {
 	next := cloneState(state)
+	return e.settleInto(next, plan)
+}
+
+// SettleInPlace 原地结算：直接修改传入状态并返回（不克隆）。
+// 调用方必须保证 state 结算后不再使用（批量评估/长跑热路径：
+// 避免每 tick 879MB 级深拷贝分配——克隆是批量并发评估的 GC 主瓶颈，
+// 16 并发仅 3.3x 的根因）。语义与 Settle 完全一致。
+func (e *Engine) SettleInPlace(state *domain.TickState, plan *domain.Plan) SettleResult {
+	return e.settleInto(state, plan)
+}
+
+// settleInto 是结算主体：在 next 状态上就地应用全部阶段。
+// 确定性：同输入同输出（无随机、稳定遍历顺序）。
+func (e *Engine) settleInto(next *domain.TickState, plan *domain.Plan) SettleResult {
 	events := make([]domain.Event, 0, 8)
 	stats := SettleStats{}
 

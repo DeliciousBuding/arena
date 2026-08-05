@@ -148,25 +148,45 @@ func ShortestPath(from, to Position, obstacles Set[string], margin int) ([]Posit
 // ShortestPathFirstStep 在 margin 边界框内做有界 BFS，返回 from→to 最短路
 // 的第一步（与 TS 版 shortestPathFirstStep 同语义）。不可达返回 ok=false。
 // obstacles 为 cell-key（"x,y"）集合。
+// 性能：visited 用 map[Position]struct{}（Position 是 [2]int，可直接哈希，
+// 零字符串分配——BFS 热路径每节点 4 次 CellKey 拼接 + 字符串 map 访问是
+// 批量评估的 CPU 主热点，占 ~45%）。
 func ShortestPathFirstStep(from, to Position, obstacles Set[string], margin int) (Direction, bool) {
 	minX, maxX, minY, maxY := searchBounds(from, to, margin)
+	// 障碍预转 Position-keyed（一次性；BFS 内所有检查零字符串分配）。
+	obstaclePos := make(map[Position]struct{}, len(obstacles))
+	for key := range obstacles {
+		if position, err := ParseCellKey(key); err == nil {
+			obstaclePos[position] = struct{}{}
+		}
+	}
+	return shortestPathFirstStepKeyed(from, to, obstaclePos, minX, maxX, minY, maxY)
+}
+
+// shortestPathFirstStepKeyed 是 Position-keyed BFS 主体（零字符串分配）。
+func shortestPathFirstStepKeyed(from, to Position, obstaclePos map[Position]struct{}, minX, maxX, minY, maxY int) (Direction, bool) {
 	type firstStepNode struct {
 		position       Position
 		firstDirection Direction
 	}
 	queue := make([]firstStepNode, 0, 64)
 	queue = append(queue, firstStepNode{position: from})
-	visited := NewSet(from)
+	visited := map[Position]struct{}{from: {}}
+	var directions [4]Direction
 	head := 0
-	for head < len(queue) && visited.Len() <= maxVisitedNodes {
+	for head < len(queue) && len(visited) <= maxVisitedNodes {
 		current := queue[head]
 		head++
-		for _, direction := range orderedDirections(current.position, to) {
+		orderedDirectionsInto(current.position, to, &directions)
+		for _, direction := range directions {
 			next := Move(current.position, direction)
 			if next[0] < minX || next[0] > maxX || next[1] < minY || next[1] > maxY {
 				continue
 			}
-			if visited.Contains(next) || obstacles.Contains(CellKey(next[0], next[1])) {
+			if _, seen := visited[next]; seen {
+				continue
+			}
+			if _, blocked := obstaclePos[next]; blocked {
 				continue
 			}
 			firstDirection := direction
@@ -176,7 +196,7 @@ func ShortestPathFirstStep(from, to Position, obstacles Set[string], margin int)
 			if next == to {
 				return firstDirection, true
 			}
-			visited.Add(next)
+			visited[next] = struct{}{}
 			queue = append(queue, firstStepNode{position: next, firstDirection: firstDirection})
 		}
 	}
@@ -191,13 +211,35 @@ func StepToward(position, target Position, obstacles Set[string]) (Direction, bo
 	if position == target {
 		return "", false
 	}
-	for _, margin := range pathMargins {
-		if direction, ok := ShortestPathFirstStep(position, target, obstacles, margin); ok {
+	// 障碍预转一次（4 个 margin 的 BFS 共享；避免每 BFS 重复转换）。
+	obstaclePos := make(map[Position]struct{}, len(obstacles))
+	for key := range obstacles {
+		if cell, err := ParseCellKey(key); err == nil {
+			obstaclePos[cell] = struct{}{}
+		}
+	}
+	// 关键优化：目标在 margin 框外时 BFS 必然失败（框内永远找不到目标），
+	// 跳过这些 margin——远处目标（探索 radius 17+）不再白跑 3 个完整
+	// BFS 遍历。从第一个能覆盖目标的 margin 开始尝试（结果与逐级
+	// 全试完全一致：被跳过的必然失败，成功只取决于第一个覆盖 margin
+	// 起的搜索，全失败后 fail-safe 不变）。
+	distance := Chebyshev(position, target)
+	startMargin := 0
+	for startMargin < len(pathMargins) && distance > pathMargins[startMargin] {
+		startMargin++
+	}
+	for index := startMargin; index < len(pathMargins); index++ {
+		margin := pathMargins[index]
+		minX, maxX, minY, maxY := searchBounds(position, target, margin)
+		if direction, ok := shortestPathFirstStepKeyed(position, target, obstaclePos, minX, maxX, minY, maxY); ok {
 			return direction, true
 		}
 	}
-	for _, direction := range orderedDirections(position, target) {
-		if !obstacles.Contains(CellKey(Move(position, direction)[0], Move(position, direction)[1])) {
+	var directions [4]Direction
+	orderedDirectionsInto(position, target, &directions)
+	for _, direction := range directions {
+		next := Move(position, direction)
+		if _, blocked := obstaclePos[next]; !blocked {
 			return direction, true
 		}
 	}
@@ -234,39 +276,67 @@ func searchBounds(from, to Position, margin int) (minX, maxX, minY, maxY int) {
 
 // orderedDirections 返回确定性方向顺序（与 TS 版同语义）：优先主轴向
 // （|dx| >= |dy| 时 x 优先），再按 RIGHT/DOWN/LEFT/UP 补齐。
+// 热路径（BFS 每节点）用 orderedDirectionsInto 写固定 buffer 免分配。
 func orderedDirections(from, target Position) []Direction {
+	var directions [4]Direction
+	count := orderedDirectionsInto(from, target, &directions)
+	return append([]Direction(nil), directions[:count]...)
+}
+
+// orderedDirectionsInto 把确定性方向顺序写入 buffer，返回方向数。
+// BFS 热路径使用：避免每节点 slice 分配（CPU profile 热点之一）。
+func orderedDirectionsInto(from, target Position, buffer *[4]Direction) int {
 	dx := target[0] - from[0]
 	dy := target[1] - from[1]
-	preferred := make([]Direction, 0, 4)
+	index := 0
 	if abs(dx) >= abs(dy) {
 		if dx > 0 {
-			preferred = append(preferred, DirectionRight)
+			buffer[index] = DirectionRight
+			index++
 		} else if dx < 0 {
-			preferred = append(preferred, DirectionLeft)
+			buffer[index] = DirectionLeft
+			index++
 		}
 		if dy > 0 {
-			preferred = append(preferred, DirectionDown)
+			buffer[index] = DirectionDown
+			index++
 		} else if dy < 0 {
-			preferred = append(preferred, DirectionUp)
+			buffer[index] = DirectionUp
+			index++
 		}
 	} else {
 		if dy > 0 {
-			preferred = append(preferred, DirectionDown)
+			buffer[index] = DirectionDown
+			index++
 		} else if dy < 0 {
-			preferred = append(preferred, DirectionUp)
+			buffer[index] = DirectionUp
+			index++
 		}
 		if dx > 0 {
-			preferred = append(preferred, DirectionRight)
+			buffer[index] = DirectionRight
+			index++
 		} else if dx < 0 {
-			preferred = append(preferred, DirectionLeft)
+			buffer[index] = DirectionLeft
+			index++
 		}
 	}
 	for _, direction := range directionOrder {
-		if !containsDirection(preferred, direction) {
-			preferred = append(preferred, direction)
+		if !directionInBuffer(buffer, index, direction) {
+			buffer[index] = direction
+			index++
 		}
 	}
-	return preferred
+	return index
+}
+
+// directionInBuffer 报告 direction 是否已在前 index 个 buffer 元素中。
+func directionInBuffer(buffer *[4]Direction, index int, target Direction) bool {
+	for i := 0; i < index; i++ {
+		if buffer[i] == target {
+			return true
+		}
+	}
+	return false
 }
 
 func containsDirection(directions []Direction, target Direction) bool {
