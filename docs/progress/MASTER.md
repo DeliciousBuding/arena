@@ -1,6 +1,6 @@
 # Arena 当前执行状态
 
-> 最后更新：2026-08-05。代码、测试、run manifest、JSONL 与 Runtime-Golden 优先于聊天记录。
+> 最后更新：2026-08-06。代码、测试、run manifest、JSONL 与 Runtime-Golden 优先于聊天记录。
 
 ## 当前阶段
 
@@ -67,14 +67,45 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 - `test/economy-loop.test.ts`（12 测试）：经济闭环长跑（决策→模拟结算 200 ticks，断言 cargo 周期清零/SPAWN 消耗闭环/守家锚点/资源满让位/敌格绕行/militaryRatio 产兵门禁）。
 - `test/nav-pathfinding.test.ts`（10 测试）：生产场景复刻（三面围堵绕行/四面围死 null）、直线墙绕行可达性、确定性、性能上限、自适应半径远距离（48 格）可达与绕行。
 
+## 决策指挥状态机（2026-08-06 综合设计，五层闭环）
+
+生产 t1 事故链完整归因：policy(LLM) 输出远点 focusRegion → go_focus 直线远征（无距离上限）→ 0 采集 → 资源冻结 → 无法补员/产兵 → 0 军事 → 打不了敌 CORE。修复不是单点，而是**决策指挥链五层**，每层只改 `focusRegion` 一个字段（最小干预，让执行层既有回仓巡逻逻辑自行恢复）：
+
+```text
+policy(LLM 低频 32 tick)
+  └─ discipline(上游纪律) PolicyDiscipline──连续 2 次超距焦点(距 Core>32) → 禁言 128 tick
+       （focusRegion 强制 null，其余字段保留；合法焦点清零计数；无 Core 防御分支不误伤）
+       └─ recovery(下游自愈) StallRecovery──idle → recovering(覆盖 focus=null) →
+            escalating(all-in 军事 militaryRatio=1 + attackPriority=core 拆敌 CORE)
+            经济恢复(delta>0 或 harvest/deposit>0)提前退出记成功；失败升级；同 kind 冷却 64 tick
+            └─ 结果反馈（lastRecoveryOutcome 注入下一次 policy 决策）：
+                 failed → 不要再用远点 focus，转军事压制/重置 workerTarget
+                 expired → 恢复经济为第一优先
+                 recovered → 僵局已解除
+            └─ 执行层──SafetyPlanner 防呆 maxFocusDistance=32（Core 为圆心统一过滤超距焦点）
+                 + clear-path 清障（defensive 下 Vanguard 清回仓路径敌人/敌占资源格）
+            └─ 模拟级验证：episode.policyProvider（每 tick 策略决策器模拟 LLM 低频决策/
+                 坏焦点模式）——discipline/recovery 生产机制在模拟器可复现（无防呆执行层下
+                 worker 留守 vs 被支走的位置断言）
+            └─ KPI 统计：stall_warning / stall_recovery 迁移 / 自愈结局（recovered/failed/
+                 expired 自愈成功率）/ policy_discipline 纪律事件
+```
+
+组件与证据：
+- `src/runtime/stall-detector.ts`（5 模式：cargo_blocked/no_production/patrol_only/focus_exile/capacity_wait_loop；16 tick rising-edge；256 tick 开局宽限）；
+- `src/runtime/stall-recovery.ts`（outcome 三态 recovered/failed/expired；failureRounds 跨会话累计驱动升级）；
+- `src/runtime/policy-discipline.ts`（禁言事件落盘 policy.jsonl）；
+- `test/command-chain-sim.test.ts`（3 测试）：LLM 每 8 tick 输出北向远焦点——无保护 worker 被支走北上（y≥10）vs discipline/full 链留守巡逻圈（y≤10）；
+- `scripts/param-scan.mts`（neat-freak 参数网格扫描）：9 组合 × 2 seeds × 双场景，输出排序 + 可注册配置候选。**扫描结论：clearPath=true 两场景稳定 +1 资源（防呆/清障夹具），无副作用——注册为 clear-path-v1 候选变体，不改生产默认（保基线确定性）**；maxFocusDistance 各档在聚焦夹具无区分（防呆价值由 command-chain 模拟级测试验证）。
+
 **剩余已知卡点**：w1 满载 Worker 在 32 格外被敌方 Worker 群长期围堵（战场阻塞，非 planner 死锁——四面围死时 WAIT 正确；等敌群散开或 Vanguard 清场）。A/B 对照 t2（aggressive）经济更健康佐证防守策略需配合前压。
 - **经济死锁修复 + A/B 实验（v0.2.2，PR #25，2026-08-05）**：生产数据显示 deterministic SPAWN 锁死 emergency floor=2（t1 停 2 worker、策略 workerTarget=16 不生效）→ workerTarget 接线补员（reserve 保护 + emergency 保命优先）+ prompt 注入策略历史基线（防 16→3 跳变）+ config.policyOverride 实验框架。**A/B 第一轮已启动**：t1 = LLM 自主对照，t2 = 固定 aggressive/workerTarget=12/attackPriority=core 实验组（policy.jsonl policy_override 记录为证）。
 - **部署链路/状态机/世界状态设计稿（2026-08-04）**：`docs/design/deploy-fast-upgrade.md`（版本 pin 单源化 /opt/arena/version.env + upgrade.sh 一键升级 + 自动回滚——pin 丢失已两次实测）；`docs/design/game-state-machine.md`（Core 复活/自毁/upkeep 状态机 + 规则升级语义 + 决策层 respawnOverride）；`docs/design/world-state.md`（本地记忆 vs 服务器权威 + 资源记忆过期 + tick 回退世界重置检测）。
-- **工具链升级（2026-08-05）**：TypeScript 5.5 → 7.0.2（Go 原生编译器，`npm run check` 提速约 10x）；两包测试链全面切换 Node 24 原生 `node --test --test-force-exit`（hero-ts 53 + arena-agent 519 tests 全绿，0 fail），`tsx` 仅保留为 CLI 入口；消除 3 处 parameter properties 与 1 处 type-only import，tsconfig 开启 `verbatimModuleSyntax` 固化 erasable-only 规范；`npm run check` / `npm test` / `schema:check` / `replay:ts` / gen-status / docs_health 全绿。
+- **工具链升级（2026-08-05）**：TypeScript 5.5 → 7.0.2（Go 原生编译器，`npm run check` 提速约 10x）；两包测试链全面切换 Node 24 原生 `node --test --test-force-exit`（hero-ts 53 + arena-agent 583 tests 全绿，0 fail），`tsx` 仅保留为 CLI 入口；消除 3 处 parameter properties 与 1 处 type-only import，tsconfig 开启 `verbatimModuleSyntax` 固化 erasable-only 规范；`npm run check` / `npm test` / `schema:check` / `replay:ts` / gen-status / docs_health 全绿。
 
 ## 自动化证据
 
-- SDK、arena-agent、schema、Python 模块计数：`docs/generated/status.md`（唯一生成源，勿手改；arena-agent 519 含锁 PID 复用回归与 Runtime-Golden 覆盖工具用例）；
+- SDK、arena-agent、schema、Python 模块计数：`docs/generated/status.md`（唯一生成源，勿手改；arena-agent 583 含锁 PID 复用回归与 Runtime-Golden 覆盖工具用例）；
 - Supervisor Windows：19/19；Linux Node 24 定向：86/86（专项跑测记录，非 status.md 覆盖项）；
 - TS replay：100 records；
 - simulator economy 10,000 Tick 与 movement 随机 10,000 cases invariant 通过。
