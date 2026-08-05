@@ -5,7 +5,14 @@
 
 # 运行时产物（遥测/manifest 含脱敏数据，仍不进 git）。
 # 根锚定（/runtime/）防止误匹配 internal/runtime/ 源码包。
+# 例外：模拟器平台化场景/策略资产（P1 固化，入库版本管理）。
 /runtime/
+!/runtime/scenes/
+/runtime/scenes/*
+!/runtime/scenes/*.json
+!/runtime/policies/
+/runtime/policies/*
+!/runtime/policies/*.json
 /runs/
 /logs/
 /alerts/
