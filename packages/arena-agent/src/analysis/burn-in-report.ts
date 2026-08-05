@@ -2,6 +2,7 @@ import type {
   DecisionTraceRecord,
   FailedEventTrace,
   OutcomeTraceRecord,
+  PolicyTraceRecord,
   RuntimeTraceRecord,
 } from "../telemetry/decision-trace.ts";
 
@@ -59,6 +60,32 @@ export interface BurnInReport {
   readonly deadlineOutcomes: readonly string[];
   readonly gates: readonly BurnInGate[];
   readonly passed: boolean;
+}
+
+/** TS-001 KPI 扩展：经济/损耗/拥堵/策略层统计（telemetry 有则实算，缺则进 gaps）。 */
+export interface BurnInKpi {
+  readonly grossDepositTotal: number;
+  readonly spawnTotal: number;
+  readonly healTotal: number;
+  readonly unitLossTotal: number;
+  readonly meanWorkerCargoTotal: number;
+  readonly maxWorkerCargoTotal: number;
+  readonly capacityWaitCount: number;
+  readonly stallWarningCount: number;
+  readonly ticksTo20: number | null;
+  readonly ticksTo30: number | null;
+  readonly ticksTo50: number | null;
+  readonly policyUpdateCount: number;
+  readonly policyErrorCount: number;
+  readonly policyInitErrorCount: number;
+  readonly policyOverrideCount: number;
+  readonly policyLatencyMsP95: number | null;
+  /** 无法从现有 telemetry 精确计算的指标（不猜数）。 */
+  readonly telemetryGaps: readonly string[];
+}
+
+export interface BurnInReportWithKpi extends BurnInReport {
+  readonly kpi: BurnInKpi;
 }
 
 export function buildBurnInReport(
@@ -194,6 +221,78 @@ function countFailureReasons(events: readonly FailedEventTrace[]): Readonly<Reco
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return Object.freeze(counts);
+}
+
+/** TS-001 KPI 扩展：从四流遥测计算业务 KPI。telemetry 缺字段的指标明确标记
+ *  telemetry_gap（不猜数）；policy 延迟当前无落盘 → policyLatencyMsP95=null + gap。 */
+export function buildBurnInKpi(
+  runtime: readonly RuntimeTraceRecord[],
+  decisions: readonly DecisionTraceRecord[],
+  outcomes: readonly OutcomeTraceRecord[],
+  policies: readonly PolicyTraceRecord[] = [],
+): BurnInKpi {
+  const cargoTotals = outcomes
+    .map((record) => record.workerCargoTotal)
+    .filter((value): value is number => value !== undefined);
+  const capacityWaitCount = sum(
+    decisions.map((record) =>
+      sum(
+        Object.entries(record.intentCounts ?? {})
+          .filter(([intent]) => intent.startsWith("capacity_wait:"))
+          .map(([, count]) => count),
+      ),
+    ),
+  );
+  const stallWarningCount = runtime.filter((record) => record.telemetryType === "stall_warning").length;
+  const ticksTo = (threshold: number): number | null => {
+    const hit = outcomes.find((record) => record.coreResourcesAfter >= threshold);
+    return hit === undefined ? null : hit.tick;
+  };
+  const policyUpdates = policies.filter((record) => record.type === "policy_update");
+  const telemetryGaps: string[] = [];
+  if (policies.length > 0 && !policies.some((record) => record.at !== undefined)) {
+    telemetryGaps.push("policy_latency: policy.jsonl has no per-call latency field");
+  }
+  if (outcomes.every((record) => record.grossDeposit === undefined)) {
+    telemetryGaps.push("upkeep: no upkeep ledger in outcome telemetry");
+  }
+  telemetryGaps.push("travel_waste: no route-distance ledger in outcome telemetry");
+  telemetryGaps.push("clear_roi: military cost vs worker-blocked loss not computable from current telemetry");
+
+  return {
+    grossDepositTotal: sum(outcomes.map((record) => record.grossDeposit ?? 0)),
+    spawnTotal: sum(outcomes.map((record) => record.spawnCount ?? 0)),
+    healTotal: sum(outcomes.map((record) => record.healCount ?? 0)),
+    unitLossTotal: sum(outcomes.map((record) => record.unitLossCount ?? 0)),
+    meanWorkerCargoTotal: round(mean(cargoTotals)),
+    maxWorkerCargoTotal: max(cargoTotals),
+    capacityWaitCount,
+    stallWarningCount,
+    ticksTo20: ticksTo(20),
+    ticksTo30: ticksTo(30),
+    ticksTo50: ticksTo(50),
+    policyUpdateCount: policyUpdates.length,
+    policyErrorCount: policies.filter((record) => record.type === "policy_error").length,
+    policyInitErrorCount: policies.filter((record) => record.type === "policy_init_error").length,
+    policyOverrideCount: policies.filter((record) => record.type === "policy_override").length,
+    policyLatencyMsP95: null,
+    telemetryGaps: Object.freeze([...new Set(telemetryGaps)].sort()),
+  };
+}
+
+/** KPI + 门禁报告的组装入口（TS-001：一次计算、两处消费）。 */
+export function buildBurnInReportWithKpi(
+  processRunId: string,
+  runtime: readonly RuntimeTraceRecord[],
+  decisions: readonly DecisionTraceRecord[],
+  outcomes: readonly OutcomeTraceRecord[],
+  policies: readonly PolicyTraceRecord[] = [],
+  thresholds: BurnInThresholds = DEFAULT_BURN_IN_THRESHOLDS,
+): BurnInReportWithKpi {
+  return {
+    ...buildBurnInReport(processRunId, runtime, decisions, outcomes, thresholds),
+    kpi: buildBurnInKpi(runtime, decisions, outcomes, policies),
+  };
 }
 
 function gate(name: string, pass: boolean, actual: number | string, expected: string): BurnInGate {

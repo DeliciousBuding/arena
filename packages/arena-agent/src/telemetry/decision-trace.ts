@@ -42,6 +42,10 @@ export interface RuntimeTraceRecord {
   readonly notSubmittedReason?: "disabled" | "startup_sync" | "outcome_drain";
   /** submit 被拒时的拒绝码（LeaseRejectionCode，如 deadline_exceeded）。 */
   readonly leaseRejectionCode?: string;
+  /** 经济停滞告警（stall detector 直接 append 的旁路记录；TS-001 KPI 统计用）。 */
+  readonly telemetryType?: "stall_warning";
+  readonly stallKind?: string;
+  readonly stallStreak?: number;
 }
 
 /** DecisionTrace：为什么选这个计划（来源/仲裁计数/修复/最终计划哈希）。 */
@@ -104,6 +108,17 @@ export interface FailedEventTrace {
 
 /** 三种遥测记录的统一类型（JsonlWriter 的写入面）。 */
 export type TraceRecord = RuntimeTraceRecord | DecisionTraceRecord | OutcomeTraceRecord;
+
+/** MacroPolicy 遥测（policy.jsonl；tenant-runtime append，TS-001 KPI 统计用）。
+ *  policy_update.policy 是 serializeMacroPolicy 的 JSON 文本。 */
+export interface PolicyTraceRecord {
+  readonly at?: string;
+  readonly tenantId?: string;
+  readonly type: "policy_update" | "policy_error" | "policy_override" | "policy_init_error";
+  readonly tick?: number;
+  readonly policy?: string;
+  readonly message?: string;
+}
 
 /** 工厂默认值：调用方（进程/租户/tick 上下文）必须显式覆盖。 */
 const DEFAULT_PROCESS_RUN_ID = "unknown";
