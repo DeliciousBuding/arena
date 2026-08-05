@@ -125,6 +125,22 @@ func main() {
 	fmt.Print("actions:", formatCounts(actionTotal))
 	fmt.Print("intents:", formatCounts(intentTotal))
 
+	// 战斗统计（意图级）：shoot/sweep/kite/engage/disengage 分布。
+	combatIntents := []string{"shoot", "sweep", "kite", "engage", "disengage"}
+	combatSummary := ""
+	for _, intent := range combatIntents {
+		if count := intentTotal[intent]; count > 0 {
+			if combatSummary != "" {
+				combatSummary += ", "
+			}
+			combatSummary += intent + "=" + fmt.Sprint(count)
+		}
+	}
+	if combatSummary == "" {
+		combatSummary = "none"
+	}
+	fmt.Printf("combat: %s\n", combatSummary)
+
 	// 移动量：单位位置指纹逐 tick 变化次数（验证真实移动/停滞）。
 	if len(decisions) > 1 && len(decisions[0].UnitPositions) > 0 {
 		moves := 0
