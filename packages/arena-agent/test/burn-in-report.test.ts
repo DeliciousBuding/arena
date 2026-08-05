@@ -178,6 +178,9 @@ test("TS-001: buildBurnInKpi 从四流遥测计算业务 KPI", () => {
     runtimeRecord(1, "accepted"),
     runtimeRecord(2, "accepted"),
     { ...runtimeRecord(3, "accepted"), telemetryType: "stall_warning", stallKind: "cargo_blocked", stallStreak: 16 },
+    { ...runtimeRecord(4, "accepted"), telemetryType: "stall_recovery", recoveryState: "recovering", stallKind: "focus_exile" },
+    { ...runtimeRecord(5, "accepted"), telemetryType: "stall_recovery", recoveryState: "escalating", stallKind: "focus_exile", escalated: true },
+    { ...runtimeRecord(6, "accepted"), telemetryType: "stall_recovery", recoveryState: "idle", stallKind: "focus_exile" },
   ] as RuntimeTraceRecord[];
   const decisions = [
     { ...decisionRecord(1), intentCounts: { patrol: 4, "capacity_wait:DEPOSIT": 2 } },
@@ -194,6 +197,8 @@ test("TS-001: buildBurnInKpi 从四流遥测计算业务 KPI", () => {
     { type: "policy_update", tick: 42, policy: "{}" },
     { type: "policy_error", tick: 20, message: "x" },
     { type: "policy_override", policy: "{}" },
+    { type: "policy_discipline", tick: 50, kind: "invalid_focus", count: 1, focusRegion: [1500, 1500] },
+    { type: "policy_discipline", tick: 82, kind: "silence_started", count: 2, focusRegion: [1500, 1500] },
   ];
 
   const kpi = buildBurnInKpi(runtime, decisions, outcomes, policies);
@@ -204,6 +209,12 @@ test("TS-001: buildBurnInKpi 从四流遥测计算业务 KPI", () => {
   assert.equal(kpi.unitLossTotal, 1);
   assert.equal(kpi.capacityWaitCount, 3);
   assert.equal(kpi.stallWarningCount, 1);
+  // 死循环自愈状态机 + 策略纪律事件统计（TS-001 扩展）
+  assert.equal(kpi.recoveryStartedCount, 1);
+  assert.equal(kpi.recoveryEscalatedCount, 1);
+  assert.equal(kpi.recoveryEndedCount, 1);
+  assert.equal(kpi.disciplineInvalidFocusCount, 1);
+  assert.equal(kpi.disciplineSilenceCount, 1);
   assert.equal(kpi.ticksTo20, 20);
   assert.equal(kpi.ticksTo30, 30);
   assert.equal(kpi.ticksTo50, 30);

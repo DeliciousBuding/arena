@@ -42,10 +42,14 @@ export interface RuntimeTraceRecord {
   readonly notSubmittedReason?: "disabled" | "startup_sync" | "outcome_drain";
   /** submit 被拒时的拒绝码（LeaseRejectionCode，如 deadline_exceeded）。 */
   readonly leaseRejectionCode?: string;
-  /** 经济停滞告警（stall detector 直接 append 的旁路记录；TS-001 KPI 统计用）。 */
-  readonly telemetryType?: "stall_warning";
+  /** 旁路健康事件（stall detector/recovery 直接 append 的宽松记录；KPI 统计用）。
+   *  stall_warning：检测器告警；stall_recovery：自愈状态机迁移。 */
+  readonly telemetryType?: "stall_warning" | "stall_recovery";
   readonly stallKind?: string;
   readonly stallStreak?: number;
+  /** stall_recovery 迁移目标状态（recovering/escalating/idle）。 */
+  readonly recoveryState?: string;
+  readonly escalated?: boolean;
 }
 
 /** DecisionTrace：为什么选这个计划（来源/仲裁计数/修复/最终计划哈希）。 */
@@ -110,14 +114,20 @@ export interface FailedEventTrace {
 export type TraceRecord = RuntimeTraceRecord | DecisionTraceRecord | OutcomeTraceRecord;
 
 /** MacroPolicy 遥测（policy.jsonl；tenant-runtime append，TS-001 KPI 统计用）。
- *  policy_update.policy 是 serializeMacroPolicy 的 JSON 文本。 */
+ *  policy_update.policy 是 serializeMacroPolicy 的 JSON 文本。
+ *  policy_discipline：策略层纪律事件（invalid_focus/silence_started）。 */
 export interface PolicyTraceRecord {
   readonly at?: string;
   readonly tenantId?: string;
-  readonly type: "policy_update" | "policy_error" | "policy_override" | "policy_init_error";
+  readonly type: "policy_update" | "policy_error" | "policy_override" | "policy_init_error" | "policy_discipline";
   readonly tick?: number;
   readonly policy?: string;
   readonly message?: string;
+  /** policy_discipline：事件种类（invalid_focus/silence_started）。 */
+  readonly kind?: string;
+  /** policy_discipline：连续无效次数。 */
+  readonly count?: number;
+  readonly focusRegion?: readonly [number, number] | null;
 }
 
 /** 工厂默认值：调用方（进程/租户/tick 上下文）必须显式覆盖。 */

@@ -72,6 +72,13 @@ export interface BurnInKpi {
   readonly maxWorkerCargoTotal: number;
   readonly capacityWaitCount: number;
   readonly stallWarningCount: number;
+  /** 死循环自愈状态机统计（stall_recovery 迁移计数：recovering 触发 / 升级 / 结束）。 */
+  readonly recoveryStartedCount: number;
+  readonly recoveryEscalatedCount: number;
+  readonly recoveryEndedCount: number;
+  /** 策略层纪律事件计数（policy_discipline：坏焦点 / 禁言）。 */
+  readonly disciplineInvalidFocusCount: number;
+  readonly disciplineSilenceCount: number;
   readonly ticksTo20: number | null;
   readonly ticksTo30: number | null;
   readonly ticksTo50: number | null;
@@ -244,6 +251,12 @@ export function buildBurnInKpi(
     ),
   );
   const stallWarningCount = runtime.filter((record) => record.telemetryType === "stall_warning").length;
+  const recoveryTransitions = runtime.filter((record) => record.telemetryType === "stall_recovery");
+  const recoveryStartedCount = recoveryTransitions.filter((record) => record.recoveryState === "recovering").length;
+  const recoveryEscalatedCount = recoveryTransitions.filter((record) => record.recoveryState === "escalating").length;
+  const recoveryEndedCount = recoveryTransitions.filter((record) => record.recoveryState === "idle").length;
+  const disciplineInvalidFocusCount = policies.filter((record) => record.type === "policy_discipline" && record.kind === "invalid_focus").length;
+  const disciplineSilenceCount = policies.filter((record) => record.type === "policy_discipline" && record.kind === "silence_started").length;
   const ticksTo = (threshold: number): number | null => {
     const hit = outcomes.find((record) => record.coreResourcesAfter >= threshold);
     return hit === undefined ? null : hit.tick;
@@ -268,6 +281,11 @@ export function buildBurnInKpi(
     maxWorkerCargoTotal: max(cargoTotals),
     capacityWaitCount,
     stallWarningCount,
+    recoveryStartedCount,
+    recoveryEscalatedCount,
+    recoveryEndedCount,
+    disciplineInvalidFocusCount,
+    disciplineSilenceCount,
     ticksTo20: ticksTo(20),
     ticksTo30: ticksTo(30),
     ticksTo50: ticksTo(50),
