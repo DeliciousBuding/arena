@@ -34,6 +34,8 @@ import { buildDecisionPrompt } from "../infrastructure/pi/prompt-builder.ts";
 import { buildMacroPolicyPrompt, readLastAssistantText } from "../infrastructure/pi/policy-prompt.ts";
 import { MacroPolicyOrchestrator } from "../runtime/macro-policy-orchestrator.ts";
 import { serializeMacroPolicy } from "../runtime/macro-policy.ts";
+import { StallDetector, type StallEvent } from "../runtime/stall-detector.ts";
+import { StallRecovery } from "../runtime/stall-recovery.ts";
 import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
 import { manhattan } from "../domain/nav.ts";
@@ -337,6 +339,17 @@ export async function runTenant(
     let policyOrchestrator: MacroPolicyOrchestrator | null = null;
     // 经济趋势缓冲（最近 32 ticks 的 coreResourceDelta；策略 prompt 输入）
     const recentResourceDeltas: number[] = [];
+    // 死循环检测与自动跳出（2026-08-05 生产事故后新增）：StallDetector 多模式
+    // 发现（含"全巡逻/远征/0 产出"等盲区模式），StallRecovery 在发现后覆盖
+    // policy.focusRegion=null 让执行层回仓自愈；恢复验证 + 连续失败升级 all-in
+    // 军事拆敌 CORE。recentStallEvents 供 policy 层感知（低频策略 prompt 摘要）。
+    const stallDetector = new StallDetector();
+    const stallRecovery = new StallRecovery();
+    const recentStallEvents: string[] = [];
+    const appendStallEvent = (event: StallEvent): void => {
+      recentStallEvents.push(`kind=${event.kind}@tick=${event.tick}(streak=${event.streak})`);
+      if (recentStallEvents.length > 4) recentStallEvents.shift();
+    };
     if (options.runtime === undefined) {
       try {
         const policyFactory = new PiSessionFactory({
@@ -366,6 +379,8 @@ export async function runTenant(
           intervalTicks: config.policyIntervalTicks ?? 32,
           promptBuilder: (state) => buildMacroPolicyPrompt(state, {
             recentResourceDeltas,
+            // 最近 stall 告警摘要：策略层感知死循环并主动调整（见 prompt 应对指引）
+            recentStallEvents,
             // 策略历史基线（低频演进，防 workerTarget 16→3 跳变）；
             // promptBuilder 在 orchestrator 创建前不触发（首次决策 previous=null）
             previousPolicy: policyOrchestrator === null ? null : serializeMacroPolicy(policyOrchestrator.current),
@@ -420,9 +435,11 @@ export async function runTenant(
       configHash: manifest.configHash,
       processRunId,
       decisionMode,
+      // recovery 覆盖是执行层临时指令（stall 自愈），在 policy 层产物之上包裹：
+      // recovering/escalating 期间下发的 focusRegion=null / all-in 军事。
       policyProvider: policyOrchestrator === null
         ? undefined
-        : (state) => policyOrchestrator!.onTick(state),
+        : (state) => stallRecovery.policyFor(policyOrchestrator!.onTick(state)),
       onRunSettled: (info) => {
         // runtime trace 的 settle 补充事件（不阻塞决策路径）
         void info;
@@ -440,17 +457,25 @@ export async function runTenant(
     } = { prev: null };
     let processedTickCount = 0;
     let liveSubmitCount = 0;
-    // 经济停滞连续计数（cargo_blocked：delta=0 且满载 Worker 滞留；达阈值写 stall_warning）
-    let stallStreak = 0;
-    let lastCargoWorkerFingerprint: string | null = null;
 
     const onTick = (outcome: TickOutcome): void => {
       const decision = outcome.decision;
+      const intentCounts = decision === undefined
+        ? {}
+        : Object.values(outcome.plan.intents).reduce<Record<string, number>>((counts, intent) => {
+            counts[intent] = (counts[intent] ?? 0) + 1;
+            return counts;
+          }, {});
+      // 最终计划动作分布（decisionRecord 与 stall 检测共用；decision undefined 时全 0）
+      const actionCounts = decision === undefined
+        ? { moveCount: 0, harvestCount: 0, depositCount: 0, waitCount: 0 }
+        : {
+            moveCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "MOVE").length,
+            harvestCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "HARVEST").length,
+            depositCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "DEPOSIT").length,
+            waitCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "WAIT").length,
+          };
       if (decision !== undefined) {
-        const intentCounts = Object.values(outcome.plan.intents).reduce<Record<string, number>>((counts, intent) => {
-          counts[intent] = (counts[intent] ?? 0) + 1;
-          return counts;
-        }, {});
         // runtime trace + decision trace（三流以 runId 关联；直接构造 record——
         // 工厂默认值（unknown）是危险默认，生产路径显式传全字段，validate 由 JsonlWriter 执行）
         const runtimeRecord: RuntimeTraceRecord = {
@@ -483,10 +508,10 @@ export async function runTenant(
           safetyReplacementCount: decision.safetyReplacementCount,
           invalidAgentActionCount: decision.invalidAgentActionCount,
           repairCount: decision.repairCount,
-          moveCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "MOVE").length,
-          harvestCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "HARVEST").length,
-          depositCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "DEPOSIT").length,
-          waitCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "WAIT").length,
+          moveCount: actionCounts.moveCount,
+          harvestCount: actionCounts.harvestCount,
+          depositCount: actionCounts.depositCount,
+          waitCount: actionCounts.waitCount,
           intentCounts,
           planHash: planHashOf(outcome.plan),
         };
@@ -543,36 +568,61 @@ export async function runTenant(
           events: outcome.state.events.map((e) => e.eventType),
         };
         outcomeWriter.write(outcomeRecord);
-        // 停滞检测（2026-08-05 生产死锁回归）：满载 Worker 长期无法回仓 DEPOSIT
-        // 时，coreResourceDelta 持续为 0 且 workerCargoTotal 持续 >0（t1 实测
-        // capacity_wait:DEPOSIT 死锁 60+ ticks 才被人工发现）。连续阈值达到即写
-        // runtime.jsonl 的 stall_warning 记录，供监控查询/人工介入，不等自然暴露。
+        // 死循环检测与自动跳出（2026-08-05 生产事故后）：StallDetector 多模式
+        // 检测（cargo_blocked/no_production/patrol_only/focus_exile/
+        // capacity_wait_loop），事件落盘 runtime.jsonl 供监控查询/人工介入；
+        // StallRecovery 状态机推进（触发/恢复/升级）落盘 stall_recovery。
+        // 干预本身（focusRegion=null 覆盖）经 policyProvider 下发，见 coordinator。
         const cargoWorkerCells = outcome.state.workers
           .filter((worker) => worker.cargo > 0)
           .map((worker) => `${worker.position[0]},${worker.position[1]}`)
           .sort()
           .join("|");
-        const cargoWorkerMoved = cargoWorkerCells.length > 0 && cargoWorkerCells !== lastCargoWorkerFingerprint;
-        lastCargoWorkerFingerprint = cargoWorkerCells.length > 0 ? cargoWorkerCells : lastCargoWorkerFingerprint;
-        const cargoBlocked =
-          outcomeRecord.coreResourceDelta === 0 &&
-          (outcomeRecord.workerCargoTotal ?? 0) > 0 &&
-          !cargoWorkerMoved;
-        stallStreak = cargoBlocked ? stallStreak + 1 : 0;
-        if (stallStreak === STALL_WARNING_TICKS) {
-          // stall_warning 是运行时健康事件（非 turn 级 runtime trace），走宽松
-          // append 流：不参与 TraceRecord schema 校验，监控直接查 runtime.jsonl。
+        const stallEvents = stallDetector.onObservation({
+          tick: outcome.tick,
+          coreResourceDelta: outcomeRecord.coreResourceDelta,
+          workerCount: outcomeRecord.workerCount ?? 0,
+          workerCargoTotal: outcomeRecord.workerCargoTotal ?? 0,
+          workerMeanDistanceFromCore: outcomeRecord.workerMeanDistanceFromCore,
+          harvestCount: actionCounts.harvestCount,
+          depositCount: actionCounts.depositCount,
+          moveCount: actionCounts.moveCount,
+          waitCount: actionCounts.waitCount,
+          intentCounts,
+          cargoWorkerFingerprint: cargoWorkerCells.length > 0 ? cargoWorkerCells : null,
+        });
+        for (const event of stallEvents) {
+          appendStallEvent(event);
           appendJsonlLine(
             join(dirs.telemetryDir, "runtime.jsonl"),
             JSON.stringify(sanitizeValue({
               processRunId,
               tenantId: config.tenantId,
-              tick: outcome.tick,
+              tick: event.tick,
               telemetryType: "stall_warning",
-              stallKind: "cargo_blocked",
-              stallStreak,
-              workerCargoTotal: outcomeRecord.workerCargoTotal,
-              workersWithCargo: outcomeRecord.workersWithCargo,
+              stallKind: event.kind,
+              stallStreak: event.streak,
+              detail: event.detail,
+            })),
+          );
+        }
+        const recoveryTransition = stallRecovery.observe(stallEvents, {
+          tick: outcome.tick,
+          coreResourceDelta: outcomeRecord.coreResourceDelta,
+          harvestCount: actionCounts.harvestCount,
+          depositCount: actionCounts.depositCount,
+        });
+        if (recoveryTransition !== null) {
+          appendJsonlLine(
+            join(dirs.telemetryDir, "runtime.jsonl"),
+            JSON.stringify(sanitizeValue({
+              processRunId,
+              tenantId: config.tenantId,
+              tick: recoveryTransition.tick,
+              telemetryType: "stall_recovery",
+              recoveryState: recoveryTransition.state,
+              stallKind: recoveryTransition.kind,
+              escalated: recoveryTransition.escalated ?? false,
             })),
           );
         }

@@ -90,10 +90,10 @@ test("MacroPolicy: normalize 剔除未知字段并回退非法值", () => {
 });
 
 test("MacroPolicy: focusRegion 负坐标拒绝（生产实测 [-1500,1500] 越界远征教训）", () => {
-  const negative = { posture: "balanced" as const, workerTarget: 8, militaryRatio: 0.3, focusRegion: [-1500, 1500], attackPriority: null as const };
+  const negative: Record<string, unknown> = { posture: "balanced", workerTarget: 8, militaryRatio: 0.3, focusRegion: [-1500, 1500], attackPriority: null };
   assert.equal(isValidMacroPolicy(negative), false);
-  assert.equal(normalizeMacroPolicy(negative as unknown as Record<string, unknown>).focusRegion, null);
-  const origin = { posture: "balanced" as const, workerTarget: 8, militaryRatio: 0.3, focusRegion: [0, 0], attackPriority: null as const };
+  assert.equal(normalizeMacroPolicy(negative).focusRegion, null);
+  const origin: Record<string, unknown> = { posture: "balanced", workerTarget: 8, militaryRatio: 0.3, focusRegion: [0, 0], attackPriority: null };
   assert.equal(isValidMacroPolicy(origin), true);
 });
 
