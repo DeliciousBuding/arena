@@ -55,6 +55,7 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
 10. **v0.2.12 模拟器 policy 注入 + 远距离导航自适应**：
     - `EpisodeTenant.policy`（可选 MacroPolicy）+ `PlanProvider.decide` 扩展 `policy?`——离线策略扫描闭环（root cause：episode.ts 原 decide 不传 policy → workerTarget=floor=2 → 模拟器无补员 → 经济恒死；注入后 SPAWN/采集/回仓正常，res 10→2-4、pop 2→4）。
     - `nav.adaptivePathOptions`：distance > 24 时放大 BFS 搜索半径（radius=min(64, distance+2)、nodeBudget=radius²×4）——生产实测满载 Worker 在 40+ 格外回仓时默认搜索窗直接不可达，退化为 fail-safe 卡死（stall_warning cargo_blocked 累计 26 次）。回仓/GO_RESOURCE 分支接线（确定性零回归：distance ≤ 24 返回默认对象）。
+11. **v0.2.13 stall 检测误报修复**：远距离满载回仓途中（位置逐 tick 变化）也会 `delta=0 + cargo>0`，原判定 16 ticks 即误报（v0.2.12 部署后立即复现）。修复：满载 Worker 位置指纹（cargo>0 单位位置集合）不变才计 blocked；移动中 = 正常回仓不告警。真死锁（围死/占格）位置不变仍正确告警。
 
 **检测设施（同步落地）**：
 - `stall detector`（v0.2.4+）：连续 16 ticks `delta=0 且满载滞留` → runtime.jsonl `stall_warning`（生产累计触发 26 次，自动告警替代人工发现）。
