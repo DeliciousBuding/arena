@@ -89,6 +89,10 @@ export class PiSessionFactory {
     // provider+id 解析 models.json 合成模型（带 baseUrl/compat）；找不到回退调用方模型
     //（测试的 fake provider 走此回退）。诊断依据：真实 newapi 流在缺 baseUrl 时
     // 报 "Cannot read properties of undefined (reading 'includes')"。
+    // v0.2.15：解析结果必须保留调用方显式 compat 覆盖（supportsDeveloperRole 等）——
+    // models.json 的模型常缺 compat，Pi 0.83 会按 provider 推断 supportsDeveloperRole=true，
+    // thinkingLevel≠off 时把 system prompt 发成 developer role，DeepSeek/SenseNova
+    // 网关拒绝（400 messages[0].role，生产 19 次 policy_error）。显式 compat 永远优先。
     let model = this.options.model;
     try {
       const modelMeta = this.options.model as { provider?: string; id?: string };
@@ -97,7 +101,12 @@ export class PiSessionFactory {
           ? modelRuntime.getModel(modelMeta.provider, modelMeta.id)
           : undefined;
       if (resolved !== undefined) {
-        model = resolved;
+        model = {
+          ...resolved,
+          ...(this.options.model.compat !== undefined
+            ? { compat: { ...(resolved as { compat?: Record<string, unknown> }).compat, ...this.options.model.compat } }
+            : {}),
+        };
       }
     } catch {
       // 解析失败回退调用方模型（保持可运行）
