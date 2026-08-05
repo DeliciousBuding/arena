@@ -10,6 +10,7 @@
  * 用法：cd packages/arena-agent && npx tsx scripts/military-ratio-experiment.mts
  */
 
+import { writeFileSync } from "node:fs";
 import { runEpisode, type EpisodeConfig, type EpisodeTenant } from "../src/sim/harness/episode.ts";
 import type { MacroPolicy } from "../src/runtime/macro-policy.ts";
 
@@ -55,8 +56,9 @@ function duelScenario(seed: number) {
 const P1_POLICY: MacroPolicy = { posture: "balanced", workerTarget: 6, militaryRatio: 0.3, focusRegion: null, attackPriority: null };
 
 const RATIOS = [0, 0.3, 0.5, 0.8];
-const SEEDS = [1, 2, 3];
-const TICKS = 500;
+const SEEDS = [1, 2];
+const TICKS = 300;
+const RESULT_FILE = "experiment-result.txt";
 
 interface Result {
   readonly res1: number;
@@ -94,16 +96,19 @@ function runDuel(ratio2: number, seed: number): Result {
 const mean = (values: number[]): number => values.reduce((s, v) => s + v, 0) / values.length;
 
 async function main(): Promise<void> {
-  console.log("=== 军事比例实验（p1=balanced/0.3 固定；500 ticks × 3 seeds）===");
-  console.log("p2 milRatio | p2 res | p1 res | p2 pop | p1 pop | p2 core | p1 core");
+  const lines: string[] = ["=== 军事比例实验（p1=balanced/0.3 固定；300 ticks × 2 seeds）===", "p2 milRatio | p2 res | p1 res | p2 pop | p1 pop | p2 core | p1 core"];
   for (const ratio of RATIOS) {
     const results = await Promise.all(SEEDS.map((seed) => runDuel(ratio, seed)));
     const avg = (f: (r: Result) => number) => mean(results.map(f));
-    console.log(
-      `${String(ratio).padStart(11)} | ${String(avg((r) => r.res2).toFixed(1)).padStart(6)} | ${String(avg((r) => r.res1).toFixed(1)).padStart(6)} | ${String(avg((r) => r.pop2).toFixed(1)).padStart(6)} | ${String(avg((r) => r.pop1).toFixed(1)).padStart(6)} | ${String(avg((r) => r.coreHp2).toFixed(1)).padStart(7)} | ${String(avg((r) => r.coreHp1).toFixed(1)).padStart(7)}`,
-    );
+    const line =
+      `${String(ratio).padStart(11)} | ${String(avg((r) => r.res2).toFixed(1)).padStart(6)} | ${String(avg((r) => r.res1).toFixed(1)).padStart(6)} | ${String(avg((r) => r.pop2).toFixed(1)).padStart(6)} | ${String(avg((r) => r.pop1).toFixed(1)).padStart(6)} | ${String(avg((r) => r.coreHp2).toFixed(1)).padStart(7)} | ${String(avg((r) => r.coreHp1).toFixed(1)).padStart(7)}`;
+    lines.push(line);
+    // 逐行落盘（防缓冲丢失）
+    writeFileSync(RESULT_FILE, lines.join("\n") + "\n", "utf-8");
+    console.log(line);
   }
-  console.log("解读：res 高 = 经济健康；pop 高 = 军队强；core hp 低 = 被拆家。");
+  lines.push("解读：res 高 = 经济健康；pop 高 = 军队强；core hp 低 = 被拆家。");
+  writeFileSync(RESULT_FILE, lines.join("\n") + "\n", "utf-8");
 }
 
 void main().catch((error) => {

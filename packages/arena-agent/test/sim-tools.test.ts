@@ -388,7 +388,7 @@ test("近似 refill：开启后资源节点按 cadence 补回（长期经济不�
     refill: {},
   });
   // 近似 refill 开启后资源持续供给：100 ticks 最终资源应高于无 refill
-  const res = (result: { finalWorld: { players: Map<string, { resources: number }> } }): number =>
+  const res = (result: { finalWorld: { players: ReadonlyMap<string, { resources: number }> } }): number =>
     result.finalWorld.players.get("p1")!.resources;
   assert.ok(
     res(refilled) >= res(base),
