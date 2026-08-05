@@ -13,7 +13,7 @@ import { reduceTurn, type TurnLike } from "../../domain/state-reducer.ts";
 import { DeterministicPlanner } from "../../planning/deterministic-planner.ts";
 import type { PlanProvider } from "../../runtime/decision-types.ts";
 import type { MacroPolicy } from "../../runtime/macro-policy.ts";
-import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../../strategies/safety-planner.ts";
+import { DEFAULT_SAFETY_CONFIG, SafetyPlanner, type SafetyPlannerConfig } from "../../strategies/safety-planner.ts";
 import { loadRulesManifest, type RulesManifest } from "../contracts/rules-manifest.ts";
 import { createSeededRng } from "../deterministic/rng.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
@@ -35,6 +35,8 @@ export interface EpisodeTenant {
    *  支持 militaryRatio/workerTarget 网格的离线验证（v0.2.12）。缺省不传，
    *  与旧行为逐字节一致。 */
   readonly policy?: MacroPolicy;
+  /** SafetyPlanner 配置覆盖（实验用，如 vanguardRatio 配比；缺省 = DEFAULT_SAFETY_CONFIG）。 */
+  readonly plannerConfig?: Partial<SafetyPlannerConfig>;
 }
 
 export interface EpisodeTickPlayerMeasurement {
@@ -109,10 +111,11 @@ export interface EpisodeResult {
   };
 }
 
-function createPlanner(kind: PlannerKind): PlanProvider {
-  return kind === "deterministic"
-    ? new DeterministicPlanner()
-    : new SafetyPlanner(DEFAULT_SAFETY_CONFIG);
+function createPlanner(kind: PlannerKind, tenant: EpisodeTenant): PlanProvider {
+  if (kind === "deterministic") {
+    return new DeterministicPlanner(undefined, undefined, undefined, tenant.plannerConfig?.vanguardRatio);
+  }
+  return new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...tenant.plannerConfig });
 }
 
 function canonicalize(value: unknown): unknown {
@@ -183,7 +186,7 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
   const planners = new Map(
     tenants.map((tenant) => [
       tenant.id,
-      config.plannerFactory?.(tenant) ?? createPlanner(tenant.planner),
+      config.plannerFactory?.(tenant) ?? createPlanner(tenant.planner, tenant),
     ]),
   );
   const previousEvents = new Map<string, readonly ResolutionEvent[]>();
