@@ -1,8 +1,8 @@
 package strategy
 
 // F2 验收：FfiPlanner 单测（mock 路径）+ 集成冒烟（真实 cdylib）。
-// 集成测试需要 dll：环境变量 ARENA_SIM_FFI_DLL 指向
-// sim-rs/target/release/arena_sim_ffi.dll（缺失时跳过）。
+// 集成测试需要动态库：环境变量 ARENA_SIM_FFI_DLL 指向平台对应产物
+// （Windows: arena_sim_ffi.dll；Linux: libarena_sim_ffi.so；缺失时跳过）。
 
 import (
 	"encoding/json"
@@ -48,16 +48,16 @@ func testState() *domain.TickState {
 	}
 }
 
-// 集成冒烟：真实 dll 加载 + 决策 + 指令 + 释放（跨 C ABI 全链路）。
+// 集成冒烟：真实动态库加载 + 决策 + 指令 + 释放（跨 C ABI 全链路）。
 func TestFfiPlannerIntegration(t *testing.T) {
 	libPath := os.Getenv("ARENA_SIM_FFI_DLL")
 	if libPath == "" {
-		t.Skip("ARENA_SIM_FFI_DLL not set (point to sim-rs/target/release/arena_sim_ffi.dll)")
+		t.Skip("ARENA_SIM_FFI_DLL not set (point to the platform arena_sim_ffi library)")
 	}
 	planner := NewFfiPlanner(DefaultConfig(), libPath, testLogger())
 	defer planner.Close()
 	if planner.handle == nil {
-		t.Fatal("FFI planner failed to initialize (dll loaded but handle nil)")
+		t.Fatal("FFI planner failed to initialize (library loaded but handle nil)")
 	}
 	state := testState()
 	plan := planner.Decide(state)
@@ -124,12 +124,12 @@ func TestFfiPlannerMatchesGoPlanner(t *testing.T) {
 	}
 }
 
-// fail-safe：dll 不存在 → 自动回退 Go planner，Decide 正常产出。
+// fail-safe：动态库不存在 → 自动回退 Go planner，Decide 正常产出。
 func TestFfiPlannerFallbackOnMissingLib(t *testing.T) {
-	planner := NewFfiPlanner(DefaultConfig(), "definitely-missing-arena-sim-ffi.dll", testLogger())
+	planner := NewFfiPlanner(DefaultConfig(), "definitely-missing-arena-sim-ffi", testLogger())
 	defer planner.Close()
 	if planner.handle != nil {
-		t.Fatal("handle should be nil when dll missing")
+		t.Fatal("handle should be nil when library is missing")
 	}
 	plan := planner.Decide(testState())
 	if plan == nil {
@@ -155,8 +155,8 @@ func TestStateJSONShape(t *testing.T) {
 	}
 }
 
-// 平台实现必须满足 ffiLib 接口（编译期断言）。
-var _ ffiLib = (*ffiLibWindows)(nil)
+// 平台实现自己的文件内已经分别提供 ffiLib 编译期断言；公共测试不得引用
+// 仅在 Windows build tag 下存在的 ffiLibWindows 类型，否则 Linux CI 无法编译。
 
 func contains(haystack, needle string) bool {
 	if len(needle) == 0 {
