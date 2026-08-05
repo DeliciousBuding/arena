@@ -339,13 +339,14 @@ export class SafetyPlanner {
     }
 
     const nearby = enemies.filter((enemy) => manhattan(unit.position, enemy.position) <= 4);
-    // clear-path 清障（TS-009 候选）：满载 Worker 回仓路径上的敌人视为挡路者，
-    // Vanguard 优先主动清除（覆盖留守）。判据：敌人距任一满载 Worker ≤2 格，
-    // 且比该 Worker 更靠近 Core（在回仓方向）。生产 A/B 实测：被敌群挡回仓的
-    // 一方经济 2-4× 差于清场方——清障的经济价值由 A/B 候选衡量。
+    // clear-path 清障（TS-009 候选）：满载 Worker 回仓路径上的敌人，或站在
+    // 我方可见资源格上的敌人（封锁采集），视为挡路者，Vanguard 优先主动清除
+    // （覆盖留守）。判据 1：敌人距任一满载 Worker ≤2 格且比 Worker 更靠近 Core
+    // （回仓方向）；判据 2：敌人站在可见资源格上（采集封锁——生产实测：被压方
+    // 经济 2-4× 差于清场方）。
     if (this.config.clearPath === true && state.core !== null) {
       const corePosition = state.core.position;
-      const blockingEnemy = enemies.find((enemy) =>
+      const blockingOnRoute = enemies.find((enemy) =>
         state.workers.some((worker) => {
           if (worker.cargo <= 0) return false;
           if (manhattan(worker.position, enemy.position) > 2) return false;
@@ -354,6 +355,8 @@ export class SafetyPlanner {
           return enemyDistance < workerDistance;
         }),
       );
+      const blockingResource = enemies.find((enemy) => state.resourceCells.has(cellKey(enemy.position)));
+      const blockingEnemy = blockingOnRoute ?? blockingResource;
       if (blockingEnemy !== undefined) {
         const direction = stepToward(unit.position, blockingEnemy.position, movementObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_clear_path");

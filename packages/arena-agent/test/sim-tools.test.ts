@@ -22,6 +22,9 @@ const SCENARIO = JSON.parse(
 const FOCUS_EXILE_SCENARIO = JSON.parse(
   readFileSync(join(here, "fixtures", "sim", "scenario-focus-exile.json"), "utf8"),
 ) as unknown;
+const CLEAR_PATH_SCENARIO = JSON.parse(
+  readFileSync(join(here, "fixtures", "sim", "scenario-clear-path.json"), "utf8"),
+) as unknown;
 const RULES = join(here, "..", "src", "sim", "contracts", "rules-v0.11.json");
 /** 生产事故复现 policy：focusRegion 指向远点（> maxFocusDistance=32），
  *  v0.2.15 基线（无防呆）会把 worker 直线支走；v0.2.17 候选过滤后留守巡逻。 */
@@ -327,4 +330,40 @@ test("TS-008: runAB policy 注入——focus 远征场景可 A/B 且同 seed 配
   // unknown effects 是模拟器固有的诚实标注（refill 放置/server UUID 服务器秘密），
   // 场景本身无 unsupported 特性（结构正确性断言）。
   assert.ok(report.runs.every((run) => run.summary.unsupported.length === 0));
+});
+
+test("TS-009: clear-path 清障 ROI——敌占资源格被清后经济恢复（模拟 A/B）", () => {
+  // 场景：p2 敌人 vanguard 静止（idle）站在 p1 唯一资源格 [2,0] 上（采集封锁）。
+  // p1 vanguard [3,1]：基线（safety）留守不救 → worker 永久锁死；clear-path-v1
+  // 主动清障 → 敌人被杀 → 采集恢复。
+  const run = (p1VariantId: string, seed: number) => {
+    const result = runEpisode({
+      scenario: CLEAR_PATH_SCENARIO,
+      rulesPath: RULES,
+      seed,
+      ticks: 60,
+      tenants: [
+        { id: "p1", planner: "deterministic" },
+        { id: "p2", planner: "deterministic" },
+      ],
+      plannerFactory: (tenant) =>
+        tenant.id === "p1" ? resolvePlannerVariant(p1VariantId).create("p1") : resolvePlannerVariant("idle").create("p2"),
+    });
+    const player = result.finalWorld.players.get("p1")!;
+    return player.resources;
+  };
+  for (const seed of [1, 2]) {
+    const baselineFinal = run("safety", seed);
+    const clearPathFinal = run("clear-path-v1", seed);
+    // 基线：vanguard 留守 → 资源格被占 → worker 无法采集（4 = 初始资源不变）
+    assert.ok(
+      baselineFinal <= 4,
+      `基线应被封锁（final=${baselineFinal}）——vanguard 留守不救敌占资源格`,
+    );
+    // 候选：清障后采集恢复 → 资源增长
+    assert.ok(
+      clearPathFinal > baselineFinal,
+      `clear-path 应优于基线（clear=${clearPathFinal} vs base=${baselineFinal}）`,
+    );
+  }
 });
