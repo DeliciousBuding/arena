@@ -451,3 +451,9 @@ test("PolicyDiscipline: prompt 恢复结果反馈注入（lastRecoveryOutcome �
   const noOutcome = buildMacroPolicyPrompt(makeState(100), { lastRecoveryOutcome: null });
   assert.ok(!noOutcome.includes("last recovery outcome:"), "null 不注入");
 });
+
+test("MacroPolicy: prompt 军事比例约束注入（模拟器实证拐点指引）", () => {
+  const prompt = buildMacroPolicyPrompt(makeState(100));
+  assert.ok(prompt.includes("0.3-0.4 是军事性价比拐点"), "拐点指引注入");
+  assert.ok(prompt.includes("禁止输出 militaryRatio>0.5"), "高比例禁令注入");
+});
