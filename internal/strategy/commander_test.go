@@ -92,8 +92,8 @@ func TestStuckDetectionForcesNewTarget(t *testing.T) {
 	}
 }
 
-// TestStarvedPatrolFocusesOnBeacon：EXPLORE_STARVED 模式下 worker 朝
-// 指挥焦点（Beacon）方向推进（不再是 8 方位分散）。
+// TestStarvedPatrolFocusesOnBeacon：EXPLORE_STARVED 模式下 worker 走
+// 螺旋覆盖（目标在环上：距离 ≈ radius；到达后沿环推进）。
 func TestStarvedPatrolFocusesOnBeacon(t *testing.T) {
 	state := baseState()
 	state.ResourceCells = domain.NewSet[string]()
@@ -106,12 +106,30 @@ func TestStarvedPatrolFocusesOnBeacon(t *testing.T) {
 	plan := planner.Decide(state)
 	action := requireUnitAction(t, plan, "worker-1")
 	if action.Kind != domain.ActionMove || action.Direction == nil {
-		t.Fatalf("action = %+v, want MOVE toward beacon", action)
+		t.Fatalf("action = %+v, want MOVE (spiral sweep)", action)
 	}
-	// 焦点正东：第一步必须向东（RIGHT）。
-	if *action.Direction != domain.DirectionRight {
-		t.Errorf("direction = %v, want RIGHT (focus sweep toward beacon)", *action.Direction)
+	// 螺旋目标在环上：与 home 距离 ≈ radius（16 ± 3）。
+	first := planner.patrolTargets["worker-1"]
+	distance := abs(first[0]) + abs(first[1])
+	if distance < 13 || distance > 19 {
+		t.Errorf("first spiral target = %v (dist %d), want on ring ~16", first, distance)
 	}
+	// 到达目标后沿环推进（下一目标不同）。
+	state.Units[0].Position = first
+	state.Workers[0].Position = first
+	state.Tick = 2
+	planner.Decide(state)
+	second := planner.patrolTargets["worker-1"]
+	if second == first {
+		t.Errorf("spiral target did not advance after arrival (%v)", first)
+	}
+}
+
+func abs(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 // TestMigrationStartsOnMigrateCandidate：MIGRATE_CAND + 显式启用 →

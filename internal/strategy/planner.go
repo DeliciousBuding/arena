@@ -351,47 +351,51 @@ func (p *Planner) patrol(state *domain.TickState, unit *domain.UnitSnapshot) dom
 	return p.moveToward(state, unit, target)
 }
 
-// starvedPatrol 是资源枯竭模式的集中扫掠：所有 worker 朝指挥焦点
-// （Beacon 方位）方向直线推进，半径按环扩展（16→32→48→64），
-// 单位按 ID 哈希错开横向偏移形成扫掠线（覆盖走廊更宽）。
+// starvedPatrol 是资源枯竭模式的确定性螺旋覆盖：每 worker 沿自己
+// 方位角（focus 方向 + ID 哈希偏移）在环上等距行走（angle 步长按
+// ring 缩放保持覆盖密度），走完一圈 ring+1（半径 22→44→66→88）。
+// 相比直线扫掠：环形覆盖不漏环间区域（确定性覆盖，neat-freak
+// 优化：探索覆盖率最大化）。
 func (p *Planner) starvedPatrol(state *domain.TickState, unit *domain.UnitSnapshot, home domain.Position) domain.UnitAction {
 	target, hasTarget := p.patrolTargets[unit.ID]
 	if !hasTarget || unit.Position == target || p.isStuck(unit.ID) {
 		ring := p.patrolRings[unit.ID]
 		radius := p.config.ExploreRadius * (ring + 1)
-		if radius > 64 {
-			radius = p.config.ExploreRadius // 半径循环：避免无限外扩
+		if radius > 88 {
+			p.patrolRings[unit.ID] = 0
+			ring = 0
+			radius = p.config.ExploreRadius
 		}
-		target = p.focusTarget(home, p.directive.Focus, unit.ID, radius)
-		p.patrolRings[unit.ID]++
+		angleStep := 1 + radius/16 // 环越大步长越大：覆盖密度恒定
+		target = spiralPoint(home, p.directive.Focus, unit.ID, ring, p.patrolDirs[unit.ID], radius)
+		p.patrolDirs[unit.ID] += angleStep
+		if p.patrolDirs[unit.ID] >= 64 {
+			p.patrolDirs[unit.ID] = 0
+			p.patrolRings[unit.ID]++
+		}
 		p.stuck[unit.ID] = &stuckState{lastPos: unit.Position}
 	}
 	action := p.moveToward(state, unit, target)
 	if action.Kind == domain.ActionWait {
-		target = p.focusTarget(home, p.directive.Focus, unit.ID, p.config.ExploreRadius)
+		target = spiralPoint(home, p.directive.Focus, unit.ID, p.patrolRings[unit.ID], p.patrolDirs[unit.ID]+1, p.config.ExploreRadius)
 	}
 	p.patrolTargets[unit.ID] = target
 	return p.moveToward(state, unit, target)
 }
 
-// focusTarget 沿 focus 方位生成扫掠目标：方向 = focus-home 的八方位
-// delta，横向偏移按单位 ID 哈希错开（-2..2），形成扫掠线。
-func (p *Planner) focusTarget(home, focus domain.Position, unitID string, radius int) domain.Position {
-	octant := octantOf(focus[0]-home[0], focus[1]-home[1])
-	delta := exploreDeltas[octant]
-	// 横向偏移：与主方向垂直（旋转 90°）的错开。
-	lateral := 0
-	if radius > 0 {
-		for _, ch := range unitID {
-			lateral = (lateral*31 + int(ch)) % 5
-		}
-		lateral -= 2 // -2..2
+// spiralPoint 生成环上目标点：64 方位角分辨率，方位角 = focus 方位
+// （45°×8）+ 单位 ID 哈希偏移 + 环进度 angle；半径按 ring 缩放。
+func spiralPoint(home, focus domain.Position, unitID string, ring, angle, radius int) domain.Position {
+	base := octantOf(focus[0]-home[0], focus[1]-home[1]) * 8
+	offset := 0
+	for _, ch := range unitID {
+		offset = (offset*31 + int(ch)) % 64
 	}
-	perpendicular := domain.Position{-delta[1], delta[0]}
-	return domain.Position{
-		home[0] + delta[0]*radius + perpendicular[0]*lateral,
-		home[1] + delta[1]*radius + perpendicular[1]*lateral,
-	}
+	total := ((base+offset+angle)%64 + 64) % 64
+	theta := float64(total) / 64 * 2 * math.Pi
+	x := home[0] + int(math.Round(math.Cos(theta)*float64(radius)))
+	y := home[1] + int(math.Round(math.Sin(theta)*float64(radius)))
+	return domain.Position{x, y}
 }
 
 // exploreDeltas 是八方位单位向量（与 domain.nav 同布局）。
