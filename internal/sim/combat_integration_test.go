@@ -111,3 +111,56 @@ func TestCombatFullLoopRangerShootKills(t *testing.T) {
 		t.Errorf("expected SHOOT event, got %+v", result.Events)
 	}
 }
+
+// TestMilitaryFullLoopSpawnAndFight：军事全闭环——worker 达 target 后
+// planner 产 Vanguard → sim 结算 → 相邻敌人 SWEEP 击杀。
+func TestMilitaryFullLoopSpawnAndFight(t *testing.T) {
+	state, _ := economyStateWithMilitary()
+	// 3 workers 达 target=3，无军事 → 应产 Vanguard。
+	state.Resources = 50
+	state.Units = state.Units[:2] // 去掉测试用军事单位
+	state.Vanguards = nil
+	state.Rangers = nil
+	config := strategy.Config{WorkerTarget: 2, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 10, SpawnReserve: 0, MilitaryRatio: 25}
+	planner := strategy.NewPlanner(config)
+	engine := NewEngine()
+
+	// tick 1: SPAWN VANGUARD。
+	state.Tick = 1
+	plan := planner.Decide(state)
+	if plan.CoreAction == nil || plan.CoreAction.UnitType == nil || *plan.CoreAction.UnitType != domain.UnitVanguard {
+		t.Fatalf("core action = %+v, want SPAWN VANGUARD", plan.CoreAction)
+	}
+	result := engine.Settle(state, plan)
+	if result.Stats.Spawns != 1 {
+		t.Fatalf("spawns = %d, want 1", result.Stats.Spawns)
+	}
+	state = result.NextState
+	if len(state.Vanguards) != 1 {
+		t.Fatalf("vanguards = %d, want 1", len(state.Vanguards))
+	}
+	// 新 Vanguard 在 Core 格：放到敌人旁边模拟推进。
+	state.Vanguards[0].Position = domain.Position{10, 10}
+	for i := range state.Units {
+		if state.Units[i].ID == state.Vanguards[0].ID {
+			state.Units[i].Position = domain.Position{10, 10}
+		}
+	}
+	state.VisibleEnemies = []domain.VisibleEntity{
+		{ID: "enemy-1", Kind: "UNIT", Position: domain.Position{10, 11}, HP: 1},
+	}
+
+	// tick 2: 相邻敌人 → SWEEP 击杀。
+	state.Tick = 2
+	plan = planner.Decide(state)
+	if plan.UnitActions[state.Vanguards[0].ID].Kind != domain.ActionSweep {
+		t.Fatalf("vanguard action = %s, want SWEEP", plan.UnitActions[state.Vanguards[0].ID].Kind)
+	}
+	result = engine.Settle(state, plan)
+	if result.Stats.Kills != 1 {
+		t.Errorf("kills = %d, want 1 (enemy killed by sweep)", result.Stats.Kills)
+	}
+	if len(result.NextState.VisibleEnemies) != 0 {
+		t.Errorf("enemies = %d, want 0", len(result.NextState.VisibleEnemies))
+	}
+}
