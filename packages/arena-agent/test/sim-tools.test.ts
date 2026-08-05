@@ -12,12 +12,25 @@ import { runAB, runBenchmark } from "../src/sim/tools/experiments.ts";
 import { evaluateCandidate } from "../src/sim/tools/candidate-evaluator.ts";
 import { resolvePlannerVariant } from "../src/sim/tools/planner-variants.ts";
 import { DeterministicPlanner } from "../src/planning/deterministic-planner.ts";
+import { runEpisode } from "../src/sim/harness/episode.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCENARIO = JSON.parse(
   readFileSync(join(here, "fixtures", "sim", "scenario-basic.json"), "utf8"),
 ) as unknown;
+const FOCUS_EXILE_SCENARIO = JSON.parse(
+  readFileSync(join(here, "fixtures", "sim", "scenario-focus-exile.json"), "utf8"),
+) as unknown;
 const RULES = join(here, "..", "src", "sim", "contracts", "rules-v0.11.json");
+/** 生产事故复现 policy：focusRegion 指向远点（> maxFocusDistance=32），
+ *  v0.2.15 基线（无防呆）会把 worker 直线支走；v0.2.17 候选过滤后留守巡逻。 */
+const FOCUS_EXILE_POLICY = {
+  posture: "balanced",
+  workerTarget: 8,
+  militaryRatio: 0,
+  focusRegion: [40, 0],
+  attackPriority: null,
+} as const;
 
 test("S9: canonical JSON/hash is insertion-order independent", () => {
   const a = { z: [3, { b: 2, a: 1 }], a: true };
@@ -252,4 +265,58 @@ test("TS-007: pairedAggregates 输出 median/p10/p90/最差 seed", () => {
   assert.ok(aggregate.medianResourceDelta <= aggregate.p90ResourceDelta);
   assert.ok(report.pairedDeltas.some((pair) => pair.seed === aggregate.worstSeed));
   assert.equal(aggregate.worstSeedDelta, Math.min(...report.pairedDeltas.map((pair) => pair.resourceDelta)));
+});
+
+test("TS-008: 变体语义——v0.2.15 基线（无防呆）/ v0.2.17 候选（防呆）/ deterministic 别名", () => {
+  const baseline = resolvePlannerVariant("deterministic-v0.2.15");
+  const candidate = resolvePlannerVariant("deterministic-v0.2.17");
+  const alias = resolvePlannerVariant("deterministic");
+  assert.ok(baseline.create("t1") instanceof DeterministicPlanner);
+  assert.ok(candidate.create("t1") instanceof DeterministicPlanner);
+  assert.equal(alias.aliasOf, "deterministic");
+  // 候选与别名共用当前语义（生产默认）；基线是独立冻结形态
+  assert.notEqual(baseline.id, candidate.id);
+  assert.notEqual(baseline.id, alias.id);
+});
+
+test("TS-008: focus 远征场景——基线被支走 vs 候选留守（生产事故模拟回归）", () => {
+  const run = (variantId: string) => runEpisode({
+    scenario: FOCUS_EXILE_SCENARIO,
+    rulesPath: RULES,
+    seed: 1,
+    ticks: 30,
+    tenants: [{ id: "p1", planner: "deterministic", policy: FOCUS_EXILE_POLICY }],
+    plannerFactory: () => resolvePlannerVariant(variantId).create("p1"),
+  });
+  const baselineResult = run("deterministic-v0.2.15");
+  const candidateResult = run("deterministic-v0.2.17");
+  const baselineWorker = [...baselineResult.finalWorld.players.get("p1")!.units][0]!;
+  const candidateWorker = [...candidateResult.finalWorld.players.get("p1")!.units][0]!;
+  // 基线无防呆：worker 采完开局资源后被 go_focus 直线支向 [40,0]（先 x 轴）
+  assert.ok(
+    baselineWorker.position[0] >= 20,
+    `基线 worker 应被支走远离 Core: ${JSON.stringify(baselineWorker.position)}`,
+  );
+  // 候选防呆：焦点被过滤 → patrol 留守巡逻圈（exploreRadius=8，30 tick 内不越界）
+  assert.ok(
+    candidateWorker.position[0] <= 10,
+    `候选 worker 应留守巡逻圈: ${JSON.stringify(candidateWorker.position)}`,
+  );
+});
+
+test("TS-008: runAB policy 注入——focus 远征场景可 A/B 且同 seed 配对", () => {
+  const { report } = runAB({
+    scenario: FOCUS_EXILE_SCENARIO,
+    rulesPath: RULES,
+    ticks: 30,
+    seeds: [1, 2],
+    planners: ["deterministic-v0.2.15", "deterministic-v0.2.17"],
+    policy: FOCUS_EXILE_POLICY,
+  });
+  assert.deepEqual(report.planners, ["deterministic-v0.2.15", "deterministic-v0.2.17"]);
+  assert.equal(report.runs.length, 4);
+  assert.equal(report.pairedDeltas.length, 2);
+  // unknown effects 是模拟器固有的诚实标注（refill 放置/server UUID 服务器秘密），
+  // 场景本身无 unsupported 特性（结构正确性断言）。
+  assert.ok(report.runs.every((run) => run.summary.unsupported.length === 0));
 });

@@ -12,6 +12,7 @@ import {
 import { worldFromScenario } from "../world/loaders.ts";
 import { sha256Json } from "./artifacts.ts";
 import { resolvePlannerVariant } from "./planner-variants.ts";
+import type { MacroPolicy } from "../../runtime/macro-policy.ts";
 
 export interface PlayerEpisodeSummary {
   readonly playerId: string;
@@ -170,6 +171,9 @@ export function runAB(config: {
   readonly seeds: readonly number[];
   /** PlannerKind 或 TS-004 命名变体 id（registry 解析，未知 id fail-fast）。 */
   readonly planners: readonly string[];
+  /** 实验场景 policy 注入（EpisodeTenant.policy）：复现 focusRegion 远征等
+   *  死循环场景的 A/B（v0.2.12 policy 网格验证的 runAB 形态）。缺省不注入。 */
+  readonly policy?: MacroPolicy;
 }): { readonly report: ABReport; readonly performance: ABPerformance } {
   const seeds = [...new Set(config.seeds)].sort((a, b) => a - b);
   const planners = [...new Set(config.planners)].sort(compareCodeUnit);
@@ -188,7 +192,11 @@ export function runAB(config: {
         rulesPath: config.rulesPath,
         seed,
         ticks: config.ticks,
-        tenants: playerIds.map((id) => ({ id, planner: "deterministic" })),
+        tenants: playerIds.map((id) => ({
+          id,
+          planner: "deterministic",
+          ...(config.policy !== undefined ? { policy: config.policy } : {}),
+        })),
         plannerFactory: (tenant) => variant.create(tenant.id),
       };
       const result = runEpisode(episodeConfig);
