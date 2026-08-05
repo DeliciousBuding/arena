@@ -50,9 +50,12 @@ export function isValidMacroPolicy(value: unknown): value is MacroPolicy {
     if (
       !Array.isArray(region) ||
       region.length !== 2 ||
-      // 地图坐标非负（[0,0] 为原点；生产实测 policy 曾输出 [-1500,1500] 等
-      // 越界坐标，worker 被 go_focus 直线支走 → 经济冻结——负坐标直接拒绝）。
-      !region.every((value) => Number.isInteger(value) && (value as number) >= 0)
+      // 2026-08-06 修正：允许负坐标（生产 t1 Core 在 [-619,-154] 负坐标区域，
+      // 模型按枯竭告警输出真实负坐标焦点被"非负校验"误拒 → 3 次 policy_error +
+      // 退化无焦点）。远点防呆依赖 maxFocusDistance（Chebyshev 距 Core ≤32），
+      // 坐标符号校验是历史遗留（[1500,1500] 事故是正坐标，maxFocusDistance
+      // 已覆盖）。
+      !region.every((value) => Number.isInteger(value))
     ) {
       return false;
     }
@@ -74,7 +77,8 @@ export function normalizeMacroPolicy(raw: Record<string, unknown>): MacroPolicy 
   if (
     Array.isArray(raw.focusRegion) &&
     raw.focusRegion.length === 2 &&
-    raw.focusRegion.every((value) => Number.isInteger(value) && (value as number) >= 0)
+    // 允许负坐标（2026-08-06：生产地图含负坐标区域，t1 Core 在 [-619,-154]）
+    raw.focusRegion.every((value) => Number.isInteger(value))
   ) {
     focusRegion = [raw.focusRegion[0], raw.focusRegion[1]] as const;
   }
