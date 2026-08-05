@@ -185,6 +185,11 @@ func (p *Planner) decideCore(state *domain.TickState) *domain.CoreAction {
 		if workers < emergencyWorkerFloor || respawnOverride(state) {
 			reserve = 0
 		}
+		// 满仓死锁防护（参数扫描发现）：reserve 超过 capacity-cost 时
+		// spawn 永不触发（capacity=10、cost=5、reserve=8 → 13>10）。
+		if maxReserve := state.ResourceCapacity - cost; reserve > maxReserve {
+			reserve = maxReserve
+		}
 		if state.Resources >= cost+reserve {
 			unitType := domain.UnitWorker
 			return &domain.CoreAction{Kind: domain.CoreSpawn, UnitType: &unitType}

@@ -176,6 +176,23 @@ func TestMigrationStopsWhenCoreMoving(t *testing.T) {
 	}
 }
 
+// TestSpawnReserveClampedToCapacity：reserve 超过 capacity-cost 时被
+// 钳制（参数扫描发现的满仓死锁：capacity=10、cost=5、reserve=8 →
+// 13>10 永不 spawn）——钳制后 reserve=5，resources=10 恰好可 spawn。
+func TestSpawnReserveClampedToCapacity(t *testing.T) {
+	state := baseState() // capacity=10, resources=5, pop=2
+	state.Resources = 10
+	state.ResourceSpace = 0
+	planner := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 16, ThreatDistance: 5, SpawnReserve: 8})
+	plan := planner.Decide(state)
+	if plan.CoreAction == nil || plan.CoreAction.Kind != domain.CoreSpawn {
+		t.Fatalf("core action = %+v, want SPAWN (reserve clamped to 5: 10 >= 5+5)", plan.CoreAction)
+	}
+	if result := domain.ValidatePlan(state, *plan); !result.Valid {
+		t.Errorf("plan invalid: %v", result.Issues)
+	}
+}
+
 // TestStarvedPatrolRecoversToGrowth：模式切回 GROWTH 后恢复 8 方位巡逻
 // （指令传递可逆）。
 func TestStarvedPatrolRecoversToGrowth(t *testing.T) {
