@@ -13,6 +13,7 @@
  */
 
 import type { PlanProvider } from "../../runtime/decision-types.ts";
+import type { Plan } from "../../domain/model.ts";
 import type { PlannerKind } from "../harness/episode.ts";
 import { DeterministicPlanner } from "../../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../../planning/worker-task-planner.ts";
@@ -35,6 +36,14 @@ function legacyDeterministicPlanner(): DeterministicPlanner {
     new SafetyPlanner(legacyConfig),
     new SafetyPlanner(legacyConfig),
   );
+}
+
+/** 实验用静止 planner：全单位 WAIT + Core 无动作——构造"敌人墙"场景
+ *  （敌单位占资源格/挡回仓路不动），供 clear-path 等清障 ROI 的 A/B 验证。 */
+class IdlePlanner implements PlanProvider {
+  decide(): Plan {
+    return { tick: 0, unitActions: {}, coreAction: null, intents: {} };
+  }
 }
 
 /** 内置变体。新候选（TS-009 clear-path-v1 等）在后续提交注册。 */
@@ -62,6 +71,11 @@ export const PLANNER_VARIANTS: readonly PlannerVariant[] = Object.freeze([
     description: "内置 SafetyPlanner（默认配置）",
     create: () => new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
     aliasOf: "safety",
+  }),
+  Object.freeze({
+    id: "idle",
+    description: "实验用静止 planner（全 WAIT）：构造敌人墙场景供清障 ROI A/B",
+    create: () => new IdlePlanner(),
   }),
   Object.freeze({
     id: "deterministic",
