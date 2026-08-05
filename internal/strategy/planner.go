@@ -266,11 +266,23 @@ func (p *Planner) patrol(state *domain.TickState, unit *domain.UnitSnapshot) dom
 
 // nextPatrolTarget 生成下一巡逻目标：per-unit 八方位方向索引递增，
 // 每轮 8 个方向后探索环 +1（半径 ×1×2×3×4 循环，对齐
-// domain.ExploreRadiusForRing 语义）。
+// domain.ExploreRadiusForRing 语义）。首目标方向按单位 ID 稳定分散
+// （多 worker 同时出发时覆盖不同方位，fixture 实测同向出发会挤在一起）。
 func (p *Planner) nextPatrolTarget(home, beacon domain.Position, unitID string) domain.Position {
+	initial := p.patrolDirs[unitID]
+	if initial == 0 {
+		// 首目标：以 beacon 方位为基准 + 单位 ID 哈希偏移（0..7），
+		// 同 tick 多单位覆盖 8 个不同方位。
+		offset := 0
+		for _, ch := range unitID {
+			offset = (offset*31 + int(ch)) % 8
+		}
+		initial = offset
+		p.patrolDirs[unitID] = initial
+	}
 	radius, _ := domain.ExploreRadiusForRing(p.config.ExploreRadius, p.patrolRings[unitID])
-	target := domain.ExploreTarget(home, beacon, p.patrolDirs[unitID], radius)
-	p.patrolDirs[unitID] = (p.patrolDirs[unitID] + 1) % 8
+	target := domain.ExploreTarget(home, beacon, initial, radius)
+	p.patrolDirs[unitID] = (initial + 1) % 8
 	if p.patrolDirs[unitID] == 0 {
 		p.patrolRings[unitID]++
 	}

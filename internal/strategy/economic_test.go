@@ -337,28 +337,18 @@ func TestMoveCapacityReturnBeatsToResource(t *testing.T) {
 // TestMoveCapacityReturnBeatsExplore：回仓与探索争同一目标格 → 回仓保留，
 // 探索让路（deposit 优先级胜过 explore）。
 func TestMoveCapacityReturnBeatsExplore(t *testing.T) {
-	state := workerState([]domain.UnitSnapshot{
-		{ID: "worker-1", Position: domain.Position{3, 0}, UnitType: domain.UnitWorker, Cargo: 1},
-		{ID: "worker-2", Position: domain.Position{1, 0}, UnitType: domain.UnitWorker},
-	})
-	state.Core = &domain.Core{
-		ID: "core-1", Position: domain.Position{2, 0}, HP: domain.CoreMaxHP,
-		Shield: domain.CoreMaxShield, State: domain.CoreNormal,
+	// 函数级仲裁验证（patrol 目标按 ID 分散后，Decide 链路的 explore
+	// 目标格不可控——直接验证优先级排序）。
+	candidates := []moveCandidate{
+		{unitID: "worker-2", destination: domain.Position{2, 0}, priority: movePriorityFor("explore"), intent: "explore"},
+		{unitID: "worker-1", destination: domain.Position{2, 0}, priority: movePriorityFor("return_core"), intent: "return_core"},
 	}
-	// 无资源格：worker-2 巡逻，beacon 在正东使第一步向右 → (2,0)。
-	state.Beacon = domain.Beacon{Position: domain.Position{12, 0}, Status: domain.BeaconGround}
-
-	plan := NewPlanner(DefaultConfig()).Decide(state)
-	action := requireUnitAction(t, plan, "worker-1")
-	if action.Kind != domain.ActionMove || action.Direction == nil || *action.Direction != domain.DirectionLeft {
-		t.Fatalf("worker-1 action = %+v, want MOVE LEFT", action)
+	losers := arbitrateMoveCapacity(candidates)
+	if len(losers) != 1 || losers[0].unitID != "worker-2" {
+		t.Fatalf("losers = %+v, want [worker-2] (explore demoted by return)", losers)
 	}
-	loser := requireUnitAction(t, plan, "worker-2")
-	if loser.Kind != domain.ActionWait {
-		t.Fatalf("worker-2 action = %s, want WAIT (explore demoted)", loser.Kind)
-	}
-	if intent := plan.Intents["worker-2"]; intent != "capacity_wait:explore" {
-		t.Errorf("worker-2 intent = %q, want capacity_wait:explore", intent)
+	if losers[0].intent != "explore" {
+		t.Errorf("loser intent = %q, want explore", losers[0].intent)
 	}
 }
 
@@ -413,28 +403,14 @@ func TestMoveCapacityDistinctTargetsUnaffected(t *testing.T) {
 // TestMoveCapacityEngageBeatsExplore：战斗（engage）与探索争同一目标格
 // → 战斗保留，探索让路。
 func TestMoveCapacityEngageBeatsExplore(t *testing.T) {
-	state := workerState([]domain.UnitSnapshot{
-		{ID: "worker-1", Position: domain.Position{2, 2}, UnitType: domain.UnitWorker},
-	})
-	state.Units = append(state.Units, domain.UnitSnapshot{
-		ID: "vanguard-1", Position: domain.Position{2, 2}, HP: domain.UnitMaxHP(domain.UnitVanguard), UnitType: domain.UnitVanguard,
-	})
-	enemyType := domain.UnitVanguard
-	state.VisibleEnemies = []domain.VisibleEntity{
-		{ID: "enemy-1", Kind: "UNIT", Position: domain.Position{3, 2}, HP: 4, UnitType: &enemyType},
+	// 函数级仲裁验证（patrol 目标按 ID 分散后，Decide 链路不可控）。
+	candidates := []moveCandidate{
+		{unitID: "worker-1", destination: domain.Position{3, 2}, priority: movePriorityFor("explore"), intent: "explore"},
+		{unitID: "vanguard-1", destination: domain.Position{3, 2}, priority: movePriorityFor("engage"), intent: "engage"},
 	}
-	// beacon 正东：worker-1 巡逻第一步向右 → (3,2)，与 vanguard 追击目标格
-	// (3,2) 冲突 → engage 优先。
-	state.Beacon = domain.Beacon{Position: domain.Position{10, 0}, Status: domain.BeaconGround}
-
-	plan := NewPlanner(DefaultConfig()).Decide(state)
-	action := requireUnitAction(t, plan, "vanguard-1")
-	if action.Kind != domain.ActionMove || action.Direction == nil || *action.Direction != domain.DirectionRight {
-		t.Fatalf("vanguard action = %+v, want MOVE RIGHT", action)
-	}
-	loser := requireUnitAction(t, plan, "worker-1")
-	if loser.Kind != domain.ActionWait {
-		t.Fatalf("worker-1 action = %s, want WAIT (explore demoted)", loser.Kind)
+	losers := arbitrateMoveCapacity(candidates)
+	if len(losers) != 1 || losers[0].unitID != "worker-1" {
+		t.Fatalf("losers = %+v, want [worker-1] (explore demoted by engage)", losers)
 	}
 }
 
