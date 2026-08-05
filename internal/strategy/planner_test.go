@@ -575,6 +575,76 @@ func TestWorkerBlockedByObstaclesWaits(t *testing.T) {
 	}
 }
 
+// TestVanguardSweepsAdjacentEnemy：敌人紧邻（相邻格）→ SWEEP AOE（比
+// engage 逼近优先，战斗闭环）。
+func TestVanguardSweepsAdjacentEnemy(t *testing.T) {
+	state := baseState()
+	enemyType := domain.UnitVanguard
+	state.Units = append(state.Units, domain.UnitSnapshot{
+		ID: "vanguard-1", Position: domain.Position{2, 2}, HP: 4, UnitType: domain.UnitVanguard,
+	})
+	state.Vanguards = append(state.Vanguards, state.Units[1])
+	state.VisibleEnemies = []domain.VisibleEntity{
+		{ID: "enemy-1", Kind: "UNIT", Position: domain.Position{2, 3}, HP: 4, UnitType: &enemyType},
+	}
+	plan := NewPlanner(DefaultConfig()).Decide(state)
+
+	action := requireUnitAction(t, plan, "vanguard-1")
+	if action.Kind != domain.ActionSweep {
+		t.Fatalf("vanguard action = %s, want SWEEP (adjacent enemy)", action.Kind)
+	}
+	if intent := plan.Intents["vanguard-1"]; intent != "sweep" {
+		t.Errorf("intent = %q, want sweep", intent)
+	}
+	if action.Direction == nil || *action.Direction != domain.DirectionDown {
+		t.Errorf("direction = %v, want DOWN (enemy at (2,3))", action.Direction)
+	}
+	if result := domain.ValidatePlan(state, *plan); !result.Valid {
+		t.Errorf("plan invalid: %v", result.Issues)
+	}
+}
+
+// TestVanguardSweepOrderDeterministic：四面都有敌人 → 取确定性顺序
+// （UP→RIGHT→DOWN→LEFT）第一个。
+func TestVanguardSweepOrderDeterministic(t *testing.T) {
+	state := baseState()
+	enemyType := domain.UnitVanguard
+	state.Units = append(state.Units, domain.UnitSnapshot{
+		ID: "vanguard-1", Position: domain.Position{0, 0}, HP: 4, UnitType: domain.UnitVanguard,
+	})
+	state.Vanguards = append(state.Vanguards, state.Units[1])
+	state.VisibleEnemies = []domain.VisibleEntity{
+		{ID: "enemy-down", Kind: "UNIT", Position: domain.Position{0, 1}, HP: 4, UnitType: &enemyType},
+		{ID: "enemy-up", Kind: "UNIT", Position: domain.Position{0, -1}, HP: 4, UnitType: &enemyType},
+		{ID: "enemy-left", Kind: "UNIT", Position: domain.Position{-1, 0}, HP: 4, UnitType: &enemyType},
+	}
+	plan := NewPlanner(DefaultConfig()).Decide(state)
+
+	action := requireUnitAction(t, plan, "vanguard-1")
+	if action.Kind != domain.ActionSweep || action.Direction == nil || *action.Direction != domain.DirectionUp {
+		t.Fatalf("vanguard = %+v, want SWEEP UP (first in yield order)", action)
+	}
+}
+
+// TestVanguardSweepsEnemyCoreAdjacent：敌方 Core 紧邻 → SWEEP（官方规则：
+// 相邻格敌方 Core 也受 1 伤害）。
+func TestVanguardSweepsEnemyCoreAdjacent(t *testing.T) {
+	state := baseState()
+	state.Units = append(state.Units, domain.UnitSnapshot{
+		ID: "vanguard-1", Position: domain.Position{2, 2}, HP: 4, UnitType: domain.UnitVanguard,
+	})
+	state.Vanguards = append(state.Vanguards, state.Units[1])
+	state.VisibleEnemies = []domain.VisibleEntity{
+		{ID: "enemy-core", Kind: "CORE", Position: domain.Position{3, 2}, HP: 5},
+	}
+	plan := NewPlanner(DefaultConfig()).Decide(state)
+
+	action := requireUnitAction(t, plan, "vanguard-1")
+	if action.Kind != domain.ActionSweep || action.Direction == nil || *action.Direction != domain.DirectionRight {
+		t.Fatalf("vanguard = %+v, want SWEEP RIGHT (enemy core adjacent)", action)
+	}
+}
+
 // TestVanguardEngagesNearbyEnemy：敌人进入 ThreatDistance → 前压 engage
 // （防御/战斗分支触发）。
 func TestVanguardEngagesNearbyEnemy(t *testing.T) {

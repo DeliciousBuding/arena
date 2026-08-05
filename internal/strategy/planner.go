@@ -280,6 +280,11 @@ func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapsho
 }
 
 func (p *Planner) decideVanguard(state *domain.TickState, unit *domain.UnitSnapshot) (domain.UnitAction, string, bool) {
+	// SWEEP（官方规则）：相邻格有敌方单位/Core → AOE 1 伤害（比逼近优先）。
+	if direction := adjacentEnemySweep(state, unit.Position); direction != nil {
+		dir := *direction
+		return domain.UnitAction{Kind: domain.ActionSweep, Direction: &dir}, "sweep", true
+	}
 	if enemy := nearestEnemy(state, unit.Position, p.config.ThreatDistance); enemy != nil {
 		return p.moveToward(state, unit, enemy.Position), "engage", true
 	}
@@ -297,6 +302,23 @@ func (p *Planner) decideVanguard(state *domain.TickState, unit *domain.UnitSnaps
 		return domain.UnitAction{Kind: domain.ActionWait}, "defend", true
 	}
 	return p.patrol(state, unit), "patrol", true
+}
+
+// adjacentEnemySweep 检查四方向相邻格（UP→RIGHT→DOWN→LEFT 确定性顺序），
+// 返回第一个含敌方单位/Core 的方向；无相邻敌人返回 nil。
+func adjacentEnemySweep(state *domain.TickState, position domain.Position) *domain.Direction {
+	for _, direction := range []domain.Direction{
+		domain.DirectionUp, domain.DirectionRight, domain.DirectionDown, domain.DirectionLeft,
+	} {
+		adjacent := domain.Move(position, direction)
+		for _, enemy := range state.VisibleEnemies {
+			if enemy.Position == adjacent {
+				dir := direction
+				return &dir
+			}
+		}
+	}
+	return nil
 }
 
 func (p *Planner) decideRanger(state *domain.TickState, unit *domain.UnitSnapshot) (domain.UnitAction, string, bool) {
