@@ -800,8 +800,9 @@ impl Planner {
     }
 
     /// patrol 是 per-unit 持久巡逻：同一单位持续朝同一目标直线移动直到
-    /// 到达或受阻，才按八方位 × 递增环半径换下一个目标。目标是让 worker
-    /// 真正走出视野发现资源格。停滞跳出：位置连续不变 → 强制换目标。
+    /// 到达或受阻，才换下一个螺旋扫描目标（覆盖路径规划启发式：视野带
+    /// 重叠保证——相邻扫描点距 ≤ 视野直径，扫描带无缝隙漏检，对齐
+    /// Go 6e389fb）。停滞跳出：位置连续不变 → 强制换目标。
     fn patrol(&mut self, state: &TickState, unit: &UnitSnapshot) -> UnitAction {
         let home = state.core.as_ref().map(|c| c.position).unwrap_or([0, 0]);
         // EXPLORE_STARVED / MIGRATE_CAND：所有 worker 朝指挥焦点方向扫掠。
@@ -814,7 +815,7 @@ impl Planner {
         let has_target = self.patrol_targets.contains_key(&unit.id);
         let at_target = self.patrol_targets.get(&unit.id) == Some(&unit.position);
         if !has_target || at_target || self.is_stuck(&unit.id) {
-            let target = self.next_patrol_target(home, state.beacon.position, &unit.id);
+            let target = self.next_spiral_target(home, state.beacon.position, &unit.id);
             self.stuck.insert(
                 unit.id.clone(),
                 StuckState {
@@ -828,16 +829,16 @@ impl Planner {
         let action = self.move_toward(state, unit, target);
         if action.kind == UnitActionKind::Wait {
             // 目标方向全被障碍阻挡：换下一个目标，避免原地卡死。
-            let target = self.next_patrol_target(home, state.beacon.position, &unit.id);
+            let target = self.next_spiral_target(home, state.beacon.position, &unit.id);
             self.patrol_targets.insert(unit.id.clone(), target);
             return self.move_toward(state, unit, target);
         }
         action
     }
 
-    /// starvedPatrol 是资源枯竭模式的确定性螺旋覆盖：每 worker 沿自己
-    /// 方位角（focus 方向 + ID 哈希偏移）在环上等距行走（angle 步长按
-    /// ring 缩放保持覆盖密度），走完一圈 ring+1（半径 22→44→66→88）。
+    /// starvedPatrol 是资源枯竭模式的确定性螺旋覆盖（与普通巡逻同一
+    /// 扫描器，焦点改为指挥焦点）：每 worker 沿自己方位角（focus 方向 +
+    /// ID 哈希偏移）在环上等距行走，视野带重叠保证无缝隙漏检。
     fn starved_patrol(
         &mut self,
         state: &TickState,
@@ -847,22 +848,7 @@ impl Planner {
         let has_target = self.patrol_targets.contains_key(&unit.id);
         let at_target = self.patrol_targets.get(&unit.id) == Some(&unit.position);
         if !has_target || at_target || self.is_stuck(&unit.id) {
-            let mut ring = self.patrol_rings.get(&unit.id).copied().unwrap_or(0);
-            let mut radius = self.config.explore_radius * (ring + 1);
-            if radius > 88 {
-                self.patrol_rings.insert(unit.id.clone(), 0);
-                ring = 0;
-                radius = self.config.explore_radius;
-            }
-            let angle_step = 1 + radius / 16; // 环越大步长越大：覆盖密度恒定
-            let angle = self.patrol_dirs.get(&unit.id).copied().unwrap_or(0);
-            let target = spiral_point(home, self.directive.focus, &unit.id, ring, angle, radius);
-            self.patrol_dirs.insert(unit.id.clone(), angle + angle_step);
-            let next_angle = self.patrol_dirs[&unit.id];
-            if next_angle >= 64 {
-                self.patrol_dirs.insert(unit.id.clone(), 0);
-                self.patrol_rings.insert(unit.id.clone(), ring + 1);
-            }
+            let target = self.next_spiral_target(home, self.directive.focus, &unit.id);
             self.stuck.insert(
                 unit.id.clone(),
                 StuckState {
@@ -875,51 +861,31 @@ impl Planner {
         let target = self.patrol_targets[&unit.id];
         let action = self.move_toward(state, unit, target);
         if action.kind == UnitActionKind::Wait {
-            let ring = self.patrol_rings.get(&unit.id).copied().unwrap_or(0);
-            let angle = self.patrol_dirs.get(&unit.id).copied().unwrap_or(0);
-            let target = spiral_point(
-                home,
-                self.directive.focus,
-                &unit.id,
-                ring,
-                angle + 1,
-                self.config.explore_radius,
-            );
+            let target = self.next_spiral_target(home, self.directive.focus, &unit.id);
             self.patrol_targets.insert(unit.id.clone(), target);
             return self.move_toward(state, unit, target);
         }
         action
     }
 
-    /// 生成下一巡逻目标：per-unit 八方位方向索引递增，每轮 8 个方向后
-    /// 探索环 +1（半径 ×1×2×3×4 循环）。首目标方向按单位 ID 稳定分散。
-    fn next_patrol_target(&mut self, home: Position, beacon: Position, unit_id: &str) -> Position {
-        let mut initial = self.patrol_dirs.get(unit_id).copied().unwrap_or(0);
-        if initial == 0 {
-            // 首目标：beacon 方位为基准 + 单位 ID 哈希偏移（0..7）。
-            let offset = id_hash(unit_id, 8);
-            initial = offset;
-            self.patrol_dirs.insert(unit_id.to_string(), initial);
-        }
-        // 巡逻半径从内圈开始螺旋外扩（Core 周围是资源最可能的位置）。
-        let mut radius = self.config.explore_radius / 2;
-        if radius < 4 {
-            radius = 4;
-        }
-        if let Some(&ring) = self.patrol_rings.get(unit_id) {
-            if ring > 0 {
-                if let Some(r) =
-                    arena_sim_domain::explore_radius_for_ring(self.config.explore_radius, ring)
-                {
-                    radius = r;
-                }
-            }
-        }
-        let target = arena_sim_domain::explore_target(home, beacon, initial as usize, radius);
-        let next = (initial + 1) % 8;
-        self.patrol_dirs.insert(unit_id.to_string(), next);
-        if next == 0 {
-            let ring = self.patrol_rings.get(unit_id).copied().unwrap_or(0);
+    /// 生成下一螺旋扫描目标（对齐 Go nextSpiralTarget）：
+    /// - 半径：内圈优先（Core 周围是资源最可能的位置），每 ring 半径
+    ///   步进 6（视野直径 5 + 1 重叠 → 径向扫描带无缝），上限 46 后
+    ///   重置内圈循环扫；
+    /// - 周向：64 方位角分辨率，角步长按半径自适应
+    ///   （angleStep = max(1, floor(36/radius)) → 相邻扫描点距 ≤ 5）；
+    /// - 首方位：focus 方位 + 单位 ID 哈希偏移（多 worker 同时出发
+    ///   覆盖不同方位）。
+    fn next_spiral_target(&mut self, home: Position, focus: Position, unit_id: &str) -> Position {
+        let ring = self.patrol_rings.get(unit_id).copied().unwrap_or(0);
+        let radius = patrol_scan_radius(ring);
+        let step = patrol_angle_step(radius);
+        let angle = self.patrol_dirs.get(unit_id).copied().unwrap_or(0);
+        let target = spiral_point(home, focus, unit_id, ring, angle, radius);
+        let next_angle = angle + step;
+        self.patrol_dirs.insert(unit_id.to_string(), next_angle);
+        if next_angle >= 64 {
+            self.patrol_dirs.insert(unit_id.to_string(), 0);
             self.patrol_rings.insert(unit_id.to_string(), ring + 1);
         }
         target
@@ -936,7 +902,8 @@ pub const YIELD_ORDER: [Direction; 4] = [
 ];
 
 /// 生成 spiralPoint 环上目标点：64 方位角分辨率，方位角 = focus 方位
-/// （45°×8）+ 单位 ID 哈希偏移 + 环进度 angle；半径按 ring 缩放。
+/// （45°×8）+ 单位 ID 哈希偏移 + 环进度 angle；半径由调用方传入
+/// （对齐 Go `spiralPoint`，ring 参数未在函数内使用）。
 fn spiral_point(
     home: Position,
     focus: Position,
@@ -952,6 +919,29 @@ fn spiral_point(
     let x = home[0] + (theta.cos() * radius as f64).round() as i32;
     let y = home[1] + (theta.sin() * radius as f64).round() as i32;
     [x, y]
+}
+
+/// 返回 ring 的扫描半径：内圈 4 起步（至少覆盖 Core 邻域），每 ring
+/// +6（视野直径 5 + 1 重叠），上限 46 后重置回内圈循环扫（对齐 Go
+/// `patrolScanRadius`——确定性覆盖，不漏任何径向带）。
+fn patrol_scan_radius(ring: i32) -> i32 {
+    let radius = 4 + 6 * ring;
+    if radius > 46 {
+        return 4;
+    }
+    radius
+}
+
+/// 返回半径 r 处的周向角步长（64 方位角分辨率）：保证相邻扫描点距
+/// （Chebyshev）≤ 5（视野直径）→ step = max(1, floor(36/r))（对齐 Go
+/// `patrolAngleStep`）。半径小（内圈）时步长大，半径大时步长 1。
+fn patrol_angle_step(radius: i32) -> i32 {
+    let step = 36 / radius;
+    if step < 1 {
+        1
+    } else {
+        step
+    }
 }
 
 /// 单位 ID 的确定性哈希偏移（Go `for ch { offset = (offset*31+ch)%n }`）。

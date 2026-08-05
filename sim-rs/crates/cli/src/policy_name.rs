@@ -24,8 +24,10 @@ mod tests {
 
     #[test]
     fn name_field_wins() {
-        let mut config = Config::default();
-        config.name = "aggressive".to_string();
+        let config = Config {
+            name: "aggressive".to_string(),
+            ..Config::default()
+        };
         assert_eq!(policy_name(&config), "aggressive");
     }
 

@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn reveal_only_visible_active_cells() {
         let latent = vec![[0, 0], [3, 3], [100, 100]];
-        let mut config = RefillConfig::new(&latent);
+        let config = RefillConfig::new(&latent);
         let mut state = state_with_vision_core([0, 0]);
         config.reveal(&mut state);
         assert!(state.resource_cells.contains("0,0"));

@@ -193,7 +193,7 @@ fn economy_loop_grows_population() {
     );
     // 经济自持：累计产出（deposits）至少覆盖人口增长所需成本。
     assert!(
-        outcome.deposits as i32 > outcome.spawns * 5,
+        outcome.deposits > outcome.spawns * 5,
         "economy not self-sustaining: deposits={} spawns={}",
         outcome.deposits,
         outcome.spawns

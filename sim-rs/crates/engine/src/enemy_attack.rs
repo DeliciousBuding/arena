@@ -245,7 +245,7 @@ mod tests {
                 .count(),
             1
         );
-        assert!(events.iter().any(|e| e.event_type == "CORE_DAMAGED") == false);
+        assert!(!events.iter().any(|e| e.event_type == "CORE_DAMAGED"));
     }
 
     #[test]

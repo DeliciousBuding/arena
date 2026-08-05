@@ -311,6 +311,7 @@ impl BfsSearcher {
     /// None）。obstacle_pos 为 Position-keyed 障碍集合（调用方每 tick
     /// 缓存一次，避免每调用字符串解析）；extra_obstacle 为动态额外障碍
     /// （如目标非 Core 时的 Core 格——planner 热路径用，免集合克隆）。
+    #[allow(clippy::too_many_arguments)] // 热路径性能函数，参数为 BFS 固定语义输入
     pub fn first_step(
         &mut self,
         from: Position,
