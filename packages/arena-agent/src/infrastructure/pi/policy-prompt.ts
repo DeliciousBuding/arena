@@ -73,6 +73,8 @@ export function buildMacroPolicyPrompt(
     "策略是低频演进而非重掷：优先在 previous policy 基础上做小幅调整（workerTarget 变化幅度建议 ≤4/周期）。",
     "军事单位价值：敌方单位/Core 群会阻挡 Worker 回仓与采集（经济停滞的直接原因，生产实测）；",
     "适当 militaryRatio（>0）配前压清场能显著提升经济（生产 A/B 实测：清场方资源均值 20 满仓 vs 被压方 5）。",
+    "militaryRatio 约束（模拟器 500 ticks 实证）：0.3-0.4 是军事性价比拐点（军队优势明显、经济代价可控）；",
+    "0.5 以上不增加军队（产兵饱和）却持续烧资源（资源 4.3 vs 纯经济 29）——高比例是纯损耗，禁止输出 militaryRatio>0.5。",
     "",
     "宏观状态：",
     `tick: ${state.tick}`,
