@@ -437,6 +437,7 @@ export async function runTenant(
     let liveSubmitCount = 0;
     // 经济停滞连续计数（cargo_blocked：delta=0 且满载 Worker 滞留；达阈值写 stall_warning）
     let stallStreak = 0;
+    let lastCargoWorkerFingerprint: string | null = null;
 
     const onTick = (outcome: TickOutcome): void => {
       const decision = outcome.decision;
@@ -541,7 +542,17 @@ export async function runTenant(
         // 时，coreResourceDelta 持续为 0 且 workerCargoTotal 持续 >0（t1 实测
         // capacity_wait:DEPOSIT 死锁 60+ ticks 才被人工发现）。连续阈值达到即写
         // runtime.jsonl 的 stall_warning 记录，供监控查询/人工介入，不等自然暴露。
-        const cargoBlocked = outcomeRecord.coreResourceDelta === 0 && (outcomeRecord.workerCargoTotal ?? 0) > 0;
+        const cargoWorkerCells = outcome.state.workers
+          .filter((worker) => worker.cargo > 0)
+          .map((worker) => `${worker.position[0]},${worker.position[1]}`)
+          .sort()
+          .join("|");
+        const cargoWorkerMoved = cargoWorkerCells.length > 0 && cargoWorkerCells !== lastCargoWorkerFingerprint;
+        lastCargoWorkerFingerprint = cargoWorkerCells.length > 0 ? cargoWorkerCells : lastCargoWorkerFingerprint;
+        const cargoBlocked =
+          outcomeRecord.coreResourceDelta === 0 &&
+          (outcomeRecord.workerCargoTotal ?? 0) > 0 &&
+          !cargoWorkerMoved;
         stallStreak = cargoBlocked ? stallStreak + 1 : 0;
         if (stallStreak === STALL_WARNING_TICKS) {
           // stall_warning 是运行时健康事件（非 turn 级 runtime trace），走宽松
