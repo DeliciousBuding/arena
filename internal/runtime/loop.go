@@ -15,7 +15,6 @@ import (
 	"github.com/deliciousbuding/arena/internal/domain"
 	"github.com/deliciousbuding/arena/internal/hero"
 	"github.com/deliciousbuding/arena/internal/obs"
-	"github.com/deliciousbuding/arena/internal/strategy"
 	"github.com/deliciousbuding/arena/internal/telemetry"
 )
 
@@ -55,10 +54,24 @@ type Stats struct {
 	LastTick        atomic.Int64
 }
 
+// GameClient 是 Loop 依赖的最小客户端接口（hero.ArenaHeroClient 天然实现；
+// 测试注入桩以验证重复 tick/提交拒绝等行为）。
+type GameClient interface {
+	Events(ctx context.Context) <-chan hero.Event
+	Err() error
+	Submit(ctx context.Context, plan contracts.CommandPlan, idempotencyKey string) (*contracts.Accepted, error)
+	Close()
+}
+
+// Planner 是决策器接口（strategy.Planner 天然实现）。
+type Planner interface {
+	Decide(state *domain.TickState) *domain.Plan
+}
+
 // Loop 是单租户运行循环。
 type Loop struct {
-	Client      *hero.ArenaHeroClient
-	Planner     *strategy.Planner
+	Client      GameClient
+	Planner     Planner
 	World       *domain.World // 跨 tick 世界记忆（nil 时跳过 Observe，测试兼容）
 	Config      TenantConfig
 	Obs         *obs.Obs // 统一可观测句柄（nil 时降级：仅 Logger）
@@ -67,6 +80,11 @@ type Loop struct {
 	DecisionLog *telemetry.JsonlWriter
 	Stats       Stats
 
+	// lastHandledTick 记录最近已进入决策的 tick（exactly-once 语义）：
+	// 重连后服务器会重放已处理过的 Tick，任何重复 state 必须在
+	// Reduce/Plan/Telemetry/Submit 之前按 Tick 去重——否则会重复决策、
+	// 重复记账并污染赛马数据（30 Tick 实测 409 冲突根因）。
+	lastHandledTick atomic.Int64
 	// lastSubmittedTick 记录最近已提交的 tick（live 每 tick 只提交一次：
 	// 服务器同 tick 可能推送多个 state 更新，stateHash 变化会产生不同
 	// 幂等键导致 409 IDEMPOTENCY_CONFLICT——真机 30t 递进发现）。
@@ -77,12 +95,15 @@ type Loop struct {
 	idleDumpSeq atomic.Int64
 }
 
-// logger 返回有效日志器（Obs 优先）。
+// logger 返回有效日志器（Obs 优先；全空时兜底默认 logger）。
 func (l *Loop) logger() *slog.Logger {
 	if l.Obs != nil {
 		return l.Obs.Logger()
 	}
-	return l.Logger
+	if l.Logger != nil {
+		return l.Logger
+	}
+	return slog.Default()
 }
 
 // event 发出诊断事件（Obs nil 时降级为 Debug 日志）。
@@ -144,6 +165,10 @@ func (l *Loop) Run(ctx context.Context) error {
 			case hero.StateEvent:
 				if err := l.handleState(ctx, &event.State); err != nil {
 					l.event(slog.LevelError, "state.handle_failed", "tick", l.Stats.LastTick.Load(), "error", err)
+					// 红线：deterministic repair / submit rejection 都立即停
+					// 止本轮，不再继续消费后续 tick（30 Tick 实测 409 后
+					// 继续运行会掩盖问题并污染赛马数据）。
+					return err
 				}
 			case hero.ReceivedEvent:
 				logger.Debug("received", "tick", event.Received.Tick, "source", event.Received.Source)
@@ -211,6 +236,15 @@ func (l *Loop) handleState(ctx context.Context, state *contracts.PlayerState) er
 	if tick < 1 {
 		return nil // 尚未收到 tick 信封，等待
 	}
+	// exactly-once：重连重放或同 tick 多次 state 事件都在此处去重，
+	// 之后的 Reduce/Plan/Telemetry/Submit 对同一 tick 只发生一次。
+	if tick <= l.lastHandledTick.Load() {
+		l.logger().Debug("duplicate state, skipping", "tick", tick)
+		return nil
+	}
+	// 进入本 tick 决策后立即标记（防止 handleState 内部出错返回后，
+	// 同一 tick 的重放被当作新 tick 再次处理）。
+	l.lastHandledTick.Store(tick)
 
 	stepStart := time.Now()
 	step := func(name string) {
