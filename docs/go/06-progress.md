@@ -116,3 +116,16 @@
 ### 待办（视野研究指引）
 - Core 迁移决策（连续 N tick 零资源 → START_MOVE 朝 beacon/未知 chunk）
 - t4 资源发现等待（workers 外扩扫描中）或新地图验证
+
+## E2 决策指挥分层（2026-08-05，f956999）
+
+- [x] Commander 指挥层：GROWTH / EXPLORE_STARVED（30 tick 无进展）/
+      MIGRATE_CAND（100 tick，只评估不执行）；economy.stagnant /
+      migration.candidate 事件；decision 记录 directiveMode
+- [x] 停滞跳出（第二类）：服务器反馈位置连续 3 tick 不变 → 强制换
+      巡逻目标（计划合法但结算未生效的拥挤/被占场景）
+- [x] EXPLORE_STARVED 扫掠：全部 worker 朝 Beacon 焦点推进（半径环
+      扩展 + ID 错开扫掠线）
+- [x] 遥测：unitPositions（analyze 移动量指标）；cmd/analyze run
+      实验报告工具（模式分布/资源趋势/动作统计/移动量）
+- [ ] t4 真机 40t 验证（运行中）
