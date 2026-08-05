@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "race.strategy-profile.v1",
+  "profileId": "economy-v1",
+  "status": "candidate",
+  "description": "资源发现与经济闭环优先候选；用于 economy-dense/economy-sparse/resource-far。",
+  "posture": "economic",
+  "workerTarget": 8,
+  "populationCeiling": 19,
+  "militaryRatio": 0.15,
+  "vanguardRatio": 0.5,
+  "accumulateThreshold": 30,
+  "attackForce": 6,
+  "exploreRadius": 48,
+  "maxFocusDistance": 32,
+  "threatDistance": 5,
+  "spawnReserve": 2,
+  "attackPriority": null,
+  "resourceMemory": {
+    "maxAgeTicks": 48,
+    "failedCooldownTicks": 32
+  },
+  "exploration": {
+    "ringStep": 8,
+    "ringCount": 6,
+    "directionStride": 3,
+    "chunkAgeWeight": 2.0
+  },
+  "safety": {
+    "clearPath": true,
+    "enableCoreMigration": false
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "race.strategy-profile.v1",
+  "profileId": "balanced-v1",
+  "status": "candidate",
+  "description": "Race v1 双场景稳健候选；参数来自 TS 现有实验结论，需统一 20-seed 矩阵复核。",
+  "posture": "balanced",
+  "workerTarget": 8,
+  "populationCeiling": 19,
+  "militaryRatio": 0.35,
+  "vanguardRatio": 0.5,
+  "accumulateThreshold": 20,
+  "attackForce": 5,
+  "exploreRadius": 40,
+  "maxFocusDistance": 32,
+  "threatDistance": 6,
+  "spawnReserve": 1,
+  "attackPriority": null,
+  "resourceMemory": {
+    "maxAgeTicks": 32,
+    "failedCooldownTicks": 32
+  },
+  "exploration": {
+    "ringStep": 8,
+    "ringCount": 5,
+    "directionStride": 3,
+    "chunkAgeWeight": 1.0
+  },
+  "safety": {
+    "clearPath": true,
+    "enableCoreMigration": false
+  }
+}

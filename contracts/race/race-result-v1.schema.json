@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DeliciousBuding/arena/contracts/race/race-result-v1.schema.json",
+  "title": "Arena Race Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "raceId",
+    "createdAt",
+    "implementation",
+    "git",
+    "profile",
+    "scenario",
+    "submissionMode",
+    "hardGates",
+    "eligible",
+    "metrics",
+    "evidence"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "race.result.v1" },
+    "raceId": { "type": "string", "minLength": 3, "maxLength": 128 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "implementation": { "enum": ["ts", "fusion"] },
+    "submissionMode": { "enum": ["offline", "shadow", "bounded-live", "live"] },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch", "sha"],
+      "properties": {
+        "branch": { "type": "string", "minLength": 1 },
+        "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "hostSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "kernelSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profileId", "schemaVersion", "hash", "unsupportedFields"],
+      "properties": {
+        "profileId": { "type": "string" },
+        "schemaVersion": { "const": "race.strategy-profile.v1" },
+        "hash": { "type": "string", "minLength": 8 },
+        "unsupportedFields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenarioId", "scenarioHash", "seeds", "ticksPerSeed"],
+      "properties": {
+        "scenarioId": { "type": "string", "minLength": 1 },
+        "scenarioHash": { "type": "string", "minLength": 8 },
+        "rulesVersion": { "type": ["string", "null"] },
+        "refillMode": { "enum": ["none", "approximate", "server-observed", "server-secret"] },
+        "seeds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer" },
+          "uniqueItems": true
+        },
+        "ticksPerSeed": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "hardGates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wrongTickSubmit",
+        "duplicateSubmit",
+        "staleCandidateExecuted",
+        "illegalFinalPlan",
+        "secondWriter",
+        "crossTenantStateLeak",
+        "orphanProcess",
+        "unhandledKernelPanic",
+        "credentialLeak",
+        "unknownRepair",
+        "silentKernelFallback"
+      ],
+      "properties": {
+        "wrongTickSubmit": { "$ref": "#/$defs/count" },
+        "duplicateSubmit": { "$ref": "#/$defs/count" },
+        "staleCandidateExecuted": { "$ref": "#/$defs/count" },
+        "illegalFinalPlan": { "$ref": "#/$defs/count" },
+        "secondWriter": { "$ref": "#/$defs/count" },
+        "crossTenantStateLeak": { "$ref": "#/$defs/count" },
+        "orphanProcess": { "$ref": "#/$defs/count" },
+        "unhandledKernelPanic": { "$ref": "#/$defs/count" },
+        "credentialLeak": { "$ref": "#/$defs/count" },
+        "unknownRepair": { "$ref": "#/$defs/count" },
+        "silentKernelFallback": { "$ref": "#/$defs/count" }
+      }
+    },
+    "eligible": { "type": "boolean" },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core", "economy", "exploration", "combat", "system"],
+      "properties": {
+        "core": { "$ref": "#/$defs/metricGroup" },
+        "economy": { "$ref": "#/$defs/metricGroup" },
+        "exploration": { "$ref": "#/$defs/metricGroup" },
+        "combat": { "$ref": "#/$defs/metricGroup" },
+        "system": { "$ref": "#/$defs/metricGroup" }
+      }
+    },
+    "score": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 100
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest", "summary", "raw"],
+      "properties": {
+        "manifest": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "raw": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "notes": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "count": { "type": "integer", "minimum": 0 },
+    "metricGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applicable", "values"],
+      "properties": {
+        "applicable": { "type": "boolean" },
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["number", "integer", "null"]
+          }
+        }
+      }
+    }
+  }
+}
