@@ -92,7 +92,11 @@ function modelBaseUrl(): string | undefined {
   return url !== undefined && url.length > 0 ? url : undefined;
 }
 
-/** config.model → pi Model 结构（api = OpenAI 兼容协议；baseUrl 从 env 显式声明）。 */
+/** config.model → pi Model 结构（api = OpenAI 兼容协议；baseUrl 从 env 显式声明）。
+ *  compat.supportsDeveloperRole=false 强制 system role（v0.2.15 生产修复）：
+ *  Pi 0.83 在 thinkingLevel≠off 时把 system prompt 发成 OpenAI 的 developer role，
+ *  DeepSeek/SenseNova 网关均拒绝（400 messages[0].role）——所有 OpenAI 兼容网关
+ *  都接受 system，显式关掉 developer 是安全默认。 */
 export function resolvePiModel(config: TenantRuntimeConfig): PiModel {
   return {
     id: config.model.id,
@@ -105,6 +109,7 @@ export function resolvePiModel(config: TenantRuntimeConfig): PiModel {
     cost: { input: 0, output: 0 },
     contextWindow: 8000,
     maxTokens: 4096,
+    compat: { supportsDeveloperRole: false },
   } as unknown as PiModel;
 }
 
