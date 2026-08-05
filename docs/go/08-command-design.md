@@ -99,7 +99,22 @@ optsearch 挂载 refill 引擎后重新搜索（双算法共识）：
 - DefaultConfig 落地 SA 解：workerTarget 8→6、spawnReserve 5→1、
   populationCeiling 20→21。
 
-## 8. 红线
+## 8. 军事战术层（2026-08-05）
+
+| 战术 | 触发 | 行为 |
+|---|---|---|
+| `SWEEP` | Vanguard 相邻格有敌方单位/Core | AOE 1 伤害（比逼近优先） |
+| `SHOOT` | Ranger 3 格内敌人、视线无遮挡 | 1 伤害（target_id 精度） |
+| `kite`（放风筝） | Ranger 敌人距离 ≤2（近战威胁） | 朝反方向撤退保持射程优势 |
+| `engage` | Vanguard 威胁距离内敌人 | 逼近（moveToward） |
+| `disengage`（追敌超时） | engage 连续 8 tick 未进入 SWEEP 射程 | 放弃追击回核心/巡逻 |
+| 军事生产 | worker 达 WorkerTarget 且军事占比 < MilitaryRatio | Vanguard/Ranger 交替 spawn |
+
+战斗结算（sim 侧，官方顺序）：MOVE → HARVEST/DEPOSIT → 己方攻击
+（SHOOT/SWEEP，快照同时结算）→ 敌方攻击（Vanguard 相邻/Ranger 八方向
+1-3，Shield 优先扣）→ 单位 HEAL → Core SPAWN/HEAL/REPAIR_SHIELD。
+
+## 9. 红线
 
 - MIGRATE_CAND **只评估不执行**：START_MOVE 需要 operator 显式启用
   （配置 `enableCoreMigration: true`）后才会由 planner 发出。
