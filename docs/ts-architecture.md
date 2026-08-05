@@ -47,6 +47,19 @@ client.turns() → Turn（SDK）
   → runtime / decision / outcome JSONL 遥测
 ```
 
+## 决策指挥链（2026-08-06，死循环闭环五层）
+
+低频策略层与高频执行层之间插入了完整指挥链。每层只改 `focusRegion` 一个字段
+（最小干预，让执行层既有回仓巡逻逻辑自行恢复）：
+
+```
+policy(LLM 低频 32 tick, 独立 Pi session)
+  → discipline(PolicyDiscipline 上游纪律：连续 2 次超距焦点 → 禁言 128 tick)
+  → recovery(StallRecovery 下游自愈：idle→recovering→escalating，结果反馈 policy)
+  → 执行层(SafetyPlanner maxFocusDistance 防呆 + clearPath 清障)
+  → KPI(自愈成功率/纪律事件/恢复迁移统计)
+```
+
 核心运行时组件（`packages/arena-agent/src/runtime/`）：
 
 | 组件 | 职责 |
@@ -59,6 +72,10 @@ client.turns() → Turn（SDK）
 | `deadline-budget.ts` / `clock.ts` | 时间预算与 FakeClock（测试用） |
 | `state-hash.ts` | TickState 内容哈希（lease 校验用） |
 | `decision-types.ts` | AgentDecisionRequest/DecisionResult 等契约 |
+| `stall-detector.ts` | 死循环 5 模式检测（cargo_blocked/no_production/patrol_only/focus_exile/capacity_wait_loop），16 tick rising-edge，256 tick 开局宽限 |
+| `stall-recovery.ts` | 自愈状态机（idle→recovering→escalating；outcome 三态 recovered/failed/expired；failureRounds 跨会话累计） |
+| `policy-discipline.ts` | 策略层纪律（连续坏焦点 → 禁言 focusRegion 强制 null；合法焦点清零） |
+| `macro-policy-orchestrator.ts` | 低频策略周期（32 tick）+ sticky 失败保持 + 重生覆盖 |
 
 领域层（`packages/arena-agent/src/domain/`）：
 
@@ -74,8 +91,21 @@ client.turns() → Turn（SDK）
 策略层（`packages/arena-agent/src/strategies/`）：
 
 - `safety-planner.ts`：确定性 Safety 基线（spawn / 巡逻 / 回仓状态机 / 守备）；
+  `SafetyPlannerConfig`：`maxFocusDistance`（focus 防呆半径，默认 32）+ `clearPath`
+  （清障开关，TS-009 候选）；变体注册在 `sim/tools/planner-variants.ts`；
 - DeterministicPlanner（经济闭环）：复用 SafetyPlanner，WorkerTaskPlanner 负责资源格全局唯一分配；
 - `DecisionMode` / `SubmissionMode` 两轴独立，不再用单一 `shadow:boolean`。
+
+模拟级验证（`packages/arena-agent/src/sim/harness/episode.ts`）：
+
+- `EpisodeConfig.policyProvider`：每 tick 策略决策器（模拟 LLM 低频决策/坏焦点模式；
+  null = 保持上次）——discipline/recovery 生产机制可在模拟器复现
+  （`test/command-chain-sim.test.ts`：无防呆执行层下 worker 留守 vs 被支走的位置断言）。
+
+参数优化（neat-freak 闭环）：`packages/arena-agent/scripts/param-scan.mts` 网格扫描
+（maxFocusDistance/clearPath/exploreRadius/threatEnemyDistance，2 seeds × 双场景），
+输出排序 + 可注册配置候选。扫描结论：clearPath=true 稳定 +1 资源（不改生产默认，
+注册为 clear-path-v1 候选变体）。
 
 ## 关键设计约束
 
