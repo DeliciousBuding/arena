@@ -95,10 +95,27 @@ var optLatentResources = []domain.Position{
 	{38, 47}, {28, 36}, {48, 36}, {28, 48}, {48, 48}, {40, 24},
 }
 
-// optState 是评分场景（真实拓扑 + 满载死锁起点 + 6 资源格分布
-// 四周不同距离——多资源格下参数差异才可区分，单格场景参数平坦）。
-func optState() *domain.TickState {
-	state := &domain.TickState{
+// optDenseLatentResources 是密集场景 refill 潜在池（16 格：8 初始
+// 可见格 + 6 周边扩展格 + 2 邻 chunk 格）。布局约束：Core 所在 chunk
+// 配额 14（floor(128/(8+1))），每 chunk 潜在格数 ≤ 配额，refill 恢复
+// 顺序无关（全部恢复）→ 评分确定性（refill 引擎对超配额部分按 map
+// 迭代序恢复，会引入随机性）。
+var optDenseLatentResources = []domain.Position{
+	{37, 38}, {37, 39}, {37, 40}, {38, 38}, {38, 40}, {39, 38}, {39, 39}, {39, 40},
+	{36, 39}, {40, 39}, {38, 36}, {38, 42}, {37, 37}, {39, 41},
+	{30, 42}, {31, 39},
+}
+
+// optSparseLatentResources 是稀疏场景 refill 潜在池（6 格：沿三个
+// 远资源方向扩展，模拟低密度地图的再生空间）。
+var optSparseLatentResources = []domain.Position{
+	{26, 30}, {30, 26}, {50, 30}, {46, 26}, {36, 58}, {40, 54},
+}
+
+// optStateFrame 是三个评分场景共享的初始状态框架（Core 满载 worker
+// 死锁起点 + 空载 worker 在外 + beacon），仅资源/障碍分布不同。
+func optStateFrame() *domain.TickState {
+	return &domain.TickState{
 		Tick: 1, Status: domain.PlayerStatusActive,
 		Resources: 10, ResourceCapacity: 10, ResourceSpace: 0, Population: 2,
 		Core: &domain.Core{ID: "core-1", Position: domain.Position{38, 39}, HP: domain.CoreMaxHP, Shield: domain.CoreMaxShield, State: domain.CoreNormal},
@@ -110,32 +127,69 @@ func optState() *domain.TickState {
 			{ID: "worker-full", Position: domain.Position{38, 39}, HP: 2, UnitType: domain.UnitWorker, Cargo: 1},
 			{ID: "worker-empty", Position: domain.Position{38, 51}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
 		},
-		ResourceCells: domain.NewSet[string](
-			domain.CellKey(38, 45), domain.CellKey(30, 34), domain.CellKey(46, 34),
-			domain.CellKey(30, 46), domain.CellKey(46, 46), domain.CellKey(38, 26),
-		),
 		ObstacleCells: domain.NewSet[string](),
 		Beacon:        domain.Beacon{Position: domain.Position{-17, 77}, Status: domain.BeaconGround},
 	}
+}
+
+// optState 是基准评分场景（真实拓扑 + 满载死锁起点 + 6 资源格分布
+// 四周不同距离 + 12 格 fixture 障碍——多资源格下参数差异才可区分，
+// 单格场景参数平坦）。
+func optState() *domain.TickState {
+	state := optStateFrame()
+	state.ResourceCells = domain.NewSet[string](
+		domain.CellKey(38, 45), domain.CellKey(30, 34), domain.CellKey(46, 34),
+		domain.CellKey(30, 46), domain.CellKey(46, 46), domain.CellKey(38, 26),
+	)
 	for _, cell := range []domain.Position{{36, 51}, {36, 52}, {37, 39}, {37, 42}, {37, 44}, {38, 34}, {38, 43}, {38, 50}, {39, 41}, {39, 44}, {39, 52}, {40, 40}} {
 		state.ObstacleCells.Add(domain.CellKey(cell[0], cell[1]))
 	}
 	return state
 }
 
-// evaluate 运行 sim 闭环 100 tick，返回经济产出评分：
-// workers×10 + deposits×5 + spawns×3 + harvests×2（资源格产能约束下
-// 衡量扩张与循环效率）。挂载 refill 引擎（官方规则：4 tick 配额 +
-// 视野揭示）——评分基于真实游戏逻辑（资源再生 + 采空消失），
-// 而非"资源永不再生"的简化模型。
+// optStateDense 是密集资源评分场景：Core 周围 8 格全资源、无障碍，
+// 检验高产场景下的扩张与循环效率。
+func optStateDense() *domain.TickState {
+	state := optStateFrame()
+	state.ResourceCells = domain.NewSet[string](
+		domain.CellKey(37, 38), domain.CellKey(37, 39), domain.CellKey(37, 40),
+		domain.CellKey(38, 38), domain.CellKey(38, 40),
+		domain.CellKey(39, 38), domain.CellKey(39, 39), domain.CellKey(39, 40),
+	)
+	return state
+}
+
+// optStateSparse 是稀疏资源评分场景：Core 远处 3 资源格 + 8 个
+// 自构造障碍（不与资源格重叠），检验长距离探索与绕障能力。
+func optStateSparse() *domain.TickState {
+	state := optStateFrame()
+	state.ResourceCells = domain.NewSet[string](
+		domain.CellKey(28, 28), domain.CellKey(48, 28), domain.CellKey(38, 56),
+	)
+	for _, cell := range []domain.Position{{37, 38}, {39, 40}, {36, 42}, {42, 37}, {38, 50}, {35, 36}, {43, 43}, {45, 41}} {
+		state.ObstacleCells.Add(domain.CellKey(cell[0], cell[1]))
+	}
+	return state
+}
+
+// evaluate 运行 sim 闭环 100 tick，返回经济产出评分（单场景：
+// 真实拓扑，供对比与调试）。
 func evaluate(p searchParams, ticks int) float64 {
-	state := optState()
+	return evaluateScenario(p, ticks, optState(), optLatentResources)
+}
+
+// evaluateScenario 在指定状态与潜在资源池上运行 sim 闭环，返回
+// 经济产出评分：workers×10 + deposits×5 + spawns×3 + harvests×2
+// （资源格产能约束下衡量扩张与循环效率）。挂载 refill 引擎（官方
+// 规则：4 tick 配额 + 视野揭示）——评分基于真实游戏逻辑（资源再生
+// + 采空消失），而非"资源永不再生"的简化模型。
+func evaluateScenario(p searchParams, ticks int, state *domain.TickState, latent []domain.Position) float64 {
 	planner := strategy.NewPlanner(strategy.Config{
 		WorkerTarget: p.workerTarget, PopulationCeiling: p.populationCeiling,
 		ExploreRadius: p.exploreRadius, ThreatDistance: 5, SpawnReserve: p.spawnReserve,
 	})
 	engine := sim.NewEngine()
-	engine.Refill = sim.NewRefillConfig(optLatentResources)
+	engine.Refill = sim.NewRefillConfig(latent)
 	score := 0.0
 	for tick := 1; tick <= ticks; tick++ {
 		state.Tick = tick
@@ -146,6 +200,34 @@ func evaluate(p searchParams, ticks int) float64 {
 	}
 	score += float64(len(state.Workers)) * 10
 	return score
+}
+
+// scenarioScores 是三个评分场景各自的得分。
+type scenarioScores struct {
+	base, dense, sparse float64
+}
+
+// evaluateMulti 跑三个场景（真实/密集/稀疏），返回三场景最低分
+// （最差场景决定评分——鲁棒性优先，防止参数过拟合单场景）与各场景分。
+func evaluateMulti(p searchParams, ticks int) (float64, scenarioScores) {
+	scores := scenarioScores{
+		base:   evaluate(p, ticks),
+		dense:  evaluateScenario(p, ticks, optStateDense(), optDenseLatentResources),
+		sparse: evaluateScenario(p, ticks, optStateSparse(), optSparseLatentResources),
+	}
+	minScore := scores.base
+	if scores.dense < minScore {
+		minScore = scores.dense
+	}
+	if scores.sparse < minScore {
+		minScore = scores.sparse
+	}
+	return minScore, scores
+}
+
+// formatScores 格式化三场景分，如 "{129, 150, 100}"（base, dense, sparse）。
+func formatScores(s scenarioScores) string {
+	return fmt.Sprintf("{%.0f, %.0f, %.0f}", s.base, s.dense, s.sparse)
 }
 
 func main() {
@@ -169,26 +251,29 @@ func main() {
 	}
 
 	current := defaultParams()
-	currentScore := evaluate(current, ticks)
+	currentScore, currentScores := evaluateMulti(current, ticks)
 	best := current
 	bestScore := currentScore
+	bestScores := currentScores
 
 	// 模拟退火：温度线性降温，Metropolis 接受准则。
 	temperature := 50.0
 	accepts := 0
 	fmt.Printf("=== simulated annealing (%d iterations, %d ticks) ===\n", iterations, ticks)
-	fmt.Printf("start: %+v score=%.0f\n", current, currentScore)
+	fmt.Printf("start: %+v score=%.0f scenario: %s\n", current, currentScore, formatScores(currentScores))
 	for i := 0; i < iterations; i++ {
 		candidate := neighbor(current, rng)
-		candidateScore := evaluate(candidate, ticks)
+		candidateScore, candidateScores := evaluateMulti(candidate, ticks)
 		delta := candidateScore - currentScore
 		if delta >= 0 || rng.Float64() < math.Exp(delta/temperature) {
 			current = candidate
 			currentScore = candidateScore
+			currentScores = candidateScores
 			accepts++
 			if currentScore > bestScore {
 				best = current
 				bestScore = currentScore
+				bestScores = candidateScores
 			}
 		}
 		temperature *= 0.99
@@ -196,8 +281,9 @@ func main() {
 			temperature = 1
 		}
 	}
-	fmt.Printf("best: %+v score=%.0f (accepts=%d)\n", best, bestScore, accepts)
-	fmt.Printf("default: %+v score=%.0f\n", defaultParams(), evaluate(defaultParams(), ticks))
+	fmt.Printf("best: %+v score=%.0f scenario: %s (accepts=%d)\n", best, bestScore, formatScores(bestScores), accepts)
+	defaultScore, defaultScores := evaluateMulti(defaultParams(), ticks)
+	fmt.Printf("default: %+v score=%.0f scenario: %s\n", defaultParams(), defaultScore, formatScores(defaultScores))
 }
 
 // geneticAlgorithm 运行遗传算法参数搜索。
@@ -206,21 +292,22 @@ func geneticAlgorithm(generations, ticks int, rng *rand.Rand) {
 	const populationSize = 20
 	pop := make([]searchParams, populationSize)
 	fitness := make([]float64, populationSize)
-	for i := range pop {
-		pop[i] = randomParams(rng)
-		fitness[i] = evaluate(pop[i], ticks)
-	}
 	best := pop[0]
 	bestScore := fitness[0]
-	for i, f := range fitness {
-		if f > bestScore {
+	var bestScores scenarioScores
+	for i := range pop {
+		pop[i] = randomParams(rng)
+		score, scores := evaluateMulti(pop[i], ticks)
+		fitness[i] = score
+		if score > bestScore {
 			best = pop[i]
-			bestScore = f
+			bestScore = score
+			bestScores = scores
 		}
 	}
 
 	fmt.Printf("=== genetic algorithm (%d gen, population %d, %d ticks) ===\n", generations, populationSize, ticks)
-	fmt.Printf("seed: %+v score=%.0f\n", best, bestScore)
+	fmt.Printf("seed: %+v score=%.0f scenario: %s\n", best, bestScore, formatScores(bestScores))
 	for gen := 0; gen < generations; gen++ {
 		next := make([]searchParams, populationSize)
 		nextFitness := make([]float64, populationSize)
@@ -233,10 +320,12 @@ func geneticAlgorithm(generations, ticks int, rng *rand.Rand) {
 			child := crossover(parent1, parent2, rng)
 			child = mutate(child, rng)
 			next[i] = child
-			nextFitness[i] = evaluate(child, ticks)
-			if nextFitness[i] > bestScore {
+			childScore, childScores := evaluateMulti(child, ticks)
+			nextFitness[i] = childScore
+			if childScore > bestScore {
 				best = next[i]
-				bestScore = nextFitness[i]
+				bestScore = childScore
+				bestScores = childScores
 			}
 		}
 		pop = next
@@ -245,8 +334,9 @@ func geneticAlgorithm(generations, ticks int, rng *rand.Rand) {
 			fmt.Printf("  gen %3d: best=%.0f %+v\n", gen+1, bestScore, best)
 		}
 	}
-	fmt.Printf("best: %+v score=%.0f\n", best, bestScore)
-	fmt.Printf("default: %+v score=%.0f\n", defaultParams(), evaluate(defaultParams(), ticks))
+	fmt.Printf("best: %+v score=%.0f scenario: %s\n", best, bestScore, formatScores(bestScores))
+	defaultScore, defaultScores := evaluateMulti(defaultParams(), ticks)
+	fmt.Printf("default: %+v score=%.0f scenario: %s\n", defaultParams(), defaultScore, formatScores(defaultScores))
 }
 
 // tournamentSelect 从种群中随机选 size 个个体，返回最优。
