@@ -279,39 +279,88 @@ func (p *Planner) decideUnit(state *domain.TickState, unit *domain.UnitSnapshot,
 // moveTowardOrYield：moveToward 的停滞跳出包装——位置连续不变达
 // stuckYieldThreshold 且路径第一步仍被占（环形互堵：每个单位的
 // BFS 第一步都被另一个单位占着，全员 WAIT 永久互等，经济冻结）→
-// 确定性让位到相邻空格打破环（UP→RIGHT→DOWN→LEFT 优先空位）。
+// 确定性让位到相邻空格打破环（优先垂直于目标方向让开，不挡通道）。
 func (p *Planner) moveTowardOrYield(state *domain.TickState, unit *domain.UnitSnapshot, target domain.Position) domain.UnitAction {
 	action := p.moveToward(state, unit, target)
 	if action.Kind != domain.ActionWait || !p.isStuck(unit.ID) {
 		return action
 	}
-	if aside, ok := p.stepAside(state, unit); ok {
+	if aside, ok := p.stepAside(state, unit, target); ok {
 		return aside
 	}
 	return action
 }
 
-// stepAside 让位：向 4 邻域第一个空位（非障碍/非占用/界内）移动。
-// 确定性：UP→RIGHT→DOWN→LEFT。全部被堵返回 (false, "")。
-func (p *Planner) stepAside(state *domain.TickState, unit *domain.UnitSnapshot) (domain.UnitAction, bool) {
+// stepAside 让位：向相邻空位移动打破互堵。
+// 方向优先级（确定性）：
+//  1. 垂直于目标方向的两个方向（横向让开——不挡目标通道，且自己
+//     绕开占位者；满载回 Core 与空载去资源的对称互堵场景：双方
+//     各自横向让开，垂直通道腾出）；
+//  2. 远离目标方向（让开目标一侧）；
+//  3. 兜底 4 邻域顺序（UP→RIGHT→DOWN→LEFT）。
+//
+// 全部被堵返回 (false, "")。
+func (p *Planner) stepAside(state *domain.TickState, unit *domain.UnitSnapshot, target domain.Position) (domain.UnitAction, bool) {
 	const worldBound = 1000
-	for _, direction := range []domain.Direction{
-		domain.DirectionUp, domain.DirectionRight, domain.DirectionDown, domain.DirectionLeft,
-	} {
-		next := domain.Move(unit.Position, direction)
-		if next[0] < -worldBound || next[0] > worldBound || next[1] < -worldBound || next[1] > worldBound {
-			continue
+	perpendicular := perpendicularTo(unit.Position, target)
+	away := awayDirection(unit.Position, target)
+	orders := [][]domain.Direction{perpendicular, {away}, yieldOrder}
+	for _, order := range orders {
+		for _, direction := range order {
+			next := domain.Move(unit.Position, direction)
+			if next[0] < -worldBound || next[0] > worldBound || next[1] < -worldBound || next[1] > worldBound {
+				continue
+			}
+			if state.ObstacleCells.Contains(domain.CellKey(next[0], next[1])) {
+				continue
+			}
+			if occupiedByAny(state, unit.ID, next) {
+				continue
+			}
+			dir := direction
+			return domain.UnitAction{Kind: domain.ActionMove, Direction: &dir}, true
 		}
-		if state.ObstacleCells.Contains(domain.CellKey(next[0], next[1])) {
-			continue
-		}
-		if occupiedByAny(state, unit.ID, next) {
-			continue
-		}
-		dir := direction
-		return domain.UnitAction{Kind: domain.ActionMove, Direction: &dir}, true
 	}
 	return domain.UnitAction{}, false
+}
+
+// perpendicularTo 返回目标方向的垂直方向列表（确定性顺序）：
+// 目标主要沿 X 轴（|dx| >= |dy|）→ 让位 UP/DOWN（沿 Y 让开）；
+// 目标主要沿 Y 轴 → 让位 LEFT/RIGHT。
+func perpendicularTo(from, target domain.Position) []domain.Direction {
+	dx := target[0] - from[0]
+	dy := target[1] - from[1]
+	if absInt(dx) >= absInt(dy) {
+		return []domain.Direction{domain.DirectionUp, domain.DirectionDown}
+	}
+	return []domain.Direction{domain.DirectionLeft, domain.DirectionRight}
+}
+
+// awayDirection 返回远离目标方向的确定性方向（与目标主轴向相反）：
+// 目标在左（dx<0）→ RIGHT；目标在右 → LEFT；目标在上（dy<0）→ DOWN；
+// 目标在下 → UP；dx/dy 平局按 LEFT→RIGHT→UP→DOWN 优先级取反。
+func awayDirection(from, target domain.Position) domain.Direction {
+	dx := target[0] - from[0]
+	dy := target[1] - from[1]
+	switch {
+	case dx < 0:
+		return domain.DirectionRight
+	case dx > 0:
+		return domain.DirectionLeft
+	case dy < 0:
+		return domain.DirectionDown
+	case dy > 0:
+		return domain.DirectionUp
+	}
+	return domain.DirectionLeft
+}
+
+// absInt 返回绝对值。
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapshot, assignments map[string]domain.Position) (domain.UnitAction, string, bool) {

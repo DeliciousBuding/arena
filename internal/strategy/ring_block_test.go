@@ -96,6 +96,44 @@ func TestCoreRingYieldEmptyWorker(t *testing.T) {
 	t.Logf("core-ring yield: deposits=%d workers=%d", deposits, len(state.Workers))
 }
 
+// TestSymmetricBlockFullVsEmptyYield：第四类互堵（满载回 Core 与空载
+// 去资源互相占住对方 BFS 第一步格，双方对称 WAIT）。修复：
+// stepAside 优先垂直目标方向让开（横向错开，垂直通道腾出）。
+// 场景：满载在 (1,1) 回 Core (0,0)，空载在 (1,0) 去资源 (2,0)——
+// 满载第一步 (1,0) 被空载占、空载第一步 (2,0) 被?（无）……
+// 用真实 dense 拓扑：Core (0,0) 四邻全资源格，满载围 Core、空载在 Core。
+func TestSymmetricBlockFullVsEmptyYield(t *testing.T) {
+	state := &domain.TickState{
+		Tick: 1, Status: domain.PlayerStatusActive,
+		Resources: 0, ResourceCapacity: 10, ResourceSpace: 10, Population: 3,
+		Core:          &domain.Core{ID: "core-1", Position: domain.Position{0, 0}, HP: domain.CoreMaxHP, Shield: domain.CoreMaxShield, State: domain.CoreNormal},
+		ResourceCells: domain.NewSet[string](domain.CellKey(1, 0), domain.CellKey(0, 1), domain.CellKey(-1, 0), domain.CellKey(0, -1)),
+		ObstacleCells: domain.NewSet[string](),
+		Beacon:        domain.Beacon{},
+	}
+	state.Units = []domain.UnitSnapshot{
+		{ID: "full-a", Position: domain.Position{1, 1}, HP: 2, UnitType: domain.UnitWorker, Cargo: 1},
+		{ID: "empty-b", Position: domain.Position{0, 0}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+	}
+	state.Workers = append([]domain.UnitSnapshot(nil), state.Units...)
+	planner := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 0})
+
+	deposits := 0
+	blocked := 0
+	for tick := 1; tick <= 60; tick++ {
+		state.Tick = tick
+		plan := planner.Decide(state)
+		settled := settleForTest(state, plan)
+		deposits += settled.deposits
+		blocked += settled.blocked
+		state = settled.state
+	}
+	if deposits == 0 {
+		t.Fatalf("symmetric block: 0 deposits in 60 ticks (full/empty mutually blocking first-step cells)")
+	}
+	t.Logf("symmetric block broken: deposits=%d blocked=%d", deposits, blocked)
+}
+
 // settleForTest 是策略测试专用迷你结算：只应用 MOVE（移动到目标格，
 // 若被占则原地）+ 统计 DEPOSIT。不模拟 harvest/spawn/战斗（策略包
 // 不依赖 sim 引擎，避免循环导入）。
@@ -118,9 +156,11 @@ func settleForTest(state *domain.TickState, plan *domain.Plan) settleResult {
 			}
 			next := domain.Move(unit.Position, *action.Direction)
 			if state.ObstacleCells.Contains(domain.CellKey(next[0], next[1])) {
+				result.blocked++
 				continue
 			}
 			if _, taken := occupied[next]; taken {
+				result.blocked++
 				continue
 			}
 			delete(occupied, unit.Position)
@@ -142,5 +182,6 @@ func settleForTest(state *domain.TickState, plan *domain.Plan) settleResult {
 // settleResult 是测试用结算结果。
 type settleResult struct {
 	deposits int
+	blocked  int
 	state    *domain.TickState
 }
