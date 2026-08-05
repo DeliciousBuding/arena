@@ -1,6 +1,6 @@
 # Arena Agent 协作说明
 
-最后更新：2026-08-04。
+最后更新：2026-08-06。
 
 Arena 正式运行链为 TS-only。遵循原生设计：优先 Node 标准能力、现有 SDK/lock/JSONL，不引入第二套进程框架、控制面或配置系统。
 
@@ -30,6 +30,21 @@ npx tsx packages/arena-agent/src/cli/run-tenant.ts --doctor --config=runtime/con
 npm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --shadow --port=8120
 ```
 
+## 本地运行形态（2026-08-06 起）
+
+us1 已关闭，t1/t2 本地 live（deterministic + submitEnabled=true，baseDir=runtime）：
+```bash
+npm run arena:supervisor -- --configs=t1,t2 --mode=deterministic --live --record-calibration --port=8120
+```
+- 看护：Windows 计划任务 `ArenaWatchdog`（每分钟）+ `scripts/arena-watchdog.sh`（异常自动恢复，日志 `~/arena-watchdog.log`）；
+- t3/t4 不得使用（用户裁决——让位给外部实现）。
+
+## 模拟器真实性（稳定知识）
+
+- 官方 refill 是 **server-secret**（rules manifest `constraints.refill.status=server-secret`，永久 seed 不可预测）——模拟器默认不实现（unknown-by-design，绝不伪装 MATCH）；实验可用 `EpisodeConfig.refill`（近似：按 cadence 补回原始资源格，unknown note 标注 approximate）。
+- 策略约束（模拟器实证 + prompt 已落地）：**militaryRatio 0.3-0.4 是拐点、>0.5 纯损耗禁止**；**workerTarget 8 是平衡区**（6 保守、10 upkeep 负担）。
+- 策略搜索工具：`packages/arena-agent/scripts/strategy-search.mts`（两阶段：单人全网格 + top4 对打）、`scripts/military-ratio-experiment.mts`（结果文件落盘）。
+
 ## 不可违反
 
 - 未获明确授权不得启动真实 live writer；
@@ -37,7 +52,7 @@ npm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --shadow 
 - Pi 只提交候选，不直接 submit；
 - 不把 `INCONCLUSIVE` 写成 `MATCH`；
 - 不把 micro-Golden 写成 Runtime-Golden；
-- 不自动重启 live writer；
+- 不自动重启 live writer（本地看护例外：用户授权自主维护，`arena-watchdog.sh` 严格确认旧进程死透后拉起）；
 - 不恢复 Python runtime/pyproject/uv.lock；
 - 不在日志、fixture、manifest 或文档写入 token；
 - 不为形式上的路线图提前实现 MapStore worker、控制面写接口或 RL。
