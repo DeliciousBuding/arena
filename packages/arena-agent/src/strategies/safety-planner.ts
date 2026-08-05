@@ -208,7 +208,7 @@ export class SafetyPlanner {
     obstacles: ReadonlySet<string>,
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
   ): void {
-    const memory = this.world.unitMemory(unit.id, index);
+    const memory = this.world.unitMemory(unit.id, (index * 3) % EXPLORE_DIRECTION_COUNT);
     const home = state.core?.position ?? null;
     const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
 
@@ -274,7 +274,11 @@ export class SafetyPlanner {
         target = home;
       } else if (samePosition(unit.position, home)) {
         if (memory.patrolStarted) {
-          memory.patrolDirection = (memory.patrolDirection + 1) % EXPLORE_DIRECTION_COUNT;
+          // 方位步进 1→3（2026-08-06 生产实证）：t1 资源枯竭时 40 格矿在正东，
+          // 旧连续步进（+1）按 beacon 方位基（东南）逐格推进，第 8 圈才轮到正东
+          // （数百 tick 不可达）——4 worker 首圈聚集东南-西 4 方位造成测绘盲区；
+          // +3（与 8 互质）前 3 圈即扫过全部 8 方位，分散覆盖。
+          memory.patrolDirection = (memory.patrolDirection + 3) % EXPLORE_DIRECTION_COUNT;
           memory.patrolRing = (memory.patrolRing + 1) % EXPLORE_RING_COUNT;
         }
         else memory.patrolStarted = true;
