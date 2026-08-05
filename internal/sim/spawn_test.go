@@ -154,10 +154,58 @@ func TestSettleOrderYieldThenSpawn(t *testing.T) {
 	}
 }
 
-// TestFullEconomicLoopBreakDeadlock：t4 死锁闭环（20 ticks，真实
-// strategy.Planner + sim.Engine 每 tick 循环）：
-// 满载让位 → SPAWN → resources 下降 → workers 增加 → 卸货空间恢复 →
-// 满载回仓 DEPOSIT。断言闭环达成（最终发生 DEPOSIT 且资源回升）。
+// TestFullEconomicLoopPositiveGrowth：带资源格的经济正循环（50 ticks）：
+// harvest → deposit → spawn 持续增长，worker 数稳步上升、资源不枯竭
+// （per-unit 巡逻修复后"发现资源格"链路验证）。
+func TestFullEconomicLoopPositiveGrowth(t *testing.T) {
+	state := economyBaseState()
+	// 资源格：Core 附近 4 格（worker 可见可采）。
+	for _, cell := range []domain.Position{{1, 0}, {-1, 0}, {0, 1}, {0, -1}} {
+		state.ResourceCells.Add(domain.CellKey(cell[0], cell[1]))
+	}
+	planner := strategy.NewPlanner(strategy.Config{
+		WorkerTarget:      8,
+		PopulationCeiling: 20,
+		ExploreRadius:     8,
+		ThreatDistance:    5,
+		SpawnReserve:      0,
+	})
+	engine := NewEngine()
+
+	totalHarvests := 0
+	totalDeposits := 0
+	spawns := 0
+	resourceFloor := state.Resources
+	for tick := 1; tick <= 50; tick++ {
+		state.Tick = tick
+		plan := planner.Decide(state)
+		result := engine.Settle(state, plan)
+		totalHarvests += result.Stats.Harvests
+		totalDeposits += result.Stats.Deposits
+		spawns += result.Stats.Spawns
+		state = result.NextState
+		if state.Resources < resourceFloor {
+			resourceFloor = state.Resources
+		}
+	}
+
+	if spawns < 3 {
+		t.Errorf("spawns = %d, want >= 3 (economy should grow toward workerTarget)", spawns)
+	}
+	if totalHarvests == 0 {
+		t.Errorf("harvests = 0, want > 0 (resource cells must be farmed)")
+	}
+	if totalDeposits == 0 {
+		t.Errorf("deposits = 0, want > 0 (harvested cargo must reach core)")
+	}
+	if resourceFloor < 0 {
+		t.Errorf("resource floor = %d, want >= 0 (no negative resources)", resourceFloor)
+	}
+	if len(state.Workers) < 5 {
+		t.Errorf("workers = %d, want >= 5 after 50 ticks of growth", len(state.Workers))
+	}
+}
+
 func TestFullEconomicLoopBreakDeadlock(t *testing.T) {
 	state := economyBaseState()
 	planner := strategy.NewPlanner(strategy.Config{
