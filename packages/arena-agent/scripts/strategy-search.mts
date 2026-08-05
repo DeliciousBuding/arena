@@ -76,10 +76,10 @@ function duelScenario(seed: number) {
 /** 生产基准（v0.2.2 被压方形态）。 */
 const BASE_POLICY: MacroPolicy = { posture: "harvest", workerTarget: 6, militaryRatio: 0, focusRegion: null, attackPriority: null };
 
-/** 网格：posture × militaryRatio × workerTarget（18 组合）。 */
+/** 网格：posture × militaryRatio × workerTarget（27 组合，含 8-worker 平衡点）。 */
 const GRID: readonly MacroPolicy[] = (["harvest", "balanced", "aggressive"] as const).flatMap((posture) =>
   [0, 0.3, 0.5].flatMap((militaryRatio) =>
-    [6, 10].map((workerTarget) => ({
+    [6, 8, 10].map((workerTarget) => ({
       posture,
       workerTarget,
       militaryRatio,
@@ -89,8 +89,8 @@ const GRID: readonly MacroPolicy[] = (["harvest", "balanced", "aggressive"] as c
   ),
 );
 
-const SOLO_SEEDS = [1, 2, 3];
-const SOLO_TICKS = 300;
+const SOLO_SEEDS = [1, 2];
+const SOLO_TICKS = 150;
 const DUEL_SEEDS = [1, 2];
 const DUEL_TICKS = 300;
 
