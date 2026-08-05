@@ -6,36 +6,36 @@
   "scenes": [
     {
       "scene": "base",
-      "deposits": 77,
-      "spawns": 14,
+      "deposits": 51,
+      "spawns": 11,
       "workers": 13,
       "kills": 0,
       "unitsLost": 0,
-      "blocked": 37,
-      "moves": 3904,
-      "resources": 0
+      "blocked": 1,
+      "moves": 2156,
+      "resources": 6
     },
     {
       "scene": "dense",
-      "deposits": 25,
+      "deposits": 157,
+      "spawns": 16,
+      "workers": 13,
+      "kills": 0,
+      "unitsLost": 0,
+      "blocked": 2,
+      "moves": 3081,
+      "resources": 58
+    },
+    {
+      "scene": "sparse",
+      "deposits": 26,
       "spawns": 7,
       "workers": 9,
       "kills": 0,
       "unitsLost": 0,
-      "blocked": 425,
-      "moves": 3198,
-      "resources": 0
-    },
-    {
-      "scene": "sparse",
-      "deposits": 33,
-      "spawns": 8,
-      "workers": 10,
-      "kills": 0,
-      "unitsLost": 0,
-      "blocked": 3,
-      "moves": 2937,
-      "resources": 3
+      "blocked": 0,
+      "moves": 2658,
+      "resources": 1
     }
   ]
 }

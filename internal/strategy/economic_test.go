@@ -558,7 +558,9 @@ func TestRespawnStatusRespawningSpawnsAtCostIgnoringReserve(t *testing.T) {
 }
 
 // TestRespawnMovingCoreVanguardReturnsToCore：Core MOVING 恢复期，健康的
-// Vanguard 回核心防守（defend），不巡逻。
+// Vanguard 回核心防守（defend），不巡逻。Core 格被己方单位占位时
+// WAIT 排队（moveToward 目标被占不绕行——绕行会占住其他等待者的
+// 目标格形成互卡；等占位者离开即可）。
 func TestRespawnMovingCoreVanguardReturnsToCore(t *testing.T) {
 	state := baseState()
 	state.Core.State = domain.CoreMoving
@@ -568,8 +570,10 @@ func TestRespawnMovingCoreVanguardReturnsToCore(t *testing.T) {
 
 	plan := NewPlanner(DefaultConfig()).Decide(state)
 	action := requireUnitAction(t, plan, "vanguard-1")
-	if action.Kind != domain.ActionMove || action.Direction == nil || *action.Direction != domain.DirectionUp {
-		t.Fatalf("vanguard action = %+v, want MOVE UP (back to core)", action)
+	// Core 被 worker-full（baseState 满载 worker 在 Core 格）占位 →
+	// WAIT 排队；Core 空时 MOVE UP 回核心。
+	if action.Kind != domain.ActionWait {
+		t.Fatalf("vanguard action = %+v, want WAIT (core occupied by worker-full)", action)
 	}
 	if intent := plan.Intents["vanguard-1"]; intent != "defend" {
 		t.Errorf("intent = %q, want defend", intent)

@@ -150,13 +150,13 @@ func (p *Planner) Decide(state *domain.TickState) *domain.Plan {
 	for _, loser := range arbitrateMoveCapacity(candidates) {
 		plan.UnitActions[loser.unitID] = domain.UnitAction{Kind: domain.ActionWait}
 		plan.Intents[loser.unitID] = "capacity_wait:" + loser.intent
-		// 仲裁降级的空载 Worker 若站在 Core 格：改为让位（仓库口让出）——
-		// refill 闭环暴露：deposit 完的空载 worker 在 Core 上等 to_resource，
-		// 仲裁失败后原地 WAIT，满载 worker 进不来 deposit，经济卡死。
+		// 仲裁降级且站在 Core 格上的任意己方单位：改为让位（仓库口让出）——
+		// 空载 Worker 等 to_resource、军事单位巡逻经过，都会占住 Core 格
+		// 让满载 worker 进不来 deposit（refill 闭环 + 军事生产后暴露）。
+		// 空载让位允许踩资源格（dense 拓扑 Core 四邻全为资源格）。
 		if unit := findUnitSnapshot(state, loser.unitID); unit != nil &&
-			unit.UnitType == domain.UnitWorker && unit.Cargo == 0 &&
+			unit.Cargo == 0 &&
 			state.Core != nil && unit.Position == state.Core.Position {
-			// 空载让位允许踩资源格（dense 拓扑 Core 四邻全为资源格）。
 			if yield, ok := p.yieldFromCore(state, unit, false); ok {
 				plan.UnitActions[loser.unitID] = yield
 				plan.Intents[loser.unitID] = "yield_core_wait"
@@ -513,13 +513,16 @@ func directionIn(direction domain.Direction, directions []domain.Direction) bool
 //     理想第一步的目标格被占时 WAIT 排队（等占位者离开），而不是绕远路
 //     （t4 拓扑暴露：满载 worker 回仓在 Core 附近被占位者挡路时，
 //     BFS 绕行路径每 tick 变化 → 位置横跳振荡、永不结算）；
-//   - 目标格被占时走到目标相邻格等待（已在相邻格则 WAIT）；
+//   - 目标格被占时同样 WAIT 排队——不绕行到目标相邻格（dense 拓扑
+//     暴露：Core 被空载 worker 让位占住时，绕行者恰好占住让位者的
+//     目标格，双方互相卡死、经济冻结；排队等让位者离开即可破环）；
 //   - Core 格路径语义：目标非 Core 时 Core 格视为障碍（探索/采集路径
 //     不得穿越仓库口——探索 worker 反复穿过 Core 格会堵住回仓）。
 func (p *Planner) moveToward(state *domain.TickState, unit *domain.UnitSnapshot, target domain.Position) domain.UnitAction {
-	// 目标格被己方单位占位：走到目标相邻格等待（不横跳远离目标）。
+	// 目标格被己方单位占位：WAIT 排队（等占位者离开；不绕行——
+	// 绕行会占住其他等待者的目标格，形成互卡死锁）。
 	if target != unit.Position && occupiedByAny(state, unit.ID, target) {
-		return p.stepToAdjacentOf(state, unit, target)
+		return domain.UnitAction{Kind: domain.ActionWait}
 	}
 	// 地形障碍 + Core 格（目标非 Core 时）作为 BFS 障碍。
 	obstacles := state.ObstacleCells.Clone()
@@ -541,6 +544,7 @@ func (p *Planner) moveToward(state *domain.TickState, unit *domain.UnitSnapshot,
 }
 
 // stepToAdjacentOf 目标格被占时走到目标相邻的可达空位等待。
+// （当前 moveToward 不调用——改为 WAIT 排队；保留供诊断/测试。）
 func (p *Planner) stepToAdjacentOf(state *domain.TickState, unit *domain.UnitSnapshot, target domain.Position) domain.UnitAction {
 	obstacles := state.ObstacleCells.Clone()
 	for _, other := range state.Units {

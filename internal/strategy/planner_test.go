@@ -716,7 +716,7 @@ func TestVanguardHealsAtCore(t *testing.T) {
 }
 
 // TestVanguardReturnsToCoreToHeal：Vanguard 掉血且不在 Core 格 → 回 Core
-// （to_core_heal）。
+// （to_core_heal）。Core 被己方占位时 WAIT 排队（目标被占不绕行）。
 func TestVanguardReturnsToCoreToHeal(t *testing.T) {
 	state := baseState()
 	state.Units = append(state.Units, domain.UnitSnapshot{
@@ -726,8 +726,10 @@ func TestVanguardReturnsToCoreToHeal(t *testing.T) {
 	plan := NewPlanner(DefaultConfig()).Decide(state)
 
 	action := requireUnitAction(t, plan, "vanguard-1")
-	if action.Kind != domain.ActionMove {
-		t.Fatalf("vanguard action = %s, want MOVE", action.Kind)
+	// Core 被 worker-full（baseState 满载 worker 在 Core 格）占位 →
+	// WAIT 排队等占位者离开（不绕行——绕行会占住其他等待者的目标格）。
+	if action.Kind != domain.ActionWait {
+		t.Fatalf("vanguard action = %s, want WAIT (core occupied)", action.Kind)
 	}
 	if intent := plan.Intents["vanguard-1"]; intent != "to_core_heal" {
 		t.Errorf("intent = %q, want to_core_heal", intent)

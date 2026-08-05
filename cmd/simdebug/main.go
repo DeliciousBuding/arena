@@ -84,9 +84,10 @@ func main() {
 		plan := planner.Decide(state)
 		settled := engine.Settle(state, plan)
 		if tick%*dumpEvery == 0 || tick == *ticks {
-			fmt.Printf("\n=== t%d res=%d space=%d cells=%d workers=%d ===\n",
-				tick, state.Resources, state.ResourceSpace, len(state.ResourceCells), len(state.Workers))
-			for _, unit := range state.Units {
+			next := settled.NextState
+			fmt.Printf("\n=== t%d res=%d space=%d cells=%d workers=%d blocked=%d ===\n",
+				tick, next.Resources, next.ResourceSpace, len(next.ResourceCells), len(next.Workers), settled.Stats.Blocked)
+			for _, unit := range next.Units {
 				intent := plan.Intents[unit.ID]
 				if intent == "" {
 					intent = "-"
@@ -96,8 +97,13 @@ func main() {
 				if actionKind == "" {
 					actionKind = "-"
 				}
-				fmt.Printf("  %-12s %-8s at(%d,%d) cargo=%d hp=%d intent=%-16s action=%s\n",
-					unit.ID, unit.UnitType, unit.Position[0], unit.Position[1], unit.Cargo, unit.HP, intent, actionKind)
+				detail := ""
+				if action.Direction != nil {
+					target := domain.Move(unit.Position, *action.Direction)
+					detail = fmt.Sprintf("→(%d,%d)", target[0], target[1])
+				}
+				fmt.Printf("  %-12s %-8s at(%d,%d) cargo=%d hp=%d intent=%-16s action=%s%s\n",
+					unit.ID, unit.UnitType, unit.Position[0], unit.Position[1], unit.Cargo, unit.HP, intent, actionKind, detail)
 			}
 		}
 		state = settled.NextState
