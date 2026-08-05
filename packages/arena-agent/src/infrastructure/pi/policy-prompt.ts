@@ -65,7 +65,8 @@ export function buildMacroPolicyPrompt(
     "字段含义：posture=战略姿态（harvest 纯经济/balanced 均衡/aggressive 主动进攻）；",
     "workerTarget=目标 Worker 数量；militaryRatio=军事单位占比目标；",
     "focusRegion=探索/攻坚聚焦坐标（null 不聚焦）；attackPriority=攻击优先级（core 拆家掠夺资源/workers 断敌经济/null 不主动攻击）。",
-    "focusRegion 约束：必须是非负整数坐标（地图原点 [0,0]），且必须在己方 Core 附近可探索范围内（建议距 Core ≤30 格）；",
+    "focusRegion 约束：必须是整数坐标，且必须在己方 Core 附近可探索范围内（建议距 Core ≤30 格、禁超 32）；",
+    "坐标允许为负（真实地图 Core 常在负坐标区域，如 t1 Core [-619,-154]）；",
     "严禁输出远离己方基地的坐标（如地图角落）——worker 会直线远征导致 0 采集、经济冻结（生产实测教训）；",
     "资源枯竭时按下方 ⚠ 告警指引行动；绝不把 worker 支去超距远点找矿（直线远征 = 经济冻结）。",
     ...(state.resourceCells.size === 0

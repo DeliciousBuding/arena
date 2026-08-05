@@ -90,12 +90,18 @@ test("MacroPolicy: normalize 剔除未知字段并回退非法值", () => {
   assert.equal(fallback.attackPriority, null);
 });
 
-test("MacroPolicy: focusRegion 负坐标拒绝（生产实测 [-1500,1500] 越界远征教训）", () => {
-  const negative: Record<string, unknown> = { posture: "balanced", workerTarget: 8, militaryRatio: 0.3, focusRegion: [-1500, 1500], attackPriority: null };
-  assert.equal(isValidMacroPolicy(negative), false);
-  assert.equal(normalizeMacroPolicy(negative).focusRegion, null);
+test("MacroPolicy: focusRegion 负坐标合法（生产地图负坐标区域；远点防呆靠 maxFocusDistance）", () => {
+  // 2026-08-06 修正：t1 Core 在 [-619,-154]（负坐标区域），枯竭告警下模型
+  // 输出真实负坐标焦点被旧"非负校验"误拒（3 次 policy_error 实证）——负坐标
+  // 整数焦点合法；远点（[-1500,1500]）由 SafetyPlanner maxFocusDistance=32
+  // 按距 Core 距离过滤，不再按坐标符号拒绝。
+  const negative: Record<string, unknown> = { posture: "balanced", workerTarget: 8, militaryRatio: 0.3, focusRegion: [-600, -160], attackPriority: null };
+  assert.equal(isValidMacroPolicy(negative), true);
+  assert.deepEqual(normalizeMacroPolicy(negative).focusRegion, [-600, -160]);
   const origin: Record<string, unknown> = { posture: "balanced", workerTarget: 8, militaryRatio: 0.3, focusRegion: [0, 0], attackPriority: null };
   assert.equal(isValidMacroPolicy(origin), true);
+  const bad: Record<string, unknown> = { posture: "balanced", workerTarget: 8, militaryRatio: 0.3, focusRegion: [1.5, 0], attackPriority: null };
+  assert.equal(isValidMacroPolicy(bad), false);
 });
 
 test("MacroPolicy: aggressionOf 映射（aggressive → aggressive，其余 defensive）", () => {
