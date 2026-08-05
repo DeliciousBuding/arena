@@ -63,6 +63,13 @@ export interface EpisodeConfig {
    *  缺省用 tenant.policy 固定值。recovery/discipline 链由调用方在 provider 内组装
    *  （模拟级验证生产指挥机制）。tick 为游戏 tick（1-based）。 */
   readonly policyProvider?: (tenantId: string, tick: number, state: TickState) => MacroPolicy | null;
+  /**
+   * 近似 refill（实验可选；默认 undefined = 不实现官方 refill，保持
+   * unknown-by-design）：按规则 cadence 把原始资源格补回，模拟真实节奏的
+   * 持续供给（官方 refill 是 server-secret，本配置只是近似，unknown note
+   * 明确标注 approximate）。
+   */
+  readonly refill?: { readonly everyTicks?: number };
   readonly validatePlans?: boolean;
   /** 测试/实验注入；默认复用线上 DeterministicPlanner/SafetyPlanner。 */
   readonly plannerFactory?: (tenant: EpisodeTenant) => PlanProvider;
@@ -160,7 +167,18 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
   assertWorldInvariants(world);
 
   const rng = createSeededRng(config.seed);
-  const context: SettlementContext = { rules, rng: () => rng.next() };
+  const context: SettlementContext = {
+    rules,
+    rng: () => rng.next(),
+    ...(config.refill === undefined
+      ? {}
+      : {
+          refill: {
+            cells: [...loaded.terrain.resources.keys()].sort(compareCodeUnit),
+            everyTicks: config.refill.everyTicks ?? rules.rules.economy.refillEveryTicks,
+          },
+        }),
+  };
   const validate = config.validatePlans ?? true;
   const planners = new Map(
     tenants.map((tenant) => [
