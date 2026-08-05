@@ -36,6 +36,8 @@
 | 2026-08-05 | t4 固定策略实验 wt=2（shadow） | `runtime/t4/policy-wt2.log` + run-...194805 | ✅ **spawn 意图 0%**（7 tick；2 workers >= workerTarget=2 不 spawn）——workerTarget 接线验证 |
 | 2026-08-05 | t4 固定策略实验 wt=8（shadow） | `runtime/t4/policy-wt8.log` + run-...195009 | ✅ **spawn 意图 100%**（7 tick；2 workers < workerTarget=8 且 resources>=cost+reserve 持续 spawn）——**接线对比成立** |
 | 2026-08-05 | t4 真机 100t（新默认参数，shadow） | `runtime/t4/runs/run-20260805T121419/` + `e7-refill-100t.log` | ✅ **100/100 tick 零提交零 repair 干净退出**：`ticks=100 submits=0 rejected=0`；模式 GROWTH=30→EXPLORE_STARVED=70（t4 资源采空后 30t 无进展触发，符合预期）；动作 MOVE=352/WAIT=41 全 valid；unit moves 36/99t 无停滞；world enemies 4.5/tick；workers 4→3（敌方击杀，战斗真实场景） |
+| 2026-08-05 | **t4 长期 shadow 常驻（持续运行中）** | `runtime/t4/runs/run-20260805T124841/` + `longrun.log` | ✅ **600+ ticks 持续稳定**：0 ERROR、0 repaired、进程 ALIVE（PID 68264）；数据收集线 `C:\Users\Ding\tmp\arena-tenants-monitor.log` 每 2 分钟采样 |
+| 2026-08-05 | **t3 长期 shadow 常驻（补启动，持续运行中）** | `runtime/t3/runs/run-20260805T153401/` + `longrun.log` | ✅ 启动即产出；**双租户并行常驻**：t3/t4 各自独立进程（arena-ten-t3 / arena-ten）、独立 run/锁；监控循环双采样 ALIVE |
 
 ## 差异日志（行为漂移唯一记录）
 

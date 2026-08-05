@@ -57,8 +57,8 @@ type Planner struct {
 	config        Config
 	directive     Directive
 	patrolTargets map[string]domain.Position // unitID → 当前巡逻目标
-	patrolDirs    map[string]int             // unitID → 八方位索引
-	patrolRings   map[string]int             // unitID → 探索环（半径扩展）
+	patrolDirs    map[string]int             // unitID → 螺旋角度索引（64 方位角）
+	patrolRings   map[string]int             // unitID → 扫描环（半径扩展）
 	stuck         map[string]*stuckState     // unitID → 位置指纹停滞计数
 	engageTicks   map[string]int             // unitID → 连续 engage 计数
 }
@@ -632,9 +632,10 @@ func occupiedByAny(state *domain.TickState, excludeID string, cell domain.Positi
 }
 
 // patrol 是 per-unit 持久巡逻：同一单位持续朝同一目标直线移动直到
-// 到达或受阻，才按八方位 × 递增环半径换下一个目标（对齐 TS 版
-// patrol 语义）。目标是让 worker 真正走出视野发现资源格——全局共享
-// 索引每 tick 换目标会原地打转（真机 20t 资源枯竭根因）。
+// 到达或受阻，才换下一个螺旋扫描目标（覆盖路径规划启发式：视野带
+// 重叠保证——相邻扫描点距 ≤ 视野直径，扫描带无缝隙漏检）。
+// 目标是让 worker 真正走出视野发现资源格——全局共享索引每 tick 换
+// 目标会原地打转（真机 20t 资源枯竭根因）。
 // 停滞跳出：服务器反馈的位置连续不变（计划合法但结算未生效）→
 // 强制换目标，避免"合法但无效"的死循环。
 func (p *Planner) patrol(state *domain.TickState, unit *domain.UnitSnapshot) domain.UnitAction {
@@ -649,49 +650,97 @@ func (p *Planner) patrol(state *domain.TickState, unit *domain.UnitSnapshot) dom
 
 	target, hasTarget := p.patrolTargets[unit.ID]
 	if !hasTarget || unit.Position == target || p.isStuck(unit.ID) {
-		target = p.nextPatrolTarget(home, state.Beacon.Position, unit.ID)
+		target = p.nextSpiralTarget(home, state.Beacon.Position, unit.ID)
 		p.stuck[unit.ID] = &stuckState{lastPos: unit.Position} // 跳出后重置指纹
 	}
 	action := p.moveToward(state, unit, target)
 	if action.Kind == domain.ActionWait {
 		// 目标方向全被障碍阻挡：换下一个目标，避免原地卡死。
-		target = p.nextPatrolTarget(home, state.Beacon.Position, unit.ID)
+		target = p.nextSpiralTarget(home, state.Beacon.Position, unit.ID)
 	}
 	p.patrolTargets[unit.ID] = target
 	return p.moveToward(state, unit, target)
 }
 
-// starvedPatrol 是资源枯竭模式的确定性螺旋覆盖：每 worker 沿自己
-// 方位角（focus 方向 + ID 哈希偏移）在环上等距行走（angle 步长按
-// ring 缩放保持覆盖密度），走完一圈 ring+1（半径 22→44→66→88）。
-// 相比直线扫掠：环形覆盖不漏环间区域（确定性覆盖，neat-freak
-// 优化：探索覆盖率最大化）。
+// starvedPatrol 是资源枯竭模式的确定性螺旋覆盖（与普通巡逻同一
+// 扫描器，焦点改为指挥焦点）：每 worker 沿自己方位角（focus 方向 +
+// ID 哈希偏移）在环上等距行走，视野带重叠保证无缝隙漏检。
 func (p *Planner) starvedPatrol(state *domain.TickState, unit *domain.UnitSnapshot, home domain.Position) domain.UnitAction {
 	target, hasTarget := p.patrolTargets[unit.ID]
 	if !hasTarget || unit.Position == target || p.isStuck(unit.ID) {
-		ring := p.patrolRings[unit.ID]
-		radius := p.config.ExploreRadius * (ring + 1)
-		if radius > 88 {
-			p.patrolRings[unit.ID] = 0
-			ring = 0
-			radius = p.config.ExploreRadius
-		}
-		angleStep := 1 + radius/16 // 环越大步长越大：覆盖密度恒定
-		target = spiralPoint(home, p.directive.Focus, unit.ID, ring, p.patrolDirs[unit.ID], radius)
-		p.patrolDirs[unit.ID] += angleStep
-		if p.patrolDirs[unit.ID] >= 64 {
-			p.patrolDirs[unit.ID] = 0
-			p.patrolRings[unit.ID]++
-		}
+		target = p.nextSpiralTarget(home, p.directive.Focus, unit.ID)
 		p.stuck[unit.ID] = &stuckState{lastPos: unit.Position}
 	}
 	action := p.moveToward(state, unit, target)
 	if action.Kind == domain.ActionWait {
-		target = spiralPoint(home, p.directive.Focus, unit.ID, p.patrolRings[unit.ID], p.patrolDirs[unit.ID]+1, p.config.ExploreRadius)
+		target = p.nextSpiralTarget(home, p.directive.Focus, unit.ID)
 	}
 	p.patrolTargets[unit.ID] = target
 	return p.moveToward(state, unit, target)
 }
+
+// nextSpiralTarget 生成下一螺旋扫描目标（覆盖路径规划启发式）：
+//   - 半径：内圈优先（Core 周围是资源最可能的位置），每 ring 半径
+//     步进 6（视野直径 5 + 1 重叠 → 径向扫描带无缝），上限 46 后
+//     重置内圈循环扫；
+//   - 周向：64 方位角分辨率，角步长按半径自适应
+//     （angleStep = max(1, floor(50/radius)) → 相邻扫描点距 ≤ 5，
+//     与视野直径重叠——周向扫描带无缝）；
+//   - 首方位：focus 方位 + 单位 ID 哈希偏移（多 worker 同时出发
+//     覆盖不同方位，fixture 实测同向出发会挤在一起）。
+//
+// 设计依据：simsearch 随机场景 + t4 真机双重暴露——旧实现 8 方位
+// 点距 6.3 格、starved 外圈点距 52 格，均大于视野直径 5，扫描带
+// 之间漏检（资源 9-13 距离的稀疏场景 0 harvest 经济枯竭）。
+func (p *Planner) nextSpiralTarget(home, focus domain.Position, unitID string) domain.Position {
+	ring := p.patrolRings[unitID]
+	radius := p.patrolScanRadius(ring)
+	step := p.patrolAngleStep(radius)
+	target := spiralPoint(home, focus, unitID, ring, p.patrolDirs[unitID], radius)
+	p.patrolDirs[unitID] += step
+	if p.patrolDirs[unitID] >= 64 {
+		p.patrolDirs[unitID] = 0
+		p.patrolRings[unitID]++
+	}
+	return target
+}
+
+// patrolScanRadius 返回 ring 的扫描半径：内圈 4 起步（至少覆盖 Core
+// 邻域），每 ring +6（视野直径 5 + 1 重叠），上限 46 后重置回内圈
+// 循环扫（确定性覆盖，不漏任何径向带）。
+func (p *Planner) patrolScanRadius(ring int) int {
+	radius := 4 + 6*ring
+	if radius > 46 {
+		return 4
+	}
+	return radius
+}
+
+// patrolAngleStep 返回半径 r 处的周向角步长（64 方位角分辨率）：
+// 保证相邻扫描点距（Chebyshev）≤ 5（视野直径，含取整误差余量）→
+// step = max(1, floor(36/r))（36 = 5×64/2π×1.13 保守系数，覆盖
+// spiralPoint 取整后 Chebyshev 距离略大于弧长的情形）。
+// 半径小（内圈）时步长大（点少但点距仍 ≤ 5），半径大时步长 1
+// （最密采样）——周向扫描带全程无缝。
+func (p *Planner) patrolAngleStep(radius int) int {
+	step := 36 / radius
+	if step < 1 {
+		step = 1
+	}
+	return step
+}
+
+// spiralUnitVectors 是 64 方位角的预计算单位向量（索引 = 方位角 0..63，
+// 顺时针：0=E、16=S、32=W、48=N）。避免热路径每目标调用
+// math.Cos/Sin/Round（200 单位 × 每 tick 巡逻决策的性能热点）。
+var spiralUnitVectors = func() [64][2]float64 {
+	var table [64][2]float64
+	for i := 0; i < 64; i++ {
+		theta := float64(i) / 64 * 2 * math.Pi
+		table[i] = [2]float64{math.Cos(theta), math.Sin(theta)}
+	}
+	return table
+}()
 
 // spiralPoint 生成环上目标点：64 方位角分辨率，方位角 = focus 方位
 // （45°×8）+ 单位 ID 哈希偏移 + 环进度 angle；半径按 ring 缩放。
@@ -702,9 +751,9 @@ func spiralPoint(home, focus domain.Position, unitID string, ring, angle, radius
 		offset = (offset*31 + int(ch)) % 64
 	}
 	total := ((base+offset+angle)%64 + 64) % 64
-	theta := float64(total) / 64 * 2 * math.Pi
-	x := home[0] + int(math.Round(math.Cos(theta)*float64(radius)))
-	y := home[1] + int(math.Round(math.Sin(theta)*float64(radius)))
+	vector := spiralUnitVectors[total]
+	x := home[0] + int(math.Round(vector[0]*float64(radius)))
+	y := home[1] + int(math.Round(vector[1]*float64(radius)))
 	return domain.Position{x, y}
 }
 
@@ -743,42 +792,6 @@ func octantOf(dx, dy int) int {
 	angle := math.Atan2(float64(dy), float64(dx))
 	octant := int(math.Round(angle / (math.Pi / 4)))
 	return ((octant % 8) + 8) % 8
-}
-
-// nextPatrolTarget 生成下一巡逻目标：per-unit 八方位方向索引递增，
-// 每轮 8 个方向后探索环 +1（半径 ×1×2×3×4 循环，对齐
-// domain.ExploreRadiusForRing 语义）。首目标方向按单位 ID 稳定分散
-// （多 worker 同时出发时覆盖不同方位，fixture 实测同向出发会挤在一起）。
-func (p *Planner) nextPatrolTarget(home, beacon domain.Position, unitID string) domain.Position {
-	initial := p.patrolDirs[unitID]
-	if initial == 0 {
-		// 首目标：以 beacon 方位为基准 + 单位 ID 哈希偏移（0..7），
-		// 同 tick 多单位覆盖 8 个不同方位。
-		offset := 0
-		for _, ch := range unitID {
-			offset = (offset*31 + int(ch)) % 8
-		}
-		initial = offset
-		p.patrolDirs[unitID] = initial
-	}
-	// 巡逻半径从内圈开始螺旋外扩（真实游戏逻辑：Core 周围是资源
-	// 最可能的位置，先扫内圈再外扩）。首圈用 ExploreRadius/2（至少
-	// 4），后续 ring 逐步放大——simsearch 随机场景实测：稀疏场景
-	// （3 格资源、2 个在 38+ 距离）ring0 半径 17 直接跳过 Core 周围
-	// 内圈 → 0 harvest 经济枯竭；内圈起步后先发现近程资源。
-	radius := p.config.ExploreRadius / 2
-	if radius < 4 {
-		radius = 4
-	}
-	if ring := p.patrolRings[unitID]; ring > 0 {
-		radius, _ = domain.ExploreRadiusForRing(p.config.ExploreRadius, ring)
-	}
-	target := domain.ExploreTarget(home, beacon, initial, radius)
-	p.patrolDirs[unitID] = (initial + 1) % 8
-	if p.patrolDirs[unitID] == 0 {
-		p.patrolRings[unitID]++
-	}
-	return target
 }
 
 func nearestEnemy(state *domain.TickState, from domain.Position, radius int) *domain.VisibleEntity {
