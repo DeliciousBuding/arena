@@ -112,6 +112,10 @@ policy(LLM 低频 32 tick)
 
 ## 真机证据边界
 
+### 决策指挥闭环生产部署（2026-08-06，用户授权"全部部署全部实测"）
+
+us1 live 已升级 `ghcr.io/deliciousbuding/arena:404c1bcc…`（version.env pin + upgrade.sh 健康门禁通过；systemd 单元同步 active）。实测：t1+t2 ready（新代码首次双租户 live 提交）、manifest submitEnabled=true/decisionMode=deterministic、t1 新 run accepted 446+/rejected 0（历史 TICK_MISMATCH 为停机过渡期）、policy 流产出 aggressive/militaryRatio=0.8/focusRegion=null（无坏焦点）、live-health + disk-health timer active。历史证据：v0.2.16 时代 LLM 真实输出过 `focusRegion:[1500,1500]`（tick 56508）——决策指挥机制正是防御此场景；stall_recovery/policy_discipline telemetry 生产形态待命（无死循环即不触发）。
+
 ### Deterministic
 
 四租户历史报告均包含 startup sync、100 accepted submit 和 outcome drain；合计 400/400 accepted、0 rejected、0 repair。该事实不等于 Supervisor 四租户长期 soak 已完成。
