@@ -348,7 +348,8 @@ func TestDecideNoSpawnWhenResourcesInsufficient(t *testing.T) {
 	}
 }
 
-// TestDecideNoSpawnWhenWorkerTargetMet：Worker 数达到目标 → 不 spawn。
+// TestDecideNoSpawnWhenWorkerTargetMet：Worker 数达到目标 → 不 spawn
+// worker（显式 MilitaryRatio=0 排除军事分支）。
 func TestDecideNoSpawnWhenWorkerTargetMet(t *testing.T) {
 	state := baseState()
 	state.Resources = 50
@@ -362,7 +363,9 @@ func TestDecideNoSpawnWhenWorkerTargetMet(t *testing.T) {
 			ID: id, Position: domain.Position{i, 0}, HP: 2, UnitType: domain.UnitWorker,
 		})
 	}
-	plan := NewPlanner(DefaultConfig()).Decide(state)
+	config := DefaultConfig()
+	config.MilitaryRatio = 0
+	plan := NewPlanner(config).Decide(state)
 
 	if plan.CoreAction != nil {
 		t.Fatalf("expected no spawn with workers == target, got %+v", plan.CoreAction)
