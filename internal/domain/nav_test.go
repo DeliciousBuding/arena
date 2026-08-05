@@ -200,6 +200,46 @@ func TestStepTowardDirect(t *testing.T) {
 	}
 }
 
+// TestStepTowardFastPathMatchesBFS：快速路径（主轴向 L 形无墙直走）
+// 结果必须与 BFS 一致——随机障碍场景下，当 BFS 成功时 StepToward
+// 的第一步必须等于 BFS 第一步（确定性验证：快速路径不漂移语义）。
+// BFS 失败时 StepToward 允许走 fail-safe 方向（契约如此），不比较。
+func TestStepTowardFastPathMatchesBFS(t *testing.T) {
+	const iterations = 5000
+	random := rand.New(rand.NewSource(20260805))
+	compared := 0
+	for iteration := 0; iteration < iterations; iteration++ {
+		obstacles := make(Set[string])
+		// 稀疏障碍（0-8 个）：覆盖快速路径命中（开阔）与回退（绕障）两态。
+		for i := 0; i < random.Intn(9); i++ {
+			obstacles.Add(CellKey(random.Intn(21)-10, random.Intn(21)-10))
+		}
+		from := Position{random.Intn(21) - 10, random.Intn(21) - 10}
+		to := Position{random.Intn(21) - 10, random.Intn(21) - 10}
+		if from == to {
+			continue
+		}
+		fast, fastOK := StepToward(from, to, obstacles)
+		if !fastOK {
+			continue // 全堵：BFS 同样失败，跳过
+		}
+		// BFS 参考：margin 32（覆盖 21×21 网格内全部）。
+		bfsDirection, bfsOK := ShortestPathFirstStep(from, to, obstacles, 32)
+		if !bfsOK {
+			continue // BFS 失败（目标不可达/被围）：fail-safe 方向合法，不比较
+		}
+		compared++
+		if fast != bfsDirection {
+			t.Fatalf("iteration %d: fast path %s != BFS %s (%v -> %v, obstacles=%v)",
+				iteration, fast, bfsDirection, from, to, obstacles)
+		}
+	}
+	if compared < 2000 {
+		t.Fatalf("too few comparable cases: %d/5000", compared)
+	}
+	t.Logf("fast-path consistency: %d cases match BFS", compared)
+}
+
 // TestShortestPathInvariant 10,000 条随机路径：可达路径必须合法
 // （端点正确、逐格相邻、不穿墙、不越 margin 边界框、长度不小于曼哈顿
 // 下界）。种子固定，结果确定性。

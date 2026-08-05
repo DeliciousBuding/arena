@@ -94,6 +94,8 @@ func TestStuckDetectionForcesNewTarget(t *testing.T) {
 
 // TestStarvedPatrolFocusesOnBeacon：EXPLORE_STARVED 模式下 worker 走
 // 螺旋覆盖（目标在环上：距离 ≈ radius；到达后沿环推进）。
+// 新语义（覆盖路径规划启发式）：首圈半径 4 起步（内圈优先），
+// 每 ring +6（视野带重叠），角步长自适应保证扫描带无缝。
 func TestStarvedPatrolFocusesOnBeacon(t *testing.T) {
 	state := baseState()
 	state.ResourceCells = domain.NewSet[string]()
@@ -108,11 +110,11 @@ func TestStarvedPatrolFocusesOnBeacon(t *testing.T) {
 	if action.Kind != domain.ActionMove || action.Direction == nil {
 		t.Fatalf("action = %+v, want MOVE (spiral sweep)", action)
 	}
-	// 螺旋目标在环上：与 home 距离 ≈ radius（16 ± 3）。
+	// 螺旋目标在环上：与 home 距离 ≈ ring0 半径 4（±2）。
 	first := planner.patrolTargets["worker-1"]
 	distance := abs(first[0]) + abs(first[1])
-	if distance < 13 || distance > 19 {
-		t.Errorf("first spiral target = %v (dist %d), want on ring ~16", first, distance)
+	if distance < 2 || distance > 6 {
+		t.Errorf("first spiral target = %v (dist %d), want on ring ~4 (inner-first)", first, distance)
 	}
 	// 到达目标后沿环推进（下一目标不同）。
 	state.Units[0].Position = first
@@ -122,6 +124,23 @@ func TestStarvedPatrolFocusesOnBeacon(t *testing.T) {
 	second := planner.patrolTargets["worker-1"]
 	if second == first {
 		t.Errorf("spiral target did not advance after arrival (%v)", first)
+	}
+	// 螺旋覆盖推进验证：环上相邻目标点距 ≤ 5（视野直径，扫描带无缝）。
+	// 模拟连续推进 8 个目标，检查相邻点距离。
+	planner2 := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 16, ThreatDistance: 5, SpawnReserve: 0})
+	planner2.ApplyDirective(Directive{Mode: ModeExploreStarved, Focus: state.Beacon.Position})
+	prev := planner2.patrolTargets["worker-1"]
+	maxGap := 0
+	for i := 0; i < 8; i++ {
+		cur := planner2.nextSpiralTarget(domain.Position{0, 0}, state.Beacon.Position, "worker-1")
+		gap := domain.Chebyshev(prev, cur)
+		if gap > maxGap {
+			maxGap = gap
+		}
+		prev = cur
+	}
+	if maxGap > 5 {
+		t.Errorf("spiral scan band gap = %d, want <= 5 (vision diameter, seamless coverage)", maxGap)
 	}
 }
 
