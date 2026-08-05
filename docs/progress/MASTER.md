@@ -99,6 +99,14 @@ policy(LLM 低频 32 tick)
 - `scripts/param-scan.mts`（neat-freak 参数网格扫描）：9 组合 × 2 seeds × 双场景，输出排序 + 可注册配置候选。**扫描结论：clearPath=true 两场景稳定 +1 资源（防呆/清障夹具），无副作用——注册为 clear-path-v1 候选变体，不改生产默认（保基线确定性）**；maxFocusDistance 各档在聚焦夹具无区分（防呆价值由 command-chain 模拟级测试验证）。
 
 **剩余已知卡点**：w1 满载 Worker 在 32 格外被敌方 Worker 群长期围堵（战场阻塞，非 planner 死锁——四面围死时 WAIT 正确；等敌群散开或 Vanguard 清场）。A/B 对照 t2（aggressive）经济更健康佐证防守策略需配合前压。
+
+## 模拟器真实性（2026-08-06，真实数据校准第一环）
+
+"模拟器要模拟实际真实游戏数据"（用户导向）：
+- **近似 refill**（`EpisodeConfig.refill`，默认关闭）：官方 refill 是 server-secret（rules manifest `constraints.refill.status=server-secret`，永久 seed 不可预测）——模拟器默认不实现（unknown-by-design）；实验可选配置按规则 cadence 把原始资源格补回（P13-refill-policy 双路径：无配置 → server-secret note 零回归；有配置 → 补回 + approximate note）。**实测**（500 ticks 双人对打）：no-refill 资源 5/人口 3（经济崩）vs refill 资源 18/人口 8（经济活、战争结果不同）——长期模拟经济不再失真。
+- **军事比例实验**（refill 版，300 ticks × 2 seeds，p1=balanced/0.3 固定）：militaryRatio=0 资源 30 vs 军事化 2.5；军队 6 vs 8；**0.3/0.5/0.8 输出完全一致**（2.5/8）——0.5+ 产兵饱和纯烧经济（生产 t2 0.5 濒死机制确认）；军事化对局经济先崩者输。**策略层约束落地**：policy prompt 注入拐点指引（0.3-0.4 性价比、禁止 >0.5）。
+- **基准**：单 episode 1.3k ticks/s、批量并行 4.2k ticks/s（Promise.all）；对打场景（双玩家+军事）单局成本远高于单人场景。
+- **工具**：`scripts/strategy-search.mts`（策略网格批量验证）、`scripts/military-ratio-experiment.mts`（军事比例聚焦实验，结果文件落盘）。
 - **经济死锁修复 + A/B 实验（v0.2.2，PR #25，2026-08-05）**：生产数据显示 deterministic SPAWN 锁死 emergency floor=2（t1 停 2 worker、策略 workerTarget=16 不生效）→ workerTarget 接线补员（reserve 保护 + emergency 保命优先）+ prompt 注入策略历史基线（防 16→3 跳变）+ config.policyOverride 实验框架。**A/B 第一轮已启动**：t1 = LLM 自主对照，t2 = 固定 aggressive/workerTarget=12/attackPriority=core 实验组（policy.jsonl policy_override 记录为证）。
 - **部署链路/状态机/世界状态设计稿（2026-08-04）**：`docs/design/deploy-fast-upgrade.md`（版本 pin 单源化 /opt/arena/version.env + upgrade.sh 一键升级 + 自动回滚——pin 丢失已两次实测）；`docs/design/game-state-machine.md`（Core 复活/自毁/upkeep 状态机 + 规则升级语义 + 决策层 respawnOverride）；`docs/design/world-state.md`（本地记忆 vs 服务器权威 + 资源记忆过期 + tick 回退世界重置检测）。
 - **工具链升级（2026-08-05）**：TypeScript 5.5 → 7.0.2（Go 原生编译器，`npm run check` 提速约 10x）；两包测试链全面切换 Node 24 原生 `node --test --test-force-exit`（hero-ts 53 + arena-agent 583 tests 全绿，0 fail），`tsx` 仅保留为 CLI 入口；消除 3 处 parameter properties 与 1 处 type-only import，tsconfig 开启 `verbatimModuleSyntax` 固化 erasable-only 规范；`npm run check` / `npm test` / `schema:check` / `replay:ts` / gen-status / docs_health 全绿。
