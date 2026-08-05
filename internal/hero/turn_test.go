@@ -2,8 +2,8 @@ package hero
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/deliciousbuding/arena/internal/contracts"
@@ -126,18 +126,17 @@ func TestTurnBuildSortsUnitActionsByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalCommandPlan: %v", err)
 	}
-	var raw struct {
-		UnitActions map[string]json.RawMessage `json:"unit_actions"`
+	// json.Marshal 对 map 键排序输出（Go 语义）；断言编码文本中的键顺序
+	// （不能 unmarshal 后遍历 Go map——map 遍历无序是 flaky 根因）。
+	text := string(encoded)
+	aPos := strings.Index(text, `"a-unit"`)
+	mPos := strings.Index(text, `"m-unit"`)
+	zPos := strings.Index(text, `"z-unit"`)
+	if aPos < 0 || mPos < 0 || zPos < 0 {
+		t.Fatalf("encoded plan missing sorted keys: %s", text)
 	}
-	if err := json.Unmarshal(encoded, &raw); err != nil {
-		t.Fatalf("unmarshal encoded plan: %v", err)
-	}
-	keys := make([]string, 0, len(raw.UnitActions))
-	for key := range raw.UnitActions {
-		keys = append(keys, key)
-	}
-	if len(keys) != 3 || keys[0] != "a-unit" || keys[1] != "m-unit" || keys[2] != "z-unit" {
-		t.Errorf("encoded unit action keys = %v, want [a-unit m-unit z-unit]", keys)
+	if !(aPos < mPos && mPos < zPos) {
+		t.Errorf("encoded unit action keys not sorted in output: %s", text)
 	}
 }
 
