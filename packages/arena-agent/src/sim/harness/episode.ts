@@ -112,10 +112,16 @@ export interface EpisodeResult {
 }
 
 function createPlanner(kind: PlannerKind, tenant: EpisodeTenant): PlanProvider {
+  const safetyConfig = { ...DEFAULT_SAFETY_CONFIG, ...tenant.plannerConfig };
   if (kind === "deterministic") {
-    return new DeterministicPlanner(undefined, undefined, undefined, tenant.plannerConfig?.vanguardRatio);
+    return new DeterministicPlanner(
+      undefined,
+      new SafetyPlanner(safetyConfig),
+      new SafetyPlanner(safetyConfig),
+      tenant.plannerConfig?.vanguardRatio,
+    );
   }
-  return new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...tenant.plannerConfig });
+  return new SafetyPlanner(safetyConfig);
 }
 
 function canonicalize(value: unknown): unknown {

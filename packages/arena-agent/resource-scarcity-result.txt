@@ -1,0 +1,9 @@
+=== 资源枯竭应对（近处资源采完、远处 30 格外、无 refill；400 ticks × 2 seeds）===
+variant                    | res   | pop  | workerMaxDist
+balanced/null（现状守家）        |   2.0 |  4.0 |          17.0
+balanced/focus 远矿          |   3.0 |  5.0 |          33.0
+balanced/探索半径24            |   2.0 |  4.0 |         111.0
+harvest/null（纯经济）          |   2.0 |  4.0 |          17.0
+aggressive/null（军事对照）      |   2.0 |  4.0 |          17.0
+
+=== 最优枯竭应对：balanced/focus 远矿（res=3.0）===

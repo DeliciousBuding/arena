@@ -36,8 +36,18 @@ us1 已关闭，t1/t2 本地 live（deterministic + submitEnabled=true，baseDir
 ```bash
 npm run arena:supervisor -- --configs=t1,t2 --mode=deterministic --live --record-calibration --port=8120
 ```
-- 看护：Windows 计划任务 `ArenaWatchdog`（每分钟）+ `scripts/arena-watchdog.sh`（异常自动恢复，日志 `~/arena-watchdog.log`）；
+- 看护：Windows 计划任务 `ArenaWatchdog`（每分钟，重建命令见下）+ `scripts/arena-watchdog.sh`（异常自动恢复：确认死透 → 清死锁 → 带 `--record-calibration` 重启，日志 `~/arena-watchdog.log`）；
 - t3/t4 不得使用（用户裁决——让位给外部实现）。
+
+### 租户始终运行 + 数据收集线保障（2026-08-06）
+
+- **数据收集线 = supervisor `--record-calibration` 旁路**（calibration cases 持续落盘 `runtime/<t>/calibration/<runId>/cases/`，看护重启命令已含该参数）；
+- **计划任务丢失恢复**：ArenaWatchdog 曾丢失（2026-08-06 发现）——重建命令：
+  ```bash
+  MSYS_NO_PATHCONV=1 schtasks /create /tn ArenaWatchdog /sc minute /mo 1 /ru Ding /f /tr 'C:\Program Files\Git\bin\bash.exe -lc "/d/Code/Projects/arena/scripts/arena-watchdog.sh"'
+  ```
+  验证：`MSYS_NO_PATHCONV=1 schtasks /query /tn ArenaWatchdog /fo LIST`；
+- **操作纪律（防误杀数据线）**：清理实验/后台进程只按**命令行匹配**杀特定 PID（`wmic process where "name='node.exe'" get processid,commandline | grep 匹配`），**严禁 `taskkill` 全部 node 进程树**——会误杀 supervisor/tenant 造成数据线中断（2026-08-06 实测教训：误杀后看护 26s 恢复，但产生中断窗口）；需要杀 supervisor 时按 8120 端口找 PID 定向杀。
 
 ## 模拟器真实性（稳定知识）
 
