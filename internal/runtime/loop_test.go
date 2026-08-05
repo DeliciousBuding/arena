@@ -303,6 +303,30 @@ func TestDecisionRecordDetectsCargoBlocked(t *testing.T) {
 	}
 }
 
+// TestMigrationCandidateEventOnProlongedStarvation：100+ tick 无进展 →
+// Commander 切 MIGRATE_CAND，Loop 发出 migration.candidate 事件
+// （实机 105t 的离线等价验证——事件链路完整覆盖）。
+func TestMigrationCandidateEventOnProlongedStarvation(t *testing.T) {
+	client := &stubClient{events: make(chan hero.Event, 300)}
+	loop, _ := newTestLoop(t, client, &stubPlanner{plans: []*domain.Plan{validPlan()}})
+	loop.Commander = strategy.NewCommander()
+	defer loop.Close()
+
+	// 101 个相同空 state（res=0 恒定、无资源格）：no-progress 计数
+	// 到 100 → MIGRATE_CAND → migration.candidate 事件。
+	for tick := 1; tick <= 101; tick++ {
+		client.events <- hero.Event{Kind: hero.TickEvent, Tick: tick}
+		client.events <- hero.Event{Kind: hero.StateEvent, State: *emptyState()}
+	}
+	close(client.events)
+	if err := loop.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if loop.lastDirective.Mode != strategy.ModeMigrateCand {
+		t.Errorf("mode = %s, want MIGRATE_CAND after 100 no-progress ticks", loop.lastDirective.Mode)
+	}
+}
+
 func jsonlLineCount(t *testing.T, path string) int {
 	t.Helper()
 	data, err := os.ReadFile(path)
