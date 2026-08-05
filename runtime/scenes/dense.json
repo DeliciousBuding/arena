@@ -1,0 +1,33 @@
+{
+  "name": "dense",
+  "initial": {
+    "Tick": 1,
+    "Status": "ACTIVE",
+    "Resources": 10,
+    "ResourceCapacity": 10,
+    "ResourceSpace": 0,
+    "Population": 2,
+    "Core": {
+      "ID": "core-1",
+      "Position": [0, 0],
+      "HP": 5,
+      "Shield": 5,
+      "State": "NORMAL"
+    },
+    "Units": [
+      {"ID": "worker-full", "Position": [0, 0], "HP": 2, "UnitType": "WORKER", "Cargo": 1},
+      {"ID": "worker-empty", "Position": [5, 5], "HP": 2, "UnitType": "WORKER", "Cargo": 0}
+    ],
+    "Workers": [
+      {"ID": "worker-full", "Position": [0, 0], "HP": 2, "UnitType": "WORKER", "Cargo": 1},
+      {"ID": "worker-empty", "Position": [5, 5], "HP": 2, "UnitType": "WORKER", "Cargo": 0}
+    ],
+    "ResourceCells": [],
+    "ObstacleCells": [],
+    "Beacon": {"Position": [-17, 77], "Status": "GROUND"}
+  },
+  "latentResources": [
+    [1, 0], [-1, 0], [0, 1], [0, -1], [2, 0], [-2, 0], [0, 2], [0, -2],
+    [3, 0], [-3, 0], [0, 3], [0, -3], [1, 1], [-1, -1], [1, -1], [-1, 1]
+  ]
+}

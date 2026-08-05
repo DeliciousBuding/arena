@@ -1,0 +1,9 @@
+{
+  "name": "default",
+  "workerTarget": 13,
+  "populationCeiling": 16,
+  "exploreRadius": 17,
+  "threatDistance": 5,
+  "spawnReserve": 0,
+  "militaryRatio": 25
+}

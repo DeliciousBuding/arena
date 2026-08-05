@@ -1,0 +1,33 @@
+{
+  "name": "base",
+  "initial": {
+    "Tick": 1,
+    "Status": "ACTIVE",
+    "Resources": 10,
+    "ResourceCapacity": 10,
+    "ResourceSpace": 0,
+    "Population": 2,
+    "Core": {
+      "ID": "core-1",
+      "Position": [38, 39],
+      "HP": 5,
+      "Shield": 5,
+      "State": "NORMAL"
+    },
+    "Units": [
+      {"ID": "worker-full", "Position": [38, 39], "HP": 2, "UnitType": "WORKER", "Cargo": 1},
+      {"ID": "worker-empty", "Position": [38, 51], "HP": 2, "UnitType": "WORKER", "Cargo": 0}
+    ],
+    "Workers": [
+      {"ID": "worker-full", "Position": [38, 39], "HP": 2, "UnitType": "WORKER", "Cargo": 1},
+      {"ID": "worker-empty", "Position": [38, 51], "HP": 2, "UnitType": "WORKER", "Cargo": 0}
+    ],
+    "ResourceCells": ["38,45"],
+    "ObstacleCells": ["36,51", "36,52", "37,39", "37,42", "37,44", "38,34", "38,43", "38,50", "39,41", "39,44", "39,52", "40,40"],
+    "Beacon": {"Position": [-17, 77], "Status": "GROUND"}
+  },
+  "latentResources": [
+    [38, 45], [30, 34], [46, 34], [30, 46], [46, 46], [38, 26],
+    [38, 47], [28, 36], [48, 36], [28, 48], [48, 48], [40, 24]
+  ]
+}

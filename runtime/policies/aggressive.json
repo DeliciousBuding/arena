@@ -1,0 +1,9 @@
+{
+  "name": "aggressive",
+  "workerTarget": 10,
+  "populationCeiling": 20,
+  "exploreRadius": 12,
+  "threatDistance": 8,
+  "spawnReserve": 0,
+  "militaryRatio": 50
+}

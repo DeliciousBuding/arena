@@ -1,0 +1,9 @@
+{
+  "name": "growth",
+  "workerTarget": 16,
+  "populationCeiling": 24,
+  "exploreRadius": 20,
+  "threatDistance": 5,
+  "spawnReserve": 2,
+  "militaryRatio": 0
+}
