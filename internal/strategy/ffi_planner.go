@@ -70,6 +70,14 @@ func (p *FfiPlanner) Decide(state *domain.TickState) *domain.Plan {
 	return p.fallback.Decide(state)
 }
 
+// IsFallback 报告是否处于回退模式（dll 加载失败/句柄创建失败/调用失败后
+// 永久回退 Go 原生 planner）。
+func (p *FfiPlanner) IsFallback() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.handle == nil
+}
+
 // ApplyDirective 把指挥层指令下发到 Rust planner。
 func (p *FfiPlanner) ApplyDirective(directive Directive) {
 	p.mu.Lock()
