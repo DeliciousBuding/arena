@@ -18,6 +18,9 @@ type Config struct {
 	ExploreRadius     int // 探索半径
 	ThreatDistance    int // 威胁判定距离（Manhattan）
 	SpawnReserve      int // 正常扩张的预留资源（reserve guard；紧急/恢复期忽略）
+	// EnableCoreMigration 启用 Core 迁移执行（红线：默认 false——
+	// MIGRATE_CAND 只评估，operator 显式开启后才发 START_MOVE）。
+	EnableCoreMigration bool
 }
 
 // DefaultConfig 返回默认配置。
@@ -166,6 +169,14 @@ func (p *Planner) isStuck(unitID string) bool {
 func (p *Planner) decideCore(state *domain.TickState) *domain.CoreAction {
 	if state.Core == nil || state.Core.State != domain.CoreNormal {
 		return nil
+	}
+	// Core 迁移执行（红线：默认关闭；MIGRATE_CAND 且显式启用才发）。
+	// 方向朝指挥焦点（Beacon 方位）；Core 进入 MOVING 后本函数
+	// 返回 nil（state 非 NORMAL），不会重复发。
+	if p.config.EnableCoreMigration && p.directive.Mode == ModeMigrateCand {
+		if direction := migrationDirection(p.directive.Focus, state.Core.Position); direction != nil {
+			return &domain.CoreAction{Kind: domain.CoreStartMove, Direction: direction}
+		}
 	}
 	workers := len(state.Workers)
 	if workers < p.config.WorkerTarget && state.Population < p.config.PopulationCeiling {
@@ -379,6 +390,27 @@ func (p *Planner) focusTarget(home, focus domain.Position, unitID string, radius
 // exploreDeltas 是八方位单位向量（与 domain.nav 同布局）。
 var exploreDeltas = []domain.Position{
 	{1, 0}, {1, 1}, {0, 1}, {-1, 1}, {-1, 0}, {-1, -1}, {0, -1}, {1, -1},
+}
+
+// migrationDirection 将指挥焦点方位转为 Core 迁移的四方向：
+// octant 0/1→E、2/3→S、4/5→W、6/7→N。焦点与 home 重合返回 nil。
+func migrationDirection(focus, home domain.Position) *domain.Direction {
+	if focus == home {
+		return nil
+	}
+	octant := octantOf(focus[0]-home[0], focus[1]-home[1])
+	var direction domain.Direction
+	switch octant {
+	case 0, 1:
+		direction = domain.DirectionRight
+	case 2, 3:
+		direction = domain.DirectionDown
+	case 4, 5:
+		direction = domain.DirectionLeft
+	default:
+		direction = domain.DirectionUp
+	}
+	return &direction
 }
 
 // octantOf 将方向向量映射到 0..7 八方位索引（与 domain exploreOctant

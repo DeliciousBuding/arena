@@ -114,6 +114,68 @@ func TestStarvedPatrolFocusesOnBeacon(t *testing.T) {
 	}
 }
 
+// TestMigrationStartsOnMigrateCandidate：MIGRATE_CAND + 显式启用 →
+// Core START_MOVE 朝焦点方向（红线：默认关闭时不发）。
+func TestMigrationStartsOnMigrateCandidate(t *testing.T) {
+	state := baseState()
+	state.Resources = 1
+	state.ResourceCells = domain.NewSet[string]()
+	// Beacon 在正东：焦点东 → START_MOVE RIGHT。
+	state.Beacon = domain.Beacon{Position: domain.Position{20, 0}, Status: domain.BeaconGround}
+
+	// 默认关闭：MIGRATE_CAND 也不发。
+	disabled := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 16, ThreatDistance: 5, SpawnReserve: 0})
+	disabled.ApplyDirective(Directive{Mode: ModeMigrateCand, Focus: state.Beacon.Position})
+	plan := disabled.Decide(state)
+	if plan.CoreAction != nil {
+		t.Fatalf("migration disabled: core action = %+v, want nil", plan.CoreAction)
+	}
+
+	// 显式启用：MIGRATE_CAND → START_MOVE RIGHT。
+	enabled := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 16, ThreatDistance: 5, SpawnReserve: 0, EnableCoreMigration: true})
+	enabled.ApplyDirective(Directive{Mode: ModeMigrateCand, Focus: state.Beacon.Position})
+	plan = enabled.Decide(state)
+	if plan.CoreAction == nil || plan.CoreAction.Kind != domain.CoreStartMove {
+		t.Fatalf("core action = %+v, want START_MOVE", plan.CoreAction)
+	}
+	if plan.CoreAction.Direction == nil || *plan.CoreAction.Direction != domain.DirectionRight {
+		t.Errorf("migration direction = %v, want RIGHT (focus east)", plan.CoreAction.Direction)
+	}
+	// 计划必须通过校验（wire 转换 + validator）。
+	if result := domain.ValidatePlan(state, *plan); !result.Valid {
+		t.Errorf("plan invalid: %v", result.Issues)
+	}
+}
+
+// TestMigrationNotInGrowthMode：GROWTH 模式下即使启用也不迁移。
+func TestMigrationNotInGrowthMode(t *testing.T) {
+	state := baseState()
+	state.Resources = 1
+	state.ResourceCells = domain.NewSet[string]()
+	state.Beacon = domain.Beacon{Position: domain.Position{20, 0}, Status: domain.BeaconGround}
+	planner := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 16, ThreatDistance: 5, SpawnReserve: 0, EnableCoreMigration: true})
+	planner.ApplyDirective(Directive{Mode: ModeGrowth, Focus: state.Beacon.Position})
+	plan := planner.Decide(state)
+	if plan.CoreAction != nil {
+		t.Fatalf("core action = %+v, want nil in GROWTH mode", plan.CoreAction)
+	}
+}
+
+// TestMigrationStopsWhenCoreMoving：Core MOVING 时不发迁移（不重复发）。
+func TestMigrationStopsWhenCoreMoving(t *testing.T) {
+	state := baseState()
+	state.Resources = 1
+	state.ResourceCells = domain.NewSet[string]()
+	state.Beacon = domain.Beacon{Position: domain.Position{20, 0}, Status: domain.BeaconGround}
+	state.Core.State = domain.CoreMoving
+	planner := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 16, ThreatDistance: 5, SpawnReserve: 0, EnableCoreMigration: true})
+	planner.ApplyDirective(Directive{Mode: ModeMigrateCand, Focus: state.Beacon.Position})
+	plan := planner.Decide(state)
+	if plan.CoreAction != nil {
+		t.Fatalf("core action = %+v, want nil while core moving", plan.CoreAction)
+	}
+}
+
 // TestStarvedPatrolRecoversToGrowth：模式切回 GROWTH 后恢复 8 方位巡逻
 // （指令传递可逆）。
 func TestStarvedPatrolRecoversToGrowth(t *testing.T) {

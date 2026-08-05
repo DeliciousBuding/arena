@@ -51,8 +51,9 @@ const (
 
 // CoreAction 是 Core 动作。
 type CoreAction struct {
-	Kind     CoreActionKind
-	UnitType *UnitType
+	Kind      CoreActionKind
+	UnitType  *UnitType
+	Direction *Direction // START_MOVE 方向
 }
 
 // 单位与 Core 属性常量（与服务器规则一致）。

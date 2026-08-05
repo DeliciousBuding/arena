@@ -253,12 +253,20 @@ func PlanToCommandPlan(plan *domain.Plan) (*contracts.CommandPlan, error) {
 	var coreAction *contracts.WireAction
 	if plan.CoreAction != nil {
 		wire := contracts.WireAction{Type: string(plan.CoreAction.Kind)}
-		if plan.CoreAction.Kind == domain.CoreSpawn {
+		switch plan.CoreAction.Kind {
+		case domain.CoreSpawn:
 			if plan.CoreAction.UnitType == nil {
 				return nil, newInvalidActionError("SPAWN requires unit_type")
 			}
 			unitType := contracts.UnitType(*plan.CoreAction.UnitType)
 			wire.UnitType = &unitType
+		case domain.CoreStartMove:
+			// START_MOVE 需要 direction（wire 校验要求）。
+			if plan.CoreAction.Direction == nil {
+				return nil, newInvalidActionError("START_MOVE requires direction")
+			}
+			dir := contracts.Direction(*plan.CoreAction.Direction)
+			wire.Direction = &dir
 		}
 		coreAction = &wire
 	}
