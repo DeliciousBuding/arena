@@ -203,9 +203,21 @@ func runTenantCmd(args []string) int {
 	}
 	logger.Info("planner config", "workerTarget", plannerConfig.WorkerTarget, "spawnReserve", plannerConfig.SpawnReserve)
 
+	// 决策内核选择（fusion-line.md §3 F4）：decisionMode=deterministic-rust
+	// 走 Rust FFI 内核（arena-sim-ffi.dll；加载/调用失败自动回退 Go 原生
+	// planner，tenant 不中断）；其余模式保持 Go 原生 planner。
+	var planner runtime.Planner = strategy.NewPlanner(plannerConfig)
+	if configFile.DecisionMode == "deterministic-rust" {
+		planner = strategy.NewFfiPlanner(plannerConfig, resolveFfiLibPath(configFile.TenantID, baseDir), logger)
+	}
+	plannerKind := "go-native"
+	if _, isFfiPlanner := planner.(*strategy.FfiPlanner); isFfiPlanner {
+		plannerKind = "rust-ffi"
+	}
+
 	loop := &runtime.Loop{
 		Client:    client,
-		Planner:   strategy.NewPlanner(plannerConfig),
+		Planner:   planner,
 		World:     domain.NewWorld(),
 		Obs:       obsObj,
 		Commander: strategy.NewCommander(),
@@ -222,6 +234,11 @@ func runTenantCmd(args []string) int {
 		DecisionLog: decisionLog,
 	}
 	defer loop.Close()
+	// FFI planner 持有 Rust 句柄与动态库：随 loop 一起释放（LIFO 先于
+	// loop.Close 执行；句柄/库为空时 Close 为 no-op）。
+	if ffiPlanner, isFfiPlanner := planner.(*strategy.FfiPlanner); isFfiPlanner {
+		defer ffiPlanner.Close()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -237,6 +254,7 @@ func runTenantCmd(args []string) int {
 		"tenant", configFile.TenantID,
 		"mode", submissionMode,
 		"decisionMode", configFile.DecisionMode,
+		"planner", plannerKind,
 		"baseUrl", heroConfig.BaseURL,
 	)
 	if err := loop.Run(ctx); err != nil {
@@ -250,6 +268,19 @@ func runTenantCmd(args []string) int {
 		"repaired", loop.Stats.RepairedPlans.Load(),
 	)
 	return exitOK
+}
+
+// ffiLibEnvVar 指定 Rust 决策内核动态库路径的环境变量（优先于默认路径）。
+const ffiLibEnvVar = "ARENA_FFI_DLL"
+
+// resolveFfiLibPath 解析 Rust FFI 动态库路径：ARENA_FFI_DLL 环境变量优先，
+// 否则默认 <baseDir>/<tenantID>/arena-sim-ffi.dll。baseDir 缺省为 runtime
+// （与 run 目录同根，见 runTenantCmd），即默认 runtime/<tenantID>/arena-sim-ffi.dll。
+func resolveFfiLibPath(tenantID, baseDir string) string {
+	if libPath := os.Getenv(ffiLibEnvVar); libPath != "" {
+		return libPath
+	}
+	return filepath.Join(baseDir, tenantID, "arena-sim-ffi.dll")
 }
 
 func loadTenantConfig(path string) (*tenantConfigFile, error) {
