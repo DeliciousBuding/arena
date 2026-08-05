@@ -3,9 +3,11 @@
 //! 模式指令。战术层（Planner）按指令调整行为。
 
 use arena_sim_domain::TickState;
+use serde::{Deserialize, Serialize};
 
 /// 全局指挥模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum DirectiveMode {
     /// 正常扩张（默认）。
     Growth,
@@ -20,7 +22,9 @@ pub const STARVED_THRESHOLD_TICKS: i32 = 30; // 无进展连续 tick 数 → EXP
 pub const MIGRATE_CANDIDATE_TICKS: i32 = 100; // EXPLORE_STARVED 持续 → MIGRATE_CAND
 
 /// 指挥层输出（每 tick 由 Loop 传递给 Planner）。
-#[derive(Debug, Clone, Copy)]
+/// JSON 形状对齐 Go `strategy.Directive`：`{"Mode":"GROWTH","Focus":[0,0]}`。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct Directive {
     pub mode: DirectiveMode,
     /// 探索焦点（EXPLORE_STARVED 时所有 worker 朝此方向扫掠；默认

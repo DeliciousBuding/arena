@@ -1,0 +1,15 @@
+[package]
+name = "arena-sim-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "Arena 融合线 FFI 边界：Go 宿主 → Rust 决策内核（句柄化 planner，cdylib）"
+
+[lib]
+name = "arena_sim_ffi"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+arena-sim-domain = { path = "../domain" }
+arena-sim-strategy = { path = "../strategy" }
+serde = { workspace = true }
+serde_json = { workspace = true }

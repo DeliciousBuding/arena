@@ -20,11 +20,14 @@ use arena_sim_domain::{
     Position, TickState, UnitAction, UnitActionKind, UnitSnapshot, UnitType, CORE_MAX_HP,
     PATH_MARGINS,
 };
+use serde::{Deserialize, Serialize};
 
-use commander::{Directive, DirectiveMode};
+pub use commander::{Directive, DirectiveMode};
 
-/// 规划器配置（对齐 TS 版 DEFAULT_SAFETY_CONFIG / Go `Config`）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 规划器配置（对齐 TS 版 DEFAULT_SAFETY_CONFIG / Go `Config`；JSON
+/// 形状对齐 Go `json.Marshal`：PascalCase 字段名）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
 pub struct Config {
     /// 策略可读名（批量评估/赛马/黄金集输出用；规划逻辑忽略）。
     pub name: String,

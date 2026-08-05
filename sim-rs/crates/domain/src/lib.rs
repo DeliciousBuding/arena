@@ -108,8 +108,10 @@ pub enum BeaconStatus {
     Carried,
 }
 
-/// 受控单位快照（与 Go `UnitSnapshot` 一致）。
+/// 受控单位快照（与 Go `UnitSnapshot` 一致；JSON 形状对齐 Go
+/// json.Marshal：PascalCase 字段名）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct UnitSnapshot {
     pub id: String,
     pub position: Position,
@@ -118,8 +120,9 @@ pub struct UnitSnapshot {
     pub cargo: i32,
 }
 
-/// 受控 Core 快照（与 Go `Core` 一致）。
+/// 受控 Core 快照（与 Go `Core` 一致；JSON 形状对齐 Go Marshal）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct Core {
     pub id: String,
     pub position: Position,
@@ -131,6 +134,7 @@ pub struct Core {
 
 /// 可见敌方实体（与 Go `VisibleEntity` 一致）：Kind 为 "UNIT" 或 "CORE"。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct VisibleEntity {
     pub id: String,
     pub kind: String,
@@ -142,6 +146,7 @@ pub struct VisibleEntity {
 
 /// Champion Beacon 快照（与 Go `Beacon` 一致）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct Beacon {
     pub position: Position,
     pub status: BeaconStatus,
@@ -150,6 +155,7 @@ pub struct Beacon {
 
 /// 单个结算事件快照（与 Go `Event` 一致）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct Event {
     pub event_id: String,
     pub tick: i32,
@@ -161,8 +167,12 @@ pub struct Event {
     pub values: BTreeMap<String, serde_json::Value>,
 }
 
-/// 规范化游戏状态（与 Go `TickState` 一致）。
+/// 规范化游戏状态（与 Go `TickState` 一致；JSON 形状对齐 Go Marshal：
+/// PascalCase 字段名；`resource_cells`/`obstacle_cells` 在 FFI 边界经
+/// 镜像类型转换——Go 的 Set 序列化为 `{"x,y":{}}` 对象，BTreeSet 序列化
+/// 为数组，见 arena-sim-ffi 契约）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct TickState {
     pub tick: i32,
     pub status: CoreStatus,
@@ -201,8 +211,9 @@ pub enum UnitActionKind {
     Heal,
 }
 
-/// 单位动作（与 Go `UnitAction` 一致）。
+/// 单位动作（与 Go `UnitAction` 一致；JSON 形状对齐 Go Marshal）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct UnitAction {
     pub kind: UnitActionKind,
     pub direction: Option<Direction>,
@@ -225,18 +236,21 @@ pub enum CoreActionKind {
     SelfDestruct,
 }
 
-/// Core 动作（与 Go `CoreAction` 一致）。
+/// Core 动作（与 Go `CoreAction` 一致；JSON 形状对齐 Go Marshal）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct CoreAction {
     pub kind: CoreActionKind,
     pub unit_type: Option<UnitType>,
     pub direction: Option<Direction>,
 }
 
-/// 一次决策的完整动作计划（与 Go `Plan` 一致）。
+/// 一次决策的完整动作计划（与 Go `Plan` 一致；JSON 形状对齐 Go
+/// Marshal：`{"Tick":N,"UnitActions":{...},"CoreAction":{...},"Intents":{...}}`）。
 /// 有意差异：`unit_actions`/`intents` 用 `BTreeMap`（确定性迭代，
 /// 等价于 Go 版 sortedUnitIDs 的排序语义）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct Plan {
     pub tick: i32,
     pub unit_actions: BTreeMap<String, UnitAction>,

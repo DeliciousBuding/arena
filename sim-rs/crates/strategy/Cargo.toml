@@ -7,3 +7,5 @@ description = "Arena 模拟器策略层（planner/commander/economic，从 go-re
 [dependencies]
 arena-sim-domain = { path = "../domain" }
 arena-sim-engine = { path = "../engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }

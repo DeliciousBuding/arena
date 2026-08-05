@@ -32,11 +32,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "arena-sim-ffi"
+version = "0.1.0"
+dependencies = [
+ "arena-sim-domain",
+ "arena-sim-strategy",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "arena-sim-strategy"
 version = "0.1.0"
 dependencies = [
  "arena-sim-domain",
  "arena-sim-engine",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
