@@ -782,11 +782,8 @@ impl Planner {
         }
         // fail-safe：朝目标方向走第一个非障碍格（含 Core 格）；全堵 WAIT。
         let mut directions = [Direction::Right; 4];
-        let count = arena_sim_domain::ordered_directions_into(
-            unit.position,
-            target,
-            &mut directions,
-        );
+        let count =
+            arena_sim_domain::ordered_directions_into(unit.position, target, &mut directions);
         for direction in &directions[..count] {
             let next = move_position(unit.position, *direction);
             if self.obstacle_positions.contains(&next) || extra_obstacle == Some(next) {

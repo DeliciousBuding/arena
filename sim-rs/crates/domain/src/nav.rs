@@ -336,7 +336,10 @@ impl BfsSearcher {
         let stamp = self.stamp;
 
         self.queue.clear();
-        self.queue.push(BfsEntry { position: from, first_direction: None });
+        self.queue.push(BfsEntry {
+            position: from,
+            first_direction: None,
+        });
         self.visited[grid_index(from, min_x, min_y, width)] = stamp;
 
         let mut directions = [Direction::Right; 4];
@@ -361,7 +364,10 @@ impl BfsSearcher {
                     return Some(first_direction);
                 }
                 self.visited[grid_index(next, min_x, min_y, width)] = stamp;
-                self.queue.push(BfsEntry { position: next, first_direction: Some(first_direction) });
+                self.queue.push(BfsEntry {
+                    position: next,
+                    first_direction: Some(first_direction),
+                });
             }
         }
         None

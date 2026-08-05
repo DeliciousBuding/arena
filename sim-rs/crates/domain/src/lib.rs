@@ -38,6 +38,7 @@ pub type CellSet = BTreeSet<String>;
 
 /// 移动/横扫方向（与 Go `Direction` 一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum Direction {
     Up,
     Down,
@@ -62,6 +63,7 @@ impl Direction {
 
 /// 单位类型（与 Go `UnitType` 一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum UnitType {
     Worker,
     Vanguard,
@@ -84,6 +86,7 @@ impl UnitType {
 
 /// Core 移动状态（与 Go `CoreState` 一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum CoreState {
     Normal,
     Moving,
@@ -91,6 +94,7 @@ pub enum CoreState {
 
 /// 玩家生命周期状态（与 Go `PlayerStatus` 一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum CoreStatus {
     Active,
     Respawning,
@@ -98,6 +102,7 @@ pub enum CoreStatus {
 
 /// Champion Beacon 状态（与 Go `BeaconStatus` 一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum BeaconStatus {
     Ground,
     Carried,
@@ -182,6 +187,7 @@ pub struct TickState {
 
 /// 单位动作类型（与 Go `UnitActionKind` 一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum UnitActionKind {
     Wait,
     Move,
@@ -206,6 +212,7 @@ pub struct UnitAction {
 
 /// Core 动作类型（与 Go `CoreActionKind` 一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum CoreActionKind {
     Wait,
     Spawn,

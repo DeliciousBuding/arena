@@ -10,8 +10,8 @@ use std::time::Instant;
 
 use arena_sim_engine::{Engine, RefillConfig};
 
-use crate::{Config, Planner};
 use super::loop_tests::{bench_latent, bench_state};
+use crate::{Config, Planner};
 
 /// bench 配置（与 Go bench_test 的 planner Config 一致）。
 fn bench_config() -> Config {
