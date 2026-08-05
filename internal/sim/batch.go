@@ -119,7 +119,7 @@ func runScenario(scene *Scenario, policy *strategy.Config, ticks int, opt BatchO
 	engine := NewEngine()
 	engine.Refill = NewRefillConfig(scene.LatentResources)
 
-	result := BatchResult{Scene: scene.Name, Policy: policyName(policy), Ticks: ticks}
+	result := BatchResult{Scene: scene.Name, Policy: PolicyName(policy), Ticks: ticks}
 	statsPerTick := make([]SettleStats, 0, ticks)
 	for tick := 1; tick <= ticks; tick++ {
 		state.Tick = tick
@@ -159,9 +159,10 @@ func runScenario(scene *Scenario, policy *strategy.Config, ticks int, opt BatchO
 	return result
 }
 
-// policyName 返回策略的可读名：优先 Config.Name（策略文件命名），
-// 否则确定性字段拼接（默认策略/内联策略）。
-func policyName(policy *strategy.Config) string {
+// PolicyName 返回策略的可读名：优先 Config.Name（策略文件命名），
+// 否则确定性字段拼接（默认策略/内联策略）。导出供调用方
+// （optsearch 批量评分按名匹配结果）。
+func PolicyName(policy *strategy.Config) string {
 	if policy.Name != "" {
 		return policy.Name
 	}

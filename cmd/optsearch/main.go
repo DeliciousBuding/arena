@@ -183,23 +183,24 @@ func evaluate(p searchParams, ticks int) float64 {
 // （资源格产能约束下衡量扩张与循环效率）。挂载 refill 引擎（官方
 // 规则：4 tick 配额 + 视野揭示）——评分基于真实游戏逻辑（资源再生
 // + 采空消失），而非"资源永不再生"的简化模型。
+// 内部用 sim.Batch 并发评估（多场景 × 多策略全组合并行——Go 多核
+// 天然优势；单个体评估复用 Batch 的单场景路径，开销与串行等价）。
 func evaluateScenario(p searchParams, ticks int, state *domain.TickState, latent []domain.Position) float64 {
-	planner := strategy.NewPlanner(strategy.Config{
+	scenes := []*sim.Scenario{{Name: "score", Initial: state, LatentResources: latent}}
+	policies := []*strategy.Config{paramsToConfig(p)}
+	results := sim.Batch(scenes, policies, ticks, sim.BatchOption{Workers: 4})
+	result := results[0]
+	score := float64(result.Stats.Spawns)*3 + float64(result.Stats.Deposits)*5 + float64(result.Stats.Harvests)*2
+	score += float64(len(result.Final.Workers)) * 10
+	return score
+}
+
+// paramsToConfig 把搜索参数转为策略配置。
+func paramsToConfig(p searchParams) *strategy.Config {
+	return &strategy.Config{
 		WorkerTarget: p.workerTarget, PopulationCeiling: p.populationCeiling,
 		ExploreRadius: p.exploreRadius, ThreatDistance: 5, SpawnReserve: p.spawnReserve,
-	})
-	engine := sim.NewEngine()
-	engine.Refill = sim.NewRefillConfig(latent)
-	score := 0.0
-	for tick := 1; tick <= ticks; tick++ {
-		state.Tick = tick
-		plan := planner.Decide(state)
-		settled := engine.Settle(state, plan)
-		score += float64(settled.Stats.Spawns)*3 + float64(settled.Stats.Deposits)*5 + float64(settled.Stats.Harvests)*2
-		state = settled.NextState
 	}
-	score += float64(len(state.Workers)) * 10
-	return score
 }
 
 // scenarioScores 是三个评分场景各自的得分。
@@ -209,11 +210,27 @@ type scenarioScores struct {
 
 // evaluateMulti 跑三个场景（真实/密集/稀疏），返回三场景最低分
 // （最差场景决定评分——鲁棒性优先，防止参数过拟合单场景）与各场景分。
+// 并发：3 场景在 Batch 内并行（多核拉满）。
 func evaluateMulti(p searchParams, ticks int) (float64, scenarioScores) {
-	scores := scenarioScores{
-		base:   evaluate(p, ticks),
-		dense:  evaluateScenario(p, ticks, optStateDense(), optDenseLatentResources),
-		sparse: evaluateScenario(p, ticks, optStateSparse(), optSparseLatentResources),
+	scenes := []*sim.Scenario{
+		{Name: "base", Initial: optState(), LatentResources: optLatentResources},
+		{Name: "dense", Initial: optStateDense(), LatentResources: optDenseLatentResources},
+		{Name: "sparse", Initial: optStateSparse(), LatentResources: optSparseLatentResources},
+	}
+	policies := []*strategy.Config{paramsToConfig(p)}
+	results := sim.Batch(scenes, policies, ticks, sim.BatchOption{Workers: 4})
+	scores := scenarioScores{}
+	for _, result := range results {
+		score := float64(result.Stats.Spawns)*3 + float64(result.Stats.Deposits)*5 + float64(result.Stats.Harvests)*2
+		score += float64(len(result.Final.Workers)) * 10
+		switch result.Scene {
+		case "base":
+			scores.base = score
+		case "dense":
+			scores.dense = score
+		case "sparse":
+			scores.sparse = score
+		}
 	}
 	minScore := scores.base
 	if scores.dense < minScore {
@@ -223,6 +240,41 @@ func evaluateMulti(p searchParams, ticks int) (float64, scenarioScores) {
 		minScore = scores.sparse
 	}
 	return minScore, scores
+}
+
+// evaluateBatch 并发评估多个个体的三场景最差分（GA 种群/SA 链批量
+// 并行——这是并发化的核心收益点：N 个体 × 3 场景全部同时跑）。
+// 返回与输入顺序一致的得分数组。
+func evaluateBatch(params []searchParams, ticks int) []float64 {
+	scenes := []*sim.Scenario{
+		{Name: "base", Initial: optState(), LatentResources: optLatentResources},
+		{Name: "dense", Initial: optStateDense(), LatentResources: optDenseLatentResources},
+		{Name: "sparse", Initial: optStateSparse(), LatentResources: optSparseLatentResources},
+	}
+	policies := make([]*strategy.Config, 0, len(params))
+	for _, p := range params {
+		policies = append(policies, paramsToConfig(p))
+	}
+	results := sim.Batch(scenes, policies, ticks, sim.BatchOption{Workers: 0}) // 0 = NumCPU
+	// 每个体取三场景最低分（结果按 scene 名升序 × policy 名升序；
+	// policy 名含参数值——需按 config 匹配）。
+	scores := make([]float64, len(params))
+	for i, p := range params {
+		want := sim.PolicyName(paramsToConfig(p))
+		minScore := math.Inf(1)
+		for _, result := range results {
+			if result.Policy != want {
+				continue
+			}
+			score := float64(result.Stats.Spawns)*3 + float64(result.Stats.Deposits)*5 + float64(result.Stats.Harvests)*2
+			score += float64(len(result.Final.Workers)) * 10
+			if score < minScore {
+				minScore = score
+			}
+		}
+		scores[i] = minScore
+	}
+	return scores
 }
 
 // formatScores 格式化三场景分，如 "{129, 150, 100}"（base, dense, sparse）。
@@ -297,12 +349,15 @@ func geneticAlgorithm(generations, ticks int, rng *rand.Rand) {
 	var bestScores scenarioScores
 	for i := range pop {
 		pop[i] = randomParams(rng)
-		score, scores := evaluateMulti(pop[i], ticks)
-		fitness[i] = score
-		if score > bestScore {
+	}
+	// 初始种群批量并发评估（20 个体 × 3 场景 = 60 评估一次并行）。
+	seedFitness := evaluateBatch(pop, ticks)
+	for i := range pop {
+		fitness[i] = seedFitness[i]
+		if seedFitness[i] > bestScore {
 			best = pop[i]
-			bestScore = score
-			bestScores = scores
+			bestScore = seedFitness[i]
+			bestScores = scoresFor(best, ticks)
 		}
 	}
 
@@ -320,12 +375,16 @@ func geneticAlgorithm(generations, ticks int, rng *rand.Rand) {
 			child := crossover(parent1, parent2, rng)
 			child = mutate(child, rng)
 			next[i] = child
-			childScore, childScores := evaluateMulti(child, ticks)
-			nextFitness[i] = childScore
-			if childScore > bestScore {
+		}
+		// 种群批量并发评估（19 个体 × 3 场景 = 57 评估一次并行跑完——
+		// 多核拉满，串行时代每个体 3 场景逐个跑）。
+		batchFitness := evaluateBatch(next[1:], ticks)
+		for i := 1; i < populationSize; i++ {
+			nextFitness[i] = batchFitness[i-1]
+			if nextFitness[i] > bestScore {
 				best = next[i]
-				bestScore = childScore
-				bestScores = childScores
+				bestScore = nextFitness[i]
+				bestScores = scoresFor(next[i], ticks)
 			}
 		}
 		pop = next
@@ -337,6 +396,12 @@ func geneticAlgorithm(generations, ticks int, rng *rand.Rand) {
 	fmt.Printf("best: %+v score=%.0f scenario: %s\n", best, bestScore, formatScores(bestScores))
 	defaultScore, defaultScores := evaluateMulti(defaultParams(), ticks)
 	fmt.Printf("default: %+v score=%.0f scenario: %s\n", defaultParams(), defaultScore, formatScores(defaultScores))
+}
+
+// scoresFor 计算单个体的三场景最差分（best 更新时用）。
+func scoresFor(p searchParams, ticks int) scenarioScores {
+	_, scores := evaluateMulti(p, ticks)
+	return scores
 }
 
 // tournamentSelect 从种群中随机选 size 个个体，返回最优。
