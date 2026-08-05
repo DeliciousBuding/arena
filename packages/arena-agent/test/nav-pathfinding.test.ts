@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { cellKey, type Direction, type Position } from "../src/domain/model.ts";
-import { move, stepToward, stepTowardPath } from "../src/domain/nav.ts";
+import { adaptivePathOptions, DEFAULT_PATH_SEARCH_OPTIONS, move, stepToward, stepTowardPath } from "../src/domain/nav.ts";
 
 function obstaclesOf(cells: readonly Position[]): Set<string> {
   return new Set(cells.map((cell) => cellKey(cell)));

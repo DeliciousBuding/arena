@@ -12,6 +12,7 @@ import { validatePlan, type ValidationResult } from "../../domain/plan-validator
 import { reduceTurn, type TurnLike } from "../../domain/state-reducer.ts";
 import { DeterministicPlanner } from "../../planning/deterministic-planner.ts";
 import type { PlanProvider } from "../../runtime/decision-types.ts";
+import type { MacroPolicy } from "../../runtime/macro-policy.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../../strategies/safety-planner.ts";
 import { loadRulesManifest, type RulesManifest } from "../contracts/rules-manifest.ts";
 import { createSeededRng } from "../deterministic/rng.ts";
@@ -30,6 +31,10 @@ export type PlannerKind = "deterministic" | "safety";
 export interface EpisodeTenant {
   readonly id: string;
   readonly planner: PlannerKind;
+  /** 低频 MacroPolicy（策略扫描/实验用）：注入后 planner.decide 携带 policy，
+   *  支持 militaryRatio/workerTarget 网格的离线验证（v0.2.12）。缺省不传，
+   *  与旧行为逐字节一致。 */
+  readonly policy?: MacroPolicy;
 }
 
 export interface EpisodeTickPlayerMeasurement {
@@ -183,7 +188,7 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
         previousEvents.get(tenant.id) ?? [],
       );
       const state: TickState = reduceTurn(turn);
-      const proposed = planner.decide({ state });
+      const proposed = planner.decide({ state, policy: tenant.policy });
       let finalPlan = proposed;
       let summary: ValidationSummary = { valid: true, repaired: false, issueCount: 0 };
 
