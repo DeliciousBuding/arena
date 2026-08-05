@@ -59,6 +59,10 @@ export interface EpisodeConfig {
   readonly ticks: number;
   /** 必须与 scenario players 一一对应；缺失/重复/额外 tenant 均 fail closed。 */
   readonly tenants: readonly EpisodeTenant[];
+  /** 每 tick 策略决策器（模拟 LLM 低频决策/坏焦点模式；返回 null = 保持上次）。
+   *  缺省用 tenant.policy 固定值。recovery/discipline 链由调用方在 provider 内组装
+   *  （模拟级验证生产指挥机制）。tick 为游戏 tick（1-based）。 */
+  readonly policyProvider?: (tenantId: string, tick: number, state: TickState) => MacroPolicy | null;
   readonly validatePlans?: boolean;
   /** 测试/实验注入；默认复用线上 DeterministicPlanner/SafetyPlanner。 */
   readonly plannerFactory?: (tenant: EpisodeTenant) => PlanProvider;
@@ -170,6 +174,10 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
   let illegalPlans = 0;
   let repairedPlans = 0;
   let totalEvents = 0;
+  // policyProvider 形态：每 tick 可能产出新 policy；null = 保持上次（模拟 LLM 低频决策）
+  const lastPolicy = new Map<string, MacroPolicy | undefined>(
+    tenants.map((tenant) => [tenant.id, tenant.policy]),
+  );
 
   for (let step = 0; step < config.ticks; step += 1) {
     const tickStarted = performance.now();
@@ -188,7 +196,12 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
         previousEvents.get(tenant.id) ?? [],
       );
       const state: TickState = reduceTurn(turn);
-      const proposed = planner.decide({ state, policy: tenant.policy });
+      if (config.policyProvider !== undefined) {
+        const next = config.policyProvider(tenant.id, before.tick, state);
+        if (next !== null) lastPolicy.set(tenant.id, next);
+      }
+      const policy = lastPolicy.get(tenant.id) ?? tenant.policy;
+      const proposed = planner.decide({ state, policy });
       let finalPlan = proposed;
       let summary: ValidationSummary = { valid: true, repaired: false, issueCount: 0 };
 
