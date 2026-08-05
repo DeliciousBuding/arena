@@ -136,3 +136,22 @@
 - [x] domain.CoreAction 加 Direction；decideCore：MIGRATE_CAND +
       EnableCoreMigration（默认 false，红线）→ START_MOVE 朝焦点方向
 - [x] Core MOVING 自动停止（不重复发）；3 个迁移测试
+
+## E3 运行监控工具（2026-08-05）
+
+- [x] 工具：cmd/runwatch 运行性能监控（零新依赖，纯 stdlib + os/exec）——
+      pid 模式：tasklist /V 采集 RSS（Working Set）与 CPU%（累计 CPU Time
+      差值/墙钟，秒级粒度）；log-dir 模式：decision.jsonl 行数（tick 进度）
+      + 最新 *.log 尾部 200 行 ERROR/WARN 计数；Ctrl+C 输出平均/峰值 RSS、
+      运行时长、tick 速率汇总（stdout 纯 TSV，汇总走 stderr）
+
+## E5 100t 里程碑（2026-08-05，run-20260805T104905）
+
+- [x] 100/100 accepted、0 rejected、0 repaired（t4 真机最长窗口）
+- [x] 指挥层全链路：GROWTH=30 → EXPLORE_STARVED=70 实机验证
+- [x] unit moves 393/99 ticks——移动完全正常（停滞问题彻底解决）
+- [x] obs idle.dump 落盘验证（服务器 2 分钟停顿期间，dumps/*.stack）
+- [x] cmd/paramscan 参数扫描（reserve=8 死锁发现 + 钳制修复 00447bf）
+- [x] cmd/runwatch 进程/日志监控（e68ea54，8 单测）
+- [ ] migration.candidate 边界验证（105t 运行中：100 no-progress 需
+      101 tick，首个 Update 为基线）
