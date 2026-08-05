@@ -127,6 +127,12 @@ export interface ABPairedAggregate {
   readonly candidate: string;
   readonly pairs: number;
   readonly meanResourceDelta: number;
+  readonly medianResourceDelta: number;
+  readonly p10ResourceDelta: number;
+  readonly p90ResourceDelta: number;
+  /** 最差 seed 及其 delta（候选 - 基线；灾难回退守卫用）。 */
+  readonly worstSeed: number;
+  readonly worstSeedDelta: number;
   readonly meanFinalPopulationDelta: number;
   readonly illegalPlansDelta: number;
   readonly repairedPlansDelta: number;
@@ -233,11 +239,20 @@ export function runAB(config: {
   const pairedAggregates: ABPairedAggregate[] = planners.slice(1).map((candidate) => {
     const pairs = pairedDeltas.filter((pair) => pair.candidate === candidate);
     const divisor = pairs.length || 1;
+    const deltas = pairs.map((pair) => pair.resourceDelta);
+    const worst = deltas.length === 0
+      ? null
+      : pairs.reduce((current, pair) => (pair.resourceDelta < current.resourceDelta ? pair : current));
     return {
       baseline,
       candidate,
       pairs: pairs.length,
       meanResourceDelta: pairs.reduce((sum, pair) => sum + pair.resourceDelta, 0) / divisor,
+      medianResourceDelta: median(deltas),
+      p10ResourceDelta: percentile(deltas, 0.1),
+      p90ResourceDelta: percentile(deltas, 0.9),
+      worstSeed: worst?.seed ?? 0,
+      worstSeedDelta: worst?.resourceDelta ?? 0,
       meanFinalPopulationDelta:
         pairs.reduce((sum, pair) => sum + pair.finalPopulationDelta, 0) / divisor,
       illegalPlansDelta: pairs.reduce((sum, pair) => sum + pair.illegalPlansDelta, 0),
@@ -317,6 +332,11 @@ function percentile(values: readonly number[], ratio: number): number {
   const sorted = [...values].sort((a, b) => a - b);
   const index = Math.max(0, Math.ceil(ratio * sorted.length) - 1);
   return sorted[index];
+}
+
+function median(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  return percentile(values, 0.5);
 }
 
 export function runBenchmark(config: {

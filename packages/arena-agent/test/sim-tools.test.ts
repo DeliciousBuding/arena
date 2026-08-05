@@ -235,3 +235,21 @@ test("TS-006: report 基线不匹配 manifest → reject", () => {
   assert.equal(evaluation.decision, "reject");
   assert.ok(evaluation.reasons.some((reason) => reason.includes("baseline")));
 });
+
+test("TS-007: pairedAggregates 输出 median/p10/p90/最差 seed", () => {
+  const { report } = runAB({
+    scenario: SCENARIO,
+    rulesPath: RULES,
+    ticks: 1,
+    seeds: [1, 2, 3, 4, 5],
+    planners: ["deterministic-v0.2.15", "safety"],
+  });
+  const aggregate = report.pairedAggregates[0];
+  assert.equal(aggregate.pairs, 5);
+  assert.equal(aggregate.candidate, "safety");
+  assert.equal(typeof aggregate.medianResourceDelta, "number");
+  assert.ok(aggregate.p10ResourceDelta <= aggregate.medianResourceDelta);
+  assert.ok(aggregate.medianResourceDelta <= aggregate.p90ResourceDelta);
+  assert.ok(report.pairedDeltas.some((pair) => pair.seed === aggregate.worstSeed));
+  assert.equal(aggregate.worstSeedDelta, Math.min(...report.pairedDeltas.map((pair) => pair.resourceDelta)));
+});
