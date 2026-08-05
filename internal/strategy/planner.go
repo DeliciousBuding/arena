@@ -86,6 +86,11 @@ func (p *Planner) ApplyDirective(directive Directive) {
 	p.directive = directive
 }
 
+// DirectiveMode 返回当前指挥模式（决策遥测/批量评估时间线用）。
+func (p *Planner) DirectiveMode() DirectiveMode {
+	return p.directive.Mode
+}
+
 // 停滞跳出阈值：服务器反馈的位置连续 N tick 不变（且单位有移动
 // 意图）→ 强制换巡逻目标（计划合法但服务器不结算的拥挤/被占场景）。
 const stuckYieldThreshold = 3
