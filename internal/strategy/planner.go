@@ -18,6 +18,10 @@ type Config struct {
 	ExploreRadius     int // 探索半径
 	ThreatDistance    int // 威胁判定距离（Manhattan）
 	SpawnReserve      int // 正常扩张的预留资源（reserve guard；紧急/恢复期忽略）
+	// MilitaryRatio 是军事单位占人口比例（百分数 0-100）：worker 达到
+	// WorkerTarget 后按比例补 Vanguard/Ranger（交替，防御优先——
+	// Vanguard SWEEP AOE 守家、Ranger 远程）。0 = 不产军事。
+	MilitaryRatio int
 	// EnableCoreMigration 启用 Core 迁移执行（红线：默认 false——
 	// MIGRATE_CAND 只评估，operator 显式开启后才发 START_MOVE）。
 	EnableCoreMigration bool
@@ -36,6 +40,7 @@ func DefaultConfig() Config {
 		ExploreRadius:     17,
 		ThreatDistance:    5,
 		SpawnReserve:      0,
+		MilitaryRatio:     25,
 	}
 }
 
@@ -208,10 +213,38 @@ func (p *Planner) decideCore(state *domain.TickState) *domain.CoreAction {
 			return &domain.CoreAction{Kind: domain.CoreSpawn, UnitType: &unitType}
 		}
 	}
+	// 军事生产（worker 达到目标后）：按人口比例补 Vanguard/Ranger 交替。
+	if militaryType := p.militarySpawn(state, workers); militaryType != nil {
+		cost := domain.SpawnCost(*militaryType)
+		if state.Resources >= cost {
+			unitType := *militaryType
+			return &domain.CoreAction{Kind: domain.CoreSpawn, UnitType: &unitType}
+		}
+	}
 	if state.Core.HP < domain.CoreMaxHP && workers >= 2 {
 		return &domain.CoreAction{Kind: domain.CoreHeal}
 	}
 	return nil
+}
+
+// militarySpawn 返回需要生产的军事单位类型（nil = 不生产）：
+// worker 达到 WorkerTarget 且军事占比低于 MilitaryRatio 时，
+// Vanguard/Ranger 交替（第偶数个军事 → Vanguard，奇数 → Ranger，
+// 防御优先——Vanguard SWEEP AOE 守家）。
+func (p *Planner) militarySpawn(state *domain.TickState, workers int) *domain.UnitType {
+	if p.config.MilitaryRatio <= 0 || workers < p.config.WorkerTarget {
+		return nil
+	}
+	military := len(state.Vanguards) + len(state.Rangers)
+	expected := int(math.Ceil(float64(state.Population) * float64(p.config.MilitaryRatio) / 100))
+	if military >= expected {
+		return nil
+	}
+	unitType := domain.UnitVanguard
+	if military%2 == 1 {
+		unitType = domain.UnitRanger
+	}
+	return &unitType
 }
 
 func (p *Planner) decideUnit(state *domain.TickState, unit *domain.UnitSnapshot, assignments map[string]domain.Position) (domain.UnitAction, string, bool) {

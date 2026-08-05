@@ -1023,3 +1023,63 @@ func TestPatrolPerUnitIndependent(t *testing.T) {
 		}
 	}
 }
+
+// TestMilitarySpawnAfterWorkerTarget：worker 达 target + 军事占比不足 →
+// 先产 Vanguard（防御优先）。
+func TestMilitarySpawnAfterWorkerTarget(t *testing.T) {
+	state := workerState([]domain.UnitSnapshot{
+		{ID: "worker-1", Position: domain.Position{0, 0}, UnitType: domain.UnitWorker},
+		{ID: "worker-2", Position: domain.Position{1, 0}, UnitType: domain.UnitWorker},
+		{ID: "worker-3", Position: domain.Position{2, 0}, UnitType: domain.UnitWorker},
+	})
+	state.Resources = 50
+	config := Config{WorkerTarget: 3, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 0, MilitaryRatio: 25}
+	plan := NewPlanner(config).Decide(state)
+
+	if plan.CoreAction == nil || plan.CoreAction.Kind != domain.CoreSpawn {
+		t.Fatalf("core action = %+v, want SPAWN", plan.CoreAction)
+	}
+	if plan.CoreAction.UnitType == nil || *plan.CoreAction.UnitType != domain.UnitVanguard {
+		t.Errorf("unit type = %v, want VANGUARD (military ratio 25%% of 3 pop = 1)", plan.CoreAction.UnitType)
+	}
+	if result := domain.ValidatePlan(state, *plan); !result.Valid {
+		t.Errorf("plan invalid: %v", result.Issues)
+	}
+}
+
+// TestMilitarySpawnAlternatesRanger：已有 1 Vanguard → 下一个军事是 Ranger。
+func TestMilitarySpawnAlternatesRanger(t *testing.T) {
+	state := workerState([]domain.UnitSnapshot{
+		{ID: "worker-1", Position: domain.Position{0, 0}, UnitType: domain.UnitWorker},
+		{ID: "worker-2", Position: domain.Position{1, 0}, UnitType: domain.UnitWorker},
+		{ID: "worker-3", Position: domain.Position{2, 0}, UnitType: domain.UnitWorker},
+	})
+	state.Resources = 50
+	state.Vanguards = []domain.UnitSnapshot{{ID: "vanguard-1", Position: domain.Position{5, 5}, HP: 4, UnitType: domain.UnitVanguard}}
+	state.Units = append(state.Units, state.Vanguards[0])
+	config := Config{WorkerTarget: 3, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 0, MilitaryRatio: 50}
+	plan := NewPlanner(config).Decide(state)
+
+	if plan.CoreAction == nil || plan.CoreAction.UnitType == nil {
+		t.Fatalf("core action = %+v, want SPAWN RANGER", plan.CoreAction)
+	}
+	if *plan.CoreAction.UnitType != domain.UnitRanger {
+		t.Errorf("unit type = %v, want RANGER (2nd military alternates)", plan.CoreAction.UnitType)
+	}
+}
+
+// TestMilitarySpawnDisabledByRatioZero：MilitaryRatio=0 → 不产军事。
+func TestMilitarySpawnDisabledByRatioZero(t *testing.T) {
+	state := workerState([]domain.UnitSnapshot{
+		{ID: "worker-1", Position: domain.Position{0, 0}, UnitType: domain.UnitWorker},
+		{ID: "worker-2", Position: domain.Position{1, 0}, UnitType: domain.UnitWorker},
+		{ID: "worker-3", Position: domain.Position{2, 0}, UnitType: domain.UnitWorker},
+	})
+	state.Resources = 50
+	config := Config{WorkerTarget: 3, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 0, MilitaryRatio: 0}
+	plan := NewPlanner(config).Decide(state)
+
+	if plan.CoreAction != nil {
+		t.Fatalf("core action = %+v, want nil (military disabled)", plan.CoreAction)
+	}
+}
