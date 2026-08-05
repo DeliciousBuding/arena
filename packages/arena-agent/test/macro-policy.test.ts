@@ -73,13 +73,13 @@ test("MacroPolicy: normalize 剔除未知字段并回退非法值", () => {
     posture: "aggressive",
     workerTarget: 12,
     militaryRatio: 0.6,
-    focusRegion: [3, -2],
+    focusRegion: [3, 2],
     attackPriority: "workers",
     extra: "ignored",
   });
   assert.equal(normalized.posture, "aggressive");
   assert.equal(normalized.workerTarget, 12);
-  assert.deepEqual(normalized.focusRegion, [3, -2]);
+  assert.deepEqual(normalized.focusRegion, [3, 2]);
   assert.equal(normalized.attackPriority, "workers");
   // 非法值回退默认
   const fallback = normalizeMacroPolicy({ posture: "aggressive", workerTarget: 0, militaryRatio: 9, focusRegion: "bad", attackPriority: "nuke" });
@@ -87,6 +87,14 @@ test("MacroPolicy: normalize 剔除未知字段并回退非法值", () => {
   assert.equal(fallback.militaryRatio, DEFAULT_MACRO_POLICY.militaryRatio);
   assert.equal(fallback.focusRegion, null);
   assert.equal(fallback.attackPriority, null);
+});
+
+test("MacroPolicy: focusRegion 负坐标拒绝（生产实测 [-1500,1500] 越界远征教训）", () => {
+  const negative = { posture: "balanced" as const, workerTarget: 8, militaryRatio: 0.3, focusRegion: [-1500, 1500], attackPriority: null as const };
+  assert.equal(isValidMacroPolicy(negative), false);
+  assert.equal(normalizeMacroPolicy(negative as unknown as Record<string, unknown>).focusRegion, null);
+  const origin = { posture: "balanced" as const, workerTarget: 8, militaryRatio: 0.3, focusRegion: [0, 0], attackPriority: null as const };
+  assert.equal(isValidMacroPolicy(origin), true);
 });
 
 test("MacroPolicy: aggressionOf 映射（aggressive → aggressive，其余 defensive）", () => {
@@ -258,6 +266,37 @@ test("SafetyPlanner: focusRegion 接线（Worker go_focus、无敌人时军事�
   // Vanguard 无敌人时朝聚焦区（vanguard_move 且目标是聚焦方向）
   const vanguard = plan.unitActions["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"];
   assert.equal(vanguard?.type, "MOVE");
+});
+
+test("SafetyPlanner: focusRegion 超 maxFocusDistance 防呆（生产实测 [1500,1500] 远征教训）", () => {
+  const planner = new SafetyPlanner(); // Core [0,0]，默认 maxFocusDistance=32
+  const state = makeState(1);
+  const farFocusState: TickState = {
+    ...state,
+    visibleEnemies: [],
+    resourceCells: new Set(),
+    units: [
+      ...state.units,
+      { id: "dddddddd-dddd-dddd-dddd-dddddddddddd", position: [3, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+    ],
+    workers: [
+      { id: "dddddddd-dddd-dddd-dddd-dddddddddddd", position: [3, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+    ],
+  };
+  // 远焦点视为无效：worker 不发 go_focus，回退巡逻（生产实测：policy 层输出
+  // [1500,1500]/[-1500,1500] → 全部 worker 直线远征 → 0 采集、经济冻结）。
+  const farPlan = planner.decide({
+    state: farFocusState,
+    policy: { posture: "balanced", workerTarget: 8, militaryRatio: 0.4, focusRegion: [1500, 1500], attackPriority: null },
+  });
+  assert.notEqual(farPlan.intents["dddddddd-dddd-dddd-dddd-dddddddddddd"], "go_focus");
+  assert.equal(farPlan.intents["dddddddd-dddd-dddd-dddd-dddddddddddd"], "patrol");
+  // 近焦点仍生效（回归保护）
+  const nearPlan = planner.decide({
+    state: farFocusState,
+    policy: { posture: "balanced", workerTarget: 8, militaryRatio: 0.4, focusRegion: [8, 4], attackPriority: null },
+  });
+  assert.equal(nearPlan.intents["dddddddd-dddd-dddd-dddd-dddddddddddd"], "go_focus");
 });
 
 test("SafetyPlanner: attackPriority 接线（workers → Vanguard 追 Worker，core → 追 Core）", () => {
