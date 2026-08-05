@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { canonicalJson, sha256Json } from "../src/sim/tools/artifacts.ts";
+import { parseExperimentManifest } from "../src/sim/tools/experiment-manifest.ts";
 import { runAB, runBenchmark } from "../src/sim/tools/experiments.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -103,4 +104,55 @@ test("S9: benchmark locks final world, trace and semantic summary", () => {
   assert.ok(report.tickLatencyMs.p50 >= 0);
   assert.ok(report.tickLatencyMs.p95 >= report.tickLatencyMs.p50);
   assert.ok(report.samples.every((sample) => sample.peakHeapBytes >= sample.heapStartBytes));
+});
+
+test("TS-003: 合法 manifest 解析成功并保留字段", () => {
+  const manifest = parseExperimentManifest({
+    experimentId: "economy-v1-grid",
+    hypothesis: "shorter harvest-return-deposit cycle improves net core gain",
+    baselineVariant: "deterministic-v0.2.15",
+    candidateVariant: "economy-v1",
+    rulesVersion: "v0.11",
+    seeds: [1, 2, 3],
+    ticks: 500,
+    primaryMetric: "net_core_gain_per_100_ticks",
+    guardrails: [{ metric: "illegal_plan_count", max: 0 }, { metric: "capacity_wait_count", max: 10 }],
+    configHash: "sha256:abc",
+    gitSha: "deadbeef",
+  });
+  assert.equal(manifest.experimentId, "economy-v1-grid");
+  assert.deepEqual(manifest.seeds, [1, 2, 3]);
+  assert.equal(manifest.ticks, 500);
+  assert.equal(manifest.guardrails[0].max, 0);
+});
+
+test("TS-003: 缺必填字段/非法值 fail-fast", () => {
+  assert.throws(
+    () => parseExperimentManifest({}),
+    /missing required field/,
+  );
+  assert.throws(
+    () => parseExperimentManifest({
+      experimentId: "x", hypothesis: "h", baselineVariant: "a", candidateVariant: "b",
+      rulesVersion: "v0.11", seeds: [], ticks: 500, primaryMetric: "m",
+      guardrails: [], configHash: "sha256:abc", gitSha: "deadbeef",
+    }),
+    /seeds must be a non-empty array/,
+  );
+  assert.throws(
+    () => parseExperimentManifest({
+      experimentId: "x", hypothesis: "h", baselineVariant: "a", candidateVariant: "a",
+      rulesVersion: "v0.11", seeds: [1], ticks: 500, primaryMetric: "m",
+      guardrails: [], configHash: "sha256:abc", gitSha: "deadbeef",
+    }),
+    /baselineVariant must differ/,
+  );
+  assert.throws(
+    () => parseExperimentManifest({
+      experimentId: "x", hypothesis: "h", baselineVariant: "a", candidateVariant: "b",
+      rulesVersion: "v0.11", seeds: [1], ticks: 0, primaryMetric: "m",
+      guardrails: [], configHash: "sha256:abc", gitSha: "deadbeef",
+    }),
+    /ticks must be a positive integer/,
+  );
 });
