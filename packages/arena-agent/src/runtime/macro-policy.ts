@@ -50,7 +50,9 @@ export function isValidMacroPolicy(value: unknown): value is MacroPolicy {
     if (
       !Array.isArray(region) ||
       region.length !== 2 ||
-      !region.every((value) => Number.isInteger(value))
+      // 地图坐标非负（[0,0] 为原点；生产实测 policy 曾输出 [-1500,1500] 等
+      // 越界坐标，worker 被 go_focus 直线支走 → 经济冻结——负坐标直接拒绝）。
+      !region.every((value) => Number.isInteger(value) && (value as number) >= 0)
     ) {
       return false;
     }
@@ -69,7 +71,11 @@ export function normalizeMacroPolicy(raw: Record<string, unknown>): MacroPolicy 
     ? raw.militaryRatio
     : DEFAULT_MACRO_POLICY.militaryRatio;
   let focusRegion: readonly [number, number] | null = null;
-  if (Array.isArray(raw.focusRegion) && raw.focusRegion.length === 2 && raw.focusRegion.every((value) => Number.isInteger(value))) {
+  if (
+    Array.isArray(raw.focusRegion) &&
+    raw.focusRegion.length === 2 &&
+    raw.focusRegion.every((value) => Number.isInteger(value) && (value as number) >= 0)
+  ) {
     focusRegion = [raw.focusRegion[0], raw.focusRegion[1]] as const;
   }
   const attackPriority = raw.attackPriority === "core" || raw.attackPriority === "workers" ? raw.attackPriority : null;

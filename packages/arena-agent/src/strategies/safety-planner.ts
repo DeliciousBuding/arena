@@ -41,6 +41,13 @@ export interface SafetyPlannerConfig {
   readonly accumulateTarget: number;
   readonly guardResources: number;
   readonly guardForce: number;
+  /**
+   * focusRegion 最大有效距离（Chebyshev，以 Core 为圆心）：聚焦区语义是"可探索/
+   * 可攻坚的近程区域"，超上限视为无效并回退巡逻。生产实测：policy 层曾输出
+   * [1500,1500]/[-1500,1500] 等地图角落坐标，全部 worker 被直线支去不可达远点 →
+   * 无限 go_focus、0 采集、经济冻结（focus 是"直线远征"而非"巡逻偏好"）。
+   */
+  readonly maxFocusDistance: number;
   readonly phase?: PhaseConfig;
   /**
    * 战斗激进级别（默认 defensive，与历史行为一致）：
@@ -62,6 +69,7 @@ export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
   accumulateTarget: 0,
   guardResources: 30,
   guardForce: 4,
+  maxFocusDistance: 32,
 });
 
 /** 激进战斗配置：完整默认值 + aggressive 战斗行为（供 tenant-runtime 注入）。 */
@@ -102,6 +110,16 @@ export class SafetyPlanner {
   decide(input: SafetyPlannerInput): Plan {
     const { state } = input;
     this.effectivePolicy = input.policy ?? null;
+    // focusRegion 防呆（生产实测 2026-08-05）：policy 层曾输出 [1500,1500]/
+    // [-1500,1500]/[0,0] 等不可达远点，全部 worker 被 go_focus 直线支走 → 0 采集、
+    // 经济冻结、无法补员/产兵。聚焦区必须是 Core 附近的可探索近程区域：以 Core
+    // 为圆心超 maxFocusDistance 的焦点视为无效，统一回退巡逻（覆盖 worker/vanguard/
+    // ranger 的全部 focus 消费点）。
+    const focus = this.effectivePolicy?.focusRegion ?? null;
+    const home = state.core?.position ?? null;
+    if (focus !== null && home !== null && this.effectivePolicy !== null && chebyshev(home, focus) > this.config.maxFocusDistance) {
+      this.effectivePolicy = { ...this.effectivePolicy, focusRegion: null };
+    }
     this.effectiveAggression =
       input.policy !== undefined ? aggressionOf(input.policy) : (this.config.aggression ?? "defensive");
     this.effectiveWorkerTarget = input.policy?.workerTarget ?? this.config.workerTarget;
