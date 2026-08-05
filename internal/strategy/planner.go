@@ -49,6 +49,7 @@ func DefaultConfig() Config {
 //   - per-unit 巡逻目标/方向/环（worker 需要走出视野发现资源格——
 //     全局共享索引每 tick 换目标会让单位原地打转，真机 20t 实测根因）；
 //   - 停滞指纹（服务器反馈的位置连续不变 → 强制换目标跳出死循环）；
+//   - engage 计数（追敌超时跳出——敌人持续移动追不上时放弃回防）；
 //   - 指挥指令（Commander 输出的模式，docs/go/08-command-design.md）。
 type Planner struct {
 	config        Config
@@ -57,6 +58,7 @@ type Planner struct {
 	patrolDirs    map[string]int             // unitID → 八方位索引
 	patrolRings   map[string]int             // unitID → 探索环（半径扩展）
 	stuck         map[string]*stuckState     // unitID → 位置指纹停滞计数
+	engageTicks   map[string]int             // unitID → 连续 engage 计数
 }
 
 // stuckState 是单位停滞指纹（基于服务器反馈的位置）。
@@ -74,6 +76,7 @@ func NewPlanner(config Config) *Planner {
 		patrolDirs:    make(map[string]int),
 		patrolRings:   make(map[string]int),
 		stuck:         make(map[string]*stuckState),
+		engageTicks:   make(map[string]int),
 	}
 }
 
@@ -319,8 +322,21 @@ func (p *Planner) decideVanguard(state *domain.TickState, unit *domain.UnitSnaps
 		return domain.UnitAction{Kind: domain.ActionSweep, Direction: &dir}, "sweep", true
 	}
 	if enemy := nearestEnemy(state, unit.Position, p.config.ThreatDistance); enemy != nil {
+		// 追敌超时跳出（agent 智能决策跳出死循环）：敌人持续移动导致
+		// 永远追不上（engage 连续 engageTimeoutTicks tick）→ 放弃追击
+		// 回核心防守/巡逻，避免无限消耗（第二类停滞跳出的军事版）。
+		if p.engageTicks[unit.ID] >= engageTimeoutTicks {
+			p.engageTicks[unit.ID] = 0
+			if state.Core != nil && unit.Position != state.Core.Position {
+				return p.moveToward(state, unit, state.Core.Position), "disengage", true
+			}
+			return p.patrol(state, unit), "patrol", true
+		}
+		p.engageTicks[unit.ID]++
 		return p.moveToward(state, unit, enemy.Position), "engage", true
 	}
+	// 无敌人：重置 engage 计数。
+	p.engageTicks[unit.ID] = 0
 	if state.Core != nil && unit.HP < domain.UnitMaxHP(unit.UnitType) {
 		if unit.Position == state.Core.Position {
 			return domain.UnitAction{Kind: domain.ActionHeal}, "heal", true
@@ -336,6 +352,10 @@ func (p *Planner) decideVanguard(state *domain.TickState, unit *domain.UnitSnaps
 	}
 	return p.patrol(state, unit), "patrol", true
 }
+
+// engageTimeoutTicks 是追敌超时阈值：连续 engage 超过该 tick 数且未
+// 进入 SWEEP 射程 → 放弃追击（敌人持续移动追不上的场景）。
+const engageTimeoutTicks = 8
 
 // adjacentEnemySweep 检查四方向相邻格（UP→RIGHT→DOWN→LEFT 确定性顺序），
 // 返回第一个含敌方单位/Core 的方向；无相邻敌人返回 nil。
@@ -357,6 +377,13 @@ func adjacentEnemySweep(state *domain.TickState, position domain.Position) *doma
 func (p *Planner) decideRanger(state *domain.TickState, unit *domain.UnitSnapshot) (domain.UnitAction, string, bool) {
 	if enemy := nearestEnemy(state, unit.Position, 3); enemy != nil {
 		if !domain.LineBlocked(unit.Position, enemy.Position, state.ObstacleCells) {
+			// 放风筝（kite）：敌人距离 <= 2 时先拉开（近战 Vanguard 相邻
+			// 格 1 伤害、Ranger 距离 2 有被反打风险）——保持射程优势。
+			if domain.Chebyshev(unit.Position, enemy.Position) <= 2 {
+				if action, ok := p.kiteAway(state, unit, enemy.Position); ok {
+					return action, "kite", true
+				}
+			}
 			targetID := enemy.ID
 			cell := enemy.Position
 			return domain.UnitAction{Kind: domain.ActionShoot, TargetID: &targetID, ExpectedCell: &cell}, "shoot", true
@@ -376,6 +403,60 @@ func (p *Planner) decideRanger(state *domain.TickState, unit *domain.UnitSnapsho
 		return domain.UnitAction{Kind: domain.ActionWait}, "defend", true
 	}
 	return p.patrol(state, unit), "patrol", true
+}
+
+// kiteAway 让 Ranger 朝远离敌人的方向撤退一步（保持射程优势）。
+// 方向选择：敌人反方向优先（dx/dy 反向），被堵则走正交方向；
+// 全部被堵返回 ok=false（调用方降级 SHOOT）。
+func (p *Planner) kiteAway(state *domain.TickState, unit *domain.UnitSnapshot, enemy domain.Position) (domain.UnitAction, bool) {
+	dx := unit.Position[0] - enemy[0]
+	dy := unit.Position[1] - enemy[1]
+	// 反方向候选：主轴向优先（|dx| >= |dy| 时 x 反向优先）。
+	preferred := make([]domain.Direction, 0, 4)
+	if dx != 0 {
+		if dx > 0 {
+			preferred = append(preferred, domain.DirectionRight)
+		} else {
+			preferred = append(preferred, domain.DirectionLeft)
+		}
+	}
+	if dy != 0 {
+		if dy > 0 {
+			preferred = append(preferred, domain.DirectionDown)
+		} else {
+			preferred = append(preferred, domain.DirectionUp)
+		}
+	}
+	for _, direction := range []domain.Direction{
+		domain.DirectionRight, domain.DirectionDown, domain.DirectionLeft, domain.DirectionUp,
+	} {
+		if !directionIn(direction, preferred) {
+			preferred = append(preferred, direction)
+		}
+	}
+	for _, direction := range preferred {
+		next := domain.Move(unit.Position, direction)
+		key := domain.CellKey(next[0], next[1])
+		if state.ObstacleCells.Contains(key) || state.ResourceCells.Contains(key) {
+			continue
+		}
+		if occupiedByAny(state, unit.ID, next) {
+			continue
+		}
+		dir := direction
+		return domain.UnitAction{Kind: domain.ActionMove, Direction: &dir}, true
+	}
+	return domain.UnitAction{}, false
+}
+
+// directionIn 报告 direction 是否已在列表中。
+func directionIn(direction domain.Direction, directions []domain.Direction) bool {
+	for _, candidate := range directions {
+		if candidate == direction {
+			return true
+		}
+	}
+	return false
 }
 
 // moveToward 朝目标走一步：
