@@ -430,3 +430,24 @@ test("PolicyDiscipline: prompt 指挥状态注入（stall_recovery/escalation �
   const escalation = buildMacroPolicyPrompt(makeState(100), { commandState: "escalation" });
   assert.ok(escalation.includes("command state: escalation active"), "escalation 态注入配合指引");
 });
+
+test("PolicyDiscipline: prompt 恢复结果反馈注入（lastRecoveryOutcome 三种结局）", () => {
+  const base = buildMacroPolicyPrompt(makeState(100));
+  assert.ok(!base.includes("last recovery outcome:"), "无恢复结果不注入");
+  const recovered = buildMacroPolicyPrompt(makeState(100), {
+    lastRecoveryOutcome: { outcome: "recovered", kind: "cargo_blocked", tick: 90 },
+  });
+  assert.ok(recovered.includes("上次自愈成功"), "recovered 结局注入成功指引");
+  assert.ok(recovered.includes("kind=cargo_blocked@tick=90"), "结局携带 kind/tick");
+  const failed = buildMacroPolicyPrompt(makeState(100), {
+    lastRecoveryOutcome: { outcome: "failed", kind: "focus_exile", tick: 80 },
+  });
+  assert.ok(failed.includes("上次自愈失败"), "failed 结局注入纠错指引");
+  assert.ok(failed.includes("不要再用远点 focus"), "failed 结局给出可执行对策");
+  const expired = buildMacroPolicyPrompt(makeState(100), {
+    lastRecoveryOutcome: { outcome: "expired", kind: "focus_exile", tick: 70 },
+  });
+  assert.ok(expired.includes("恢复经济为第一优先"), "expired 结局注入经济优先指引");
+  const noOutcome = buildMacroPolicyPrompt(makeState(100), { lastRecoveryOutcome: null });
+  assert.ok(!noOutcome.includes("last recovery outcome:"), "null 不注入");
+});

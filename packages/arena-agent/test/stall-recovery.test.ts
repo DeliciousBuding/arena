@@ -106,3 +106,40 @@ test("StallRecovery: escalating 到期回 idle（带 escalated 标记）", () =>
   assert.equal(recovery.stateOf(), "idle");
   assert.deepEqual(recovery.policyFor(BASE), BASE);
 });
+
+test("StallRecovery: 迁移结局 outcome 标记（recovered/failed/expired）", () => {
+  // 经济恢复 → recovered
+  const success = new StallRecovery({ recoveryTicks: 128 });
+  success.observe([event("cargo_blocked", 500)], { tick: 500, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  const recovered = success.observe(noEvents(), { tick: 502, coreResourceDelta: 2, harvestCount: 1, depositCount: 0 });
+  assert.equal(recovered?.state, "idle");
+  assert.equal(recovered?.outcome, "recovered");
+
+  // 到期未恢复 → failed（升级 escalating 时同标 failed）
+  const failing = new StallRecovery({ recoveryTicks: 10, escalateAfterFailures: 2, cooldownTicks: 0 });
+  failing.observe([event("focus_exile", 600)], { tick: 600, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  for (let tick = 601; tick < 610; tick += 1) {
+    failing.observe(noEvents(), { tick, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  }
+  const firstFail = failing.observe(noEvents(), { tick: 610, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(firstFail?.outcome, "failed");
+  failing.observe([event("focus_exile", 611)], { tick: 611, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  for (let tick = 612; tick < 621; tick += 1) {
+    failing.observe(noEvents(), { tick, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  }
+  const escalate = failing.observe(noEvents(), { tick: 621, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(escalate?.state, "escalating");
+  assert.equal(escalate?.outcome, "failed");
+
+  // escalating 到期 → expired
+  const escalationTicks = 8;
+  const exiting = new StallRecovery({ recoveryTicks: 5, escalateAfterFailures: 1, escalationTicks, cooldownTicks: 0 });
+  exiting.observe([event("patrol_only", 700)], { tick: 700, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  for (let tick = 701; tick < 705; tick += 1) {
+    exiting.observe(noEvents(), { tick, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  }
+  exiting.observe(noEvents(), { tick: 705, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  const expired = exiting.observe(noEvents(), { tick: 705 + escalationTicks, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(expired?.state, "idle");
+  assert.equal(expired?.outcome, "expired");
+});

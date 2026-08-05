@@ -76,6 +76,11 @@ export interface BurnInKpi {
   readonly recoveryStartedCount: number;
   readonly recoveryEscalatedCount: number;
   readonly recoveryEndedCount: number;
+  /** 自愈结局统计（outcome 字段：recovered 成功 / failed 到期未恢复 / expired 终局到期）。
+   *  自愈成功率 = recoveryRecoveredCount / (recovered + failed)。 */
+  readonly recoveryRecoveredCount: number;
+  readonly recoveryFailedCount: number;
+  readonly recoveryExpiredCount: number;
   /** 策略层纪律事件计数（policy_discipline：坏焦点 / 禁言）。 */
   readonly disciplineInvalidFocusCount: number;
   readonly disciplineSilenceCount: number;
@@ -255,6 +260,9 @@ export function buildBurnInKpi(
   const recoveryStartedCount = recoveryTransitions.filter((record) => record.recoveryState === "recovering").length;
   const recoveryEscalatedCount = recoveryTransitions.filter((record) => record.recoveryState === "escalating").length;
   const recoveryEndedCount = recoveryTransitions.filter((record) => record.recoveryState === "idle").length;
+  const recoveryRecoveredCount = recoveryTransitions.filter((record) => record.outcome === "recovered").length;
+  const recoveryFailedCount = recoveryTransitions.filter((record) => record.outcome === "failed").length;
+  const recoveryExpiredCount = recoveryTransitions.filter((record) => record.outcome === "expired").length;
   const disciplineInvalidFocusCount = policies.filter((record) => record.type === "policy_discipline" && record.kind === "invalid_focus").length;
   const disciplineSilenceCount = policies.filter((record) => record.type === "policy_discipline" && record.kind === "silence_started").length;
   const ticksTo = (threshold: number): number | null => {
@@ -284,6 +292,9 @@ export function buildBurnInKpi(
     recoveryStartedCount,
     recoveryEscalatedCount,
     recoveryEndedCount,
+    recoveryRecoveredCount,
+    recoveryFailedCount,
+    recoveryExpiredCount,
     disciplineInvalidFocusCount,
     disciplineSilenceCount,
     ticksTo20: ticksTo(20),

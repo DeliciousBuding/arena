@@ -349,6 +349,9 @@ export async function runTenant(
     const stallDetector = new StallDetector();
     const stallRecovery = new StallRecovery();
     const policyDiscipline = new PolicyDiscipline();
+    // 恢复结果反馈（agent 智能跳出闭环）：上次自愈结束的结局（成功/失败/到期），
+    // 注入策略 prompt 让 LLM 基于结果调整战略（见 policy-prompt 渲染）。
+    let lastRecoveryOutcome: { readonly outcome: "recovered" | "failed" | "expired"; readonly kind: string | null; readonly tick: number } | null = null;
     const recentStallEvents: string[] = [];
     const appendStallEvent = (event: StallEvent): void => {
       recentStallEvents.push(`kind=${event.kind}@tick=${event.tick}(streak=${event.streak})`);
@@ -389,6 +392,9 @@ export async function runTenant(
             // 决策指挥状态：执行层临时接管（stall_recovery/escalation）时策略层
             // 必须配合（focusRegion=null / 维持 aggressive）
             commandState: stallRecovery.stateOf(),
+            // 恢复结果反馈：上次自愈结局（recovered/failed/expired）——策略层
+            // 据此判断是否需要改变战略（连续失败 → 维持军事姿态等）
+            lastRecoveryOutcome,
             // 策略历史基线（低频演进，防 workerTarget 16→3 跳变）；
             // promptBuilder 在 orchestrator 创建前不触发（首次决策 previous=null）
             previousPolicy: policyOrchestrator === null ? null : serializeMacroPolicy(policyOrchestrator.current),
@@ -645,8 +651,18 @@ export async function runTenant(
               recoveryState: recoveryTransition.state,
               stallKind: recoveryTransition.kind,
               escalated: recoveryTransition.escalated ?? false,
+              outcome: recoveryTransition.outcome ?? null,
             })),
           );
+          // 恢复结果反馈：自愈结束（含 escalating 到期）时记录结局，供策略层
+          // 决策参考（agent 智能跳出闭环的"结果感知"侧）。
+          if (recoveryTransition.state === "idle" && recoveryTransition.outcome !== undefined) {
+            lastRecoveryOutcome = {
+              outcome: recoveryTransition.outcome,
+              kind: recoveryTransition.kind ?? null,
+              tick: recoveryTransition.tick,
+            };
+          }
         }
         // 经济趋势缓冲（策略 prompt 输入；保留最近 32 ticks）
         recentResourceDeltas.push(outcome.state.resources - holder.prev.resources);

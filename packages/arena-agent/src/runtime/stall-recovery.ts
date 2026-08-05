@@ -28,6 +28,10 @@ export interface RecoveryTransition {
   readonly tick: number;
   /** escalating 结束后回 idle 时标记（落盘审计用）。 */
   readonly escalated?: boolean;
+  /** 本次迁移结局（agent 决策反馈 + 自愈成功率 KPI）：
+   *  recovered = 经济恢复提前退出；failed = 到期未恢复（含升级 escalating 时）；
+   *  expired = escalating 终局尝试到期。 */
+  readonly outcome?: "recovered" | "failed" | "expired";
 }
 
 export interface StallRecoveryConfig {
@@ -130,7 +134,7 @@ export class StallRecovery {
       }
       if (economyRecovered(obs.coreResourceDelta, obs.harvestCount, obs.depositCount)) {
         // 经济恢复 → 提前退出干预（自愈成功），进入冷却。
-        return this.resetToIdle(tick);
+        return this.resetToIdle(tick, "recovered");
       }
       if (tick - this.startTick >= this.recoveryTicks) {
         // 到期仍未恢复 → 记失败一轮；达上限升级 escalating。
@@ -138,22 +142,23 @@ export class StallRecovery {
         if (this.failureRounds >= this.escalateAfterFailures) {
           this.state = "escalating";
           this.startTick = tick;
-          return { state: "escalating", kind: this.activeKind, tick };
+          return { state: "escalating", kind: this.activeKind, tick, outcome: "failed" };
         }
-        return this.resetToIdle(tick);
+        return this.resetToIdle(tick, "failed");
       }
       return null;
     }
 
     // escalating：到期回 idle（终局尝试结束），冷却同类。
     if (this.startTick !== null && tick - this.startTick >= this.escalationTicks) {
-      return this.resetToIdle(tick);
+      return this.resetToIdle(tick, "expired");
     }
     return null;
   }
 
-  /** 状态回 idle + 同类冷却（返回迁移记录）。 */
-  private resetToIdle(tick: number): RecoveryTransition {
+  /** 状态回 idle + 同类冷却（返回迁移记录）。
+   *  注意：failureRounds 跨会话保留——连续失败升级 escalating 依赖跨轮累计。 */
+  private resetToIdle(tick: number, outcome?: "recovered" | "failed" | "expired"): RecoveryTransition {
     const kind = this.activeKind;
     const previousState = this.state;
     this.state = "idle";
@@ -162,6 +167,12 @@ export class StallRecovery {
     if (kind !== null) {
       this.cooldownUntilTick.set(kind, tick + this.cooldownTicks);
     }
-    return { state: "idle", kind, tick, ...(previousState === "escalating" ? { escalated: true } : {}) };
+    return {
+      state: "idle",
+      kind,
+      tick,
+      ...(previousState === "escalating" ? { escalated: true } : {}),
+      ...(outcome !== undefined ? { outcome } : {}),
+    };
   }
 }
