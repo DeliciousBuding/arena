@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "race.strategy-profile.v1",
+  "profileId": "surge-v1",
+  "status": "candidate",
+  "description": "积累后爆兵并在兵力成型时前压敌方 Core；用于 enemy-defensive 与拆 Core 场景。",
+  "posture": "aggressive",
+  "workerTarget": 8,
+  "populationCeiling": 19,
+  "militaryRatio": 0.4,
+  "vanguardRatio": 0.5,
+  "accumulateThreshold": 20,
+  "attackForce": 5,
+  "exploreRadius": 40,
+  "maxFocusDistance": 32,
+  "threatDistance": 6,
+  "spawnReserve": 1,
+  "attackPriority": "core",
+  "resourceMemory": {
+    "maxAgeTicks": 32,
+    "failedCooldownTicks": 32
+  },
+  "exploration": {
+    "ringStep": 8,
+    "ringCount": 5,
+    "directionStride": 3,
+    "chunkAgeWeight": 1.0
+  },
+  "safety": {
+    "clearPath": true,
+    "enableCoreMigration": false
+  }
+}

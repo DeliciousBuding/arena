@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "race.strategy-profile.v1",
+  "profileId": "defense-v1",
+  "status": "candidate",
+  "description": "Core 生存、回防与抗夹击候选；用于 enemy-aggressive/crossfire。",
+  "posture": "balanced",
+  "workerTarget": 8,
+  "populationCeiling": 19,
+  "militaryRatio": 0.35,
+  "vanguardRatio": 0.35,
+  "accumulateThreshold": 24,
+  "attackForce": 6,
+  "exploreRadius": 32,
+  "maxFocusDistance": 24,
+  "threatDistance": 8,
+  "spawnReserve": 2,
+  "attackPriority": "nearest",
+  "resourceMemory": {
+    "maxAgeTicks": 32,
+    "failedCooldownTicks": 32
+  },
+  "exploration": {
+    "ringStep": 8,
+    "ringCount": 4,
+    "directionStride": 3,
+    "chunkAgeWeight": 1.0
+  },
+  "safety": {
+    "clearPath": true,
+    "enableCoreMigration": false
+  }
+}

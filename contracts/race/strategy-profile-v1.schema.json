@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DeliciousBuding/arena/contracts/race/strategy-profile-v1.schema.json",
+  "title": "Arena Race Strategy Profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profileId",
+    "status",
+    "posture",
+    "workerTarget",
+    "populationCeiling",
+    "militaryRatio",
+    "vanguardRatio",
+    "accumulateThreshold",
+    "attackForce",
+    "exploreRadius",
+    "maxFocusDistance",
+    "threatDistance",
+    "spawnReserve",
+    "attackPriority",
+    "resourceMemory",
+    "exploration",
+    "safety"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "race.strategy-profile.v1" },
+    "profileId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"
+    },
+    "status": {
+      "enum": ["candidate", "validated", "production"]
+    },
+    "description": { "type": "string", "maxLength": 500 },
+    "posture": {
+      "enum": ["economic", "balanced", "aggressive"]
+    },
+    "workerTarget": { "type": "integer", "minimum": 1, "maximum": 32 },
+    "populationCeiling": { "type": "integer", "minimum": 1, "maximum": 64 },
+    "militaryRatio": { "type": "number", "minimum": 0, "maximum": 1 },
+    "vanguardRatio": { "type": "number", "minimum": 0, "maximum": 1 },
+    "accumulateThreshold": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "attackForce": { "type": "integer", "minimum": 0, "maximum": 64 },
+    "exploreRadius": { "type": "integer", "minimum": 1, "maximum": 128 },
+    "maxFocusDistance": { "type": "integer", "minimum": 1, "maximum": 128 },
+    "threatDistance": { "type": "integer", "minimum": 0, "maximum": 64 },
+    "spawnReserve": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "attackPriority": {
+      "type": ["string", "null"],
+      "enum": ["core", "workers", "nearest", null]
+    },
+    "resourceMemory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxAgeTicks", "failedCooldownTicks"],
+      "properties": {
+        "maxAgeTicks": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "failedCooldownTicks": { "type": "integer", "minimum": 0, "maximum": 4096 }
+      }
+    },
+    "exploration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ringStep", "ringCount", "directionStride", "chunkAgeWeight"],
+      "properties": {
+        "ringStep": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "ringCount": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "directionStride": { "type": "integer", "minimum": 1, "maximum": 31 },
+        "chunkAgeWeight": { "type": "number", "minimum": 0, "maximum": 1000 }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clearPath", "enableCoreMigration"],
+      "properties": {
+        "clearPath": { "type": "boolean" },
+        "enableCoreMigration": { "type": "boolean" }
+      }
+    }
+  }
+}
