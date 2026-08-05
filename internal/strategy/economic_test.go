@@ -212,22 +212,21 @@ func TestAssignWorkersNoCellsEmptyAssignment(t *testing.T) {
 func TestWorkerMovesToAssignedCell(t *testing.T) {
 	state := workerState([]domain.UnitSnapshot{
 		{ID: "worker-1", Position: domain.Position{0, 0}, UnitType: domain.UnitWorker},
-		{ID: "worker-2", Position: domain.Position{0, 1}, UnitType: domain.UnitWorker},
+		{ID: "worker-2", Position: domain.Position{2, 2}, UnitType: domain.UnitWorker},
 	})
 	state.ResourceCells = cellSet(domain.Position{0, 3}, domain.Position{0, 5})
 
 	plan := NewPlanner(DefaultConfig()).Decide(state)
-	for _, id := range []string{"worker-1", "worker-2"} {
-		action := requireUnitAction(t, plan, id)
-		if action.Kind != domain.ActionMove {
-			t.Fatalf("%s action = %s, want MOVE", id, action.Kind)
-		}
-		if action.Direction == nil || *action.Direction != domain.DirectionDown {
-			t.Errorf("%s direction = %v, want DOWN", id, action.Direction)
-		}
-		if intent := plan.Intents[id]; intent != "to_resource" {
-			t.Errorf("%s intent = %q, want to_resource", id, intent)
-		}
+	// worker-1: (0,0)→(0,3) 直线 DOWN 无阻挡（worker-2 已移开，不挡路）。
+	action := requireUnitAction(t, plan, "worker-1")
+	if action.Kind != domain.ActionMove {
+		t.Fatalf("worker-1 action = %s, want MOVE", action.Kind)
+	}
+	if action.Direction == nil || *action.Direction != domain.DirectionDown {
+		t.Errorf("worker-1 direction = %v, want DOWN", action.Direction)
+	}
+	if intent := plan.Intents["worker-1"]; intent != "to_resource" {
+		t.Errorf("worker-1 intent = %q, want to_resource", intent)
 	}
 	if result := domain.ValidatePlan(state, *plan); !result.Valid {
 		t.Errorf("plan invalid: %v", result.Issues)

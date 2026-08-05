@@ -271,6 +271,49 @@ func TestPatrolInitialDirectionsSpread(t *testing.T) {
 	}
 }
 
+// TestMoveAvoidsOwnUnits：拥挤排布（t4 实测：4 worker 排成一排，计划
+// 互相踩格导致服务器不结算移动）——每个单位的目标格不得被其他己方
+// 单位占据，计划互相不冲突。
+func TestMoveAvoidsOwnUnits(t *testing.T) {
+	state := baseState()
+	state.ResourceCells = domain.NewSet[string]()
+	state.ObstacleCells = domain.NewSet[string]()
+	// t4 实测排布：Core 在 (98,84)，4 个 worker 在 y=76 排成一排。
+	state.Core.Position = domain.Position{98, 84}
+	state.Workers = []domain.UnitSnapshot{
+		{ID: "w-1", Position: domain.Position{94, 76}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+		{ID: "w-2", Position: domain.Position{95, 76}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+		{ID: "w-3", Position: domain.Position{96, 76}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+		{ID: "w-4", Position: domain.Position{101, 76}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+	}
+	state.Units = append([]domain.UnitSnapshot(nil), state.Workers...)
+	planner := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 0})
+	plan := planner.Decide(state)
+
+	occupied := make(map[string]domain.Position, len(state.Workers))
+	for _, worker := range state.Workers {
+		occupied[worker.ID] = worker.Position
+	}
+	for _, worker := range state.Workers {
+		action := requireUnitAction(t, plan, worker.ID)
+		if action.Kind != domain.ActionMove || action.Direction == nil {
+			continue // WAIT 可接受（无路可走时降级）
+		}
+		destination := domain.Move(worker.Position, *action.Direction)
+		for otherID, otherPos := range occupied {
+			if otherID == worker.ID {
+				continue
+			}
+			if destination == otherPos {
+				t.Errorf("%s moves onto %s's cell %v (would be rejected by server)", worker.ID, otherID, destination)
+			}
+		}
+	}
+	if result := domain.ValidatePlan(state, *plan); !result.Valid {
+		t.Errorf("plan invalid: %v", result.Issues)
+	}
+}
+
 func TestDecideSpawnsWorkerWhenResourcesSufficient(t *testing.T) {
 	state := baseState()
 	plan := NewPlanner(DefaultConfig()).Decide(state)

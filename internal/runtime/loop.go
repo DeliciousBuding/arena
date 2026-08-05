@@ -5,6 +5,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"runtime"
@@ -373,6 +374,11 @@ func (l *Loop) submit(ctx context.Context, tickState *domain.TickState, plan *do
 	commandPlan, err := hero.PlanToCommandPlan(plan)
 	if err != nil {
 		return fmt.Errorf("build command plan: %w", err)
+	}
+	// 提交体调试（排查"服务器接受但不结算"类问题：动作格式/单位 ID
+	// 匹配一眼可见）。
+	if encoded, err := json.Marshal(commandPlan); err == nil {
+		l.logger().Debug("submit plan body", "tick", tickState.Tick, "plan", string(encoded))
 	}
 	key := l.stableIdempotencyKey(tickState)
 	accepted, err := l.Client.Submit(ctx, *commandPlan, key)

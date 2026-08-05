@@ -79,5 +79,28 @@ func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult
 	}
 	events = append(events, coreEvents...)
 
+	// 一致性：分列（Workers/Vanguards/Rangers）从 Units 重建——结算只
+	// 修改 Units 的位置/cargo，若不回写分列，决策（读 Units）与分配
+	// （读分列）会看到不同状态，导致闭环卡死（真实拓扑测试暴露）。
+	rebuildColumns(next)
+
 	return SettleResult{NextState: next, Events: events, Stats: stats}
+}
+
+// rebuildColumns 按 Units 重建分列（Workers/Vanguards/Rangers），
+// 保持 Units 的既有顺序（reduce 语义：按 ID 升序）。
+func rebuildColumns(state *domain.TickState) {
+	state.Workers = state.Workers[:0]
+	state.Vanguards = state.Vanguards[:0]
+	state.Rangers = state.Rangers[:0]
+	for _, unit := range state.Units {
+		switch unit.UnitType {
+		case domain.UnitWorker:
+			state.Workers = append(state.Workers, unit)
+		case domain.UnitVanguard:
+			state.Vanguards = append(state.Vanguards, unit)
+		case domain.UnitRanger:
+			state.Rangers = append(state.Rangers, unit)
+		}
+	}
 }

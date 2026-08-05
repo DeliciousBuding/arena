@@ -234,8 +234,19 @@ func (p *Planner) decideRanger(state *domain.TickState, unit *domain.UnitSnapsho
 	return p.patrol(state, unit), "patrol", true
 }
 
+// moveToward 朝目标走一步（BFS 绕障 + 避开其他己方单位当前位置）：
+// 真机 20t 停滞根因——worker 排成一排时，计划互相踩格（A 的目标格
+// 是 B 的当前位置），服务器不结算移动，位置永不变。把其他单位当前
+// 位置并入障碍集后，BFS 确定性绕行，计划不再互相冲突。
 func (p *Planner) moveToward(state *domain.TickState, unit *domain.UnitSnapshot, target domain.Position) domain.UnitAction {
-	if direction, ok := domain.StepToward(unit.Position, target, state.ObstacleCells); ok {
+	obstacles := state.ObstacleCells.Clone()
+	for _, other := range state.Units {
+		if other.ID == unit.ID {
+			continue
+		}
+		obstacles.Add(domain.CellKey(other.Position[0], other.Position[1]))
+	}
+	if direction, ok := domain.StepToward(unit.Position, target, obstacles); ok {
 		dir := direction
 		return domain.UnitAction{Kind: domain.ActionMove, Direction: &dir}
 	}
