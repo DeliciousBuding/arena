@@ -373,7 +373,7 @@ func TestDecideNoSpawnWhenWorkerTargetMet(t *testing.T) {
 func TestDecideNoSpawnWhenPopulationCeilingReached(t *testing.T) {
 	state := baseState()
 	state.Resources = 50
-	state.Population = 20
+	state.Population = 30 // 默认 ceiling=30（模拟退火优化后）
 	plan := NewPlanner(DefaultConfig()).Decide(state)
 
 	if plan.CoreAction != nil {
