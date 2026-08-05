@@ -60,6 +60,11 @@ export interface PhaseContext {
   readonly features: ReadonlySet<SimFeature>;
   /** Cells where a carried Beacon landed through death before P07. */
   readonly beaconPickupLockedCells: Set<string>;
+  /** 近似 refill（实验可选；undefined = 不实现官方 refill）。 */
+  readonly refill?: {
+    readonly cells: readonly string[];
+    readonly everyTicks: number;
+  };
 }
 
 export const EMPTY_OUTCOME: PhaseOutcome = Object.freeze({

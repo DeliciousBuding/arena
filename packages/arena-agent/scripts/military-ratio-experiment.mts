@@ -15,13 +15,9 @@ import type { MacroPolicy } from "../src/runtime/macro-policy.ts";
 
 const MANIFEST_PATH = "src/sim/contracts/rules-v0.11.json";
 
-/** 资源充裕：60 格资源（模拟 refill 的长期供给效果；模拟器本身无 refill）。 */
+/** 合理资源密度（14 格，模拟真实地图）；近似 refill 提供持续供给。 */
 function resources(): Array<[number, number]> {
-  const cells: Array<[number, number]> = [];
-  for (let i = 0; i < 60; i += 1) {
-    cells.push([(i * 7) % 30, Math.floor((i * 7) / 30) + 3] as [number, number]);
-  }
-  return cells;
+  return [[5, 0], [6, 0], [7, 0], [8, 0], [9, 0], [35, 40], [36, 40], [37, 40], [38, 40], [20, 20], [21, 20], [22, 20], [15, 15], [25, 25]];
 }
 
 function duelScenario(seed: number) {
@@ -78,6 +74,7 @@ function runDuel(ratio2: number, seed: number): Result {
     rulesPath: MANIFEST_PATH,
     seed,
     ticks: TICKS,
+    refill: {}, // 近似 refill：按规则 cadence 补回资源格（官方 server-secret，近似标注）
     tenants: [
       { id: "p1", planner: "deterministic", policy: P1_POLICY } as EpisodeTenant,
       { id: "p2", planner: "deterministic", policy: p2Policy } as EpisodeTenant,

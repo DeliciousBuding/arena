@@ -26,6 +26,16 @@ export interface SettlementContext {
   readonly rules: RulesManifest;
   /** test-seeded 随机源（refill-policy 用）；null = disabled。 */
   readonly rng: (() => number) | null;
+  /**
+   * 近似 refill（实验可选；默认 undefined = 不实现官方 refill，保持
+   * unknown-by-design）：官方 refill 是 server-secret（永久 seed），模拟器
+   * 不伪装官方语义；此配置按 cadence 把原始资源格补回（近似节奏），
+   * unknown effect note 明确标注 approximate，不混淆为 MATCH。
+   */
+  readonly refill?: {
+    readonly cells: readonly string[];
+    readonly everyTicks: number;
+  };
 }
 
 export interface SettlementResult {
@@ -123,7 +133,8 @@ const PHASES: readonly Phase[] = [
       // 记录 unknown 效应，绝不伪装成 MATCH。test-seeded rng 存在时也不
       // 称为"官方 refill"，只是场景注入。
       const cadence = ctx.rules.rules.economy.refillEveryTicks;
-      if ((draft.resolvedTickCount + 1) % cadence === 0) {
+      if ((draft.resolvedTickCount + 1) % cadence !== 0) return EMPTY_OUTCOME;
+      if (ctx.refill === undefined) {
         return outcome({
           unknownEffects: [
             {
@@ -134,7 +145,25 @@ const PHASES: readonly Phase[] = [
           ],
         });
       }
-      return EMPTY_OUTCOME;
+      // 近似 refill（实验配置）：把原始资源格中已被采空的节点补回，
+      // 模拟真实节奏的持续供给；unknown note 明确标注 approximate。
+      const resources = new Map(draft.terrain.resources);
+      for (const key of ctx.refill.cells) {
+        if (!resources.has(key)) resources.set(key, { cell: keyToPosition(key) });
+      }
+      (draft as unknown as { terrain: SimWorld["terrain"] }).terrain = {
+        ...draft.terrain,
+        resources,
+      };
+      return outcome({
+        unknownEffects: [
+          {
+            tick: draft.tick,
+            kind: "refill",
+            note: `approximate refill (config-driven every ${cadence} ticks); official placement is server-secret`,
+          },
+        ],
+      });
     },
   },
   {
@@ -175,6 +204,7 @@ export function settleTick(
     rng: context.rng,
     features,
     beaconPickupLockedCells: new Set(),
+    ...(context.refill === undefined ? {} : { refill: context.refill }),
   };
   const events: ResolutionEvent[] = [];
   const unknownEffects: UnknownEffect[] = [];
@@ -215,6 +245,12 @@ function sortEvents(events: readonly ResolutionEvent[]): readonly ResolutionEven
     if (byType !== 0) return byType;
     return compareCodeUnit(a.recipientPlayerId ?? "", b.recipientPlayerId ?? "");
   });
+}
+
+/** "x,y" → Position（近似 refill 补回节点用）。 */
+function keyToPosition(key: string): [number, number] {
+  const [x, y] = key.split(",").map((part) => Number.parseInt(part, 10));
+  return [x, y];
 }
 
 /** 调试/诊断：列出 phase 顺序（供测试断言）。 */
