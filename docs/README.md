@@ -10,6 +10,8 @@
 | 要做什么 | 读 |
 |----------|----|
 | 当前进度 / 门禁 / 未通过项 | `progress/MASTER.md` |
+| TS 主线执行序列 / 资源配额 | `ts-execution-plan.md`（worktree：`.worktrees/ts-execution-plan`） |
+| 冻结基线（离线 A/B 对照） | `design/baseline-deterministic-v0.2.15.md` |
 | TS 迁移计划 W0-W6 切片 | `migration-plan.md` |
 | 长期路线图 W7-W18 | `roadmap-long-term.md` |
 | 项目目标与商店战略 | `GOAL.md` |
