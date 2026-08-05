@@ -151,12 +151,27 @@ const selfDestructPhase: Phase = {
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
 
-    // v0.12: every living Core may self-destruct unconditionally. Movement and
-    // combat resolve first (this phase runs before them); a surviving Core
-    // destroys its inventory and all owned Units. Cargo and a carried Beacon
-    // drop at each carrier's actual position. No damage/participation/loot.
-    // The private CORE_DESTROYED uses reason_code SELF_DESTRUCT without
-    // destroyed_by, then follows the normal same-Tick respawn flow (P12).
+    for (const request of collectUnitRequests(draft, ctx.plans, "SELF_DESTRUCT")) {
+      const unit = findUnit(draft, request.playerId, request.unitId);
+      if (unit === null) continue;
+      removeUnitAndDropCargo(draft, request.playerId, unit, events, ctx.beaconPickupLockedCells);
+      events.push(eventOf(draft.tick, "UNIT_SELF_DESTRUCTED", { actorId: unit.id, position: unit.position }));
+    }
+    return outcome({ events });
+  },
+};
+
+/** Core SELF_DESTRUCT as its own phase (P10, after combat): v0.12 production
+ *  semantics require movement and combat to resolve first. A Core killed by
+ *  combat this tick (core === null here) already granted participation/loot
+ *  to the attacker; only a surviving Core destroys its fleet before heal/spawn.
+ *  The doomed fleet already paid upkeep (P04) and acted in movement/combat
+ *  (P05/P09) earlier in the tick. */
+const coreSelfDestructPhase: Phase = {
+  id: "P10-core-self-destruct",
+  officialPhase: 10,
+  run: (draft, ctx) => {
+    const events: ResolutionEvent[] = [];
     const coreRequests = [...draft.players.keys()]
       .filter((playerId) => draft.players.get(playerId)?.core !== null)
       .filter((playerId) => ctx.plans.get(playerId)?.coreAction?.type === "SELF_DESTRUCT")
@@ -172,14 +187,14 @@ const selfDestructPhase: Phase = {
         players.set(playerId, {
           ...player,
           status: "RESPAWNING",
-          respawnAtTick: draft.tick, // P12 同 Tick 立即尝试放置 replacement
+          respawnAtTick: draft.tick,
           resources: 0,
           core: null,
           units: [],
         });
       });
       dropBeaconOnDeath(draft, core.id, core.position, events, {
-        clampShield: false, // Core 已销毁，无盾可 clamp
+        clampShield: false,
         pickupLockedCells: ctx.beaconPickupLockedCells,
       });
       events.push(
@@ -189,13 +204,6 @@ const selfDestructPhase: Phase = {
           position: core.position,
         }),
       );
-    }
-
-    for (const request of collectUnitRequests(draft, ctx.plans, "SELF_DESTRUCT")) {
-      const unit = findUnit(draft, request.playerId, request.unitId);
-      if (unit === null) continue;
-      removeUnitAndDropCargo(draft, request.playerId, unit, events, ctx.beaconPickupLockedCells);
-      events.push(eventOf(draft.tick, "UNIT_SELF_DESTRUCTED", { actorId: unit.id, position: unit.position }));
     }
     return outcome({ events });
   },
@@ -652,3 +660,6 @@ export const economyPhases: readonly Phase[] = [
   unitHealPhase,
   coreActionPhase,
 ];
+
+/** Core 自毁独立 phase：settlement 在 P09 combat 之后、P10 heal 之前注册。 */
+export const coreSelfDestructPhaseExport: Phase = coreSelfDestructPhase;

@@ -56,6 +56,11 @@ W6/W7 的代码硬层已完成；Issue #1 继续承载生产验收，不重做�
     - `EpisodeTenant.policy`（可选 MacroPolicy）+ `PlanProvider.decide` 扩展 `policy?`——离线策略扫描闭环（root cause：episode.ts 原 decide 不传 policy → workerTarget=floor=2 → 模拟器无补员 → 经济恒死；注入后 SPAWN/采集/回仓正常，res 10→2-4、pop 2→4）。
     - `nav.adaptivePathOptions`：distance > 24 时放大 BFS 搜索半径（radius=min(64, distance+2)、nodeBudget=radius²×4）——生产实测满载 Worker 在 40+ 格外回仓时默认搜索窗直接不可达，退化为 fail-safe 卡死（stall_warning cargo_blocked 累计 26 次）。回仓/GO_RESOURCE 分支接线（确定性零回归：distance ≤ 24 返回默认对象）。
 11. **v0.2.13 stall 检测误报修复**：远距离满载回仓途中（位置逐 tick 变化）也会 `delta=0 + cargo>0`，原判定 16 ticks 即误报（v0.2.12 部署后立即复现）。修复：满载 Worker 位置指纹（cargo>0 单位位置集合）不变才计 blocked；移动中 = 正常回仓不告警。真死锁（围死/占格）位置不变仍正确告警。
+12. **v0.2.14 决策层优化 + 模拟器 Core 自毁时序修正**：
+    - **OP3 防守 Ranger 目标排序**：`defensiveShotPriority`（距离 → 类型价值 → id）替代 id 字典序——1 格外即将 sweep 的 Vanguard 优先于 3 格外 Worker；同距离 WORKER 优先断经济。激进模式保持原价值排序。
+    - **OP5 Vanguard 守家锚点按单位展开**：`homeCell(core, obstacles, index)`——第 n 只 Vanguard 从 UP→RIGHT→DOWN→LEFT 的第 n 个方向起选锚点。多只守家单位不再挤同一格（容量 2 下第 3 只起被拒/抖动），防线覆盖四向且不堵单条回仓通道。
+    - **OP1 模拟器 Core SELF_DESTRUCT 时序**（P0 规则失真）：拆独立 phase（P10-core-self-destruct，combat 之后）——v0.12 生产语义要求移动与 combat 先结算：被集火时本 tick 已阵亡的 Core 由攻击方正常获得参与分/掠夺（CORE_RESOURCES_CAPTURED），幸存 Core 才在 heal/spawn 前自毁；自毁舰队已交 upkeep（P04）、已参与移动/攻击（P05/P09）。新增测试：攻击+自毁同 tick → 攻击方掠夺 7 资源、reasonCode=ATTACK、无 SELF_DESTRUCT。
+    - **OP4 评估后跳过**（不做净收益下限/DEPOSIT resourceSpace 双重检查）：生产资源采尽后 `availableCells=0` 自然无死头行程；taskAction 已有 resourceSpace 让位处理（v0.2.5），forcedTaskFor 加检查属重复逻辑；模拟器无 refill 时远节点是唯一收入，阈值调参需 A/B 网格——收益不确定，不过度工程化。
 
 **检测设施（同步落地）**：
 - `stall detector`（v0.2.4+）：连续 16 ticks `delta=0 且满载滞留` → runtime.jsonl `stall_warning`（生产累计触发 26 次，自动告警替代人工发现）。
