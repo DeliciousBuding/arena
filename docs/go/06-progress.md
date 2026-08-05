@@ -35,6 +35,7 @@
 | 2026-08-05 | t3 真机 shadow v8（20 tick，--log-file） | `runtime/t3/shadow-20t-v8.log` + run-...194013 | ✅ **20/20 完整**：`ticks=20 submits=0 rejected=0 repaired=0`；经历 2 次服务器停顿（含 90s）自动恢复；零缓冲日志与 decision.jsonl 交叉一致 |
 | 2026-08-05 | t4 固定策略实验 wt=2（shadow） | `runtime/t4/policy-wt2.log` + run-...194805 | ✅ **spawn 意图 0%**（7 tick；2 workers >= workerTarget=2 不 spawn）——workerTarget 接线验证 |
 | 2026-08-05 | t4 固定策略实验 wt=8（shadow） | `runtime/t4/policy-wt8.log` + run-...195009 | ✅ **spawn 意图 100%**（7 tick；2 workers < workerTarget=8 且 resources>=cost+reserve 持续 spawn）——**接线对比成立** |
+| 2026-08-05 | t4 真机 100t（新默认参数，shadow） | `runtime/t4/runs/run-20260805T121419/` + `e7-refill-100t.log` | ✅ **100/100 tick 零提交零 repair 干净退出**：`ticks=100 submits=0 rejected=0`；模式 GROWTH=30→EXPLORE_STARVED=70（t4 资源采空后 30t 无进展触发，符合预期）；动作 MOVE=352/WAIT=41 全 valid；unit moves 36/99t 无停滞；world enemies 4.5/tick；workers 4→3（敌方击杀，战斗真实场景） |
 
 ## 差异日志（行为漂移唯一记录）
 
@@ -208,9 +209,13 @@
 - [x] DefaultConfig 落地（f124e88）：workerTarget 13、spawnReserve 0、
       populationCeiling 16、exploreRadius 17、MilitaryRatio 25
 
-### 待办
-- [ ] t4 真机 100t 完整分析（e7-refill-100t.log 运行中：65/100 tick，
-      EXPLORE_STARVED 模式 + economy.stagnant 事件符合预期）
+### 真机验证（run-20260805T121419，100t）
+- [x] t4 真机 100t 零提交零 repair 干净退出（新默认参数
+      workerTarget=13/spawnReserve=0/MilitaryRatio=25）
+- [x] 模式 GROWTH=30→EXPLORE_STARVED=70（t4 资源采空后 30t 无进展
+      触发，符合预期）；economy.stagnant 事件持续
+- [x] 动作 MOVE=352/WAIT=41 全 valid；unit moves 36/99t 无停滞；
+      world enemies 4.5/tick；workers 4→3（敌方击杀）
 
 ## E7 游戏逻辑利用 + 振荡修复（2026-08-05）
 
