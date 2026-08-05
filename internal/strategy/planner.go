@@ -31,14 +31,24 @@ func DefaultConfig() Config {
 }
 
 // Planner 是确定性规划器（无副作用，不接触游戏）。
+// 跨 tick 持久状态：per-unit 巡逻目标与方向（worker 需要走出视野发现
+// 资源格——全局共享索引每 tick 换目标会让单位原地打转，真机 20t 实测
+// 资源枯竭根因）。
 type Planner struct {
-	config       Config
-	exploreIndex int
+	config        Config
+	patrolTargets map[string]domain.Position // unitID → 当前巡逻目标
+	patrolDirs    map[string]int             // unitID → 八方位索引
+	patrolRings   map[string]int             // unitID → 探索环（半径扩展）
 }
 
 // NewPlanner 创建规划器。
 func NewPlanner(config Config) *Planner {
-	return &Planner{config: config}
+	return &Planner{
+		config:        config,
+		patrolTargets: make(map[string]domain.Position),
+		patrolDirs:    make(map[string]int),
+		patrolRings:   make(map[string]int),
+	}
 }
 
 // Decide 产出确定性计划（同输入同输出）：
@@ -232,14 +242,39 @@ func (p *Planner) moveToward(state *domain.TickState, unit *domain.UnitSnapshot,
 	return domain.UnitAction{Kind: domain.ActionWait}
 }
 
+// patrol 是 per-unit 持久巡逻：同一单位持续朝同一目标直线移动直到
+// 到达或受阻，才按八方位 × 递增环半径换下一个目标（对齐 TS 版
+// patrol 语义）。目标是让 worker 真正走出视野发现资源格——全局共享
+// 索引每 tick 换目标会原地打转（真机 20t 资源枯竭根因）。
 func (p *Planner) patrol(state *domain.TickState, unit *domain.UnitSnapshot) domain.UnitAction {
 	home := domain.Position{0, 0}
 	if state.Core != nil {
 		home = state.Core.Position
 	}
-	target := domain.ExploreTarget(home, state.Beacon.Position, p.exploreIndex%8, p.config.ExploreRadius)
-	p.exploreIndex++
+	target, hasTarget := p.patrolTargets[unit.ID]
+	if !hasTarget || unit.Position == target {
+		target = p.nextPatrolTarget(home, state.Beacon.Position, unit.ID)
+	}
+	action := p.moveToward(state, unit, target)
+	if action.Kind == domain.ActionWait {
+		// 目标方向全被障碍阻挡：换下一个目标，避免原地卡死。
+		target = p.nextPatrolTarget(home, state.Beacon.Position, unit.ID)
+	}
+	p.patrolTargets[unit.ID] = target
 	return p.moveToward(state, unit, target)
+}
+
+// nextPatrolTarget 生成下一巡逻目标：per-unit 八方位方向索引递增，
+// 每轮 8 个方向后探索环 +1（半径 ×1×2×3×4 循环，对齐
+// domain.ExploreRadiusForRing 语义）。
+func (p *Planner) nextPatrolTarget(home, beacon domain.Position, unitID string) domain.Position {
+	radius, _ := domain.ExploreRadiusForRing(p.config.ExploreRadius, p.patrolRings[unitID])
+	target := domain.ExploreTarget(home, beacon, p.patrolDirs[unitID], radius)
+	p.patrolDirs[unitID] = (p.patrolDirs[unitID] + 1) % 8
+	if p.patrolDirs[unitID] == 0 {
+		p.patrolRings[unitID]++
+	}
+	return target
 }
 
 func nearestEnemy(state *domain.TickState, from domain.Position, radius int) *domain.VisibleEntity {

@@ -157,8 +157,90 @@ func TestFullWorkerOffCoreStillWaitsOnFullCapacity(t *testing.T) {
 	}
 }
 
-// TestDecideSpawnsWorkerWhenResourcesSufficient：资源充足 + 未达 Worker
-// 目标 + 未达人口上限 → Core SPAWN WORKER（M4 验收：spawn 决策正确）。
+// TestPatrolPersistsPerUnitTarget：同一 planner 跨 tick 时，同一单位持续
+// 朝同一目标直线移动（不会每 tick 换方向原地打转——真机 20t 资源枯竭
+// 根因回归）。开放地图无障碍：直线推进方向必须稳定。
+func TestPatrolPersistsPerUnitTarget(t *testing.T) {
+	state := baseState()
+	state.ResourceCells = domain.NewSet[string]()
+	planner := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 0})
+
+	first := planner.Decide(state)
+	firstAction := requireUnitAction(t, first, "worker-1")
+	if firstAction.Kind != domain.ActionMove {
+		t.Fatalf("first decide action = %+v, want MOVE", firstAction)
+	}
+	// 模拟单位移动到目标方向一格（同 planner 下一 tick）。
+	state.Units[0].Position = domain.Move(state.Units[0].Position, *firstAction.Direction)
+	state.Workers[0].Position = state.Units[0].Position
+	state.Tick = 2
+
+	second := planner.Decide(state)
+	secondAction := requireUnitAction(t, second, "worker-1")
+	// 目标未到达：方向应保持一致（同一直线推进）。
+	if secondAction.Kind != domain.ActionMove || secondAction.Direction == nil {
+		t.Fatalf("second decide action = %+v, want MOVE", secondAction)
+	}
+	if *secondAction.Direction != *firstAction.Direction {
+		t.Errorf("patrol direction changed %v → %v, want persistent (same target)", *firstAction.Direction, *secondAction.Direction)
+	}
+}
+
+// TestPatrolAdvancesRings：单位到达目标后换下一方位目标（环半径扩展，
+// 探索逐步扩大）。
+func TestPatrolAdvancesRings(t *testing.T) {
+	state := baseState()
+	state.ResourceCells = domain.NewSet[string]()
+	planner := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 0})
+
+	// 模拟 20 tick 移动（不遇到目标时持续朝同一方向）。
+	directions := make([]domain.Direction, 0, 20)
+	for tick := 1; tick <= 20; tick++ {
+		state.Tick = tick
+		plan := planner.Decide(state)
+		action := requireUnitAction(t, plan, "worker-1")
+		if action.Kind != domain.ActionMove || action.Direction == nil {
+			break
+		}
+		directions = append(directions, *action.Direction)
+		state.Units[0].Position = domain.Move(state.Units[0].Position, *action.Direction)
+		state.Workers[0].Position = state.Units[0].Position
+	}
+	// 目标 radius=8：到达后换方向（8 格内方向不变；20 格至少两次换向）。
+	if len(directions) < 12 {
+		t.Fatalf("only %d moves in 20 ticks, want steady outward patrol", len(directions))
+	}
+}
+
+// TestDecideUsesWorldResourceHints：实时视野无资源格但世界记忆有 →
+// worker 朝记忆格移动（to_resource 而不是 explore）。
+func TestDecideUsesWorldResourceHints(t *testing.T) {
+	state := baseState()
+	state.ObstacleCells = domain.NewSet[string]()
+	state.ResourceCells = domain.NewSet[string]() // 实时视野空
+
+	world := domain.NewWorld()
+	// 世界记忆：远处资源格 (10, 0)。
+	world.Observe(&domain.TickState{
+		Tick:          1,
+		Core:          state.Core,
+		Units:         state.Units,
+		Workers:       state.Workers,
+		ResourceCells: domain.NewSet[string](domain.CellKey(10, 0)),
+	})
+
+	decideState := state.WithResourceHints(world.ResourceHints(0, 0))
+	plan := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 0}).Decide(decideState)
+
+	action := requireUnitAction(t, plan, "worker-1")
+	if plan.Intents["worker-1"] != "to_resource" {
+		t.Fatalf("intent = %q, want to_resource (memory hint merged)", plan.Intents["worker-1"])
+	}
+	if action.Kind != domain.ActionMove || action.Direction == nil {
+		t.Fatalf("action = %+v, want MOVE toward memory resource", action)
+	}
+}
+
 func TestDecideSpawnsWorkerWhenResourcesSufficient(t *testing.T) {
 	state := baseState()
 	plan := NewPlanner(DefaultConfig()).Decide(state)
@@ -752,38 +834,48 @@ func TestLargeUnitListPerformance(t *testing.T) {
 	}
 }
 
-// TestPatrolCyclesExploreDirections：探索巡逻按 exploreIndex 顺时针遍历
-// 8 方位（index 8 回绕到第 0 方位，结果与首轮一致）。
-func TestPatrolCyclesExploreDirections(t *testing.T) {
+// TestPatrolPerUnitIndependent：per-unit 巡逻状态互不干扰——同一 tick
+// 多个单位各持自己的目标（先前全局共享 exploreIndex 每 tick 换方向，
+// 单位原地打转；新语义为单位持久目标）。
+func TestPatrolPerUnitIndependent(t *testing.T) {
 	state := baseState()
+	state.ResourceCells = domain.NewSet[string]()
+	// 三个 worker 分布在三个位置（同格同目标会触发移动仲裁降级，非本测试关注）。
+	state.Workers = []domain.UnitSnapshot{
+		{ID: "worker-a", Position: domain.Position{0, 0}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+		{ID: "worker-b", Position: domain.Position{5, 0}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+		{ID: "worker-c", Position: domain.Position{0, 5}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+	}
+	state.Units = append([]domain.UnitSnapshot(nil), state.Workers...)
 	planner := NewPlanner(DefaultConfig())
 
-	firstCycle := make([]domain.Direction, 0, 8)
-	for i := 0; i < 8; i++ {
-		plan := planner.Decide(state)
-		action := requireUnitAction(t, plan, "worker-1")
-		if action.Kind != domain.ActionMove {
-			t.Fatalf("call %d: action = %s, want MOVE", i, action.Kind)
+	first := planner.Decide(state)
+	// 首目标方向按 beacon 方位（同一初始 dir=0）：三单位方向一致可接受；
+	// 关键回归是"单位不随全局索引每 tick 换方向"——模拟移动后方向持久。
+	var firstDirections []domain.Direction
+	for _, worker := range state.Workers {
+		action := requireUnitAction(t, first, worker.ID)
+		if action.Kind != domain.ActionMove || action.Direction == nil {
+			t.Fatalf("%s action = %+v, want MOVE", worker.ID, action)
 		}
-		firstCycle = append(firstCycle, *action.Direction)
+		firstDirections = append(firstDirections, *action.Direction)
 	}
 
-	seen := map[domain.Direction]bool{}
-	for _, direction := range firstCycle {
-		seen[direction] = true
+	// 各单位沿自己的方向移动一格后，下一 tick 方向必须保持。
+	for i, worker := range state.Workers {
+		state.Workers[i].Position = domain.Move(worker.Position, firstDirections[i])
+		state.Units[i].Position = state.Workers[i].Position
 	}
-	for _, direction := range []domain.Direction{
-		domain.DirectionUp, domain.DirectionDown, domain.DirectionLeft, domain.DirectionRight,
-	} {
-		if !seen[direction] {
-			t.Errorf("patrol cycle never explored direction %s (cycle=%v)", direction, firstCycle)
+	state.Tick = 2
+	second := planner.Decide(state)
+	for i, worker := range state.Workers {
+		action := requireUnitAction(t, second, worker.ID)
+		if action.Kind != domain.ActionMove || action.Direction == nil {
+			t.Fatalf("%s second action = %+v, want MOVE", worker.ID, action)
 		}
-	}
-
-	// 第 9 次调用回绕：探索目标应与第 1 次相同。
-	plan := planner.Decide(state)
-	action := requireUnitAction(t, plan, "worker-1")
-	if action.Direction == nil || *action.Direction != firstCycle[0] {
-		t.Errorf("wrap-around direction = %v, want %s", action.Direction, firstCycle[0])
+		if *action.Direction != firstDirections[i] {
+			t.Errorf("%s direction changed %v → %v, want persistent per-unit target",
+				worker.ID, firstDirections[i], *action.Direction)
+		}
 	}
 }

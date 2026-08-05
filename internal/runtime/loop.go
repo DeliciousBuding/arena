@@ -273,7 +273,17 @@ func (l *Loop) handleState(ctx context.Context, state *contracts.PlayerState) er
 	}
 	step("observe")
 
-	plan := l.Planner.Decide(tickState)
+	// 决策视图：合并世界记忆中的资源格（实时视野为空时 worker 朝记忆
+	// 格采集/移动——真机 20t 资源枯竭根因：patrol 原地打转走不出视野，
+	// 服务器不推送远处资源）。
+	decideState := tickState
+	if l.World != nil {
+		if hints := l.World.ResourceHints(0, 0); len(hints) > 0 {
+			decideState = tickState.WithResourceHints(hints)
+		}
+	}
+
+	plan := l.Planner.Decide(decideState)
 	step("decide")
 
 	validation := domain.ValidatePlan(tickState, *plan)

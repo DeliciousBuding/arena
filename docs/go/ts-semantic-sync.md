@@ -48,3 +48,13 @@ Adapter 映射：
 - [ ] rules 常量逐项对齐（spawn 成本/容量/upkeep 公式，从 `contracts/` 与 hero SDK rules 提取）
 - [ ] manifest rulesVersion 改为实际 rules 哈希
 - [ ] TS 主线最新 SafetyPlanner 行为差异（Go 最小版 vs TS 完整版）登记
+
+## E0 P0 同步（2026-08-05）
+
+| TS 语义 | Go 状态 | 说明 |
+|---|---|---|
+| 满仓满载 Worker 让出 Core（固定方向顺序） | ? 已同步（E0-2） | decideWorker yield_full_core：满载在 Core + space<=0 → MOVE 安全相邻格 |
+| SPAWN 占位语义（满载 Worker 不阻止） | ? 已同步（E0-2/E0-3） | planner 持续计划 SPAWN；sim 结算 permanentCoreOccupant：满载不阻止、空载/军事阻止 |
+| exactly-once Tick（重连重放去重） | ? 已同步（E0-1） | lastHandledTick 在 Reduce 前去重 |
+| 错误真正即停（repair/submit rejection） | ? 已同步（E0-1） | Loop.Run 直接返回错误，不再吞 |
+| 动作结算 outcome 遥测 | ? 已同步（E0-3） | planned_spawn_no_effect / cargo_blocked 位置指纹 |

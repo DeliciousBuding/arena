@@ -187,6 +187,23 @@ type TickState struct {
 // 需要可写副本时调用 Clone。
 type Set[T comparable] map[T]struct{}
 
+// WithResourceHints 返回合并世界记忆资源格后的决策视图（浅拷贝）：
+// 实时 ResourceCells 为空或不足时，把跨 tick 记忆中的资源格并入
+// 候选集合，让 worker 朝记忆格采集/移动（真机视野外资源格依赖此链路，
+// 否则 worker 原地打转、经济枯竭）。无 hints 时返回原 state。
+func (s *TickState) WithResourceHints(hints []Position) *TickState {
+	if len(hints) == 0 {
+		return s
+	}
+	clone := *s
+	cells := s.ResourceCells.Clone()
+	for _, cell := range hints {
+		cells.Add(CellKey(cell[0], cell[1]))
+	}
+	clone.ResourceCells = cells
+	return &clone
+}
+
 // NewSet 从元素构造集合。
 func NewSet[T comparable](items ...T) Set[T] {
 	set := make(Set[T], len(items))

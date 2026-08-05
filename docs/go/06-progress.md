@@ -79,3 +79,24 @@
 - [ ] 3→10→30 tick bounded live（live 三件套已就绪，待用户授权执行）
 - [ ] 统一固定 Policy TS/Go 交叉赛马（Canonical Policy 已定义）
 - [ ] 低频 LLM MacroPolicy 接线（最后）
+
+## E0 轮（2026-08-05 最新裁决执行）
+
+- [x] E0-1 exactly-once tick（`8a3c86e`）：lastHandledTick 去重（Reduce/Plan/
+      Telemetry/Submit 前）、ProcessedTicks 统计唯一 tick、handleState 错误
+      （repair/submit rejection）Loop.Run 立即返回；Loop 接口化注入回归；
+      3 个回归测试
+- [x] E0-2 满仓 Core 占位破锁（`09ed8ac`）：满载 Worker 在 Core + 满仓 →
+      确定性让位 MOVE（yield_full_core，UP→RIGHT→DOWN→LEFT 跳过障碍/资源/
+      占用格）；t4 真实状态回归（同计划 MOVE 让位 + SPAWN WORKER + valid）
+- [x] E0-3 sim SPAWN + outcome 遥测（`6cdc13f`）：SPAWN 结算（资源扣除/容量
+      刷新/新 worker 出生）、占位语义（满载不阻止/空载与军事阻止）、结算
+      顺序（MOVE 让位→SPAWN）；20-tick 经济闭环测试达成（让位→SPAWN→资源
+      降→worker 增→空间恢复→DEPOSIT）；decision 记录含 actionKinds/
+      intentCounts/coreAction/resources-workers-cargo delta/
+      planned_spawn_no_effect/cargo_blocked
+
+### 真机里程碑（E0 后）
+- bounded live：3/3 → 10/10 → 29/30（409 幂等冲突根因=重连重放重复决策，
+  E0-1 exactly-once 修复）
+- sim 经济闭环：t4 死锁状态 20 tick 内完整破锁（离线确定性验证）
