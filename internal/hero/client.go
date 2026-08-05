@@ -323,7 +323,7 @@ func (c *ArenaHeroClient) eventLoop(ctx context.Context, ch chan<- Event) {
 			} else {
 				sleepFor = jitter(delay)
 			}
-			c.logDebug("ws dial failed, reconnecting", "delay", sleepFor, "err", err)
+			c.logDebug("ws.reconnect", "delay", sleepFor, "err", err)
 			if !c.sleep(streamCtx, sleepFor) {
 				return
 			}
@@ -333,11 +333,11 @@ func (c *ArenaHeroClient) eventLoop(ctx context.Context, ch chan<- Event) {
 		conn.SetReadLimit(c.config.MaxMessageSize)
 		c.setConn(conn)
 		delay = c.config.ReconnectMinDelay
-		c.logDebug("ws connected")
+		c.logDebug("ws.connected")
 
 		closeStatus, readErr := c.readLoop(streamCtx, conn, ch)
 		c.clearConn(conn)
-		c.logDebug("ws read ended", "closeStatus", closeStatus, "err", readErr)
+		c.logDebug("ws.read_ended", "closeStatus", closeStatus, "err", readErr)
 		if closeStatus == websocket.StatusNormalClosure {
 			_ = conn.Close(websocket.StatusNormalClosure, "")
 		} else {
@@ -355,7 +355,7 @@ func (c *ArenaHeroClient) eventLoop(ctx context.Context, ch chan<- Event) {
 		}
 		switch closeStatus {
 		case websocket.StatusNormalClosure:
-			c.logDebug("ws closed normal, stream ends")
+			c.logDebug("ws.read_ended")
 			return // 服务端正常结束：不重连
 		case websocket.StatusPolicyViolation:
 			c.setErr(&PolicyViolationError{msg: "WebSocket closed with 1008 Policy Violation"})
@@ -389,7 +389,7 @@ func (c *ArenaHeroClient) readLoop(ctx context.Context, conn *websocket.Conn, ch
 	if c.config.IdleTimeout > 0 {
 		stopWatchdog := make(chan struct{})
 		defer close(stopWatchdog)
-		c.logDebug("ws idle watchdog armed", "idleTimeout", c.config.IdleTimeout)
+		c.logDebug("ws.watchdog_armed", "idleTimeout", c.config.IdleTimeout)
 		go func() {
 			ticker := time.NewTicker(c.config.IdleTimeout / 4)
 			defer ticker.Stop()
@@ -400,7 +400,7 @@ func (c *ArenaHeroClient) readLoop(ctx context.Context, conn *websocket.Conn, ch
 				case <-ticker.C:
 					last := lastReadAt.Load()
 					if last > 0 && time.Since(time.Unix(0, last)) > c.config.IdleTimeout {
-						c.logDebug("ws idle timeout, forcing reconnect", "idleTimeout", c.config.IdleTimeout)
+						c.logDebug("ws.idle_timeout", "idleTimeout", c.config.IdleTimeout)
 						_ = conn.CloseNow()
 						return
 					}

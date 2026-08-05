@@ -16,6 +16,7 @@ import (
 
 	"github.com/deliciousbuding/arena/internal/domain"
 	"github.com/deliciousbuding/arena/internal/hero"
+	"github.com/deliciousbuding/arena/internal/obs"
 	"github.com/deliciousbuding/arena/internal/ops"
 	"github.com/deliciousbuding/arena/internal/runtime"
 	"github.com/deliciousbuding/arena/internal/strategy"
@@ -99,7 +100,10 @@ func runTenantCmd(args []string) int {
 		logSink = logFileHandle
 		defer logFileHandle.Close()
 	}
-	logger := slog.New(slog.NewTextHandler(logSink, &slog.HandlerOptions{Level: logLevel}))
+	// runID 提前生成：Obs 溯源注入与 run 目录共用同一标识。
+	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102T150405"))
+	obsObj := obs.New(runID, configFile.TenantID, logSink, logLevel)
+	logger := obsObj.Logger()
 
 	// 遥测与 manifest（baseDir 下 tenant 目录，gitignored）。
 	baseDir := configFile.BaseDir
@@ -141,7 +145,6 @@ func runTenantCmd(args []string) int {
 		logger.Info("live lock acquired", "path", lockPath)
 	}
 
-	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102T150405"))
 	runDir := filepath.Join(tenantDir, "runs", runID)
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		fmt.Fprintf(os.Stderr, "arena tenant: create run dir: %v\n", err)
@@ -204,12 +207,14 @@ func runTenantCmd(args []string) int {
 		Client:  client,
 		Planner: strategy.NewPlanner(plannerConfig),
 		World:   domain.NewWorld(),
+		Obs:     obsObj,
 		Config: runtime.TenantConfig{
 			TenantID:       configFile.TenantID,
 			BaseURL:        heroConfig.BaseURL,
 			DecisionMode:   configFile.DecisionMode,
 			SubmissionMode: submissionMode,
 			MaxTicks:       *maxTicks,
+			BaseDir:        baseDir,
 		},
 		Logger:      logger,
 		RuntimeLog:  runtimeLog,

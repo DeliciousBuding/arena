@@ -1066,4 +1066,3 @@ func TestIdleTimeoutForcesReconnect(t *testing.T) {
 		}
 	}
 }
-
