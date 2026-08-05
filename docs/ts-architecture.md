@@ -107,6 +107,15 @@ policy(LLM 低频 32 tick, 独立 Pi session)
 输出排序 + 可注册配置候选。扫描结论：clearPath=true 稳定 +1 资源（不改生产默认，
 注册为 clear-path-v1 候选变体）。
 
+模拟器真实性（2026-08-06）：
+- 官方 refill 是 server-secret（rules manifest constraints.refill.status=server-secret）——
+  P13-refill-policy 双路径：无配置 → server-secret unknown note（零回归）；有配置
+  （`EpisodeConfig.refill`）→ 按 cadence 补回原始资源格 + approximate note（近似，不伪装官方）。
+- 策略搜索引擎：`scripts/strategy-search.mts` v3（两阶段：单人经济全网格 27 组合 +
+  top4 对打验证）、`scripts/military-ratio-experiment.mts`（军事比例聚焦）。
+- 实证结论（refill 下）：militaryRatio 0.3-0.4 拐点、>0.5 纯损耗（prompt 约束已落地）；
+  workerTarget 8 平衡区（6 保守、10 upkeep 负担）。
+
 ## 关键设计约束
 
 - **单写者锁**：同一租户只能有一个 live writer（`wx` / O_CREAT|O_EXCL 原子创建）；
