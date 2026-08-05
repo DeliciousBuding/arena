@@ -50,6 +50,113 @@ func requireUnitAction(t *testing.T, plan *domain.Plan, unitID string) domain.Un
 	return action
 }
 
+// fullCoreDeadlockState 构造 t4 真实满仓死锁状态（实测抓取）：
+// resources=10、population=2、capacity=10（space=0）、workerTarget=8、
+// spawnReserve=0；满载 Worker 在 Core 格，空载 Worker 在外。
+// Core 相邻 4 格均为安全空地（无资源/障碍/单位）。
+func fullCoreDeadlockState() *domain.TickState {
+	state := baseState()
+	state.Resources = 10
+	state.ResourceCapacity = 10
+	state.ResourceSpace = 0
+	state.Population = 2
+	state.Workers = []domain.UnitSnapshot{
+		{ID: "worker-full", Position: domain.Position{0, 0}, HP: 2, UnitType: domain.UnitWorker, Cargo: 1},
+		{ID: "worker-empty", Position: domain.Position{5, 5}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0},
+	}
+	state.Units = append([]domain.UnitSnapshot(nil), state.Workers...)
+	return state
+}
+
+// TestYieldFullCoreBreaksDeadlock：满仓 + 满载 Worker 站在 Core → 让位
+// MOVE + Core SPAWN WORKER 同计划且通过校验（t4 破锁核心回归）。
+func TestYieldFullCoreBreaksDeadlock(t *testing.T) {
+	state := fullCoreDeadlockState()
+	planner := NewPlanner(Config{
+		WorkerTarget:      8,
+		PopulationCeiling: 20,
+		ExploreRadius:     8,
+		ThreatDistance:    5,
+		SpawnReserve:      0,
+	})
+	plan := planner.Decide(state)
+
+	// 满载 Worker 必须让位（MOVE 离开 Core），不能 WAIT。
+	fullAction := requireUnitAction(t, plan, "worker-full")
+	if fullAction.Kind != domain.ActionMove || fullAction.Direction == nil {
+		t.Fatalf("worker-full = %+v, want MOVE away from core", fullAction)
+	}
+	if intent := plan.Intents["worker-full"]; intent != "yield_full_core" {
+		t.Errorf("worker-full intent = %q, want yield_full_core", intent)
+	}
+	// 目标格必须不在 Core 上。
+	destination := domain.Move(state.Core.Position, *fullAction.Direction)
+	if destination == state.Core.Position {
+		t.Errorf("worker-full destination = core cell, want yield away")
+	}
+
+	// Core 计划 SPAWN WORKER（满载 Worker 不视为永久占位，不阻止 SPAWN）。
+	if plan.CoreAction == nil || plan.CoreAction.Kind != domain.CoreSpawn ||
+		plan.CoreAction.UnitType == nil || *plan.CoreAction.UnitType != domain.UnitWorker {
+		t.Fatalf("core action = %+v, want SPAWN WORKER", plan.CoreAction)
+	}
+
+	// 同一份计划必须通过语义校验（裁决要求 plan valid = true）。
+	if result := domain.ValidatePlan(state, *plan); !result.Valid {
+		t.Errorf("plan invalid: %v", result.Issues)
+	}
+}
+
+// TestYieldFullCoreSkipsBlockedCells：让位探测按固定顺序跳过障碍格、
+// 资源格与占用格，取第一个安全格。
+func TestYieldFullCoreSkipsBlockedCells(t *testing.T) {
+	state := fullCoreDeadlockState()
+	// Core 在 (0,0)：UP=(0,-1) 障碍、RIGHT=(1,0) 资源格、DOWN=(0,1) 被
+	// 己方单位占用 → 只能 LEFT=(-1,0)。
+	state.ObstacleCells.Add(domain.CellKey(0, -1))
+	state.ResourceCells.Add(domain.CellKey(1, 0))
+	state.Units = append(state.Units,
+		domain.UnitSnapshot{ID: "blocker", Position: domain.Position{0, 1}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0})
+	state.Workers = append(state.Workers,
+		domain.UnitSnapshot{ID: "blocker", Position: domain.Position{0, 1}, HP: 2, UnitType: domain.UnitWorker, Cargo: 0})
+
+	plan := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 0}).Decide(state)
+	fullAction := requireUnitAction(t, plan, "worker-full")
+	if fullAction.Direction == nil || *fullAction.Direction != domain.DirectionLeft {
+		t.Fatalf("worker-full = %+v, want MOVE LEFT (first safe cell)", fullAction)
+	}
+}
+
+// TestYieldFullCoreSurroundedFallsBackToWait：Core 四面全被堵死（无安全
+// 相邻格）→ 降级 WAIT（不产生非法 MOVE）。
+func TestYieldFullCoreSurroundedFallsBackToWait(t *testing.T) {
+	state := fullCoreDeadlockState()
+	for _, cell := range []domain.Position{{0, -1}, {1, 0}, {0, 1}, {-1, 0}} {
+		state.ObstacleCells.Add(domain.CellKey(cell[0], cell[1]))
+	}
+	plan := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 0}).Decide(state)
+	fullAction := requireUnitAction(t, plan, "worker-full")
+	if fullAction.Kind != domain.ActionWait {
+		t.Fatalf("worker-full = %+v, want WAIT fallback (all cells blocked)", fullAction)
+	}
+	if result := domain.ValidatePlan(state, *plan); !result.Valid {
+		t.Errorf("plan invalid: %v", result.Issues)
+	}
+}
+
+// TestFullWorkerOffCoreStillWaitsOnFullCapacity：满载 Worker 不在 Core 上
+// 且满仓 → 仍 WAIT（不长途回仓，等 SPAWN 腾出空间）。
+func TestFullWorkerOffCoreStillWaitsOnFullCapacity(t *testing.T) {
+	state := fullCoreDeadlockState()
+	state.Workers[0].Position = domain.Position{3, 3}
+	state.Units[0].Position = domain.Position{3, 3}
+	plan := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 0}).Decide(state)
+	action := requireUnitAction(t, plan, "worker-full")
+	if action.Kind != domain.ActionWait {
+		t.Fatalf("worker-full = %+v, want WAIT (off core, capacity full)", action)
+	}
+}
+
 // TestDecideSpawnsWorkerWhenResourcesSufficient：资源充足 + 未达 Worker
 // 目标 + 未达人口上限 → Core SPAWN WORKER（M4 验收：spawn 决策正确）。
 func TestDecideSpawnsWorkerWhenResourcesSufficient(t *testing.T) {

@@ -109,7 +109,7 @@ func assignWorkers(state *domain.TickState) map[string]domain.Position {
 // 等）不产生目标格，不会进入仲裁。
 func movePriorityFor(intent string) movePriority {
 	switch intent {
-	case "deposit", "return_core":
+	case "deposit", "return_core", "yield_full_core":
 		return priorityReturn
 	case "harvest", "to_resource":
 		return priorityHarvest
@@ -153,6 +153,41 @@ func arbitrateMoveCapacity(candidates []moveCandidate) []moveCandidate {
 		}
 	}
 	return losers
+}
+
+// yieldOrder 是满载 Worker 让位 Core 时的确定性探测方向顺序
+// （UP → RIGHT → DOWN → LEFT，对齐 TS 版破锁语义）。
+var yieldOrder = []domain.Direction{
+	domain.DirectionUp,
+	domain.DirectionRight,
+	domain.DirectionDown,
+	domain.DirectionLeft,
+}
+
+// yieldFullCore 让满载 Worker 离开 Core 格（满仓破锁）：
+// 按固定顺序找第一个安全相邻格（跳过障碍格、资源格、任何已占用格），
+// 返回 MOVE 动作；无可用格时返回 ok=false（调用方降级 WAIT）。
+func (p *Planner) yieldFullCore(state *domain.TickState, unit *domain.UnitSnapshot) (domain.UnitAction, bool) {
+	occupied := make(map[string]struct{}, len(state.Units)+len(state.VisibleEnemies))
+	for _, other := range state.Units {
+		occupied[domain.CellKey(other.Position[0], other.Position[1])] = struct{}{}
+	}
+	for _, enemy := range state.VisibleEnemies {
+		occupied[domain.CellKey(enemy.Position[0], enemy.Position[1])] = struct{}{}
+	}
+	for _, direction := range yieldOrder {
+		next := domain.Move(unit.Position, direction)
+		key := domain.CellKey(next[0], next[1])
+		if state.ObstacleCells.Contains(key) || state.ResourceCells.Contains(key) {
+			continue
+		}
+		if _, taken := occupied[key]; taken {
+			continue
+		}
+		dir := direction
+		return domain.UnitAction{Kind: domain.ActionMove, Direction: &dir}, true
+	}
+	return domain.UnitAction{}, false
 }
 
 // respawnOverride 报告当前是否处于 Core 恢复期（Core 缺失 / 玩家

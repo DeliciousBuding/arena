@@ -146,8 +146,16 @@ func (p *Planner) decideUnit(state *domain.TickState, unit *domain.UnitSnapshot,
 func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapshot, assignments map[string]domain.Position) (domain.UnitAction, string, bool) {
 	if unit.Cargo >= 1 {
 		if state.ResourceSpace <= 0 {
-			// Core 容量已满（resources == capacity）：无处可存，
-			// 原地等待防 deposit 非法动作循环。
+			// 满仓破锁（TS 版语义）：满载 Worker 站在 Core 会永久阻塞
+			// SPAWN 结算（服务端因 Core 格被占不结算）→ 确定性让位到
+			// 安全相邻格（UP→RIGHT→DOWN→LEFT），SPAWN 腾出仓库空间后
+			// 再回仓 DEPOSIT；不在 Core 上的满载 Worker 原地等待（长途
+			// 回仓无意义，等空间出现）。
+			if state.Core != nil && unit.Position == state.Core.Position {
+				if action, ok := p.yieldFullCore(state, unit); ok {
+					return action, "yield_full_core", true
+				}
+			}
 			return domain.UnitAction{Kind: domain.ActionWait}, "wait_full", true
 		}
 		if state.Core != nil && unit.Position == state.Core.Position {
