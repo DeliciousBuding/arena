@@ -48,6 +48,12 @@ export interface SafetyPlannerConfig {
    * 无限 go_focus、0 采集、经济冻结（focus 是"直线远征"而非"巡逻偏好"）。
    */
   readonly maxFocusDistance: number;
+  /**
+   * clear-path 清障（TS-009 候选）：defensive 下 Vanguard 不再纯留守——满载
+   * Worker 回仓路径上（距满载 Worker ≤2 格且比 Worker 更靠近 Core）的敌人视为
+   * 挡路者，优先主动清除。生产 A/B 实测：被敌群挡回仓的一方经济 2-4× 差于清场方。
+   */
+  readonly clearPath?: boolean;
   readonly phase?: PhaseConfig;
   /**
    * 战斗激进级别（默认 defensive，与历史行为一致）：
@@ -333,6 +339,27 @@ export class SafetyPlanner {
     }
 
     const nearby = enemies.filter((enemy) => manhattan(unit.position, enemy.position) <= 4);
+    // clear-path 清障（TS-009 候选）：满载 Worker 回仓路径上的敌人视为挡路者，
+    // Vanguard 优先主动清除（覆盖留守）。判据：敌人距任一满载 Worker ≤2 格，
+    // 且比该 Worker 更靠近 Core（在回仓方向）。生产 A/B 实测：被敌群挡回仓的
+    // 一方经济 2-4× 差于清场方——清障的经济价值由 A/B 候选衡量。
+    if (this.config.clearPath === true && state.core !== null) {
+      const corePosition = state.core.position;
+      const blockingEnemy = enemies.find((enemy) =>
+        state.workers.some((worker) => {
+          if (worker.cargo <= 0) return false;
+          if (manhattan(worker.position, enemy.position) > 2) return false;
+          const workerDistance = manhattan(worker.position, corePosition);
+          const enemyDistance = manhattan(enemy.position, corePosition);
+          return enemyDistance < workerDistance;
+        }),
+      );
+      if (blockingEnemy !== undefined) {
+        const direction = stepToward(unit.position, blockingEnemy.position, movementObstacles);
+        if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_clear_path");
+        return;
+      }
+    }
     if (
       nearby.length > 0 &&
       state.core !== null &&

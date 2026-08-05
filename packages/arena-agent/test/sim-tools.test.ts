@@ -12,6 +12,7 @@ import { runAB, runBenchmark } from "../src/sim/tools/experiments.ts";
 import { evaluateCandidate } from "../src/sim/tools/candidate-evaluator.ts";
 import { resolvePlannerVariant } from "../src/sim/tools/planner-variants.ts";
 import { DeterministicPlanner } from "../src/planning/deterministic-planner.ts";
+import { SafetyPlanner } from "../src/strategies/safety-planner.ts";
 import { runEpisode } from "../src/sim/harness/episode.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -277,6 +278,13 @@ test("TS-008: 变体语义——v0.2.15 基线（无防呆）/ v0.2.17 候选（
   // 候选与别名共用当前语义（生产默认）；基线是独立冻结形态
   assert.notEqual(baseline.id, candidate.id);
   assert.notEqual(baseline.id, alias.id);
+});
+
+test("TS-009: clear-path-v1 变体注册（清场 ROI 候选）", () => {
+  const variant = resolvePlannerVariant("clear-path-v1");
+  assert.equal(variant.id, "clear-path-v1");
+  assert.ok(variant.create("t1") instanceof SafetyPlanner);
+  assert.throws(() => resolvePlannerVariant("no-such-variant"), /unknown planner variant/);
 });
 
 test("TS-008: focus 远征场景——基线被支走 vs 候选留守（生产事故模拟回归）", () => {
