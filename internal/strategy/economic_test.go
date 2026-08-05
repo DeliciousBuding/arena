@@ -416,7 +416,8 @@ func TestMoveCapacityEngageBeatsExplore(t *testing.T) {
 // --- workerTarget 消费：reserve guard + 紧急通道 ---
 
 // TestSpawnBlockedBelowCostPlusReserve：worker 充足（≥2）时正常扩张需
-// resources >= cost + reserve；不足 → 不 spawn。
+// resources >= cost + reserve；不足 → 不 spawn。显式 reserve=5 验证
+// reserve guard（默认配置 reserve=0 无 guard，多场景优化结果）。
 func TestSpawnBlockedBelowCostPlusReserve(t *testing.T) {
 	state := workerState([]domain.UnitSnapshot{
 		{ID: "worker-1", Position: domain.Position{0, 0}, UnitType: domain.UnitWorker},
@@ -425,7 +426,7 @@ func TestSpawnBlockedBelowCostPlusReserve(t *testing.T) {
 	cost := domain.SpawnCost(domain.UnitWorker)
 	state.Resources = cost // 刚好 cost，缺 reserve
 
-	plan := NewPlanner(DefaultConfig()).Decide(state)
+	plan := NewPlanner(Config{WorkerTarget: 8, PopulationCeiling: 20, ExploreRadius: 8, ThreatDistance: 5, SpawnReserve: 5}).Decide(state)
 	if plan.CoreAction != nil {
 		t.Fatalf("resources = cost with 2 workers: expected no spawn (reserve guard), got %+v", plan.CoreAction)
 	}

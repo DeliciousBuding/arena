@@ -23,19 +23,19 @@ type Config struct {
 	EnableCoreMigration bool
 }
 
-// DefaultConfig 返回默认配置（模拟退火 + 遗传算法双算法验证：
-// 挂载 refill 引擎的真实游戏逻辑评分——资源 4 tick 配额再生 +
-// 视野揭示，100 tick sim 闭环）。
-// 双算法共识：spawnReserve=1（refill 下资源可持续流入，攒资源浪费
-// 大于 buffer 收益）；SA 最优 {workerTarget:6 spawnReserve:1
-// exploreRadius:16 populationCeiling:21} score=174（默认 129，+35%）。
+// DefaultConfig 返回默认配置（多场景最差分评分双算法验证：
+// 三拓扑——base（真实 fixture 6 格）/ dense（Core 周围 8 格）/
+// sparse（远处 3 格 + 障碍）——score 取三场景最低分，鲁棒性优先）。
+// 双算法共识（SA {13,0,17,16} / GA {13,0,10,19} 均 110 分，默认 83，
+// +33%）：workerTarget=13（高工人数覆盖稀疏场景长途）、
+// spawnReserve=0（refill 下资源持续流入，攒资源无益）。
 func DefaultConfig() Config {
 	return Config{
-		WorkerTarget:      6,
-		PopulationCeiling: 21,
-		ExploreRadius:     16,
+		WorkerTarget:      13,
+		PopulationCeiling: 16,
+		ExploreRadius:     17,
 		ThreatDistance:    5,
-		SpawnReserve:      1,
+		SpawnReserve:      0,
 	}
 }
 

@@ -352,8 +352,8 @@ func TestDecideNoSpawnWhenResourcesInsufficient(t *testing.T) {
 func TestDecideNoSpawnWhenWorkerTargetMet(t *testing.T) {
 	state := baseState()
 	state.Resources = 50
-	state.Population = 8
-	for i := 1; i < 8; i++ {
+	state.Population = 13 // 默认 workerTarget=13（多场景优化）
+	for i := 1; i < 13; i++ {
 		id := fmt.Sprintf("worker-%d", i+1)
 		state.Units = append(state.Units, domain.UnitSnapshot{
 			ID: id, Position: domain.Position{i, 0}, HP: 2, UnitType: domain.UnitWorker,
