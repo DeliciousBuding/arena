@@ -58,3 +58,15 @@ Adapter 映射：
 | exactly-once Tick（重连重放去重） | ? 已同步（E0-1） | lastHandledTick 在 Reduce 前去重 |
 | 错误真正即停（repair/submit rejection） | ? 已同步（E0-1） | Loop.Run 直接返回错误，不再吞 |
 | 动作结算 outcome 遥测 | ? 已同步（E0-3） | planned_spawn_no_effect / cargo_blocked 位置指纹 |
+
+## E2 P1 同步（2026-08-05）
+
+| TS 语义 | Go 状态 | 说明 |
+|---|---|---|
+| 移动冲突失败后尝试改道 | ? 已同步 | moveToward 并入己方占位感知（BFS 绕行）+ 停滞指纹 3 tick 强制换目标 |
+| 导航防左右振荡 | ? 已同步 | per-unit 持久巡逻目标（到达/受阻才换向） |
+| 满载 Worker 位置指纹停滞检测 | ? 已同步 | cargo_blocked 诊断（遥测）+ 停滞跳出（战术层） |
+| 自适应路径搜索半径 | ? 已同步 | ExploreRadius 16 + 环扩展 ×1×2×3×4 + EXPLORE_STARVED 扫掠 |
+| 资源枯竭处置（非等待） | ? 已同步（评估） | Commander MIGRATE_CAND（100 tick 只评估）；执行路径 START_MOVE 已实现（EnableCoreMigration 默认关，红线） |
+| Worker 路径避开全部敌方格 | ? 未同步（P2） | 敌方占位在威胁距离内 engage 优先；全面避让后续 |
+| Core 自毁顺序 / Vanguard 守家锚点 | ? 未同步（P2） | militaryRatio 之后 |
