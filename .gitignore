@@ -14,6 +14,7 @@
 !/runtime/policies/
 /runtime/policies/*
 !/runtime/policies/*.json
+!/runtime/golden.json
 /runs/
 /logs/
 /alerts/

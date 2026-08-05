@@ -1,0 +1,41 @@
+{
+  "ticks": 500,
+  "policies": [
+    "default"
+  ],
+  "scenes": [
+    {
+      "scene": "base",
+      "deposits": 16,
+      "spawns": 5,
+      "workers": 7,
+      "kills": 0,
+      "unitsLost": 0,
+      "blocked": 1,
+      "moves": 589,
+      "resources": 1
+    },
+    {
+      "scene": "dense",
+      "deposits": 8,
+      "spawns": 3,
+      "workers": 5,
+      "kills": 0,
+      "unitsLost": 0,
+      "blocked": 1,
+      "moves": 1966,
+      "resources": 3
+    },
+    {
+      "scene": "sparse",
+      "deposits": 9,
+      "spawns": 3,
+      "workers": 5,
+      "kills": 0,
+      "unitsLost": 0,
+      "blocked": 1,
+      "moves": 597,
+      "resources": 4
+    }
+  ]
+}
