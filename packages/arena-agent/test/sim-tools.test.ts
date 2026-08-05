@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { canonicalJson, sha256Json } from "../src/sim/tools/artifacts.ts";
 import { parseExperimentManifest } from "../src/sim/tools/experiment-manifest.ts";
 import { runAB, runBenchmark } from "../src/sim/tools/experiments.ts";
+import { resolvePlannerVariant } from "../src/sim/tools/planner-variants.ts";
+import { DeterministicPlanner } from "../src/planning/deterministic-planner.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCENARIO = JSON.parse(
@@ -155,4 +157,26 @@ test("TS-003: 缺必填字段/非法值 fail-fast", () => {
     }),
     /ticks must be a positive integer/,
   );
+});
+
+test("TS-004: 变体 registry 解析 + 未知 id fail-fast", () => {
+  const baseline = resolvePlannerVariant("deterministic-v0.2.15");
+  assert.equal(baseline.id, "deterministic-v0.2.15");
+  assert.ok(baseline.create("t1") instanceof DeterministicPlanner);
+  assert.equal(resolvePlannerVariant("safety").aliasOf, "safety");
+  assert.throws(() => resolvePlannerVariant("no-such-variant"), /unknown planner variant/);
+});
+
+test("TS-004: runAB 接受命名变体 id（plannerFactory 注入，同策略对局）", () => {
+  const { report } = runAB({
+    scenario: SCENARIO,
+    rulesPath: RULES,
+    ticks: 1,
+    seeds: [1, 2],
+    planners: ["deterministic-v0.2.15", "safety"],
+  });
+  assert.deepEqual(report.planners, ["deterministic-v0.2.15", "safety"]);
+  assert.equal(report.runs.length, 4);
+  assert.equal(report.pairedDeltas[0].baseline, "deterministic-v0.2.15");
+  assert.equal(report.pairedDeltas[0].candidate, "safety");
 });

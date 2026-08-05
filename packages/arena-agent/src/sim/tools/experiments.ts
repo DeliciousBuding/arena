@@ -11,6 +11,7 @@ import {
 } from "../harness/episode.ts";
 import { worldFromScenario } from "../world/loaders.ts";
 import { sha256Json } from "./artifacts.ts";
+import { resolvePlannerVariant } from "./planner-variants.ts";
 
 export interface PlayerEpisodeSummary {
   readonly playerId: string;
@@ -94,13 +95,13 @@ export function episodePerformance(config: EpisodeConfig, result: EpisodeResult)
 }
 
 export interface ABRunSummary {
-  readonly planner: PlannerKind;
+  readonly planner: string;
   readonly seed: number;
   readonly summary: EpisodeSemanticSummary;
 }
 
 export interface ABAggregate {
-  readonly planner: PlannerKind;
+  readonly planner: string;
   readonly runs: number;
   readonly meanResourceDelta: number;
   readonly meanFinalPopulation: number;
@@ -111,8 +112,8 @@ export interface ABAggregate {
 
 export interface ABPairedDelta {
   readonly seed: number;
-  readonly baseline: PlannerKind;
-  readonly candidate: PlannerKind;
+  readonly baseline: string;
+  readonly candidate: string;
   /** Candidate minus baseline. */
   readonly resourceDelta: number;
   readonly finalPopulationDelta: number;
@@ -122,8 +123,8 @@ export interface ABPairedDelta {
 }
 
 export interface ABPairedAggregate {
-  readonly baseline: PlannerKind;
-  readonly candidate: PlannerKind;
+  readonly baseline: string;
+  readonly candidate: string;
   readonly pairs: number;
   readonly meanResourceDelta: number;
   readonly meanFinalPopulationDelta: number;
@@ -136,14 +137,14 @@ export interface ABReport {
   readonly schema: "sim.ab-report.v1";
   readonly ticks: number;
   readonly seeds: readonly number[];
-  readonly planners: readonly PlannerKind[];
+  readonly planners: readonly string[];
   readonly runs: readonly ABRunSummary[];
   readonly aggregates: readonly ABAggregate[];
   readonly pairedDeltas: readonly ABPairedDelta[];
   readonly pairedAggregates: readonly ABPairedAggregate[];
   readonly rankingStatus: "conclusive" | "exploratory";
   /** Lexicographic: resource delta desc, illegal plans asc, population desc, planner id. */
-  readonly ranking: readonly PlannerKind[];
+  readonly ranking: readonly string[];
   readonly semanticHash: string;
 }
 
@@ -161,7 +162,8 @@ export function runAB(config: {
   readonly rulesPath: string;
   readonly ticks: number;
   readonly seeds: readonly number[];
-  readonly planners: readonly PlannerKind[];
+  /** PlannerKind 或 TS-004 命名变体 id（registry 解析，未知 id fail-fast）。 */
+  readonly planners: readonly string[];
 }): { readonly report: ABReport; readonly performance: ABPerformance } {
   const seeds = [...new Set(config.seeds)].sort((a, b) => a - b);
   const planners = [...new Set(config.planners)].sort(compareCodeUnit);
@@ -172,13 +174,16 @@ export function runAB(config: {
   const playerIds = [...scenarioWorld.players.keys()].sort(compareCodeUnit);
   const runs: ABRunSummary[] = [];
   for (const planner of planners) {
+    // TS-004：变体经 registry 解析后用 plannerFactory 注入（同策略对局语义不变）。
+    const variant = resolvePlannerVariant(planner);
     for (const seed of seeds) {
       const episodeConfig: EpisodeConfig = {
         scenario: config.scenario,
         rulesPath: config.rulesPath,
         seed,
         ticks: config.ticks,
-        tenants: playerIds.map((id) => ({ id, planner })),
+        tenants: playerIds.map((id) => ({ id, planner: "deterministic" })),
+        plannerFactory: (tenant) => variant.create(tenant.id),
       };
       const result = runEpisode(episodeConfig);
       runs.push({ planner, seed, summary: summarizeEpisode(episodeConfig, result) });
