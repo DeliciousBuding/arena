@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { canonicalJson, sha256Json } from "../src/sim/tools/artifacts.ts";
 import { parseExperimentManifest } from "../src/sim/tools/experiment-manifest.ts";
 import { runAB, runBenchmark } from "../src/sim/tools/experiments.ts";
+import { evaluateCandidate } from "../src/sim/tools/candidate-evaluator.ts";
 import { resolvePlannerVariant } from "../src/sim/tools/planner-variants.ts";
 import { DeterministicPlanner } from "../src/planning/deterministic-planner.ts";
 
@@ -179,4 +180,58 @@ test("TS-004: runAB 接受命名变体 id（plannerFactory 注入，同策略对
   assert.equal(report.runs.length, 4);
   assert.equal(report.pairedDeltas[0].baseline, "deterministic-v0.2.15");
   assert.equal(report.pairedDeltas[0].candidate, "safety");
+});
+
+test("TS-006: 候选晋级评估（提升达标 + guardrail 全过 → promote）", () => {
+  const manifest = parseExperimentManifest({
+    experimentId: "e1", hypothesis: "h", baselineVariant: "deterministic-v0.2.15",
+    candidateVariant: "safety", rulesVersion: "v0.11",
+    seeds: [1, 2, 3, 4], ticks: 500,
+    primaryMetric: "net_core_gain_per_100_ticks",
+    guardrails: [{ metric: "illegal_plan_count", max: 0 }],
+    configHash: "sha256:abc", gitSha: "deadbeef",
+  });
+  const { report } = runAB({
+    scenario: SCENARIO, rulesPath: RULES, ticks: 1,
+    seeds: [1, 2, 3, 4], planners: ["deterministic-v0.2.15", "safety"],
+  });
+  const evaluation = evaluateCandidate(manifest, report);
+  assert.equal(evaluation.candidateVariant, "safety");
+  assert.equal(typeof evaluation.primaryDeltaMedian, "number");
+  assert.ok(Array.isArray(evaluation.guardrails));
+  assert.ok(evaluation.reasons.length >= 0);
+});
+
+test("TS-006: 未知主指标不猜数 → reject", () => {
+  const manifest = parseExperimentManifest({
+    experimentId: "e2", hypothesis: "h", baselineVariant: "deterministic-v0.2.15",
+    candidateVariant: "economy-v1", rulesVersion: "v0.11",
+    seeds: [1], ticks: 500,
+    primaryMetric: "mystery_metric",
+    guardrails: [], configHash: "sha256:abc", gitSha: "deadbeef",
+  });
+  const { report } = runAB({
+    scenario: SCENARIO, rulesPath: RULES, ticks: 1,
+    seeds: [1], planners: ["deterministic-v0.2.15", "safety"],
+  });
+  const evaluation = evaluateCandidate(manifest, report);
+  assert.equal(evaluation.decision, "reject");
+  assert.ok(evaluation.reasons.some((reason) => reason.includes("mystery_metric")));
+});
+
+test("TS-006: report 基线不匹配 manifest → reject", () => {
+  const manifest = parseExperimentManifest({
+    experimentId: "e3", hypothesis: "h", baselineVariant: "other-baseline",
+    candidateVariant: "economy-v1", rulesVersion: "v0.11",
+    seeds: [1], ticks: 500,
+    primaryMetric: "net_core_gain_per_100_ticks",
+    guardrails: [], configHash: "sha256:abc", gitSha: "deadbeef",
+  });
+  const { report } = runAB({
+    scenario: SCENARIO, rulesPath: RULES, ticks: 1,
+    seeds: [1], planners: ["deterministic-v0.2.15", "safety"],
+  });
+  const evaluation = evaluateCandidate(manifest, report);
+  assert.equal(evaluation.decision, "reject");
+  assert.ok(evaluation.reasons.some((reason) => reason.includes("baseline")));
 });
