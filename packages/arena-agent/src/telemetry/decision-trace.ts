@@ -50,6 +50,8 @@ export interface RuntimeTraceRecord {
   /** stall_recovery 迁移目标状态（recovering/escalating/idle）。 */
   readonly recoveryState?: string;
   readonly escalated?: boolean;
+  /** stall_recovery 结束结局（recovered/failed/expired；自愈成功率 KPI）。 */
+  readonly outcome?: "recovered" | "failed" | "expired";
 }
 
 /** DecisionTrace：为什么选这个计划（来源/仲裁计数/修复/最终计划哈希）。 */

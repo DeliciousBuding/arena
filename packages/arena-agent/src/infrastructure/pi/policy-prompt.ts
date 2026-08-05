@@ -20,6 +20,12 @@ export function buildMacroPolicyPrompt(
     readonly recentStallEvents?: readonly string[];
     /** 决策指挥状态（执行层临时接管时策略层必须配合）：policy/stall_recovery/escalation。 */
     readonly commandState?: string;
+    /** 上次自愈结局（recovered/failed/expired；agent 智能跳出闭环的结果反馈）。 */
+    readonly lastRecoveryOutcome?: {
+      readonly outcome: "recovered" | "failed" | "expired";
+      readonly kind: string | null;
+      readonly tick: number;
+    } | null;
   } = {},
 ): string {
   const coreLine = state.core === null
@@ -42,6 +48,16 @@ export function buildMacroPolicyPrompt(
       : extras.commandState === "stall_recovery"
         ? "command state: stall_recovery active（执行层自愈中——你必须 focusRegion=null，配合回仓恢复）"
         : "command state: escalation active（执行层 all-in 军事翻盘中——不要输出 focusRegion，维持 aggressive 姿态）";
+  const recoveryOutcomeLine = (() => {
+    const last = extras.lastRecoveryOutcome;
+    if (last === undefined || last === null) return null;
+    const label = last.outcome === "recovered"
+      ? "上次自愈成功（经济恢复），僵局已解除"
+      : last.outcome === "failed"
+        ? "上次自愈失败（到期未恢复）——僵局根因未被 focusRegion=null 解决：不要再用远点 focus，应转军事压制或重置 workerTarget"
+        : "上次 escalating 终局尝试到期——all-in 军事未翻盘：恢复经济为第一优先，停止无谓远征";
+    return `last recovery outcome: ${label} (kind=${last.kind ?? "unknown"}@tick=${last.tick})`;
+  })();
   return [
     "你是 Arena Hero 的战略指挥官，只做低频宏观决策，不做逐 Tick 战术。",
     "根据以下宏观状态，输出一个策略 JSON 对象（不要输出任何其他内容，不要 markdown 围栏）：",
@@ -70,6 +86,7 @@ export function buildMacroPolicyPrompt(
     baselineLine,
     ...(stallLine === null ? [] : [stallLine]),
     ...(commandLine === null ? [] : [commandLine]),
+    ...(recoveryOutcomeLine === null ? [] : [recoveryOutcomeLine]),
   ].join("\n");
 }
 
