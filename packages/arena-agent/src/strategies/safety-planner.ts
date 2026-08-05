@@ -127,6 +127,12 @@ export class SafetyPlanner {
         .sort((a, b) => a.id.localeCompare(b.id))
         .map((worker, index) => [worker.id, index]),
     );
+    const vanguardIndex = new Map(
+      [...state.units]
+        .filter((unit) => unit.unitType === "VANGUARD")
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((unit, index) => [unit.id, index]),
+    );
 
     const set = (unit: UnitSnapshot, action: UnitAction, intent: string): void => {
       actions[unit.id] = action;
@@ -155,7 +161,7 @@ export class SafetyPlanner {
       if (unit.unitType === "WORKER") {
         this.decideWorker(state, unit, workerIndex.get(unit.id) ?? 0, obstacles, set);
       } else if (unit.unitType === "VANGUARD") {
-        this.decideVanguard(state, unit, obstacles, enemies, set);
+        this.decideVanguard(state, unit, vanguardIndex.get(unit.id) ?? 0, obstacles, enemies, set);
       } else {
         this.decideRanger(state, unit, obstacles, enemies, set);
       }
@@ -274,6 +280,7 @@ export class SafetyPlanner {
   private decideVanguard(
     state: TickState,
     unit: UnitSnapshot,
+    index: number,
     obstacles: ReadonlySet<string>,
     enemies: readonly VisibleEntity[],
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
@@ -317,7 +324,7 @@ export class SafetyPlanner {
     }
     // 守家/回防锚点 = Core 相邻格（绝不站 Core 格本身——Core 格是 Worker 回仓
     // 通道，被军事单位长期占用会造成 capacity_wait:DEPOSIT 经济死锁，生产实测）。
-    const home = state.core === null ? null : homeCell(state.core.position, movementObstacles);
+    const home = state.core === null ? null : homeCell(state.core.position, movementObstacles, index);
     // 已在 Core 格且满血：移出到守家锚点（治疗是短时占格，治疗完必须让出回仓通道）
     if (
       state.core !== null &&
@@ -352,10 +359,13 @@ export class SafetyPlanner {
 
     // Precision shot at a visible enemy in range. Aggressive mode prioritizes
     // enemy Workers to cut their economy (cargo never reaches their Core).
+    // Defensive mode prioritizes the nearest threat first (a Vanguard one cell
+    // from sweeping us outranks a Worker three cells away), then same value
+    // ranks by type (workers first = economy damage), then raw id (determinism).
     const inRange = enemies.filter((enemy) => canShoot(unit.position, enemy.position, obstacles));
     const target = this.effectiveAggression === "aggressive"
       ? inRange.sort(aggressiveShotPriority)[0]
-      : inRange[0];
+      : inRange.sort((a, b) => defensiveShotPriority(unit.position, a, b))[0];
     if (target !== undefined) {
       set(unit, { type: "SHOOT", targetId: target.id, expectedCell: target.position }, "shoot");
       return;
@@ -438,9 +448,10 @@ function nextMilitary(state: TickState): UnitType {
 /** Core 的守家锚点：四邻中第一个非障碍格（确定性 UP→RIGHT→DOWN→LEFT）。
  *  军事单位守家站此格而非 Core 格本身——Core 格是 Worker 回仓通道，
  *  被长期占用会造成 capacity_wait:DEPOSIT 经济死锁。 */
-function homeCell(core: Position, obstacles: ReadonlySet<string>): Position | null {
+function homeCell(core: Position, obstacles: ReadonlySet<string>, index = 0): Position | null {
   const order: readonly Direction[] = ["UP", "RIGHT", "DOWN", "LEFT"];
-  for (const dir of order) {
+  for (let offset = 0; offset < order.length; offset += 1) {
+    const dir = order[(index + offset) % order.length];
     const cell: Position = dir === "UP"
       ? [core[0], core[1] - 1]
       : dir === "RIGHT"
@@ -461,8 +472,19 @@ function nearestEnemy(enemies: readonly VisibleEntity[], position: Position): Vi
 
 /** 激进射击目标优先级：断敌经济（WORKER）优先，其次远程单位，最后 Core。
  *  排序稳定：同优先级按 raw id 字典序（nearestEnemy 的调用方约束）。 */
+/** 激进射击目标优先级（纯类型价值）：断敌经济（WORKER 优先），同价值 raw id 序。 */
 function aggressiveShotPriority(a: VisibleEntity, b: VisibleEntity): number {
   return shotTargetRank(a) - shotTargetRank(b) || a.id.localeCompare(b.id);
+}
+
+/** 防守射击目标优先级：最近威胁优先（1 格外的 Vanguard 即将 sweep 我们），
+ *  同距离再按类型价值（WORKER 优先断经济），最后 raw id 序（确定性）。 */
+function defensiveShotPriority(from: Position, a: VisibleEntity, b: VisibleEntity): number {
+  return (
+    manhattan(from, a.position) - manhattan(from, b.position) ||
+    shotTargetRank(a) - shotTargetRank(b) ||
+    a.id.localeCompare(b.id)
+  );
 }
 
 function shotTargetRank(enemy: VisibleEntity): number {

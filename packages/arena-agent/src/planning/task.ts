@@ -28,9 +28,10 @@ export interface Task {
   readonly targetCellKey?: string;
 }
 
-/** canDeposit：cargo > 0 且 Core 在位（可接收）。 */
+/** canDeposit：cargo > 0 且 Core 在位且资源未满（resourceSpace=0 时 DEPOSIT 不合法，
+ *  强派会把满载 Worker 拉回 Core 格后让位，形成"回仓→让位→再回仓"振荡（v0.2.14）。 */
 export function canDeposit(unit: PlanningUnit, snapshot: PlanningSnapshot): boolean {
-  return unit.cargo > 0 && snapshot.corePosition !== null;
+  return unit.cargo > 0 && snapshot.corePosition !== null && snapshot.resourceSpace > 0;
 }
 
 /** 强制任务判定：命中 RP2 规则返回对应 Task，否则 null（走代价矩阵）。

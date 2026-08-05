@@ -640,3 +640,67 @@ test("S10 economy: 双方 Core 同归于尽时不捕获，延迟 respawn 也不�
   assert.equal(result.world.players.get("p1")!.status, "RESPAWNING");
   assert.equal(result.world.players.get("p2")!.status, "RESPAWNING");
 });
+
+/** OP1 (v0.2.14): Core self-destruct runs AFTER combat. A Core killed by
+ *  combat in the same tick must not self-destruct first (old P02 ordering
+ *  denied the attacker participation/loot); the attacker keeps the captured
+ *  resources and the dead Core never fires SELF_DESTRUCT. */
+test("combat kills Core while SELF_DESTRUCT planned: attacker captures resources", () => {
+  const p1Vanguard = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const p2Vanguard = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 9,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 7,
+        core: { id: P1_CORE, position: [0, 0], hp: 1, shield: 0, state: "NORMAL" },
+        units: [{ id: p1Vanguard, owner: "p1", position: [1, 0], hp: 4, unitType: "VANGUARD", cargo: 0 }],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 3,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: p2Vanguard, owner: "p2", position: [0, 1], hp: 4, unitType: "VANGUARD", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world,
+    new Map([
+      // p1 plans SELF_DESTRUCT but its Core is killed by p2's SWEEP this tick
+      [
+        "p1",
+        {
+          tick: world.tick,
+          unitActions: { [p1Vanguard]: { type: "SWEEP", direction: "DOWN" } },
+          coreAction: { type: "SELF_DESTRUCT" },
+          intents: {},
+        },
+      ],
+      // p2 Vanguard at [0,1] sweeps UP into p1's Core cell [0,0] (hp 1, shield 0)
+      ["p2", planOf(world, { [p2Vanguard]: { type: "SWEEP", direction: "UP" } })],
+    ]),
+    ctx,
+  );
+  // p1's Core dies in combat first: p2 captures its 7 resources
+  const captured = result.events.find((event) => event.eventType === "CORE_RESOURCES_CAPTURED");
+  assert.ok(captured !== undefined, "attacker must capture resources from a Core killed by combat");
+  assert.equal(result.world.players.get("p2")!.resources, 10);
+  // P12 respawns the dead Core in the same tick (ACTIVE with a fresh Core)
+  assert.equal(result.world.players.get("p1")!.status, "ACTIVE");
+  assert.notEqual(result.world.players.get("p1")!.core, null);
+  // the killed Core's destruction reason is combat ATTACK, not SELF_DESTRUCT
+  const destroyed = result.events.find((event) => event.eventType === "CORE_DESTROYED");
+  assert.equal(destroyed?.reasonCode, "ATTACK");
+  assert.ok(
+    !result.events.some((event) => event.reasonCode === "SELF_DESTRUCT"),
+    "a Core killed by combat must not self-destruct afterwards",
+  );
+});
