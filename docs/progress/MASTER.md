@@ -112,11 +112,13 @@ policy(LLM 低频 32 tick)
 
 ## 真机证据边界
 
-### 决策指挥闭环生产部署（2026-08-06，用户授权"全部部署全部实测"）
+### 决策指挥闭环生产部署与迁移（2026-08-06）
 
-us1 live 已升级 `ghcr.io/deliciousbuding/arena:404c1bcc…`（version.env pin + upgrade.sh 健康门禁通过；systemd 单元同步 active）。实测：t1+t2 ready（live 提交中；t3/t4 用户裁决不得使用——config submitEnabled=false 保持，ARENA_CONFIGS=t1,t2）、manifest submitEnabled=true/decisionMode=deterministic、当前 run accepted 持续/rejected 0（历史 TICK_MISMATCH 与 tick 56656 瞬时 submitError 均为过渡/瞬时故障，safe retries 正确记录）、policy 流产出 aggressive/militaryRatio=0.8/focusRegion=null（无坏焦点）、live-health + disk-health timer active。历史证据：v0.2.16 时代 LLM 真实输出过 `focusRegion:[1500,1500]`（tick 56508）——决策指挥机制正是防御此场景；stall_recovery/policy_discipline telemetry 生产形态待命（无死循环即不触发）。
+**部署**（用户授权"全部部署全部实测"）：us1 live 升级 `ghcr.io/deliciousbuding/arena:404c1bcc…` 并实测通过——t1+t2 ready、manifest submitEnabled=true/decisionMode=deterministic、当前 run accepted 持续/rejected 0（历史 TICK_MISMATCH 与 tick 56656 瞬时 submitError 均为过渡/瞬时故障，safe retries 正确记录）、policy 流 aggressive/militaryRatio=0.8/focusRegion=null（无坏焦点）；历史证据：v0.2.16 时代 LLM 真实输出过 `focusRegion:[1500,1500]`（tick 56508）——决策指挥机制正是防御此场景；stall_recovery/policy_discipline telemetry 生产形态待命（无死循环即不触发）。
 
 **回滚演练（2026-08-06）**：`upgrade.sh --rollback` 到 v0.2.16 失败（live not healthy）——旧版本 tag 与当前 compose/配置契约不兼容，**不是可行逃生通道**；逃生通道应使用同部署形态的 commit sha 镜像（CI 每次 main push 构建）。演练验证了 rollback 流程本身（pin 恢复/容器重建/健康门禁），失败被正确捕获，已恢复 404c1bc。
+
+**迁移本地（2026-08-06，用户裁决"全部本地跑，关掉 us1 全部操作"）**：us1 全部关闭（live/shadow service + 全部 health timers 停用，0 残留进程/锁/容器）；生产数据归档 `runtime/archive/us1-2026-08-06/arena-data.tar.gz`（t1/t2 runs+telemetry）；本地 `runtime/configs/t1.json`/`t2.json`（deterministic + submitEnabled=true，baseDir=runtime）supervisor 8120 端口 t1/t2 **live ready**（accepted 提交中、rejected 0、policy 流产出 aggressive/militaryRatio=0.9/focusRegion=null，git sha c294104）。t3/t4 用户裁决不得使用（config submitEnabled=false 保持）。
 
 ### Deterministic
 
