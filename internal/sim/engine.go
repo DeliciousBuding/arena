@@ -26,6 +26,7 @@ type SettleStats struct {
 	Kills         int // 本 tick 击杀的敌方实体数（战斗阶段）
 	ShotsFired    int // 本 tick Ranger SHOOT 攻击数（含未命中）
 	SweepsFired   int // 本 tick Vanguard SWEEP 攻击数（含未命中）
+	UnitsLost     int // 本 tick 被敌方击杀的己方单位数
 }
 
 // Engine 是确定性结算引擎（默认无状态，并发安全；挂载 Refill 后
@@ -81,6 +82,10 @@ func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult
 
 	combatEvents := applyCombat(next, plan, &stats)
 	events = append(events, combatEvents...)
+
+	// 敌方攻击（官方对称语义）：敌方单位攻击我方单位/Core，死亡移除。
+	enemyEvents := applyEnemyAttacks(next, &stats)
+	events = append(events, enemyEvents...)
 
 	coreEvents := e.applyCoreAction(next, plan.CoreAction)
 	for _, event := range coreEvents {
