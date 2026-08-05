@@ -278,6 +278,18 @@ const WORKER_SPAWN_COST = 5;
 /** 补员保留资源（不因扩编掏空国库；emergency 时也可用满额 5）。 */
 const WORKER_SPAWN_RESERVE = 2;
 
+/** 军事单位类型选择：默认交替（VANGUARD ↔ RANGER）；vanguardRatio 配置时按目标占比。 */
+function nextMilitaryType(state: TickState, vanguardRatio?: number): "VANGUARD" | "RANGER" {
+  if (vanguardRatio === undefined) {
+    return state.vanguards.length <= state.rangers.length ? "VANGUARD" : "RANGER";
+  }
+  const military = state.vanguards.length + state.rangers.length;
+  // ceil((military+1)*ratio)：新兵计入后 VANGUARD 占比不超过 ratio 才产 VANGUARD。
+  // （floor(military*ratio) 在 military=0 时恒 0——ratio=1 也错误产 RANGER。）
+  const targetVanguards = Math.ceil((military + 1) * vanguardRatio);
+  return state.vanguards.length < targetVanguards ? "VANGUARD" : "RANGER";
+}
+
 /**
  * deterministic 的长期目标仍是积累资源，但不能因此失去自恢复能力：
  * - Core HEAL / REPAIR_SHIELD 属于生存动作，直接沿用 Safety 的合法裁决；
@@ -289,6 +301,7 @@ export function selectDeterministicCoreAction(
   state: TickState,
   fallbackAction: CoreAction | null,
   policy?: MacroPolicy,
+  vanguardRatio?: number,
 ): { readonly action: CoreAction | null; readonly intent: string | null } {
   if (fallbackAction?.type === "HEAL") {
     return { action: fallbackAction, intent: "core_heal" };
@@ -331,9 +344,9 @@ export function selectDeterministicCoreAction(
           };
         }
       } else if (needMilitary) {
-        // 军事单位交替产出（VANGUARD ↔ RANGER），资源门禁：VANGUARD 10 / RANGER 12 + reserve
-        const unitType: "VANGUARD" | "RANGER" =
-          state.vanguards.length <= state.rangers.length ? "VANGUARD" : "RANGER";
+        // 军事单位产出：默认交替（VANGUARD ↔ RANGER）；vanguardRatio 实验配置
+        // 覆盖为按目标占比产出。资源门禁：VANGUARD 10 / RANGER 12 + reserve
+        const unitType: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
         const cost = unitType === "VANGUARD" ? 10 : 12;
         if (state.resources >= cost + WORKER_SPAWN_RESERVE) {
           return {
@@ -358,16 +371,20 @@ export class DeterministicPlanner implements PlanProvider {
   /** 只用于“资源格已被其他 Worker 占用”时继续探索；永远看不到 resourceCells，
    *  因此不会把额外 Worker 再次派往同一可见资源格。 */
   private readonly patrolPlanner: SafetyPlanner;
+  /** 军事配比（实验）：VANGUARD 目标占比 [0,1]；undefined = 交替产兵（历史行为）。 */
+  private readonly vanguardRatio: number | undefined;
   private previousAssignments: readonly Assignment[] = [];
 
   constructor(
     planner: WorkerTaskPlanner = new WorkerTaskPlanner(),
     fallbackPlanner: SafetyPlanner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
     patrolPlanner: SafetyPlanner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
+    vanguardRatio: number | undefined = undefined,
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
     this.patrolPlanner = patrolPlanner;
+    this.vanguardRatio = vanguardRatio;
   }
 
   decide(input: DeterministicPlannerInput): Plan {
@@ -417,7 +434,7 @@ export class DeterministicPlanner implements PlanProvider {
     // fallback 可能提出被 deterministic 故意压制的普通 spawn；不要留下“有 intent
     // 但 coreAction=null”的误导遥测。只有实际执行的恢复/生存动作才记录 core intent。
     delete finalIntents.core;
-    const coreDecision = selectDeterministicCoreAction(input.state, fallback.coreAction, input.policy);
+    const coreDecision = selectDeterministicCoreAction(input.state, fallback.coreAction, input.policy, this.vanguardRatio);
     if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;
 
     return {

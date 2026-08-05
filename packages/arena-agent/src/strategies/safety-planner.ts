@@ -62,6 +62,12 @@ export interface SafetyPlannerConfig {
    *   （射 WORKER）并保持射程站定。
    */
   readonly aggression?: AggressionLevel;
+  /**
+   * 军事配比（实验，默认 undefined = 交替产兵）：VANGUARD 目标占比 [0,1]。
+   * 1 = 全近战攻坚、0 = 全远程断经济、0.5 = 交替（历史行为等价）。
+   * 模拟器配比实验（military-composition-experiment）决定生产默认是否调整。
+   */
+  readonly vanguardRatio?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -472,8 +478,8 @@ export class SafetyPlanner {
       this.config.accumulateTarget > 0 &&
       state.resources >= this.config.guardResources &&
       military < this.config.guardForce
-        ? nextMilitary(state)
-        : nextSpawn(state, this.effectiveWorkerTarget);
+        ? nextMilitary(state, this.config)
+        : nextSpawn(state, this.effectiveWorkerTarget, this.config);
     const cost = unitType === "WORKER" ? 5 : unitType === "VANGUARD" ? 10 : 12;
     const reserve = state.resources >= this.config.wealthyThreshold
       ? this.config.reserveWealthy
@@ -484,13 +490,21 @@ export class SafetyPlanner {
   }
 }
 
-function nextSpawn(state: TickState, workerTarget: number): UnitType {
+function nextSpawn(state: TickState, workerTarget: number, config: SafetyPlannerConfig): UnitType {
   if (state.workers.length < workerTarget) return "WORKER";
-  return nextMilitary(state);
+  return nextMilitary(state, config);
 }
 
-function nextMilitary(state: TickState): UnitType {
-  return state.vanguards.length <= state.rangers.length ? "VANGUARD" : "RANGER";
+function nextMilitary(state: TickState, config: SafetyPlannerConfig): UnitType {
+  const ratio = config.vanguardRatio;
+  if (ratio === undefined) {
+    return state.vanguards.length <= state.rangers.length ? "VANGUARD" : "RANGER";
+  }
+  const military = state.vanguards.length + state.rangers.length;
+  // ceil((military+1)*ratio)：新兵计入后 VANGUARD 占比不超过 ratio 才产 VANGUARD。
+  // （floor(military*ratio) 在 military=0 时恒 0——ratio=1 也错误产 RANGER。）
+  const targetVanguards = Math.ceil((military + 1) * ratio);
+  return state.vanguards.length < targetVanguards ? "VANGUARD" : "RANGER";
 }
 
 /** Core 的守家锚点：四邻中第一个非障碍格（确定性 UP→RIGHT→DOWN→LEFT）。
