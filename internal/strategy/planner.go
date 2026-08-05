@@ -23,19 +23,19 @@ type Config struct {
 	EnableCoreMigration bool
 }
 
-// DefaultConfig 返回默认配置（模拟退火优化 cmd/optsearch 结果：
-// 多资源格 sim 闭环 100 tick 评分 +26%——spawnReserve 5→2 减少攒资源
-// 浪费、exploreRadius 16→22 更快发现远处资源格、populationCeiling
-// 20→30 高产能下允许更多工人）。
-// ExploreRadius 注释（视野研究 v0.13）：Worker 视野半径仅 3，chunk
-// 32×32；巡逻目标按半 chunk 量级才能系统性扫过 chunk 边界区域。
+// DefaultConfig 返回默认配置（模拟退火 + 遗传算法双算法验证：
+// 挂载 refill 引擎的真实游戏逻辑评分——资源 4 tick 配额再生 +
+// 视野揭示，100 tick sim 闭环）。
+// 双算法共识：spawnReserve=1（refill 下资源可持续流入，攒资源浪费
+// 大于 buffer 收益）；SA 最优 {workerTarget:6 spawnReserve:1
+// exploreRadius:16 populationCeiling:21} score=174（默认 129，+35%）。
 func DefaultConfig() Config {
 	return Config{
-		WorkerTarget:      8,
-		PopulationCeiling: 30,
-		ExploreRadius:     22,
+		WorkerTarget:      6,
+		PopulationCeiling: 21,
+		ExploreRadius:     16,
 		ThreatDistance:    5,
-		SpawnReserve:      2,
+		SpawnReserve:      1,
 	}
 }
 

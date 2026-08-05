@@ -87,6 +87,14 @@ func neighbor(p searchParams, rng *rand.Rand) searchParams {
 	return p
 }
 
+// optLatentResources 是 refill 引擎的潜在资源格池（评分场景的
+// 服务器秘密分布；与 optState 的初始可见格同源 + 周边扩展格——
+// 模拟资源再生空间，评分基于真实游戏逻辑）。
+var optLatentResources = []domain.Position{
+	{38, 45}, {30, 34}, {46, 34}, {30, 46}, {46, 46}, {38, 26},
+	{38, 47}, {28, 36}, {48, 36}, {28, 48}, {48, 48}, {40, 24},
+}
+
 // optState 是评分场景（真实拓扑 + 满载死锁起点 + 6 资源格分布
 // 四周不同距离——多资源格下参数差异才可区分，单格场景参数平坦）。
 func optState() *domain.TickState {
@@ -117,7 +125,9 @@ func optState() *domain.TickState {
 
 // evaluate 运行 sim 闭环 100 tick，返回经济产出评分：
 // workers×10 + deposits×5 + spawns×3 + harvests×2（资源格产能约束下
-// 衡量扩张与循环效率）。
+// 衡量扩张与循环效率）。挂载 refill 引擎（官方规则：4 tick 配额 +
+// 视野揭示）——评分基于真实游戏逻辑（资源再生 + 采空消失），
+// 而非"资源永不再生"的简化模型。
 func evaluate(p searchParams, ticks int) float64 {
 	state := optState()
 	planner := strategy.NewPlanner(strategy.Config{
@@ -125,6 +135,7 @@ func evaluate(p searchParams, ticks int) float64 {
 		ExploreRadius: p.exploreRadius, ThreatDistance: 5, SpawnReserve: p.spawnReserve,
 	})
 	engine := sim.NewEngine()
+	engine.Refill = sim.NewRefillConfig(optLatentResources)
 	score := 0.0
 	for tick := 1; tick <= ticks; tick++ {
 		state.Tick = tick
