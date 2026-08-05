@@ -302,12 +302,17 @@ export function selectDeterministicCoreAction(
   fallbackAction: CoreAction | null,
   policy?: MacroPolicy,
   vanguardRatio?: number,
-): { readonly action: CoreAction | null; readonly intent: string | null } {
+  /** 爆兵模式（2026-08-06）：>0 时 resources 达标前只产 Worker 积累、达标后
+   *  surgeActive=true 持续爆兵（不受 militaryRatio 限制）；内部按资源是否
+   *  够产兵回写 surgeActive（资源耗尽回积累期）。默认 0 = 关闭。 */
+  accumulateThreshold = 0,
+  surgeActive = false,
+): { readonly action: CoreAction | null; readonly intent: string | null; readonly surgeActive: boolean } {
   if (fallbackAction?.type === "HEAL") {
-    return { action: fallbackAction, intent: "core_heal" };
+    return { action: fallbackAction, intent: "core_heal", surgeActive };
   }
   if (fallbackAction?.type === "REPAIR_SHIELD") {
-    return { action: fallbackAction, intent: "repair_shield" };
+    return { action: fallbackAction, intent: "repair_shield", surgeActive };
   }
 
   const workerTarget = Math.max(policy?.workerTarget ?? WORKER_RECOVERY_FLOOR, WORKER_RECOVERY_FLOOR);
@@ -324,6 +329,11 @@ export function selectDeterministicCoreAction(
     militaryRatio > 0 &&
     populationTotal > 0 &&
     military / populationTotal < militaryRatio;
+  // 爆兵模式：达标即激活并保持（防止"产 1 兵掉回阈值下"振荡）
+  let active = surgeActive;
+  if (accumulateThreshold > 0 && !active && state.resources >= accumulateThreshold) {
+    active = true;
+  }
 
   if (core !== null && core.state === "NORMAL") {
     // Core 格被空载/非 Worker 单位占位时阻塞生成（SPAWN 会叠加容量）；
@@ -336,11 +346,26 @@ export function selectDeterministicCoreAction(
         !(unit.unitType === "WORKER" && unit.cargo > 0),
     ).length;
     if (permanentOccupantsOnCore === 0) {
-      if (state.workers.length < workerTarget && !needMilitary) {
+      const surgeOn = accumulateThreshold > 0 && active;
+      if (surgeOn) {
+        // 爆兵期：全力产兵（交替 VANGUARD/RANGER，不受 militaryRatio 限制）
+        const unitType: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
+        const cost = unitType === "VANGUARD" ? 10 : 12;
+        if (state.resources >= cost + WORKER_SPAWN_RESERVE) {
+          return {
+            action: { type: "SPAWN", unitType },
+            intent: `spawn_${unitType.toLowerCase()}_surge`,
+            surgeActive: active,
+          };
+        }
+        // 资源不足以产兵：回积累期
+        active = false;
+      } else if (state.workers.length < workerTarget && !needMilitary) {
         if (state.resources >= WORKER_SPAWN_COST + (emergency ? 0 : WORKER_SPAWN_RESERVE)) {
           return {
             action: { type: "SPAWN", unitType: "WORKER" },
             intent: emergency ? "emergency_spawn_worker" : "spawn_worker_target",
+            surgeActive: active,
           };
         }
       } else if (needMilitary) {
@@ -352,12 +377,13 @@ export function selectDeterministicCoreAction(
           return {
             action: { type: "SPAWN", unitType },
             intent: `spawn_${unitType.toLowerCase()}_military_ratio`,
+            surgeActive: active,
           };
         }
       }
     }
   }
-  return { action: null, intent: null };
+  return { action: null, intent: null, surgeActive: active };
 }
 
 export interface DeterministicPlannerInput {
@@ -373,6 +399,10 @@ export class DeterministicPlanner implements PlanProvider {
   private readonly patrolPlanner: SafetyPlanner;
   /** 军事配比（实验）：VANGUARD 目标占比 [0,1]；undefined = 交替产兵（历史行为）。 */
   private readonly vanguardRatio: number | undefined;
+  /** 爆兵阈值（2026-08-06）：resources 达标前只产 Worker 积累、达标后持续爆兵。 */
+  private readonly accumulateThreshold: number;
+  /** 爆兵状态（跨 tick 保持：达标后持续爆兵直到资源耗尽回积累期）。 */
+  private surgeActive = false;
   private previousAssignments: readonly Assignment[] = [];
 
   constructor(
@@ -380,11 +410,13 @@ export class DeterministicPlanner implements PlanProvider {
     fallbackPlanner: SafetyPlanner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
     patrolPlanner: SafetyPlanner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
     vanguardRatio: number | undefined = undefined,
+    accumulateThreshold = 0,
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
     this.patrolPlanner = patrolPlanner;
     this.vanguardRatio = vanguardRatio;
+    this.accumulateThreshold = accumulateThreshold;
   }
 
   decide(input: DeterministicPlannerInput): Plan {
@@ -434,7 +466,15 @@ export class DeterministicPlanner implements PlanProvider {
     // fallback 可能提出被 deterministic 故意压制的普通 spawn；不要留下“有 intent
     // 但 coreAction=null”的误导遥测。只有实际执行的恢复/生存动作才记录 core intent。
     delete finalIntents.core;
-    const coreDecision = selectDeterministicCoreAction(input.state, fallback.coreAction, input.policy, this.vanguardRatio);
+    const coreDecision = selectDeterministicCoreAction(
+      input.state,
+      fallback.coreAction,
+      input.policy,
+      this.vanguardRatio,
+      this.accumulateThreshold,
+      this.surgeActive,
+    );
+    this.surgeActive = coreDecision.surgeActive;
     if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;
 
     return {

@@ -119,6 +119,7 @@ function createPlanner(kind: PlannerKind, tenant: EpisodeTenant): PlanProvider {
       new SafetyPlanner(safetyConfig),
       new SafetyPlanner(safetyConfig),
       tenant.plannerConfig?.vanguardRatio,
+      tenant.plannerConfig?.accumulateThreshold ?? 0,
     );
   }
   return new SafetyPlanner(safetyConfig);
