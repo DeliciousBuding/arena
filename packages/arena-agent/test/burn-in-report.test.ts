@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  buildBurnInKpi,
   buildBurnInReport,
+  buildBurnInReportWithKpi,
   DEFAULT_BURN_IN_THRESHOLDS,
 } from "../src/analysis/burn-in-report.ts";
 import type {
   DecisionTraceRecord,
   OutcomeTraceRecord,
+  PolicyTraceRecord,
   RuntimeTraceRecord,
 } from "../src/telemetry/decision-trace.ts";
 
@@ -168,4 +171,57 @@ test("Burn-in report：非法门禁配置 fail-fast", () => {
     }),
     /maxWaitRatio must be within/,
   );
+});
+
+test("TS-001: buildBurnInKpi 从四流遥测计算业务 KPI", () => {
+  const runtime = [
+    runtimeRecord(1, "accepted"),
+    runtimeRecord(2, "accepted"),
+    { ...runtimeRecord(3, "accepted"), telemetryType: "stall_warning", stallKind: "cargo_blocked", stallStreak: 16 },
+  ] as RuntimeTraceRecord[];
+  const decisions = [
+    { ...decisionRecord(1), intentCounts: { patrol: 4, "capacity_wait:DEPOSIT": 2 } },
+    { ...decisionRecord(2), intentCounts: { patrol: 4, "capacity_wait:DEPOSIT": 1 } },
+    { ...decisionRecord(3), intentCounts: { patrol: 6 } },
+  ] as DecisionTraceRecord[];
+  const outcomes = [
+    { ...outcomeRecord(10), grossDeposit: 2, spawnCount: 1, healCount: 1, unitLossCount: 0, coreResourcesAfter: 12 },
+    { ...outcomeRecord(20), grossDeposit: 3, spawnCount: 0, healCount: 0, unitLossCount: 1, coreResourcesAfter: 22 },
+    { ...outcomeRecord(30), grossDeposit: 5, spawnCount: 1, healCount: 0, unitLossCount: 0, coreResourcesAfter: 55 },
+  ] as OutcomeTraceRecord[];
+  const policies: PolicyTraceRecord[] = [
+    { type: "policy_update", tick: 10, policy: "{}" },
+    { type: "policy_update", tick: 42, policy: "{}" },
+    { type: "policy_error", tick: 20, message: "x" },
+    { type: "policy_override", policy: "{}" },
+  ];
+
+  const kpi = buildBurnInKpi(runtime, decisions, outcomes, policies);
+
+  assert.equal(kpi.grossDepositTotal, 10);
+  assert.equal(kpi.spawnTotal, 2);
+  assert.equal(kpi.healTotal, 1);
+  assert.equal(kpi.unitLossTotal, 1);
+  assert.equal(kpi.capacityWaitCount, 3);
+  assert.equal(kpi.stallWarningCount, 1);
+  assert.equal(kpi.ticksTo20, 20);
+  assert.equal(kpi.ticksTo30, 30);
+  assert.equal(kpi.ticksTo50, 30);
+  assert.equal(kpi.policyUpdateCount, 2);
+  assert.equal(kpi.policyErrorCount, 1);
+  assert.equal(kpi.policyInitErrorCount, 0);
+  assert.equal(kpi.policyOverrideCount, 1);
+  assert.equal(kpi.policyLatencyMsP95, null);
+  assert.ok(kpi.telemetryGaps.some((gap) => gap.startsWith("policy_latency")));
+  assert.ok(kpi.telemetryGaps.some((gap) => gap.startsWith("travel_waste")));
+});
+
+test("TS-001: buildBurnInReportWithKpi 组装门禁报告 + KPI", () => {
+  const runtime = [runtimeRecord(1, "accepted")] as RuntimeTraceRecord[];
+  const decisions = [decisionRecord(1)] as DecisionTraceRecord[];
+  const outcomes = [outcomeRecord(10), outcomeRecord(20)] as OutcomeTraceRecord[];
+  const report = buildBurnInReportWithKpi(RUN_ID, runtime, decisions, outcomes, []);
+  assert.equal(report.passed, false);
+  assert.equal(typeof report.kpi.spawnTotal, "number");
+  assert.ok(Array.isArray(report.kpi.telemetryGaps));
 });
