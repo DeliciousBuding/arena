@@ -9,6 +9,8 @@ pub mod commander;
 pub mod economic;
 
 #[cfg(test)]
+mod bench_tests;
+#[cfg(test)]
 mod loop_tests;
 
 use std::collections::BTreeMap;

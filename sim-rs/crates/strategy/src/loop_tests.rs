@@ -11,7 +11,7 @@ use arena_sim_engine::{Engine, RefillConfig};
 use crate::{commander::Commander, Config, Planner};
 
 /// 构造经济闭环场景（与 Go benchState 同构：refill 池 + 满载死锁起点）。
-fn bench_state() -> TickState {
+pub(crate) fn bench_state() -> TickState {
     TickState {
         tick: 1,
         status: CoreStatus::Active,
@@ -93,7 +93,7 @@ fn bench_state() -> TickState {
 }
 
 /// bench refill 池（与 Go bench_test 一致）。
-fn bench_latent() -> Vec<arena_sim_domain::Position> {
+pub(crate) fn bench_latent() -> Vec<arena_sim_domain::Position> {
     vec![
         [38, 45],
         [30, 34],
