@@ -6,7 +6,9 @@ import (
 
 // applyHarvests 结算 HARVEST 动作：worker 必须站在可见资源格上，
 // 成功 +1 cargo（每 tick 至多 1）。
-func applyHarvests(state *domain.TickState, workerIDs []string, stats *SettleStats) []domain.Event {
+// 服务器语义：采空格立即消失（从 ResourceCells 移除；refill 引擎挂载
+// 时标记 mined，4 tick 配额补满后恢复）。
+func (e *Engine) applyHarvests(state *domain.TickState, workerIDs []string, stats *SettleStats) []domain.Event {
 	events := make([]domain.Event, 0, len(workerIDs))
 	for _, unitID := range workerIDs {
 		unit := findUnit(state, unitID)
@@ -19,6 +21,12 @@ func applyHarvests(state *domain.TickState, workerIDs []string, stats *SettleSta
 		}
 		unit.Cargo++
 		stats.Harvests++
+		// 采空格立即消失（官方规则；refill 由引擎挂载时补回）。
+		cellKey := domain.CellKey(unit.Position[0], unit.Position[1])
+		state.ResourceCells.Remove(cellKey)
+		if e.Refill != nil {
+			e.Refill.markMined(unit.Position)
+		}
 		events = append(events, harvestEvent(state.Tick, unitID, ""))
 	}
 	return events

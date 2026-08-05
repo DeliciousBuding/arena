@@ -156,11 +156,14 @@ func TestSettleOrderYieldThenSpawn(t *testing.T) {
 
 // TestFullEconomicLoopPositiveGrowth：带资源格的经济正循环（50 ticks）：
 // harvest → deposit → spawn 持续增长，worker 数稳步上升、资源不枯竭
-// （per-unit 巡逻修复后"发现资源格"链路验证）。
+// （per-unit 巡逻修复后"发现资源格"链路验证）。挂载 refill 引擎
+// （官方规则：4 tick 配额补满 + 视野揭示）——采空格立即消失后由
+// 视野揭示恢复，模拟真实服务器资源再生。
 func TestFullEconomicLoopPositiveGrowth(t *testing.T) {
 	state := economyBaseState()
-	// 资源格：Core 附近 4 格（worker 可见可采）。
-	for _, cell := range []domain.Position{{1, 0}, {-1, 0}, {0, 1}, {0, -1}} {
+	// 资源格：Core 附近 4 格（worker 可见可采，refill 池同源）。
+	resourceCells := []domain.Position{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
+	for _, cell := range resourceCells {
 		state.ResourceCells.Add(domain.CellKey(cell[0], cell[1]))
 	}
 	planner := strategy.NewPlanner(strategy.Config{
@@ -171,6 +174,7 @@ func TestFullEconomicLoopPositiveGrowth(t *testing.T) {
 		SpawnReserve:      0,
 	})
 	engine := NewEngine()
+	engine.Refill = NewRefillConfig(resourceCells)
 
 	totalHarvests := 0
 	totalDeposits := 0
@@ -240,6 +244,9 @@ func TestFullEconomicLoopRealMapTopology(t *testing.T) {
 		SpawnReserve:      0,
 	})
 	engine := NewEngine()
+	// 挂载 refill（官方规则）：资源格采空立即消失、4 tick 配额补满 +
+	// 视野揭示——真实服务器语义，验证探索/回仓在资源再生下的闭环。
+	engine.Refill = NewRefillConfig([]domain.Position{{38, 45}})
 
 	spawns := 0
 	deposits := 0

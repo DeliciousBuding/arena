@@ -135,6 +135,17 @@ func (p *Planner) Decide(state *domain.TickState) *domain.Plan {
 	for _, loser := range arbitrateMoveCapacity(candidates) {
 		plan.UnitActions[loser.unitID] = domain.UnitAction{Kind: domain.ActionWait}
 		plan.Intents[loser.unitID] = "capacity_wait:" + loser.intent
+		// 仲裁降级的空载 Worker 若站在 Core 格：改为让位（仓库口让出）——
+		// refill 闭环暴露：deposit 完的空载 worker 在 Core 上等 to_resource，
+		// 仲裁失败后原地 WAIT，满载 worker 进不来 deposit，经济卡死。
+		if unit := findUnitSnapshot(state, loser.unitID); unit != nil &&
+			unit.UnitType == domain.UnitWorker && unit.Cargo == 0 &&
+			state.Core != nil && unit.Position == state.Core.Position {
+			if yield, ok := p.yieldFullCore(state, unit); ok {
+				plan.UnitActions[loser.unitID] = yield
+				plan.Intents[loser.unitID] = "yield_core_wait"
+			}
+		}
 	}
 	return plan
 }
@@ -249,7 +260,17 @@ func (p *Planner) decideWorker(state *domain.TickState, unit *domain.UnitSnapsho
 	}
 	// 全局分配：目标是"分给我的"资源格（每格唯一，消除抢格）。
 	if target, ok := assignments[unit.ID]; ok {
-		return p.moveToward(state, unit, target), "to_resource", true
+		action := p.moveToward(state, unit, target)
+		if action.Kind == domain.ActionWait && state.Core != nil && unit.Position == state.Core.Position {
+			// 空载 Worker 在 Core 上排队等资源格时被堵：先让位离开
+			// 仓库口（t4 拓扑 refill 暴露——deposit 完的 worker 站在
+			// Core 等 to_resource，满载 worker 进不来 deposit，
+			// 经济循环卡死）。让位后下一 tick 再前往资源格。
+			if yield, ok := p.yieldFullCore(state, unit); ok {
+				return yield, "yield_core_wait", true
+			}
+		}
+		return action, "to_resource", true
 	}
 	// 无可见资源格：恢复期原地待命（不探索远处），正常期巡逻探索。
 	if respawnOverride(state) {
@@ -302,11 +323,41 @@ func (p *Planner) decideRanger(state *domain.TickState, unit *domain.UnitSnapsho
 	return p.patrol(state, unit), "patrol", true
 }
 
-// moveToward 朝目标走一步（BFS 绕障 + 避开其他己方单位当前位置）：
-// 真机 20t 停滞根因——worker 排成一排时，计划互相踩格（A 的目标格
-// 是 B 的当前位置），服务器不结算移动，位置永不变。把其他单位当前
-// 位置并入障碍集后，BFS 确定性绕行，计划不再互相冲突。
+// moveToward 朝目标走一步：
+//   - 地形障碍（静态）由 BFS 绕行（StepToward，与 TS 版 stepToward 同）；
+//   - 其他己方单位当前位置不并入 BFS（避免拥挤时绕行横跳振荡）——
+//     理想第一步的目标格被占时 WAIT 排队（等占位者离开），而不是绕远路
+//     （t4 拓扑暴露：满载 worker 回仓在 Core 附近被占位者挡路时，
+//     BFS 绕行路径每 tick 变化 → 位置横跳振荡、永不结算）；
+//   - 目标格被占时走到目标相邻格等待（已在相邻格则 WAIT）；
+//   - Core 格路径语义：目标非 Core 时 Core 格视为障碍（探索/采集路径
+//     不得穿越仓库口——探索 worker 反复穿过 Core 格会堵住回仓）。
 func (p *Planner) moveToward(state *domain.TickState, unit *domain.UnitSnapshot, target domain.Position) domain.UnitAction {
+	// 目标格被己方单位占位：走到目标相邻格等待（不横跳远离目标）。
+	if target != unit.Position && occupiedByAny(state, unit.ID, target) {
+		return p.stepToAdjacentOf(state, unit, target)
+	}
+	// 地形障碍 + Core 格（目标非 Core 时）作为 BFS 障碍。
+	obstacles := state.ObstacleCells.Clone()
+	if state.Core != nil && target != state.Core.Position {
+		obstacles.Add(domain.CellKey(state.Core.Position[0], state.Core.Position[1]))
+	}
+	direction, ok := domain.StepToward(unit.Position, target, obstacles)
+	if !ok {
+		return domain.UnitAction{Kind: domain.ActionWait}
+	}
+	// 理想第一步的目标格被其他单位占据：WAIT 排队（等占位者离开），
+	// 不绕行——拥挤时绕行路径每 tick 变化导致横跳振荡。
+	nextCell := domain.Move(unit.Position, direction)
+	if occupiedByAny(state, unit.ID, nextCell) {
+		return domain.UnitAction{Kind: domain.ActionWait}
+	}
+	dir := direction
+	return domain.UnitAction{Kind: domain.ActionMove, Direction: &dir}
+}
+
+// stepToAdjacentOf 目标格被占时走到目标相邻的可达空位等待。
+func (p *Planner) stepToAdjacentOf(state *domain.TickState, unit *domain.UnitSnapshot, target domain.Position) domain.UnitAction {
 	obstacles := state.ObstacleCells.Clone()
 	for _, other := range state.Units {
 		if other.ID == unit.ID {
@@ -314,11 +365,33 @@ func (p *Planner) moveToward(state *domain.TickState, unit *domain.UnitSnapshot,
 		}
 		obstacles.Add(domain.CellKey(other.Position[0], other.Position[1]))
 	}
-	if direction, ok := domain.StepToward(unit.Position, target, obstacles); ok {
-		dir := direction
-		return domain.UnitAction{Kind: domain.ActionMove, Direction: &dir}
+	for _, direction := range []domain.Direction{
+		domain.DirectionUp, domain.DirectionRight, domain.DirectionDown, domain.DirectionLeft,
+	} {
+		adjacent := domain.Move(target, direction)
+		if adjacent == unit.Position || obstacles.Contains(domain.CellKey(adjacent[0], adjacent[1])) {
+			continue
+		}
+		if step, ok := domain.StepToward(unit.Position, adjacent, obstacles); ok {
+			dir := step
+			return domain.UnitAction{Kind: domain.ActionMove, Direction: &dir}
+		}
 	}
+	// 目标四周全被堵（含已在相邻格）：等占位者离开。
 	return domain.UnitAction{Kind: domain.ActionWait}
+}
+
+// occupiedByAny 报告目标格是否被任一己方单位占据（除 excludeID 外）。
+func occupiedByAny(state *domain.TickState, excludeID string, cell domain.Position) bool {
+	for _, other := range state.Units {
+		if other.ID == excludeID {
+			continue
+		}
+		if other.Position == cell {
+			return true
+		}
+	}
+	return false
 }
 
 // patrol 是 per-unit 持久巡逻：同一单位持续朝同一目标直线移动直到

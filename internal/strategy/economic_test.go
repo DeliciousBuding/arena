@@ -237,7 +237,7 @@ func TestWorkerMovesToAssignedCell(t *testing.T) {
 // 正常期转探索（explore），不抢占已分配格。
 func TestWorkerWithoutAssignmentExplores(t *testing.T) {
 	state := workerState([]domain.UnitSnapshot{
-		{ID: "worker-1", Position: domain.Position{0, 0}, UnitType: domain.UnitWorker},
+		{ID: "worker-1", Position: domain.Position{1, 0}, UnitType: domain.UnitWorker},
 		{ID: "worker-2", Position: domain.Position{0, 1}, UnitType: domain.UnitWorker},
 		{ID: "worker-3", Position: domain.Position{0, 2}, UnitType: domain.UnitWorker},
 	})

@@ -229,6 +229,11 @@ func (s Set[T]) Add(item T) {
 	s[item] = struct{}{}
 }
 
+// Remove 从集合删除元素（sim 结算用：采空格立即消失；World 清理用）。
+func (s Set[T]) Remove(item T) {
+	delete(s, item)
+}
+
 // Clone 返回集合的独立副本（避免别名共享）。
 func (s Set[T]) Clone() Set[T] {
 	clone := make(Set[T], len(s))

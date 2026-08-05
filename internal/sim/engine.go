@@ -25,10 +25,15 @@ type SettleStats struct {
 	ResourceDelta int
 }
 
-// Engine 是确定性结算引擎（无状态，并发安全）。
-type Engine struct{}
+// Engine 是确定性结算引擎（默认无状态，并发安全；挂载 Refill 后
+// 跨 tick 有状态——单写者使用，与 runtime Loop 一致）。
+type Engine struct {
+	// Refill 是资源补满引擎（官方规则：4 tick 配额 + 视野揭示）；
+	// nil = 不启用（纯结算，fixture 回放路径不受影响）。
+	Refill *RefillConfig
+}
 
-// NewEngine 构造结算引擎。
+// NewEngine 构造结算引擎（默认不启用资源 refill）。
 func NewEngine() *Engine {
 	return &Engine{}
 }
@@ -37,6 +42,7 @@ func NewEngine() *Engine {
 // 确定性：同输入同输出（无随机、稳定遍历顺序）。
 // 结算顺序（裁决语义）：MOVE（让位）→ HARVEST/DEPOSIT → Core SPAWN——
 // 满载 Worker 本 tick 让位腾空 Core 格后，SPAWN 同 tick 即可结算。
+// 挂载 Refill 时，settle 末尾执行视野揭示 + 每 4 tick 配额补满。
 func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult {
 	next := cloneState(state)
 	events := make([]domain.Event, 0, 8)
@@ -63,7 +69,7 @@ func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult
 		}
 	}
 
-	harvestEvents := applyHarvests(next, harvestWorkers, &stats)
+	harvestEvents := e.applyHarvests(next, harvestWorkers, &stats)
 	depositEvents := applyDeposits(next, depositWorkers, &stats)
 	events = append(events, harvestEvents...)
 	events = append(events, depositEvents...)
@@ -83,6 +89,14 @@ func (e *Engine) Settle(state *domain.TickState, plan *domain.Plan) SettleResult
 	// 修改 Units 的位置/cargo，若不回写分列，决策（读 Units）与分配
 	// （读分列）会看到不同状态，导致闭环卡死（真实拓扑测试暴露）。
 	rebuildColumns(next)
+
+	// 资源 refill + 视野揭示（官方规则）：reveal 每 tick 执行（视野内
+	// active 潜在格进入 ResourceCells），refill 每 4 tick 补满配额
+	// （mined 格恢复 active）。挂载 Refill 时才启用（fixture 回放保持
+	// 纯结算不变）。
+	if e.Refill != nil {
+		e.Refill.applyRefillAndReveal(next)
+	}
 
 	return SettleResult{NextState: next, Events: events, Stats: stats}
 }
