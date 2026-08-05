@@ -1,9 +1,13 @@
 /**
  * 军事配比（VANGUARD vs RANGER）对比实验（2026-08-06）：
- * p1=balanced/8/0.3/null 基准（默认交替产兵），p2=aggressive/8/0.3/attack=core
- * 只变 vanguardRatio（0=全远程 / 0.3 / 0.5=交替等价 / 0.7 / 1=全近战攻坚）——
- * 验证默认 1:1 交替产兵是否为最优配比（VANGUARD 近战 sweep、RANGER 远程射程站定，
- * 成本 10 vs 12）。
+ * p2=aggressive/8/0.3/attack=core 变 vanguardRatio（0=全远程 / 0.3 / 0.5=交替 /
+ * 0.7 / 1=全近战攻坚）对打两种对手姿态：
+ * - p1=balanced（防守）：Vanguard 配比越高越优（1: +35.0 / 交替: +33.0 / 全远程: +28.0）
+ *   ——攻坚拆家无对攻压力；
+ * - p1=aggressive（对攻）：全 Ranger 唯一存活（+28.0 vs 含 Vanguard 全灭 -22.5）
+ *   ——Vanguard 前压被集火送死。
+ * 结论：**配比应适配对手姿态**（防守对手 Vanguard 攻坚、进攻对手偏 Ranger 存活），
+ * 不存在全局最优固定配比；默认交替（0.5）是两场景的稳健折中。
  *
  * 用法：cd packages/arena-agent && npx tsx scripts/military-composition-experiment.mts
  */
@@ -55,9 +59,6 @@ const ATTACK_POLICY: MacroPolicy = {
   posture: "aggressive", workerTarget: 8, militaryRatio: 0.3, focusRegion: null, attackPriority: "core",
 };
 
-/** 势均力敌对攻：p1 也用 aggressive/core（默认交替产兵）——配比差异在军事消耗中体现。 */
-const ATTACK_POLICY_P1: MacroPolicy = { ...ATTACK_POLICY };
-
 const VARIANTS: readonly { readonly name: string; readonly vanguardRatio: number }[] = [
   { name: "0（全 Ranger 远程）", vanguardRatio: 0 },
   { name: "0.3（偏远程）", vanguardRatio: 0.3 },
@@ -87,7 +88,7 @@ function runDuel(vanguardRatio: number, seed: number): DuelOutcome {
     ticks: DUEL_TICKS,
     refill: {},
     tenants: [
-      { id: "p1", planner: "deterministic", policy: ATTACK_POLICY_P1 } as EpisodeTenant,
+      { id: "p1", planner: "deterministic", policy: BASE_POLICY } as EpisodeTenant,
       { id: "p2", planner: "deterministic", policy: ATTACK_POLICY, plannerConfig: { vanguardRatio } } as EpisodeTenant,
     ],
   };
