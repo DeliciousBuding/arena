@@ -1,8 +1,34 @@
 # Arena Agent 协作说明
 
-最后更新：2026-08-06。
+最后更新：2026-08-06 02:45（UTC+8）。
 
-Arena 正式运行链为 TS-only。遵循原生设计：优先 Node 标准能力、现有 SDK/lock/JSONL，不引入第二套进程框架、控制面或配置系统。
+## 🚨 当前总控：每次开始任务、上下文压缩或提交前必须重读
+
+架构裁决已经收敛：
+
+- **Pure Rust 是唯一长期产品主线**；
+- **TS 仍是 t1/t2 当前生产、calibration、策略实验、Runtime-Golden、迁移 Oracle 与回滚线**；
+- Go / Go+Rust Fusion / FFI 已冻结，不再继续投入。
+
+权威入口：
+
+- 跨线迁移总控：GitHub Issue **#27**
+- Pure Rust 实现总控：GitHub Issue **#26**
+- TS 实现总控：GitHub Issue **#1**
+- Pure Rust 架构与共享契约：Draft PR **#31**
+
+**TS Agent 当前必须执行：**
+
+1. 先收口正在做的原子任务，不继续横向铺新能力；
+2. 恢复当前 4 个测试漂移，但不得回滚 40 格连续外扩、资源记忆与最新策略语义；
+3. 保持 t1/t2 live、ArenaWatchdog 与 calibration 稳定；
+4. 只继续生产必要修复、策略实验和可迁移 fixture/Profile/Runtime-Golden；
+5. 不触碰 `sim-rs/**`，不再设计新的长期 runtime 架构；
+6. 在开始下一原子任务前，必须到 Issue #27 回执：branch/head/touched files/tests/WIP/next task。
+
+GitHub Issue 评论是持久总控，但不会自动打断已运行的本地 Agent。因此本文件与 `CLAUDE.md` 是仓内强制广播入口；Agent 必须主动检查 #27/#1，不能等待聊天提醒。
+
+Arena 当前正式运行链仍由 TS 承担。遵循原生设计：优先 Node 标准能力、现有 SDK/lock/JSONL，不引入第二套进程框架、控制面或配置系统。
 
 ## 权威入口
 
@@ -37,7 +63,7 @@ us1 已关闭，t1/t2 本地 live（deterministic + submitEnabled=true，baseDir
 npm run arena:supervisor -- --configs=t1,t2 --mode=deterministic --live --record-calibration --port=8120
 ```
 - 看护：Windows 计划任务 `ArenaWatchdog`（每分钟，重建命令见下）+ `scripts/arena-watchdog.sh`（异常自动恢复：确认死透 → 清死锁 → 带 `--record-calibration` 重启，日志 `~/arena-watchdog.log`）；
-- t3/t4 不得使用（用户裁决——让位给外部实现）。
+- t3/t4 不得使用（用户裁决——让位给 Pure Rust 验证）。
 
 ### 租户始终运行 + 数据收集线保障（2026-08-06）
 
