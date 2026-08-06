@@ -253,6 +253,47 @@ test("S8b: one invalid case does not poison the next valid state pair", async ()
   }
 });
 
+test("S8b: server field fingerprint change writes a version_fingerprint warning line", async () => {
+  const root = mkdtempSync(join(tmpdir(), "runtime-golden-"));
+  try {
+    const warningPath = join(root, "telemetry", "calibration-recorder.jsonl");
+    const recorder = new RuntimeGoldenRecorder({
+      outputDir: root,
+      processRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      tenantId: "t1",
+      rulesVersion: "v0.11",
+      sourceCommit: "0123456789abcdef0123456789abcdef01234567",
+      configHash: `sha256:${"a".repeat(64)}`,
+      versionFingerprintLogPath: warningPath,
+    });
+    // Legacy protocol: the server sends population_tier / upkeep_next_tick.
+    recorder.observe(outcome(10, state(4), true));
+    recorder.observe(outcome(11, state(5), false));
+    // v0.14 protocol: the server no longer sends the fields (null after normalize).
+    const v014Before = structuredClone(state(6)) as PlayerState;
+    v014Before.population_tier = null;
+    v014Before.upkeep_next_tick = null;
+    const v014After = structuredClone(state(7)) as PlayerState;
+    v014After.population_tier = null;
+    v014After.upkeep_next_tick = null;
+    recorder.observe(outcome(12, v014Before, true));
+    recorder.observe(outcome(13, v014After, false));
+    const result = await recorder.close();
+    assert.equal(result.caseCount, 2, "fingerprint warning must not affect case persistence");
+    assert.equal(result.errorCount, 0);
+    const lines = readFileSync(warningPath, "utf8").trim().split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(lines.length, 1, "exactly one warning per fingerprint change");
+    assert.equal(lines[0]!.type, "version_fingerprint");
+    assert.equal(lines[0]!.fingerprint, "population_tier=absent;upkeep_next_tick=absent");
+    assert.equal(lines[0]!.previousFingerprint, "population_tier=present;upkeep_next_tick=present");
+    assert.equal(typeof lines[0]!.at, "string");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("S8b: write failure is fail-open and becomes explicit recorder error", async () => {
   const root = mkdtempSync(join(tmpdir(), "runtime-golden-"));
   const warnings: string[] = [];

@@ -12,7 +12,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { canonicalizeIntegrity, sha256Canonical } from "../domain/integrity.ts";
 import type { Plan } from "../domain/model.ts";
 import type { TickOutcome } from "../runtime/loop.ts";
@@ -64,6 +64,11 @@ export interface RuntimeGoldenRecorderOptions {
   readonly sourceCommit: string;
   readonly configHash: string;
   readonly onWarning?: (message: string) => void;
+  /**
+   * calibration-recorder.jsonl 路径（tenant-runtime 布局下默认为
+   * outputDir 的兄弟 telemetry 目录）。用于服务器字段指纹变化告警。
+   */
+  readonly versionFingerprintLogPath?: string;
 }
 
 export interface RuntimeGoldenRecorderResult {
@@ -102,6 +107,18 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
+/**
+ * 服务器字段指纹：rawState（domain 层 normalize 后）中
+ * population_tier / upkeep_next_tick 的“存在性”。v0.14 服务器不下发时
+ * 为 null → absent；旧协议下发值为 present。
+ */
+function serverFieldFingerprint(state: PlayerState): string {
+  const populationTierPresent = (state.population_tier ?? null) !== null;
+  const upkeepNextTickPresent = (state.upkeep_next_tick ?? null) !== null;
+  return `population_tier=${populationTierPresent ? "present" : "absent"};` +
+    `upkeep_next_tick=${upkeepNextTickPresent ? "present" : "absent"}`;
+}
+
 export class RuntimeGoldenRecorder {
   readonly outputDir: string;
   readonly manifestPath: string;
@@ -115,6 +132,7 @@ export class RuntimeGoldenRecorder {
   private closed = false;
   private skippedRejected = 0;
   private droppedPending = 0;
+  private lastServerFieldFingerprint: string | null = null;
 
   constructor(options: RuntimeGoldenRecorderOptions) {
     this.options = options;
@@ -239,6 +257,33 @@ export class RuntimeGoldenRecorder {
       afterSha256: sha256Canonical(calibrationCase.after),
       receipt: pending.receipt,
     });
+
+    // v0.14 起服务器不再下发 population_tier / upkeep_next_tick（normalize 后
+    // 为 null）。指纹变化时写一条 warning 事件，不抛错、不影响落盘。
+    const fingerprint = serverFieldFingerprint(pending.state);
+    if (this.lastServerFieldFingerprint !== null && fingerprint !== this.lastServerFieldFingerprint) {
+      this.writeVersionFingerprintWarning(fingerprint, this.lastServerFieldFingerprint);
+    }
+    this.lastServerFieldFingerprint = fingerprint;
+  }
+
+  private writeVersionFingerprintWarning(fingerprint: string, previousFingerprint: string): void {
+    try {
+      const logPath = this.options.versionFingerprintLogPath ??
+        join(this.outputDir, "..", "..", "telemetry", "calibration-recorder.jsonl");
+      mkdirSync(dirname(logPath), { recursive: true });
+      appendJsonlLine(
+        logPath,
+        JSON.stringify({
+          at: new Date().toISOString(),
+          type: "version_fingerprint",
+          fingerprint,
+          previousFingerprint,
+        }),
+      );
+    } catch {
+      // fail-open：指纹告警丢失不得影响 case 落盘。
+    }
   }
 
   private buildManifest(): RuntimeGoldenDatasetManifest {

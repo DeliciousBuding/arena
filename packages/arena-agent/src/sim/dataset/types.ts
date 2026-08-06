@@ -39,6 +39,7 @@ export interface ParsedCase {
   readonly caseValue: CalibrationCaseV1;
   readonly caseFilePath: string;
   readonly runId: string;
+  readonly sampleStatus: "conclusive" | "inconclusive" | null;
 }
 
 export type SplitName = "train" | "validation" | "test";
@@ -101,6 +102,9 @@ export interface QualityReport {
     readonly calibrationErrors: number;
     readonly hardMismatchCases: number;
     readonly inconclusiveCases: number;
+    readonly inconclusiveSamples: number;
+    readonly conclusiveSamples: number;
+    readonly absentOpponentPlansCount: number;
     readonly policyParseErrors: number;
     readonly policyPostureNormalized: number;
     readonly tickGapCases: number;
@@ -130,6 +134,7 @@ export interface QualityReport {
     readonly knownEventAccuracy: number | null;
     readonly hardMismatchCaseCount: number;
     readonly unclassifiedDifferenceCount: number;
+    readonly expectedUnknownCount: number;
   };
   readonly coverage: {
     readonly combat: number;
@@ -156,6 +161,7 @@ export interface QualityReport {
     readonly passed: boolean;
   };
   readonly quarantine: readonly QuarantineRecord[];
+  readonly quarantineByReason: Readonly<Record<string, number>>;
   readonly registry: {
     readonly appended: boolean;
     readonly entryUri: string;

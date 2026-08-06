@@ -9,10 +9,12 @@
  * This is an OFFLINE derivation only: it never writes runtime data, never
  * enters the live loop, and does not train any model. Labels are rolling
  * windows computed from recorded before/after pairs within each
- * (processRunId, runId); windows truncate and are marked incomplete across run
- * boundaries and tick gaps (design 5.2). Cases whose offline calibration
- * status is INCONCLUSIVE (EXPECTED_UNKNOWN-only differences) are quarantined,
- * never published as clean samples (hard constraint).
+ * (processRunId, tick-consecutive-segment); windows truncate and are marked
+ * incomplete across segment boundaries and tick gaps (design 5.2). Cases with
+ * hard failures (schema/integrity/parse errors, untraceable lineage) are
+ * quarantined. INCONCLUSIVE cases whose differences are all EXPECTED_UNKNOWN
+ * are still published with an honest provenance.sampleStatus of
+ * "inconclusive" (decision 1).
  */
 
 import { createHash } from "node:crypto";
@@ -108,6 +110,9 @@ interface MutableCounts {
   calibrationErrors: number;
   hardMismatchCases: number;
   inconclusiveCases: number;
+  inconclusiveSamples: number;
+  conclusiveSamples: number;
+  absentOpponentPlansCount: number;
   policyParseErrors: number;
   policyFieldNormalized: number;
   tickGapCases: number;
@@ -571,10 +576,6 @@ function compareStrings(left: string, right: string): number {
   return 0;
 }
 
-function runKeyOf(processRunId: string, runId: string): string {
-  return `${processRunId}\u0000${runId}`;
-}
-
 function sampleTick(caseValue: CalibrationCaseV1): number {
   return caseValue.before.tick;
 }
@@ -606,6 +607,9 @@ export function buildDataset(options: DatasetBuildOptions): DatasetBuildResult {
     calibrationErrors: 0,
     hardMismatchCases: 0,
     inconclusiveCases: 0,
+    inconclusiveSamples: 0,
+    conclusiveSamples: 0,
+    absentOpponentPlansCount: 0,
     policyParseErrors: 0,
     policyFieldNormalized: 0,
     tickGapCases: 0,
@@ -630,7 +634,7 @@ export function buildDataset(options: DatasetBuildOptions): DatasetBuildResult {
     join(options.dataRoot, "runtime", tenantId, "telemetry", "policy.jsonl"),
     counts,
   );
-  const runGroups = new Map<string, Map<number, ParsedCase>>();
+  const accepted: ParsedCase[] = [];
   const quarantine: QuarantineRecord[] = [];
 
   for (const entry of manifest.cases) {
@@ -668,8 +672,10 @@ export function buildDataset(options: DatasetBuildOptions): DatasetBuildResult {
       continue;
     }
     let calibrationStatus: "MATCH" | "MISMATCH" | "INCONCLUSIVE" = "MATCH";
+    let calibrationReport: CalibrationReport | null = null;
     try {
-      const report = runCalibrationCase(rawCase, options.rulesPath);
+      calibrationReport = runCalibrationCase(rawCase, options.rulesPath);
+      const report = calibrationReport;
       calibrationStatus = report.status;
       calibrationAggregate.statusCounts[report.status] =
         (calibrationAggregate.statusCounts[report.status] ?? 0) + 1;
@@ -689,34 +695,72 @@ export function buildDataset(options: DatasetBuildOptions): DatasetBuildResult {
       quarantine.push({ caseId: caseKey, reason: `calibration-error: ${(error as Error).message}` });
       continue;
     }
+    const report = calibrationReport!;
     if (calibrationStatus === "INCONCLUSIVE") {
       counts.inconclusiveCases += 1;
-      counts.quarantineTotal += 1;
-      quarantine.push({ caseId: caseKey, reason: "inconclusive" });
-      continue;
+      // Publish only INCONCLUSIVE cases whose differences are all
+      // EXPECTED_UNKNOWN (no MISMATCH, no unclassified, no UNSUPPORTED);
+      // the rest stay quarantined (decision 1).
+      const publishableInconclusive = report.differences.length > 0 &&
+        report.differences.every((difference) => difference.class === "EXPECTED_UNKNOWN");
+      if (!publishableInconclusive) {
+        counts.quarantineTotal += 1;
+        quarantine.push({ caseId: caseKey, reason: "inconclusive" });
+        continue;
+      }
     }
     if (calibrationStatus === "MISMATCH") counts.hardMismatchCases += 1;
+    if (caseValue.metadata.opponentPlans === "absent") counts.absentOpponentPlansCount += 1;
     counts.casesParsed += 1;
     updateCoverage(caseValue, coverage);
-
-    const runId = caseValue.metadata.runId ?? processRunId;
-    const runKey = runKeyOf(processRunId, runId);
-    let tickMap = runGroups.get(runKey);
-    if (tickMap === undefined) {
-      tickMap = new Map<number, ParsedCase>();
-      runGroups.set(runKey, tickMap);
-    }
-    const tick = sampleTick(caseValue);
-    if (tickMap.has(tick)) {
-      counts.duplicateCases += 1;
-      counts.quarantineTotal += 1;
-      quarantine.push({ caseId: caseKey, reason: "duplicate" });
-      continue;
-    }
-    tickMap.set(tick, { entry, caseValue, caseFilePath: casePath, runId });
+    const sampleStatus: "conclusive" | "inconclusive" | null =
+      calibrationStatus === "MATCH"
+        ? "conclusive"
+        : calibrationStatus === "INCONCLUSIVE"
+          ? "inconclusive"
+          : null;
+    accepted.push({
+      entry,
+      caseValue,
+      caseFilePath: casePath,
+      runId: caseValue.metadata.runId ?? processRunId,
+      sampleStatus,
+    });
   }
 
-  // Samples are derived per (processRunId, runId) with rolling lookahead.
+  // Windows are grouped per (processRunId, tick-consecutive-segment): the
+  // recorder's runId is per-tick (`<processRunId>:<tenant>:<tick>:<seq>`) and
+  // unusable as a window-grouping key (decision 3). Same-tick duplicates stay
+  // quarantined (ambiguous timeline).
+  const runGroups = new Map<string, Map<number, ParsedCase>>();
+  const tickToRunKey = new Map<number, string>();
+  const orderedAccepted = [...accepted].sort(
+    (left, right) => left.caseValue.before.tick - right.caseValue.before.tick,
+  );
+  let segmentOrdinal = 0;
+  let previousTick: number | null = null;
+  let currentRunKey: string | null = null;
+  let currentTickMap: Map<number, ParsedCase> | null = null;
+  for (const parsedCase of orderedAccepted) {
+    const tick = sampleTick(parsedCase.caseValue);
+    if (tick === previousTick) {
+      counts.duplicateCases += 1;
+      counts.quarantineTotal += 1;
+      quarantine.push({ caseId: parsedCase.caseValue.caseId, reason: "duplicate" });
+      continue;
+    }
+    if (currentTickMap === null || previousTick === null || tick !== previousTick + 1) {
+      segmentOrdinal += 1;
+      currentRunKey = `seg-${String(segmentOrdinal).padStart(6, "0")}`;
+      currentTickMap = new Map<number, ParsedCase>();
+      runGroups.set(currentRunKey, currentTickMap);
+    }
+    tickToRunKey.set(tick, currentRunKey!);
+    currentTickMap.set(tick, parsedCase);
+    previousTick = tick;
+  }
+
+  // Samples are derived per (processRunId, tick-consecutive-segment) with rolling lookahead.
   const derivedSamples: Array<Record<string, unknown>> = [];
   const runOrder: string[] = [...runGroups.keys()].sort(compareStrings);
   for (const runKey of runOrder) {
@@ -758,6 +802,7 @@ export function buildDataset(options: DatasetBuildOptions): DatasetBuildResult {
           source,
           observationScope: "private-player-projection",
           opponentPlans: "not-included",
+          sampleStatus: parsedCase.sampleStatus,
           sourceRefs: [
             {
               kind: "calibration-case",
@@ -783,12 +828,14 @@ export function buildDataset(options: DatasetBuildOptions): DatasetBuildResult {
         continue;
       }
       derivedSamples.push(sample);
+      if (parsedCase.sampleStatus === "inconclusive") counts.inconclusiveSamples += 1;
+      if (parsedCase.sampleStatus === "conclusive") counts.conclusiveSamples += 1;
     }
   }
 
   const samples = [...derivedSamples].sort(compareSamples);
   const splitMap = assignSplits(runOrder);
-  const splitCounts = buildSplitCounts(samples, splitMap);
+  const splitCounts = buildSplitCounts(samples, splitMap, tickToRunKey);
   const sampleTicks = samples.map((sample) => (sample.provenance as Record<string, unknown>).tick as number);
   const inputTicks = manifest.cases.map((entry) => entry.tick);
   const tickRange = {
@@ -923,6 +970,7 @@ export function buildDataset(options: DatasetBuildOptions): DatasetBuildResult {
     runOrder,
     splitMap,
     splitCounts,
+    tickToRunKey,
     quarantine,
     datasetHash,
     rulesManifestHash: manifestHash(rules),
@@ -983,6 +1031,7 @@ function assignSplits(runOrder: readonly string[]): ReadonlyMap<string, SplitNam
 function buildSplitCounts(
   samples: readonly Record<string, unknown>[],
   splitMap: ReadonlyMap<string, SplitName>,
+  tickToRunKey: ReadonlyMap<number, string>,
 ): Readonly<Record<SplitName, { runs: number; samples: number; completeLabelWindows: number }>> {
   const result: Record<SplitName, { runs: number; samples: number; completeLabelWindows: number }> = {
     train: { runs: 0, samples: 0, completeLabelWindows: 0 },
@@ -995,8 +1044,8 @@ function buildSplitCounts(
   const runSplit = new Map(splitMap);
   for (const sample of samples) {
     const provenance = sample.provenance as Record<string, unknown>;
-    const runKey = runKeyOf(provenance.processRunId as string, provenance.runId as string);
-    const split = runSplit.get(runKey);
+    const runKey = tickToRunKey.get(provenance.tick as number);
+    const split = runKey === undefined ? undefined : runSplit.get(runKey);
     if (split !== undefined) {
       result[split].samples += 1;
       if ((sample.label as Record<string, unknown>).windowComplete === true) {
@@ -1018,6 +1067,7 @@ interface ReportInput {
   readonly runOrder: readonly string[];
   readonly splitMap: ReadonlyMap<string, SplitName>;
   readonly splitCounts: Readonly<Record<SplitName, { runs: number; samples: number; completeLabelWindows: number }>>;
+  readonly tickToRunKey: ReadonlyMap<number, string>;
   readonly quarantine: readonly QuarantineRecord[];
   readonly datasetHash: string;
   readonly rulesManifestHash: string;
@@ -1036,14 +1086,13 @@ function buildQualityReport(input: ReportInput): QualityReport {
   const completeLabelWindows = input.samples.filter((sample) =>
     (sample.label as Record<string, unknown>).windowComplete === true).length;
   const runAssignments = input.runOrder.map((runKey) => {
-    const runId = runKey.slice(runKey.indexOf("\u0000") + 1);
     const runSamples = input.samples.filter((sample) => {
       const provenance = sample.provenance as Record<string, unknown>;
-      return provenance.runId === runId;
+      return input.tickToRunKey.get(provenance.tick as number) === runKey;
     });
     return {
       processRunId: input.manifest.datasetId,
-      runId,
+      runId: runKey,
       completedAt: input.manifest.completedAt,
       split: input.splitMap.get(runKey) ?? "train",
       sampleCount: runSamples.length,
@@ -1054,6 +1103,10 @@ function buildQualityReport(input: ReportInput): QualityReport {
   const knownEventAccuracy = input.calibrationAggregate.knownEventCompared === 0
     ? null
     : input.calibrationAggregate.knownEventMatched / input.calibrationAggregate.knownEventCompared;
+  const quarantineByReason: Record<string, number> = {};
+  for (const record of input.quarantine) {
+    quarantineByReason[record.reason] = (quarantineByReason[record.reason] ?? 0) + 1;
+  }
   return {
     schema: "arena-dataset-quality-report",
     datasetId: input.datasetId,
@@ -1079,6 +1132,9 @@ function buildQualityReport(input: ReportInput): QualityReport {
       calibrationErrors: input.counts.calibrationErrors,
       hardMismatchCases: input.counts.hardMismatchCases,
       inconclusiveCases: input.counts.inconclusiveCases,
+      inconclusiveSamples: input.counts.inconclusiveSamples,
+      conclusiveSamples: input.counts.conclusiveSamples,
+      absentOpponentPlansCount: input.counts.absentOpponentPlansCount,
       policyParseErrors: input.counts.policyParseErrors,
       policyPostureNormalized: input.counts.policyFieldNormalized,
       tickGapCases: input.counts.tickGapCases,
@@ -1099,6 +1155,7 @@ function buildQualityReport(input: ReportInput): QualityReport {
       knownEventAccuracy,
       hardMismatchCaseCount: input.counts.hardMismatchCases,
       unclassifiedDifferenceCount: input.calibrationAggregate.unclassifiedDifferenceCount,
+      expectedUnknownCount: input.calibrationAggregate.taxonomyCounts.EXPECTED_UNKNOWN,
     },
     coverage: { ...input.coverage },
     splits: {
@@ -1118,6 +1175,7 @@ function buildQualityReport(input: ReportInput): QualityReport {
         Object.keys(versionsSeen).length === 1,
     },
     quarantine: [...input.quarantine],
+    quarantineByReason,
     registry: {
       appended: input.registryResult.appended,
       entryUri: `datasets/${input.datasetId}/manifest.json`,
