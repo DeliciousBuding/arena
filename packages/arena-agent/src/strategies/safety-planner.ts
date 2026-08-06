@@ -528,6 +528,20 @@ export class SafetyPlanner {
         }
         return;
       }
+      // 敌方 Core 记忆推进（2026-08-07 竞品 offensive memory 对齐）：aggressive
+      // 且当前无可见敌人时，若曾见过敌方 Core（记忆未过期），向记忆位置推进——
+      // 避免"敌人离开视野后 Vanguard 只在自家 Core 附近巡逻"的盲区（模拟器
+      // v0.14 实证：无敌人时 scavenge 巡逻方向随机，可能完全背离敌方）。
+      // Core 是慢速目标，记忆有效期放宽到 60 ticks（单位记忆默认 6）。
+      // 优先级高于守家巡逻：有攻坚目标时不空转。
+      if (enemies.length === 0 && state.core !== null) {
+        const enemyCoreMemory = this.world.enemyHints(60).find((hint) => hint.kind === "CORE");
+        if (enemyCoreMemory !== undefined) {
+          const direction = stepToward(unit.position, enemyCoreMemory.position, movementObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_pressure_memory");
+          return;
+        }
+      }
       // 军事打野（2026-08-06 用户导向）：aggressive + 无可见敌人 + 资源枯竭
       // （视野 0 资源格）——军事单位不再守家发呆，巡逻外扩探索（测绘 + 打野）；
       // 有资源仍守家（防止军事单位长期远征离家被端）、有敌人走前压。
