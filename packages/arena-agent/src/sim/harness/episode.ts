@@ -77,6 +77,17 @@ export interface EpisodeConfig {
   readonly plannerFactory?: (tenant: EpisodeTenant) => PlanProvider;
   /** Optional read-only performance observer; never participates in simulation semantics. */
   readonly onTickSettled?: (measurement: EpisodeTickMeasurement) => void;
+  /** Synthetic calibration 记录钩子（2026-08-07）：每 tick 结算后回调
+   *  before/after 世界 + plans + events——synthetic 对打数据管道用
+   *  （projectPlayerState 生成官方格式 calibration case）。只读，不参与
+   *  模拟语义。 */
+  readonly onTickRecorded?: (args: {
+    readonly tick: number;
+    readonly before: SimWorld;
+    readonly after: SimWorld;
+    readonly plans: Readonly<Record<string, Plan>>;
+    readonly events: readonly ResolutionEvent[];
+  }) => void;
 }
 
 export interface ValidationSummary {
@@ -274,6 +285,15 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
       unsupported: result.unsupported,
       unknownEffects: result.unknownEffects,
     });
+    if (config.onTickRecorded !== undefined) {
+      config.onTickRecorded({
+        tick: before.tick,
+        before,
+        after: world,
+        plans,
+        events: result.events,
+      });
+    }
     if (config.onTickSettled !== undefined) {
       const players = [...world.players.values()]
         .sort((a, b) => compareCodeUnit(a.id, b.id))
