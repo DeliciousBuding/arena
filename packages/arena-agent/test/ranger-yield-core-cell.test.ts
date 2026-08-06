@@ -137,6 +137,38 @@ test("Ranger 让位：Core 四邻全堵且全被占 2 → 无锚点 → 原地�
   assert.equal(plan.unitActions[P1_RANGER], undefined, "无锚点 → 不发动作（隐式 WAIT，等下一 tick）");
 });
 
+test("Ranger 让位：可见敌人时目标远离敌人（官方 egress 语义）", () => {
+  const planner = new SafetyPlanner();
+  // Core [0,0]，四邻全空；敌人 [0,-5]（Core 上方、射程外且预测步
+  // [0,-4] 仍射程外——预测射击不触发）→ 让位目标远离敌人
+  // （选 DOWN 而非 UP——距离 6 vs 4）
+  const enemy: VisibleEntity = { id: "e1", kind: "UNIT", position: [0, -5], hp: 4, unitType: "VANGUARD" };
+  const plan = planner.decide({ state: makeState(1, [0, 0], [enemy]) });
+  assert.equal(plan.intents[P1_RANGER], "ranger_home");
+  const action = plan.unitActions[P1_RANGER];
+  assert.equal(action.type, "MOVE");
+  assert.equal(
+    action.type === "MOVE" ? action.direction : null,
+    "DOWN",
+    "敌人上方 → 让位目标选最远方向 DOWN（不走进敌人怀里）",
+  );
+});
+
+test("Ranger 让位：敌人距离平局保持确定性原序（DOWN 先于 LEFT）", () => {
+  const planner = new SafetyPlanner();
+  // 敌人 [0,5]（Core 下方、射程外）→ DOWN [0,1] 距离 4 排除；UP
+  // [0,-1]/LEFT [-1,0]/RIGHT [1,0] 距离 6 平局 → 原序 UP 先（index 0）
+  const enemy: VisibleEntity = { id: "e1", kind: "UNIT", position: [0, 5], hp: 4, unitType: "VANGUARD" };
+  const plan = planner.decide({ state: makeState(1, [0, 0], [enemy]) });
+  const action = plan.unitActions[P1_RANGER];
+  assert.equal(action.type, "MOVE");
+  assert.equal(
+    action.type === "MOVE" ? action.direction : null,
+    "UP",
+    "敌人下方 → 平局候选按确定性原序 UP",
+  );
+});
+
 test("Ranger 有可见敌人 → 追击/守位优先于让位（战斗行为不变）", () => {
   const planner = new SafetyPlanner();
   const enemy: VisibleEntity = { id: "e1", kind: "UNIT", position: [3, 0], hp: 4, unitType: "VANGUARD" };
