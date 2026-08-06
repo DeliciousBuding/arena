@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { runCalibrationCase } from "../sim/calibration/calibrate.ts";
 import { runCalibrationDataset } from "../sim/calibration/dataset.ts";
+import { buildDataset } from "../sim/dataset/builder.ts";
 import {
   assertRulesSupported,
   loadRulesManifest,
@@ -40,7 +41,7 @@ const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
 const DEFAULT_RULES_PATH = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
 const SUPPORTED_RULES_VERSION = "v0.11";
 
-type Command = "doctor" | "episode" | "ab" | "benchmark" | "calibrate" | "calibrate-dataset";
+type Command = "doctor" | "episode" | "ab" | "benchmark" | "calibrate" | "calibrate-dataset" | "dataset";
 
 interface ParsedArgs {
   readonly command: Command;
@@ -62,6 +63,7 @@ const KNOWN_FLAGS: Readonly<Record<Command, ReadonlySet<string>>> = {
   ]),
   calibrate: new Set(["--case", "--rules", "--output", "--run-id", "--data-root", "--force", "--help"]),
   "calibrate-dataset": new Set(["--manifest", "--rules", "--output", "--run-id", "--data-root", "--force", "--help"]),
+  dataset: new Set(["--manifest", "--rules", "--data-root", "--dataset-id", "--force", "--help"]),
 };
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -90,7 +92,9 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
 }
 
 function parseCommand(value: string): Command {
-  if (["doctor", "episode", "ab", "benchmark", "calibrate", "calibrate-dataset"].includes(value)) return value as Command;
+  if (["doctor", "episode", "ab", "benchmark", "calibrate", "calibrate-dataset", "dataset"].includes(value)) {
+    return value as Command;
+  }
   throw new Error(`unknown sim command: ${value}`);
 }
 
@@ -103,6 +107,7 @@ function usage(): string {
     "  benchmark --scenario PATH [--planner deterministic|safety] [--ticks N] [--warmup N] [--repeats N] [--workers 1]",
     "  calibrate --case PATH",
     "  calibrate-dataset --manifest PATH",
+    "  dataset --manifest PATH [--dataset-id ID] [--force]",
     "common output flags: --data-root PATH --output runs/sim[/subdir] --run-id ID --force",
   ].join("\n");
 }
@@ -439,6 +444,36 @@ function runCalibrationDatasetCommand(args: ParsedArgs): number {
   return report.hardMismatchCaseCount > 0 || report.unclassifiedDifferenceCount > 0 ? 3 : 2;
 }
 
+function runDatasetCommand(args: ParsedArgs): number {
+  const inputPath = resolveInputPath(REPO_ROOT, required(args, "--manifest"));
+  const pathToRules = rulesPath(args);
+  const dataRoot = resolveArenaDataRoot(
+    REPO_ROOT,
+    args.values.get("--data-root"),
+    process.env.ARENA_DATA_ROOT,
+  );
+  const result = buildDataset({
+    inputPath,
+    rulesPath: pathToRules,
+    dataRoot,
+    datasetId: args.values.get("--dataset-id") ?? undefined,
+    force: args.booleans.has("--force"),
+  });
+  const report = result.report;
+  console.log(
+    `sim dataset ${result.gatePassed ? "PASS" : "FAIL"}: ` +
+      `dataset=${result.datasetId} samples=${result.sampleCount} ` +
+      `quarantined=${report.counts.quarantineTotal} ` +
+      `schemaFailures=${report.counts.schemaFailures} ` +
+      `splits=train:${report.splits.counts.train.samples}/` +
+      `validation:${report.splits.counts.validation.samples}/` +
+      `test:${report.splits.counts.test.samples} ` +
+      `registry=${report.registry.appended ? "appended" : "skipped"} ` +
+      `out=${result.datasetDir}`,
+  );
+  return result.gatePassed ? 0 : 2;
+}
+
 function main(): number {
   const args = parseArgs(process.argv.slice(2));
   if (args.booleans.has("--help")) {
@@ -452,6 +487,7 @@ function main(): number {
     case "benchmark": return runBenchmarkCommand(args);
     case "calibrate": return runCalibrationCommand(args);
     case "calibrate-dataset": return runCalibrationDatasetCommand(args);
+    case "dataset": return runDatasetCommand(args);
   }
 }
 
