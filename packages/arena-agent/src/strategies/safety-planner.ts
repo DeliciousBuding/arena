@@ -678,6 +678,17 @@ export class SafetyPlanner {
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
   ): void {
     const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
+    // 军事单位绕开自家 Core 格（2026-08-07 生产 t2 实证）：Core 格是
+    // Worker 回仓/SPAWN 出生通道——军事单位穿越（如让位回归路径穿过
+    // Core 格）会与同 tick SPAWN 冲突 CELL_UNIT_LIMIT → 每 2 tick 一次
+    // spawn 失败循环（单 run 26 次）。回 Core 的接近目标 = Core 邻格
+    // （homeCell——Core 格本身是军事禁区）；四邻全堵回退 Core 格。
+    const militaryObstacles = state.core === null
+      ? movementObstacles
+      : new Set([...movementObstacles, cellKey(state.core.position)]);
+    const approachTarget = state.core === null
+      ? null
+      : homeCell(state.core.position, militaryObstacles, index) ?? state.core.position;
     const adjacent = enemies.find((enemy) => manhattan(unit.position, enemy.position) === 1);
     if (adjacent !== undefined) {
       const direction = directionToAdjacent(unit.position, adjacent.position);
@@ -692,9 +703,9 @@ export class SafetyPlanner {
       const military = state.vanguards.length + state.rangers.length;
       const forceGate = (this.config.attackForce ?? 0) > 0 && military < (this.config.attackForce ?? 0);
       if (forceGate) {
-        const home = state.core === null ? null : homeCell(state.core.position, movementObstacles, index);
+        const home = state.core === null ? null : homeCell(state.core.position, militaryObstacles, index);
         if (home !== null && !samePosition(unit.position, home)) {
-          const direction = stepToward(unit.position, home, movementObstacles);
+          const direction = stepToward(unit.position, home, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_hold");
         }
         return;
@@ -715,11 +726,11 @@ export class SafetyPlanner {
             this.config.boundedRaid === true &&
             chebyshev(state.core.position, enemyCoreMemory.position) > BOUNDED_RAID_DISTANCE
           ) {
-            const direction = stepToward(unit.position, state.core.position, movementObstacles);
+            const direction = stepToward(unit.position, approachTarget ?? state.core.position, militaryObstacles);
             if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_bounded_return");
             return;
           }
-          const direction = stepToward(unit.position, enemyCoreMemory.position, movementObstacles);
+          const direction = stepToward(unit.position, enemyCoreMemory.position, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_pressure_memory");
           return;
         }
@@ -748,7 +759,7 @@ export class SafetyPlanner {
             patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
           }
         }
-        const direction = stepToward(unit.position, patrolPoint, movementObstacles);
+        const direction = stepToward(unit.position, patrolPoint, militaryObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_scavenge");
         return;
       }
@@ -773,7 +784,7 @@ export class SafetyPlanner {
       if (this.config.detachedSquadResponse === true) {
         const returnUntil = this.detachedReturnUntil.get(unit.id) ?? 0;
         if (state.tick < returnUntil) {
-          const direction = stepToward(unit.position, state.core!.position, movementObstacles);
+          const direction = stepToward(unit.position, approachTarget ?? state.core!.position, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_detached_return");
           return;
         }
@@ -785,7 +796,7 @@ export class SafetyPlanner {
         );
         if (intercepted && state.core !== null) {
           this.detachedReturnUntil.set(unit.id, state.tick + DETACHED_RETURN_TICKS);
-          const direction = stepToward(unit.position, state.core.position, movementObstacles);
+          const direction = stepToward(unit.position, approachTarget ?? state.core.position, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_detached_return");
           return;
         }
@@ -794,8 +805,8 @@ export class SafetyPlanner {
         const stuckTicks = this.moveFailedStreak.get(unit.id) ?? 0;
         const direction =
           this.config.moveFailedAvoidance === true && stuckTicks >= 2
-            ? detourDirection(unit.position, target, movementObstacles)
-            : stepToward(unit.position, target, movementObstacles);
+            ? detourDirection(unit.position, target, militaryObstacles)
+            : stepToward(unit.position, target, militaryObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_pressure");
       }
       return;
@@ -829,7 +840,7 @@ export class SafetyPlanner {
       !samePosition(unit.position, state.core.position)
     ) {
       this.healRotationActive.set(unit.id, state.tick + HEAL_ROTATION_HOLD_TICKS);
-      const direction = stepToward(unit.position, state.core.position, movementObstacles);
+      const direction = stepToward(unit.position, approachTarget ?? state.core.position, militaryObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "guard_heal_return");
       return;
     }
@@ -854,7 +865,7 @@ export class SafetyPlanner {
       const blockingResource = enemies.find((enemy) => state.resourceCells.has(cellKey(enemy.position)));
       const blockingEnemy = blockingOnRoute ?? blockingResource;
       if (blockingEnemy !== undefined) {
-        const direction = stepToward(unit.position, blockingEnemy.position, movementObstacles);
+        const direction = stepToward(unit.position, blockingEnemy.position, militaryObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_clear_path");
         return;
       }
@@ -887,7 +898,7 @@ export class SafetyPlanner {
     ) {
       const yieldTarget = yieldAnchor(state.core.position, movementObstacles, occupancyCounts(state), state.visibleEnemies);
       if (yieldTarget !== null && !samePosition(unit.position, yieldTarget)) {
-        const direction = stepToward(unit.position, yieldTarget, movementObstacles);
+        const direction = stepToward(unit.position, yieldTarget, militaryObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_home");
         return;
       }
@@ -900,7 +911,7 @@ export class SafetyPlanner {
       ? nearestEnemy(nearby, unit.position)?.position ?? null
       : focus ?? home;
     if (target !== null && !samePosition(unit.position, target)) {
-      const direction = stepToward(unit.position, target, movementObstacles);
+      const direction = stepToward(unit.position, target, militaryObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_move");
     }
   }
@@ -914,6 +925,14 @@ export class SafetyPlanner {
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
   ): void {
     const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
+    // 与 Vanguard 同：军事单位绕开自家 Core 格（生产/SPAWN 通道，见
+    // decideVanguard 注释）——让位回归路径不穿越 Core 格。
+    const militaryObstacles = state.core === null
+      ? movementObstacles
+      : new Set([...movementObstacles, cellKey(state.core.position)]);
+    const approachTarget = state.core === null
+      ? null
+      : homeCell(state.core.position, militaryObstacles, index) ?? state.core.position;
 
     // Precision shot at a visible enemy in range. Aggressive mode prioritizes
     // enemy Workers to cut their economy (cargo never reaches their Core).
@@ -993,7 +1012,7 @@ export class SafetyPlanner {
       !samePosition(unit.position, state.core.position)
     ) {
       this.healRotationActive.set(unit.id, state.tick + HEAL_ROTATION_HOLD_TICKS);
-      const direction = stepToward(unit.position, state.core.position, movementObstacles);
+      const direction = stepToward(unit.position, approachTarget ?? state.core.position, militaryObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "guard_heal_return");
       return;
     }
@@ -1025,7 +1044,7 @@ export class SafetyPlanner {
     ) {
       const yieldTarget = yieldAnchor(state.core.position, movementObstacles, occupancyCounts(state), state.visibleEnemies);
       if (yieldTarget !== null && !samePosition(unit.position, yieldTarget)) {
-        const direction = stepToward(unit.position, yieldTarget, movementObstacles);
+        const direction = stepToward(unit.position, yieldTarget, militaryObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_home");
         return;
       }
@@ -1043,7 +1062,7 @@ export class SafetyPlanner {
       const distance = manhattan(unit.position, moveTarget);
       const keepRange = this.effectiveAggression === "aggressive" && distance <= 3;
       if (!keepRange) {
-        const direction = stepToward(unit.position, moveTarget, movementObstacles);
+        const direction = stepToward(unit.position, moveTarget, militaryObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_move");
       }
     }
