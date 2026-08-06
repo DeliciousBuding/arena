@@ -134,6 +134,15 @@ export interface SafetyPlannerConfig {
    * false = 历史行为（威胁不改变 worker 巡逻范围）。
    */
   readonly threatRecall?: boolean;
+  /**
+   * 防御轴分桶守卫轮转（v0.3，实验，B4 竞品 defense distribution 对照）：
+   * 可见战斗敌按相对 Core 的主接近方向分 4 轴桶（N/E/S/W），威胁轴按
+   * 最近敌距离升序排序；第 i 个防守者取排序后第 (i % 轴数) 轴的外层守位
+   * （Vanguard 3 格外层 / Ranger 2 格内层）——守卫按轴分散而非全部挤向
+   * 最近敌方向，多轴夹击时各轴都有拦截。守位避开障碍/敌占格，保持 Core
+   * 邻格为空（cargo 通道）。默认 false = 历史行为（Core 四邻轮转）。
+   */
+  readonly guardAxes?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -300,6 +309,12 @@ export class SafetyPlanner {
         .sort((a, b) => a.id.localeCompare(b.id))
         .map((unit, index) => [unit.id, index]),
     );
+    const rangerIndex = new Map(
+      [...state.units]
+        .filter((unit) => unit.unitType === "RANGER")
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((unit, index) => [unit.id, index]),
+    );
 
     const set = (unit: UnitSnapshot, action: UnitAction, intent: string): void => {
       actions[unit.id] = action;
@@ -330,7 +345,7 @@ export class SafetyPlanner {
       } else if (unit.unitType === "VANGUARD") {
         this.decideVanguard(state, unit, vanguardIndex.get(unit.id) ?? 0, obstacles, enemies, set);
       } else {
-        this.decideRanger(state, unit, obstacles, enemies, set);
+        this.decideRanger(state, unit, rangerIndex.get(unit.id) ?? 0, obstacles, enemies, set);
       }
     }
 
@@ -630,9 +645,17 @@ export class SafetyPlanner {
     ) {
       return;
     }
-    // 守家/回防锚点 = Core 相邻格（绝不站 Core 格本身——Core 格是 Worker 回仓
-    // 通道，被军事单位长期占用会造成 capacity_wait:DEPOSIT 经济死锁，生产实测）。
-    const home = state.core === null ? null : homeCell(state.core.position, movementObstacles, index);
+    // 守家/回防锚点（绝不站 Core 格本身——Core 格是 Worker 回仓通道，被军事
+    // 单位长期占用会造成 capacity_wait:DEPOSIT 经济死锁，生产实测）。
+    // guardAxes（B4 候选）：有可见敌人时按威胁轴分桶守位（Vanguard 3 格外层
+    // 屏、Ranger 2 格内层屏），守卫分散到各威胁轴；无敌人回退历史四邻轮转。
+    let home: Position | null = null;
+    if (state.core !== null) {
+      home =
+        this.config.guardAxes === true && enemies.length > 0
+          ? defensePost(state.core.position, enemies, movementObstacles, "VANGUARD", index)
+          : homeCell(state.core.position, movementObstacles, index);
+    }
     // 已在 Core 格且满血：移出到守家锚点（治疗是短时占格，治疗完必须让出回仓通道）
     if (
       state.core !== null &&
@@ -659,6 +682,7 @@ export class SafetyPlanner {
   private decideRanger(
     state: TickState,
     unit: UnitSnapshot,
+    index: number,
     obstacles: ReadonlySet<string>,
     enemies: readonly VisibleEntity[],
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
@@ -695,8 +719,15 @@ export class SafetyPlanner {
       }
     }
 
+    // guardAxes（B4 候选）：defensive + 有可见敌人时 Ranger 守内层屏
+    // （2 格）而非追击最近敌（竞品"defenders do not chase beyond the
+    // protective posture"——Ranger 冲脸失去射程优势且易被 SWEEP）。
     const moveTarget = enemies.length > 0
-      ? nearestEnemy(enemies, unit.position)?.position ?? null
+      ? this.config.guardAxes === true &&
+        this.effectiveAggression === "defensive" &&
+        state.core !== null
+        ? defensePost(state.core.position, enemies, movementObstacles, "RANGER", index)
+        : nearestEnemy(enemies, unit.position)?.position ?? null
       : this.effectivePolicy?.focusRegion ?? state.core?.position ?? null;
     if (moveTarget !== null && !samePosition(unit.position, moveTarget)) {
       // 激进：保持 1-3 射程站定，不冲脸（近身会让 Ranger 失去射程优势且易被
@@ -842,6 +873,78 @@ function nextMilitary(state: TickState, config: SafetyPlannerConfig): UnitType {
 /** Core 的守家锚点：四邻中第一个非障碍格（确定性 UP→RIGHT→DOWN→LEFT）。
  *  军事单位守家站此格而非 Core 格本身——Core 格是 Worker 回仓通道，
  *  被长期占用会造成 capacity_wait:DEPOSIT 经济死锁。 */
+/** 防御轴分桶守卫轮转（B4 竞品 defense distribution 对照，2026-08-07）：
+ *  可见战斗敌按相对 Core 的主接近方向分 4 轴桶（N/E/S/W）；威胁轴按"轴内
+ *  最近敌距离升序"排序（威胁大的轴先被覆盖），第 i 个防守者取排序后第
+ *  (i % 轴数) 轴的外层守位——守卫按轴分散而非全部挤向最近敌方向。
+ *  守位半径：Vanguard 3（外层屏）/ Ranger 2（内层屏，竞品
+ *  VANGUARD_GUARD_RADIUS=3 / RANGER_GUARD_RADIUS=2）。保持 Core 邻格为空
+ *  （cargo 通道）——半径 ≥2 天然满足；守位被障碍/敌占占用时沿轴向内收缩
+ *  （radius-1 直到 1），全堵返回 null（调用方回退 homeCell 历史四邻轮转）。 */
+const VANGUARD_GUARD_RADIUS = 3;
+const RANGER_GUARD_RADIUS = 2;
+
+/** 敌相对 Core 的主接近方向轴（4 桶，确定性：|dx| 与 |dy| 比较）。 */
+type ThreatAxis = "N" | "E" | "S" | "W";
+
+function axisOfDelta(dx: number, dy: number): ThreatAxis {
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? "E" : "W";
+  return dy >= 0 ? "S" : "N";
+}
+
+const AXIS_DIRECTIONS: Readonly<Record<ThreatAxis, Position>> = Object.freeze({
+  N: [0, -1],
+  E: [1, 0],
+  S: [0, 1],
+  W: [-1, 0],
+});
+const AXIS_ORDER: readonly ThreatAxis[] = ["N", "E", "S", "W"];
+
+function defensePost(
+  core: Position,
+  enemies: readonly VisibleEntity[],
+  obstacles: ReadonlySet<string>,
+  unitType: "VANGUARD" | "RANGER",
+  index: number,
+): Position | null {
+  // 每轴最近敌距离（无可见敌在该轴 = Infinity → 该轴不参与）
+  const axisMinDistance: Record<ThreatAxis, number> = {
+    N: Number.POSITIVE_INFINITY,
+    E: Number.POSITIVE_INFINITY,
+    S: Number.POSITIVE_INFINITY,
+    W: Number.POSITIVE_INFINITY,
+  };
+  for (const enemy of enemies) {
+    if (enemy.kind === "CORE") continue;
+    const axis = axisOfDelta(enemy.position[0] - core[0], enemy.position[1] - core[1]);
+    axisMinDistance[axis] = Math.min(
+      axisMinDistance[axis],
+      manhattan(core, enemy.position),
+    );
+  }
+  const axesWithEnemies = AXIS_ORDER
+    .filter((axis) => Number.isFinite(axisMinDistance[axis]))
+    .sort(
+      (a, b) =>
+        axisMinDistance[a] - axisMinDistance[b] ||
+        AXIS_ORDER.indexOf(a) - AXIS_ORDER.indexOf(b),
+    );
+  if (axesWithEnemies.length === 0) return null;
+  const axis = axesWithEnemies[index % axesWithEnemies.length];
+  const radius = unitType === "VANGUARD" ? VANGUARD_GUARD_RADIUS : RANGER_GUARD_RADIUS;
+  // 沿轴由外向内收缩：守位被障碍/敌占占用时向内一格（半径 ≥2 保持 Core 邻格空）
+  for (let r = radius; r >= 1; r -= 1) {
+    const candidate: Position = [
+      core[0] + AXIS_DIRECTIONS[axis][0] * r,
+      core[1] + AXIS_DIRECTIONS[axis][1] * r,
+    ];
+    if (obstacles.has(cellKey(candidate))) continue;
+    if (enemies.some((enemy) => samePosition(enemy.position, candidate))) continue;
+    return candidate;
+  }
+  return null;
+}
+
 function homeCell(core: Position, obstacles: ReadonlySet<string>, index = 0): Position | null {
   const order: readonly Direction[] = ["UP", "RIGHT", "DOWN", "LEFT"];
   for (let offset = 0; offset < order.length; offset += 1) {
