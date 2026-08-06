@@ -128,8 +128,12 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<vo
   }
 }
 
-async function requestJson(port: number, path: string): Promise<{ status: number; body: any }> {
-  const response = await fetch(`http://127.0.0.1:${port}${path}`);
+async function requestJson(
+  port: number,
+  path: string,
+  options: { method?: string } = {},
+): Promise<{ status: number; body: any }> {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, { method: options.method ?? "GET" });
   return { status: response.status, body: await response.json() };
 }
 
@@ -403,6 +407,34 @@ test("DebugServer separates health from lock-backed readiness", async () => {
     assert.equal(ready.body.ready, true);
     children.get("t1")!.autoExitOnSend = true;
     await supervisor.shutdown();
+  } finally {
+    await debug.close();
+    repo.cleanup();
+  }
+});
+
+test("DebugServer POST /shutdown triggers graceful IPC cleanup; GET rejected", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  const supervisor = new TenantSupervisor({
+    repoRoot: repo.root,
+    configs: ["t1.json"],
+    spawnChild: fakeSpawn(children),
+  });
+  const debug = new DebugServer({ repoRoot: repo.root, supervisor, port: 0 });
+  try {
+    await debug.listen();
+    await supervisor.start();
+    const port = debug.address()!.port;
+    children.get("t1")!.autoExitOnSend = true;
+    const shutdown = await requestJson(port, "/shutdown", { method: "POST" });
+    assert.equal(shutdown.status, 202);
+    assert.equal(shutdown.body.shuttingDown, true);
+    assert.deepEqual(children.get("t1")!.sent, [{ type: "arena.shutdown" }]);
+    assert.equal(supervisor.allExited(), true);
+    assert.equal(supervisor.isReady(), false);
+    const get = await requestJson(port, "/shutdown");
+    assert.equal(get.status, 405);
   } finally {
     await debug.close();
     repo.cleanup();
