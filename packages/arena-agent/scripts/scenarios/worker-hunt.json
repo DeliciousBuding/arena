@@ -91,5 +91,9 @@
     ],
     "status": "GROUND",
     "carrierId": null
+  },
+  "evaluation": {
+    "p1Posture": "balanced",
+    "p1AttackPriority": null
   }
 }
