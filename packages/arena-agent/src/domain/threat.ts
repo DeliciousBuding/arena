@@ -5,7 +5,8 @@
  * PRE_EVADE Core 迁移）等 P05/P06 验证后按差距清单逐步接入。
  *
  * 等级（确定性级联，保守优先）：
- * - ENGAGED：本 tick 我方受击（CORE_DAMAGED/UNIT_DAMAGED）
+ * - ENGAGED：本 tick 我方 Core 受击（CORE_DAMAGED/CORE_DESTROYED——单位受击
+ *   不升级 Core 级，2026-08-07 竞品 recent_core_attack 分账对齐）
  * - BREAKOUT：可见敌 ≥2 且相对 Core 轴数 ≥2 且至少一个在 12 格内且**无逃逸方向**
  *   （竞品 multi-axis breakout 对齐：多轴但存在某方向使全部敌距离增加 = 可逃，
  *   不算被包围——第三十四轮修正旧"多轴即 BREAKOUT"的高估）
@@ -26,6 +27,9 @@ export interface ThreatAssessment {
   readonly movingEnemies: number;
   /** 可见敌相对 Core 的 45° 轴数（≥2 = 多轴夹击候选）。 */
   readonly axes: number;
+  /** 确认追击（积分 >0 且（12 格内 或 积分 ≥3 持续逼近））——竞品
+   *  pursuing_enemy_ids 对照，供 decideCore 消费（远距确认追击也触发迁移）。 */
+  readonly confirmedPursuit: boolean;
 }
 
 /** 回退半径（竞品 12-cell fallback）：ALERT 触发条件之一。 */
@@ -73,13 +77,15 @@ export function assessThreat(options: {
   readonly visibleEnemies: readonly VisibleEntity[];
   /** World.enemyHints()（含 prevPosition 差分信息）。 */
   readonly enemyHints: readonly EnemyMemory[];
-  /** 本 tick 我方是否受击（CORE_DAMAGED / UNIT_DAMAGED 事件）。 */
-  readonly damagedThisTick: boolean;
+  /** 本 tick 我方 Core 是否受击（仅 CORE_DAMAGED / CORE_DESTROYED）——
+   *  ENGAGED 是 Core 级威胁；远程 worker 被摸不得升级为 Core 级
+   *  （2026-08-07 竞品 recent_attack vs recent_core_attack 分账对齐）。 */
+  readonly coreDamagedThisTick: boolean;
 }): ThreatAssessment {
-  const { core, visibleEnemies, enemyHints, damagedThisTick } = options;
+  const { core, visibleEnemies, enemyHints, coreDamagedThisTick } = options;
 
   if (core === null) {
-    return { level: "NORMAL", reason: "no_core", closingEnemies: 0, movingEnemies: 0, axes: 0 };
+    return { level: "NORMAL", reason: "no_core", closingEnemies: 0, movingEnemies: 0, axes: 0, confirmedPursuit: false };
   }
 
   const hintsById = new Map(enemyHints.map((hint) => [hint.id, hint]));
@@ -106,14 +112,14 @@ export function assessThreat(options: {
     axes.add(axisOf(core, enemy.position));
   }
 
-  if (damagedThisTick) {
-    return { level: "ENGAGED", reason: "damaged", closingEnemies, movingEnemies, axes: axes.size };
+  if (coreDamagedThisTick) {
+    return { level: "ENGAGED", reason: "damaged", closingEnemies, movingEnemies, axes: axes.size, confirmedPursuit };
   }
   if (visibleEnemies.length >= 2 && axes.size >= 2 && closingEnemies > 0 && !hasEscapeDirection(core, visibleEnemies)) {
-    return { level: "BREAKOUT", reason: "multi_axis", closingEnemies, movingEnemies, axes: axes.size };
+    return { level: "BREAKOUT", reason: "multi_axis", closingEnemies, movingEnemies, axes: axes.size, confirmedPursuit };
   }
   if (confirmedPursuit) {
-    return { level: "ALERT", reason: "pursuit", closingEnemies, movingEnemies, axes: axes.size };
+    return { level: "ALERT", reason: "pursuit", closingEnemies, movingEnemies, axes: axes.size, confirmedPursuit: true };
   }
   if (movingEnemies > 0 || closingEnemies > 0) {
     return {
@@ -122,12 +128,13 @@ export function assessThreat(options: {
       closingEnemies,
       movingEnemies,
       axes: axes.size,
+      confirmedPursuit,
     };
   }
-  return { level: "NORMAL", reason: null, closingEnemies: 0, movingEnemies: 0, axes: axes.size };
+  return { level: "NORMAL", reason: null, closingEnemies: 0, movingEnemies: 0, axes: axes.size, confirmedPursuit: false };
 }
 
-/** 我方是否受击（从 resolution events 过滤——供 decide 侧调用）。 */
+/** 我方任意单位/Core 是否受击（从 resolution events 过滤——兼容旧调用）。 */
 export function damagedThisTick(events: readonly { readonly eventType: string }[]): boolean {
   return events.some(
     (event) =>
@@ -135,5 +142,15 @@ export function damagedThisTick(events: readonly { readonly eventType: string }[
       event.eventType === "UNIT_DAMAGED" ||
       event.eventType === "CORE_DESTROYED" ||
       event.eventType === "UNIT_DESTROYED",
+  );
+}
+
+/** 我方 Core 是否受击（仅 CORE_DAMAGED / CORE_DESTROYED）——ENGAGED 判定
+ *  用此函数：Core 级威胁与单位级受击分离（竞品 recent_core_attack 对照）。 */
+export function coreDamagedThisTick(events: readonly { readonly eventType: string }[]): boolean {
+  return events.some(
+    (event) =>
+      event.eventType === "CORE_DAMAGED" ||
+      event.eventType === "CORE_DESTROYED",
   );
 }

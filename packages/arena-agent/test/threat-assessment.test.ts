@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import type { Position, TickState, VisibleEntity } from "../src/domain/model.ts";
-import { assessThreat, damagedThisTick } from "../src/domain/threat.ts";
+import { assessThreat, coreDamagedThisTick, damagedThisTick } from "../src/domain/threat.ts";
 import { World } from "../src/domain/world.ts";
 
 const CORE: Position = [0, 0];
@@ -44,7 +44,7 @@ function makeState(tick: number, enemies: VisibleEntity[], events: TickState["ev
 }
 
 test("威胁评估：无敌人 → NORMAL", () => {
-  const result = assessThreat({ core: CORE, visibleEnemies: [], enemyHints: [], damagedThisTick: false });
+  const result = assessThreat({ core: CORE, visibleEnemies: [], enemyHints: [], coreDamagedThisTick: false });
   assert.equal(result.level, "NORMAL");
   assert.equal(result.reason, null);
 });
@@ -54,7 +54,7 @@ test("威胁评估：12 格内可见敌（静止）→ ALERT enemy_near", () => 
     core: CORE,
     visibleEnemies: [enemy("e1", [8, 0])],
     enemyHints: [hint("e1", [8, 0], [8, 0])],
-    damagedThisTick: false,
+    coreDamagedThisTick: false,
   });
   assert.equal(result.level, "ALERT");
   assert.equal(result.reason, "enemy_near");
@@ -67,7 +67,7 @@ test("威胁评估：位置差分移动 → ALERT enemy_moving（12 格外也触
     core: CORE,
     visibleEnemies: [enemy("e1", [15, 0])],
     enemyHints: [hint("e1", [15, 0], [14, 0])],
-    damagedThisTick: false,
+    coreDamagedThisTick: false,
   });
   assert.equal(result.level, "ALERT");
   assert.equal(result.reason, "enemy_moving");
@@ -79,7 +79,7 @@ test("威胁评估：位置未变（prev == cur）不算移动", () => {
     core: CORE,
     visibleEnemies: [enemy("e1", [15, 0])],
     enemyHints: [hint("e1", [15, 0], [15, 0])],
-    damagedThisTick: false,
+    coreDamagedThisTick: false,
   });
   assert.equal(result.level, "NORMAL");
   assert.equal(result.movingEnemies, 0);
@@ -90,7 +90,7 @@ test("威胁评估：多轴夹击但可逃（东西夹击有 UP/DOWN 通道）�
     core: CORE,
     visibleEnemies: [enemy("e1", [8, 0]), enemy("e2", [-8, 0])],
     enemyHints: [hint("e1", [8, 0], [8, 0]), hint("e2", [-8, 0], [-8, 0])],
-    damagedThisTick: false,
+    coreDamagedThisTick: false,
   });
   // 有逃逸方向（UP/DOWN 同时远离两敌）→ 降级 ALERT（closingEnemies=2 仍在 12 格内）
   assert.equal(result.level, "ALERT");
@@ -108,7 +108,7 @@ test("威胁评估：四向包围（无逃逸方向）→ BREAKOUT", () => {
       hint("e3", [0, 8], [0, 8]),
       hint("e4", [0, -8], [0, -8]),
     ],
-    damagedThisTick: false,
+    coreDamagedThisTick: false,
   });
   // 任一方向都至少靠近某敌（无逃逸）→ BREAKOUT
   assert.equal(result.level, "BREAKOUT");
@@ -125,7 +125,7 @@ test("威胁评估：三角夹击（三轴无逃逸）→ BREAKOUT", () => {
       hint("e2", [-5, 7], [-5, 7]),
       hint("e3", [-5, -7], [-5, -7]),
     ],
-    damagedThisTick: false,
+    coreDamagedThisTick: false,
   });
   assert.equal(result.level, "BREAKOUT");
   assert.equal(result.reason, "multi_axis");
@@ -136,7 +136,7 @@ test("威胁评估：单轴双敌（同方向）不算夹击", () => {
     core: CORE,
     visibleEnemies: [enemy("e1", [8, 0]), enemy("e2", [12, 0])],
     enemyHints: [hint("e1", [8, 0], [8, 0]), hint("e2", [12, 0], [12, 0])],
-    damagedThisTick: false,
+    coreDamagedThisTick: false,
   });
   assert.equal(result.level, "ALERT");
   assert.equal(result.axes, 1);
@@ -147,14 +147,48 @@ test("威胁评估：本 tick 受击 → ENGAGED（优先于其他等级）", ()
     core: CORE,
     visibleEnemies: [enemy("e1", [8, 0])],
     enemyHints: [hint("e1", [8, 0], [8, 0])],
-    damagedThisTick: true,
+    coreDamagedThisTick: true,
   });
   assert.equal(result.level, "ENGAGED");
   assert.equal(result.reason, "damaged");
 });
 
+test("威胁评估：仅单位受击不升级 Core 级 ENGAGED（recent_attack 分账）", () => {
+  // 2026-08-07 C9 对齐：远程 worker 被摸是单位级受击，不得升级为 Core 级
+  // ENGAGED（ENGAGED 只由 CORE_DAMAGED/CORE_DESTROYED 触发）。
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("e1", [8, 0])],
+    enemyHints: [hint("e1", [8, 0], [8, 0])],
+    coreDamagedThisTick: false,
+  });
+  assert.notEqual(result.level, "ENGAGED", "单位受击不应升级 Core 级");
+  assert.equal(result.level, "ALERT");
+});
+
+test("威胁评估：确认追击（远距 score≥3）→ confirmedPursuit=true", () => {
+  // 2026-08-07 B3 对齐：score≥3 持续逼近的远距敌（>12 格）也确认追击——
+  // 供 decideCore 消费（远距确认追击也触发 Core 迁移）。
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("e1", [20, 0])],
+    enemyHints: [hint("e1", [20, 0], [22, 0], 3)],
+    coreDamagedThisTick: false,
+  });
+  assert.equal(result.confirmedPursuit, true);
+  assert.equal(result.level, "ALERT");
+  assert.equal(result.reason, "pursuit");
+});
+
+test("coreDamagedThisTick：仅 Core 受击事件过滤", () => {
+  assert.equal(coreDamagedThisTick([{ eventType: "UNIT_DAMAGED" }]), false);
+  assert.equal(coreDamagedThisTick([{ eventType: "CORE_DAMAGED" }]), true);
+  assert.equal(coreDamagedThisTick([{ eventType: "CORE_DESTROYED" }]), true);
+  assert.equal(coreDamagedThisTick([{ eventType: "HARVEST_SUCCEEDED" }]), false);
+});
+
 test("威胁评估：Core 不在位 → NORMAL no_core", () => {
-  const result = assessThreat({ core: null, visibleEnemies: [enemy("e1", [8, 0])], enemyHints: [], damagedThisTick: false });
+  const result = assessThreat({ core: null, visibleEnemies: [enemy("e1", [8, 0])], enemyHints: [], coreDamagedThisTick: false });
   assert.equal(result.level, "NORMAL");
   assert.equal(result.reason, "no_core");
 });
@@ -208,7 +242,7 @@ test("威胁评估：确认追击（score≥3 且 12 格外）→ ALERT pursuit"
     core: CORE,
     visibleEnemies: [enemy("e1", [15, 0])],
     enemyHints: [hint("e1", [15, 0], [16, 0], 3)],
-    damagedThisTick: false,
+    coreDamagedThisTick: false,
   });
   assert.equal(result.level, "ALERT");
   assert.equal(result.reason, "pursuit", "持续逼近（score 3）优先于 enemy_moving");
@@ -219,7 +253,7 @@ test("威胁评估：低分路过（score 1 且 12 格外）不算确认追击",
     core: CORE,
     visibleEnemies: [enemy("e1", [15, 0])],
     enemyHints: [hint("e1", [15, 0], [16, 0], 1)],
-    damagedThisTick: false,
+    coreDamagedThisTick: false,
   });
   assert.equal(result.level, "ALERT");
   assert.equal(result.reason, "enemy_moving", "单次逼近不算确认追击（防路过误报）");
