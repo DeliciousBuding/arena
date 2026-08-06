@@ -1,0 +1,169 @@
+{
+  "rulesVersion": "v0.14",
+  "tick": 1,
+  "seed": 1,
+  "players": [
+    {
+      "id": "p1",
+      "username": "p1",
+      "resources": 20,
+      "core": {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "position": [
+          0,
+          0
+        ],
+        "hp": 5,
+        "shield": 5,
+        "state": "NORMAL"
+      },
+      "units": [
+        {
+          "id": "22222222-2222-2222-2222-222222222211",
+          "owner": "p1",
+          "position": [
+            4,
+            0
+          ],
+          "hp": 4,
+          "unitType": "VANGUARD",
+          "cargo": 0
+        },
+        {
+          "id": "22222222-2222-2222-2222-222222222212",
+          "owner": "p1",
+          "position": [
+            4,
+            1
+          ],
+          "hp": 4,
+          "unitType": "VANGUARD",
+          "cargo": 0
+        },
+        {
+          "id": "22222222-2222-2222-2222-222222222213",
+          "owner": "p1",
+          "position": [
+            4,
+            2
+          ],
+          "hp": 4,
+          "unitType": "VANGUARD",
+          "cargo": 0
+        },
+        {
+          "id": "22222222-2222-2222-2222-222222222201",
+          "owner": "p1",
+          "position": [
+            3,
+            3
+          ],
+          "hp": 2,
+          "unitType": "WORKER",
+          "cargo": 0
+        },
+        {
+          "id": "22222222-2222-2222-2222-222222222202",
+          "owner": "p1",
+          "position": [
+            3,
+            4
+          ],
+          "hp": 2,
+          "unitType": "WORKER",
+          "cargo": 0
+        }
+      ]
+    },
+    {
+      "id": "p2",
+      "username": "p2",
+      "resources": 20,
+      "core": {
+        "id": "44444444-4444-4444-4444-444444444444",
+        "position": [
+          12,
+          0
+        ],
+        "hp": 5,
+        "shield": 5,
+        "state": "NORMAL"
+      },
+      "units": [
+        {
+          "id": "55555555-5555-5555-5555-555555555511",
+          "owner": "p2",
+          "position": [
+            8,
+            0
+          ],
+          "hp": 4,
+          "unitType": "VANGUARD",
+          "cargo": 0
+        },
+        {
+          "id": "55555555-5555-5555-5555-555555555512",
+          "owner": "p2",
+          "position": [
+            8,
+            1
+          ],
+          "hp": 4,
+          "unitType": "VANGUARD",
+          "cargo": 0
+        },
+        {
+          "id": "55555555-5555-5555-5555-555555555501",
+          "owner": "p2",
+          "position": [
+            9,
+            3
+          ],
+          "hp": 2,
+          "unitType": "WORKER",
+          "cargo": 0
+        },
+        {
+          "id": "55555555-5555-5555-5555-555555555502",
+          "owner": "p2",
+          "position": [
+            9,
+            4
+          ],
+          "hp": 2,
+          "unitType": "WORKER",
+          "cargo": 0
+        }
+      ]
+    }
+  ],
+  "terrain": {
+    "obstacles": [],
+    "resources": [
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        9,
+        0
+      ],
+      [
+        9,
+        1
+      ]
+    ]
+  },
+  "beacon": {
+    "position": [
+      100,
+      100
+    ],
+    "status": "GROUND",
+    "carrierId": null
+  }
+}
