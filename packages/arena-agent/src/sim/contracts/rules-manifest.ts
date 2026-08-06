@@ -6,9 +6,9 @@
  *   v0.11 为默认（历史语义锁定），v0.14 为动态价格基线（官方 changelog
  *   2026-08-06，docs commit 166ef86 / server commit b24cfcd）；
  * - 版本不匹配必须 fail closed（未核对的规则版本不能被静默加载）；
- * - 提供 mirror 聚合 SHA-256 验证（检测 reference SDK 镜像漂移；
- *   v0.11-only——v0.14 的 SDK v0.2.9 镜像尚未核对，见 rules-v0.14.json
- *   evidence.discrepancies）；
+ * - 提供 mirror 聚合 SHA-256 验证（检测 reference SDK 镜像漂移；v0.11 与
+ *   v0.14 统一生效——v0.14 的 SDK v0.2.9 镜像已核对，见 rules-v0.14.json
+ *   evidence.sdk）；
  * - canonical 序列化，供 calibration 报告打 stale 标记。
  *
  * 隔离边界：本文件无网络、无 .env、无 Client import；只读文件系统。
@@ -28,6 +28,19 @@ export interface EvidenceDocs {
   readonly commit: string;
   readonly rulesVersion: string;
   readonly apiVersion: string;
+}
+
+/** SDK 镜像证据（v0.11 自迁移起存在；v0.14 于 2026-08-07 补上——官方 SDK
+ *  v0.2.9 发布后完成 unit_cost 钉定核对，verifyMirror 对两种版本统一生效）。 */
+interface EvidenceSdk {
+  readonly repo: string;
+  readonly tag: string;
+  readonly publicCommit: string;
+  readonly documentedCommit: string;
+  readonly documentedCommitStatus: string;
+  readonly mirrorDir: string;
+  readonly mirrorFileCount: number;
+  readonly mirrorAggregateSha256: string;
 }
 
 export interface EvidenceServerSource {
@@ -154,16 +167,7 @@ export interface RulesManifestV011 {
   readonly verifiedAt: string;
   readonly evidence: {
     readonly docs: EvidenceDocs;
-    readonly sdk: {
-      readonly repo: string;
-      readonly tag: string;
-      readonly publicCommit: string;
-      readonly documentedCommit: string;
-      readonly documentedCommitStatus: string;
-      readonly mirrorDir: string;
-      readonly mirrorFileCount: number;
-      readonly mirrorAggregateSha256: string;
-    };
+    readonly sdk: EvidenceSdk;
     readonly serverSource: EvidenceServerSource;
     readonly discrepancies: readonly string[];
   };
@@ -178,6 +182,7 @@ export interface RulesManifestV014 {
   readonly verifiedAt: string;
   readonly evidence: {
     readonly docs: EvidenceDocs;
+    readonly sdk: EvidenceSdk;
     readonly serverSource: EvidenceServerSource;
     readonly discrepancies: readonly string[];
   };
@@ -337,6 +342,22 @@ function parseConstraints(raw: Record<string, unknown>): RulesConstraints {
   });
 }
 
+function parseSdkEvidence(sdk: Record<string, unknown>): EvidenceSdk {
+  return Object.freeze({
+    repo: assertStringField(sdk.repo, "evidence.sdk.repo"),
+    tag: assertStringField(sdk.tag, "evidence.sdk.tag"),
+    publicCommit: assertStringField(sdk.publicCommit, "evidence.sdk.publicCommit"),
+    documentedCommit: assertStringField(sdk.documentedCommit, "evidence.sdk.documentedCommit"),
+    documentedCommitStatus: assertStringField(
+      sdk.documentedCommitStatus,
+      "evidence.sdk.documentedCommitStatus",
+    ),
+    mirrorDir: assertStringField(sdk.mirrorDir, "evidence.sdk.mirrorDir"),
+    mirrorFileCount: assertIntField(sdk.mirrorFileCount, "evidence.sdk.mirrorFileCount"),
+    mirrorAggregateSha256: assertStringField(sdk.mirrorAggregateSha256, "evidence.sdk.mirrorAggregateSha256"),
+  });
+}
+
 function parseRulesManifestV011(root: Record<string, unknown>): RulesManifestV011 {
   const rulesVersion = assertStringField(root.rulesVersion, "rulesVersion");
   if (rulesVersion !== "v0.11") {
@@ -366,19 +387,7 @@ function parseRulesManifestV011(root: Record<string, unknown>): RulesManifestV01
         rulesVersion: assertStringField(docs.rulesVersion, "evidence.docs.rulesVersion"),
         apiVersion: assertStringField(docs.apiVersion, "evidence.docs.apiVersion"),
       }),
-      sdk: Object.freeze({
-        repo: assertStringField(sdk.repo, "evidence.sdk.repo"),
-        tag: assertStringField(sdk.tag, "evidence.sdk.tag"),
-        publicCommit: assertStringField(sdk.publicCommit, "evidence.sdk.publicCommit"),
-        documentedCommit: assertStringField(sdk.documentedCommit, "evidence.sdk.documentedCommit"),
-        documentedCommitStatus: assertStringField(
-          sdk.documentedCommitStatus,
-          "evidence.sdk.documentedCommitStatus",
-        ),
-        mirrorDir: assertStringField(sdk.mirrorDir, "evidence.sdk.mirrorDir"),
-        mirrorFileCount: assertIntField(sdk.mirrorFileCount, "evidence.sdk.mirrorFileCount"),
-        mirrorAggregateSha256: assertStringField(sdk.mirrorAggregateSha256, "evidence.sdk.mirrorAggregateSha256"),
-      }),
+      sdk: parseSdkEvidence(sdk),
       serverSource: Object.freeze({
         status: assertStringField(serverSource.status, "evidence.serverSource.status"),
         note: assertStringField(serverSource.note, "evidence.serverSource.note"),
@@ -419,6 +428,7 @@ function parseRulesManifestV014(root: Record<string, unknown>): RulesManifestV01
 
   const evidence = assertRecord(root.evidence, "evidence");
   const docs = assertRecord(evidence.docs, "evidence.docs");
+  const sdk = assertRecord(evidence.sdk, "evidence.sdk");
   const serverSource = assertRecord(evidence.serverSource, "evidence.serverSource");
   const discrepancies = assertStringArray(evidence.discrepancies, "evidence.discrepancies");
 
@@ -460,6 +470,7 @@ function parseRulesManifestV014(root: Record<string, unknown>): RulesManifestV01
         rulesVersion: assertStringField(docs.rulesVersion, "evidence.docs.rulesVersion"),
         apiVersion: assertStringField(docs.apiVersion, "evidence.docs.apiVersion"),
       }),
+      sdk: parseSdkEvidence(sdk),
       serverSource: Object.freeze({
         status: assertStringField(serverSource.status, "evidence.serverSource.status"),
         note: assertStringField(serverSource.note, "evidence.serverSource.note"),
@@ -583,8 +594,12 @@ export function directoryAggregateSha256(dirPath: string): { aggregate: string; 
 }
 
 /** 验证本地 SDK 镜像与 manifest 锁定值一致（检测镜像漂移）。返回 null 表示一致。
- *  仅 v0.11 有已核对的 SDK 镜像；v0.14 镜像核对见 rules-v0.14.json discrepancies。 */
-export function verifyMirror(manifest: RulesManifestV011, mirrorDir: string): string | null {
+ *  v0.11 与 v0.14 统一生效（两版本 evidence.sdk 均已核对；v0.14 于 2026-08-07
+ *  在官方 SDK v0.2.9 发布后完成 183/183 unit_cost 钉定核对）。 */
+export function verifyMirror(
+  manifest: RulesManifestV011 | RulesManifestV014,
+  mirrorDir: string,
+): string | null {
   const { aggregate, fileCount } = directoryAggregateSha256(mirrorDir);
   if (fileCount !== manifest.evidence.sdk.mirrorFileCount) {
     return `mirror file count mismatch: expected ${manifest.evidence.sdk.mirrorFileCount}, got ${fileCount}`;
