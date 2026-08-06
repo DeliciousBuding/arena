@@ -2,7 +2,7 @@
  * run-tenant CLI（切片 4 阶段 6）：单租户运行入口。
  *
  * 用法：
- *   npx tsx src/cli/run-tenant.ts --config=runtime/configs/t1.json            # 按 config 默认
+ *   npx tsx src/cli/run-tenant.ts --config=../data/runtime/configs/t1.json    # 按 config 默认
  *   npx tsx src/cli/run-tenant.ts --config=... --shadow                      # 强制只观察（不提交）
  *   npx tsx src/cli/run-tenant.ts --config=... --live                        # 强制 live 提交
  *   npx tsx src/cli/run-tenant.ts --config=... --mode=agent-shadow           # 覆盖决策模式
@@ -16,10 +16,10 @@
  */
 
 import { parseArgs } from "node:util";
-import { join } from "node:path";
 import { runDoctor } from "./doctor.ts";
 import { runTenant } from "../app/tenant-runtime.ts";
 import { loadDotEnv } from "../app/dotenv.ts";
+import { resolveArenaDataRoot, resolveArenaRuntimeRoot } from "../app/data-root.ts";
 import { registerShutdownRequest } from "../app/process-shutdown.ts";
 
 async function main(): Promise<void> {
@@ -35,6 +35,7 @@ async function main(): Promise<void> {
       "startup-sync-ticks": { type: "string" },
       "record-calibration": { type: "boolean" },
       repoRoot: { type: "string" },
+      "data-root": { type: "string" },
     },
   });
 
@@ -45,11 +46,11 @@ async function main(): Promise<void> {
   }
   const repoRoot = values.repoRoot ?? process.cwd();
   loadDotEnv(repoRoot); // 密钥只从 .env 进进程环境，不落盘不打印
-  const configDir = join(repoRoot, "runtime", "configs");
+  const dataRoot = resolveArenaDataRoot(repoRoot, values["data-root"], process.env.ARENA_DATA_ROOT);
   const configPath = values.config;
 
   if (values.doctor) {
-    const result = runDoctor(configPath, repoRoot, join(repoRoot, "runtime"));
+    const result = runDoctor(configPath, repoRoot, resolveArenaRuntimeRoot(dataRoot));
     for (const check of result.checks) {
       console.log(`[${check.pass ? "PASS" : "FAIL"}] ${check.name}: ${check.detail}`);
     }
@@ -90,6 +91,7 @@ async function main(): Promise<void> {
     ? undefined
     : (values.mode as "safety" | "deterministic" | "agent-shadow" | "hybrid");
   const result = await runTenant(configPath, repoRoot, {
+    dataRoot,
     submissionMode: values.live ? "live" : values.shadow ? "disabled" : undefined,
     decisionMode,
     maxTicks,

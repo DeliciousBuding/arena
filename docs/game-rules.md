@@ -5,6 +5,9 @@ the whole file before writing a tactic or controlling a live Turn.
 
 This contract was reviewed against the rules changelog
 (`docs/reference/changelog.md`, arena-hero-doc repo) on 4 August 2026.
+Re-checked 2026-08-06: official repo has no commits since 2026-08-03
+(v0.13 Ranger cell fire remains the latest gameplay version) -- local
+bundle is up to date.
 **规则变更源：https://github.com/arena-hero/arena-hero-doc/blob/main/docs/reference/changelog.md
 ——检查日期 2026-08-04（v0.12 unconditional Core self-destruction + v0.13 true
 Ranger cell fire 均已合入：Core 可无条件 SELF_DESTRUCT（来源 server bdd68e8）；

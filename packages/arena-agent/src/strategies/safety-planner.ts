@@ -19,6 +19,7 @@ import {
   exploreTarget,
   lineBlocked,
   manhattan,
+  move,
   nearest,
   stepToward,
 } from "../domain/nav.ts";
@@ -26,6 +27,7 @@ import { UNIT_MAX_HP } from "../domain/plan-validator.ts";
 import { countEnemiesNearCore } from "../domain/plan-validator.ts";
 import { PhaseMachine, type PhaseConfig } from "../domain/phase-machine.ts";
 import { World } from "../domain/world.ts";
+import { assessThreat, damagedThisTick, type ThreatAssessment } from "../domain/threat.ts";
 import { aggressionOf, type MacroPolicy } from "../runtime/macro-policy.ts";
 
 export type AggressionLevel = "defensive" | "aggressive";
@@ -81,6 +83,57 @@ export interface SafetyPlannerConfig {
    * 默认 0 = 关闭（历史行为：有可见敌人即前压）。
    */
   readonly attackForce?: number;
+  /**
+   * frontier 探索（v0.2，实验）：worker 回家换巡逻方位时，按"该方位探测点所在
+   * chunk 观察老化"选方向——观察最老的分区先巡（chunk 16×16），多 worker 按
+   * 序号轮转分散到不同老分区。默认 false = 固定步进 +3（历史行为零回归）。
+   * 场景价值：资源枯竭后 40 格外矿在不同方位时，worker 不再沿固定方位序列
+   * 顺序覆盖（可能数圈后才到矿所在方位），而是优先补老分区。
+   */
+  readonly frontierPriority?: boolean;
+  /**
+   * Core 迁移（v0.3，PRE_EVADE-lite，实验）：12 格内可见敌或确认追击时
+   * START_MOVE 远离敌人+远离 beacon（竞品 threat-response 对照，P06 结算
+   * 已支持）。默认 false = 历史行为（Core 不迁移）。迁移中不生产/heal。
+   */
+  readonly coreEvade?: boolean;
+  /**
+   * Core 迁移 TTR 预撤离（v0.3，实验，需 coreEvade=true）：用 EnemyMemory
+   * 位置差分估算逼近速度，TTR（距离/速度）≤16 tick 即触发迁移——比 12 格
+   * 固定阈值更早（高速逼近的敌人在 20 格外 TTR 已 ≤16）。竞品
+   * threat-response time-to-range 对照。默认 false = 仅 12 格触发（历史实验行为）。
+   */
+  readonly coreEvadeTtr?: boolean;
+  /**
+   * Core 迁移多目标方向评分（v0.3，实验，需 coreEvade=true）：retreatDirection
+   * 用竞品字典序（投影伤害 → 全敌距离升序向量 → beacon）替代旧"只取最近敌
+   * 距离"——防退向"离最近敌最远"但冲进另一敌射程（Ranger 3 格直线）。
+   * 默认 false = 旧 distance 评分（历史实验行为零回归）。
+   */
+  readonly coreEvadeScoring?: boolean;
+  /**
+   * MOVE_FAILED 反馈规避（v0.3，实验）：单位连续 N 次移动被结算拒绝
+   * （MOVE_CONTESTED/CELL_UNIT_LIMIT 等）时，不再盲目重试同格——改走垂直
+   * 绕行格（探路）。模拟器实证（2026-08-06 第三十一轮）：2 Vanguard vs 敌
+   * CORE 场景，敌守军与进攻方 3 只 Vanguard 每 tick 争唯一推进格（容量 2）
+   * → MOVE_CONTESTED 全失败 → 无反馈重试 400 tick 0 拆。默认 false =
+   * 历史行为（无反馈重试，零回归）。
+   */
+  readonly moveFailedAvoidance?: boolean;
+  /**
+   * BREAKOUT 全面收缩（v0.3，实验）：威胁等级 BREAKOUT（多轴包围、无逃逸
+   * 方向——竞品 multi-axis breakout 对齐）时 worker 全面缩守家圈（比 ALERT
+   * 召回更保守——被包围时外出采集/巡逻即送死，等包围解除再恢复）。默认
+   * false = 历史行为（仅 ALERT 召回生效时收缩）。
+   */
+  readonly threatBreakout?: boolean;
+  /**
+   * 威胁召回（v0.3，实验）：ALERT 级威胁（12 格内可见敌确认）时 worker
+   * 巡逻半径缩到守家圈（4 格），不放远探/远采——防止 worker 在外被敌人
+   * 击杀（生产 t2 无近敌是地理因素；有敌接触对局中保护经济）。默认
+   * false = 历史行为（威胁不改变 worker 巡逻范围）。
+   */
+  readonly threatRecall?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -96,6 +149,37 @@ export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
   guardForce: 4,
   maxFocusDistance: 32,
 });
+
+/** 威胁召回触发距离（12 = ALERT 级威胁的确认接触半径，与 threat.ts 一致）。 */
+const THREAT_RECALL_DISTANCE = 12;
+/** 召回时 worker 的守家巡逻半径。 */
+const RECALL_PATROL_RADIUS = 4;
+/** Core 迁移 TTR 预撤离阈值（竞品 time-to-range ≤16 tick）。 */
+const TTR_PRE_EVADE_TICKS = 16;
+
+/** moveFailedAvoidance 绕行（v0.3 实验）：单位连续 MOVE_FAILED 后不再盲目重试
+ *  同格——沿主方向垂直的候选方向探路（先 UP/DOWN 再 LEFT/RIGHT，排除障碍格）；
+ *  垂直全堵再退一格反向（远离目标后 BFS 自然换路）。模拟器实证根因：进攻方与
+ *  敌守军每 tick 争唯一推进格（容量 2）→ MOVE_CONTESTED 全失败 → 无反馈重试
+ *  死循环；垂直绕行打破争格僵局。 */
+function detourDirection(
+  position: Position,
+  target: Position,
+  obstacles: ReadonlySet<string>,
+): Direction | null {
+  const dx = target[0] - position[0];
+  const dy = target[1] - position[1];
+  const horizontal = Math.abs(dx) >= Math.abs(dy);
+  const perpendicular: Direction[] = horizontal ? ["UP", "DOWN"] : ["LEFT", "RIGHT"];
+  for (const direction of perpendicular) {
+    if (!obstacles.has(cellKey(move(position, direction)))) return direction;
+  }
+  const primary: Direction = horizontal ? (dx > 0 ? "RIGHT" : "LEFT") : (dy > 0 ? "DOWN" : "UP");
+  const reverse: Direction =
+    primary === "UP" ? "DOWN" : primary === "DOWN" ? "UP" : primary === "LEFT" ? "RIGHT" : "LEFT";
+  if (!obstacles.has(cellKey(move(position, reverse)))) return reverse;
+  return null;
+}
 
 /** 激进战斗配置：完整默认值 + aggressive 战斗行为（供 tenant-runtime 注入）。 */
 export const AGGRESSIVE_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -125,6 +209,14 @@ export class SafetyPlanner {
   /** 爆兵状态（2026-08-06）：accumulateThreshold 达标后置 true 并保持——
    *  持续爆兵直到资源不足以产兵才回积累期（防止"产 1 兵掉回阈值下"振荡）。 */
   private surgeActive = false;
+  /** Core 迁移方向（coreEvade）：START_MOVE 发起时记录；次 tick 仍 MOVING
+   *  同向 = 已提交（本地等效 move_progress≥2，竞品 CANCEL 语义用）。 */
+  private coreMoveDirection: Direction | null = null;
+  /** MOVE_FAILED 连续失败计数（moveFailedAvoidance）：单位连续 N tick 移动被
+   *  结算拒绝时改走垂直绕行格，避免无反馈重试同格死循环。 */
+  private moveFailedStreak = new Map<string, number>();
+  /** 本 tick 威胁评估（threatBreakout 用）：decide 入口计算一次供 worker 消费。 */
+  private currentThreat: ThreatAssessment | null = null;
 
   constructor(
     config: SafetyPlannerConfig = DEFAULT_SAFETY_CONFIG,
@@ -157,6 +249,31 @@ export class SafetyPlanner {
       resources: state.resources,
       enemyNearCore: countEnemiesNearCore(state, this.config.threatEnemyDistance),
     });
+    // 威胁评估（threatBreakout 用）：decide 入口算一次（有 Core 且有可见敌时）。
+    this.currentThreat = null;
+    if (state.core !== null && state.visibleEnemies.length > 0) {
+      this.currentThreat = assessThreat({
+        core: state.core.position,
+        visibleEnemies: state.visibleEnemies,
+        enemyHints: this.world.enemyHints(),
+        damagedThisTick: damagedThisTick(state.events),
+      });
+    }
+    // MOVE_FAILED 反馈（moveFailedAvoidance）：上 tick 结算拒绝的单位计连续失败，
+    // 其余清零——连续失败 ≥2 时单位改走垂直绕行格探路（见 detourDirection）。
+    if (this.config.moveFailedAvoidance === true) {
+      const failed = new Set<string>();
+      for (const event of state.events) {
+        if (event.eventType === "UNIT_MOVE_FAILED" && event.actorId !== null) failed.add(event.actorId);
+      }
+      for (const unit of state.units) {
+        if (failed.has(unit.id)) {
+          this.moveFailedStreak.set(unit.id, (this.moveFailedStreak.get(unit.id) ?? 0) + 1);
+        } else {
+          this.moveFailedStreak.delete(unit.id);
+        }
+      }
+    }
 
     const actions: Record<string, UnitAction> = {};
     const intents: Record<string, string> = {};
@@ -227,12 +344,29 @@ export class SafetyPlanner {
     const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % EXPLORE_DIRECTION_COUNT);
     const home = state.core?.position ?? null;
     const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
+    // 威胁召回（threatRecall，v0.3 实验）：12 格内可见敌（确认接触）时 worker
+    // 巡逻/探索半径缩到守家圈（RECALL_PATROL_RADIUS），不放远探/远采。
+    // BREAKOUT 全面收缩（threatBreakout，v0.3 实验）：多轴包围（无逃逸方向）
+    // 时同样缩家——被包围时外出即送死，等包围解除再恢复。
+    const recallActive =
+      this.config.threatRecall === true &&
+      state.visibleEnemies.some(
+        (enemy) => home !== null && manhattan(enemy.position, home) <= THREAT_RECALL_DISTANCE,
+      );
+    const breakoutActive =
+      this.config.threatBreakout === true && this.currentThreat?.level === "BREAKOUT";
+    const maxPatrolRadius =
+      recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
 
     if (unit.cargo > 0) {
       if (home !== null && samePosition(unit.position, home)) {
         if (state.resourceSpace > 0) set(unit, { type: "DEPOSIT" }, "deposit");
       } else if (home !== null) {
-        const direction = stepToward(unit.position, home, movementObstacles);
+        const stuckTicks = this.moveFailedStreak.get(unit.id) ?? 0;
+        const direction =
+          this.config.moveFailedAvoidance === true && stuckTicks >= 2
+            ? detourDirection(unit.position, home, movementObstacles)
+            : stepToward(unit.position, home, movementObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "return_home");
       }
       return;
@@ -248,11 +382,21 @@ export class SafetyPlanner {
     const visibleResources = [...state.resourceCells].map((cell) => parseCell(cell));
     if (visibleResources.length > 0) {
       const target = nearest(visibleResources, unit.position);
-      memory.workerMode = "go_harvest";
-      memory.harvestTarget = target;
-      if (target !== null && !samePosition(target, unit.position)) {
-        const direction = stepToward(unit.position, target, movementObstacles);
-        if (direction !== null) set(unit, { type: "MOVE", direction }, "go_harvest");
+      // 召回期间只采守家圈内的矿（远矿等威胁解除再采）
+      if (recallActive && target !== null && home !== null && manhattan(target, home) > maxPatrolRadius) {
+        memory.workerMode = "patrol";
+        memory.harvestTarget = null;
+      } else {
+        memory.workerMode = "go_harvest";
+        memory.harvestTarget = target;
+        if (target !== null && !samePosition(target, unit.position)) {
+          const stuckTicks = this.moveFailedStreak.get(unit.id) ?? 0;
+          const direction =
+            this.config.moveFailedAvoidance === true && stuckTicks >= 2
+              ? detourDirection(unit.position, target, movementObstacles)
+              : stepToward(unit.position, target, movementObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "go_harvest");
+        }
       }
       return;
     }
@@ -263,8 +407,11 @@ export class SafetyPlanner {
       memory.harvestTarget !== null &&
       hints.some((hint) => samePosition(hint, memory.harvestTarget!))
     ) {
-      const direction = stepToward(unit.position, memory.harvestTarget, movementObstacles);
-      if (direction !== null) set(unit, { type: "MOVE", direction }, "go_harvest_mem");
+      const inRecallRange = home === null || manhattan(memory.harvestTarget, home) <= maxPatrolRadius;
+      if (inRecallRange) {
+        const direction = stepToward(unit.position, memory.harvestTarget, movementObstacles);
+        if (direction !== null) set(unit, { type: "MOVE", direction }, "go_harvest_mem");
+      }
       return;
     }
 
@@ -283,6 +430,7 @@ export class SafetyPlanner {
     if (home !== null) {
       const beacon = state.beacon.position ?? home;
       let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
+      if (maxPatrolRadius < patrolRadius) patrolRadius = maxPatrolRadius;
       let patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
       const patrolPointBlocked = obstacles.has(cellKey(patrolPoint));
       if (chebyshev(unit.position, home) > patrolRadius) {
@@ -294,7 +442,23 @@ export class SafetyPlanner {
           // 旧连续步进（+1）按 beacon 方位基（东南）逐格推进，第 8 圈才轮到正东
           // （数百 tick 不可达）——4 worker 首圈聚集东南-西 4 方位造成测绘盲区；
           // +3（与 8 互质）前 3 圈即扫过全部 8 方位，分散覆盖。
-          memory.patrolDirection = (memory.patrolDirection + 3) % EXPLORE_DIRECTION_COUNT;
+          // frontier-v1（实验）：观察最老的分区先巡——8 方位按当前环探测点所在
+          // chunk 老化排序，worker 按序号轮转分散（默认 false 保持 +3 固定步进）。
+          memory.patrolDirection =
+            this.config.frontierPriority === true
+              ? this.world.staleDirection(
+                  home,
+                  beacon,
+                  memory.patrolRing,
+                  this.config.exploreRadius,
+                  EXPLORE_DIRECTION_COUNT,
+                  // 分散偏移与初始方向同构（(index*3+7)%8 生产验证的分散方案）：
+                  // 纯 index 位次会让全部 worker 涌向"最老"位次（实验实证：
+                  // 双对角远矿场景 east 0/3 west 3/3——东侧被集体放弃）；
+                  // 固定偏移保证不同 worker 取不同老化位次，老方位优先 + 覆盖分散。
+                  (index * 3 + 7) % EXPLORE_DIRECTION_COUNT,
+                )
+              : (memory.patrolDirection + 3) % EXPLORE_DIRECTION_COUNT;
           memory.patrolRing = (memory.patrolRing + 1) % EXPLORE_RING_COUNT;
         }
         else memory.patrolStarted = true;
@@ -364,31 +528,14 @@ export class SafetyPlanner {
         }
         return;
       }
-      // 激进：主动前压。attackPriority 决定攻坚目标（v0.9 拆 Core 掠夺资源 vs
-      // 断敌经济）；无特攻目标时追击最近可见敌人。不再因靠近自家 Core 而留守。
-      const attackPriority = this.effectivePolicy?.attackPriority ?? null;
-      let target: Position | null = null;
-      if (attackPriority === "workers") {
-        const enemyWorker = enemies.find((enemy) => enemy.kind === "UNIT" && enemy.unitType === "WORKER");
-        target = enemyWorker?.position ?? nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
-      } else if (attackPriority === "core") {
-        const enemyCore = enemies.find((enemy) => enemy.kind === "CORE");
-        target = enemyCore?.position ?? nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
-      } else {
-        target = nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
-      }
-      if (target !== null && !samePosition(unit.position, target)) {
-        const direction = stepToward(unit.position, target, movementObstacles);
-        if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_pressure");
-      }
       // 军事打野（2026-08-06 用户导向）：aggressive + 无可见敌人 + 资源枯竭
       // （视野 0 资源格）——军事单位不再守家发呆，巡逻外扩探索（测绘 + 打野）；
-      // 非枯竭仍守家（防止军事单位长期远征离家被端）。
-      if (
-        state.resourceCells.size === 0 &&
-        state.core !== null &&
-        samePosition(unit.position, target ?? state.core.position)
-      ) {
+      // 有资源仍守家（防止军事单位长期远征离家被端）、有敌人走前压。
+      // 修复（2026-08-06 模拟器实证）：旧条件 samePosition(unit, target) 要求
+      // Vanguard 先走到 target（无敌人时 = Core 格）才打野——守家锚点在途/
+      // Core 格被 Worker 回仓占用时永远到不了 → 打野永不触发、Vanguard 枯竭后
+      // 空转守家。无敌人时 target 恒为 Core 位置，该到位限制无意义。
+      if (enemies.length === 0 && state.resourceCells.size === 0 && state.core !== null) {
         const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % EXPLORE_DIRECTION_COUNT);
         const home = state.core.position;
         const beacon = state.beacon.position ?? home;
@@ -407,6 +554,28 @@ export class SafetyPlanner {
         }
         const direction = stepToward(unit.position, patrolPoint, movementObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_scavenge");
+        return;
+      }
+      // 激进：主动前压。attackPriority 决定攻坚目标（v0.9 拆 Core 掠夺资源 vs
+      // 断敌经济）；无特攻目标时追击最近可见敌人。不再因靠近自家 Core 而留守。
+      const attackPriority = this.effectivePolicy?.attackPriority ?? null;
+      let target: Position | null = null;
+      if (attackPriority === "workers") {
+        const enemyWorker = enemies.find((enemy) => enemy.kind === "UNIT" && enemy.unitType === "WORKER");
+        target = enemyWorker?.position ?? nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+      } else if (attackPriority === "core") {
+        const enemyCore = enemies.find((enemy) => enemy.kind === "CORE");
+        target = enemyCore?.position ?? nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+      } else {
+        target = nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+      }
+      if (target !== null && !samePosition(unit.position, target)) {
+        const stuckTicks = this.moveFailedStreak.get(unit.id) ?? 0;
+        const direction =
+          this.config.moveFailedAvoidance === true && stuckTicks >= 2
+            ? detourDirection(unit.position, target, movementObstacles)
+            : stepToward(unit.position, target, movementObstacles);
+        if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_pressure");
       }
       return;
     }
@@ -526,6 +695,56 @@ export class SafetyPlanner {
   private decideCore(state: TickState, intents: Record<string, string>): CoreAction | null {
     const core = state.core;
     if (core === null) return null;
+    // Core 迁移（v0.3 PRE_EVADE-lite，coreEvade 配置默认关闭）：迁移中不
+    // 生产/heal（竞品语义：MOVING 直接 return）；迁移方向由 START_MOVE 发起
+    // 时记录，次 tick 仍 MOVING = 已提交（本地等效 move_progress≥2）。
+    if (core.state === "MOVING") {
+      return null;
+    }
+    if (this.config.coreEvade === true && state.visibleEnemies.length > 0) {
+      const threat = assessThreat({
+        core: core.position,
+        visibleEnemies: state.visibleEnemies,
+        enemyHints: this.world.enemyHints(),
+        damagedThisTick: damagedThisTick(state.events),
+      });
+      // 触发：12 格内可见敌（含受击）——Core 慢（4 tick/格），提前撤离
+      // （竞品 12-cell fallback + time-to-range 的简化版）。
+      const closing = threat.closingEnemies > 0;
+      // TTR 预撤离（coreEvadeTtr，v0.3 实验）：用 EnemyMemory 位置差分估算
+      // 敌人逼近速度，TTR（距离/速度）≤16 tick 即触发——比 12 格固定阈值
+      // 更早（高速逼近的敌人在 20 格外 TTR 已 ≤16）。竞品 threat-response
+      // 的 time-to-range 对照。
+      let ttrTrigger = false;
+      if (this.config.coreEvadeTtr === true) {
+        const hintsById = new Map(this.world.enemyHints().map((hint) => [hint.id, hint]));
+        for (const enemy of state.visibleEnemies) {
+          const hint = hintsById.get(enemy.id);
+          if (hint?.prevPosition === undefined) continue;
+          const prevDistance = manhattan(hint.prevPosition, core.position);
+          const distance = manhattan(enemy.position, core.position);
+          const approachSpeed = prevDistance - distance; // 每 tick 逼近格数
+          if (approachSpeed > 0 && distance / approachSpeed <= TTR_PRE_EVADE_TICKS) {
+            ttrTrigger = true;
+            break;
+          }
+        }
+      }
+      if (closing || ttrTrigger) {
+        const direction = retreatDirection(
+          core.position,
+          state.visibleEnemies,
+          this.world.obstacles(state.obstacleCells),
+          state.beacon.position,
+          this.config.coreEvadeScoring === true ? "multi" : "distance",
+        );
+        if (direction !== null) {
+          this.coreMoveDirection = direction;
+          intents.core = ttrTrigger ? "core_evade_ttr" : "core_evade";
+          return { type: "START_MOVE", direction };
+        }
+      }
+    }
     if (core.hp < 5) {
       intents.core = "core_heal";
       return { type: "HEAL" };
@@ -616,6 +835,97 @@ function nearestEnemy(enemies: readonly VisibleEntity[], position: Position): Vi
   )[0] ?? null;
 }
 
+/** Core 迁移方向（coreEvade，PRE_EVADE-lite）：4 方向候选中，硬块（障碍/资源/
+ *  敌占格）排除；评分 = 最近敌距离（越大越好，无敌人 = 无穷）×1000 + beacon 距离
+ *  （远离敌人优先、次远离 beacon——竞品 retreat 语义的确定性简化版）。
+ *  coreEvadeScoring=true 时用多目标字典序（竞品 threat-response 对照）：
+ *  投影伤害（候选格受敌射程内伤害总值，Vanguard sweep 1 格 / Ranger 直线 3 格）
+ *  → 全敌距离升序向量字典序（远离所有敌，不只最近）→ beacon 距离（小优）。
+ *  修复：旧评分只取 minEnemyDistance，退向"离最近敌最远"的方向可能冲进
+ *  另一敌的射程（Ranger 3 格直线）。 */
+const RANGER_SHOOT_RANGE = 3;
+const VANGUARD_SWEEP_RANGE = 1;
+
+function retreatDirection(
+  core: Position,
+  enemies: readonly VisibleEntity[],
+  obstacles: ReadonlySet<string>,
+  beacon: Position,
+  scoring: "distance" | "multi" = "distance",
+): Direction | null {
+  const candidates: readonly Direction[] = ["UP", "RIGHT", "DOWN", "LEFT"];
+  let best: Direction | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  let bestVector: readonly number[] = [];
+  let bestBeacon = 0;
+  for (const direction of candidates) {
+    const destination: Position =
+      direction === "UP"
+        ? [core[0], core[1] - 1]
+        : direction === "RIGHT"
+          ? [core[0] + 1, core[1]]
+          : direction === "DOWN"
+            ? [core[0], core[1] + 1]
+            : [core[0] - 1, core[1]];
+    if (obstacles.has(cellKey(destination))) continue;
+    if (enemies.some((enemy) => samePosition(enemy.position, destination))) continue;
+    if (scoring === "distance") {
+      const minEnemyDistance =
+        enemies.length === 0
+          ? Number.POSITIVE_INFINITY
+          : Math.min(...enemies.map((enemy) => manhattan(destination, enemy.position)));
+      const score = minEnemyDistance * 1000 + manhattan(destination, beacon);
+      if (score > bestScore) {
+        bestScore = score;
+        best = direction;
+      }
+      continue;
+    }
+    // 多目标评分（coreEvadeScoring）：投影伤害 → 全敌距离升序向量 → beacon。
+    const projectedDamage = enemies.reduce((sum, enemy) => {
+      if (enemy.kind === "CORE") return sum;
+      const distance = manhattan(destination, enemy.position);
+      const range = enemy.unitType === "RANGER" ? RANGER_SHOOT_RANGE : VANGUARD_SWEEP_RANGE;
+      return distance <= range ? sum + 1 : sum;
+    }, 0);
+    const distanceVector = enemies
+      .map((enemy) => manhattan(destination, enemy.position))
+      .sort((a, b) => a - b);
+    const beaconDistance = manhattan(destination, beacon);
+    // 字典序：投影伤害小优 → 敌距向量大优 → beacon 小优。
+    if (
+      best === null ||
+      compareRetreat(projectedDamage, distanceVector, beaconDistance, bestScore, bestVector, bestBeacon) > 0
+    ) {
+      bestScore = projectedDamage;
+      bestVector = distanceVector;
+      bestBeacon = beaconDistance;
+      best = direction;
+    }
+  }
+  return best;
+}
+
+/** 多目标字典序比较（竞品 retreat 语义）：投影伤害（小优）→ 全敌距离升序向量
+ *  （大优）→ beacon 距离（小优）。返回 >0 表示 candidate 优于 incumbent。 */
+function compareRetreat(
+  candidateDamage: number,
+  candidateVector: readonly number[],
+  candidateBeacon: number,
+  incumbentDamage: number,
+  incumbentVector: readonly number[],
+  incumbentBeacon: number,
+): number {
+  if (candidateDamage !== incumbentDamage) return incumbentDamage - candidateDamage;
+  const length = Math.max(candidateVector.length, incumbentVector.length);
+  for (let index = 0; index < length; index += 1) {
+    const a = candidateVector[index] ?? 0;
+    const b = incumbentVector[index] ?? 0;
+    if (a !== b) return a - b;
+  }
+  return incumbentBeacon - candidateBeacon;
+}
+
 /** 激进射击目标优先级：断敌经济（WORKER）优先，其次远程单位，最后 Core。
  *  排序稳定：同优先级按 raw id 字典序（nearestEnemy 的调用方约束）。 */
 /** 激进射击目标优先级（纯类型价值）：断敌经济（WORKER 优先），同价值 raw id 序。 */
@@ -624,15 +934,24 @@ function aggressiveShotPriority(a: VisibleEntity, b: VisibleEntity): number {
 }
 
 /** 防守射击目标优先级：最近威胁优先（1 格外的 Vanguard 即将 sweep 我们），
- *  同距离再按类型价值（WORKER 优先断经济），最后 raw id 序（确定性）。 */
+ *  同距离再按威胁价值（RANGER 优先——远程火力 3 格持续威胁；再 VANGUARD 近战；
+ *  WORKER 最后——不构成即时威胁，断经济是进攻姿态的事，2026-08-06 竞品
+ *  hierarchical threat assessment 对照），最后 raw id 序（确定性）。 */
 function defensiveShotPriority(from: Position, a: VisibleEntity, b: VisibleEntity): number {
   return (
     manhattan(from, a.position) - manhattan(from, b.position) ||
-    shotTargetRank(a) - shotTargetRank(b) ||
+    defensiveShotTargetRank(a) - defensiveShotTargetRank(b) ||
     a.id.localeCompare(b.id)
   );
 }
 
+/** 防守威胁价值（低 = 优先）：RANGER 远程持续威胁 > VANGUARD 近战 > WORKER 无即时威胁。 */
+function defensiveShotTargetRank(enemy: VisibleEntity): number {
+  if (enemy.kind === "CORE") return 3;
+  return enemy.unitType === "RANGER" ? 0 : enemy.unitType === "VANGUARD" ? 1 : 2;
+}
+
+/** 进攻目标价值（低 = 优先）：断敌经济（WORKER 优先），同价值 raw id 序。 */
 function shotTargetRank(enemy: VisibleEntity): number {
   if (enemy.kind === "CORE") return 3;
   return enemy.unitType === "WORKER" ? 0 : enemy.unitType === "RANGER" ? 1 : 2;

@@ -55,6 +55,13 @@ export const RuntimeConfigSchema = Type.Object(
     costLimitUsd: Type.Optional(Type.Number({ minimum: 0 })),
     /** 低频 MacroPolicy 策略决策周期（ticks，缺省 32；0/缺省 = 不启用策略层）。 */
     policyIntervalTicks: Type.Optional(Type.Integer({ minimum: 1 })),
+    /**
+     * 候选变体声明（2026-08-06 架构整理）：SafetyPlanner 变体 id 列表
+     * （见 strategies/variant-registry.ts 注册映射，如 ["threat-recall-v1"]）。
+     * 启用 = 改配置声明（不再改代码布尔）；未知 id 在运行时 fail-fast。
+     * 缺省 = 无变体（历史行为零回归）。
+     */
+    variants: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
     /** 固定策略覆盖（实验框架）：非空时绕过 LLM 决策，恒用该策略
      *  （posture/workerTarget/militaryRatio/focusRegion/attackPriority 全量）。 */
     policyOverride: Type.Optional(

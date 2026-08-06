@@ -277,6 +277,15 @@ const WORKER_RECOVERY_FLOOR = 2;
 const WORKER_SPAWN_COST = 5;
 /** 补员保留资源（不因扩编掏空国库；emergency 时也可用满额 5）。 */
 const WORKER_SPAWN_RESERVE = 2;
+/**
+ * 无 policy 时的默认补员目标（2026-08-06 扩编主动性优化）：原恢复地板 2 使
+ * solo 3 worker 起步即永不补员（res 闲置）；workerTarget 梯度实验（3 seeds）：
+ * 2→res 15/pop 3/deposits 5 vs 4→res 20/pop 4/deposits 15（3 倍，res 更高）——
+ * 多 1 worker 边际收益 > 5 成本，纯正收益；8/12→deposits 17.3 但 res 5.7
+ * （upkeep 负担重）。取 4 = 温和扩编（经济存量最优、无副作用），emergency
+ * floor=2 保留。生产有 policy 时仍以 policy.workerTarget 为准（零变化）。
+ */
+const DEFAULT_WORKER_TARGET = 4;
 
 /** 军事单位类型选择：默认交替（VANGUARD ↔ RANGER）；vanguardRatio 配置时按目标占比。 */
 function nextMilitaryType(state: TickState, vanguardRatio?: number): "VANGUARD" | "RANGER" {
@@ -294,7 +303,8 @@ function nextMilitaryType(state: TickState, vanguardRatio?: number): "VANGUARD" 
  * deterministic 的长期目标仍是积累资源，但不能因此失去自恢复能力：
  * - Core HEAL / REPAIR_SHIELD 属于生存动作，直接沿用 Safety 的合法裁决；
  * - 补员按 policy.workerTarget 驱动（MacroPolicy 低频战略的消费点之一）：
- *   workerTarget 缺省/过低时用 emergency floor=2 兜底；
+ *   无 policy 时用 DEFAULT_WORKER_TARGET=4（扩编主动性，2026-08-06 实验取证），
+ *   emergency floor=2 兜底；
  * - 补员带 reserve 保护（至少保留 2 资源），不因扩编掏空国库。
  */
 export function selectDeterministicCoreAction(
@@ -307,6 +317,10 @@ export function selectDeterministicCoreAction(
    *  够产兵回写 surgeActive（资源耗尽回积累期）。默认 0 = 关闭。 */
   accumulateThreshold = 0,
   surgeActive = false,
+  /** 补员 reserve（2026-08-06 第十轮实验配置）：solo 刷新供给≈upkeep 平衡场景
+   *  （生产 t2：res 恒 5 < cost 5 + reserve 2 = 7 → 永不 SPAWN → pop 3 冻结），
+   *  reserve=0 可突破平衡扩编；默认 WORKER_SPAWN_RESERVE=2 保持生产行为零回归。 */
+  spawnReserve = WORKER_SPAWN_RESERVE,
 ): { readonly action: CoreAction | null; readonly intent: string | null; readonly surgeActive: boolean } {
   if (fallbackAction?.type === "HEAL") {
     return { action: fallbackAction, intent: "core_heal", surgeActive };
@@ -315,7 +329,10 @@ export function selectDeterministicCoreAction(
     return { action: fallbackAction, intent: "repair_shield", surgeActive };
   }
 
-  const workerTarget = Math.max(policy?.workerTarget ?? WORKER_RECOVERY_FLOOR, WORKER_RECOVERY_FLOOR);
+  const workerTarget = Math.max(
+    policy?.workerTarget ?? DEFAULT_WORKER_TARGET,
+    WORKER_RECOVERY_FLOOR,
+  );
   const core = state.core;
   const emergency = state.workers.length < WORKER_RECOVERY_FLOOR;
   // militaryRatio 消费点（v0.2.11）：workers 达 target 后按策略产兵——
@@ -351,7 +368,7 @@ export function selectDeterministicCoreAction(
         // 爆兵期：全力产兵（交替 VANGUARD/RANGER，不受 militaryRatio 限制）
         const unitType: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
         const cost = unitType === "VANGUARD" ? 10 : 12;
-        if (state.resources >= cost + WORKER_SPAWN_RESERVE) {
+        if (state.resources >= cost + spawnReserve) {
           return {
             action: { type: "SPAWN", unitType },
             intent: `spawn_${unitType.toLowerCase()}_surge`,
@@ -361,7 +378,7 @@ export function selectDeterministicCoreAction(
         // 资源不足以产兵：回积累期
         active = false;
       } else if (state.workers.length < workerTarget && !needMilitary) {
-        if (state.resources >= WORKER_SPAWN_COST + (emergency ? 0 : WORKER_SPAWN_RESERVE)) {
+        if (state.resources >= WORKER_SPAWN_COST + (emergency ? 0 : spawnReserve)) {
           return {
             action: { type: "SPAWN", unitType: "WORKER" },
             intent: emergency ? "emergency_spawn_worker" : "spawn_worker_target",
@@ -373,7 +390,7 @@ export function selectDeterministicCoreAction(
         // 覆盖为按目标占比产出。资源门禁：VANGUARD 10 / RANGER 12 + reserve
         const unitType: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
         const cost = unitType === "VANGUARD" ? 10 : 12;
-        if (state.resources >= cost + WORKER_SPAWN_RESERVE) {
+        if (state.resources >= cost + spawnReserve) {
           return {
             action: { type: "SPAWN", unitType },
             intent: `spawn_${unitType.toLowerCase()}_military_ratio`,
@@ -403,6 +420,8 @@ export class DeterministicPlanner implements PlanProvider {
   private readonly accumulateThreshold: number;
   /** 爆兵状态（跨 tick 保持：达标后持续爆兵直到资源耗尽回积累期）。 */
   private surgeActive = false;
+  /** 补员 reserve（第十轮实验配置；默认 2 = 生产行为零回归）。 */
+  private readonly spawnReserve: number;
   private previousAssignments: readonly Assignment[] = [];
 
   constructor(
@@ -411,12 +430,14 @@ export class DeterministicPlanner implements PlanProvider {
     patrolPlanner: SafetyPlanner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
     vanguardRatio: number | undefined = undefined,
     accumulateThreshold = 0,
+    spawnReserve = WORKER_SPAWN_RESERVE,
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
     this.patrolPlanner = patrolPlanner;
     this.vanguardRatio = vanguardRatio;
     this.accumulateThreshold = accumulateThreshold;
+    this.spawnReserve = spawnReserve;
   }
 
   decide(input: DeterministicPlannerInput): Plan {
@@ -473,6 +494,7 @@ export class DeterministicPlanner implements PlanProvider {
       this.vanguardRatio,
       this.accumulateThreshold,
       this.surgeActive,
+      this.spawnReserve,
     );
     this.surgeActive = coreDecision.surgeActive;
     if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;

@@ -20,10 +20,19 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { TenantSupervisor, type SupervisorEvent, type TenantSpec } from "../src/app/tenant-supervisor.ts";
 import { DebugServer } from "../src/app/debug-server.ts";
 import { registerShutdownRequest } from "../src/app/process-shutdown.ts";
+import { resolveArenaDataRoot } from "../src/app/data-root.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..");
 let nextPid = 41000;
+
+test("data root resolution uses CLI, env, then sibling default precedence", () => {
+  const repoRoot = resolve(tmpdir(), "arena-workspace", "arena-ts");
+  assert.equal(resolveArenaDataRoot(repoRoot), resolve(repoRoot, "..", "data"));
+  assert.equal(resolveArenaDataRoot(repoRoot, undefined, "env-data"), resolve(repoRoot, "env-data"));
+  assert.equal(resolveArenaDataRoot(repoRoot, "cli-data", "env-data"), resolve(repoRoot, "cli-data"));
+  assert.equal(resolveArenaDataRoot(repoRoot, "", "env-data"), resolve(repoRoot, "env-data"));
+});
 
 class FakeChild extends EventEmitter {
   readonly pid = nextPid++;
@@ -55,6 +64,8 @@ class FakeChild extends EventEmitter {
 
 interface TempRepo {
   readonly root: string;
+  readonly dataRoot: string;
+  readonly runtimeRoot: string;
   readonly envNames: readonly string[];
   cleanup(): void;
 }
@@ -64,14 +75,18 @@ function makeTempRepo(
     { file: "t1.json", tenantId: "t1" },
   ],
 ): TempRepo {
-  const root = mkdtempSync(join(tmpdir(), "arena-supervisor-"));
-  mkdirSync(join(root, "runtime", "configs"), { recursive: true });
+  const workspaceRoot = mkdtempSync(join(tmpdir(), "arena-supervisor-"));
+  const root = join(workspaceRoot, "arena-ts");
+  const dataRoot = join(workspaceRoot, "data");
+  const runtimeRoot = join(dataRoot, "runtime");
+  mkdirSync(root, { recursive: true });
+  mkdirSync(join(runtimeRoot, "configs"), { recursive: true });
   const envNames: string[] = [];
   for (const tenant of tenants) {
     const envName = tenant.envName ?? `ARENA_TEST_${tenant.tenantId}_${Math.random().toString(16).slice(2)}`;
     process.env[envName] = "test-key-not-real";
     envNames.push(envName);
-    writeFileSync(join(root, "runtime", "configs", tenant.file), JSON.stringify({
+    writeFileSync(join(runtimeRoot, "configs", tenant.file), JSON.stringify({
       tenantId: tenant.tenantId,
       arenaTokenEnv: envName,
       decisionMode: "deterministic",
@@ -82,10 +97,12 @@ function makeTempRepo(
   }
   return {
     root,
+    dataRoot,
+    runtimeRoot,
     envNames,
     cleanup() {
       for (const name of envNames) delete process.env[name];
-      rmSync(root, { recursive: true, force: true });
+      rmSync(workspaceRoot, { recursive: true, force: true });
     },
   };
 }
@@ -129,6 +146,9 @@ test("complete preflight happens before the first spawn", async () => {
       spawnChild: fakeSpawn(children),
     });
     const results = await supervisor.start();
+    assert.equal(supervisor.dataRoot, resolve(repo.dataRoot));
+    assert.equal(supervisor.configRoot, resolve(repo.runtimeRoot, "configs"));
+    assert.equal(supervisor.runtimeRoot, resolve(repo.runtimeRoot));
     assert.deepEqual([...results.keys()], ["t1", "t2"]);
     assert.equal(children.size, 2);
     assert.deepEqual(supervisor.status().map((row) => row.lifecycle), ["starting", "starting"]);
@@ -395,7 +415,7 @@ test("DebugServer bounds events and rejects unbounded n", async () => {
   const debug = new DebugServer({ repoRoot: repo.root, supervisor, port: 0 });
   try {
     for (let i = 0; i < 500; i += 1) {
-      appendFileSync(join(repo.root, "runtime", "supervisor.jsonl"), `${JSON.stringify({ i, pad: "x".repeat(700) })}\n`);
+      appendFileSync(join(repo.runtimeRoot, "supervisor.jsonl"), `${JSON.stringify({ i, pad: "x".repeat(700) })}\n`);
     }
     await debug.listen();
     const port = debug.address()!.port;
@@ -413,7 +433,7 @@ test("DebugServer walks backward from a truncated JSONL tail", async () => {
   const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"] });
   const debug = new DebugServer({ repoRoot: repo.root, supervisor, port: 0 });
   try {
-    const path = join(repo.root, "runtime", "t1", "telemetry", "runtime.jsonl");
+    const path = join(repo.runtimeRoot, "t1", "telemetry", "runtime.jsonl");
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, '{"tick":1}\n{"tick":2}\n{"tick":');
     await debug.listen();
@@ -433,11 +453,11 @@ test("DebugServer reads rotated JSONL history without unbounded scans", async ()
   const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"] });
   const debug = new DebugServer({ repoRoot: repo.root, supervisor, port: 0 });
   try {
-    const telemetry = join(repo.root, "runtime", "t1", "telemetry");
+    const telemetry = join(repo.runtimeRoot, "t1", "telemetry");
     mkdirSync(telemetry, { recursive: true });
     writeFileSync(join(telemetry, "runtime.jsonl.1"), '{"tick":7}\n');
     writeFileSync(join(telemetry, "runtime.jsonl"), '{"tick":');
-    const events = join(repo.root, "runtime", "supervisor.jsonl");
+    const events = join(repo.runtimeRoot, "supervisor.jsonl");
     writeFileSync(`${events}.1`, '{"i":1}\n{"i":2}\n');
     writeFileSync(events, '{"i":3}\n');
     await debug.listen();
@@ -472,7 +492,7 @@ test("run-supervisor binds debug port before preflight and spawns zero children 
     const code = await new Promise<number | null>((resolvePromise) => child.once("exit", resolvePromise));
     assert.equal(code, 1);
     assert.match(output, /EADDRINUSE|address already in use/i);
-    const eventPath = join(repo.root, "runtime", "supervisor.jsonl");
+    const eventPath = join(repo.runtimeRoot, "supervisor.jsonl");
     const events = existsSync(eventPath) ? readFileSync(eventPath, "utf8") : "";
     assert.doesNotMatch(events, /"type":"spawned"/);
   } finally {
@@ -581,7 +601,7 @@ test("Supervisor IPC drives a real runTenant child to natural cleanup and exit",
   const script = join(repo.root, "run-tenant-child.mts");
   const runtimeModule = pathToFileURL(resolve(PACKAGE_ROOT, "src", "app", "tenant-runtime.ts")).href;
   const shutdownModule = pathToFileURL(resolve(PACKAGE_ROOT, "src", "app", "process-shutdown.ts")).href;
-  const configPath = join(repo.root, "runtime", "configs", "t1.json");
+  const configPath = join(repo.runtimeRoot, "configs", "t1.json");
   writeFileSync(script, `
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -607,7 +627,7 @@ try {
   });
   writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
     clientClosed, runtimeClosed,
-    lockExists: existsSync(join(${JSON.stringify(repo.root)}, "runtime", "t1", "locks", "t1.lock")),
+    lockExists: existsSync(join(${JSON.stringify(repo.runtimeRoot)}, "t1", "locks", "t1.lock")),
     connectedBeforeFinally: process.connected,
   }));
 } finally {

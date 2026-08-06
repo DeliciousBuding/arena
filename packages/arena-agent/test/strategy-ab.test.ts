@@ -18,6 +18,7 @@ import type { Plan, TickState } from "../src/domain/model.ts";
 import { validatePlan } from "../src/domain/plan-validator.ts";
 import type { PlanProvider } from "../src/runtime/decision-types.ts";
 import { runEpisode, type EpisodeConfig } from "../src/sim/harness/episode.ts";
+import { DeterministicPlanner } from "../src/planning/deterministic-planner.ts";
 import { AGGRESSIVE_SAFETY_CONFIG, SafetyPlanner } from "../src/strategies/safety-planner.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -74,7 +75,7 @@ const DUEL_SCENARIO = {
         {
           id: "55555555-5555-5555-5555-555555555555",
           owner: "p2",
-          position: [6, 0],
+          position: [3, 0],
           hp: 4,
           unitType: "VANGUARD",
           cargo: 0,
@@ -92,20 +93,23 @@ const DUEL_SCENARIO = {
   ],
   terrain: {
     obstacles: [[3, 2]],
-    resources: [[5, 1], [9, 1]],
+    // p2 双专属近矿（[8,1]/[9,1]）：补员 Worker 有分配选择，不抢 p1 的 [5,1]——
+    // 旧场景 [9,1] 单矿 + 补员 Worker 的 nearest 会跨玩家争用 [5,1]，双方持续
+    // MOVE_CONTESTED 死锁（S7 debug 实证：t6-t200 连续失败、0 交战）。
+    resources: [[5, 1], [8, 1], [9, 1]],
   },
   beacon: { position: [100, 100], status: "GROUND", carrierId: null },
 };
 
-function aggressivePlanner(): PlanProvider {
+function aggressivePlanner(): SafetyPlanner {
   return new SafetyPlanner(AGGRESSIVE_SAFETY_CONFIG);
 }
 
-function defensivePlanner(): PlanProvider {
+function defensivePlanner(): SafetyPlanner {
   return new SafetyPlanner();
 }
 
-function duelConfig(ticks: number, p1: () => PlanProvider, p2: () => PlanProvider): EpisodeConfig {
+function duelConfig(ticks: number, p1: () => SafetyPlanner, p2: () => SafetyPlanner): EpisodeConfig {
   return {
     scenario: DUEL_SCENARIO,
     rulesPath: MANIFEST_PATH,
@@ -115,7 +119,10 @@ function duelConfig(ticks: number, p1: () => PlanProvider, p2: () => PlanProvide
       { id: "p1", planner: "safety" },
       { id: "p2", planner: "safety" },
     ],
-    plannerFactory: (tenant) => (tenant.id === "p1" ? p1() : p2()),
+    plannerFactory: (tenant) =>
+      // 生产形态：DeterministicPlanner 带容量仲裁（裸 SafetyPlanner 同格单位
+      // 争同一目的格会 MOVE_CONTESTED 卡死——模拟器语义：跨玩家同格进入全失败）
+      new DeterministicPlanner(undefined, tenant.id === "p1" ? p1() : p2(), tenant.id === "p1" ? p1() : p2()),
   };
 }
 

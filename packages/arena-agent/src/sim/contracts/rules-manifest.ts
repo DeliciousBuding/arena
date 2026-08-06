@@ -339,17 +339,21 @@ export function manifestHash(manifest: RulesManifest): string {
   return createHash("sha256").update(canonicalJson(manifest)).digest("hex");
 }
 
-/** 目录聚合 SHA-256：文件名排序 → 每文件 "hash  name" 行 → 整体 sha256（与 bash 工具一致）。 */
+/** 目录聚合 SHA-256：文件名排序 → 每文件 "hash  name" 行 → 整体 sha256（与 bash 工具一致）。
+ *  只聚合文件（跳过子目录，如 __pycache__ 等运行产物——防止运行时生成物造成漂移误报）。 */
 export function directoryAggregateSha256(dirPath: string): { aggregate: string; fileCount: number } {
-  const files = readdirSync(dirPath).sort();
+  const entries = readdirSync(dirPath, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort();
   const lines: string[] = [];
-  for (const name of files) {
+  for (const name of entries) {
     const content = readFileSync(join(dirPath, name));
     const digest = createHash("sha256").update(content).digest("hex");
     lines.push(`${digest}  ${name}`);
   }
   const aggregate = createHash("sha256").update(lines.join("\n") + "\n").digest("hex");
-  return { aggregate, fileCount: files.length };
+  return { aggregate, fileCount: entries.length };
 }
 
 /** 验证本地 SDK 镜像与 manifest 锁定值一致（检测镜像漂移）。返回 null 表示一致。 */

@@ -49,6 +49,8 @@ export function forcedTaskFor(unit: PlanningUnit, snapshot: PlanningSnapshot): T
     return { type: "PICKUP_BEACON", target: beacon.position, targetCellKey: cellKey(beacon.position) };
   }
   const core = snapshot.corePosition;
+  // cargo>0 即强制回仓（服务器语义：HARVEST 要求 cargo=0，cargo=1 再采必
+  // CARGO_FULL——"满载运 2 次"不可行，2026-08-06 实验实证后回滚）。
   if (unit.cargo > 0 && core !== null) {
     return { type: "DEPOSIT", target: core };
   }

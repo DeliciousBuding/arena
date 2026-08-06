@@ -2,7 +2,7 @@
 
 Arena Hero 游戏 SDK 的 TypeScript 实现，**fork 自 [arena-hero/arena-hero-python](https://github.com/arena-hero/arena-hero-python)**（Apache-2.0）。
 
-## 位置与结构（arena 单仓 monorepo）
+## 位置与结构
 
 ```
 packages/arena-hero-ts/
@@ -10,10 +10,10 @@ packages/arena-hero-ts/
   test/              ← TS 测试
   contracts/         ← 契约产物（generated/ JSON Schema + fixtures/ 真实样本）
   scripts/           ← 契约产物生成
-reference/arena-hero-python/   ← 官方 Python SDK 源码镜像（追上游对照，见 sync-log.md）
+../../../reference/arena-hero-python/  ← 协调仓中的官方 Python SDK 源码镜像
 ```
 
-- 追上游：`reference/arena-hero-python/sync-log.md`（官方仓库更新 → 对照镜像 → 手动同步协议变更到本包）
+- 追上游：`../../../reference/arena-hero-python/sync-log.md`（官方仓库更新 → 对照镜像 → 手动同步协议变更到本包）
 - 协议事实来源：官方 src/arena_hero/ 源码 + 官方 changelog
 
 ## 设计基线

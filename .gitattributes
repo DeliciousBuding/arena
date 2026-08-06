@@ -1,7 +1,3 @@
-# 上游 SDK 镜像：逐字节对照（-text = 零行尾转换），保证 mirror 聚合 sha256 跨环境稳定
-reference/arena-hero-python/** -text
 packages/arena-hero-ts/contracts/generated/*.schema.json text eol=lf
 *.sh text eol=lf
-deploy/systemd/* text eol=lf
-deploy/docker/* text eol=lf
 scripts/server/*.mjs text eol=lf

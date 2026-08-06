@@ -56,8 +56,10 @@ function duelScenario(seed: number) {
 const P1_POLICY: MacroPolicy = { posture: "balanced", workerTarget: 6, militaryRatio: 0.3, focusRegion: null, attackPriority: null };
 
 const RATIOS = [0, 0.3, 0.5, 0.8];
-const SEEDS = [1, 2];
-const TICKS = 300;
+const SEEDS = [1, 2, 3];
+// 800 ticks（第二十轮）：300 ticks 时校准供给下 res 3.5 产不起兵（cost 10）、
+// 区分度被窗口吞掉（第十九轮阴性）——长窗口排除窗口限制。
+const TICKS = 800;
 const RESULT_FILE = "experiment-result.txt";
 
 interface Result {
@@ -76,7 +78,7 @@ function runDuel(ratio2: number, seed: number): Result {
     rulesPath: MANIFEST_PATH,
     seed,
     ticks: TICKS,
-    refill: {}, // 近似 refill：按规则 cadence 补回资源格（官方 server-secret，近似标注）
+    refill: { everyTicks: 65 }, // 生产校准 cadence（第十一轮：真实 solo 供给 ≈60-70 tick/格）；原 refill:{} 用规则默认 ≈200 远慢于真实
     tenants: [
       { id: "p1", planner: "deterministic", policy: P1_POLICY } as EpisodeTenant,
       { id: "p2", planner: "deterministic", policy: p2Policy } as EpisodeTenant,

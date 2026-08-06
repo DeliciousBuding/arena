@@ -1,7 +1,7 @@
 # Arena Bot 架构（Python 版，legacy）
 
 > ⚠️ **本文件描述已删除的 Python runtime，只是不可执行的历史快照。**
-> 当前权威架构见 [ts-architecture.md](ts-architecture.md)，运维见 [ops/supervisor-runbook.md](ops/supervisor-runbook.md)。
+> 当前权威架构见 [共享 TS 架构](../../docs/ts-architecture.md)，运维见 [共享 Supervisor 手册](../../docs/ops/supervisor-runbook.md)。
 > 不要按本文命令恢复 Python 运行链。
 
 最后更新：2026-08-02（重构后）
@@ -15,7 +15,7 @@ strategy.py      决策抽象：Strategy 基类 + Plan 纯数据 + apply_plan �
 strategies/      策略实现（balance = 默认）
 phase_machine.py 全局阶段状态机（EARLY_EXPANSION/BALANCED/MILITARY）
 world.py         环境记忆（障碍永久/资源三态/敌人跟踪/失败格冷却/单位意图）
-map_store.py     共享地图测绘（SQLite WAL，4 账号协同探索）
+map_store.py     共享地图测绘（SQLite WAL，多账号协同探索）
 core/
   state.py       Turn 适配层（TickState：决策层不碰 SDK 细节）
   nav.py         确定性导航（曼哈顿/直线遮挡/步进/巡逻目标）
@@ -71,7 +71,7 @@ PATROL ⇄ GO_HARVEST（跨 Tick 目标记忆）→ cargo>0 → RETURN → DEPOS
 
 ## 共享地图（map_store）
 
-- 障碍是永久地形（规则）→ 4 个租户的观察实时落盘 SQLite（WAL 多进程安全）
+- 障碍是永久地形（规则）→ 多个租户的观察实时落盘 SQLite（WAL 多进程安全）
 - 任一租户查询全量已知障碍：巡逻/回家直接绕开其他账号测绘过的区域
 - `GET /map` 查看测绘统计（障碍格数/chunk 数）；数据在 `mapstore/`（gitignore）
 - 这是"经验建图"（官方种子不可逆，但地图内容可从观察合法重建）的第一层
@@ -85,5 +85,5 @@ PATROL ⇄ GO_HARVEST（跨 Tick 目标记忆）→ cargo>0 → RETURN → DEPOS
 ## 规则契约
 
 - 规则 v0.10 / SDK 0.2.6（2026-08-02 核对，上游 commit ad6fc27 / 4a29585）
-- 契约文档 `docs/game-rules.md`；数值速查 `docs/reference-numbers.md`
-- 升级路径：更新官方源码镜像/文档 → `python scripts/sync_docs.py` → 同步 TS schema/实现 → Runtime-Golden 门禁
+- 契约文档 `docs/game-rules.md`；数值速查 `../../docs/reference-numbers.md`
+- 升级路径：更新 `../../reference/` 官方镜像 → 同步公共规则文档与 TS schema/实现 → Runtime-Golden 门禁

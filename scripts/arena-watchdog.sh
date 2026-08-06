@@ -5,7 +5,9 @@
 set -u
 
 LOG="$HOME/arena-watchdog.log"
-REPO="/d/Code/Projects/arena"
+REPO="/d/Code/Projects/arena/arena-ts"
+DATA_ROOT="/d/Code/Projects/arena/data"
+RUNTIME_ROOT="$DATA_ROOT/runtime"
 READY_URL="http://127.0.0.1:8120/ready"
 
 now() { date '+%Y-%m-%d %H:%M:%S'; }
@@ -33,10 +35,10 @@ if [ -n "$STRAY" ]; then
 fi
 
 # 3) 清理死锁（进程已确认死透）
-rm -f "$REPO/runtime/t1/locks/"*.lock "$REPO/runtime/t2/locks/"*.lock
+rm -f "$RUNTIME_ROOT/t1/locks/"*.lock "$RUNTIME_ROOT/t2/locks/"*.lock
 
 # 4) 重启 live supervisor（脱离当前会话，日志追加；--record-calibration 旁路
-#    Runtime-Golden dataset 记录）
+#    只记录 raw Runtime-Golden dataset；后续校准严格离线执行）
 cd "$REPO" || exit 1
-nohup npm run arena:supervisor -- --configs=t1,t2 --mode=deterministic --live --record-calibration --port=8120 >> "$LOG" 2>&1 &
+nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs=t1,t2 --mode=deterministic --live --record-calibration --port=8120 >> "$LOG" 2>&1 &
 echo "$(now) supervisor restarted (pid $!)" >> "$LOG"

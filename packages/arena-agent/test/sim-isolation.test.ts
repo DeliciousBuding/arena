@@ -3,7 +3,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
@@ -14,18 +15,15 @@ const PKG_ROOT = resolve(here, "..");
 const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
 const CHECKER = join(PKG_ROOT, "scripts", "check-sim-isolation.mjs");
 const SCENARIO = join(PKG_ROOT, "test", "fixtures", "sim", "scenario-basic.json");
-const createdRunIds = new Set<string>();
+const TEST_DATA_ROOT = mkdtempSync(join(tmpdir(), "arena-sim-isolation-data-"));
+const RUN_ROOT = join(TEST_DATA_ROOT, "runs", "sim");
 
 function testRunId(label: string): string {
-  const id = `${label}-${process.pid}`;
-  createdRunIds.add(id);
-  return id;
+  return `${label}-${process.pid}`;
 }
 
 after(() => {
-  for (const id of createdRunIds) {
-    rmSync(join(REPO_ROOT, "runs", "sim", id), { recursive: true, force: true });
-  }
+  rmSync(TEST_DATA_ROOT, { recursive: true, force: true });
 });
 
 function runChecker(args: readonly string[] = []): { code: number; stdout: string; stderr: string } {
@@ -49,7 +47,13 @@ function runSim(args: readonly string[]): { code: number; stdout: string; stderr
       encoding: "utf8",
       cwd: PKG_ROOT,
       shell: true,
-      env: { ...process.env, API_KEY: "", BASE_URL: "", WEBSOCKET_URL: "" },
+      env: {
+        ...process.env,
+        ARENA_DATA_ROOT: TEST_DATA_ROOT,
+        API_KEY: "",
+        BASE_URL: "",
+        WEBSOCKET_URL: "",
+      },
     });
     return { code: 0, stdout, stderr: "" };
   } catch (error) {
@@ -80,7 +84,7 @@ test("S1/S9: doctor CLI 在无凭据环境下成功（无 .env 依赖）", () =>
   assert.match(result.stdout, /sim doctor ok: rules=v0\.11/);
 });
 
-test("S9: episode 输出落 runs/sim 且 manifest 为 sim.run.v1", () => {
+test("S9: episode 输出落 data/runs/sim 且 manifest 为 sim.run.v1", () => {
   const id = testRunId("isolation");
   const result = runSim([
     "episode", "--scenario", SCENARIO, "--seed", "7", "--ticks", "5",
@@ -90,7 +94,7 @@ test("S9: episode 输出落 runs/sim 且 manifest 为 sim.run.v1", () => {
   const match = result.stdout.match(/out=(\S+)/);
   assert.ok(match, "output dir not reported");
   const runDir = match![1];
-  assert.ok(runDir.includes(join(REPO_ROOT, "runs", "sim")));
+  assert.ok(runDir.includes(RUN_ROOT));
   const manifestPath = join(runDir, "manifest.json");
   assert.ok(existsSync(manifestPath), "manifest.json missing");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));

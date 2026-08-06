@@ -10,12 +10,11 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, "..");
-const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
 const SCENARIO = join(PKG_ROOT, "test", "fixtures", "sim", "scenario-basic.json");
 const CALIBRATION = join(PKG_ROOT, "test", "fixtures", "sim", "calibration-wait-match.json");
 const CALIBRATION_DATASET = join(PKG_ROOT, "test", "fixtures", "sim", "calibration-dataset-match", "manifest.json");
-const RUN_ROOT = join(REPO_ROOT, "runs", "sim");
-const createdRunIds = new Set<string>();
+const TEST_DATA_ROOT = mkdtempSync(join(tmpdir(), "arena-sim-cli-data-"));
+const RUN_ROOT = join(TEST_DATA_ROOT, "runs", "sim");
 
 interface CommandResult {
   readonly code: number;
@@ -30,7 +29,13 @@ function runSim(args: readonly string[]): CommandResult {
       encoding: "utf8",
       cwd: PKG_ROOT,
       shell: true,
-      env: { ...process.env, API_KEY: "", BASE_URL: "", WEBSOCKET_URL: "" },
+      env: {
+        ...process.env,
+        ARENA_DATA_ROOT: TEST_DATA_ROOT,
+        API_KEY: "",
+        BASE_URL: "",
+        WEBSOCKET_URL: "",
+      },
     });
     return { code: 0, stdout, stderr: "" };
   } catch (error) {
@@ -44,9 +49,7 @@ function runSim(args: readonly string[]): CommandResult {
 }
 
 function runId(label: string): string {
-  const id = `s9-${process.pid}-${label}`;
-  createdRunIds.add(id);
-  return id;
+  return `s9-${process.pid}-${label}`;
 }
 
 function runDir(id: string): string {
@@ -62,7 +65,23 @@ function json<T>(id: string, file: string): T {
 }
 
 after(() => {
-  for (const id of createdRunIds) rmSync(runDir(id), { recursive: true, force: true });
+  rmSync(TEST_DATA_ROOT, { recursive: true, force: true });
+});
+
+test("S9: CLI data root overrides ARENA_DATA_ROOT", () => {
+  const cliDataRoot = mkdtempSync(join(tmpdir(), "arena-sim-cli-override-"));
+  const id = runId("data-root-precedence");
+  try {
+    const result = runSim([
+      "episode", "--scenario", SCENARIO, "--ticks", "1",
+      "--data-root", cliDataRoot, "--run-id", id,
+    ]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(existsSync(join(cliDataRoot, "runs", "sim", id, "manifest.json")), true);
+    assert.equal(existsSync(runDir(id)), false);
+  } finally {
+    rmSync(cliDataRoot, { recursive: true, force: true });
+  }
 });
 
 test("S9: episode writes complete artifacts and deterministic files are byte-identical", () => {
@@ -99,21 +118,12 @@ test("S9: run directory collision fails closed unless --force", () => {
   assert.equal(runSim([...base, "--force"]).code, 0);
 });
 
-test("S9: output symlink/junction escape is rejected", (context) => {
+test("S9: output symlink/junction escape is rejected", () => {
   const linkName = `s9-${process.pid}-junction`;
   const linkPath = join(RUN_ROOT, linkName);
   const external = mkdtempSync(join(tmpdir(), "arena-sim-output-"));
   try {
-    try {
-      symlinkSync(external, linkPath, "junction");
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "EPERM" || code === "EACCES" || code === "ENOSYS") {
-        context.skip(`junction creation unavailable: ${code}`);
-        return;
-      }
-      throw error;
-    }
+    symlinkSync(external, linkPath, "junction");
     const result = runSim([
       "episode", "--scenario", SCENARIO,
       "--output", `runs/sim/${linkName}`, "--run-id", "escape",
