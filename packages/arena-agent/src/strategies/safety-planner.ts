@@ -181,6 +181,13 @@ export interface SafetyPlannerConfig {
    */
   readonly boundedRaid?: boolean;
   /**
+   * 守卫预留（B7，实验，竞品 _strike_group_ids 对照）：aggressive 攻坚
+   * （敌 Core 记忆推进）时按 id 排序保留 1 个 Vanguard 守家（官方拆家
+   * 留守卫 VANGUARD_CORE_GUARDS=1 防换家/反打——家不空防），其余全压
+   * 拆家。默认 false = 历史行为（全压，零回归）。
+   */
+  readonly strikeGroupReserve?: boolean;
+  /**
    * worker 遭遇撤离（v0.3，实验，B10 竞品 "Scout And Observer Response"
    * 对照）：空 worker 视野内（3 格）出现战斗单位（VANGUARD/RANGER）时，
    * 撤离回 Core（EVADE+RETURN 合一——向 Core 步进即远离敌人，敌占格
@@ -707,6 +714,21 @@ export class SafetyPlanner {
         if (home !== null && !samePosition(unit.position, home)) {
           const direction = stepToward(unit.position, home, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_hold");
+        }
+        return;
+      }
+      // B7 守卫预留（strikeGroupReserve 候选，竞品 _strike_group_ids 对照）：
+      // 攻坚时按 id 排序保留 1 个 Vanguard 守家（官方拆家留守卫
+      // VANGUARD_CORE_GUARDS=1 防换家/反打），其余全压拆家——家不空防。
+      const reserveGuard =
+        this.config.strikeGroupReserve === true &&
+        state.vanguards.length >= 2 &&
+        [...state.vanguards].map((v) => v.id).sort().at(-1) === unit.id;
+      if (reserveGuard) {
+        const home = state.core === null ? null : homeCell(state.core.position, militaryObstacles, index);
+        if (home !== null && !samePosition(unit.position, home)) {
+          const direction = stepToward(unit.position, home, militaryObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_home_guard");
         }
         return;
       }
