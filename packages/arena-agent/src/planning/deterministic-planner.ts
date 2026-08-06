@@ -291,6 +291,12 @@ const WORKER_SPAWN_RESERVE = 2;
  * floor=2 保留。生产有 policy 时仍以 policy.workerTarget 为准（零变化）。
  */
 const DEFAULT_WORKER_TARGET = 4;
+/** 威胁防御产兵（竞品 arena_farmer 对照）：可见战斗敌距 Core 的触发半径。
+ *  5 格 > 射程 3 = 预警带：敌人进入视野即产兵，比挨打再产（fallback
+ *  HEAL 会抢占资源）提前 2 tick 部署。 */
+const THREAT_SPAWN_DISTANCE = 5;
+/** 威胁时的 VANGUARD 防御目标（官方 DEFENSE_VANGUARD_TARGET=3）。 */
+const DEFENSE_VANGUARD_TARGET = 3;
 
 /** 军事单位类型选择：默认交替（VANGUARD ↔ RANGER）；vanguardRatio 配置时按目标占比。 */
 function nextMilitaryType(state: TickState, vanguardRatio?: number): "VANGUARD" | "RANGER" {
@@ -326,6 +332,13 @@ export function selectDeterministicCoreAction(
    *  （生产 t2：res 恒 5 < cost 5 + reserve 2 = 7 → 永不 SPAWN → pop 3 冻结），
    *  reserve=0 可突破平衡扩编；默认 WORKER_SPAWN_RESERVE=2 保持生产行为零回归。 */
   spawnReserve = WORKER_SPAWN_RESERVE,
+  /** 威胁防御产兵（2026-08-07 竞品 _control_core 对照）：可见战斗敌距
+   *  Core <=5 格（预警带）且 VANGUARD < 3 → 优先产 VANGUARD。实验 A/B
+   *  （threat-defense-experiment，120 ticks × 3 seeds）：资源紧张场景
+   *  （容量 10、res 10）产兵挤占治疗资源——被拆 17 tick vs 对照组（不
+   *  产兵、res 留存治疗）25 tick——**更差**；官方有 heal/repair/迁移
+   *  多重防御垫底，我们只有治疗。未证明净收益 → 默认关闭（候选）。 */
+  threatDefenseSpawn = false,
 ): { readonly action: CoreAction | null; readonly intent: string | null; readonly surgeActive: boolean } {
   if (fallbackAction?.type === "HEAL") {
     return { action: fallbackAction, intent: "core_heal", surgeActive };
@@ -367,6 +380,14 @@ export function selectDeterministicCoreAction(
         unit.position[1] === core.position[1] &&
         !(unit.unitType === "WORKER" && unit.cargo > 0),
     ).length;
+    // 威胁感知（官方 _control_core 对照）：可见战斗单位（VANGUARD/RANGER）
+    // 距 Core <=3 格 = 射程内威胁——防御产兵触发条件。
+    const coreThreatened = state.visibleEnemies.some(
+      (enemy) =>
+        enemy.kind === "UNIT" &&
+        enemy.unitType !== "WORKER" &&
+        manhattan(enemy.position, core.position) <= THREAT_SPAWN_DISTANCE,
+    );
     if (permanentOccupantsOnCore === 0) {
       const surgeOn = accumulateThreshold > 0 && active;
       if (surgeOn) {
@@ -382,6 +403,20 @@ export function selectDeterministicCoreAction(
         }
         // 资源不足以产兵：回积累期
         active = false;
+      } else if (threatDefenseSpawn && coreThreatened && state.vanguards.length < DEFENSE_VANGUARD_TARGET) {
+        // 威胁防御产兵（2026-08-07 竞品 _control_core 对照）：可见战斗敌
+        // 距 Core <=5 格（预警带：射程 3 外提前 2 tick 部署）且 VANGUARD
+        // 未达防御目标 → 优先产 VANGUARD——敌人打到门口时继续产 worker
+        // 补员是送死（官方 DEFENSE_VANGUARD_TARGET=3，威胁响应先于经济
+        // 扩张）。紧急防御豁免 spawnReserve（官方语义：威胁产兵只看纯
+        // 成本 resources >= VANGUARD_COST——防御是生存行为不囤 reserve）。
+        if (state.resources >= 10) {
+          return {
+            action: { type: "SPAWN", unitType: "VANGUARD" },
+            intent: "spawn_vanguard_defense",
+            surgeActive: active,
+          };
+        }
       } else if (state.workers.length < workerTarget && !needMilitary) {
         if (state.resources >= WORKER_SPAWN_COST + (emergency ? 0 : spawnReserve)) {
           return {
