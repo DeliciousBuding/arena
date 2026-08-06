@@ -96,3 +96,54 @@ test("v0.14: computeUnitCost 只接受 v0.14 manifest（编译期版本隔离）
   assert.equal(compileTimeCheck, compileTimeCheck); // 仅引用，不执行
   assert.equal(v014.rulesVersion, "v0.14");
 });
+
+test("v0.14: 官方 SDK 0.2.9 unit_cost 钉定向量全量一致（183/183）", () => {
+  // 2026-08-07 官方 arena-hero-python 0.2.9 发布（docs 838a8eb），
+  // unit_cost(unit_type, population) 用纯整数 round-half-up
+  // （(2n+d)//(2d)）。本向量由官方 wheel 0.2.9 实测生成（PyPI
+  // arena_hero-0.2.9-py3-none-any.whl，rules.py 原样运行），逐格与
+  // 我们的 computeUnitCost 对比，杜绝浮点/取整语义漂移。
+  // 向量文件：data/runs/sim/sdk-029-check/official-unit-cost-v0.2.9-vectors.json
+  // （对官方 0.2.9 唯一授权源，重建路径记录于 MASTER §5.8）。
+  const officialWorker = [
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    7, 7, 7, 7, 7, 8, 8, 8, 8, 8,
+    11, 11, 11, 11, 11, 14, 14, 14, 14, 14,
+    19, 19, 19, 19, 19, 24, 24, 24, 24, 24,
+    31, 31, 31, 31, 31, 41, 41, 41, 41, 41,
+    53,
+  ];
+  const officialVanguard = [
+    10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+    10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+    13, 13, 13, 13, 13, 17, 17, 17, 17, 17,
+    22, 22, 22, 22, 22, 29, 29, 29, 29, 29,
+    37, 37, 37, 37, 37, 48, 48, 48, 48, 48,
+    63, 63, 63, 63, 63, 82, 82, 82, 82, 82,
+    106,
+  ];
+  const officialRanger = [
+    12, 12, 12, 12, 12, 12, 12, 12, 12, 12,
+    12, 12, 12, 12, 12, 12, 12, 12, 12, 12,
+    16, 16, 16, 16, 16, 20, 20, 20, 20, 20,
+    26, 26, 26, 26, 26, 34, 34, 34, 34, 34,
+    45, 45, 45, 45, 45, 58, 58, 58, 58, 58,
+    75, 75, 75, 75, 75, 98, 98, 98, 98, 98,
+    127,
+  ];
+  const officialByUnit = {
+    WORKER: officialWorker,
+    VANGUARD: officialVanguard,
+    RANGER: officialRanger,
+  } as const;
+  for (const [unitType, values] of Object.entries(officialByUnit)) {
+    for (let population = 0; population < values.length; population += 1) {
+      assert.equal(
+        computeUnitCost(unitType as "WORKER" | "VANGUARD" | "RANGER", population, v014),
+        values[population],
+        `unit=${unitType} population=${population}`,
+      );
+    }
+  }
+});

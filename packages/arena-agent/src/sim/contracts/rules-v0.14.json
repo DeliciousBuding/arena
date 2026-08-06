@@ -1,96 +1,108 @@
 {
-  "schemaVersion": 1,
-  "rulesVersion": "v0.14",
-  "verifiedAt": "2026-08-06T19:30:00+08:00",
-  "evidence": {
-    "docs": {
-      "repo": "github.com/arena-hero/arena-hero-doc",
-      "commit": "166ef865a0ceec280b5fd8b9ffff80eb613674c7",
-      "rulesVersion": "v0.14",
-      "apiVersion": "v0.1"
-    },
-    "serverSource": {
-      "status": "not-publicly-accessible",
-      "note": "official changelog 2026-08-06 cites server commit b24cfcd22b82c0af0f3993397d2696629762e7e5 (dynamic Unit prices replace maintenance); server repo anonymous clone unavailable for direct verification"
-    },
-    "discrepancies": [
-      "population >= 21 dynamic pricing not observed in production (historical production population peak 8); formula implemented from official changelog text only, marked NOT-VERIFIED-LIVE in pricing notes",
-      "python SDK v0.2.9 (commit 423d252adcca439669adb3e7b042e52e53b4430bd) adds exact unit_cost(unit_type, population) helper; local reference mirror is v0.2.6 (pre-v0.14), SDK mirror verification pending"
-    ]
+ "schemaVersion": 1,
+ "rulesVersion": "v0.14",
+ "verifiedAt": "2026-08-07T01:40:00+08:00",
+ "evidence": {
+  "docs": {
+   "repo": "github.com/arena-hero/arena-hero-doc",
+   "commit": "166ef865a0ceec280b5fd8b9ffff80eb613674c7",
+   "rulesVersion": "v0.14",
+   "apiVersion": "v0.1"
   },
-  "rules": {
-    "unitCosts": {
-      "base": {
-        "WORKER": 5,
-        "VANGUARD": 10,
-        "RANGER": 12
-      },
-      "dynamicPricing": {
-        "tierSize": 20,
-        "growthFactor": 1.3,
-        "tierStep": 5,
-        "rounding": "round_half_up"
-      }
-    },
-    "maintenance": {
-      "status": "removed",
-      "note": "v0.14 removes the per-Tick maintenance charge and all maintenance damage; population_tier / upkeep_next_tick / UPKEEP_PAID / UPKEEP_DEFICIT are removed rather than kept as deprecated fields"
-    },
-    "core": {
-      "minCapacity": 10,
-      "capacityPerUnit": 5,
-      "maxHp": 5,
-      "maxShield": 5,
-      "maxShieldWithBeacon": 10,
-      "visionRadius": 5,
-      "startingResources": 5,
-      "startingWorkerCount": 1
-    },
-    "units": {
-      "workerHp": 2,
-      "vanguardHp": 4,
-      "rangerHp": 2,
-      "workerCargoCapacity": 2,
-      "workerVisionRadius": 3,
-      "vanguardVisionRadius": 4,
-      "rangerVisionRadius": 5
-    },
-    "economy": {
-      "harvestAmount": 1,
-      "harvestAmountWithBeacon": 2,
-      "healCostPerHp": 1,
-      "repairShieldCost": 1,
-      "refillEveryTicks": 4
-    },
-    "movement": {
-      "cellEntityCapacity": 2,
-      "maxCellsPerTick": 1,
-      "samePlayerTieBreak": "ascending raw UUID bytes",
-      "crossPlayerContested": "all competing moves fail"
-    },
-    "settlement": {
-      "officialPhaseCount": 15,
-      "localPhaseCount": 16,
-      "granularityNote": "16 步是本仓库展开表达（两次 capacity overflow 显式化），官方 15 阶段无语义冲突"
-    }
+  "serverSource": {
+   "status": "not-publicly-accessible",
+   "note": "official changelog 2026-08-06 cites server commit b24cfcd22b82c0af0f3993397d2696629762e7e5 (dynamic Unit prices replace maintenance); server repo anonymous clone unavailable for direct verification"
   },
-  "constraints": {
-    "coordinate": {
-      "type": "signed-int64",
-      "jsRequirement": "Number.isSafeInteger",
-      "unsupportedError": "UNSUPPORTED_COORDINATE_RANGE",
-      "note": "MVP 不做 bigint 迁移；超出安全整数必须 fail closed，禁止静默舍入"
-    },
-    "uuidTieBreak": {
-      "rule": "ascending raw UUID bytes",
-      "comparator": "compareUuidRaw",
-      "forbidden": ["localeCompare"]
-    },
-    "refill": {
-      "status": "server-secret",
-      "simulation": "unknown-by-design",
-      "note": "refill 使用永久 secret world seed，客户端不可预测；模拟器不实现官方精确 refill，结算中标记 unknown"
-    },
-    "settlementOrder": "self-destruct -> capacity-shrink -> upkeep -> movement -> start-move-validation -> beacon -> harvest/deposit -> combat -> heal -> core-action -> respawn -> refill(4-tick) -> commit"
+  "discrepancies": [
+   "population >= 21 dynamic pricing not observed in production (historical production population peak 8); formula implemented from official changelog text only, marked NOT-VERIFIED-LIVE in pricing notes",
+   "python SDK v0.2.9 unit_cost(unit_type, population) verified against local implementation: 183/183 vectors identical (3 unit types x population 0..60, official wheel arena_hero-0.2.9 rules.py run as-is); pricing.ts integer round-half-up semantics match official (2n+d)//(2d)"
+  ],
+  "sdk": {
+   "repo": "github.com/arena-hero/arena-hero-python",
+   "tag": "v0.2.9",
+   "publicCommit": "423d252adcca439669adb3e7b04252e53b4430bd",
+   "mirrorDir": "../reference/arena-hero-python/arena_hero",
+   "mirrorFileCount": 13,
+   "mirrorAggregateSha256": "a4f00014f3772ff246b5436d8ed4f05bb1d594c1ec1935f7ec76f95a496a4acd",
+   "documentedCommit": "423d252adcca439669adb3e7b04252e53b4430bd",
+   "documentedCommitStatus": "documented-in-source-and-version"
   }
+ },
+ "rules": {
+  "unitCosts": {
+   "base": {
+    "WORKER": 5,
+    "VANGUARD": 10,
+    "RANGER": 12
+   },
+   "dynamicPricing": {
+    "tierSize": 20,
+    "growthFactor": 1.3,
+    "tierStep": 5,
+    "rounding": "round_half_up"
+   }
+  },
+  "maintenance": {
+   "status": "removed",
+   "note": "v0.14 removes the per-Tick maintenance charge and all maintenance damage; population_tier / upkeep_next_tick / UPKEEP_PAID / UPKEEP_DEFICIT are removed rather than kept as deprecated fields"
+  },
+  "core": {
+   "minCapacity": 10,
+   "capacityPerUnit": 5,
+   "maxHp": 5,
+   "maxShield": 5,
+   "maxShieldWithBeacon": 10,
+   "visionRadius": 5,
+   "startingResources": 5,
+   "startingWorkerCount": 1
+  },
+  "units": {
+   "workerHp": 2,
+   "vanguardHp": 4,
+   "rangerHp": 2,
+   "workerCargoCapacity": 2,
+   "workerVisionRadius": 3,
+   "vanguardVisionRadius": 4,
+   "rangerVisionRadius": 5
+  },
+  "economy": {
+   "harvestAmount": 1,
+   "harvestAmountWithBeacon": 2,
+   "healCostPerHp": 1,
+   "repairShieldCost": 1,
+   "refillEveryTicks": 4
+  },
+  "movement": {
+   "cellEntityCapacity": 2,
+   "maxCellsPerTick": 1,
+   "samePlayerTieBreak": "ascending raw UUID bytes",
+   "crossPlayerContested": "all competing moves fail"
+  },
+  "settlement": {
+   "officialPhaseCount": 15,
+   "localPhaseCount": 16,
+   "granularityNote": "16 步是本仓库展开表达（两次 capacity overflow 显式化），官方 15 阶段无语义冲突"
+  }
+ },
+ "constraints": {
+  "coordinate": {
+   "type": "signed-int64",
+   "jsRequirement": "Number.isSafeInteger",
+   "unsupportedError": "UNSUPPORTED_COORDINATE_RANGE",
+   "note": "MVP 不做 bigint 迁移；超出安全整数必须 fail closed，禁止静默舍入"
+  },
+  "uuidTieBreak": {
+   "rule": "ascending raw UUID bytes",
+   "comparator": "compareUuidRaw",
+   "forbidden": [
+    "localeCompare"
+   ]
+  },
+  "refill": {
+   "status": "server-secret",
+   "simulation": "unknown-by-design",
+   "note": "refill 使用永久 secret world seed，客户端不可预测；模拟器不实现官方精确 refill，结算中标记 unknown"
+  },
+  "settlementOrder": "self-destruct -> capacity-shrink -> upkeep -> movement -> start-move-validation -> beacon -> harvest/deposit -> combat -> heal -> core-action -> respawn -> refill(4-tick) -> commit"
+ }
 }

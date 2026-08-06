@@ -22,6 +22,7 @@ import {
   verifyMirror,
   type RulesManifest,
   type RulesManifestV011,
+  type RulesManifestV014,
   type RulesVersion,
 } from "../src/sim/contracts/rules-manifest.ts";
 
@@ -100,7 +101,6 @@ test("S0: canonical hash 确定性（同 manifest 两次输出一致）", () => 
 });
 
 test("S0: 本地 SDK 镜像聚合 hash 与 manifest 一致（漂移检测）", () => {
-  // verifyMirror 是 v0.11-only（v0.14 无已核对 SDK 镜像）：固定 v0.11 文件收窄类型
   const manifest = loadRulesManifest(V011_MANIFEST_PATH) as RulesManifestV011;
   const mismatch = verifyMirror(manifest, MIRROR_DIR);
   assert.equal(mismatch, null, mismatch ?? "");
@@ -108,6 +108,15 @@ test("S0: 本地 SDK 镜像聚合 hash 与 manifest 一致（漂移检测）", (
   const { aggregate } = directoryAggregateSha256(MIRROR_DIR);
   assert.equal(aggregate, manifest.evidence.sdk.mirrorAggregateSha256);
   assert.notEqual(createHash("sha256").update("tampered").digest("hex"), aggregate);
+});
+test("S0 v0.14: SDK 镜像聚合 hash 与 v0.14 manifest 一致（v0.2.9 已核对）", () => {
+  // 2026-08-07 官方 SDK v0.2.9 发布后完成 unit_cost 钉定核对（183/183），
+  // v0.14 manifest 补上 evidence.sdk；verifyMirror 对两版本统一生效。
+  const manifest = loadRulesManifest(MANIFEST_PATH) as RulesManifestV014;
+  const mismatch = verifyMirror(manifest, MIRROR_DIR);
+  assert.equal(mismatch, null, mismatch ?? "");
+  assert.equal(manifest.evidence.sdk.tag, "v0.2.9");
+  assert.equal(manifest.evidence.sdk.publicCommit, "423d252adcca439669adb3e7b04252e53b4430bd");
 });
 test("S0 v0.14: 内置 v0.14 manifest 加载成功且动态价格字段齐全", () => {
   const manifest = loadRulesManifest(MANIFEST_PATH);
