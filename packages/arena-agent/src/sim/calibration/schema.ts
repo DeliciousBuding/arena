@@ -50,13 +50,21 @@ function record(value: unknown, path: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function exactKeys(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
+function exactKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  path: string,
+  optional: readonly string[] = [],
+): void {
   const allowedSet = new Set(allowed);
   for (const key of Object.keys(value)) {
     if (!allowedSet.has(key)) throw new CalibrationCaseError(`${path}.${key} is not allowed`);
   }
+  const optionalSet = new Set(optional);
   for (const key of allowed) {
-    if (!(key in value)) throw new CalibrationCaseError(`${path}.${key} is required`);
+    if (!(key in value) && !optionalSet.has(key)) {
+      throw new CalibrationCaseError(`${path}.${key} is required`);
+    }
   }
 }
 
@@ -146,12 +154,21 @@ function parsePlayerState(value: unknown, path: string): PlayerState {
       "events",
     ],
     path,
+    // v0.14（2026-08-06 上游 rules v0.14）起服务器不再下发这两个字段；与
+    // 共享 schema（integer|null + optional）对齐，缺省或 null 即“服务器未提供”。
+    ["population_tier", "upkeep_next_tick"],
   );
   if (raw.status !== "ACTIVE" && raw.status !== "RESPAWNING") {
     throw new CalibrationCaseError(`${path}.status is invalid`);
   }
-  for (const field of ["resources", "population", "population_tier", "upkeep_next_tick"] as const) {
+  for (const field of ["resources", "population"] as const) {
     nonNegativeInt(raw[field], `${path}.${field}`);
+  }
+  for (const field of ["population_tier", "upkeep_next_tick"] as const) {
+    const maintenanceValue = raw[field];
+    if (maintenanceValue !== undefined && maintenanceValue !== null) {
+      nonNegativeInt(maintenanceValue, `${path}.${field}`);
+    }
   }
   if (raw.respawn_at_tick !== null) safePositiveInt(raw.respawn_at_tick, `${path}.respawn_at_tick`);
   if (raw.status === "ACTIVE" && raw.respawn_at_tick !== null) {

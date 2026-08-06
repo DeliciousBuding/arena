@@ -140,8 +140,10 @@ export const PlayerStateSchema = Type.Object(
     respawn_at_tick: Nullable(Type.Integer({ minimum: 1 })),
     resources: Type.Integer({ minimum: 0 }),
     population: Type.Integer({ minimum: 0 }),
-    population_tier: Type.Integer({ minimum: 0 }),
-    upkeep_next_tick: Type.Integer({ minimum: 0 }),
+    // v0.14（2026-08-06 上游 rules v0.14）：服务器移除 population_tier /
+    // upkeep_next_tick。旧消息仍带这两个字段，故保持可接受（向后兼容）。
+    population_tier: Nullable(Type.Integer({ minimum: 0 })),
+    upkeep_next_tick: Nullable(Type.Integer({ minimum: 0 })),
     champion_beacon: ChampionBeaconSchema,
     objects: Type.Array(WorldObjectSchema),
     events: Type.Array(ResolutionEventSchema),

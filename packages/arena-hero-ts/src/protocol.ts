@@ -62,6 +62,8 @@ function normalizePlayerState(value: unknown): PlayerState {
   return {
     ...wire,
     respawn_at_tick: wire.respawn_at_tick ?? null,
+    population_tier: wire.population_tier ?? null,
+    upkeep_next_tick: wire.upkeep_next_tick ?? null,
     champion_beacon: {
       ...beacon,
       status: beacon.status ?? null,

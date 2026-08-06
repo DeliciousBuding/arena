@@ -35,8 +35,6 @@
             "status",
             "resources",
             "population",
-            "population_tier",
-            "upkeep_next_tick",
             "champion_beacon",
             "objects",
             "events"
@@ -68,12 +66,26 @@
               "minimum": 0
             },
             "population_tier": {
-              "type": "integer",
-              "minimum": 0
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "upkeep_next_tick": {
-              "type": "integer",
-              "minimum": 0
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "champion_beacon": {
               "type": "object",

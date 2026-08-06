@@ -173,6 +173,9 @@ function normalizeState(state: PlayerState): unknown {
     respawn_at_tick: state.respawn_at_tick,
     resources: state.resources,
     population: state.population,
+    // v0.14 起服务器不再下发 population_tier/upkeep_next_tick（normalize 后为
+    // null）。原样透传：case 中为 null 时不得用旧协议公式推导参与比较，由
+    // classifyDifference 按“服务器未提供”归入 EXPECTED_UNKNOWN。
     population_tier: state.population_tier,
     upkeep_next_tick: state.upkeep_next_tick,
     champion_beacon: {
@@ -225,6 +228,15 @@ function classifyDifference(
       (isUncontrolledEntity(expected) || isUncontrolledEntity(actual))) {
     return "EXPECTED_UNKNOWN";
   }
+  // v0.14（2026-08-06 上游 rules v0.14）起服务器不再下发 population_tier /
+  // upkeep_next_tick；case 中为 null 即“服务器未提供”，该维度无法用本地
+  // 预测值验证，按 EXPECTED_UNKNOWN 处理而非伪造推导值参与判定。
+  if (
+    (path === "$.population_tier" || path === "$.upkeep_next_tick") &&
+    (expected ?? null) === null
+  ) {
+    return "EXPECTED_UNKNOWN";
+  }
   if (path.startsWith("$.entities")) return "ENTITY";
   if (path.startsWith("$.terrain")) return "TERRAIN";
   if (path.startsWith("$.events")) return "EVENT";
@@ -257,7 +269,11 @@ function collectDifferences(
     path,
     expected: expected === undefined ? null : expected,
     actual: actual === undefined ? null : actual,
-    note: null,
+    note:
+      (path === "$.population_tier" || path === "$.upkeep_next_tick") &&
+      (expected ?? null) === null
+        ? "server did not send this field under rules v0.14; not judged (no derived value fabricated)"
+        : null,
   });
   return output;
 }
