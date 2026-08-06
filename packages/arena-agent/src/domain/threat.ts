@@ -7,13 +7,15 @@
  * 等级（确定性级联，保守优先）：
  * - ENGAGED：本 tick 我方 Core 受击（CORE_DAMAGED/CORE_DESTROYED——单位受击
  *   不升级 Core 级，2026-08-07 竞品 recent_core_attack 分账对齐）
- * - BREAKOUT：可见敌 ≥2 且相对 Core 轴数 ≥2 且至少一个在 12 格内且**无逃逸方向**
- *   （竞品 multi-axis breakout 对齐：多轴但存在某方向使全部敌距离增加 = 可逃，
- *   不算被包围——第三十四轮修正旧"多轴即 BREAKOUT"的高估）
+ * - BREAKOUT：可见敌 ≥2 且相对 Core 轴数 ≥2 且**当前格投影伤害 >0**（至少
+ *   一敌能合法攻击 Core）且**无逃逸方向**（障碍/资源/敌占格为硬块——竞品
+ *   multi-axis breakout 对齐：多轴但存在某方向使全部敌距离增加 = 可逃，
+ *   不算被包围；C5 修正"12 格内"前提——打不到的远处包围不算 BREAKOUT）
  * - ALERT：可见敌移动（位置差分）或可见敌距 Core ≤12（回退半径）
  * - NORMAL：其他
  */
 import { type Position, type VisibleEntity } from "./model.ts";
+import { lineBlocked } from "./nav.ts";
 import type { EnemyMemory } from "./world.ts";
 
 export type ThreatLevel = "NORMAL" | "ALERT" | "ENGAGED" | "BREAKOUT";
@@ -52,11 +54,22 @@ function manhattan(a: Position, b: Position): number {
   return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
 }
 
-/** 竞品 multi-axis breakout 逃逸判定（第三十四轮对齐）：存在某方向使全部可见
- *  敌距离都增加（Manhattan，与竞品 _distance 同口径）= 有逃逸通道——多轴但
- *  可逃不算 BREAKOUT（被包围才是）。旧判定只看"多轴 + 12 格内"，在"多轴但
- *  可逃"场景高估威胁。 */
-function hasEscapeDirection(core: Position, enemies: readonly VisibleEntity[]): boolean {
+/** 与 nav.ts 同口径的格坐标 key（`x,y`），用于硬块集合查询。 */
+function cellKey(cell: Position): string {
+  return `${cell[0]},${cell[1]}`;
+}
+
+/** 竞品 multi-axis breakout 逃逸判定（第三十四轮对齐 + C5 硬块）：存在某方向
+ *  使全部可见敌距离都增加（Manhattan，与竞品 _distance 同口径）= 有逃逸通道
+ *  ——多轴但可逃不算 BREAKOUT。候选方向必须是可通行格：障碍格、资源格、敌占
+ *  格为硬块（竞品 "Obstacles, resource terrain, enemy-occupied cells remain
+ *  hard blocks"——旧判定裸四方向会把障碍格当成可逃方向）。 */
+function hasEscapeDirection(
+  core: Position,
+  enemies: readonly VisibleEntity[],
+  obstacles: ReadonlySet<string> = new Set(),
+  resourceCells: ReadonlySet<string> = new Set(),
+): boolean {
   const directions: ReadonlyArray<readonly [number, number]> = [
     [1, 0],
     [-1, 0],
@@ -65,11 +78,41 @@ function hasEscapeDirection(core: Position, enemies: readonly VisibleEntity[]): 
   ];
   for (const [dx, dy] of directions) {
     const destination: Position = [core[0] + dx, core[1] + dy];
+    if (obstacles.has(cellKey(destination))) continue;
+    if (resourceCells.has(cellKey(destination))) continue;
+    if (enemies.some((enemy) => sameCell(enemy.position, destination))) continue;
     if (enemies.every((enemy) => manhattan(destination, enemy.position) > manhattan(core, enemy.position))) {
       return true;
     }
   }
   return false;
+}
+
+/** 竞品投影伤害（rule-correct）：Core 当前格是否被任一敌合法攻击覆盖——
+ *  Vanguard 仅邻格（Chebyshev 1，SWEEP）；Ranger 八方向直线 ≤3 且中间格
+ *  无障碍（SHOOT，lineBlocked）。C5 用"当前格投影伤害 >0"作为 BREAKOUT
+ *  前提（旧判定用 12 格内——打不到的远处包围被高估为 BREAKOUT）。 */
+function projectedDamageOnCore(
+  core: Position,
+  enemies: readonly VisibleEntity[],
+  obstacles: ReadonlySet<string>,
+): number {
+  let damage = 0;
+  for (const enemy of enemies) {
+    if (enemy.kind === "CORE") continue;
+    const distance = Math.max(
+      Math.abs(enemy.position[0] - core[0]),
+      Math.abs(enemy.position[1] - core[1]),
+    );
+    if (enemy.unitType === "RANGER") {
+      if (distance === 0 || distance > 3) continue;
+      if (lineBlocked(core, enemy.position, obstacles)) continue;
+      damage += 1;
+    } else if (distance === 1) {
+      damage += 1;
+    }
+  }
+  return damage;
 }
 
 export function assessThreat(options: {
@@ -81,8 +124,19 @@ export function assessThreat(options: {
    *  ENGAGED 是 Core 级威胁；远程 worker 被摸不得升级为 Core 级
    *  （2026-08-07 竞品 recent_attack vs recent_core_attack 分账对齐）。 */
   readonly coreDamagedThisTick: boolean;
+  /** 障碍格（逃逸硬块；World.obstacles 合并视野障碍——默认空 = 无硬块）。 */
+  readonly obstacles?: ReadonlySet<string>;
+  /** 资源格（Core 不可入的逃逸硬块——默认空 = 无硬块）。 */
+  readonly resourceCells?: ReadonlySet<string>;
 }): ThreatAssessment {
-  const { core, visibleEnemies, enemyHints, coreDamagedThisTick } = options;
+  const {
+    core,
+    visibleEnemies,
+    enemyHints,
+    coreDamagedThisTick,
+    obstacles = new Set<string>(),
+    resourceCells = new Set<string>(),
+  } = options;
 
   if (core === null) {
     return { level: "NORMAL", reason: "no_core", closingEnemies: 0, movingEnemies: 0, axes: 0, confirmedPursuit: false };
@@ -115,7 +169,12 @@ export function assessThreat(options: {
   if (coreDamagedThisTick) {
     return { level: "ENGAGED", reason: "damaged", closingEnemies, movingEnemies, axes: axes.size, confirmedPursuit };
   }
-  if (visibleEnemies.length >= 2 && axes.size >= 2 && closingEnemies > 0 && !hasEscapeDirection(core, visibleEnemies)) {
+  if (
+    visibleEnemies.length >= 2 &&
+    axes.size >= 2 &&
+    projectedDamageOnCore(core, visibleEnemies, obstacles) > 0 &&
+    !hasEscapeDirection(core, visibleEnemies, obstacles, resourceCells)
+  ) {
     return { level: "BREAKOUT", reason: "multi_axis", closingEnemies, movingEnemies, axes: axes.size, confirmedPursuit };
   }
   if (confirmedPursuit) {

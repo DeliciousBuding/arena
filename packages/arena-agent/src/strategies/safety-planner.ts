@@ -143,6 +143,14 @@ export interface SafetyPlannerConfig {
    * 邻格为空（cargo 通道）。默认 false = 历史行为（Core 四邻轮转）。
    */
   readonly guardAxes?: boolean;
+  /**
+   * 守卫轮换治疗（v0.3，实验，B8 竞品 healing rotation 对照）：defensive
+   * 守卫受伤（Vanguard ≤2/4、Ranger ≤1/2——掉血过半）且无反击压力（敌不在
+   * 守卫反击射程内）时，主动回 Core 格补血——治疗完满血由守位锚点逻辑移出
+   * 回守位（闭环）。战斗中的守卫不回修（邻格 SWEEP/射程射击优先——C7 反击
+   * 优先已覆盖）。默认 false = 历史行为（带伤值守到死/永不回修，零回归）。
+   */
+  readonly guardHealRotation?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -165,6 +173,10 @@ const THREAT_RECALL_DISTANCE = 12;
 const RECALL_PATROL_RADIUS = 4;
 /** Core 迁移 TTR 预撤离阈值（竞品 time-to-range ≤16 tick）。 */
 const TTR_PRE_EVADE_TICKS = 16;
+/** 守卫轮换治疗（B8 候选）：HP ≤ 该值即回 Core 补血（掉血过半）。 */
+const HEAL_ROTATION_HP: Record<UnitType, number> = { WORKER: 1, VANGUARD: 2, RANGER: 1 };
+/** 守卫"战斗中不回修"的反击范围（敌进入守卫反击射程 = 战斗压力，带伤值守）。 */
+const HEAL_ROTATION_ENGAGE_RANGE: Record<UnitType, number> = { WORKER: 1, VANGUARD: 1, RANGER: 3 };
 
 /** moveFailedAvoidance 绕行（v0.3 实验）：单位连续 MOVE_FAILED 后不再盲目重试
  *  同格——沿主方向垂直的候选方向探路（先 UP/DOWN 再 LEFT/RIGHT，排除障碍格）；
@@ -270,6 +282,8 @@ export class SafetyPlanner {
         visibleEnemies: state.visibleEnemies,
         enemyHints: this.world.enemyHints(),
         coreDamagedThisTick: coreDamagedThisTick(state.events),
+        obstacles: this.world.obstacles(state.obstacleCells),
+        resourceCells: state.resourceCells,
       });
     }
     // MOVE_FAILED 反馈（moveFailedAvoidance）：上 tick 结算拒绝的单位计连续失败，
@@ -613,6 +627,28 @@ export class SafetyPlanner {
       return;
     }
 
+    // B8 守卫轮换治疗（guardHealRotation 候选）：defensive 守卫受伤（HP 过半
+    // 以下）且无反击压力（敌不在守卫反击射程内）时回 Core 补血——到达后主循环
+    // HEAL 分支接管，满血后守位锚点逻辑移出回守位（闭环）。战斗中的守卫不回修：
+    // 邻格 SWEEP 反击优先（C7 已覆盖——SWEEP 分支在本函数更早处）。已在 Core
+    // 格时不重复 MOVE（HEAL 分支直接治疗）。
+    if (
+      this.config.guardHealRotation === true &&
+      this.effectiveAggression === "defensive" &&
+      state.core !== null &&
+      unit.hp <= HEAL_ROTATION_HP[unit.unitType] &&
+      !enemies.some(
+        (enemy) =>
+          enemy.kind !== "CORE" &&
+          chebyshev(unit.position, enemy.position) <= HEAL_ROTATION_ENGAGE_RANGE[unit.unitType],
+      ) &&
+      !samePosition(unit.position, state.core.position)
+    ) {
+      const direction = stepToward(unit.position, state.core.position, movementObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, "guard_heal_return");
+      return;
+    }
+
     const nearby = enemies.filter((enemy) => manhattan(unit.position, enemy.position) <= 4);
     // clear-path 清障（TS-009 候选）：满载 Worker 回仓路径上的敌人，或站在
     // 我方可见资源格上的敌人（封锁采集），视为挡路者，Vanguard 优先主动清除
@@ -719,6 +755,26 @@ export class SafetyPlanner {
       }
     }
 
+    // B8 守卫轮换治疗（guardHealRotation 候选）：defensive Ranger 受伤且无射程
+    // 内敌（射击分支已优先处理——有敌就打，C7 反击优先）时回 Core 补血。
+    // 治疗完满血由守位锚点逻辑移出回守位（闭环）。
+    if (
+      this.config.guardHealRotation === true &&
+      this.effectiveAggression === "defensive" &&
+      state.core !== null &&
+      unit.hp <= HEAL_ROTATION_HP[unit.unitType] &&
+      !enemies.some(
+        (enemy) =>
+          enemy.kind !== "CORE" &&
+          chebyshev(unit.position, enemy.position) <= HEAL_ROTATION_ENGAGE_RANGE[unit.unitType],
+      ) &&
+      !samePosition(unit.position, state.core.position)
+    ) {
+      const direction = stepToward(unit.position, state.core.position, movementObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, "guard_heal_return");
+      return;
+    }
+
     // guardAxes（B4 候选）：defensive + 有可见敌人时 Ranger 守内层屏
     // （2 格）而非追击最近敌（竞品"defenders do not chase beyond the
     // protective posture"——Ranger 冲脸失去射程优势且易被 SWEEP）。
@@ -763,6 +819,8 @@ export class SafetyPlanner {
         visibleEnemies: state.visibleEnemies,
         enemyHints,
         coreDamagedThisTick: coreDamagedThisTick(state.events),
+        obstacles: this.world.obstacles(state.obstacleCells),
+        resourceCells: state.resourceCells,
       });
       const closing = threat.closingEnemies > 0;
       const confirmedPursuit = threat.confirmedPursuit;

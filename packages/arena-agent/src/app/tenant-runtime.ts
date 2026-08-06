@@ -78,6 +78,8 @@ function threatDiagnosticsOf(state: TickState): Pick<
     visibleEnemies: state.visibleEnemies,
     enemyHints: [],
     coreDamagedThisTick: coreDamagedThisTick(state.events),
+    obstacles: state.obstacleCells,
+    resourceCells: state.resourceCells,
   });
   return {
     threatLevel: assessment.level,
