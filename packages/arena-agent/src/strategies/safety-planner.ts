@@ -151,6 +151,15 @@ export interface SafetyPlannerConfig {
    * 优先已覆盖）。默认 false = 历史行为（带伤值守到死/永不回修，零回归）。
    */
   readonly guardHealRotation?: boolean;
+  /**
+   * 远端突击组局部响应（v0.3，实验，B5 竞品 detached squad response 对照）：
+   * aggressive 突击单位前压时，敌**非目标**战斗单位进入 5 格局部响应半径
+   * = 突击组被拦截——释放旧任务、回 Core 守位至少 8 tick（防抖动记忆），
+   * Core 不迁移（局部冲突不拖 Core 过图）。返回期间邻接敌仍 SWEEP 反击
+   * （反击优先）。8 tick 后任务目标仍在则恢复前压。默认 false = 历史行为
+   * （被拦截时无视拦截继续压任务送死，零回归）。
+   */
+  readonly detachedSquadResponse?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -177,6 +186,10 @@ const TTR_PRE_EVADE_TICKS = 16;
 const HEAL_ROTATION_HP: Record<UnitType, number> = { WORKER: 1, VANGUARD: 2, RANGER: 1 };
 /** 守卫"战斗中不回修"的反击范围（敌进入守卫反击射程 = 战斗压力，带伤值守）。 */
 const HEAL_ROTATION_ENGAGE_RANGE: Record<UnitType, number> = { WORKER: 1, VANGUARD: 1, RANGER: 3 };
+/** B5 远端突击组局部响应（竞品 detached squad）：敌非目标单位进入 5 格 = 被拦截。 */
+const DETACHED_RESPONSE_RADIUS = 5;
+/** 被拦截后回 Core 守位的最少 tick（竞品 "at least eight Ticks"）。 */
+const DETACHED_RETURN_TICKS = 8;
 
 /** moveFailedAvoidance 绕行（v0.3 实验）：单位连续 MOVE_FAILED 后不再盲目重试
  *  同格——沿主方向垂直的候选方向探路（先 UP/DOWN 再 LEFT/RIGHT，排除障碍格）；
@@ -242,6 +255,8 @@ export class SafetyPlanner {
   private moveFailedStreak = new Map<string, number>();
   /** 本 tick 威胁评估（threatBreakout 用）：decide 入口计算一次供 worker 消费。 */
   private currentThreat: ThreatAssessment | null = null;
+  /** B5 突击组被拦截后的返回截止 tick（unitId → tick；8-tick 防抖动记忆）。 */
+  private detachedReturnUntil = new Map<string, number>();
 
   constructor(
     config: SafetyPlannerConfig = DEFAULT_SAFETY_CONFIG,
@@ -615,6 +630,31 @@ export class SafetyPlanner {
         target = enemyCore?.position ?? nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
       } else {
         target = nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+      }
+      // B5 远端突击组局部响应（detachedSquadResponse 候选，竞品对照）：
+      // 敌**非目标**战斗单位进入 5 格响应半径 = 突击组被拦截——释放旧任务、
+      // 回 Core 守位至少 8 tick（防抖动记忆：8 tick 内敌消失也继续返回）。
+      // Core 不迁移（局部冲突不拖 Core 过图）；返回期间邻接敌由函数开头
+      // SWEEP 分支反击（反击优先）。8 tick 后任务目标仍在则恢复前压。
+      if (this.config.detachedSquadResponse === true) {
+        const returnUntil = this.detachedReturnUntil.get(unit.id) ?? 0;
+        if (state.tick < returnUntil) {
+          const direction = stepToward(unit.position, state.core!.position, movementObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_detached_return");
+          return;
+        }
+        const intercepted = enemies.some(
+          (enemy) =>
+            enemy.kind !== "CORE" &&
+            (target === null || !samePosition(enemy.position, target)) &&
+            manhattan(unit.position, enemy.position) <= DETACHED_RESPONSE_RADIUS,
+        );
+        if (intercepted && state.core !== null) {
+          this.detachedReturnUntil.set(unit.id, state.tick + DETACHED_RETURN_TICKS);
+          const direction = stepToward(unit.position, state.core.position, movementObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_detached_return");
+          return;
+        }
       }
       if (target !== null && !samePosition(unit.position, target)) {
         const stuckTicks = this.moveFailedStreak.get(unit.id) ?? 0;
