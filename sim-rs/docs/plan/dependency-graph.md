@@ -1,55 +1,153 @@
-# 依赖图与并行编排（rust-rewrite 分析线）
+# Pure Rust 依赖图与并行编排
 
-## 依赖图（Mermaid）
+## 1. 阶段依赖
 
 ```mermaid
 graph TD
-    A["A: cli 共享库<br/>(contracts/batch/policy_name/rng + simrun)<br/>✅ e6bd3d6"]
+    R0["R0 去 Fusion / SSOT / workspace gate"]
+    R1["R1 Hero client + protocol normalization"]
+    R2["R2 exactly-once runtime + lock + telemetry"]
+    R3["R3 World / economy / reservation"]
+    R4["R4 exploration / navigation"]
+    R5["R5 threat / Core / combat"]
+    R6["R6 replay / optimizer / promotion"]
+    PROD["一个生产租户 Rust Canary"]
 
-    subgraph Wave2 ["Wave 2：三路并行（地界错开，各写各的 bin）"]
-        B["B: simsearch + paramscan"]
-        C["C: optsearch SA+GA"]
-        D["D: simgolden + simdebug"]
-    end
-
-    subgraph Wave3 ["Wave 3：验收与门禁"]
-        E["E: 差分门禁<br/>Go oracle vs Rust 输出 diff + golden 核验"]
-        F["F: 收尾<br/>全量测试 + 基准复测 + PARITY/MASTER"]
-    end
-
-    subgraph Wave4 ["Wave 4：加固（P1）"]
-        G["G: 引擎事件级差分"]
-        H["H: CLI 输出格式测试固化"]
-        I["I: rayon 多核基准 vs Go 24.7min"]
-    end
-
-    A --> B
-    A --> C
-    A --> D
-    B --> E
-    C --> E
-    D --> E
-    E --> F
-    E --> G
-    E --> H
-    F --> I
-    J["J: 删 Go oracle（用户裁决）"] -.-> E
+    R0 --> R1
+    R0 --> R2
+    R1 --> R2
+    R2 --> R3
+    R3 --> R4
+    R3 --> R5
+    R4 --> R5
+    R3 --> R6
+    R4 --> R6
+    R5 --> R6
+    R6 --> PROD
 ```
 
-## 并行编排说明
+R1 与 R2 可以部分并行，但 runtime 只能依赖稳定的 client/domain 接口。R3 之前必须完成真实 Tick exactly-once 与 fail-closed，避免在不安全运行时上堆策略。
 
-- **接缝**：任务 A 的共享库 API（batch/contracts/policy_name/rng）是全部下游的地基，冻结后 B/C/D 可完全并行
-- **地界**：B/C/D 各只写自己的 bin 文件；tests 目录共享但按文件归属，冲突概率低
-- **共享写入点**：`runtime/golden.json` 唯一归属任务 D（simgolden --update）；Cargo.lock 归属任务 A（已锁定）
-- **合并风险**：B/C/D 三路并行，合并排队变慢是新常态，不自行协调
-- **取证纪律**：B 的证据经过 C 的战场只列存疑不动；执行线提交后重跑取证
+## 2. Crate 依赖方向
 
-## 批次规划（Delivery Batches）
+```mermaid
+graph LR
+    DOMAIN[domain]
+    ENGINE[engine]
+    STRATEGY[strategy]
+    CLIENT[client]
+    RUNTIME[runtime]
+    CLI[cli]
 
-| 批次 | 目标 | 任务 | 说明 |
-|---|---|---|---|
-| Batch 1 | CLI 平台地基 | A | ✅ 已完成并提交 |
-| Batch 2 | 6 CLI 全对偶 | B, C, D | 执行线产物，提交后复核 |
-| Batch 3 | 语义对齐门禁 | E, F | 差分绿 = 重写线核心验收 |
-| Batch 4 | 加固 | G, H, I | P1，可延后 |
-| Batch 5 | 清理 | J | 用户裁决（keep_oracle 约定：差分全绿后再删） |
+    ENGINE --> DOMAIN
+    STRATEGY --> DOMAIN
+    STRATEGY --> ENGINE
+    CLIENT --> DOMAIN
+    RUNTIME --> DOMAIN
+    RUNTIME --> CLIENT
+    RUNTIME --> STRATEGY
+    CLI --> CLIENT
+    CLI --> RUNTIME
+    CLI --> ENGINE
+    CLI --> STRATEGY
+```
+
+禁止反向依赖：
+
+- `domain` 不依赖网络、runtime、CLI；
+- `engine` 不依赖 client/runtime；
+- `strategy` 不依赖 Hero transport；
+- `client` 不依赖 strategy；
+- simulator 不导入 live submit/lock 副作用；
+- 不存在 FFI crate 连接 Go Host。
+
+## 3. 可并行 lanes
+
+### Lane A — Client / Protocol
+
+文件地界：
+
+```text
+crates/client/**
+protocol fixtures
+client-specific tests
+```
+
+负责 auth、HTTP、WS、DTO、normalization、reconnect。
+
+### Lane B — Runtime / Ops
+
+文件地界：
+
+```text
+crates/runtime/**
+runtime-specific tests
+run manifest / JSONL implementation
+```
+
+负责 exactly-once、single writer、deadline、submit orchestration、telemetry、shutdown。
+
+### Lane C — Strategy / Simulation
+
+文件地界：
+
+```text
+crates/strategy/**
+crates/engine/**（单 owner）
+strategy scenarios/tests
+```
+
+负责 World、经济、探索、导航、威胁和战斗。
+
+## 4. 单 owner 接缝
+
+以下路径同时只能由一个 Agent 修改：
+
+- `crates/domain/**`；
+- workspace `Cargo.toml` / `Cargo.lock`；
+- canonical scenario/profile/result schema；
+- `sim-rs/PROGRESS.md`；
+- Rust CLI command registry；
+- production tenant config。
+
+需要新字段时先提交最小 domain/client contract，再让各 lane 接线；禁止三路同时改 schema。
+
+## 5. 合流顺序
+
+```text
+lane 原子提交
+→ lane 局部测试
+→ rebase 当前 rust-rewrite
+→ workspace fmt/clippy/test
+→ deterministic replay
+→ 更新 PROGRESS 事实与证据
+→ 下一任务
+```
+
+不得在一个合流提交混入：
+
+- protocol 重构；
+- planner 行为变化；
+- golden 更新；
+- unrelated cleanup。
+
+## 6. 当前批次
+
+| Batch | 目标 | 任务 |
+|---|---|---|
+| B0 | 去 Fusion | 文档/SSOT、legacy 盘点、workspace gate |
+| B1 | Read-only vertical slice | client DTO/WS + shadow CLI |
+| B2 | Safe runtime | exactly-once/lock/telemetry/fatal errors |
+| B3 | Economic loop | memory/assignment/deposit/spawn/reservation |
+| B4 | Exploration and threat | map/navigation/enemy/Core |
+| B5 | Combat and optimizer | combat/replay/search/promotion |
+| B6 | Production migration | t3/t4 canary → one t1/t2 → second tenant |
+
+## 7. 止损规则
+
+- R1/R2 红时停止新增策略模块；
+- 同一验收连续失败三次，先缩小 fixture/接口，不横向补丁；
+- 结果变差先回滚 candidate，不改 scorer/golden 掩盖；
+- 发现 Go/FFI 依赖时登记并原生迁移，不继续完善旧接缝；
+- live 出现 hard gate，立即退回 shadow；
+- 本机 live/calibration 进程优先，实验只杀匹配 PID。
