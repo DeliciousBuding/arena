@@ -25,17 +25,17 @@ npm run schema:check
 npm run replay:ts
 
 npx tsx packages/arena-agent/src/cli/run-tenant.ts --doctor --config=../data/runtime/configs/t1.json
-npm run arena:supervisor -- --configs=t1,t2 --mode=deterministic --shadow --port=8120
+npm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --shadow --port=8120
 ```
 
 ## 本地运行形态（2026-08-06 起）
 
-us1 已关闭，t1/t2 本地 live（deterministic + submitEnabled=true，data root 默认 `../data`，baseDir=runtime）：
+us1 已关闭，t1/t2/t3/t4 本地 live（deterministic + submitEnabled=true，data root 默认 `../data`，baseDir=runtime）：
 ```bash
-npm run arena:supervisor -- --configs=t1,t2 --mode=deterministic --live --record-calibration --port=8120
+npm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --port=8120
 ```
 - 看护：Windows 计划任务 `ArenaWatchdog`（每分钟，重建命令见下）+ `scripts/arena-watchdog.sh`（异常自动恢复：确认死透 → 清死锁 → 带 `--record-calibration` 重启，日志 `~/arena-watchdog.log`）；
-- 生产租户仅允许 `t1` 与 `t2`；不得创建、恢复或运行其他租户配置。
+- 生产四线 `t1`/`t2`/`t3`/`t4` 运行（用户 2026-08-06 裁决）；生产租户仅限这四线，single-writer 与定向杀进程纪律不变。
 
 ### 租户始终运行 + 数据收集线保障（2026-08-06）
 

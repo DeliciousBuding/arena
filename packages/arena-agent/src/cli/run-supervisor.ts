@@ -53,7 +53,7 @@ async function main(): Promise<void> {
   const repoRoot = option("repo-root") ?? process.cwd();
   loadDotEnv(repoRoot);
   const dataRoot = resolveArenaDataRoot(repoRoot, values["data-root"], process.env.ARENA_DATA_ROOT);
-  const configNames = (option("configs") ?? "t1,t2")
+  const configNames = (option("configs") ?? "t1,t2,t3,t4")
     .split(",")
     .map((name) => name.trim())
     .filter(Boolean)
