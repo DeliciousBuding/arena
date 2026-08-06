@@ -49,6 +49,11 @@ function runScenario(
   seed: number,
 ): Outcome {
   const scenario = JSON.parse(readFileSync(scenarioPath, "utf-8"));
+  // 场景 evaluation 元数据：p1 姿态（balanced=防御评估 / aggressive=攻击
+  // 评估——攻击性候选如 strikeGroup 只在攻击场景有意义）。
+  const evaluation = scenario.evaluation as { p1Posture?: string; p1AttackPriority?: string | null } | undefined;
+  const p1Posture = evaluation?.p1Posture === "aggressive" ? "aggressive" : "balanced";
+  const p1Priority = evaluation?.p1AttackPriority ?? null;
   const makePlanner = (tenant: EpisodeTenant): PlanProvider => {
     if (tenant.id !== "p1") return new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG });
     return new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...variant.config });
@@ -60,7 +65,7 @@ function runScenario(
     ticks: TICKS,
     plannerFactory: makePlanner,
     tenants: [
-      { id: "p1", planner: "safety", policy: { posture: "balanced", workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: null } },
+      { id: "p1", planner: "safety", policy: { posture: p1Posture, workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: p1Priority } },
       { id: "p2", planner: "safety", policy: { posture: "aggressive", workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: "core" } },
     ],
   });

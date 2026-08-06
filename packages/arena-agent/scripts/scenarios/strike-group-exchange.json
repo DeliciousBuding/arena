@@ -165,5 +165,9 @@
     ],
     "status": "GROUND",
     "carrierId": null
+  },
+  "evaluation": {
+    "p1Posture": "aggressive",
+    "p1AttackPriority": "core"
   }
 }
