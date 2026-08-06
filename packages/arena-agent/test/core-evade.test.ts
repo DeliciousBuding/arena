@@ -156,6 +156,33 @@ test("coreEvade + TTR：扣 attack-range 的 TTR≤16 触发（B1）", () => {
   assert.equal(plan.intents.core, "core_evade_ttr");
 });
 
+test("coreEvadeScoring：Ranger 斜线不构成投影伤害（C6 合法攻击判定）", () => {
+  // 2026-08-07 C6 对齐：投影伤害用 rule-correct 合法攻击——Ranger 仅八方向
+  // 直线（中间格无障碍）；旧 Manhattan ≤3 代理把 (2,1) 斜线也算 1 伤。
+  // 敌 Ranger [2,0]：候选 DOWN [0,1] 距敌 Chebyshev 2 但非八方向直线 →
+  // 投影伤害 0（旧实现误判 1）；LEFT [-1,0] 距敌 3 直线 → 伤害 1。
+  // 新实现选 DOWN（伤害 0 + beacon 较近），旧实现会选 LEFT。
+  const planner = new SafetyPlanner({ ...EVADE_CONFIG, coreEvadeScoring: true });
+  const plan = planner.decide({ state: makeState(1, [enemy("e1", [2, 0], "RANGER")]) });
+  assert.equal(plan.coreAction?.type, "START_MOVE");
+  assert.equal(plan.coreAction?.type === "START_MOVE" ? plan.coreAction.direction : null, "DOWN");
+});
+
+test("coreEvadeScoring：Ranger 直线被障碍遮挡 → 投影伤害 0", () => {
+  // 敌 Ranger [3,0]，中间格 [2,0] 是障碍 → 候选 RIGHT [1,0] 无法被射击
+  // （lineBlocked → 投影伤害 0；旧 Manhattan 代理会误判 1 伤并排除该方向）。
+  // RIGHT 虽伤害 0 但距离向量 [2] 仍最差；LEFT/UP/DOWN 同距 [4]，beacon
+  // [100,100] 小优 → DOWN（cheb 100）胜 UP/LEFT（101）。
+  const planner = new SafetyPlanner({ ...EVADE_CONFIG, coreEvadeScoring: true });
+  const state = {
+    ...makeState(1, [enemy("e1", [3, 0], "RANGER")]),
+    obstacleCells: new Set(["2,0"]),
+  };
+  const plan = planner.decide({ state });
+  assert.equal(plan.coreAction?.type, "START_MOVE");
+  assert.equal(plan.coreAction?.type === "START_MOVE" ? plan.coreAction.direction : null, "DOWN");
+});
+
 test("coreEvade 开启：障碍格不选（北侧障碍 → 不选 UP）", () => {
   const planner = new SafetyPlanner(EVADE_CONFIG);
   const state = {
