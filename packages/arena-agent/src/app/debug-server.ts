@@ -1,6 +1,6 @@
 /** Bounded, read-only local observability for TenantSupervisor. */
 
-import { createServer, type Server, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { TenantSupervisor } from "./tenant-supervisor.ts";
@@ -24,7 +24,7 @@ export class DebugServer {
   constructor(options: DebugServerOptions) {
     this.options = options;
     this.server = createServer((req, res) => {
-      this.route(req.url ?? "/", res).catch((error) => {
+      this.route(req, res).catch((error) => {
         this.json(res, 500, { error: error instanceof Error ? error.message : String(error) });
       });
     });
@@ -56,8 +56,8 @@ export class DebugServer {
     return { host: addr.address, port: addr.port };
   }
 
-  private async route(url: string, res: ServerResponse): Promise<void> {
-    const urlObj = new URL(url, "http://localhost");
+  private async route(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const urlObj = new URL(req.url ?? "/", "http://localhost");
     const path = urlObj.pathname;
 
     if (path === "/health") {
@@ -109,6 +109,19 @@ export class DebugServer {
       this.json(res, 200, {
         events: readJsonlTail(join(this.options.supervisor.runtimeRoot, "supervisor.jsonl"), n),
       });
+      return;
+    }
+    if (path === "/shutdown" && req.method === "POST") {
+      // 受控优雅关停（2026-08-07 增加）：触发 supervisor.shutdown()，tenant 经
+      // IPC 收到 arena.shutdown 后执行 cleanup stack——recorder.close() 写
+      // manifest，最后释放 writer lock。仅 127.0.0.1 可及（listen 默认绑定）；
+      // 非 POST 一律 405。看护/受控重启先走这里，硬杀只作兜底。
+      void this.options.supervisor.shutdown();
+      this.json(res, 202, { shuttingDown: true });
+      return;
+    }
+    if (path === "/shutdown") {
+      this.json(res, 405, { error: "method not allowed; use POST /shutdown" });
       return;
     }
     this.json(res, 404, { error: `unknown path: ${path}` });

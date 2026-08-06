@@ -259,6 +259,36 @@ test("断线（1006 abnormal）→ 自动重连成功", async () => {
   await server.close();
 });
 
+test("连接空闲超时（服务端静默）→ 强制断开重连", async () => {
+  // 覆盖 2026-08-07 t1/t2 同时 stall：服务端不关闭连接但也不再发消息，
+  // 客户端必须靠 idle 超时自己断开并重连，而不是无限等待。
+  const server = new MockGameServer();
+  server.onConnect.push((ws) => {
+    server.send(ws, { type: "tick", data: 1 });
+    // 不再发送任何消息，也不关闭连接（模拟半开静默）
+  });
+  server.onConnect.push((ws) => {
+    server.send(ws, { type: "tick", data: 2 });
+    server.send(ws, { type: "state", data: MIN_STATE });
+    ws.close(1000);
+  });
+  await server.listen();
+  const client = makeClient(server, { idleTimeoutMs: 50 });
+  const events: GameEvent[] = [];
+  for await (const event of client.events()) {
+    events.push(event);
+  }
+  assert.equal(events.length, 3); // tick1 + tick2 + Turn
+  assert.deepEqual(events[0], { tick: 1 });
+  assert.deepEqual(events[1], { tick: 2 });
+  await server.close();
+});
+
+test("idle_timeout_ms 非正数 → ConfigurationError", () => {
+  assert.throws(() => makeClient(new MockGameServer(), { idleTimeoutMs: 0 }), ConfigurationError);
+  assert.throws(() => makeClient(new MockGameServer(), { idleTimeoutMs: -1 }), ConfigurationError);
+});
+
 test("握手 401 → AuthenticationError", async () => {
   const server = new MockGameServer();
   server.upgradeStatuses.push(401);

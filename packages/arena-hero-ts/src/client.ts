@@ -36,6 +36,9 @@ export interface ClientOptions {
   maxMessageSize?: number;
   /** 握手超时（毫秒），超过视为连接失败进入重连。默认 15000。 */
   handshakeTimeoutMs?: number;
+  /** 连接空闲超时（毫秒）：已连接后超过该时长未收到任何服务端消息，
+   *  强制断开走重连路径（覆盖"连接半开但零数据"的静默 stall）。默认 120000。 */
+  idleTimeoutMs?: number;
 }
 
 export interface ClientConfig {
@@ -48,6 +51,7 @@ export interface ClientConfig {
   reconnectMaxDelay: number;
   maxMessageSize: number;
   handshakeTimeoutMs: number;
+  idleTimeoutMs: number;
 }
 
 export function buildConfig(options: ClientOptions): ClientConfig {
@@ -61,6 +65,7 @@ export function buildConfig(options: ClientOptions): ClientConfig {
     reconnectMaxDelay = 5.0,
     maxMessageSize = 2 * 1024 * 1024,
     handshakeTimeoutMs = 15_000,
+    idleTimeoutMs = 120_000,
   } = options;
   if (!apiKey || !apiKey.trim()) {
     throw new ConfigurationError("api_key must be a non-empty string");
@@ -87,6 +92,9 @@ export function buildConfig(options: ClientOptions): ClientConfig {
   if (maxMessageSize <= 0) {
     throw new ConfigurationError("max_message_size must be positive");
   }
+  if (idleTimeoutMs <= 0) {
+    throw new ConfigurationError("idle_timeout_ms must be positive");
+  }
   return {
     apiKey,
     baseUrl: normalizedBase,
@@ -97,6 +105,7 @@ export function buildConfig(options: ClientOptions): ClientConfig {
     reconnectMaxDelay,
     maxMessageSize,
     handshakeTimeoutMs,
+    idleTimeoutMs,
   };
 }
 
@@ -253,7 +262,11 @@ export class ArenaHeroClient {
           this._socket = ws;
           delay = this.config.reconnectMinDelay;
           for (;;) {
-            const raw = await queue.next(); // 协议违规在此抛出（不重连）
+            // idle 超时兜底：连接建立后长时间收不到任何消息（半开连接/服务端
+            // 会话静默结束）→ 强制断开，走下方统一重连路径（2026-08-07 t1/t2
+            // 同时 stall 事件根因：进程 alive 但 tick 流停更，/ready 与
+            // watchdog 均无法感知，只能靠消息级超时）。协议违规仍在此抛出。
+            const raw = await this._nextWithIdleTimeout(queue, ws);
             if (raw === null) {
               break;
             }
@@ -296,6 +309,26 @@ export class ArenaHeroClient {
         this._activeTurn._seal();
       }
     }
+  }
+
+  /** queue.next() + idle 超时：超时后 terminate 触发 close → end → 返回 null
+   *  → 进入重连（code 1006 属"其他 close code"，不中断迭代）。 */
+  private _nextWithIdleTimeout(queue: MessageQueue, ws: WebSocket): Promise<string | null> {
+    return new Promise((resolve, reject) => {
+      const idleTimer = setTimeout(() => {
+        ws.terminate();
+      }, this.config.idleTimeoutMs);
+      queue.next().then(
+        (value) => {
+          clearTimeout(idleTimer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(idleTimer);
+          reject(error);
+        },
+      );
+    });
   }
 
   /** 每个可行动 Tick 恰好 yield 一次（继续处理 receipts）。 */
