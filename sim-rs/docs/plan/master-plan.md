@@ -1,107 +1,213 @@
-# Rust 覆写线完整执行计划（master-plan）
+# Pure Rust 主线完整执行计划
 
-> 分析线出品（rust-rewrite worktree）。执行线（rust-sim）按此计划推进。
-> 事实基线：rust-sim@e6bd3d6（51 tests 全绿、单核 12.1x、6 CLI 产物已落盘未提交）。
-> 最后更新：2026-08-05。
+> Arena 长期唯一产品实现。Issue #27 负责迁移裁决，Issue #26 负责实现总控，`../../PROGRESS.md` 记录事实进度。
 
-## 0. 目标与范围
+## 1. 目标
 
-**目标**：模拟器平台线（domain + sim + strategy + 6 CLI）Rust 全对偶，差分门禁证明语义与 Go oracle 一致，性能对决完结，全部产物落位收口。
-
-**范围边界**：
-- ✅ 范围内：`internal/domain`、`internal/sim`、`internal/strategy`、`cmd/sim{run,search,optsearch,paramscan,golden,debug}` 的 Rust 对偶 + 差分验证 + 基准
-- ❌ 范围外（不扩）：`agent`/`llm`/`mapstore`/`contracts` wire/`hero`/`ops`/`obs`/`telemetry`/`cmd/arena` 服务器运行线——无 oracle 可对、无性能诉求，转 Rust 负价值
-
-**产出物**：6 CLI 二进制、差分脚本、golden.json（Rust 版）、基准数字文档、PARITY/MASTER 收口。
-
-## 1. 现状基线（已完成，不再重做）
-
-| 提交 | 内容 | 验证 |
-|---|---|---|
-| 88a9af5 → dc7a0c6 | domain/engine/strategy 全移植 + stamped BFS | 43 tests 绿、单核 12.1x（51.5ms vs 563-662ms） |
-| e6bd3d6 | cli 共享库（contracts/batch/policy_name/rng）+ simrun | 51 tests 绿、真实场景跑通 |
-| 未提交 | simsearch/paramscan/optsearch/simgolden/simdebug（执行线产物） | PROGRESS.md 记录，待复核 |
-
-## 2. 阶段与任务（执行顺序 = 阶段序）
-
-### Phase 1：执行线产物复核与提交（Batch 2）
-
-| ID | 任务 | 验收命令（全过 = 完成） |
-|---|---|---|
-| P1.1 | 复核 5 个 CLI 产物：读 `sim-rs/PROGRESS.md` 回执 + 逐个 bin 检查与 Go 源码对偶 | 与 Go cmd/*.go 逐行语义核对，无偷改核心 crate |
-| P1.2 | 清 clippy warnings（e6bd3d6 残留 4 个） | `cargo clippy` 0 warning |
-| P1.3 | 全仓质量门禁 | `cargo test` 全绿（≥51+新增）、`cargo fmt --check` 干净 |
-| P1.4 | 6 CLI 确定性验收 | simsearch/optsearch 同 seed 双跑 `diff` 为空 |
-| P1.5 | 提交 Batch 2 | 提交信息含验收证据 |
-
-### Phase 2：差分门禁（E，核心验收，Batch 3 前半）
-
-| ID | 任务 | 验收命令（全过 = 完成） |
-|---|---|---|
-| P2.1 | paramscan 确定性对比：Go vs Rust 输出逐字节 diff（paramscan 无随机，**必须完全一致**） | `diff <(go run ./cmd/paramscan) <(./sim-rs/target/release/paramscan.exe)` 为空 |
-| P2.2 | simrun 同场景对比：3 场景 × 默认策略，Go vs Rust 摘要输出 diff | 同 P2.1 模式，diff 为空 |
-| P2.3 | golden 核验：Rust `simgolden --update` 后与 Go 版原 golden.json 数值对比，容差内（deposits/spawns 25%、workers 20%、kills 50%、unitsLost 硬限+1） | 容差内 PASS；超差记录差异数字不硬改 |
-| P2.4 | 差分脚本反向验证：人为改一处引擎输出，确认脚本会 FAIL | 制造失败 → 脚本 exit 1 |
-
-### Phase 3：性能对决完结（I，Batch 3 后半）
-
-| ID | 任务 | 验收 |
-|---|---|---|
-| P3.1 | rayon batch 多核基准：2 万评估 × 500 tick | 数字落文档，目标 <5min（Go 28 核 24.7min） |
-| P3.2 | 单核复测（bench_tests 同构） | ≥10x 保持 |
-| P3.3 | 双核/全核扩展曲线 | 数字落文档 |
-
-### Phase 4：加固（G/H，P1，Batch 4）
-
-| ID | 任务 | 验收 |
-|---|---|---|
-| P4.1 | 引擎事件级差分：Event 序列（含 values）与 Go 逐事件对齐 | 对齐报告；差异登记 PARITY |
-| P4.2 | CLI 输出格式测试固化：simgolden 容差逻辑 + simrun 格式单测进 cargo test | cargo test 全绿 |
-
-### Phase 5：收尾（F/J，Batch 5）
-
-| ID | 任务 | 验收 |
-|---|---|---|
-| P5.1 | PARITY.md 复核（§7 场景格式、§8 RNG、新增差异全登记） | 文档更新 |
-| P5.2 | rust-sim MASTER.md 收口（执行线进度 SSOT） | 文档更新 |
-| P5.3 | 删 Go oracle（**用户裁决后**，keep_oracle 契约：差分全绿后） | 用户指令 |
-| P5.4 | 基准/性能/差分数字全部落位 docs | 文档完整 |
-
-## 3. 并行编排
+Rust 直接拥有完整生产闭环，并与 replay/simulator/optimizer 共享同一套 domain、rules 和 strategy：
 
 ```text
-Phase 1（串行复核提交）
-   └→ Phase 2：P2.1/P2.2/P2.3 可三路并行（无文件重叠），P2.4 依赖其一
-        └→ Phase 3（依赖 Phase 2 通过）
-             └→ Phase 4：P4.1/P4.2 并行
-                  └→ Phase 5（串行，P5.3 等用户裁决）
+Hero HTTP / WebSocket
+→ protocol DTO / normalize
+→ TickState / World memory
+→ deterministic planner / validator
+→ exactly-once tenant runtime
+→ submit / idempotency / single-writer lock
+→ telemetry / replay / simulator / optimizer
 ```
 
-- 共享写入点：`runtime/golden.json` 唯一归属 P2.3；Cargo.lock 已锁定（任务 A）
-- 差分脚本归属 P2.1-P2.4 同一执行者（一个脚本演进）
+TS 在迁移期继续承担 t1/t2 生产、真实数据校准、策略实验、Runtime-Golden 与回滚。Go/Fusion/FFI 仅作为可提取知识，不进入运行路径。
 
-## 4. 里程碑
+## 2. Workspace 终态
 
-| 里程碑 | 判定 | 预计 |
-|---|---|---|
-| M2：6 CLI 全对偶 | Phase 1 全过 | 半天 |
-| M3：差分门禁绿 | Phase 2 全过（含反向验证） | 半天 |
-| M4：性能对决完结 | Phase 3 数字落文档 | 半天 |
-| M5：收口 | Phase 5 全过 | 半天 |
+保持少 crate、强边界，不为形式拆包：
 
-合计：**约 1.5-2 个工作日**（单人；若 Phase 2 三路并行执行者，可压到 1 天）。
+```text
+sim-rs/
+├── crates/domain      # 唯一领域模型、规则、validator、canonical hash
+├── crates/engine      # 纯结算、visibility、scenario、replay primitive
+├── crates/strategy    # World/Memory、经济、探索、导航、威胁、战斗
+├── crates/client      # 新增：Hero HTTP/WS、wire DTO、auth、receipt
+├── crates/runtime     # 新增：tenant loop、lock、deadline、telemetry、manifest
+└── crates/cli         # arena/shadow/replay/sim/search/doctor 等入口
+```
 
-## 5. 决策点（需用户拍板）
+`crates/ffi` 在 R0 完成知识迁移后移出 workspace 并归档或删除。Protocol DTO 只存在于 `client` 边界；进入系统后只使用 `domain::TickState`。
 
-| # | 决策 | 默认建议 |
-|---|---|---|
-| D1 | 删 Go oracle（P5.3） | 差分全绿后再删（keep_oracle 契约，用户已表态方向） |
-| D2 | 执行线 e6bd3d6 提交去留 | 保留（已是事实基线，无副作用） |
-| D3 | 执行者安排 | 执行线 owner（rust-sim）按此计划推进 |
+## 3. 固定设计约束
 
-## 6. 风险与止损
+- 一个租户一个 live writer；
+- 一个 Rust planner 状态所有者；
+- duplicate/stale/late Tick 在 planning 前拒绝；
+- deterministic invalid/repair 立即终止 run；
+- 不存在 silent fallback；
+- `command accepted` 与 settlement outcome 分开记录；
+- LLM 仅低频输出可校验 MacroPolicy，不逐 Tick 调用、不直接 submit；
+- 正式结果绑定 git/profile/rules/fixture/scenario hash；
+- 官方不可观测语义标记 `INCONCLUSIVE`，不猜测；
+- simulator 与生产共享纯逻辑，但 simulator 不导入网络和生产副作用。
 
-- **R1 语义漂移**：P2.1/P2.2 必须逐字节一致，否则引擎/策略有真实 bug——修实现不修脚本（差分脚本是法的载体）
-- **R4 golden 超差**：记录差异数字 + 定位根因（引擎 bug vs 预期语义差），不硬改容差
-- **三道止损**：数字对不上立即停；同一验收连败 3 次换项；结果比基线差回滚
-- **防作弊**：不许改核心三 crate 和共享库；不许 `.skip`/放宽测试；不许为过 check 改 golden/容差；测试数 ≥ 基线
+## 4. 阶段计划
+
+### R0 — 去 Fusion、恢复单一 SSOT
+
+任务：
+
+- 归档 Fusion 文档和 F3/F4 历史；
+- 盘点 `ffi`、Go Host、Go fallback、`deterministic-rust` 引用；
+- 提取协议/幂等/锁/reconnect/经济死锁 fixture；
+- 建立 Pure Rust workspace 门禁；
+- 删除或隔离会误导 Agent 的 Fusion 入口。
+
+门禁：
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+完成条件：当前计划不依赖 Go/FFI，Rust Agent 在 Issue #27 回执，workspace 有可复现绿色基线。
+
+### R1 — Rust-native Hero 协议纵切
+
+任务：
+
+- 配置与 token 引用，secret 不落盘；
+- HTTP submit、202/400/409/5xx 分类与稳定 idempotency key；
+- WebSocket tick/state/received、异常关闭、idle timeout 与 reconnect；
+- wire DTO 严格解析并归一化为 `TickState`；
+- shadow-only CLI 与 run-scoped manifest/JSONL。
+
+最小验收：
+
+- raw fixture → DTO → TickState → planner → validator 完整回放；
+- t3/t4 100 唯一 Tick shadow；
+- 0 submit、0 panic、0 decode mismatch；
+- 断流重连不重复 decide。
+
+### R2 — Exactly-once 生产运行时
+
+任务：
+
+- `lastHandledTick` 在 planning/telemetry 前生效；
+- `ProcessedTicks` 统计唯一 Tick；
+- live 双确认；
+- tenant single-writer lock；
+- stable idempotency；
+- deadline/stale candidate；
+- submit rejection、invalid plan、panic 全部 fatal；
+- SIGINT/timeout 清理 writer、锁、子任务和文件句柄；
+- settlement delta、`planned_spawn_no_effect`、cargo stall telemetry。
+
+完成条件：故障注入可证明 duplicate、second writer、repair、orphan 均被硬门禁捕获。
+
+### R3 — 经济闭环与 World Memory
+
+按收益顺序：
+
+1. resource memory、耗尽与失败冷却；
+2. Worker 唯一资源分配和目标粘性；
+3. harvest → return → deposit；
+4. Core 满仓让位与 spawn/deposit 破锁；
+5. 事前 move reservation / capacity arbitration；
+6. workerTarget、reserve、respawn override；
+7. dropped cargo recovery。
+
+验收场景：economy-dense、economy-sparse、resource-far、core-gate、respawn。
+
+完成条件：0 invalid/repair，20 paired seeds 下净经济提升，最差 10% 不显著退化；真实 t3/t4 能观察到 settlement state delta，而非只看 HTTP accepted。
+
+### R4 — 探索与导航
+
+任务：
+
+- chunk/frontier age；
+- 稳定扇区与连续外扩；
+- blacklist/不可达区域剪枝；
+- A* 或 bounded BFS；
+- 路线迟滞、A-B-A 环消除；
+- 长墙/窄口/敌占格绕行；
+- Core 入口和两容量格的时空预约。
+
+完成条件：远资源首次发现时间下降、重复覆盖率下降、无路线振荡和超时长尾。
+
+### R5 — Threat、Core 生存与战斗
+
+固定顺序：
+
+1. enemy memory 与可见性排除；
+2. stationary/active 分类；
+3. ETA/threat score 与安全路线；
+4. Core 多轴防御与恢复；
+5. Ranger/Vanguard 配比；
+6. 预测攻击点、追击、撤退、堵路；
+7. confirmed stationary Core raid。
+
+完成条件：crossfire/enemy-aggressive/enemy-defensive 场景通过，Core 尾部生存不低于 TS 固定基线。
+
+### R6 — Replay、Simulator 与搜索统一
+
+- StrategyProfile v1 直接由 TS/Rust 两边消费；
+- RaceResult v2；
+- 同 seed 重放逐字节确定；
+- TS Runtime-Golden 作为真实观察输入；
+- official unknown 保持 `INCONCLUSIVE`；
+- simsearch/optsearch/paramscan/simgolden 继续作为研究工具；
+- 评分同时报告均值、中位数、p10、方差和失败率。
+
+Go oracle 只在迁移 fixture 阶段临时保留；不再追求 Rust 与 Go 长期逐动作同构。
+
+### R7 — 生产晋级
+
+```text
+workspace gate
+→ fixture/replay
+→ same-state TS/Rust shadow
+→ t3/t4 24h 或 10,000 Tick shadow
+→ 3/10/30/100 Tick bounded live
+→ 1,000 Tick Canary
+→ 10,000 Tick soak
+→ 一个 t1/t2 生产 Canary
+→ 第二生产租户
+```
+
+每一级 hard gates 必须全 0；失败退回 shadow。TS baseline 在 Rust 长期 Canary 完成前保持可执行。
+
+## 5. 并行策略
+
+当前最多三条无重叠 lane：
+
+- Lane A：`client` + protocol fixtures；
+- Lane B：`runtime` + lock/idempotency/telemetry；
+- Lane C：`strategy` + simulator scenarios。
+
+边界规则：
+
+- `domain` schema/validator 只能由一个 owner 修改；
+- `Cargo.toml` / `Cargo.lock` 同一时间一个 owner；
+- 正式场景/profile/contracts 由迁移总控维护；
+- 未完成 R1/R2 前不并行扩高级战斗或 LLM；
+- 每条 lane 一个原子提交，合流后先跑 workspace 全门禁。
+
+## 6. 当前直接指令
+
+```text
+收口本地 WIP并回执
+→ 清掉 active Fusion 叙事
+→ 盘点/冻结 ffi 与 Go 依赖
+→ 建 crates/client 的 read-only Hero vertical slice
+→ 建 crates/runtime exactly-once shadow loop
+→ t3/t4 100 Tick shadow
+→ 再进入经济闭环
+```
+
+## 7. 总完成标准
+
+- Pure Rust 无 Go/FFI 运行依赖；
+- 能直接连接服务器并长期稳定运行；
+- deterministic live 无 duplicate、wrong tick、unknown repair、second writer、panic 或 orphan；
+- 生产、replay 和 simulator 共享 Rust domain/strategy；
+- 在统一 profile/fixture/指标下相对 TS 无安全退化；
+- 至少一个生产租户完成长期 Rust Canary 和可验证 TS 回滚；
+- Go/Fusion 进入 archive，TS 明确收敛为实验、Oracle 与回滚线。
