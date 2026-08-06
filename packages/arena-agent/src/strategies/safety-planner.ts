@@ -160,6 +160,14 @@ export interface SafetyPlannerConfig {
    * （被拦截时无视拦截继续压任务送死，零回归）。
    */
   readonly detachedSquadResponse?: boolean;
+  /**
+   * 有界攻坚（v0.3，实验，B6 竞品 "exceeds the bounded mission distance"
+   * 对照）：aggressive 敌 Core 记忆推进时，记忆位置距我方 Core 超上限
+   * （40 格 Chebyshev）= 远征送死（补给线长、守军集火、被端概率高）——
+   * 取消攻坚回 Core 守位（竞品 Withdraw 条件之一）。可见敌人/近距记忆
+   * 不受影响。默认 false = 历史行为（记忆多远推多远，零回归）。
+   */
+  readonly boundedRaid?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -190,6 +198,8 @@ const HEAL_ROTATION_ENGAGE_RANGE: Record<UnitType, number> = { WORKER: 1, VANGUA
 const DETACHED_RESPONSE_RADIUS = 5;
 /** 被拦截后回 Core 守位的最少 tick（竞品 "at least eight Ticks"）。 */
 const DETACHED_RETURN_TICKS = 8;
+/** B6 有界攻坚（竞品 bounded mission distance）：记忆敌 Core 距我方 Core 上限。 */
+const BOUNDED_RAID_DISTANCE = 40;
 
 /** moveFailedAvoidance 绕行（v0.3 实验）：单位连续 MOVE_FAILED 后不再盲目重试
  *  同格——沿主方向垂直的候选方向探路（先 UP/DOWN 再 LEFT/RIGHT，排除障碍格）；
@@ -603,6 +613,17 @@ export class SafetyPlanner {
       if (enemies.length === 0 && state.core !== null) {
         const enemyCoreMemory = this.world.enemyHints(60).find((hint) => hint.kind === "CORE");
         if (enemyCoreMemory !== undefined) {
+          // B6 有界攻坚（boundedRaid 候选，竞品 "exceeds the bounded mission
+          // distance" → withdraw）：记忆中的敌 Core 距我方 Core 超上限（40 格）
+          // = 远征送死（补给线长、守军集火）——取消攻坚回 Core 守位。
+          if (
+            this.config.boundedRaid === true &&
+            chebyshev(state.core.position, enemyCoreMemory.position) > BOUNDED_RAID_DISTANCE
+          ) {
+            const direction = stepToward(unit.position, state.core.position, movementObstacles);
+            if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_bounded_return");
+            return;
+          }
           const direction = stepToward(unit.position, enemyCoreMemory.position, movementObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_pressure_memory");
           return;
