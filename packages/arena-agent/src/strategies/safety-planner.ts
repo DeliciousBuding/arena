@@ -216,6 +216,9 @@ const TTR_PRE_EVADE_TICKS = 16;
 const HEAL_ROTATION_HP: Record<UnitType, number> = { WORKER: 1, VANGUARD: 2, RANGER: 1 };
 /** 守卫"战斗中不回修"的反击范围（敌进入守卫反击射程 = 战斗压力，带伤值守）。 */
 const HEAL_ROTATION_ENGAGE_RANGE: Record<UnitType, number> = { WORKER: 1, VANGUARD: 1, RANGER: 3 };
+/** B8 守卫轮换 one-at-a-time（竞品 "one wounded defender at a time"）：
+ *  触发回修后该守卫占用回修名额的 tick 窗口（路上 + 补血）。 */
+const HEAL_ROTATION_HOLD_TICKS = 12;
 /** B5 远端突击组局部响应（竞品 detached squad）：敌非目标单位进入 5 格 = 被拦截。 */
 const DETACHED_RESPONSE_RADIUS = 5;
 /** 被拦截后回 Core 守位的最少 tick（竞品 "at least eight Ticks"）。 */
@@ -297,6 +300,8 @@ export class SafetyPlanner {
   private detachedReturnUntil = new Map<string, number>();
   /** B10 worker 遭遇撤离状态（unitId → 返回截止/冷却截止 tick）。 */
   private scoutEvadeState = new Map<string, { returnUntil: number; cooldownUntil: number }>();
+  /** B8 守卫轮换 one-at-a-time：回修流程中的守卫（unitId → 名额占用截止 tick）。 */
+  private healRotationActive = new Map<string, number>();
   /** C2 RECOVERY：上次见到的我方 Core id（全新 UUID = 重生/替换 → 清战场记忆）。 */
   private lastCoreId: string | null = null;
   /** C2 RECOVERY 触发次数（telemetry/测试可读）。 */
@@ -791,11 +796,21 @@ export class SafetyPlanner {
     // HEAL 分支接管，满血后守位锚点逻辑移出回守位（闭环）。战斗中的守卫不回修：
     // 邻格 SWEEP 反击优先（C7 已覆盖——SWEEP 分支在本函数更早处）。已在 Core
     // 格时不重复 MOVE（HEAL 分支直接治疗）。
+    // B8 one-at-a-time（竞品 "one wounded defender at a time"）：同类型守卫
+    // 已有回修流程中的（名额占用未过期）→ 本守卫不触发——防多守卫同时离位
+    // /同占 Core 格（防线真空）；满血即释放名额。
+    if (unit.hp > HEAL_ROTATION_HP[unit.unitType]) {
+      this.healRotationActive.delete(unit.id);
+    }
     if (
       this.config.guardHealRotation === true &&
       this.effectiveAggression === "defensive" &&
       state.core !== null &&
       unit.hp <= HEAL_ROTATION_HP[unit.unitType] &&
+      !state.vanguards.some(
+        (other) =>
+          other.id !== unit.id && (this.healRotationActive.get(other.id) ?? 0) > state.tick,
+      ) &&
       !enemies.some(
         (enemy) =>
           enemy.kind !== "CORE" &&
@@ -803,6 +818,7 @@ export class SafetyPlanner {
       ) &&
       !samePosition(unit.position, state.core.position)
     ) {
+      this.healRotationActive.set(unit.id, state.tick + HEAL_ROTATION_HOLD_TICKS);
       const direction = stepToward(unit.position, state.core.position, movementObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "guard_heal_return");
       return;
@@ -916,12 +932,21 @@ export class SafetyPlanner {
 
     // B8 守卫轮换治疗（guardHealRotation 候选）：defensive Ranger 受伤且无射程
     // 内敌（射击分支已优先处理——有敌就打，C7 反击优先）时回 Core 补血。
-    // 治疗完满血由守位锚点逻辑移出回守位（闭环）。
+    // 治疗完满血由守位锚点逻辑移出回守位（闭环）。one-at-a-time（竞品
+    // "one wounded defender at a time"）：同类型守卫已有回修流程中的 →
+    // 本守卫不触发（防多守卫同时离位/同占 Core 格 → 防线真空）。
+    if (unit.hp > HEAL_ROTATION_HP[unit.unitType]) {
+      this.healRotationActive.delete(unit.id);
+    }
     if (
       this.config.guardHealRotation === true &&
       this.effectiveAggression === "defensive" &&
       state.core !== null &&
       unit.hp <= HEAL_ROTATION_HP[unit.unitType] &&
+      !state.rangers.some(
+        (other) =>
+          other.id !== unit.id && (this.healRotationActive.get(other.id) ?? 0) > state.tick,
+      ) &&
       !enemies.some(
         (enemy) =>
           enemy.kind !== "CORE" &&
@@ -929,6 +954,7 @@ export class SafetyPlanner {
       ) &&
       !samePosition(unit.position, state.core.position)
     ) {
+      this.healRotationActive.set(unit.id, state.tick + HEAL_ROTATION_HOLD_TICKS);
       const direction = stepToward(unit.position, state.core.position, movementObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "guard_heal_return");
       return;
