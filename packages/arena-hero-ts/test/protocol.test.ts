@@ -120,6 +120,66 @@ test("parseStreamMessage: ACTIVE wire 可省略 respawn_at_tick，domain 归一�
   assert.equal(state.champion_beacon.carrier_id, null);
 });
 
+test("parseStreamMessage: v0.14 state 省略 population_tier/upkeep_next_tick 通过并归一为 null", () => {
+  // 2026-08-06 生产 WS dump 真实消息形态（脱敏：UUID/用户名替换），
+  // 服务器不再下发这两个字段。
+  const raw = JSON.stringify({
+    type: "state",
+    data: {
+      status: "ACTIVE",
+      resources: 12,
+      population: 13,
+      champion_beacon: { position: [-84, -283] },
+      objects: [
+        { kind: "OBSTACLE", positions: [[-647, -181], [-644, -182]] },
+        {
+          kind: "CORE",
+          id: "00000000-0000-4000-8000-000000000001",
+          controlled: true,
+          owner_username: "arena_hero",
+          position: [-619, -154],
+          hp: 5,
+          shield: 5,
+          state: "NORMAL",
+        },
+        {
+          kind: "UNIT",
+          id: "00000000-0000-4000-8000-000000000002",
+          controlled: true,
+          position: [-600, -173],
+          hp: 2,
+          unit_type: "WORKER",
+          cargo: 0,
+        },
+      ],
+      events: [],
+    },
+  });
+  const state = parseStreamMessage(raw);
+  assert.ok("status" in state, "expected PlayerState");
+  assert.equal(state.population_tier, null);
+  assert.equal(state.upkeep_next_tick, null);
+  assert.equal(Object.hasOwn(state, "population_tier"), true, "domain object 必须补齐字段");
+  assert.equal(state.champion_beacon.status, null);
+  assert.equal(state.champion_beacon.carrier_id, null);
+});
+
+test("parseStreamMessage: 校验未削弱——population_tier 非整数仍拒绝", () => {
+  const raw = JSON.stringify({
+    type: "state",
+    data: {
+      status: "ACTIVE",
+      resources: 0,
+      population: 0,
+      population_tier: "zero",
+      champion_beacon: { position: [0, 0] },
+      objects: [],
+      events: [],
+    },
+  });
+  assert.throws(() => parseStreamMessage(raw), ProtocolError);
+});
+
 test("parseStreamMessage: RESPAWNING wire 省略 respawn_at_tick 仍拒绝", () => {
   const raw = JSON.stringify({
     type: "state",

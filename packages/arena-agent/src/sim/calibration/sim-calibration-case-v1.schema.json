@@ -62,8 +62,6 @@
         "respawn_at_tick",
         "resources",
         "population",
-        "population_tier",
-        "upkeep_next_tick",
         "champion_beacon",
         "objects",
         "events"
@@ -73,8 +71,8 @@
         "respawn_at_tick": { "type": ["integer", "null"], "minimum": 1 },
         "resources": { "type": "integer", "minimum": 0 },
         "population": { "type": "integer", "minimum": 0 },
-        "population_tier": { "type": "integer", "minimum": 0 },
-        "upkeep_next_tick": { "type": "integer", "minimum": 0 },
+        "population_tier": { "type": ["integer", "null"], "minimum": 0 },
+        "upkeep_next_tick": { "type": ["integer", "null"], "minimum": 0 },
         "champion_beacon": { "$ref": "#/$defs/beacon" },
         "objects": {
           "type": "array",

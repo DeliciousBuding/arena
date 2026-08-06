@@ -103,8 +103,9 @@ export interface PlayerState {
   respawn_at_tick: number | null;
   resources: number;
   population: number;
-  population_tier: number;
-  upkeep_next_tick: number;
+  /** v0.14 起服务器不再下发；旧消息可能仍携带。 */
+  population_tier: number | null;
+  upkeep_next_tick: number | null;
   champion_beacon: ChampionBeacon;
   objects: readonly WorldObject[];
   events: readonly ResolutionEvent[];

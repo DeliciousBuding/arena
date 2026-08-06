@@ -214,6 +214,10 @@ export class RuntimeGoldenRecorder {
         sourceCommit: this.options.sourceCommit,
         runId: pending.runId,
       },
+      // v0.14（2026-08-06 上游 rules v0.14）起服务器不再下发 population_tier /
+      // upkeep_next_tick，normalize 后为 null。case 契约（共享 schema）已放宽为
+      // integer|null；原样落盘、不按旧协议公式推导，避免把 v0.14 数据伪装成
+      // v0.11 语义。旧 case（服务器仍下发值）原样保留。
       before: { tick: pending.tick, state: pending.state },
       plan: pending.plan,
       after: { tick: pending.tick + 1, state: clone(afterState) },

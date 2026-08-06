@@ -15,10 +15,7 @@ import type { Accepted, PlayerState } from "@arena/arena-hero-ts";
 import type { Plan } from "../src/domain/model.ts";
 import type { TickOutcome } from "../src/runtime/loop.ts";
 import { sha256Canonical } from "../src/domain/integrity.ts";
-import {
-  RuntimeGoldenRecorder,
-  type RuntimeGoldenDatasetManifest,
-} from "../src/runtime-golden/recorder.ts";
+import { RuntimeGoldenRecorder, type RuntimeGoldenDatasetManifest } from "../src/runtime-golden/recorder.ts";
 import { parseCalibrationCase } from "../src/sim/calibration/schema.ts";
 
 const WORKER = "22222222-2222-2222-2222-222222222222";
@@ -165,6 +162,72 @@ test("S8b: missing drain drops pending case instead of forging after state", asy
     assert.equal(result.caseCount, 0);
     assert.equal(result.droppedPending, 1);
     assert.ok(warnings.some((message) => message.includes("no next raw state")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("S8b: v0.14 state 缺 maintenance 字段 → case 落盘显式 null，不按旧协议推导", async () => {
+  const root = mkdtempSync(join(tmpdir(), "runtime-golden-"));
+  try {
+    const recorder = makeRecorder(root);
+    // 2026-08-06 生产 dump 真实形态：服务器不再下发 population_tier /
+    // upkeep_next_tick，normalize 后为 null。
+    const v014Before = structuredClone(state(4)) as PlayerState;
+    v014Before.population_tier = null;
+    v014Before.upkeep_next_tick = null;
+    const v014After = structuredClone(state(5)) as PlayerState;
+    v014After.population_tier = null;
+    v014After.upkeep_next_tick = null;
+    recorder.observe(outcome(10, v014Before, true));
+    recorder.observe(outcome(11, v014After, false));
+    const result = await recorder.close();
+
+    // 若此断言失败，说明 case 契约解析器（sim/calibration/schema.ts）尚未
+    // 放宽为可接受 null（共享 schema 已放宽为 integer|null，待同步）。
+    assert.equal(result.caseCount, 1, "null maintenance fields must pass the case contract");
+    assert.equal(result.errorCount, 0);
+    const manifest = JSON.parse(readFileSync(result.manifestPath, "utf8")) as RuntimeGoldenDatasetManifest;
+    const rawCase = JSON.parse(readFileSync(join(root, manifest.cases[0]!.file), "utf8"));
+    // 真实 dump 形态：服务器未下发的字段必须原样落盘为显式 null，而不是
+    // 用旧协议公式（floor(population/20) 等）推导出的伪装值。
+    assert.equal(rawCase.before.state.population_tier, null, "before.population_tier must stay null");
+    assert.equal(rawCase.before.state.upkeep_next_tick, null, "before.upkeep_next_tick must stay null");
+    assert.equal(rawCase.after.state.population_tier, null, "after.population_tier must stay null");
+    assert.equal(rawCase.after.state.upkeep_next_tick, null, "after.upkeep_next_tick must stay null");
+    // 契约往返：共享 schema optional 后，case 解析器应能接受并保留 null。
+    const parsed = parseCalibrationCase(rawCase);
+    assert.equal(parsed.before.state.population_tier, null);
+    assert.equal(parsed.before.state.upkeep_next_tick, null);
+    assert.equal(parsed.after.state.population_tier, null);
+    assert.equal(parsed.after.state.upkeep_next_tick, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("S8b: 旧消息（服务器仍下发 maintenance 值）原样保留，不改写为 null", async () => {
+  const root = mkdtempSync(join(tmpdir(), "runtime-golden-"));
+  try {
+    const recorder = makeRecorder(root);
+    const legacyBefore = structuredClone(state(4)) as PlayerState;
+    legacyBefore.population_tier = 7;
+    legacyBefore.upkeep_next_tick = 9;
+    const legacyAfter = structuredClone(state(5)) as PlayerState;
+    legacyAfter.population_tier = 7;
+    legacyAfter.upkeep_next_tick = 9;
+    recorder.observe(outcome(10, legacyBefore, true));
+    recorder.observe(outcome(11, legacyAfter, false));
+    const result = await recorder.close();
+
+    assert.equal(result.caseCount, 1);
+    assert.equal(result.errorCount, 0);
+    const manifest = JSON.parse(readFileSync(result.manifestPath, "utf8")) as RuntimeGoldenDatasetManifest;
+    const rawCase = JSON.parse(readFileSync(join(root, manifest.cases[0]!.file), "utf8"));
+    assert.equal(rawCase.before.state.population_tier, 7, "server-provided value must be preserved");
+    assert.equal(rawCase.before.state.upkeep_next_tick, 9, "server-provided value must be preserved");
+    assert.equal(rawCase.after.state.population_tier, 7, "server-provided value must be preserved");
+    assert.equal(rawCase.after.state.upkeep_next_tick, 9, "server-provided value must be preserved");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
