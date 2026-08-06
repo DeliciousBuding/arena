@@ -12,8 +12,10 @@ READY_URL="http://127.0.0.1:8120/ready"
 
 now() { date '+%Y-%m-%d %H:%M:%S'; }
 
-# 健康则无事
-if curl -sS -m 5 "$READY_URL" 2>/dev/null | grep -q '"ready":true'; then
+# 健康则无事。注意：grep 必须取第一个 "ready" 字段（JSON 顶层），
+# 否则 tenants 数组内其他租户的 "ready":true 会让子串匹配误判健康
+# （2026-08-06 实测：t1 单线 failed 时 watchdog 因此漏恢复）。
+if curl -sS -m 5 "$READY_URL" 2>/dev/null | grep -oE '"ready":(true|false)' | head -1 | grep -q '"ready":true'; then
   exit 0
 fi
 
