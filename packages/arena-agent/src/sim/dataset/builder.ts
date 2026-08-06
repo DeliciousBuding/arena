@@ -341,6 +341,45 @@ function computeLabel(tickMap: Map<number, ParsedCase>, tick: number): LabelResu
   };
 }
 
+/** 决策停摆 run 识别（2026-08-07 t2 实证后新增）：decision telemetry 中
+ *  agentActionCount==0 且 moveCount==0 占比 >= threshold 的 processRunId。
+ *  死锁期 run 的 calibration case 决策全 WAIT（策略缺陷产物，非正常
+ *  行为）——作为训练数据会教坏模型（学 WAIT），builder 整体 quarantine
+ *  （reason: stall-run）。t2 实测：死锁 run 2209 行中 92% zero-action，
+ *  恢复 run 仅 12%。minRows 宽限短 run（新 run 未积累不判）。 */
+export function loadStallRuns(
+  decisionPath: string,
+  threshold = 0.8,
+  minRows = 10,
+): Set<string> {
+  const stallRuns = new Set<string>();
+  if (!existsSync(decisionPath)) return stallRuns;
+  const byRun = new Map<string, { total: number; zero: number }>();
+  for (const line of readFileSync(decisionPath, "utf8").split("\n")) {
+    if (line.trim() === "") continue;
+    let row: { processRunId?: unknown; agentActionCount?: unknown; moveCount?: unknown };
+    try {
+      row = JSON.parse(line) as { processRunId?: unknown; agentActionCount?: unknown; moveCount?: unknown };
+    } catch {
+      continue;
+    }
+    const runId = String(row.processRunId ?? "");
+    if (runId === "") continue;
+    const entry = byRun.get(runId) ?? { total: 0, zero: 0 };
+    entry.total += 1;
+    if (Number(row.agentActionCount ?? 0) === 0 && Number(row.moveCount ?? 0) === 0) {
+      entry.zero += 1;
+    }
+    byRun.set(runId, entry);
+  }
+  for (const [runId, { total, zero }] of byRun) {
+    if (total >= minRows && zero * 100 >= total * threshold * 100) {
+      stallRuns.add(runId);
+    }
+  }
+  return stallRuns;
+}
+
 function loadPolicyUpdates(policyPath: string, counts: MutableCounts): PolicyUpdate[] {
   if (!existsSync(policyPath)) return [];
   const updates: PolicyUpdate[] = [];
@@ -634,6 +673,11 @@ export function buildDataset(options: DatasetBuildOptions): DatasetBuildResult {
     join(options.dataRoot, "runtime", tenantId, "telemetry", "policy.jsonl"),
     counts,
   );
+  // 决策停摆 run（2026-08-07 t2 实证）：死锁期 run 的 case 决策全 WAIT，
+  // 整体 quarantine（stall-run），防止污染训练数据（学 WAIT）。
+  const stallRuns = loadStallRuns(
+    join(options.dataRoot, "runtime", tenantId, "telemetry", "decision.jsonl"),
+  );
   const accepted: ParsedCase[] = [];
   const quarantine: QuarantineRecord[] = [];
 
@@ -669,6 +713,13 @@ export function buildDataset(options: DatasetBuildOptions): DatasetBuildResult {
     if (caseValue.tenantId !== tenantId) {
       counts.quarantineTotal += 1;
       quarantine.push({ caseId: caseKey, reason: "tenant-mismatch" });
+      continue;
+    }
+    // 死锁期 run 数据（决策全 WAIT 的策略缺陷产物）整体排除
+    const processRun = (caseValue.metadata.runId ?? processRunId).split(":")[0];
+    if (stallRuns.has(processRun)) {
+      counts.quarantineTotal += 1;
+      quarantine.push({ caseId: caseKey, reason: "stall-run" });
       continue;
     }
     let calibrationStatus: "MATCH" | "MISMATCH" | "INCONCLUSIVE" = "MATCH";
