@@ -996,13 +996,34 @@ export class SafetyPlanner {
     // guardAxes（B4 候选）：defensive + 有可见敌人时 Ranger 守内层屏
     // （2 格）而非追击最近敌（竞品"defenders do not chase beyond the
     // protective posture"——Ranger 冲脸失去射程优势且易被 SWEEP）。
-    const moveTarget = enemies.length > 0
-      ? this.config.guardAxes === true &&
-        this.effectiveAggression === "defensive" &&
-        state.core !== null
+    const guardAxesPost =
+      this.config.guardAxes === true &&
+      this.effectiveAggression === "defensive" &&
+      state.core !== null
         ? defensePost(state.core.position, enemies, movementObstacles, "RANGER", index)
-        : nearestEnemy(enemies, unit.position)?.position ?? null
-      : this.effectivePolicy?.focusRegion ?? state.core?.position ?? null;
+        : null;
+    // 守家锚点（绝不站 Core 格本身——Core 格是 Worker 回仓通道，被军事
+    // 单位长期占用会造成 capacity_wait:DEPOSIT 经济死锁，生产实测 t2）。
+    // guardAxes（B4 候选）有可见敌人时按威胁轴守内层屏（2 格，天然保持
+    // Core 邻格为空）；无敌人回退历史四邻轮转。
+    const home = state.core === null
+      ? null
+      : guardAxesPost ?? homeCell(state.core.position, movementObstacles, index);
+    // 已在 Core 格且满血：移出到守家锚点（治疗是短时占格，治疗完必须让出回仓通道）
+    if (
+      state.core !== null &&
+      unit.hp >= UNIT_MAX_HP[unit.unitType] &&
+      samePosition(unit.position, state.core.position) &&
+      home !== null &&
+      !samePosition(unit.position, home)
+    ) {
+      const direction = stepToward(unit.position, home, movementObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_home");
+      return;
+    }
+    const moveTarget = enemies.length > 0
+      ? guardAxesPost ?? nearestEnemy(enemies, unit.position)?.position ?? null
+      : this.effectivePolicy?.focusRegion ?? home;
     if (moveTarget !== null && !samePosition(unit.position, moveTarget)) {
       // 激进：保持 1-3 射程站定，不冲脸（近身会让 Ranger 失去射程优势且易被
       // SWEEP）。已在射程内但没有合法射击目标（被障碍挡住）时原地待机。
