@@ -2,7 +2,14 @@
 
 最后更新：2026-08-06。
 
-Arena 正式运行链为 TS-only。遵循原生设计：优先 Node 标准能力、现有 SDK/lock/JSONL，不引入第二套进程框架、控制面或配置系统。
+Arena 是**两条实现层独立的赛马线**（用户 2026-08-06 裁决）：本仓
+（TS 线）与 `arena-rs`（Rust 线）各自独立实现引擎与策略，共享数据层
+（`ARENA_DATA_ROOT`、共享 schema、calibration case、数据集），在同一套
+真实数据上正面比较。真实数据采集执行采用单一 writer 纪律（防双
+schema/撕裂写）：**t1/t2 由本线（TS）采集**；**t3/t4 按用户 2026-08-07
+裁决移交 Rust 线接管**（移交完成前仍由本线运行，避免生产空洞）。
+本线遵循原生设计：优先 Node 标准能力、现有 SDK/lock/JSONL，不引入
+第二套进程框架、控制面或配置系统。
 
 ## 权威入口
 
@@ -35,9 +42,12 @@ us1 已关闭，t1/t2/t3/t4 本地 live（deterministic + submitEnabled=true，d
 npm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --port=8120
 ```
 - 看护：Windows 计划任务 `ArenaWatchdog`（每分钟，重建命令见下）+ `scripts/arena-watchdog.sh`（异常自动恢复：确认死透 → 清死锁 → 带 `--record-calibration` 重启，日志 `~/arena-watchdog.log`）；
-- 生产四线 `t1`/`t2`/`t3`/`t4` 运行（用户 2026-08-06 裁决）；生产租户仅限这四线，single-writer 与定向杀进程纪律不变。
+- 生产四线 `t1`/`t2`/`t3`/`t4` 运行（用户 2026-08-06 裁决）；生产租户
+  仅限这四线，single-writer 与定向杀进程纪律不变。**t3/t4 移交 Rust 线
+  接管中（用户 2026-08-07 裁决）**：Rust 侧 live 路径恢复并门禁通过前，
+  本线继续运行 t3/t4；移交完成后本线只负责 t1/t2 采集与全四线只读消费。
 
-### 租户始终运行 + 数据收集线保障（2026-08-06）
+### 租户始终运行 + 数据收集线保障（2026-08-06；t3/t4 移交裁决 2026-08-07）
 
 - **数据根优先级**：CLI `--data-root` > `ARENA_DATA_ROOT` > 仓库同级 `../data`；supervisor 未显式覆盖时使用 `../data/runtime/configs` 与 `../data/runtime`，模拟器输出严格限制在 `../data/runs/sim`；
 - **数据收集线 = supervisor `--record-calibration` 旁路**（只记录 accepted plan、相邻 raw state 与 receipt，cases 持续落盘 `../data/runtime/<t>/calibration/<runId>/cases/`；校准/分析只离线执行，看护重启命令已含该参数）；
