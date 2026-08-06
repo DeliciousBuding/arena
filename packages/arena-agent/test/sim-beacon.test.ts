@@ -309,3 +309,64 @@ test("S11: resolveBeacon 纯函数——原 world 不变", () => {
   assert.equal(JSON.stringify(world), before);
   assert.equal(resolution.nextBeacon!.status, "CARRIED");
 });
+
+test("S11: 迁移 Core 携带 Beacon——真实移动前保持逻辑位置，完成后跟随", () => {
+  // 官方 champion-beacon.md："A migrating Core keeps it at the Core's current
+  // logical position until the fourth-Tick real move goes through"——
+  // 迁移 1-3 tick Core 位置不变（Beacon 保持逻辑位置），第 4 tick 真实
+  // 移动（CORE_MOVE_SUCCEEDED）→ Beacon 跟随到新位置。
+  const world1 = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 5,
+        core: { id: P1_CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: { position: [0, 0], status: "GROUND", carrierId: null },
+  });
+  // tick1：Core 同格拾取 Beacon
+  const world2 = settleTick(
+    world1,
+    new Map([["p1", { tick: 1, unitActions: {}, coreAction: { type: "PICKUP_BEACON" }, intents: {} }]]),
+    ctx,
+  ).world;
+  assert.equal(world2.beacon?.status, "CARRIED");
+  assert.equal(world2.beacon?.carrierId, P1_CORE);
+  // tick2：START_MOVE（目的地 [1,0]，4 tick）
+  const world3 = settleTick(
+    world2,
+    new Map([["p1", { tick: 2, unitActions: {}, coreAction: { type: "START_MOVE", direction: "RIGHT" }, intents: {} }]]),
+    ctx,
+  ).world;
+  assert.equal(world3.players.get("p1")!.core!.state, "MOVING");
+  // tick3-4：迁移 progress（Core 位置不变 → Beacon 保持 [0,0] 逻辑位置）
+  const world4 = settleTick(
+    world3,
+    new Map([["p1", { tick: 3, unitActions: {}, coreAction: null, intents: {} }]]),
+    ctx,
+  ).world;
+  assert.equal(world4.players.get("p1")!.core!.position[0], 0, "迁移中 Core 位置不变");
+  assert.equal(world4.beacon?.position[0], 0, "迁移中 Beacon 保持逻辑位置");
+  const world5 = settleTick(
+    world4,
+    new Map([["p1", { tick: 4, unitActions: {}, coreAction: null, intents: {} }]]),
+    ctx,
+  ).world;
+  assert.equal(world5.players.get("p1")!.core!.position[0], 0, "第 3 tick 仍未移动");
+  assert.equal(world5.beacon?.position[0], 0, "Beacon 仍未跟随");
+  // tick5：第 4 tick 真实移动 → Core 到 [1,0]，Beacon 跟随
+  const world6 = settleTick(
+    world5,
+    new Map([["p1", { tick: 5, unitActions: {}, coreAction: null, intents: {} }]]),
+    ctx,
+  ).world;
+  assert.equal(world6.players.get("p1")!.core!.position[0], 1, "Core 完成迁移");
+  assert.equal(world6.beacon?.position[0], 1, "Beacon 跟随到新位置");
+});
