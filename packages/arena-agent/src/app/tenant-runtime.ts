@@ -43,7 +43,7 @@ import { PolicyDiscipline } from "../runtime/policy-discipline.ts";
 import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
 import { manhattan } from "../domain/nav.ts";
-import { assessThreat, damagedThisTick } from "../domain/threat.ts";
+import { assessThreat, coreDamagedThisTick } from "../domain/threat.ts";
 import type { TickState } from "../domain/model.ts";
 import type { AgentDecisionRuntime, DecisionModeName, DecisionResult, SubmissionModeName } from "../runtime/decision-types.ts";
 import {
@@ -77,7 +77,7 @@ function threatDiagnosticsOf(state: TickState): Pick<
     core: state.core?.position ?? null,
     visibleEnemies: state.visibleEnemies,
     enemyHints: [],
-    damagedThisTick: damagedThisTick(state.events),
+    coreDamagedThisTick: coreDamagedThisTick(state.events),
   });
   return {
     threatLevel: assessment.level,

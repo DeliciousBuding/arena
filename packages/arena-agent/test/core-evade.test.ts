@@ -130,6 +130,32 @@ test("defensive + 敌方 Core 记忆：无可见敌人时仍守家（不前压�
   assert.notEqual(plan.intents["v1"], "vanguard_pressure_memory");
 });
 
+test("coreEvade 开启：远距确认追击（score≥3）→ START_MOVE（B3）", () => {
+  // 2026-08-07 B3 对齐：score≥3 持续逼近的远距敌（>12 格）也触发 Core 迁移
+  // （竞品 confirmed distant pursuit → PRE_EVADE）。先观察两 tick 累积
+  // pursuitScore，第三 tick 敌人仍远距（15 格）→ 触发迁移。
+  const planner = new SafetyPlanner(EVADE_CONFIG);
+  // tick 1: 敌 16 格（远距）
+  planner.decide({ state: makeState(1, [enemy("e1", [16, 0])]) });
+  // tick 2: 敌 15 格（逼近 +2 → score 2）
+  planner.decide({ state: makeState(2, [enemy("e1", [15, 0])]) });
+  // tick 3: 敌 14 格（逼近 +2 → score 4 ≥3）——仍 >12 格（14 格），
+  // 但 confirmedPursuit 成立 → 触发迁移
+  const plan = planner.decide({ state: makeState(3, [enemy("e1", [14, 0])]) });
+  assert.equal(plan.coreAction?.type, "START_MOVE", "远距确认追击应触发迁移");
+});
+
+test("coreEvade + TTR：扣 attack-range 的 TTR≤16 触发（B1）", () => {
+  // 2026-08-07 B1 公式对齐：remaining = max(0, d − attack_range)，
+  // TTR = remaining × gap / closed ≤16。Vanguard attack_range=1：
+  // 敌 12 格 → 10 格（closed=2, gap=1, remaining=9）→ TTR=4.5 ≤16 触发。
+  const planner = new SafetyPlanner({ ...EVADE_CONFIG, coreEvadeTtr: true });
+  planner.decide({ state: makeState(1, [enemy("e1", [12, 0])]) });
+  const plan = planner.decide({ state: makeState(2, [enemy("e1", [10, 0])]) });
+  assert.equal(plan.coreAction?.type, "START_MOVE");
+  assert.equal(plan.intents.core, "core_evade_ttr");
+});
+
 test("coreEvade 开启：障碍格不选（北侧障碍 → 不选 UP）", () => {
   const planner = new SafetyPlanner(EVADE_CONFIG);
   const state = {

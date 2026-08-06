@@ -27,7 +27,7 @@ import { UNIT_MAX_HP } from "../domain/plan-validator.ts";
 import { countEnemiesNearCore } from "../domain/plan-validator.ts";
 import { PhaseMachine, type PhaseConfig } from "../domain/phase-machine.ts";
 import { World } from "../domain/world.ts";
-import { assessThreat, damagedThisTick, type ThreatAssessment } from "../domain/threat.ts";
+import { assessThreat, coreDamagedThisTick, type ThreatAssessment } from "../domain/threat.ts";
 import { aggressionOf, type MacroPolicy } from "../runtime/macro-policy.ts";
 
 export type AggressionLevel = "defensive" | "aggressive";
@@ -212,6 +212,10 @@ export class SafetyPlanner {
   /** Core 迁移方向（coreEvade）：START_MOVE 发起时记录；次 tick 仍 MOVING
    *  同向 = 已提交（本地等效 move_progress≥2，竞品 CANCEL 语义用）。 */
   private coreMoveDirection: Direction | null = null;
+  /** PRE_EVADE 持续截止 tick（竞品 preemptive_evade_until_tick = tick + 2）：
+   *  触发迁移后即使敌人消失，2 tick 内仍保持迁移意图（防止"敌人闪失 →
+   *  立刻取消"抖动）。 */
+  private preemptiveEvadeUntilTick = 0;
   /** MOVE_FAILED 连续失败计数（moveFailedAvoidance）：单位连续 N tick 移动被
    *  结算拒绝时改走垂直绕行格，避免无反馈重试同格死循环。 */
   private moveFailedStreak = new Map<string, number>();
@@ -256,7 +260,7 @@ export class SafetyPlanner {
         core: state.core.position,
         visibleEnemies: state.visibleEnemies,
         enemyHints: this.world.enemyHints(),
-        damagedThisTick: damagedThisTick(state.events),
+        coreDamagedThisTick: coreDamagedThisTick(state.events),
       });
     }
     // MOVE_FAILED 反馈（moveFailedAvoidance）：上 tick 结算拒绝的单位计连续失败，
@@ -715,36 +719,45 @@ export class SafetyPlanner {
     if (core.state === "MOVING") {
       return null;
     }
-    if (this.config.coreEvade === true && state.visibleEnemies.length > 0) {
+    if (this.config.coreEvade === true) {
+      // 触发源（2026-08-07 B1/B3 对齐竞品 threat-response PRE_EVADE）：
+      // 1) closing：12 格内可见敌（回退半径）；
+      // 2) confirmedPursuit：远距确认追击（积分 ≥3 持续逼近，>12 格也触发）；
+      // 3) ttrTrigger：TTR 预撤离（扣 attack-range、observation-gap 缩放）；
+      // 4) preemptiveEvadeUntilTick：敌人消失后 2 tick 持续（竞品 2-tick
+      //    preemptive_evade_until 对照——防止"敌人闪失 → 立刻取消"抖动）。
+      const enemyHints = this.world.enemyHints();
       const threat = assessThreat({
         core: core.position,
         visibleEnemies: state.visibleEnemies,
-        enemyHints: this.world.enemyHints(),
-        damagedThisTick: damagedThisTick(state.events),
+        enemyHints,
+        coreDamagedThisTick: coreDamagedThisTick(state.events),
       });
-      // 触发：12 格内可见敌（含受击）——Core 慢（4 tick/格），提前撤离
-      // （竞品 12-cell fallback + time-to-range 的简化版）。
       const closing = threat.closingEnemies > 0;
-      // TTR 预撤离（coreEvadeTtr，v0.3 实验）：用 EnemyMemory 位置差分估算
-      // 敌人逼近速度，TTR（距离/速度）≤16 tick 即触发——比 12 格固定阈值
-      // 更早（高速逼近的敌人在 20 格外 TTR 已 ≤16）。竞品 threat-response
-      // 的 time-to-range 对照。
+      const confirmedPursuit = threat.confirmedPursuit;
       let ttrTrigger = false;
       if (this.config.coreEvadeTtr === true) {
-        const hintsById = new Map(this.world.enemyHints().map((hint) => [hint.id, hint]));
+        const hintsById = new Map(enemyHints.map((hint) => [hint.id, hint]));
         for (const enemy of state.visibleEnemies) {
           const hint = hintsById.get(enemy.id);
-          if (hint?.prevPosition === undefined) continue;
+          if (hint?.prevPosition === undefined || hint?.prevSeenTick === undefined) continue;
           const prevDistance = manhattan(hint.prevPosition, core.position);
           const distance = manhattan(enemy.position, core.position);
-          const approachSpeed = prevDistance - distance; // 每 tick 逼近格数
-          if (approachSpeed > 0 && distance / approachSpeed <= TTR_PRE_EVADE_TICKS) {
+          const closed = prevDistance - distance; // 观测间隔内总逼近量
+          if (closed <= 0) continue;
+          const observationGap = hint.lastSeenTick - hint.prevSeenTick; // 间隔 tick
+          // 竞品公式：remaining = max(0, d − attack_range)，attack_range =
+          // RANGER 3 / VANGUARD 1；ticks_to_attack_range = remaining × gap / closed
+          const attackRange = enemy.unitType === "RANGER" ? 3 : 1;
+          const remaining = Math.max(0, distance - attackRange);
+          if ((remaining * observationGap) / closed <= TTR_PRE_EVADE_TICKS) {
             ttrTrigger = true;
             break;
           }
         }
       }
-      if (closing || ttrTrigger) {
+      const preemptivePersist = this.preemptiveEvadeUntilTick >= state.tick;
+      if (closing || confirmedPursuit || ttrTrigger || preemptivePersist) {
         const direction = retreatDirection(
           core.position,
           state.visibleEnemies,
@@ -754,6 +767,8 @@ export class SafetyPlanner {
         );
         if (direction !== null) {
           this.coreMoveDirection = direction;
+          // 竞品 preemptive_evade_until_tick = tick + 2：敌人消失后仍持续 2 tick
+          this.preemptiveEvadeUntilTick = state.tick + 2;
           intents.core = ttrTrigger ? "core_evade_ttr" : "core_evade";
           return { type: "START_MOVE", direction };
         }

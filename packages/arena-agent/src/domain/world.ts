@@ -40,6 +40,10 @@ export interface EnemyMemory {
   /** 上一可见 tick 的位置（威胁评估 ALERT 信号：位置差分 → 敌移动检测，
    *  2026-08-06 竞品 hierarchical threat assessment 对照）。 */
   prevPosition?: Position;
+  /** 上一可见 tick（观测间隔 = lastSeenTick - prevSeenTick；竞品
+   *  observation-gap 缩放——敌人间歇可见时逼近速度按间隔折算，
+   *  2026-08-07 B1 TTR 公式对齐）。 */
+  prevSeenTick?: number;
   /** 上一可见 tick 时敌距 Core 的 Chebyshev 距离（距离差分 pursuit score 的
    *  分母——竞品对照：closed = prev.d - cur.d，>0 逼近 +2、==0 平行 +1、
    *  <0 远离 -1，位置未动强制 0——天然滤除"路过"误报）。 */
@@ -200,6 +204,7 @@ export class World {
         // 位置差分：上一次可见位置保留为 prevPosition（同 id 才记录——
         // 新出现敌人无 prev，prevPosition 缺失 = 无法判断移动）。
         prevPosition: previous?.position,
+        prevSeenTick: previous?.lastSeenTick,
         coreDistance,
         pursuitScore,
         kind: enemy.kind,
