@@ -877,16 +877,21 @@ export class SafetyPlanner {
           ? defensePost(state.core.position, enemies, movementObstacles, "VANGUARD", index)
           : homeCell(state.core.position, movementObstacles, index);
     }
-    // 已在 Core 格且满血：移出到守家锚点（治疗是短时占格，治疗完必须让出回仓通道）
+    // 已在 Core 格且满血：移出到让位锚点（yieldAnchor——与 Ranger 同，
+    // 避开被占格；t2 实证：Core 四邻全堵时 homeCell 选到满格 → 预裁决
+    // 淘汰让位 → 死锁。治疗是短时占格，治疗完必须让出回仓通道）
     if (
       state.core !== null &&
       unit.hp >= UNIT_MAX_HP[unit.unitType] &&
-      samePosition(unit.position, state.core.position) &&
-      home !== null &&
-      !samePosition(unit.position, home)
+      samePosition(unit.position, state.core.position)
     ) {
-      const direction = stepToward(unit.position, home, movementObstacles);
-      if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_home");
+      const yieldTarget = yieldAnchor(state.core.position, movementObstacles, occupancyCounts(state));
+      if (yieldTarget !== null && !samePosition(unit.position, yieldTarget)) {
+        const direction = stepToward(unit.position, yieldTarget, movementObstacles);
+        if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_home");
+        return;
+      }
+      // 同 Ranger：无合法让位目标原地等，不 fall through 到守位
       return;
     }
     // focusRegion：无敌人时朝策略聚焦区推进（侦察/占位），否则回守家锚点或追击邻近敌人
@@ -1009,16 +1014,24 @@ export class SafetyPlanner {
     const home = state.core === null
       ? null
       : guardAxesPost ?? homeCell(state.core.position, movementObstacles, index);
-    // 已在 Core 格且满血：移出到守家锚点（治疗是短时占格，治疗完必须让出回仓通道）
+    // 已在 Core 格且满血：移出到让位锚点（yieldAnchor——优先空邻格、其次
+    // 单占用邻格（可挤入，容量 2）；Core 四邻全堵（障碍+单位）时 homeCell
+    // 会选到满格 → 预裁决淘汰让位 → Ranger 永不离开 → worker 永不
+    // deposit → 经济死锁（t2 实证）。治疗是短时占格，治疗完必须让出）
     if (
       state.core !== null &&
       unit.hp >= UNIT_MAX_HP[unit.unitType] &&
-      samePosition(unit.position, state.core.position) &&
-      home !== null &&
-      !samePosition(unit.position, home)
+      samePosition(unit.position, state.core.position)
     ) {
-      const direction = stepToward(unit.position, home, movementObstacles);
-      if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_home");
+      const yieldTarget = yieldAnchor(state.core.position, movementObstacles, occupancyCounts(state));
+      if (yieldTarget !== null && !samePosition(unit.position, yieldTarget)) {
+        const direction = stepToward(unit.position, yieldTarget, movementObstacles);
+        if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_home");
+        return;
+      }
+      // 无合法让位目标（Core 四邻全堵且全满）：原地等下一 tick 重试——
+      // 不 fall through 到守位（守位目标可能在 Core 邻格满格 → 预裁决
+      // 淘汰 → MOVE_FAILED 循环）。
       return;
     }
     const moveTarget = enemies.length > 0
@@ -1256,6 +1269,57 @@ function defensePost(
     return candidate;
   }
   return null;
+}
+
+/**
+ * 让位锚点（2026-08-07，生产 t2 实证修复）：已在 Core 格的军事单位
+ * （Ranger/Vanguard）移出回仓通道的目标格。与 homeCell 不同，让位必须
+ * 避开被单位占用的格——Core 四邻全堵（障碍 + 单位）时 homeCell 会选到
+ * 满格（如 t2：[-53,49] 被 Vanguard+worker 占 2）→ 预裁决按容量淘汰
+ * 让位动作 → Ranger 永不离开 → worker 永不 deposit → 经济死锁。
+ * 选择顺序：① 空邻格（占用 0，最优先）；② 单占用邻格（占用 1——
+ * 可挤入，容量 2，预裁决按优先级裁决）；③ 全堵返回 null（原地等，
+ * 下一 tick 重试）。
+ */
+function yieldAnchor(
+  core: Position,
+  obstacles: ReadonlySet<string>,
+  occupancy: ReadonlyMap<string, number>,
+): Position | null {
+  const order: readonly Direction[] = ["UP", "RIGHT", "DOWN", "LEFT"];
+  for (const target of order) {
+    const cell: Position = target === "UP"
+      ? [core[0], core[1] - 1]
+      : target === "RIGHT"
+        ? [core[0] + 1, core[1]]
+        : target === "DOWN"
+          ? [core[0], core[1] + 1]
+          : [core[0] - 1, core[1]];
+    if (!obstacles.has(cellKey(cell)) && (occupancy.get(cellKey(cell)) ?? 0) === 0) return cell;
+  }
+  for (const target of order) {
+    const cell: Position = target === "UP"
+      ? [core[0], core[1] - 1]
+      : target === "RIGHT"
+        ? [core[0] + 1, core[1]]
+        : target === "DOWN"
+          ? [core[0], core[1] + 1]
+          : [core[0] - 1, core[1]];
+    if (!obstacles.has(cellKey(cell)) && (occupancy.get(cellKey(cell)) ?? 0) === 1) return cell;
+  }
+  return null;
+}
+
+/** 当前占用计数（Core + 全部单位），让位锚点判断"空位/单占用"用。 */
+function occupancyCounts(state: TickState): Map<string, number> {
+  const counts = new Map<string, number>();
+  const bump = (position: Position): void => {
+    const key = cellKey(position);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  };
+  if (state.core !== null) bump(state.core.position);
+  for (const unit of state.units) bump(unit.position);
+  return counts;
 }
 
 function homeCell(core: Position, obstacles: ReadonlySet<string>, index = 0): Position | null {
