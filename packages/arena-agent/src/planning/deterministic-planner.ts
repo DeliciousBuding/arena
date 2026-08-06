@@ -254,6 +254,11 @@ function firstCapacityViolation(
 }
 
 function movePriority(cargo: number, intent: string): number {
+  // 守位让位（ranger_home/vanguard_home）最高优先：让位者是回仓通道的
+  // 解锁者——Core 格被军事单位占满时，让位动作被容量预裁决淘汰会导致
+  // 永久死锁（生产 t2 实证：Ranger 让位目标格被 2 个 cargo worker 争抢
+  // → Ranger 被淘汰 → Core 格永不释放 → 全部 worker WAIT、经济停摆）。
+  if (intent === "ranger_home" || intent === "vanguard_home") return -1;
   if (cargo > 0 || intent === "DEPOSIT" || intent === "return_home") return 0;
   if (intent === "GO_RESOURCE" || intent === "go_harvest" || intent === "go_harvest_mem") return 1;
   if (intent === "RETURN_FOR_HEAL" || intent.includes("heal")) return 2;

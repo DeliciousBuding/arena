@@ -57,8 +57,9 @@ function runSeed(seed: number): { deposits: number; resources: number; cargoLeft
     seed,
     ticks: TICKS,
     tenants: [
-      { id: "p1", planner: "safety", plannerConfig: { workerTarget: 4, guardForce: 4 }, policy: { posture: "balanced", workerTarget: 4, militaryRatio: 0.4, focusRegion: null, attackPriority: null } },
-      { id: "p2", planner: "safety", plannerConfig: {}, policy: { posture: "balanced", workerTarget: 4, militaryRatio: 0.4, focusRegion: null, attackPriority: null } },
+      // 生产 planner（decisionMode=deterministic 的同一路径）
+      { id: "p1", planner: "deterministic", policy: { posture: "balanced", workerTarget: 4, militaryRatio: 0.4, focusRegion: null, attackPriority: null } },
+      { id: "p2", planner: "deterministic", policy: { posture: "balanced", workerTarget: 4, militaryRatio: 0.4, focusRegion: null, attackPriority: null } },
     ],
   });
   const final = result.finalWorld.players.get("p1")!;
