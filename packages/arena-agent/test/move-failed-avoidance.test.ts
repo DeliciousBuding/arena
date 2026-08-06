@@ -130,12 +130,14 @@ test("moveFailedAvoidance 开启：worker 满载回仓连续失败 → 垂直绕
 });
 
 function makeBreakoutState(tick: number): TickState {
-  // 四向包围：e1 [8,0] e2 [-8,0] e3 [0,8] e4 [0,-8]（无逃逸方向 → BREAKOUT）
+  // 四向邻接包围（C5 对齐 2026-08-07：BREAKOUT 需当前格投影伤害>0——
+  // 8 格外的 Vanguard 打不到 Core，只算 ALERT）：
+  // e1 [1,0] e2 [-1,0] e3 [0,1] e4 [0,-1]（无逃逸方向 + 投影伤害 4 → BREAKOUT）
   const enemies: VisibleEntity[] = [
-    { id: "e1", kind: "UNIT", position: [8, 0], hp: 4, unitType: "VANGUARD" },
-    { id: "e2", kind: "UNIT", position: [-8, 0], hp: 4, unitType: "VANGUARD" },
-    { id: "e3", kind: "UNIT", position: [0, 8], hp: 4, unitType: "VANGUARD" },
-    { id: "e4", kind: "UNIT", position: [0, -8], hp: 4, unitType: "VANGUARD" },
+    { id: "e1", kind: "UNIT", position: [1, 0], hp: 4, unitType: "VANGUARD" },
+    { id: "e2", kind: "UNIT", position: [-1, 0], hp: 4, unitType: "VANGUARD" },
+    { id: "e3", kind: "UNIT", position: [0, 1], hp: 4, unitType: "VANGUARD" },
+    { id: "e4", kind: "UNIT", position: [0, -1], hp: 4, unitType: "VANGUARD" },
   ];
   return {
     tick,

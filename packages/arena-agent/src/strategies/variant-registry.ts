@@ -19,6 +19,7 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "guard-axes-v1": Object.freeze({ guardAxes: true }),
+    "guard-heal-rotation-v1": Object.freeze({ guardHealRotation: true }),
   });
 
 /** 解析变体 id → SafetyPlanner 配置覆盖；未知 id 抛错（fail-fast）。 */

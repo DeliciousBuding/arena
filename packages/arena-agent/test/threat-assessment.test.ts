@@ -98,7 +98,44 @@ test("威胁评估：多轴夹击但可逃（东西夹击有 UP/DOWN 通道）�
   assert.equal(result.axes, 2);
 });
 
-test("威胁评估：四向包围（无逃逸方向）→ BREAKOUT", () => {
+test("威胁评估：四向邻接包围（无逃逸方向、投影伤害>0）→ BREAKOUT", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("e1", [1, 0]), enemy("e2", [-1, 0]), enemy("e3", [0, 1]), enemy("e4", [0, -1])],
+    enemyHints: [
+      hint("e1", [1, 0], [1, 0]),
+      hint("e2", [-1, 0], [-1, 0]),
+      hint("e3", [0, 1], [0, 1]),
+      hint("e4", [0, -1], [0, -1]),
+    ],
+    coreDamagedThisTick: false,
+  });
+  // 四邻全被敌占（无逃逸）且邻接 Vanguard 投影伤害 4 → BREAKOUT
+  assert.equal(result.level, "BREAKOUT");
+  assert.equal(result.reason, "multi_axis");
+  assert.equal(result.axes, 4);
+});
+
+test("威胁评估：三角邻接夹击（三轴无逃逸）→ BREAKOUT", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("e1", [1, 0]), enemy("e2", [-1, 1]), enemy("e3", [-1, -1])],
+    enemyHints: [
+      hint("e1", [1, 0], [1, 0]),
+      hint("e2", [-1, 1], [-1, 1]),
+      hint("e3", [-1, -1], [-1, -1]),
+    ],
+    coreDamagedThisTick: false,
+  });
+  // 邻接 Vanguard 投影伤害 3 >0，任一候选方向都至少靠近某敌 → BREAKOUT
+  assert.equal(result.level, "BREAKOUT");
+  assert.equal(result.reason, "multi_axis");
+});
+
+test("威胁评估：四向 8 格包围但打不到 → 不算 BREAKOUT（C5 投影伤害前提）", () => {
+  // 2026-08-07 C5 对齐：BREAKOUT 前提 = 当前格投影伤害 >0（至少一敌能合法
+  // 攻击 Core）。8 格外的 Vanguard 射程 1 打不到 Core——远处包围只是 ALERT，
+  // 不再高估为 BREAKOUT（旧判定只看"12 格内"）。
   const result = assessThreat({
     core: CORE,
     visibleEnemies: [enemy("e1", [8, 0]), enemy("e2", [-8, 0]), enemy("e3", [0, 8]), enemy("e4", [0, -8])],
@@ -110,25 +147,64 @@ test("威胁评估：四向包围（无逃逸方向）→ BREAKOUT", () => {
     ],
     coreDamagedThisTick: false,
   });
-  // 任一方向都至少靠近某敌（无逃逸）→ BREAKOUT
-  assert.equal(result.level, "BREAKOUT");
-  assert.equal(result.reason, "multi_axis");
+  assert.equal(result.level, "ALERT");
+  assert.equal(result.reason, "enemy_near");
   assert.equal(result.axes, 4);
 });
 
-test("威胁评估：三角夹击（三轴无逃逸）→ BREAKOUT", () => {
+test("威胁评估：Ranger 直线 3 格四向包围 → BREAKOUT（C5 射程覆盖）", () => {
+  // Ranger 射程 3（八方向直线无遮挡）→ 3 格包围投影伤害 4 >0 且无逃逸 → BREAKOUT。
   const result = assessThreat({
     core: CORE,
-    visibleEnemies: [enemy("e1", [8, 0]), enemy("e2", [-5, 7]), enemy("e3", [-5, -7])],
+    visibleEnemies: [
+      enemy("r1", [3, 0], "RANGER"),
+      enemy("r2", [-3, 0], "RANGER"),
+      enemy("r3", [0, 3], "RANGER"),
+      enemy("r4", [0, -3], "RANGER"),
+    ],
     enemyHints: [
-      hint("e1", [8, 0], [8, 0]),
-      hint("e2", [-5, 7], [-5, 7]),
-      hint("e3", [-5, -7], [-5, -7]),
+      hint("r1", [3, 0], [3, 0]),
+      hint("r2", [-3, 0], [-3, 0]),
+      hint("r3", [0, 3], [0, 3]),
+      hint("r4", [0, -3], [0, -3]),
     ],
     coreDamagedThisTick: false,
   });
   assert.equal(result.level, "BREAKOUT");
   assert.equal(result.reason, "multi_axis");
+});
+
+test("威胁评估：逃逸方向被障碍堵住 → BREAKOUT（C5 障碍硬块）", () => {
+  // 东西邻接夹击本可逃（UP/DOWN 同时远离两敌）；[0,1]/[0,-1] 为障碍格后
+  // 唯一逃逸通道被封 → 被包围（竞品 "Obstacles remain hard blocks"）。
+  const noObstacle = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("e1", [1, 0]), enemy("e2", [-1, 0])],
+    enemyHints: [hint("e1", [1, 0], [1, 0]), hint("e2", [-1, 0], [-1, 0])],
+    coreDamagedThisTick: false,
+    obstacles: new Set(),
+  });
+  assert.equal(noObstacle.level, "ALERT", "无障碍时可沿 UP/DOWN 逃逸 → 不算包围");
+
+  const walled = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("e1", [1, 0]), enemy("e2", [-1, 0])],
+    enemyHints: [hint("e1", [1, 0], [1, 0]), hint("e2", [-1, 0], [-1, 0])],
+    coreDamagedThisTick: false,
+    obstacles: new Set(["0,1", "0,-1"]),
+  });
+  assert.equal(walled.level, "BREAKOUT", "UP/DOWN 被封 → 无逃逸方向");
+});
+
+test("威胁评估：逃逸方向被资源格堵住 → BREAKOUT（C5 资源硬块）", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("e1", [1, 0]), enemy("e2", [-1, 0])],
+    enemyHints: [hint("e1", [1, 0], [1, 0]), hint("e2", [-1, 0], [-1, 0])],
+    coreDamagedThisTick: false,
+    resourceCells: new Set(["0,1", "0,-1"]),
+  });
+  assert.equal(result.level, "BREAKOUT", "资源格（Core 不可入）同样构成硬块");
 });
 
 test("威胁评估：单轴双敌（同方向）不算夹击", () => {
