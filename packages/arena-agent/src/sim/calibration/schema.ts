@@ -331,7 +331,8 @@ function parseUnitAction(value: unknown, path: string): Record<string, unknown> 
       break;
     case "SHOOT":
       exactKeys(action, ["type", "targetId", "expectedCell"], path);
-      nonEmptyString(action.targetId, `${path}.targetId`);
+      // 官方 v0.13+ 语义：target_id 可选（空格射击 cell fire），null 合法。
+      nullableIdentifier(action.targetId, `${path}.targetId`);
       position(action.expectedCell, `${path}.expectedCell`);
       break;
     default:

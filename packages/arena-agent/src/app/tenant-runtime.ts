@@ -59,7 +59,7 @@ import {
   type RuntimeGoldenRecorderResult,
 } from "../runtime-golden/recorder.ts";
 
-export const RULES_VERSION = "v0.11";
+export const RULES_VERSION = "v0.14";
 
 /** 经济停滞告警阈值：连续 N 个 tick 满载 Worker 无法回仓（delta=0 + cargoTot>0）即告警。
  *  生产实测 t1 capacity_wait:DEPOSIT 死锁 60+ ticks 才被人工发现，16 ticks（≈2 个

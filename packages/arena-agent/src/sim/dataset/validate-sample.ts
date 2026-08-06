@@ -117,7 +117,7 @@ function checkStateAndPlan(problems: ProblemCollector, state: unknown, plan: unk
     schema: CALIBRATION_CASE_SCHEMA,
     caseId: "ml-sample-validation-shell",
     tenantId: "validation",
-    rulesVersion: "v0.11",
+    rulesVersion: "v0.14",
     seed: 0,
     metadata: {
       source: "fixture",

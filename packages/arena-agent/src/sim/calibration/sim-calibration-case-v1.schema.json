@@ -230,7 +230,7 @@
       "required": ["type", "targetId", "expectedCell"],
       "properties": {
         "type": { "const": "SHOOT" },
-        "targetId": { "type": "string", "minLength": 1 },
+        "targetId": { "type": ["string", "null"], "minLength": 1 },
         "expectedCell": { "$ref": "#/$defs/position" }
       }
     },

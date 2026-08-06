@@ -2,7 +2,7 @@
 
 import type { CalibrationCaseV1 } from "../calibration/schema.ts";
 
-export const SUPPORTED_RULES_VERSION = "v0.11";
+export const SUPPORTED_RULES_VERSION = "v0.14";
 
 /** A runtime-golden dataset manifest entry (mirrors recorder.ts entry shape). */
 export interface GoldenCaseEntry {
