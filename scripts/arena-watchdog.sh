@@ -35,11 +35,21 @@ if [ "$READY" = '"ready":true' ]; then
         break
       fi
     fi
+    # 决策停摆检查（2026-08-07 t2 实证后新增）：outcome 每 tick 照常落盘
+    # （tick 推进正常）但策略 0 动作（agentActionCount==0 且 moveCount==0
+    # 持续）→ 经济停摆——t2 曾 >600 tick 全 WAIT 无人发现。独立脚本判定，
+    # 无 decision 遥测（新 run 宽限）返回 OK。
+    if [ -z "$STALL_TENANT" ]; then
+      DECISION_STALL=$(bash "$REPO/scripts/check-decision-stall.sh" "$DATA_ROOT" "$TENANT" 2>/dev/null)
+      case "$DECISION_STALL" in
+        STALL:*) STALL_TENANT="$TENANT";;
+      esac
+    fi
   done
   if [ -z "$STALL_TENANT" ]; then
     exit 0
   fi
-  echo "$(now) STALL detected ($STALL_TENANT outcome stale > ${STALL_MAX_AGE_S}s) -> recovering" >> "$LOG"
+  echo "$(now) STALL detected ($STALL_TENANT outcome stale > ${STALL_MAX_AGE_S}s or decision inactive) -> recovering" >> "$LOG"
 else
   echo "$(now) NOT ready -> recovering" >> "$LOG"
 fi
