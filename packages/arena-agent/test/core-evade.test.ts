@@ -59,6 +59,77 @@ test("coreEvade 开启：12 格外敌人 → 不迁移", () => {
   assert.notEqual(plan.coreAction?.type, "START_MOVE", "12 格外无即时威胁");
 });
 
+test("aggressive + 敌方 Core 记忆：无可见敌人时向前推进（offensive memory）", () => {
+  // 2026-08-07 竞品 threat-response offensive Core memory 对齐：aggressive
+  // Vanguard 在"曾见过敌方 Core、当前无可见敌人"时向记忆位置推进，而不是
+  // 只在自家 Core 附近 scavenge 巡逻（模拟器 v0.14 实证的盲区）。
+  const planner = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, aggression: "aggressive" });
+  const vanguard: TickState["units"][number] = {
+    id: "v1",
+    position: [4, 0],
+    hp: 4,
+    unitType: "VANGUARD",
+    cargo: 0,
+  };
+  const enemyCore: VisibleEntity = {
+    id: "ec1",
+    kind: "CORE",
+    position: [20, 0],
+    hp: 5,
+    unitType: "VANGUARD",
+  };
+  const stateWithEnemyCore: TickState = {
+    ...makeState(1, [enemyCore]),
+    units: [vanguard],
+    vanguards: [vanguard],
+    population: 2,
+  };
+  // tick 1：看见敌方 Core（写入 EnemyMemory）
+  planner.decide({ state: stateWithEnemyCore });
+  // tick 2：敌人离开视野——aggressive Vanguard 应朝记忆的 Core 位置（东）推进
+  const stateNoEnemies: TickState = {
+    ...makeState(2, []),
+    units: [vanguard],
+    vanguards: [vanguard],
+    population: 2,
+  };
+  const plan = planner.decide({ state: stateNoEnemies });
+  const vanguardAction = plan.unitActions["v1"];
+  assert.ok(vanguardAction !== undefined, "Vanguard 应有动作");
+  assert.equal(vanguardAction.type, "MOVE");
+  assert.equal(vanguardAction.type === "MOVE" ? vanguardAction.direction : null, "RIGHT");
+  assert.equal(plan.intents["v1"], "vanguard_pressure_memory");
+});
+
+test("defensive + 敌方 Core 记忆：无可见敌人时仍守家（不前压）", () => {
+  // 记忆推进仅 aggressive 生效；defensive（生产默认）行为零变化。
+  const planner = new SafetyPlanner(); // 默认 defensive
+  const vanguard: TickState["units"][number] = {
+    id: "v1",
+    position: [4, 0],
+    hp: 4,
+    unitType: "VANGUARD",
+    cargo: 0,
+  };
+  const enemyCore: VisibleEntity = {
+    id: "ec1",
+    kind: "CORE",
+    position: [20, 0],
+    hp: 5,
+    unitType: "VANGUARD",
+  };
+  planner.decide({
+    state: { ...makeState(1, [enemyCore]), units: [vanguard], vanguards: [vanguard], population: 2 },
+  });
+  const plan = planner.decide({
+    state: { ...makeState(2, []), units: [vanguard], vanguards: [vanguard], population: 2 },
+  });
+  const vanguardAction = plan.unitActions["v1"];
+  // defensive：无可见敌人 → 不主动向敌方 Core 推进（历史行为：MOVE 目标为
+  // 守家/巡逻，绝不带 vanguard_pressure_memory 意图）
+  assert.notEqual(plan.intents["v1"], "vanguard_pressure_memory");
+});
+
 test("coreEvade 开启：障碍格不选（北侧障碍 → 不选 UP）", () => {
   const planner = new SafetyPlanner(EVADE_CONFIG);
   const state = {
