@@ -885,7 +885,7 @@ export class SafetyPlanner {
       unit.hp >= UNIT_MAX_HP[unit.unitType] &&
       samePosition(unit.position, state.core.position)
     ) {
-      const yieldTarget = yieldAnchor(state.core.position, movementObstacles, occupancyCounts(state));
+      const yieldTarget = yieldAnchor(state.core.position, movementObstacles, occupancyCounts(state), state.visibleEnemies);
       if (yieldTarget !== null && !samePosition(unit.position, yieldTarget)) {
         const direction = stepToward(unit.position, yieldTarget, movementObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_home");
@@ -1023,7 +1023,7 @@ export class SafetyPlanner {
       unit.hp >= UNIT_MAX_HP[unit.unitType] &&
       samePosition(unit.position, state.core.position)
     ) {
-      const yieldTarget = yieldAnchor(state.core.position, movementObstacles, occupancyCounts(state));
+      const yieldTarget = yieldAnchor(state.core.position, movementObstacles, occupancyCounts(state), state.visibleEnemies);
       if (yieldTarget !== null && !samePosition(unit.position, yieldTarget)) {
         const direction = stepToward(unit.position, yieldTarget, movementObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_home");
@@ -1285,29 +1285,64 @@ function yieldAnchor(
   core: Position,
   obstacles: ReadonlySet<string>,
   occupancy: ReadonlyMap<string, number>,
+  enemies: readonly VisibleEntity[] = [],
 ): Position | null {
   const order: readonly Direction[] = ["UP", "RIGHT", "DOWN", "LEFT"];
-  for (const target of order) {
-    const cell: Position = target === "UP"
-      ? [core[0], core[1] - 1]
-      : target === "RIGHT"
-        ? [core[0] + 1, core[1]]
-        : target === "DOWN"
-          ? [core[0], core[1] + 1]
-          : [core[0] - 1, core[1]];
-    if (!obstacles.has(cellKey(cell)) && (occupancy.get(cellKey(cell)) ?? 0) === 0) return cell;
+  const cellOf = (target: Direction): Position => target === "UP"
+    ? [core[0], core[1] - 1]
+    : target === "RIGHT"
+      ? [core[0] + 1, core[1]]
+      : target === "DOWN"
+        ? [core[0], core[1] + 1]
+        : [core[0] - 1, core[1]];
+  // 候选：先空位（占用 0），无空位再单占用（可挤入容量 2）。
+  const candidates: Position[] = [];
+  for (const pass of [0, 1]) {
+    for (const target of order) {
+      const cell = cellOf(target);
+      if (obstacles.has(cellKey(cell))) continue;
+      if ((occupancy.get(cellKey(cell)) ?? 0) === pass) candidates.push(cell);
+    }
+    if (candidates.length > 0) break;
   }
-  for (const target of order) {
-    const cell: Position = target === "UP"
-      ? [core[0], core[1] - 1]
-      : target === "RIGHT"
-        ? [core[0] + 1, core[1]]
-        : target === "DOWN"
-          ? [core[0], core[1] + 1]
-          : [core[0] - 1, core[1]];
-    if (!obstacles.has(cellKey(cell)) && (occupancy.get(cellKey(cell)) ?? 0) === 1) return cell;
+  if (candidates.length === 0) return null;
+  if (enemies.length === 0) return candidates[0];
+  // 可见敌人时：让位目标优先远离敌人（官方 arena_farmer egress 同语义——
+  // 守卫让位不走进敌人怀里；防御性增强）。敌人距离相同保持确定性原序。
+  candidates.sort((left, right) => {
+    const leftDistance = nearestEnemyDistance(left, enemies);
+    const rightDistance = nearestEnemyDistance(right, enemies);
+    if (leftDistance !== rightDistance) return rightDistance - leftDistance;
+    const leftDirection = directionOf(core, left, order);
+    const rightDirection = directionOf(core, right, order);
+    return leftDirection - rightDirection;
+  });
+  return candidates[0];
+}
+
+/** 到最近可见敌人的 Manhattan 距离（让位目标排序用）。 */
+function nearestEnemyDistance(cell: Position, enemies: readonly VisibleEntity[]): number {
+  let nearest = Number.POSITIVE_INFINITY;
+  for (const enemy of enemies) {
+    nearest = Math.min(nearest, manhattan(cell, enemy.position));
   }
-  return null;
+  return nearest;
+}
+
+/** cell 相对 core 的方向序（UP=0 RIGHT=1 DOWN=2 LEFT=3，确定性平局序）。 */
+function directionOf(core: Position, cell: Position, order: readonly Direction[]): number {
+  for (let index = 0; index < order.length; index += 1) {
+    const target = order[index];
+    const delta: Position = target === "UP"
+      ? [0, -1]
+      : target === "RIGHT"
+        ? [1, 0]
+        : target === "DOWN"
+          ? [0, 1]
+          : [-1, 0];
+    if (cell[0] === core[0] + delta[0] && cell[1] === core[1] + delta[1]) return index;
+  }
+  return Number.MAX_SAFE_INTEGER;
 }
 
 /** 当前占用计数（Core + 全部单位），让位锚点判断"空位/单占用"用。 */
