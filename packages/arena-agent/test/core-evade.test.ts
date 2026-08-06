@@ -183,6 +183,85 @@ test("coreEvadeScoring：Ranger 直线被障碍遮挡 → 投影伤害 0", () =>
   assert.equal(plan.coreAction?.type === "START_MOVE" ? plan.coreAction.direction : null, "DOWN");
 });
 
+test("guardAxes 默认关闭：Vanguard 守 Core 四邻（历史行为零回归）", () => {
+  const planner = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, aggression: "defensive" });
+  const vanguard: TickState["units"][number] = {
+    id: "v1",
+    position: [5, 0],
+    hp: 4,
+    unitType: "VANGUARD",
+    cargo: 0,
+  };
+  const state: TickState = {
+    ...makeState(1, [enemy("e1", [8, 0])]),
+    units: [vanguard],
+    vanguards: [vanguard],
+    population: 2,
+  };
+  const plan = planner.decide({ state });
+  // 默认：守家锚点为 Core 邻格——Vanguard 从 [5,0] 走向 Core 相邻格
+  const action = plan.unitActions["v1"];
+  assert.ok(action !== undefined);
+  assert.equal(action.type, "MOVE");
+  assert.notEqual(plan.intents["v1"], "vanguard_pressure_memory");
+});
+
+test("guardAxes 开启：Vanguard 守威胁轴外层（3 格）而非 Core 四邻", () => {
+  const planner = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, guardAxes: true });
+  const vanguard: TickState["units"][number] = {
+    id: "v1",
+    position: [5, 0],
+    hp: 4,
+    unitType: "VANGUARD",
+    cargo: 0,
+  };
+  // 敌在正东 [10,0] → E 轴威胁 → Vanguard 守位 [3,0]（Core [0,0] + E×3）
+  const state: TickState = {
+    ...makeState(1, [enemy("e1", [10, 0])]),
+    units: [vanguard],
+    vanguards: [vanguard],
+    population: 2,
+  };
+  const plan = planner.decide({ state });
+  const action = plan.unitActions["v1"];
+  assert.ok(action !== undefined, "Vanguard 应有动作");
+  assert.equal(action.type, "MOVE");
+  assert.equal(action.type === "MOVE" ? action.direction : null, "LEFT", "从 [5,0] 走向 [3,0] 守位");
+});
+
+test("guardAxes 开启：多轴敌人守卫按轴轮转（第 0 守最近轴、第 1 守次近轴）", () => {
+  const planner = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, guardAxes: true });
+  const v1: TickState["units"][number] = {
+    id: "v1",
+    position: [5, 2],
+    hp: 4,
+    unitType: "VANGUARD",
+    cargo: 0,
+  };
+  const v2: TickState["units"][number] = {
+    id: "v2",
+    position: [-5, 2],
+    hp: 4,
+    unitType: "VANGUARD",
+    cargo: 0,
+  };
+  // 敌东 [8,0]（E 轴，距 8）、敌西 [-10,0]（W 轴，距 10）→ 轴排序 E 先（近）
+  const state: TickState = {
+    ...makeState(1, [enemy("e1", [8, 0]), enemy("e2", [-10, 0])]),
+    units: [v1, v2],
+    vanguards: [v1, v2],
+    population: 3,
+  };
+  const plan = planner.decide({ state });
+  const a1 = plan.unitActions["v1"];
+  const a2 = plan.unitActions["v2"];
+  assert.ok(a1 !== undefined && a2 !== undefined, "两个 Vanguard 都应有动作");
+  // v1（index 0）→ 最近轴 E 守位 [3,0]（从 [5,0] 向左）
+  // v2（index 1）→ 次近轴 W 守位 [-3,0]（从 [-5,0] 向右）
+  assert.equal(a1.type === "MOVE" ? a1.direction : null, "LEFT");
+  assert.equal(a2.type === "MOVE" ? a2.direction : null, "RIGHT");
+});
+
 test("coreEvade 开启：障碍格不选（北侧障碍 → 不选 UP）", () => {
   const planner = new SafetyPlanner(EVADE_CONFIG);
   const state = {
