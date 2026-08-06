@@ -404,8 +404,14 @@ function applyHarvest(
   const harvestAmount = beaconBonus
     ? ctx.rules.rules.economy.harvestAmountWithBeacon
     : ctx.rules.rules.economy.harvestAmount;
+  // 掉落堆回收量是个人级（官方 units.md §Worker："a normal Worker takes 1,
+  // while a Beacon Worker takes at most 2"）——只有携带 Beacon 的 Worker
+  // 本人从堆收至多 2；其余 Worker 收 1。自然节点加成是队伍级（"or 2 while
+  // the owner holds the Champion Beacon"）。
+  const isBeaconCarrier =
+    draft.beacon !== null && draft.beacon.status === "CARRIED" && draft.beacon.carrierId === unit.id;
   const amount = fromPile
-    ? Math.min(ctx.rules.rules.units.workerCargoCapacity, pile.amount)
+    ? Math.min(isBeaconCarrier ? ctx.rules.rules.economy.harvestAmountWithBeacon : ctx.rules.rules.economy.harvestAmount, pile.amount)
     : Math.min(ctx.rules.rules.units.workerCargoCapacity, harvestAmount);
 
   updatePlayerUnits(draft, playerId, (units) =>
@@ -624,7 +630,11 @@ function resolveCoreHeal(draft: SimWorld, ctx: PhaseContext, playerId: string, e
 function resolveRepairShield(draft: SimWorld, ctx: PhaseContext, playerId: string, events: ResolutionEvent[]): void {
   const player = draft.players.get(playerId)!;
   const core = player.core!;
-  const maxShield = ctx.rules.rules.core.maxShield;
+  // 持有 Beacon 时盾上限升到 maxShieldWithBeacon（官方 champion-beacon.md
+  // §Shield bonus：holding the Beacon raises Core shield cap from 5 to 10）。
+  const maxShield = playerHoldsBeacon(draft, playerId)
+    ? ctx.rules.rules.core.maxShieldWithBeacon
+    : ctx.rules.rules.core.maxShield;
   if (core.shield >= maxShield) {
     events.push(eventOf(draft.tick, "CORE_REPAIR_FAILED", { reasonCode: "SHIELD_FULL", actorId: core.id, position: core.position }));
     return;

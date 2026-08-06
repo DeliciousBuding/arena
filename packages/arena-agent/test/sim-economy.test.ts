@@ -285,11 +285,13 @@ test("S5: dropped cargo 优先于自然节点，单次最多恢复 Worker 容量
     { resources: [[3, 0]], piles: [{ cell: [3, 0], amount: 3 }] },
   );
   const result = settle(world, new Map([["p1", planFor(world, "p1", { [worker]: { type: "HARVEST" } })]]));
-  assert.equal(result.world.players.get("p1")!.units[0].cargo, 2);
-  assert.equal(result.world.terrain.piles.get("3,0")?.amount, 1);
+  // 2026-08-07 A2 修复（官方 units.md §Worker）：无 Beacon Worker 从掉落堆
+  // 回收 1（Beacon Worker 至多 2）；旧断言 2 固化的是 pre-fix 行为。
+  assert.equal(result.world.players.get("p1")!.units[0].cargo, 1);
+  assert.equal(result.world.terrain.piles.get("3,0")?.amount, 2);
   assert.equal(result.world.terrain.resources.has("3,0"), true, "回收 pile 不应消耗自然节点");
   assert.deepEqual(result.events.find((event) => event.eventType === "HARVEST_SUCCEEDED")?.values, {
-    amount: 2,
+    amount: 1,
     source: "DROPPED_CARGO",
   });
 });
@@ -396,6 +398,87 @@ test("S5: repair shield 成功", () => {
   assert.equal(result.world.players.get("p1")!.core!.shield, 5);
   assert.equal(result.world.players.get("p1")!.resources, 4);
   assert.ok(eventTypes(result).includes("CORE_REPAIR_SUCCEEDED"));
+});
+
+test("S5: 持 Beacon 时盾上限为 10（官方 champion-beacon.md §Shield bonus）", () => {
+  // 2026-08-07 竞品对照研究（A1）实证：resolveRepairShield 固定按 5 判满，
+  // 持有 Beacon 时 REPAIR_SHIELD 无法修到 10——官方"holding the Beacon
+  // raises the Core shield cap from 5 to 10"。
+  const carrier = uuid(1);
+  const world = worldFromScenario({
+    rulesVersion: "v0.14",
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: coreUuid("p1"), position: [0, 0], hp: 5, shield: 9, state: "NORMAL" },
+        units: [{ id: carrier, owner: "p1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: { position: [1, 0], status: "CARRIED", carrierId: carrier },
+  });
+  const result = settle(world, new Map([["p1", planFor(world, "p1", {}, { type: "REPAIR_SHIELD" })]]));
+  assert.equal(result.world.players.get("p1")!.core!.shield, 10, "持 Beacon 可修到 10");
+  assert.ok(eventTypes(result).includes("CORE_REPAIR_SUCCEEDED"));
+});
+
+test("S5: 持 Beacon 盾满 10 时 REPAIR_SHIELD 报 SHIELD_FULL（不超上限）", () => {
+  const carrier = uuid(1);
+  const world = worldFromScenario({
+    rulesVersion: "v0.14",
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: coreUuid("p1"), position: [0, 0], hp: 5, shield: 10, state: "NORMAL" },
+        units: [{ id: carrier, owner: "p1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: { position: [1, 0], status: "CARRIED", carrierId: carrier },
+  });
+  const result = settle(world, new Map([["p1", planFor(world, "p1", {}, { type: "REPAIR_SHIELD" })]]));
+  assert.equal(result.world.players.get("p1")!.core!.shield, 10);
+  const failed = result.events.find((e) => e.eventType === "CORE_REPAIR_FAILED");
+  assert.ok(failed !== undefined, "CORE_REPAIR_FAILED 应存在");
+  assert.equal(failed.reasonCode, "SHIELD_FULL");
+});
+
+test("S5: 掉落堆回收量——无 Beacon Worker 收 1、Beacon Worker 收至多 2（units.md §Worker）", () => {
+  // 2026-08-07 竞品对照研究（A2）实证：applyHarvest 对掉落堆恒取
+  // min(workerCargoCapacity=2, pile)，不看 beacon——官方"normal Worker
+  // takes 1, Beacon Worker takes at most 2 without exceeding the pile"。
+  const worker = uuid(1);
+  const beaconWorker = uuid(2);
+  const world = worldFromScenario({
+    rulesVersion: "v0.14",
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 0,
+        core: { id: coreUuid("p1"), position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [
+          { id: worker, owner: "p1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+          { id: beaconWorker, owner: "p1", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+        ],
+      },
+    ],
+    terrain: { obstacles: [], resources: [], piles: [{ cell: [1, 0], amount: 2 }, { cell: [2, 0], amount: 2 }] },
+    beacon: { position: [2, 0], status: "CARRIED", carrierId: beaconWorker },
+  });
+  const result = settle(world, new Map([["p1", planFor(world, "p1", {
+    [worker]: { type: "HARVEST" },
+    [beaconWorker]: { type: "HARVEST" },
+  })]]));
+  const units = result.world.players.get("p1")!.units;
+  const w = units.find((u) => u.id === worker)!;
+  const bw = units.find((u) => u.id === beaconWorker)!;
+  assert.equal(w.cargo, 1, "无 Beacon Worker 从堆收 1");
+  assert.equal(bw.cargo, 2, "Beacon Worker 从堆收至多 2");
 });
 
 test("S5: MOVING Core 拒绝 deposit/heal/Core action，并标记 migration unsupported", () => {
