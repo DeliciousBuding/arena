@@ -1,108 +1,108 @@
 {
- "schemaVersion": 1,
- "rulesVersion": "v0.11",
- "verifiedAt": "2026-08-03T16:43:00+08:00",
- "evidence": {
-  "docs": {
-   "repo": "github.com/arena-hero/arena-hero-doc",
-   "commit": "72de5c15f334e5e224132f46ae6f791f71d158db",
-   "rulesVersion": "v0.11",
-   "apiVersion": "v0.1"
+  "schemaVersion": 1,
+  "rulesVersion": "v0.11",
+  "verifiedAt": "2026-08-03T16:43:00+08:00",
+  "evidence": {
+    "docs": {
+      "repo": "github.com/arena-hero/arena-hero-doc",
+      "commit": "72de5c15f334e5e224132f46ae6f791f71d158db",
+      "rulesVersion": "v0.11",
+      "apiVersion": "v0.1"
+    },
+    "sdk": {
+      "repo": "github.com/arena-hero/arena-hero-python",
+      "tag": "v0.2.9",
+      "publicCommit": "423d252adcca439669adb3e7b04252e53b4430bd",
+      "documentedCommit": "8f967aa86eb7909de74e57cdbb6ec845f8e21959",
+      "documentedCommitStatus": "unresolvable-404",
+      "mirrorDir": "../reference/arena-hero-python/arena_hero",
+      "mirrorFileCount": 13,
+      "mirrorAggregateSha256": "a4f00014f3772ff246b5436d8ed4f05bb1d594c1ec1935f7ec76f95a496a4acd"
+    },
+    "serverSource": {
+      "status": "not-publicly-accessible",
+      "note": "arena-hero 服务端仓库匿名 clone 返回 Repository not found；无法直接核对服务端实现"
+    },
+    "discrepancies": [
+      "official docs version page cites reviewed SDK commit 8f967aa..., which is unresolvable (404); public tag v0.2.6 = 4a29585...",
+      "official docs settlement order lists 15 phases; local game-rules.md expands to 16 (capacity overflow split) - granularity difference, no confirmed semantic conflict",
+      "official docs site (core-and-economy.md) still documents v0.10 unpaid-upkeep semantics (damage hits Core); v0.11 changelog changed it to excess-unit damage (nearest-19 protected). Local game-rules.md records v0.11 semantics. See rules.upkeep.deficitDamage.status",
+      "official-source-verification.md upkeep row reads 'per-Unit 1/tick' which contradicts official tier formula (tier x (tier+1)/2) confirmed in core-and-economy.md:148 and by absence of UPKEEP_PAID events at population 3 in burnin fixtures - tier semantics is authoritative"
+    ]
   },
-  "sdk": {
-   "repo": "github.com/arena-hero/arena-hero-python",
-   "tag": "v0.2.9",
-   "publicCommit": "423d252adcca439669adb3e7b04252e53b4430bd",
-   "documentedCommit": "8f967aa86eb7909de74e57cdbb6ec845f8e21959",
-   "documentedCommitStatus": "unresolvable-404",
-   "mirrorDir": "../reference/arena-hero-python/arena_hero",
-   "mirrorFileCount": 13,
-   "mirrorAggregateSha256": "a4f00014f3772ff246b5436d8ed4f05bb1d594c1ec1935f7ec76f95a496a4acd"
+  "rules": {
+    "core": {
+      "minCapacity": 10,
+      "capacityPerUnit": 5,
+      "maxHp": 5,
+      "maxShield": 5,
+      "maxShieldWithBeacon": 10,
+      "visionRadius": 5,
+      "startingResources": 5,
+      "startingWorkerCount": 1
+    },
+    "production": {
+      "workerCost": 5,
+      "vanguardCost": 10,
+      "rangerCost": 12,
+      "maxSpawnPerTick": 1
+    },
+    "upkeep": {
+      "tierSize": 20,
+      "deficitProtectionCount": 19,
+      "deficitDamage": {
+        "semantics": "v0.11 excess-unit damage: nearest-19-to-Core protected, remaining units damaged farthest-to-nearest by Manhattan distance, ties by ascending raw UUID",
+        "status": "PENDING-VERIFICATION",
+        "note": "official docs site still shows v0.10 (Core damage); v0.11 changelog + GPT verification support excess-unit semantics. Confirm with real events once population >= 20 with deficit occurs"
+      }
+    },
+    "units": {
+      "workerHp": 2,
+      "vanguardHp": 4,
+      "rangerHp": 2,
+      "workerCargoCapacity": 2,
+      "workerVisionRadius": 3,
+      "vanguardVisionRadius": 4,
+      "rangerVisionRadius": 5
+    },
+    "economy": {
+      "harvestAmount": 1,
+      "harvestAmountWithBeacon": 2,
+      "healCostPerHp": 1,
+      "repairShieldCost": 1,
+      "refillEveryTicks": 4
+    },
+    "movement": {
+      "cellEntityCapacity": 2,
+      "maxCellsPerTick": 1,
+      "samePlayerTieBreak": "ascending raw UUID bytes",
+      "crossPlayerContested": "all competing moves fail"
+    },
+    "settlement": {
+      "officialPhaseCount": 15,
+      "localPhaseCount": 16,
+      "granularityNote": "16 步是本仓库展开表达（两次 capacity overflow 显式化），官方 15 阶段无语义冲突"
+    }
   },
-  "serverSource": {
-   "status": "not-publicly-accessible",
-   "note": "arena-hero 服务端仓库匿名 clone 返回 Repository not found；无法直接核对服务端实现"
-  },
-  "discrepancies": [
-   "official docs version page cites reviewed SDK commit 8f967aa..., which is unresolvable (404); public tag v0.2.6 = 4a29585...",
-   "official docs settlement order lists 15 phases; local game-rules.md expands to 16 (capacity overflow split) - granularity difference, no confirmed semantic conflict",
-   "official docs site (core-and-economy.md) still documents v0.10 unpaid-upkeep semantics (damage hits Core); v0.11 changelog changed it to excess-unit damage (nearest-19 protected). Local game-rules.md records v0.11 semantics. See rules.upkeep.deficitDamage.status",
-   "official-source-verification.md upkeep row reads 'per-Unit 1/tick' which contradicts official tier formula (tier x (tier+1)/2) confirmed in core-and-economy.md:148 and by absence of UPKEEP_PAID events at population 3 in burnin fixtures - tier semantics is authoritative"
-  ]
- },
- "rules": {
-  "core": {
-   "minCapacity": 10,
-   "capacityPerUnit": 5,
-   "maxHp": 5,
-   "maxShield": 5,
-   "maxShieldWithBeacon": 10,
-   "visionRadius": 5,
-   "startingResources": 5,
-   "startingWorkerCount": 1
-  },
-  "production": {
-   "workerCost": 5,
-   "vanguardCost": 10,
-   "rangerCost": 12,
-   "maxSpawnPerTick": 1
-  },
-  "upkeep": {
-   "tierSize": 20,
-   "deficitProtectionCount": 19,
-   "deficitDamage": {
-    "semantics": "v0.11 excess-unit damage: nearest-19-to-Core protected, remaining units damaged farthest-to-nearest by Manhattan distance, ties by ascending raw UUID",
-    "status": "PENDING-VERIFICATION",
-    "note": "official docs site still shows v0.10 (Core damage); v0.11 changelog + GPT verification support excess-unit semantics. Confirm with real events once population >= 20 with deficit occurs"
-   }
-  },
-  "units": {
-   "workerHp": 2,
-   "vanguardHp": 4,
-   "rangerHp": 2,
-   "workerCargoCapacity": 2,
-   "workerVisionRadius": 3,
-   "vanguardVisionRadius": 4,
-   "rangerVisionRadius": 5
-  },
-  "economy": {
-   "harvestAmount": 1,
-   "harvestAmountWithBeacon": 2,
-   "healCostPerHp": 1,
-   "repairShieldCost": 1,
-   "refillEveryTicks": 4
-  },
-  "movement": {
-   "cellEntityCapacity": 2,
-   "maxCellsPerTick": 1,
-   "samePlayerTieBreak": "ascending raw UUID bytes",
-   "crossPlayerContested": "all competing moves fail"
-  },
-  "settlement": {
-   "officialPhaseCount": 15,
-   "localPhaseCount": 16,
-   "granularityNote": "16 步是本仓库展开表达（两次 capacity overflow 显式化），官方 15 阶段无语义冲突"
+  "constraints": {
+    "coordinate": {
+      "type": "signed-int64",
+      "jsRequirement": "Number.isSafeInteger",
+      "unsupportedError": "UNSUPPORTED_COORDINATE_RANGE",
+      "note": "MVP 不做 bigint 迁移；超出安全整数必须 fail closed，禁止静默舍入"
+    },
+    "uuidTieBreak": {
+      "rule": "ascending raw UUID bytes",
+      "comparator": "compareUuidRaw",
+      "forbidden": [
+        "localeCompare"
+      ]
+    },
+    "refill": {
+      "status": "server-secret",
+      "simulation": "unknown-by-design",
+      "note": "refill 使用永久 secret world seed，客户端不可预测；模拟器不实现官方精确 refill，结算中标记 unknown"
+    },
+    "settlementOrder": "self-destruct -> capacity-shrink -> upkeep -> movement -> start-move-validation -> beacon -> harvest/deposit -> combat -> heal -> core-action -> respawn -> refill(4-tick) -> commit"
   }
- },
- "constraints": {
-  "coordinate": {
-   "type": "signed-int64",
-   "jsRequirement": "Number.isSafeInteger",
-   "unsupportedError": "UNSUPPORTED_COORDINATE_RANGE",
-   "note": "MVP 不做 bigint 迁移；超出安全整数必须 fail closed，禁止静默舍入"
-  },
-  "uuidTieBreak": {
-   "rule": "ascending raw UUID bytes",
-   "comparator": "compareUuidRaw",
-   "forbidden": [
-    "localeCompare"
-   ]
-  },
-  "refill": {
-   "status": "server-secret",
-   "simulation": "unknown-by-design",
-   "note": "refill 使用永久 secret world seed，客户端不可预测；模拟器不实现官方精确 refill，结算中标记 unknown"
-  },
-  "settlementOrder": "self-destruct -> capacity-shrink -> upkeep -> movement -> start-move-validation -> beacon -> harvest/deposit -> combat -> heal -> core-action -> respawn -> refill(4-tick) -> commit"
- }
 }
