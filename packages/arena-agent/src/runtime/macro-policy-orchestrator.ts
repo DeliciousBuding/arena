@@ -135,7 +135,13 @@ export class MacroPolicyOrchestrator {
 }
 
 /** 解析 LLM 策略输出：剥 markdown 围栏 → 提取 JSON 对象 → 校验 → 规范化。
- *  非 JSON / 非法值域 → 抛错（调用方 sticky 处理）。 */
+ *  非 JSON / 非法值域 → 抛错（调用方 sticky 处理）。
+ *  2026-08-06 第十五轮修复（normalize-first）：生产 t1 实测 9/56（16%）policy
+ *  被拒——LLM 把 attackPriority 序列化成字符串 "null"（`"attackPriority":"null"`），
+ *  isValidMacroPolicy 严格校验先行拒绝整条策略。normalizeMacroPolicy 已对
+ *  "null"→null、未知 posture→balanced、非法数值→默认值 全部容错——改为先
+ *  normalize 后校验（校验永远通过：normalize 输出必合法），LLM 小错误不再
+ *  浪费整条策略更新（16% → ~0%）。 */
 export function parsePolicyText(text: string): MacroPolicy {
   const trimmed = text.trim();
   const jsonStart = trimmed.indexOf("{");
@@ -149,8 +155,8 @@ export function parsePolicyText(text: string): MacroPolicy {
   } catch (error) {
     throw new Error(`macro policy: invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (!isValidMacroPolicy(raw)) {
-    throw new Error(`macro policy: value out of domain: ${JSON.stringify(raw).slice(0, 200)}`);
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error("macro policy: value out of domain: non-object output");
   }
-  return normalizeMacroPolicy(raw as unknown as Record<string, unknown>);
+  return normalizeMacroPolicy(raw as Record<string, unknown>);
 }

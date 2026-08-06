@@ -1,6 +1,0 @@
-[Unit]
-Description=Emit critical alert for Arena runtime disk pressure
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/logger -p daemon.crit -- "Arena runtime filesystem is below its configured free-space threshold. Writers were not restarted; inspect /var/lib/arena, rotated JSONL, and archival health immediately."

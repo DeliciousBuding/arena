@@ -74,7 +74,9 @@ function runDuel(policy: MacroPolicy, seed: number): DuelOutcome {
     rulesPath: MANIFEST_PATH,
     seed,
     ticks: DUEL_TICKS,
-    refill: {},
+    // 生产校准 cadence（第十一轮：真实 solo 供给 ≈60-70 tick/格）——
+    // 原实验 refill:{} 用规则默认 ≈200（远慢于真实），校准后重验结论。
+    refill: { everyTicks: 65 },
     tenants: [
       { id: "p1", planner: "deterministic", policy: BASE_POLICY } as EpisodeTenant,
       { id: "p2", planner: "deterministic", policy } as EpisodeTenant,

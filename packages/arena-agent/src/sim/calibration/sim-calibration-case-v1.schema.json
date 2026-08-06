@@ -40,9 +40,9 @@
       "properties": {
         "source": { "enum": ["fixture", "live-recorder"] },
         "opponentPlans": { "enum": ["complete", "absent"] },
-        "recordedAt": { "type": ["string", "null"] },
-        "sourceCommit": { "type": ["string", "null"] },
-        "runId": { "type": ["string", "null"] }
+        "recordedAt": { "type": ["string", "null"], "minLength": 1 },
+        "sourceCommit": { "type": ["string", "null"], "minLength": 1 },
+        "runId": { "type": ["string", "null"], "minLength": 1 }
       }
     },
     "observation": {
@@ -93,7 +93,7 @@
       "properties": {
         "position": { "$ref": "#/$defs/position" },
         "status": { "enum": ["GROUND", "CARRIED", null] },
-        "carrier_id": { "type": ["string", "null"] }
+        "carrier_id": { "type": ["string", "null"], "minLength": 1 }
       }
     },
     "worldObject": {
@@ -135,16 +135,19 @@
       ],
       "properties": {
         "kind": { "const": "CORE" },
-        "id": { "type": "string" },
+        "id": { "type": "string", "minLength": 1 },
         "controlled": { "type": "boolean" },
-        "owner_username": { "type": "string" },
+        "owner_username": { "type": "string", "minLength": 1 },
         "position": { "$ref": "#/$defs/position" },
         "hp": { "type": "integer", "minimum": 0 },
         "shield": { "type": "integer", "minimum": 0 },
         "state": { "enum": ["NORMAL", "MOVING"] },
-        "move_direction": { "type": ["string", "null"] },
-        "move_progress": { "type": ["integer", "null"] },
-        "move_required_ticks": { "type": ["integer", "null"] },
+        "move_direction": {
+          "type": ["string", "null"],
+          "enum": ["UP", "DOWN", "LEFT", "RIGHT", null]
+        },
+        "move_progress": { "type": ["integer", "null"], "minimum": 0 },
+        "move_required_ticks": { "type": ["integer", "null"], "minimum": 1 },
         "destination": {
           "anyOf": [{ "$ref": "#/$defs/position" }, { "type": "null" }]
         }
@@ -156,7 +159,7 @@
       "required": ["kind", "id", "controlled", "position", "hp", "unit_type", "cargo"],
       "properties": {
         "kind": { "const": "UNIT" },
-        "id": { "type": "string" },
+        "id": { "type": "string", "minLength": 1 },
         "controlled": { "type": "boolean" },
         "position": { "$ref": "#/$defs/position" },
         "hp": { "type": "integer", "minimum": 0 },
@@ -178,12 +181,12 @@
         "values"
       ],
       "properties": {
-        "event_id": { "type": "string" },
+        "event_id": { "type": "string", "minLength": 1 },
         "tick": { "type": "integer", "minimum": 1 },
-        "event_type": { "type": "string" },
-        "reason_code": { "type": ["string", "null"] },
-        "actor_id": { "type": ["string", "null"] },
-        "target_id": { "type": ["string", "null"] },
+        "event_type": { "type": "string", "minLength": 1 },
+        "reason_code": { "type": ["string", "null"], "minLength": 1 },
+        "actor_id": { "type": ["string", "null"], "minLength": 1 },
+        "target_id": { "type": ["string", "null"], "minLength": 1 },
         "position": {
           "anyOf": [{ "$ref": "#/$defs/position" }, { "type": "null" }]
         },
@@ -290,6 +293,7 @@
         "tick": { "type": "integer", "minimum": 1 },
         "unitActions": {
           "type": "object",
+          "propertyNames": { "type": "string", "minLength": 1 },
           "additionalProperties": { "$ref": "#/$defs/unitAction" }
         },
         "coreAction": {
@@ -297,6 +301,7 @@
         },
         "intents": {
           "type": "object",
+          "propertyNames": { "type": "string", "minLength": 1 },
           "additionalProperties": { "type": "string" }
         }
       }

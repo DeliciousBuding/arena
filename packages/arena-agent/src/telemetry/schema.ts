@@ -69,6 +69,16 @@ export const DecisionTraceSchema = Type.Object({
   intentCounts: Type.Optional(Type.Record(Type.String(), Type.Integer())),
   planHash: Type.String(),
   reason: Type.Optional(Type.String()),
+  threatLevel: Type.Optional(Type.Union([
+    Type.Literal("NORMAL"),
+    Type.Literal("ALERT"),
+    Type.Literal("ENGAGED"),
+    Type.Literal("BREAKOUT"),
+  ])),
+  threatReason: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  threatClosingEnemies: Type.Optional(Type.Integer()),
+  threatMovingEnemies: Type.Optional(Type.Integer()),
+  threatAxes: Type.Optional(Type.Integer()),
 });
 
 export const OutcomeTraceSchema = Type.Object({

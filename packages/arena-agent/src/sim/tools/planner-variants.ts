@@ -18,6 +18,7 @@ import type { PlannerKind } from "../harness/episode.ts";
 import { DeterministicPlanner } from "../../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../../planning/worker-task-planner.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../../strategies/safety-planner.ts";
+import { VARIANT_SAFETY_CONFIG } from "../../strategies/variant-registry.ts";
 
 export interface PlannerVariant {
   readonly id: string;
@@ -64,7 +65,31 @@ export const PLANNER_VARIANTS: readonly PlannerVariant[] = Object.freeze([
     id: "clear-path-v1",
     description:
       "TS-009 候选：清场 ROI——defensive 下 Vanguard 清除满载 Worker 回仓路径上的敌人（生产 A/B：被压方经济 2-4× 差）",
-    create: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, clearPath: true }),
+    create: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...VARIANT_SAFETY_CONFIG["clear-path-v1"] }),
+  }),
+  Object.freeze({
+    id: "threat-recall-v1",
+    description:
+      "候选：威胁召回——ALERT 级（12 格内敌确认）时 worker 巡逻缩守家圈 4 格（对打 3 seeds 全改善：存活 0.3→2.0、res 2.3→4.7）",
+    create: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...VARIANT_SAFETY_CONFIG["threat-recall-v1"] }),
+  }),
+  Object.freeze({
+    id: "move-failed-avoidance-v1",
+    description:
+      "候选：MOVE_FAILED 反馈规避——连续失败 ≥2 走垂直绕行探路（对照 0 拆 vs 变体 4/2 轮拆 CORE、首拆 t16）",
+    create: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...VARIANT_SAFETY_CONFIG["move-failed-avoidance-v1"] }),
+  }),
+  Object.freeze({
+    id: "threat-breakout-v1",
+    description:
+      "候选：BREAKOUT 全面收缩——多轴无逃逸包围时 worker 全面缩家（模拟器 A/B 阴性：场景构造限制非机制无效）",
+    create: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...VARIANT_SAFETY_CONFIG["threat-breakout-v1"] }),
+  }),
+  Object.freeze({
+    id: "core-evade-v1",
+    description:
+      "候选：Core 迁移 PRE_EVADE-lite——12 格内可见敌或确认追击时 START_MOVE 远离（对打命中 2.3→0.0，阴性记录：逃不掉时方向无关）",
+    create: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...VARIANT_SAFETY_CONFIG["core-evade-v1"] }),
   }),
   Object.freeze({
     id: "safety",

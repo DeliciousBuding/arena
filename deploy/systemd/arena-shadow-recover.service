@@ -1,7 +1,0 @@
-[Unit]
-Description=Recover Arena shadow supervisor after failed readiness check
-After=arena-shadow-health.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/systemctl restart arena-supervisor-shadow.service

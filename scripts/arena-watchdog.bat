@@ -1,6 +1,9 @@
 @echo off
-rem ArenaWatchdog 计划任务包装（2026-08-06 v2）：
-rem 直接跑 bash 时任务会话结束会回收会话内进程树（实测 2026-08-06 23:41：
-rem supervisor 被拉起 16s 后被任务终止杀 ^C）——Start-Process 创建完全独立
-rem 进程，任务结束不影响看护逻辑与 supervisor 生命周期。
-powershell -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath 'C:\Program Files\Git\bin\bash.exe' -ArgumentList '-lc','/d/Code/Projects/arena/scripts/arena-watchdog.sh'"
+rem ArenaWatchdog scheduled-task wrapper (v2, 2026-08-06).
+rem MUST stay pure ASCII: cmd parses batch files with the console codepage
+rem (GBK on Chinese Windows), so UTF-8 Chinese comments misalign line parsing
+rem and flash a "'...' is not recognized" error window on every task run.
+rem The Chinese design notes live in arena-watchdog.sh and AGENTS.md.
+rem Direct bash under a task session gets reaped when the session ends,
+rem so Start-Process launches a fully detached process instead.
+powershell -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath 'C:\Program Files\Git\bin\bash.exe' -ArgumentList '-lc','/d/Code/Projects/arena/arena-ts/scripts/arena-watchdog.sh'"

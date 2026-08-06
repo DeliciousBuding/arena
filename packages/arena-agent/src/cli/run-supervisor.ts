@@ -1,12 +1,14 @@
-/** Four-tenant process supervisor CLI. Debug port is bound before any child spawn. */
+/** Multi-tenant process supervisor CLI. Debug port is bound before any child spawn. */
 
 import { parseArgs } from "node:util";
 import { TenantSupervisor } from "../app/tenant-supervisor.ts";
 import { DebugServer } from "../app/debug-server.ts";
 import { loadDotEnv } from "../app/dotenv.ts";
+import { resolveArenaDataRoot } from "../app/data-root.ts";
 
 const ENV_DEFAULTS = {
   "repo-root": "ARENA_REPO_ROOT",
+  "data-root": "ARENA_DATA_ROOT",
   "config-dir": "ARENA_CONFIG_DIR",
   "runtime-dir": "ARENA_RUNTIME_DIR",
   configs: "ARENA_CONFIGS",
@@ -22,6 +24,7 @@ async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
       "repo-root": { type: "string" },
+      "data-root": { type: "string" },
       "config-dir": { type: "string" },
       "runtime-dir": { type: "string" },
       configs: { type: "string" },
@@ -49,7 +52,8 @@ async function main(): Promise<void> {
   if (values.live && values.shadow) throw new Error("--live and --shadow are mutually exclusive");
   const repoRoot = option("repo-root") ?? process.cwd();
   loadDotEnv(repoRoot);
-  const configNames = (option("configs") ?? "t1,t2,t3,t4")
+  const dataRoot = resolveArenaDataRoot(repoRoot, values["data-root"], process.env.ARENA_DATA_ROOT);
+  const configNames = (option("configs") ?? "t1,t2")
     .split(",")
     .map((name) => name.trim())
     .filter(Boolean)
@@ -82,6 +86,7 @@ async function main(): Promise<void> {
   const port = parseInteger(option("port"), 8120, 0, "--port");
   const supervisor = new TenantSupervisor({
     repoRoot,
+    dataRoot,
     ...(option("config-dir") !== undefined ? { configRoot: option("config-dir") } : {}),
     ...(option("runtime-dir") !== undefined ? { runtimeRoot: option("runtime-dir") } : {}),
     configs: configNames,

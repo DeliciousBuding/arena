@@ -25,7 +25,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const CONTRACT_DIR = join(here, "..", "src", "sim", "contracts");
 const MANIFEST_PATH = join(CONTRACT_DIR, "rules-v0.11.json");
 const REPO_ROOT = resolve(here, "..", "..", "..");
-const MIRROR_DIR = join(REPO_ROOT, "reference", "arena-hero-python", "arena_hero");
+const COORDINATION_ROOT = resolve(REPO_ROOT, "..");
+const MIRROR_DIR = join(COORDINATION_ROOT, "reference", "arena-hero-python", "arena_hero");
 
 test("S0: 内置 manifest 加载成功且关键字段齐全", () => {
   const manifest = loadRulesManifest(MANIFEST_PATH);

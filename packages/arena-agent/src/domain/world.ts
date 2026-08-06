@@ -1,4 +1,5 @@
 import { cellKey, parseCellKey, type Position, type TickState, type UnitType } from "./model.ts";
+import { exploreRadiusForRing, exploreTarget } from "./nav.ts";
 
 export type ResourceState = "visible" | "stale" | "harvested";
 export type WorkerMode = "patrol" | "go_harvest";
@@ -14,6 +15,18 @@ const TRANSIENT_MOVE_FAILURE_REASONS = new Set([
  *  防"幽灵资源"——记忆中的资源格实际已被采空/不再 refill。 */
 const RESOURCE_MEMORY_TTL_TICKS = 64;
 
+/** 地图分块尺寸（frontier 探索）：16×16 格 chunk——巡逻环 8..40、
+ *  视野 5，chunk 过大（32）环内 8 方位常落同块无区分，过小（8）碎片化噪声。
+ *  chunk 记忆驱动"未观察分区优先"（frontier-v1：观察最老的分区先巡）。 */
+const CHUNK_SIZE = 16;
+
+/** chunk 坐标支持负坐标（t1 Core [-619,-154]）：floor 除法而非截断。 */
+function chunkKeyFor(position: Position): string {
+  const cx = Math.floor(position[0] / CHUNK_SIZE);
+  const cy = Math.floor(position[1] / CHUNK_SIZE);
+  return `${cx},${cy}`;
+}
+
 export interface ResourceMemory {
   readonly cell: Position;
   state: ResourceState;
@@ -24,6 +37,15 @@ export interface ResourceMemory {
 export interface EnemyMemory {
   readonly id: string;
   position: Position;
+  /** 上一可见 tick 的位置（威胁评估 ALERT 信号：位置差分 → 敌移动检测，
+   *  2026-08-06 竞品 hierarchical threat assessment 对照）。 */
+  prevPosition?: Position;
+  /** 上一可见 tick 时敌距 Core 的 Chebyshev 距离（距离差分 pursuit score 的
+   *  分母——竞品对照：closed = prev.d - cur.d，>0 逼近 +2、==0 平行 +1、
+   *  <0 远离 -1，位置未动强制 0——天然滤除"路过"误报）。 */
+  coreDistance?: number;
+  /** 追击积分 [0,4]（cap 4）：>0 且（d≤12 或 score≥3）= 确认追击。 */
+  pursuitScore: number;
   kind: "UNIT" | "CORE";
   unitType?: UnitType;
   lastSeenTick: number;
@@ -65,6 +87,10 @@ export class World {
   private readonly failedCells = new Map<string, number>();
   private readonly unitMoveFailures = new Map<string, Map<string, number>>();
   private readonly unitMemories = new Map<string, UnitMemory>();
+  /** chunk 观察记忆（frontier 探索）：chunkKey → 最近一次观察 tick。
+   *  观察来源 = 视野实体格（障碍/资源/敌人/我方单位/Core/Beacon）——
+   *  巡逻/采集到达的区域随实体观察自然更新老化。 */
+  private readonly chunkMemory = new Map<string, number>();
   /** 世界重置计数（tick 回退检测触发；决策层 telemetry/测试可读）。 */
   worldResetCount = 0;
   /** 最近一次世界重置发生时的 tick（从未重置 = null）。 */
@@ -79,11 +105,13 @@ export class World {
       this.failedCells.clear();
       this.unitMoveFailures.clear();
       this.unitMemories.clear();
+      this.chunkMemory.clear();
       this.worldResetCount += 1;
       this.lastWorldResetTick = state.tick;
     }
     this.tick = state.tick;
     for (const cell of state.obstacleCells) this.obstacleMemory.add(cell);
+    for (const cell of state.obstacleCells) this.chunkMemory.set(chunkKeyFor(parseCellKey(cell)), state.tick);
 
     const visibleResources = new Set(state.resourceCells);
     for (const cell of visibleResources) {
@@ -139,9 +167,41 @@ export class World {
     }
 
     for (const enemy of state.visibleEnemies) {
+      const previous = this.enemyMemory.get(enemy.id);
+      const core = state.core?.position;
+      let pursuitScore = 0;
+      let coreDistance: number | undefined;
+      if (core !== undefined) {
+        coreDistance = Math.max(
+          Math.abs(enemy.position[0] - core[0]),
+          Math.abs(enemy.position[1] - core[1]),
+        );
+        // 追击积分（竞品 pursuit score 对照）：距离差分——closed = prev.d - cur.d，
+        // >0 逼近 +2、==0 平行 +1、<0 远离 -1；位置未动强制 0（静态敌不算——
+        // 天然滤除"路过"误报：远离衰减、平行封顶）。cap [0,4]。
+        if (previous !== undefined && previous.coreDistance !== undefined) {
+          // 位置未动判定用上一 tick 位置（previous.position——prevPosition 是
+          // 上上 tick，仅用于威胁评估的移动检测）
+          const moved =
+            previous.position[0] !== enemy.position[0] ||
+            previous.position[1] !== enemy.position[1];
+          if (!moved) {
+            pursuitScore = 0;
+          } else {
+            const closed = previous.coreDistance - coreDistance;
+            const delta = closed > 0 ? 2 : closed === 0 ? 1 : -1;
+            pursuitScore = Math.max(0, Math.min(4, (previous.pursuitScore ?? 0) + delta));
+          }
+        }
+      }
       this.enemyMemory.set(enemy.id, {
         id: enemy.id,
         position: enemy.position,
+        // 位置差分：上一次可见位置保留为 prevPosition（同 id 才记录——
+        // 新出现敌人无 prev，prevPosition 缺失 = 无法判断移动）。
+        prevPosition: previous?.position,
+        coreDistance,
+        pursuitScore,
         kind: enemy.kind,
         unitType: enemy.unitType,
         lastSeenTick: state.tick,
@@ -164,6 +224,14 @@ export class World {
         this.failedCells.delete(cell);
       }
     }
+
+    // chunk 老化更新：所有视野实体格（资源/敌人/我方单位/Core/Beacon）——
+    // 巡逻与采集到达的区域随实体观察刷新"最近观察时间"。
+    for (const cell of visibleResources) this.chunkMemory.set(chunkKeyFor(parseCellKey(cell)), state.tick);
+    for (const enemy of state.visibleEnemies) this.chunkMemory.set(chunkKeyFor(enemy.position), state.tick);
+    for (const unit of state.units) this.chunkMemory.set(chunkKeyFor(unit.position), state.tick);
+    if (state.core !== null) this.chunkMemory.set(chunkKeyFor(state.core.position), state.tick);
+    this.chunkMemory.set(chunkKeyFor(state.beacon.position), state.tick);
   }
 
   unitMemory(unitId: string, initialPatrolDirection = 0): UnitMemory {
@@ -234,6 +302,29 @@ export class World {
     return [...this.enemyMemory.values()]
       .filter((memory) => this.tick - memory.lastSeenTick <= maxAge)
       .sort((a, b) => b.lastSeenTick - a.lastSeenTick || a.id.localeCompare(b.id));
+  }
+
+  /**
+   * frontier 探索方位选择：8 方位按"当前巡逻环探测点所在 chunk 观察老化"排序，
+   * 观察最老（lastSeen 最小）的方位优先；老化相同按方位升序（确定性 tie-break，
+   * 全未观察时退化为固定方位序）。offset 按 worker 序号轮转——多 worker 分散到
+   * 不同老分区，避免全部涌向同一最老方位（第二名"不要所有侦察走同一走廊"）。
+   */
+  staleDirection(
+    home: Position,
+    beacon: Position,
+    ringIndex: number,
+    baseRadius: number,
+    count: number,
+    offset: number,
+  ): number {
+    const radius = exploreRadiusForRing(baseRadius, ringIndex);
+    const candidates = Array.from({ length: count }, (_, direction) => ({
+      direction,
+      lastSeen: this.chunkMemory.get(chunkKeyFor(exploreTarget(home, beacon, direction, radius))) ?? 0,
+    }));
+    candidates.sort((a, b) => a.lastSeen - b.lastSeen || a.direction - b.direction);
+    return candidates[((offset % count) + count) % count].direction;
   }
 
   snapshot(): WorldSnapshot {

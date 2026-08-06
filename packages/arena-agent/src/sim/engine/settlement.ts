@@ -132,7 +132,10 @@ const PHASES: readonly Phase[] = [
       // 官方 refill 是 server secret（seed 不可见）——每 refill cadence
       // 记录 unknown 效应，绝不伪装成 MATCH。test-seeded rng 存在时也不
       // 称为"官方 refill"，只是场景注入。
-      const cadence = ctx.rules.rules.economy.refillEveryTicks;
+      // cadence 优先取实验配置（episode refill.everyTicks）——修复（2026-08-06
+      // 第九轮）：原实现只读规则 refillEveryTicks，实验配置被无视（校准实验
+      // everyTicks=50 无效、harvest 恒 2 的根因）。
+      const cadence = ctx.refill?.everyTicks ?? ctx.rules.rules.economy.refillEveryTicks;
       if ((draft.resolvedTickCount + 1) % cadence !== 0) return EMPTY_OUTCOME;
       if (ctx.refill === undefined) {
         return outcome({

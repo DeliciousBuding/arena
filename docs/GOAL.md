@@ -5,7 +5,7 @@
 ## 目标
 
 **攒 Core 资源 → 游戏商店兑换公益站注册码（现实价值商品）。**
-三个账号并行产出，bot 负责经济与防御，兑换动作由用户在游戏网页手动完成（bot 攒到阈值后日志/调试端点提示）。
+两个生产租户并行产出，bot 负责经济与防御，兑换动作由用户在游戏网页手动完成（bot 攒到阈值后日志/调试端点提示）。
 
 ## 商店清单（快照 2026-08-02，剩余数量会变化）
 
@@ -62,10 +62,10 @@ Core 容量 = max(10, 人口 × 5)     # 人口 = 存活单位数（不含 Core�
 
 这些战略意图由 TS Planner/config 或后续低频 MacroPolicy 表达；旧 `TacticConfig` 和 Python debug 写接口已退役。
 
-## 四账号并行
+## 双租户并行
 
 - 每租户配置只保存 token env 名，token 值位于仓外 secrets；
-- 调度器：`npm run arena:supervisor -- --configs=t1,t2,t3,t4 ...`；
+- 调度器：`npm run arena:supervisor -- --configs=t1,t2 ...`；
 - 每租户独立：OS 进程、single-writer lock、manifest 与 JSONL telemetry；
 - 产出比较：Digital Twin、Runtime-Golden 与有界真机交替窗口。
 
@@ -74,4 +74,4 @@ Core 容量 = max(10, 人口 × 5)     # 人口 = 存活单位数（不含 Core�
 - 每账号 (tick, source) 64 次提交配额 → 我们每 Tick 1 次，余量巨大
 - 每账号并发 4 命令体 → 单进程单提交，安全
 - SDK 自动尊重 Retry-After + 指数退避
-- 3 账号同 IP：协议无 IP 级限制条款，风险低（每账号请求频率极低）
+- 两个租户同 IP：协议无 IP 级限制条款，风险低（每租户请求频率极低）

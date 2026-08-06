@@ -6,13 +6,14 @@ Arena 正式运行链为 TS-only。遵循原生设计：优先 Node 标准能力
 
 ## 权威入口
 
-- 当前状态：`docs/progress/MASTER.md`
-- 协作快照（跨 Agent 通信文件，仓外）：`D:\Code\Projects\arena-mail.md`
-- 运维：`docs/ops/supervisor-runbook.md`
-- 服务器：`docs/ops/server-deployment.md`
-- 架构：`docs/ts-architecture.md`
-- 迁移边界：`docs/migration-plan.md`
-- 测试数字：`docs/generated/status.md`
+- 当前状态：`../docs/progress/MASTER.md`
+- 运维：`../docs/ops/supervisor-runbook.md`
+- 服务器：`../docs/ops/server-deployment.md`
+- 架构：`../docs/ts-architecture.md`
+- 迁移边界：`../docs/migration-plan.md`
+- 测试数字：`../docs/generated/status.md`
+- 外部参考（第二名，经常更新，涉及策略追赶先拉）：`../reference/arena-hero-agent`——同步 `git -C ../reference/arena-hero-agent pull`；差距清单与版本差异见共享 MASTER.md「外部参考仓库」章节
+- 官方参考源（规则更新追踪）：`../reference/arena-hero-doc`——同步 `git -C ../reference/arena-hero-doc pull && git -C ../reference/arena-hero-doc log --oneline -3`；官方版本事实与对照见共享 MASTER.md「外部参考仓库」首段
 
 ## 标准命令
 
@@ -22,30 +23,29 @@ npm run check
 npm test
 npm run schema:check
 npm run replay:ts
-npm run server:check
-python scripts/gen-status.py --check
-python scripts/docs_health.py --check
 
-npx tsx packages/arena-agent/src/cli/run-tenant.ts --doctor --config=runtime/configs/t1.json
-npm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --shadow --port=8120
+npx tsx packages/arena-agent/src/cli/run-tenant.ts --doctor --config=../data/runtime/configs/t1.json
+npm run arena:supervisor -- --configs=t1,t2 --mode=deterministic --shadow --port=8120
 ```
 
 ## 本地运行形态（2026-08-06 起）
 
-us1 已关闭，t1/t2 本地 live（deterministic + submitEnabled=true，baseDir=runtime）：
+us1 已关闭，t1/t2 本地 live（deterministic + submitEnabled=true，data root 默认 `../data`，baseDir=runtime）：
 ```bash
 npm run arena:supervisor -- --configs=t1,t2 --mode=deterministic --live --record-calibration --port=8120
 ```
 - 看护：Windows 计划任务 `ArenaWatchdog`（每分钟，重建命令见下）+ `scripts/arena-watchdog.sh`（异常自动恢复：确认死透 → 清死锁 → 带 `--record-calibration` 重启，日志 `~/arena-watchdog.log`）；
-- t3/t4 不得使用（用户裁决——让位给外部实现）。
+- 生产租户仅允许 `t1` 与 `t2`；不得创建、恢复或运行其他租户配置。
 
 ### 租户始终运行 + 数据收集线保障（2026-08-06）
 
-- **数据收集线 = supervisor `--record-calibration` 旁路**（calibration cases 持续落盘 `runtime/<t>/calibration/<runId>/cases/`，看护重启命令已含该参数）；
-- **计划任务链路（v2，实测验证）**：ArenaWatchdog（每分钟）→ `scripts/arena-watchdog.bat`（PowerShell Start-Process 完全分离）→ `arena-watchdog.sh`（确认死透 → 清死锁 → 带 `--record-calibration` 重启）。**故障注入演练通过**（2026-08-06 23:42 杀 supervisor → 31s 自动恢复 → 超过任务会话杀进程窗口 1.5 分钟仍存活）；v1 直接 `bash -lc` 有缺陷（任务会话结束回收进程树，supervisor 拉起 16s 后被 ^C 杀——实测捕获）；
-- **计划任务丢失恢复**：ArenaWatchdog 曾丢失（2026-08-06 发现）——重建命令：
+- **数据根优先级**：CLI `--data-root` > `ARENA_DATA_ROOT` > 仓库同级 `../data`；supervisor 未显式覆盖时使用 `../data/runtime/configs` 与 `../data/runtime`，模拟器输出严格限制在 `../data/runs/sim`；
+- **数据收集线 = supervisor `--record-calibration` 旁路**（只记录 accepted plan、相邻 raw state 与 receipt，cases 持续落盘 `../data/runtime/<t>/calibration/<runId>/cases/`；校准/分析只离线执行，看护重启命令已含该参数）；
+- **计划任务链路（v3，实测验证）**：ArenaWatchdog（每分钟）→ `scripts/arena-watchdog-hide.vbs`（**wscript.exe //B，GUI 子系统，无控制台窗口不闪屏**——2026-08-06 由 bat 直跑改为 vbs，消除每分钟闪窗）→ PowerShell `Start-Process` 完全分离 bash → `arena-watchdog.sh`（确认死透 → 清死锁 → 带 `--record-calibration` 重启）。**故障注入演练通过**（2026-08-06 23:42 杀 supervisor → 31s 自动恢复 → 超过任务会话杀进程窗口 1.5 分钟仍存活）；v1 直接 `bash -lc` 有缺陷（任务会话结束回收进程树，supervisor 拉起 16s 后被 ^C 杀——实测捕获）；`scripts/arena-watchdog.bat` 保留为手动回退入口（内容与 vbs 等价，不再被计划任务引用）；
+- **脚本编码约束（防闪窗回归）**：`arena-watchdog.bat` 与 `arena-watchdog-hide.vbs` 必须保持**纯 ASCII**——cmd 按 GBK 代码页解析 bat，UTF-8 中文注释会让行解析错位，实测每次任务运行都闪 `'...' 不是内部或外部命令` 报错窗（2026-08-06 已改为英文注释，中文设计说明在 `.sh` 与本文件）；改脚本时不得再引入非 ASCII 字符；
+- **计划任务丢失恢复**：ArenaWatchdog 曾丢失（2026-08-06 发现）——重建命令（动作 = wscript 跑 vbs，无闪窗）：
   ```bash
-  MSYS_NO_PATHCONV=1 schtasks /create /tn ArenaWatchdog /sc minute /mo 1 /ru Ding /f /tr 'D:\Code\Projects\arena\scripts\arena-watchdog.bat'
+    MSYS_NO_PATHCONV=1 schtasks /create /tn ArenaWatchdog /sc minute /mo 1 /ru Ding /f /tr "wscript.exe //B $(cygpath -w "$PWD/scripts/arena-watchdog-hide.vbs")"
   ```
   验证：`MSYS_NO_PATHCONV=1 schtasks /query /tn ArenaWatchdog /fo LIST`；
 - **操作纪律（防误杀数据线）**：清理实验/后台进程只按**命令行匹配**杀特定 PID（`wmic process where "name='node.exe'" get processid,commandline | grep 匹配`），**严禁 `taskkill` 全部 node 进程树**——会误杀 supervisor/tenant 造成数据线中断（2026-08-06 实测教训：误杀后看护恢复，但产生中断窗口）；需要杀 supervisor 时按 8120 端口找 PID 定向杀。

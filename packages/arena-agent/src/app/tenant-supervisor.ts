@@ -5,6 +5,11 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { loadRuntimeConfig, type TenantRuntimeConfig } from "./runtime-config.ts";
+import {
+  resolveArenaDataRoot,
+  resolveArenaRuntimeRoot,
+  resolveTenantBaseDir,
+} from "./data-root.ts";
 import { appendJsonlLine } from "../telemetry/jsonl-writer.ts";
 
 const execFileAsync = promisify(execFile);
@@ -60,6 +65,8 @@ export interface TenantStatus {
 
 export interface TenantSupervisorOptions {
   readonly repoRoot: string;
+  /** Shared data root. Defaults to the sibling directory ../data. */
+  readonly dataRoot?: string;
   /** Tenant config directory. Relative paths resolve from repoRoot. */
   readonly configRoot?: string;
   /** Shared runtime root for events and tenant baseDir validation. */
@@ -93,6 +100,7 @@ interface LockContent {
 
 export class TenantSupervisor {
   readonly repoRoot: string;
+  readonly dataRoot: string;
   readonly configRoot: string;
   readonly runtimeRoot: string;
 
@@ -107,8 +115,16 @@ export class TenantSupervisor {
 
   constructor(options: TenantSupervisorOptions) {
     this.repoRoot = resolve(options.repoRoot);
-    this.configRoot = resolveFromRepo(this.repoRoot, options.configRoot ?? join("runtime", "configs"));
-    this.runtimeRoot = resolveFromRepo(this.repoRoot, options.runtimeRoot ?? "runtime");
+    this.dataRoot = options.dataRoot === undefined
+      ? resolveArenaDataRoot(this.repoRoot)
+      : resolveFromRepo(this.repoRoot, options.dataRoot);
+    const defaultRuntimeRoot = resolveArenaRuntimeRoot(this.dataRoot);
+    this.configRoot = options.configRoot === undefined
+      ? join(defaultRuntimeRoot, "configs")
+      : resolveFromRepo(this.repoRoot, options.configRoot);
+    this.runtimeRoot = options.runtimeRoot === undefined
+      ? defaultRuntimeRoot
+      : resolveFromRepo(this.repoRoot, options.runtimeRoot);
     this.options = options;
     mkdirSync(this.runtimeRoot, { recursive: true });
     this.eventLogPath = options.eventLogPath ?? join(this.runtimeRoot, "supervisor.jsonl");
@@ -146,10 +162,8 @@ export class TenantSupervisor {
         throw new Error(`env ${config.arenaTokenEnv} missing for tenant ${config.tenantId}`);
       }
 
-      const baseDir = isAbsolute(config.baseDir ?? "runtime")
-        ? resolve(config.baseDir ?? "runtime")
-        : resolve(this.repoRoot, config.baseDir ?? "runtime");
-      if (this.options.runtimeRoot !== undefined && baseDir !== this.runtimeRoot) {
+      const baseDir = resolveTenantBaseDir(this.dataRoot, config.baseDir);
+      if (baseDir !== this.runtimeRoot) {
         throw new Error(
           `tenant ${config.tenantId} baseDir must match supervisor runtimeRoot: ${this.runtimeRoot}`,
         );
@@ -180,6 +194,8 @@ export class TenantSupervisor {
           spec.configPath,
           "--repoRoot",
           this.repoRoot,
+          "--data-root",
+          this.dataRoot,
           ...(this.options.tenantArgs ?? []),
         ];
         const child = (this.options.spawnChild ?? ((argv) => spawnChildProcess(this.repoRoot, argv)))(args, spec);

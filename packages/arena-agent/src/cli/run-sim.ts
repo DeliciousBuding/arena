@@ -32,6 +32,7 @@ import {
 } from "../sim/tools/experiments.ts";
 import { canonicalWorldJson } from "../sim/world/canonical.ts";
 import { worldFromScenario } from "../sim/world/loaders.ts";
+import { resolveArenaDataRoot } from "../app/data-root.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, "..", "..");
@@ -49,18 +50,18 @@ interface ParsedArgs {
 
 const BOOLEAN_FLAGS = new Set(["--force", "--help"]);
 const KNOWN_FLAGS: Readonly<Record<Command, ReadonlySet<string>>> = {
-  doctor: new Set(["--rules", "--help"]),
+  doctor: new Set(["--rules", "--data-root", "--help"]),
   episode: new Set([
-    "--scenario", "--rules", "--ticks", "--seed", "--planner", "--workers", "--output", "--run-id", "--force", "--help",
+    "--scenario", "--rules", "--ticks", "--seed", "--planner", "--workers", "--output", "--run-id", "--data-root", "--force", "--help",
   ]),
   ab: new Set([
-    "--scenario", "--rules", "--ticks", "--seeds", "--planners", "--workers", "--output", "--run-id", "--force", "--help",
+    "--scenario", "--rules", "--ticks", "--seeds", "--planners", "--workers", "--output", "--run-id", "--data-root", "--force", "--help",
   ]),
   benchmark: new Set([
-    "--scenario", "--rules", "--ticks", "--seed", "--planner", "--workers", "--warmup", "--repeats", "--output", "--run-id", "--force", "--help",
+    "--scenario", "--rules", "--ticks", "--seed", "--planner", "--workers", "--warmup", "--repeats", "--output", "--run-id", "--data-root", "--force", "--help",
   ]),
-  calibrate: new Set(["--case", "--rules", "--output", "--run-id", "--force", "--help"]),
-  "calibrate-dataset": new Set(["--manifest", "--rules", "--output", "--run-id", "--force", "--help"]),
+  calibrate: new Set(["--case", "--rules", "--output", "--run-id", "--data-root", "--force", "--help"]),
+  "calibrate-dataset": new Set(["--manifest", "--rules", "--output", "--run-id", "--data-root", "--force", "--help"]),
 };
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -102,7 +103,7 @@ function usage(): string {
     "  benchmark --scenario PATH [--planner deterministic|safety] [--ticks N] [--warmup N] [--repeats N] [--workers 1]",
     "  calibrate --case PATH",
     "  calibrate-dataset --manifest PATH",
-    "common output flags: --output runs/sim[/subdir] --run-id ID --force",
+    "common output flags: --data-root PATH --output runs/sim[/subdir] --run-id ID --force",
   ].join("\n");
 }
 
@@ -171,7 +172,12 @@ function outputSettings(args: ParsedArgs, kind: string, identity: unknown): {
   readonly runId: string;
   readonly force: boolean;
 } {
-  const outputBase = resolveOutputBase(REPO_ROOT, args.values.get("--output") ?? null);
+  const dataRoot = resolveArenaDataRoot(
+    REPO_ROOT,
+    args.values.get("--data-root"),
+    process.env.ARENA_DATA_ROOT,
+  );
+  const outputBase = resolveOutputBase(dataRoot, args.values.get("--output") ?? null);
   const runId = args.values.get("--run-id") ?? defaultRunId(kind, identity);
   return { outputBase, runId, force: args.booleans.has("--force") };
 }

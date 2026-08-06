@@ -110,12 +110,17 @@ test("MacroPolicy: aggressionOf 映射（aggressive → aggressive，其余 defe
   assert.equal(aggressionOf(DEFAULT_MACRO_POLICY), "defensive");
 });
 
-test("MacroPolicy: parsePolicyText 剥 markdown 围栏 + 非法抛错", () => {
+test("MacroPolicy: parsePolicyText 剥 markdown 围栏 + 容错回退（normalize-first）", () => {
   const policy = parsePolicyText('```json\n{"posture":"aggressive","workerTarget":10,"militaryRatio":0.5,"focusRegion":[1,2],"attackPriority":"core"}\n```');
   assert.equal(policy.posture, "aggressive");
   assert.equal(policy.workerTarget, 10);
   assert.throws(() => parsePolicyText("no json here"), /no JSON object/);
-  assert.throws(() => parsePolicyText('{"posture":"aggressive","workerTarget":0,"militaryRatio":0.5,"focusRegion":null,"attackPriority":null}'), /out of domain/);
+  // 2026-08-06 第十五轮：normalize-first 容错——非法值回退默认而非拒绝整条。
+  // 生产 t1 实测 9/56（16%）policy 被拒（LLM 把 attackPriority 序列化成
+  // 字符串 "null" 等小错误）→ 现在小错误不再浪费整条策略更新。
+  const fallback = parsePolicyText('{"posture":"aggressive","workerTarget":0,"militaryRatio":0.5,"focusRegion":null,"attackPriority":"null"}');
+  assert.equal(fallback.workerTarget, DEFAULT_MACRO_POLICY.workerTarget);
+  assert.equal(fallback.attackPriority, null);
 });
 
 test("MacroPolicy: prompt 构建确定性 + readLastAssistantText 提取文本", () => {

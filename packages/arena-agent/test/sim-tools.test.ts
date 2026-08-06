@@ -13,7 +13,7 @@ import { evaluateCandidate } from "../src/sim/tools/candidate-evaluator.ts";
 import { resolvePlannerVariant } from "../src/sim/tools/planner-variants.ts";
 import { DeterministicPlanner } from "../src/planning/deterministic-planner.ts";
 import { SafetyPlanner } from "../src/strategies/safety-planner.ts";
-import { runEpisode } from "../src/sim/harness/episode.ts";
+import { runEpisode, type EpisodeResult } from "../src/sim/harness/episode.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCENARIO = JSON.parse(
@@ -301,17 +301,22 @@ test("TS-008: focus 远征场景——基线被支走 vs 候选留守（生产�
   });
   const baselineResult = run("deterministic-v0.2.15");
   const candidateResult = run("deterministic-v0.2.17");
+  const workerId = [...baselineResult.finalWorld.players.get("p1")!.units][0]!.id;
   const baselineWorker = [...baselineResult.finalWorld.players.get("p1")!.units][0]!;
   const candidateWorker = [...candidateResult.finalWorld.players.get("p1")!.units][0]!;
+  const lastRecord = (result: EpisodeResult) => result.records[result.records.length - 1]!.plans["p1"]!;
   // 基线无防呆：worker 采完开局资源后被 go_focus 直线支向 [40,0]（先 x 轴）
   assert.ok(
     baselineWorker.position[0] >= 20,
     `基线 worker 应被支走远离 Core: ${JSON.stringify(baselineWorker.position)}`,
   );
-  // 候选防呆：焦点被过滤 → patrol 留守巡逻圈（exploreRadius=8，30 tick 内不越界）
-  assert.ok(
-    candidateWorker.position[0] <= 10,
-    `候选 worker 应留守巡逻圈: ${JSON.stringify(candidateWorker.position)}`,
+  assert.equal(lastRecord(baselineResult).intents[workerId], "go_focus", "基线意图应为直线远征");
+  // 候选防呆：焦点被过滤 → patrol 巡逻（连续外扩 8→16→24 环也在正东方向，
+  // 但意图是巡逻而非 go_focus——防呆效果 = 不直线远征）
+  assert.equal(
+    lastRecord(candidateResult).intents[workerId],
+    "patrol",
+    `候选 worker 应巡逻而非远征: ${JSON.stringify(candidateWorker.position)}`,
   );
 });
 

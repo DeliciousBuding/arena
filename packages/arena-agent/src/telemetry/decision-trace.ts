@@ -75,6 +75,13 @@ export interface DecisionTraceRecord {
   /** 最终采纳计划的稳定哈希（planHashOf；用于审计/漂移比对）。 */
   readonly planHash: string;
   readonly reason?: string;
+  /** 威胁评估诊断（v0.3-lite，2026-08-06）：tick 级威胁等级/原因/敌情计数。
+   *  enemyHints 记忆增强（pursuit/moving）待 planner 侧暴露后补全。 */
+  readonly threatLevel?: "NORMAL" | "ALERT" | "ENGAGED" | "BREAKOUT";
+  readonly threatReason?: string | null;
+  readonly threatClosingEnemies?: number;
+  readonly threatMovingEnemies?: number;
+  readonly threatAxes?: number;
 }
 
 /** OutcomeTrace：执行后发生了什么（核心资源变化/产出/损耗/事件流水）。 */

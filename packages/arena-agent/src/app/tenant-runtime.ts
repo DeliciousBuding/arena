@@ -17,17 +17,20 @@
 import { ArenaHeroClient } from "@arena/arena-hero-ts";
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { mkdirSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { loadRuntimeConfig, resolveCircuitBreaker, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
+import { resolveArenaDataRoot, resolveTenantBaseDir } from "./data-root.ts";
 import { SingleWriterLock } from "./single-writer-lock.ts";
 import { newProcessRunId, readGitSha, writeRunManifest, type RunManifest } from "./run-manifest.ts";
 import { DecisionCoordinator } from "../runtime/decision-coordinator.ts";
 import { LeaseRegistry } from "../runtime/lease-registry.ts";
 import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
-import { AGGRESSIVE_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
+import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
+import { resolveVariantsConfig } from "../strategies/variant-registry.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
+import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
 import { PiSessionFactory } from "../infrastructure/pi/pi-session-factory.ts";
 import { buildDecisionPrompt } from "../infrastructure/pi/prompt-builder.ts";
@@ -40,6 +43,8 @@ import { PolicyDiscipline } from "../runtime/policy-discipline.ts";
 import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
 import { manhattan } from "../domain/nav.ts";
+import { assessThreat, damagedThisTick } from "../domain/threat.ts";
+import type { TickState } from "../domain/model.ts";
 import type { AgentDecisionRuntime, DecisionModeName, DecisionResult, SubmissionModeName } from "../runtime/decision-types.ts";
 import {
   appendJsonlLine,
@@ -60,6 +65,28 @@ export const RULES_VERSION = "v0.11";
  *  生产实测 t1 capacity_wait:DEPOSIT 死锁 60+ ticks 才被人工发现，16 ticks（≈2 个
  *  MacroPolicy 周期）是"足够确认异常、又不会频繁误报"的折中。 */
 export const STALL_WARNING_TICKS = 16;
+
+/** 威胁评估诊断字段（v0.3-lite，2026-08-06）：从 outcome state 计算 tick 级威胁
+ *  （可见敌/受击基础版；enemyHints 记忆增强——moving/pursuit——待 planner 侧
+ *  暴露 world 后补全）。写入 decision.jsonl 供 replay/威胁分析。 */
+function threatDiagnosticsOf(state: TickState): Pick<
+  DecisionTraceRecord,
+  "threatLevel" | "threatReason" | "threatClosingEnemies" | "threatMovingEnemies" | "threatAxes"
+> {
+  const assessment = assessThreat({
+    core: state.core?.position ?? null,
+    visibleEnemies: state.visibleEnemies,
+    enemyHints: [],
+    damagedThisTick: damagedThisTick(state.events),
+  });
+  return {
+    threatLevel: assessment.level,
+    threatReason: assessment.reason,
+    threatClosingEnemies: assessment.closingEnemies,
+    threatMovingEnemies: assessment.movingEnemies,
+    threatAxes: assessment.axes,
+  };
+}
 
 /** safety 模式占位 runtime：coordinator 短路不会调用（P0-1），
  *  避免 Pi session 创建（模型认证）成为 safety Canary 的前置失败点。 */
@@ -117,6 +144,8 @@ export function resolvePiModel(config: TenantRuntimeConfig): PiModel {
 }
 
 export interface TenantRunOptions {
+  /** Shared data root used for relative config.baseDir values. */
+  readonly dataRoot?: string;
   /** 覆盖 config.submitEnabled（CLI --live/--shadow）。 */
   readonly submissionMode?: SubmissionModeName;
   /** 覆盖 config.decisionMode（CLI --mode）。 */
@@ -192,10 +221,8 @@ export async function runTenant(
   const deadlines = resolveDeadlines(config);
 
   const processRunId = newProcessRunId();
-  // baseDir 相对 repoRoot 解析（绝对路径原样）——产物落点与 doctor/CLI 一致
-  const baseDir = isAbsolute(config.baseDir ?? "runtime")
-    ? (config.baseDir ?? "runtime")
-    : join(repoRoot, config.baseDir ?? "runtime");
+  const dataRoot = options.dataRoot ?? resolveArenaDataRoot(repoRoot);
+  const baseDir = resolveTenantBaseDir(dataRoot, config.baseDir);
   const dirs = tenantDirs(baseDir, config.tenantId);
 
   // 1) 单写者锁（红线：同一租户一个提交者；拿不到直接失败）
@@ -438,9 +465,21 @@ export async function runTenant(
 
     // 6) coordinator（P0-1：decisionMode 传递；deterministic = planner 注入 DeterministicPlanner，
     //    coordinator 短路语义同 safety——不启动 Agent）
+    // 候选变体（config.variants）经注册表解析合并进 SafetyPlanner 配置（2026-08-06 架构整理）。
+    const variantConfig = resolveVariantsConfig(config.variants);
+    const planner =
+      decisionMode === "deterministic"
+        ? Object.keys(variantConfig).length === 0
+          ? new DeterministicPlanner()
+          : new DeterministicPlanner(
+              new WorkerTaskPlanner(),
+              new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...variantConfig }),
+              new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...variantConfig }),
+            )
+        : new SafetyPlanner({ ...AGGRESSIVE_SAFETY_CONFIG, ...variantConfig });
     const coordinator = new DecisionCoordinator({
       runtime,
-      planner: decisionMode === "deterministic" ? new DeterministicPlanner() : new SafetyPlanner(AGGRESSIVE_SAFETY_CONFIG),
+      planner,
       registry: new LeaseRegistry(),
       clock: { now: () => performance.now() },
       budgetConfig: deadlines,
@@ -542,6 +581,9 @@ export async function runTenant(
           waitCount: actionCounts.waitCount,
           intentCounts,
           planHash: planHashOf(outcome.plan),
+          // 威胁评估诊断（v0.3-lite）：outcome.state 可见敌/受击计算基础版；
+          // enemyHints 记忆（moving/pursuit）待 planner 侧暴露后补全。
+          ...threatDiagnosticsOf(outcome.state),
         };
         decisionWriter.write(decisionRecord);
       }

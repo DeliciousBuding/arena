@@ -88,29 +88,30 @@ function assertRealAncestorWithin(base: string, candidate: string, label: string
   }
 }
 
-/** Output is strictly confined to <repo>/runs/sim or a descendant. */
-export function resolveOutputBase(repoRoot: string, raw: string | null): string {
+/** Output is strictly confined to <dataRoot>/runs/sim or a descendant. */
+export function resolveOutputBase(dataRoot: string, raw: string | null): string {
   if (raw !== null && isAbsolute(raw)) {
-    throw new Error("output must be relative to repo root (absolute paths rejected: isolation policy)");
+    throw new Error("output must be relative to data root (absolute paths rejected: isolation policy)");
   }
   if (raw !== null && raw.split(/[\\/]+/u).includes("..")) {
     throw new Error("output path traversal rejected (.. not allowed)");
   }
-  const base = resolve(repoRoot, "runs", "sim");
-  const candidate = raw === null ? base : resolve(repoRoot, raw);
+  const resolvedDataRoot = resolve(dataRoot);
+  mkdirSync(resolvedDataRoot, { recursive: true });
+  const realDataRoot = realpathSync(resolvedDataRoot);
+  const base = resolve(resolvedDataRoot, "runs", "sim");
+  const candidate = raw === null ? base : resolve(resolvedDataRoot, raw);
   if (candidate !== base && !candidate.startsWith(`${base}${sep}`)) {
     throw new Error(`output must be under runs/sim (got ${raw ?? candidate})`);
   }
-  const resolvedRepo = resolve(repoRoot);
-  const realRepo = realpathSync(resolvedRepo);
   const baseAncestor = nearestExistingAncestor(base);
-  if (!isWithin(realRepo, realpathSync(baseAncestor))) {
-    throw new Error("runs/sim escapes repo through symlink/junction");
+  if (!isWithin(realDataRoot, realpathSync(baseAncestor))) {
+    throw new Error("runs/sim escapes data root through symlink/junction");
   }
   mkdirSync(base, { recursive: true });
   const realBase = realpathSync(base);
-  if (!isWithin(realRepo, realBase)) {
-    throw new Error("runs/sim escapes repo through symlink/junction");
+  if (!isWithin(realDataRoot, realBase)) {
+    throw new Error("runs/sim escapes data root through symlink/junction");
   }
   assertRealAncestorWithin(base, candidate, "output path");
   return candidate;

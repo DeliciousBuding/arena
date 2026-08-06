@@ -26,6 +26,7 @@ import {
   EXPLORE_RING_COUNT,
   exploreRadiusForRing,
   exploreTarget,
+  manhattan,
   move,
 } from "../src/domain/nav.ts";
 import type { Position, TickState, UnitAction } from "../src/domain/model.ts";
@@ -96,10 +97,10 @@ test("exploreTarget：8 个 Worker 获得 8 个独立方位且保持同一 Cheby
   assert.ok(targets.every((target) => chebyshev(home, target) === 8));
 });
 
-test("分层扩圈：半径按 8→16→24→32 循环，Worker 完成一趟后进入下一圈", () => {
+test("分层扩圈：半径按 8→16→24→32→40 循环，Worker 完成一趟后进入下一圈", () => {
   assert.deepEqual(
     Array.from({ length: EXPLORE_RING_COUNT + 1 }, (_, ring) => exploreRadiusForRing(8, ring)),
-    [8, 16, 24, 32, 8],
+    [8, 16, 24, 32, 40, 8],
   );
 
   const planner = new SafetyPlanner();
@@ -107,47 +108,52 @@ test("分层扩圈：半径按 8→16→24→32 循环，Worker 完成一趟后�
   planner.decide({ state: atHome });
   assert.equal(planner.world.unitMemory("w1").patrolRing, 0);
 
-  const atFirstTarget = makeState(101, [core(0, 0), unit("w1", 8, 8)]);
+  // beacon [100,100]（东南基）+ 初始方向 (0*3+7)%8=7 → 方位 0（正东）：
+  // 首圈环点 [8,0]。到达环点后连续外扩（2026-08-06 用户导向）——
+  // 不回 home 换环，同方位直接延伸下一环 [16,0]。
+  const atFirstTarget = makeState(101, [core(0, 0), unit("w1", 8, 0)]);
   planner.decide({ state: atFirstTarget });
-  assert.equal(planner.world.unitMemory("w1").patrolReturning, true);
+  const ring1 = planner.world.unitMemory("w1");
+  assert.equal(ring1.patrolRing, 1, "到达环点后连续外扩到下一环");
+  assert.equal(ring1.patrolReturning, false);
 
+  // 强制回 home（如被采到资源拉回）：换方位 + 推进环
   const returnedHome = makeState(102, [core(0, 0), unit("w1", 0, 0)]);
   planner.decide({ state: returnedHome });
   const memory = planner.world.unitMemory("w1");
-  assert.equal(memory.patrolRing, 1);
-  assert.equal(memory.patrolDirection, 1);
+  assert.equal(memory.patrolRing, 2);
+  assert.equal(memory.patrolDirection, 2, "方位 +3 步进：(7+3)%8=2");
 });
 
-test("巡逻目标是障碍：到达相邻格即返航，不在障碍旁二格振荡", () => {
+test("巡逻目标是障碍：到达相邻格即外扩下一环，不在障碍旁振荡", () => {
   const planner = new SafetyPlanner();
+  // 首圈环点 [8,0] 被障碍占据，w1 在 [7,0]（障碍邻格）
   const state = makeState(100, [
-    { kind: "OBSTACLE", positions: [[8, 8]] },
+    { kind: "OBSTACLE", positions: [[8, 0]] },
     core(0, 0),
-    unit("w1", 7, 7),
+    unit("w1", 7, 0),
   ]);
 
   const plan = planner.decide({ state });
   const memory = planner.world.unitMemory("w1");
-  assert.equal(memory.patrolReturning, true);
+  assert.equal(memory.patrolRing, 1, "障碍环点不再贴近，连续外扩下一环");
   assert.equal(plan.unitActions["w1"]?.type, "MOVE");
-  assert.ok(
-    plan.unitActions["w1"]?.type === "MOVE" &&
-      ["LEFT", "UP"].includes(plan.unitActions["w1"].direction),
-    "到达障碍邻格后必须朝 Core 返航，而不是继续贴近障碍目标",
+  // 绕行第一步可能瞬时横向偏移（BFS 绕开 [8,0] 障碍），但绝不回退朝 Core
+  assert.notEqual(
+    plan.unitActions["w1"]?.type === "MOVE" ? plan.unitActions["w1"].direction : null,
+    "LEFT",
+    "绕行不朝 Core 回退",
   );
 
+  // 位置未变（静态切片）→ 决策确定性一致：不横跳、不抖动
   const next = makeState(101, [
-    { kind: "OBSTACLE", positions: [[8, 8]] },
+    { kind: "OBSTACLE", positions: [[8, 0]] },
     core(0, 0),
-    unit("w1", 7, 6),
+    unit("w1", 7, 0),
   ]);
   const nextPlan = planner.decide({ state: next });
-  assert.equal(planner.world.unitMemory("w1").patrolReturning, true);
-  assert.equal(nextPlan.unitActions["w1"]?.type, "MOVE");
-  assert.notEqual(
-    nextPlan.unitActions["w1"]?.type === "MOVE" ? nextPlan.unitActions["w1"].direction : null,
-    "DOWN",
-  );
+  assert.equal(planner.world.unitMemory("w1").patrolRing, 1);
+  assert.deepEqual(nextPlan.unitActions["w1"], plan.unitActions["w1"], "同状态决策确定性一致");
 });
 
 test("World：MOVE_CONTESTED 失败格仅对对应 actor 短期生效", () => {
@@ -394,10 +400,20 @@ test("deterministic Core：Core 格已有 Unit 时不冒险 SPAWN", () => {
 });
 
 test("deterministic Core：正常人口继续积累，不保留被压制的 spawn intent", () => {
+  // 无 policy 默认目标=4（2026-08-06 扩编主动性优化）：2 worker + res 20 → 补员
   const state = makeState(100, [core(0, 0), unit("w1", 1, 0), unit("w2", 2, 0)], 20);
   const plan = new DeterministicPlanner().decide({ state });
-  assert.equal(plan.coreAction, null);
-  assert.equal(plan.intents.core, undefined);
+  assert.deepEqual(plan.coreAction, { type: "SPAWN", unitType: "WORKER" });
+  assert.equal(plan.intents.core, "spawn_worker_target");
+
+  // 已达默认目标 4 → 不再补员（res 充足也不产）
+  const full = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+  ], 20);
+  const fullPlan = new DeterministicPlanner().decide({ state: full });
+  assert.equal(fullPlan.coreAction, null);
+  assert.equal(fullPlan.intents.core, undefined);
 });
 
 test("deterministic Core：生存动作 HEAL / REPAIR_SHIELD 继续执行", () => {

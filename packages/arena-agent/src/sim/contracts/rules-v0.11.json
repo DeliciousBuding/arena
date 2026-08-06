@@ -15,7 +15,7 @@
       "publicCommit": "4a295851002ac5e73b34fa652e8d084f780c01ed",
       "documentedCommit": "8f967aa86eb7909de74e57cdbb6ec845f8e21959",
       "documentedCommitStatus": "unresolvable-404",
-      "mirrorDir": "reference/arena-hero-python/arena_hero",
+      "mirrorDir": "../reference/arena-hero-python/arena_hero",
       "mirrorFileCount": 13,
       "mirrorAggregateSha256": "caa605d404a7ae9868a5dd6f4d8b996191b0fa9385a5ead410ad43ac7842ec5c"
     },
