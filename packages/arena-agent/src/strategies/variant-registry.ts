@@ -18,6 +18,7 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "move-failed-avoidance-v1": Object.freeze({ moveFailedAvoidance: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
+    "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),
     "guard-axes-v1": Object.freeze({ guardAxes: true }),
     "guard-heal-rotation-v1": Object.freeze({ guardHealRotation: true }),
     "detached-squad-v1": Object.freeze({ detachedSquadResponse: true }),

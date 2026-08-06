@@ -112,6 +112,18 @@ export interface SafetyPlannerConfig {
    */
   readonly coreEvadeScoring?: boolean;
   /**
+   * Core 迁移 approach 记忆持续（v0.3，实验，B9 竞品 "approach memory
+   * expires" 对照，需 coreEvade=true）：closing/TTR 触发迁移后敌人消失时，
+   * 迁移意图从固定 2 tick 扩展为"approach 记忆未过期"（6 tick 内曾见
+   * 12 格内敌——closing 记忆，仅"曾逼近"才算 approach，远距路过不算）
+   * ——防"敌人被击退出 12 格 → 2 tick 恢复 → 敌人折返 → 再触发"的迁移
+   * 抖动（竞品 "Preserve migration through short visibility loss" /
+   * "Returns to ALERT after the approach memory expires"）。代价：敌人
+   * 死亡等"不再回来"场景会白迁移至记忆过期（迁移中不生产/heal）。
+   * 默认 false = 历史 2 tick 行为（零回归）。
+   */
+  readonly coreEvadePersist?: boolean;
+  /**
    * MOVE_FAILED 反馈规避（v0.3，实验）：单位连续 N 次移动被结算拒绝
    * （MOVE_CONTESTED/CELL_UNIT_LIMIT 等）时，不再盲目重试同格——改走垂直
    * 绕行格（探路）。模拟器实证（2026-08-06 第三十一轮）：2 Vanguard vs 敌
@@ -924,7 +936,18 @@ export class SafetyPlanner {
           }
         }
       }
-      const preemptivePersist = this.preemptiveEvadeUntilTick >= state.tick;
+      // B9（coreEvadePersist 候选，竞品 "approach memory expires" 对照）：
+      // closing/TTR 触发后敌人消失时，迁移意图从固定 2 tick 扩展为
+      // "approach 记忆未过期"（6 tick 内曾见 12 格内敌——closing 记忆，
+      // 仅"曾逼近"才算 approach，远距路过不算）——防"敌人被击退出
+      // 12 格 → 2 tick 恢复 → 敌人折返 → 再触发"的迁移抖动（竞品
+      // "Preserve migration through short visibility loss"）。
+      const approachMemoryActive =
+        this.config.coreEvadePersist === true &&
+        this.world
+          .enemyHints(6)
+          .some((hint) => hint.coreDistance !== undefined && hint.coreDistance <= THREAT_RECALL_DISTANCE);
+      const preemptivePersist = approachMemoryActive || this.preemptiveEvadeUntilTick >= state.tick;
       if (closing || confirmedPursuit || ttrTrigger || preemptivePersist) {
         const direction = retreatDirection(
           core.position,
@@ -935,8 +958,13 @@ export class SafetyPlanner {
         );
         if (direction !== null) {
           this.coreMoveDirection = direction;
-          // 竞品 preemptive_evade_until_tick = tick + 2：敌人消失后仍持续 2 tick
-          this.preemptiveEvadeUntilTick = state.tick + 2;
+          // 竞品 preemptive_evade_until_tick = tick + 2：敌人消失后仍持续
+          // 2 tick。仅在真实触发时刷新窗口——persist 分支（preemptivePersist
+          // 单独为真）不刷新：否则每次 persist 都顺延窗口 = 触发一次
+          // closing 后永久迁移、永不恢复生产（2026-08-07 修复，滚动窗口 bug）。
+          if (closing || confirmedPursuit || ttrTrigger) {
+            this.preemptiveEvadeUntilTick = state.tick + 2;
+          }
           intents.core = ttrTrigger ? "core_evade_ttr" : "core_evade";
           return { type: "START_MOVE", direction };
         }
