@@ -17,11 +17,15 @@ import type { SimWorld } from "../src/sim/world/types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(here, "..", "..", "..");
-const MANIFEST_PATH = join(here, "..", "src", "sim", "contracts", "rules-v0.11.json");
+const MANIFEST_PATH = join(here, "..", "src", "sim", "contracts", "rules-v0.14.json");
+const V011_MANIFEST_PATH = join(here, "..", "src", "sim", "contracts", "rules-v0.11.json");
 
 const rules = loadRulesManifest(MANIFEST_PATH);
 const rng = createSeededRng(42);
 const ctx: SettlementContext = { rules, rng: () => rng.next() };
+/** v0.11 显式回退（upkeep/deficit 语义为 v0.11-only）。 */
+const rulesV011 = loadRulesManifest(V011_MANIFEST_PATH);
+const ctxV011: SettlementContext = { rules: rulesV011, rng: () => rng.next() };
 
 /** 固定序号 UUID（raw 序 = 数字序）。 */
 const uuid = (n: number): string => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
@@ -41,9 +45,10 @@ function makeWorld(
     resources?: readonly Position[];
     piles?: readonly { readonly cell: Position; readonly amount: number }[];
   },
+  rulesVersion: string = "v0.14",
 ): SimWorld {
   return worldFromScenario({
-    rulesVersion: "v0.11",
+    rulesVersion,
     tick: 1,
     players: players.map((p) => ({
       id: p.id,
@@ -101,10 +106,10 @@ function eventTypes(result: ReturnType<typeof settleTick>): string[] {
 
 /* ---------------- upkeep ---------------- */
 
-test("S5: upkeep 足额（population 20 → tier 1 → due 1）", () => {
+test("S5: upkeep 足额（population 20 → tier 1 → due 1；v0.11 显式回退）", () => {
   const units = Array.from({ length: 20 }, (_, i) => ({ id: uuid(i + 1), position: [1 + i, 0] as Position }));
-  const world = makeWorld([{ id: "p1", resources: 5, core: [0, 0], units }]);
-  const result = settle(world, new Map([["p1", idlePlans(world).get("p1")!]]));
+  const world = makeWorld([{ id: "p1", resources: 5, core: [0, 0], units }], undefined, "v0.11");
+  const result = settleTick(world, new Map([["p1", idlePlans(world).get("p1")!]]), ctxV011);
   const player = result.world.players.get("p1")!;
   assert.equal(player.resources, 4);
   const upkeep = result.events.find((e) => e.eventType === "UPKEEP_PAID");
@@ -116,8 +121,8 @@ test("S5: upkeep 不足——最近的 19 保护，最远的受伤（v0.11）", 
   // 20 units：19 个近（分布在 [1..10, 0/1]，每格 ≤2），1 个远（距离 20）；resources 0 → deficit 1
   const near = Array.from({ length: 19 }, (_, i) => ({ id: uuid(i + 1), position: [1 + Math.floor(i / 2), i % 2] as Position }));
   const far = { id: uuid(30), position: [30, 0] as Position };
-  const world = makeWorld([{ id: "p1", resources: 0, core: [0, 0], units: [...near, far] }]);
-  const result = settle(world, new Map([["p1", idlePlans(world).get("p1")!]]));
+  const world = makeWorld([{ id: "p1", resources: 0, core: [0, 0], units: [...near, far] }], undefined, "v0.11");
+  const result = settleTick(world, new Map([["p1", idlePlans(world).get("p1")!]]), ctxV011);
   const player = result.world.players.get("p1")!;
   assert.equal(player.resources, 0);
   const farUnit = player.units.find((u) => u.id === far.id)!;
@@ -143,8 +148,8 @@ test("S5: deficit 同距按 raw UUID 序受伤", () => {
   const near = Array.from({ length: 20 }, (_, i) => ({ id: uuid(i + 1), position: [1 + Math.floor(i / 2), i % 2] as Position }));
   const farA = { id: uuid(50), position: [20, 0] as Position };
   const farB = { id: uuid(40), position: [0, 20] as Position };
-  const world = makeWorld([{ id: "p1", resources: 0, core: [0, 0], units: [...near, farA, farB] }]);
-  const result = settle(world, new Map([["p1", idlePlans(world).get("p1")!]]));
+  const world = makeWorld([{ id: "p1", resources: 0, core: [0, 0], units: [...near, farA, farB] }], undefined, "v0.11");
+  const result = settleTick(world, new Map([["p1", idlePlans(world).get("p1")!]]), ctxV011);
   const damaged = result.events.filter((e) => e.eventType === "UNIT_DAMAGED");
   assert.equal(damaged.length, 1);
   // 同距（5）→ 较低 raw UUID（uuid(40)）先受伤
@@ -205,8 +210,8 @@ test("S5: upkeep 杀死 Worker 只产生 damage/cargo-drop，不伪造 self-dest
     position: [1 + Math.floor(i / 2), i % 2] as Position,
   }));
   const far = { id: uuid(30), position: [30, 0] as Position, hp: 1, cargo: 2 };
-  const world = makeWorld([{ id: "p1", resources: 0, core: [0, 0], units: [...near, far] }]);
-  const result = settle(world, new Map([["p1", idlePlans(world).get("p1")!]]));
+  const world = makeWorld([{ id: "p1", resources: 0, core: [0, 0], units: [...near, far] }], undefined, "v0.11");
+  const result = settleTick(world, new Map([["p1", idlePlans(world).get("p1")!]]), ctxV011);
   assert.equal(result.world.players.get("p1")!.units.some((unit) => unit.id === far.id), false);
   assert.equal(result.world.terrain.piles.get("30,0")?.amount, 2);
   assert.ok(eventTypes(result).includes("WORKER_CARGO_DROPPED"));
@@ -375,7 +380,7 @@ test("S5: Vanguard HEAL 使用 Vanguard HP 上限而非 Worker 上限", () => {
 
 test("S5: repair shield 成功", () => {
   const world = worldFromScenario({
-    rulesVersion: "v0.11",
+    rulesVersion: "v0.14",
     players: [
       {
         id: "p1",
@@ -396,7 +401,7 @@ test("S5: repair shield 成功", () => {
 test("S5: MOVING Core 拒绝 deposit/heal/Core action，并标记 migration unsupported", () => {
   const worker = uuid(1);
   const world = worldFromScenario({
-    rulesVersion: "v0.11",
+    rulesVersion: "v0.14",
     players: [
       {
         id: "p1",
@@ -465,7 +470,7 @@ test("S5/S11: Beacon carrier self-destruct 后同 Tick 不可被同格对象重�
   const carrier = uuid(90);
   const contender = uuid(91);
   const world = worldFromScenario({
-    rulesVersion: "v0.11",
+    rulesVersion: "v0.14",
     tick: 1,
     seed: 42,
     players: [{
@@ -497,44 +502,13 @@ test("S5/S11: Beacon carrier self-destruct 后同 Tick 不可被同格对象重�
   assert.equal(second.world.beacon?.status, "CARRIED");
   assert.equal(second.world.beacon?.carrierId, contender);
 });
-/* ---------------- v0.14 动态价格（spawn 结算接线；新增用例，不改既有断言） ---------------- */
+/* ---------------- v0.14 动态价格（默认规则路径；v0.11 语义见上方显式回退） ---------------- */
 
-const V014_MANIFEST_PATH = join(here, "..", "src", "sim", "contracts", "rules-v0.14.json");
-const rulesV014 = loadRulesManifest(V014_MANIFEST_PATH);
-const ctxV014: SettlementContext = { rules: rulesV014, rng: () => rng.next() };
-
-function makeWorldV014(
-  players: readonly PlayerSpec[],
-): SimWorld {
-  return worldFromScenario({
-    rulesVersion: "v0.14",
-    tick: 1,
-    players: players.map((p) => ({
-      id: p.id,
-      username: p.username ?? p.id,
-      resources: p.resources,
-      core:
-        p.core === undefined || p.core === null
-          ? null
-          : { id: coreUuid(p.id), position: p.core, hp: 5, shield: 5, state: "NORMAL" },
-      units: p.units.map((u, i) => ({
-        id: u.id,
-        owner: p.id,
-        position: u.position,
-        hp: u.hp ?? 2,
-        unitType: u.unitType ?? "WORKER",
-        cargo: u.cargo ?? 0,
-      })),
-    })),
-    terrain: { obstacles: [], resources: [], piles: [] },
-  });
-}
-
-test("S5 v0.14: spawn 按存活人口计价（pop=20 → 6.5→7），CORE_SPAWN_SUCCEEDED.cost 报实付价", () => {
+test("S5: spawn 按存活人口计价（pop=20 → 6.5→7），CORE_SPAWN_SUCCEEDED.cost 报实付价", () => {
   const units = Array.from({ length: 20 }, (_, i) => ({ id: uuid(i + 1), position: [1 + i, 0] as Position }));
-  const world = makeWorldV014([{ id: "p1", resources: 100, core: [0, 0], units }]);
+  const world = makeWorld([{ id: "p1", resources: 100, core: [0, 0], units }]);
   const plan = planFor(world, "p1", {}, { type: "SPAWN", unitType: "WORKER" });
-  const result = settleTick(world, new Map([["p1", plan]]), ctxV014);
+  const result = settle(world, new Map([["p1", plan]]));
   const spawn = result.events.find((e) => e.eventType === "CORE_SPAWN_SUCCEEDED");
   assert.ok(spawn, "CORE_SPAWN_SUCCEEDED missing");
   assert.equal(spawn!.values!.cost, 7);
@@ -542,12 +516,12 @@ test("S5 v0.14: spawn 按存活人口计价（pop=20 → 6.5→7），CORE_SPAWN
   assert.equal(result.world.players.get("p1")!.units.length, 21);
 });
 
-test("S5 v0.14: 维护机制整体移除（无 UPKEEP_PAID/UPKEEP_DEFICIT，unit 不受损）", () => {
+test("S5: 维护机制整体移除（无 UPKEEP_PAID/UPKEEP_DEFICIT，unit 不受损）", () => {
   // 21 单位 + 0 resources：v0.11 语义会 UPKEEP_PAID(deficit) + UNIT_DAMAGED；
   // v0.14 维护整体移除，不产生任何维护/判伤事件。
   const units = Array.from({ length: 21 }, (_, i) => ({ id: uuid(i + 1), position: [1 + i, 0] as Position }));
-  const world = makeWorldV014([{ id: "p1", resources: 0, core: [0, 0], units }]);
-  const result = settleTick(world, new Map([["p1", idlePlans(world).get("p1")!]]), ctxV014);
+  const world = makeWorld([{ id: "p1", resources: 0, core: [0, 0], units }]);
+  const result = settle(world, new Map([["p1", idlePlans(world).get("p1")!]]));
   const maintenanceEvents = result.events.filter(
     (e) => e.eventType === "UPKEEP_PAID" || e.eventType === "UPKEEP_DEFICIT" || e.eventType === "UNIT_DAMAGED",
   );

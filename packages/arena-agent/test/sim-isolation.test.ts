@@ -14,7 +14,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, "..");
 const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
 const CHECKER = join(PKG_ROOT, "scripts", "check-sim-isolation.mjs");
-const SCENARIO = join(PKG_ROOT, "test", "fixtures", "sim", "scenario-basic.json");
+// 默认规则版本已切 v0.14：隔离/路径策略用例用 v0.14 标注场景走默认路径。
+const SCENARIO = join(PKG_ROOT, "test", "fixtures", "sim", "scenario-basic-v0.14.json");
 const TEST_DATA_ROOT = mkdtempSync(join(tmpdir(), "arena-sim-isolation-data-"));
 const RUN_ROOT = join(TEST_DATA_ROOT, "runs", "sim");
 
@@ -81,7 +82,7 @@ test("S1: isolation checker 对当前 sim 目录通过", () => {
 test("S1/S9: doctor CLI 在无凭据环境下成功（无 .env 依赖）", () => {
   const result = runSim(["doctor"]);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /sim doctor ok: rules=v0\.11/);
+  assert.match(result.stdout, /sim doctor ok: rules=v0\.14/);
 });
 
 test("S9: episode 输出落 data/runs/sim 且 manifest 为 sim.run.v1", () => {
@@ -99,7 +100,7 @@ test("S9: episode 输出落 data/runs/sim 且 manifest 为 sim.run.v1", () => {
   assert.ok(existsSync(manifestPath), "manifest.json missing");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   assert.equal(manifest.schema, "sim.run.v1");
-  assert.equal(manifest.rulesVersion, "v0.11");
+  assert.equal(manifest.rulesVersion, "v0.14");
   assert.equal(manifest.status, "completed");
   assert.equal(manifest.kind, "episode");
 });

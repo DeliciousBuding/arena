@@ -10,9 +10,12 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, "..");
-const SCENARIO = join(PKG_ROOT, "test", "fixtures", "sim", "scenario-basic.json");
+// 默认规则版本（v0.14）端到端用例使用 v0.14 标注的场景；v0.11 历史场景
+// 在显式 --rules v0.11 用例中覆盖。
+const SCENARIO = join(PKG_ROOT, "test", "fixtures", "sim", "scenario-basic-v0.14.json");
 const CALIBRATION = join(PKG_ROOT, "test", "fixtures", "sim", "calibration-wait-match.json");
 const CALIBRATION_DATASET = join(PKG_ROOT, "test", "fixtures", "sim", "calibration-dataset-match", "manifest.json");
+const RULES_V011 = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
 const TEST_DATA_ROOT = mkdtempSync(join(tmpdir(), "arena-sim-cli-data-"));
 const RUN_ROOT = join(TEST_DATA_ROOT, "runs", "sim");
 
@@ -104,6 +107,7 @@ test("S9: episode writes complete artifacts and deterministic files are byte-ide
   const firstManifest = json<{ deterministicArtifacts: Record<string, string> }>(first, "manifest.json");
   const secondManifest = json<{ deterministicArtifacts: Record<string, string> }>(second, "manifest.json");
   assert.deepEqual(firstManifest.deterministicArtifacts, secondManifest.deterministicArtifacts);
+  assert.equal(json<{ rulesVersion: string }>(first, "manifest.json").rulesVersion, "v0.14");
   const records = text(first, "records.jsonl").trim().split("\n");
   assert.equal(records.length, 30);
 });
@@ -198,10 +202,22 @@ test("S9: benchmark detects semantic stability and reports throughput", () => {
   assert.ok(report.medianTicksPerSecond > 0);
 });
 
-test("S8b: calibration dataset CLI verifies integrity and 99.9% event gate", () => {
+test("S9: doctor 默认规则解析为 v0.14", () => {
+  const result = runSim(["doctor"]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /sim doctor ok: rules=v0\.14/);
+});
+
+test("S9: doctor --rules v0.11 显式回退仍可运行历史规则", () => {
+  const result = runSim(["doctor", "--rules", RULES_V011]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /sim doctor ok: rules=v0\.11/);
+});
+
+test("S8b: calibration dataset CLI verifies integrity and 99.9% event gate (v0.11 历史 case 显式 --rules 回退)", () => {
   const id = runId("calibration-dataset");
   const result = runSim([
-    "calibrate-dataset", "--manifest", CALIBRATION_DATASET, "--run-id", id,
+    "calibrate-dataset", "--manifest", CALIBRATION_DATASET, "--rules", RULES_V011, "--run-id", id,
   ]);
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /sim calibrate-dataset PASS:/);
@@ -225,9 +241,9 @@ test("S8b: calibration dataset CLI verifies integrity and 99.9% event gate", () 
   assert.equal(report.passed, true);
 });
 
-test("S9: calibration CLI writes MATCH report with CI exit code 0", () => {
+test("S9: calibration CLI writes MATCH report (v0.11 历史 case 显式 --rules 回退)", () => {
   const id = runId("calibration");
-  const result = runSim(["calibrate", "--case", CALIBRATION, "--run-id", id]);
+  const result = runSim(["calibrate", "--case", CALIBRATION, "--rules", RULES_V011, "--run-id", id]);
   assert.equal(result.code, 0, result.stderr);
   const report = json<{ schema: string; status: string; differences: unknown[] }>(id, "calibration-report.json");
   assert.equal(report.schema, "sim-calibration-report-v1");

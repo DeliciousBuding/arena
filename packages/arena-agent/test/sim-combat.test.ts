@@ -275,6 +275,67 @@ test("S10 v0.12: cell fire 空格——SHOT_MISSED 且 target_id 为 null", () =
   assert.equal(missed.targetId, null);
 });
 
+test("S10 v0.12: cell fire 射程 1/2/3 有效、4 超程 → SHOT_MISSED", () => {
+  // p2 Ranger 固定 [0,4]，对空格 [0,3]/[0,2]/[0,1]（竖线距离 1/2/3）cell fire
+  // 均为合法射程（产生 SHOT_MISSED 而非被判定无效），[0,0] 距离 4 超程。
+  const targetCell: [number, number] = [0, 1];
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 10,
+        core: { id: P1_CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 5,
+        core: { id: P2_CORE, position: [6, 6], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P2_RANGER, owner: "p2", position: [0, 4], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const range2 = settleTick(
+    world,
+    new Map([["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: null, expectedCell: [0, 3] } })]]),
+    ctx,
+  );
+  const range3 = settleTick(
+    world,
+    new Map([["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: null, expectedCell: [0, 2] } })]]),
+    ctx,
+  );
+  const range1 = settleTick(
+    world,
+    new Map([["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: null, expectedCell: targetCell } })]]),
+    ctx,
+  );
+  const outOfRange = settleTick(
+    world,
+    new Map([["p2", planOf(world, { [P2_RANGER]: { type: "SHOOT", targetId: null, expectedCell: [0, 0] } })]]),
+    ctx,
+  );
+  for (const [label, result] of [
+    ["range 1", range1],
+    ["range 2", range2],
+    ["range 3", range3],
+  ] as const) {
+    assert.ok(result.events.some((e) => e.eventType === "SHOT_MISSED"), `${label} should fire within range`);
+  }
+  assert.ok(
+    outOfRange.events.some((e) => e.eventType === "SHOT_MISSED"),
+    "range 4 is out of range and must also resolve as SHOT_MISSED (no hit)",
+  );
+  assert.equal(outOfRange.events.some((e) => e.eventType === "SHOT_HIT"), false);
+});
+
 test("S10: 快照同时应用——互杀合法", () => {
   // p1 Vanguard[1,0] 与 p2 Vanguard[2,0] 各 SWEEP 对方格；双方 hp 1 → 互杀
   const world = worldFromScenario({

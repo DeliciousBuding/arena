@@ -15,15 +15,16 @@ import { projectPlayerState } from "../src/sim/visibility/visibility.ts";
 import { worldFromScenario } from "../src/sim/world/loaders.ts";
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const RULES = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
+const RULES = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.14.json");
+const RULES_V011 = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
 const CORE = "11111111-1111-1111-1111-111111111111";
 const WORKER = "22222222-2222-2222-2222-222222222222";
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
-function calibrationCase() {
-  const rules = loadRulesManifest(RULES);
+function calibrationCase(rulesPath: string = RULES) {
+  const rules = loadRulesManifest(rulesPath);
   const world = worldFromScenario({
-    rulesVersion: "v0.11",
+    rulesVersion: rules.rulesVersion,
     tick: 1,
     seed: 7,
     players: [{
@@ -47,7 +48,7 @@ function calibrationCase() {
     schema: "sim-calibration-case-v1",
     caseId: "dataset-case-1",
     tenantId: "p1",
-    rulesVersion: "v0.11",
+    rulesVersion: rules.rulesVersion,
     seed: 7,
     metadata: {
       source: "fixture",
@@ -69,7 +70,7 @@ function writeDataset(root: string, caseValue: ReturnType<typeof calibrationCase
     schema: "runtime-golden-dataset-v1",
     datasetId: "dataset-1",
     tenantId: "p1",
-    rulesVersion: "v0.11",
+    rulesVersion: caseValue.rulesVersion,
     sourceCommit: COMMIT,
     configHash: `sha256:${"a".repeat(64)}`,
     startedAt: "2026-08-03T00:00:00Z",
@@ -113,6 +114,22 @@ test("S8b dataset: integrity verified + known deterministic event accuracy 100%"
   }
 });
 
+test("S8b dataset v0.11 显式回退: v0.11 历史数据集 --rules v0.11 仍全绿", () => {
+  const root = mkdtempSync(join(tmpdir(), "calibration-dataset-"));
+  try {
+    const report = runCalibrationDataset(writeDataset(root, calibrationCase(RULES_V011)), RULES_V011);
+    assert.equal(report.rulesVersion, "v0.11");
+    assert.equal(report.integrityVerified, true);
+    assert.equal(report.caseCount, 1);
+    assert.equal(report.statusCounts.MATCH, 1);
+    assert.equal(report.hardMismatchCaseCount, 0);
+    assert.equal(report.accuracyGatePassed, true);
+    assert.equal(report.passed, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("S8b dataset: file tampering fails integrity before calibration", () => {
   const root = mkdtempSync(join(tmpdir(), "calibration-dataset-"));
   try {
@@ -141,6 +158,22 @@ test("S8b dataset: re-signed semantic event mismatch still fails hard and accura
     assert.equal(report.knownEventCompared, 2);
     assert.equal(report.knownEventAccuracy, 0.5);
     assert.equal(report.passed, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("S8b dataset v0.14: 默认规则版本数据集校准 → MATCH（upkeep no-op + 动态价引擎路径）", () => {
+  const root = mkdtempSync(join(tmpdir(), "calibration-dataset-"));
+  try {
+    const report = runCalibrationDataset(writeDataset(root, calibrationCase(RULES)), RULES);
+    assert.equal(report.rulesVersion, "v0.14");
+    assert.equal(report.integrityVerified, true);
+    assert.equal(report.caseCount, 1);
+    assert.equal(report.statusCounts.MATCH, 1);
+    assert.equal(report.hardMismatchCaseCount, 0);
+    assert.equal(report.accuracyGatePassed, true);
+    assert.equal(report.passed, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
