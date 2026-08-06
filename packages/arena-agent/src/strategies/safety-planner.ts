@@ -875,6 +875,25 @@ function nearestEnemy(enemies: readonly VisibleEntity[], position: Position): Vi
 const RANGER_SHOOT_RANGE = 3;
 const VANGUARD_SWEEP_RANGE = 1;
 
+/** 竞品投影伤害（rule-correct）：敌当前格可对候选格发动的合法攻击——
+ *  Vanguard 仅邻格（Chebyshev 1，SWEEP）；Ranger 八方向直线 ≤3 且中间格
+ *  无障碍（SHOOT，lineBlocked）。旧实现用 Manhattan ≤ range 代理：把
+ *  (2,1) 非法线算 1 伤、无视障碍遮挡（2026-08-07 C6 对齐）。 */
+function projectedDamageAt(
+  target: Position,
+  enemy: VisibleEntity,
+  obstacles: ReadonlySet<string>,
+): number {
+  if (enemy.kind === "CORE") return 0;
+  const distance = chebyshev(target, enemy.position);
+  if (enemy.unitType === "RANGER") {
+    if (distance === 0 || distance > RANGER_SHOOT_RANGE) return 0;
+    return lineBlocked(target, enemy.position, obstacles) ? 0 : 1;
+  }
+  // VANGUARD / WORKER 近战：仅邻格可伤害
+  return distance === VANGUARD_SWEEP_RANGE ? 1 : 0;
+}
+
 function retreatDirection(
   core: Position,
   enemies: readonly VisibleEntity[],
@@ -912,10 +931,7 @@ function retreatDirection(
     }
     // 多目标评分（coreEvadeScoring）：投影伤害 → 全敌距离升序向量 → beacon。
     const projectedDamage = enemies.reduce((sum, enemy) => {
-      if (enemy.kind === "CORE") return sum;
-      const distance = manhattan(destination, enemy.position);
-      const range = enemy.unitType === "RANGER" ? RANGER_SHOOT_RANGE : VANGUARD_SWEEP_RANGE;
-      return distance <= range ? sum + 1 : sum;
+      return sum + projectedDamageAt(destination, enemy, obstacles);
     }, 0);
     const distanceVector = enemies
       .map((enemy) => manhattan(destination, enemy.position))
