@@ -7,9 +7,10 @@ import { runCalibrationCase } from "../sim/calibration/calibrate.ts";
 import { runCalibrationDataset } from "../sim/calibration/dataset.ts";
 import { buildDataset } from "../sim/dataset/builder.ts";
 import {
-  assertRulesSupported,
   loadRulesManifest,
   manifestHash,
+  RulesManifestError,
+  SUPPORTED_RULES_VERSIONS,
 } from "../sim/contracts/rules-manifest.ts";
 import { compareCodeUnit } from "../sim/deterministic/uuid.ts";
 import { runEpisode, type EpisodeConfig, type PlannerKind } from "../sim/harness/episode.ts";
@@ -38,8 +39,9 @@ import { resolveArenaDataRoot } from "../app/data-root.ts";
 const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, "..", "..");
 const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
-const DEFAULT_RULES_PATH = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
-const SUPPORTED_RULES_VERSION = "v0.11";
+/** 默认规则版本（无 --rules 时使用）；历史 v0.11 case 可用 --rules v0.11 显式回退。 */
+const SUPPORTED_RULES_VERSION = "v0.14";
+const DEFAULT_RULES_PATH = join(PKG_ROOT, "src", "sim", "contracts", `rules-${SUPPORTED_RULES_VERSION}.json`);
 
 type Command = "doctor" | "episode" | "ab" | "benchmark" | "calibrate" | "calibrate-dataset" | "dataset";
 
@@ -168,7 +170,11 @@ function rulesPath(args: ParsedArgs): string {
 
 function checkedRules(path: string) {
   const rules = loadRulesManifest(path);
-  assertRulesSupported(rules, SUPPORTED_RULES_VERSION);
+  if (!SUPPORTED_RULES_VERSIONS.includes(rules.rulesVersion)) {
+    throw new RulesManifestError(
+      `unsupported rules version: ${rules.rulesVersion} (supported: ${SUPPORTED_RULES_VERSIONS.join(", ")})`,
+    );
+  }
   return rules;
 }
 
