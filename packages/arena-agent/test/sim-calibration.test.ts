@@ -19,7 +19,8 @@ import { worldFromScenario } from "../src/sim/world/loaders.ts";
 import type { SimWorld } from "../src/sim/world/types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const MANIFEST_PATH = join(here, "..", "src", "sim", "contracts", "rules-v0.11.json");
+const MANIFEST_PATH = join(here, "..", "src", "sim", "contracts", "rules-v0.14.json");
+const V011_MANIFEST_PATH = join(here, "..", "src", "sim", "contracts", "rules-v0.11.json");
 const SCHEMA_PATH = join(here, "..", "src", "sim", "calibration", "sim-calibration-case-v1.schema.json");
 const rules = loadRulesManifest(MANIFEST_PATH);
 const P1_CORE = "11111111-1111-1111-1111-111111111111";
@@ -38,7 +39,7 @@ function makeWorld(opts: {
   terrainResources?: readonly Position[];
 } = {}): SimWorld {
   return worldFromScenario({
-    rulesVersion: "v0.11",
+    rulesVersion: "v0.14",
     tick: opts.tick ?? 1,
     seed: 42,
     players: [
@@ -78,7 +79,7 @@ function buildCase(world: SimWorld, plan: Plan, caseId = "case-match"): Calibrat
     schema: "sim-calibration-case-v1",
     caseId,
     tenantId: "p1",
-    rulesVersion: "v0.11",
+    rulesVersion: "v0.14",
     seed: 42,
     metadata: {
       source: "fixture",
@@ -190,7 +191,87 @@ test("S8a: stale rules case is rejected before replay", () => {
   const calibrationCase = buildCase(makeWorld(), waitPlan(1));
   assert.throws(
     () => runCalibrationCase({ ...calibrationCase, rulesVersion: "v0.10" }, MANIFEST_PATH),
-    /stale rules: case=v0.10, manifest=v0.11/,
+    /stale rules: case=v0.10, manifest=v0.14/,
+  );
+});
+
+test("S8a: v0.11 历史 case 显式回退——rules-v0.11 manifest 仍可 MATCH", () => {
+  const v011Rules = loadRulesManifest(V011_MANIFEST_PATH);
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 42,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 5,
+        core: { id: P1_CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: P1_UNIT, owner: "p1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [[2, 0]] },
+    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+  });
+  const beforeState = projectPlayerState(world, "p1", v011Rules);
+  const result = settleTick(world, new Map([["p1", waitPlan(1)]]), { rules: v011Rules, rng: null });
+  const afterState = projectPlayerState(result.world, "p1", v011Rules, result.events);
+  const v011Case: CalibrationCaseV1 = {
+    schema: "sim-calibration-case-v1",
+    caseId: "case-v011-fallback",
+    tenantId: "p1",
+    rulesVersion: "v0.11",
+    seed: 42,
+    metadata: {
+      source: "fixture",
+      opponentPlans: "complete",
+      recordedAt: null,
+      sourceCommit: null,
+      runId: null,
+    },
+    before: { tick: 1, state: beforeState },
+    plan: waitPlan(1),
+    after: { tick: 2, state: afterState },
+  };
+  const report = runCalibrationCase(v011Case, V011_MANIFEST_PATH);
+  assert.equal(report.status, "MATCH");
+  assert.equal(report.differences.length, 0);
+});
+
+test("S8a v0.13: cell fire SHOOT（targetId null）通过 case 解析，targeted SHOOT 保持严格", () => {
+  const calibrationCase = buildCase(makeWorld(), waitPlan(1));
+  const cellFire = structuredClone(calibrationCase);
+  (cellFire.plan.unitActions as Record<string, unknown>)[P1_UNIT] = {
+    type: "SHOOT",
+    targetId: null,
+    expectedCell: [2, 0],
+  };
+  const parsed = parseCalibrationCase(cellFire);
+  const action = parsed.plan.unitActions[P1_UNIT];
+  assert.equal(action.type, "SHOOT");
+  if (action.type === "SHOOT") {
+    assert.equal(action.targetId, null);
+    assert.deepEqual(action.expectedCell, [2, 0]);
+  }
+
+  // 反向严格性：targeted SHOOT 仍必须带非空 targetId，缺 targetId 直接拒绝。
+  const targeted = structuredClone(calibrationCase);
+  (targeted.plan.unitActions as Record<string, unknown>)[P1_UNIT] = {
+    type: "SHOOT",
+    expectedCell: [2, 0],
+  };
+  assert.throws(() => parseCalibrationCase(targeted), /plan\.unitActions\..+\.targetId is required/);
+  assert.throws(
+    () => parseCalibrationCase({
+      ...targeted,
+      plan: {
+        ...targeted.plan,
+        unitActions: {
+          [P1_UNIT]: { type: "SHOOT", targetId: "", expectedCell: [2, 0] },
+        },
+      },
+    }),
+    /targetId must be a non-empty string/,
   );
 });
 
@@ -262,7 +343,7 @@ test("S8a: server-generated spawn UUID is normalized and reported INCONCLUSIVE",
 test("S8a: private respawn placement and replacement UUIDs stay INCONCLUSIVE, not hard mismatch", () => {
   const p2Core = "99999999-9999-9999-9999-999999999999";
   const world = worldFromScenario({
-    rulesVersion: "v0.11",
+    rulesVersion: "v0.14",
     tick: 1,
     seed: 42,
     players: [
@@ -305,7 +386,7 @@ test("S8a: private respawn placement and replacement UUIDs stay INCONCLUSIVE, no
     schema: "sim-calibration-case-v1",
     caseId: "case-respawn-private",
     tenantId: "p1",
-    rulesVersion: "v0.11",
+    rulesVersion: "v0.14",
     seed: 42,
     metadata: {
       source: "fixture",

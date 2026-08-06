@@ -67,6 +67,16 @@ function plan(tick: number): Plan {
   };
 }
 
+/** v0.13+ cell fire：Ranger SHOOT 不带 targetId（空格射击），targetId 显式 null。 */
+function cellFirePlan(tick: number): Plan {
+  return {
+    tick,
+    unitActions: { [WORKER]: { type: "SHOOT", targetId: null, expectedCell: [2, 0] } },
+    coreAction: null,
+    intents: { [WORKER]: "fixture_cell_fire" },
+  };
+}
+
 function receipt(tick: number): Accepted {
   return {
     accepted: true,
@@ -76,13 +86,18 @@ function receipt(tick: number): Accepted {
   };
 }
 
-function outcome(tick: number, rawState: PlayerState, submitted: boolean): TickOutcome {
+function outcome(
+  tick: number,
+  rawState: PlayerState,
+  submitted: boolean,
+  planOverride: Plan = plan(tick),
+): TickOutcome {
   return {
     tick,
     source: "deterministic",
     originalSource: "deterministic",
     repairCount: 0,
-    plan: plan(tick),
+    plan: planOverride,
     accepted: submitted,
     submitAttempted: submitted,
     state: {
@@ -113,7 +128,7 @@ function makeRecorder(outputDir: string, warnings: string[] = []): RuntimeGolden
     outputDir,
     processRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     tenantId: "t1",
-    rulesVersion: "v0.11",
+    rulesVersion: "v0.14",
     sourceCommit: "0123456789abcdef0123456789abcdef01234567",
     configHash: `sha256:${"a".repeat(64)}`,
     onWarning: (message) => warnings.push(message),
@@ -136,6 +151,7 @@ test("S8b: accepted plan + next raw state → strict case + integrity manifest",
     const manifest = JSON.parse(readFileSync(result.manifestPath, "utf8")) as RuntimeGoldenDatasetManifest;
     assert.equal(manifest.schema, "runtime-golden-dataset-v1");
     assert.equal(manifest.caseCount, 1);
+    assert.equal(manifest.rulesVersion, "v0.14", "recorder 落盘 rulesVersion 跟随 options（默认 v0.14）");
     assert.equal(manifest.cases[0]?.receipt.tick, 10);
     const casePath = join(root, manifest.cases[0]!.file);
     const rawCase = JSON.parse(readFileSync(casePath, "utf8"));
@@ -147,6 +163,54 @@ test("S8b: accepted plan + next raw state → strict case + integrity manifest",
     assert.equal(manifest.cases[0]!.beforeSha256, sha256Canonical(rawCase.before));
     assert.equal(manifest.cases[0]!.planSha256, sha256Canonical(rawCase.plan));
     assert.equal(manifest.cases[0]!.afterSha256, sha256Canonical(rawCase.after));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("S8b: v0.11 显式回退——options.rulesVersion=v0.11 仍落盘 v0.11 case", async () => {
+  const root = mkdtempSync(join(tmpdir(), "runtime-golden-"));
+  try {
+    const recorder = new RuntimeGoldenRecorder({
+      outputDir: root,
+      processRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      tenantId: "t1",
+      rulesVersion: "v0.11",
+      sourceCommit: "0123456789abcdef0123456789abcdef01234567",
+      configHash: `sha256:${"a".repeat(64)}`,
+    });
+    recorder.observe(outcome(10, state(4), true));
+    recorder.observe(outcome(11, state(5), false));
+    const result = await recorder.close();
+    assert.equal(result.caseCount, 1);
+    assert.equal(result.errorCount, 0);
+    const manifest = JSON.parse(readFileSync(result.manifestPath, "utf8")) as RuntimeGoldenDatasetManifest;
+    assert.equal(manifest.rulesVersion, "v0.11", "显式 v0.11 options 不得被默认版本覆盖");
+    const rawCase = JSON.parse(readFileSync(join(root, manifest.cases[0]!.file), "utf8"));
+    assert.equal(rawCase.rulesVersion, "v0.11");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("S8b v0.13: cell fire SHOOT（targetId null）plan 正常落盘不丢弃", async () => {
+  const root = mkdtempSync(join(tmpdir(), "runtime-golden-"));
+  try {
+    const recorder = makeRecorder(root);
+    recorder.observe(outcome(10, state(4), true, cellFirePlan(10)));
+    recorder.observe(outcome(11, state(5), false));
+    const result = await recorder.close();
+
+    assert.equal(result.caseCount, 1, "cell fire plan 不得因 targetId null 被丢弃");
+    assert.equal(result.errorCount, 0);
+    const rawCase = JSON.parse(readFileSync(join(root, "cases", "0000000010.json"), "utf8"));
+    const parsed = parseCalibrationCase(rawCase);
+    const action = parsed.plan.unitActions[WORKER];
+    assert.equal(action.type, "SHOOT");
+    if (action.type === "SHOOT") {
+      assert.equal(action.targetId, null);
+      assert.deepEqual(action.expectedCell, [2, 0]);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

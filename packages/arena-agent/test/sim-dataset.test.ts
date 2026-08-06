@@ -14,7 +14,8 @@ import { buildDataset } from "../src/sim/dataset/builder.ts";
 import { validateMlSample } from "../src/sim/dataset/validate-sample.ts";
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const RULES = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
+const RULES = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.14.json");
+const RULES_V011 = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const CORE = "11111111-1111-1111-1111-111111111111";
 const WORKER = "22222222-2222-2222-2222-222222222222";
@@ -50,7 +51,9 @@ function stateAt(resources: number, opts: { workerAlive?: boolean; opponent?: bo
   }
   return {
     status: "ACTIVE", respawn_at_tick: null, resources,
-    population: opts.workerAlive === false ? 0 : 1, population_tier: 0, upkeep_next_tick: 0,
+    // v0.14 起服务器不再下发 maintenance 字段，normalize 后为 null；case
+    // 契约允许 integer|null，与模拟器 v0.14 投影一致（避免伪 MISMATCH）。
+    population: opts.workerAlive === false ? 0 : 1, population_tier: null, upkeep_next_tick: null,
     champion_beacon: { position: [20, 20], status: "GROUND", carrier_id: null },
     objects,
     events: [],
@@ -74,7 +77,7 @@ function makeCase(
     schema: "sim-calibration-case-v1",
     caseId: `${processRunId}:${tick}`,
     tenantId: "t1",
-    rulesVersion: "v0.11",
+    rulesVersion: "v0.14",
     seed: 0,
     metadata: {
       source: options.source ?? "fixture",
@@ -108,7 +111,7 @@ function writeDataset(
     schema: "runtime-golden-dataset-v1",
     datasetId: processRunId,
     tenantId: "t1",
-    rulesVersion: "v0.11",
+    rulesVersion: "v0.14",
     sourceCommit: COMMIT,
     configHash: `sha256:${"a".repeat(64)}`,
     startedAt: "2026-08-03T00:00:00Z",
@@ -205,12 +208,13 @@ function chain(
   ticks: readonly number[],
   caseOptions: CaseOptions = {},
 ): Record<string, unknown>[] {
-  // The v0.11 engine records a server-secret refill EXPECTED_UNKNOWN at every
-  // 4th tick, so plain no-op cases at tick % 4 == 0 calibrate INCONCLUSIVE and
-  // are published with sampleStatus "inconclusive". Chains that need full tick
-  // coverage pass a hard difference (e.g. afterResources) so those ticks
-  // calibrate MISMATCH, which is published with sampleStatus null (the
-  // recorded outcome is still ground truth).
+  // The engine records a server-secret refill EXPECTED_UNKNOWN at every 4th
+  // tick (refillEveryTicks=4 in both the v0.11 and v0.14 rules), so plain
+  // no-op cases at tick % 4 == 0 calibrate INCONCLUSIVE and are published with
+  // sampleStatus "inconclusive". Chains that need full tick coverage pass a
+  // hard difference (e.g. afterResources) so those ticks calibrate MISMATCH,
+  // which is published with sampleStatus null (the recorded outcome is still
+  // ground truth).
   return ticks.map((tick) => makeCase(processRunId, tick, runId, caseOptions));
 }
 
@@ -490,6 +494,33 @@ test("sim:dataset fails closed on rules version mismatch", () => {
     assert.throws(
       () => buildDataset(buildOptions(dataset)),
       /rules version mismatch \(fail closed\)/u,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sim:dataset v0.11 显式回退: 历史 v0.11 数据集 fail closed（不伪标 v0.14）", () => {
+  const root = mkdtempSync(join(tmpdir(), "sim-dataset-v011-"));
+  try {
+    const processRunId = "p1";
+    const dataset = writeDataset(root, processRunId, chain(processRunId, "run-a", [1, 2]));
+    // 把默认 v0.14 case 的版本标记改回 v0.11，模拟历史数据集（不重算 hash，
+    // 版本检查在 hash 校验之前 fail closed，本就是负向用例）。
+    const manifestPath = dataset.manifestPath;
+    const manifest = readJson(manifestPath);
+    manifest.rulesVersion = "v0.11";
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    assert.throws(
+      () => buildDataset(buildOptions(dataset)),
+      /rules version mismatch \(fail closed\)/u,
+    );
+    // 显式 --rules v0.11 也不可用：dataset builder 的 SUPPORTED_RULES_VERSION
+    // 已是 v0.14，v0.11 数据集必须走 calibrate-dataset（S8b）路径，而不是
+    // 被静默当成 v0.14 数据。
+    assert.throws(
+      () => buildDataset(buildOptions(dataset, { rulesPath: RULES_V011 })),
+      /v0\.14/u,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

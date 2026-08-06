@@ -27,15 +27,14 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CONTRACT_DIR = join(here, "..", "src", "sim", "contracts");
-const MANIFEST_PATH = join(CONTRACT_DIR, "rules-v0.11.json");
-const V014_MANIFEST_PATH = join(CONTRACT_DIR, "rules-v0.14.json");
+const MANIFEST_PATH = join(CONTRACT_DIR, "rules-v0.14.json");
+const V011_MANIFEST_PATH = join(CONTRACT_DIR, "rules-v0.11.json");
 const REPO_ROOT = resolve(here, "..", "..", "..");
 const COORDINATION_ROOT = resolve(REPO_ROOT, "..");
 const MIRROR_DIR = join(COORDINATION_ROOT, "reference", "arena-hero-python", "arena_hero");
 
-test("S0: 内置 manifest 加载成功且关键字段齐全", () => {
-  // v0.11-only 字段（production/upkeep/sdk）：本文件路径固定是 v0.11，收窄类型即可
-  const manifest = loadRulesManifest(MANIFEST_PATH) as RulesManifestV011;
+test("S0 v0.11 显式回退: v0.11 manifest 加载成功且关键字段齐全", () => {
+  const manifest = loadRulesManifest(V011_MANIFEST_PATH) as RulesManifestV011;
   assert.equal(manifest.rulesVersion, "v0.11");
   assert.equal(manifest.schemaVersion, 1);
   assert.equal(manifest.evidence.docs.commit.length, 40);
@@ -79,7 +78,7 @@ test("S0: 数值范围校验（负数/超上限拒绝）", () => {
 
 test("S0: 未核对的新规则版本 fail closed", () => {
   const manifest = loadRulesManifest(MANIFEST_PATH);
-  assertRulesSupported(manifest, "v0.11"); // 通过
+  assertRulesSupported(manifest, "v0.14"); // 通过
   assert.throws(() => assertRulesSupported(manifest, "v0.12"), /rules version mismatch/);
   assert.throws(() => assertRulesSupported(manifest, "v0.10"), /rules version mismatch/);
 });
@@ -102,7 +101,7 @@ test("S0: canonical hash 确定性（同 manifest 两次输出一致）", () => 
 
 test("S0: 本地 SDK 镜像聚合 hash 与 manifest 一致（漂移检测）", () => {
   // verifyMirror 是 v0.11-only（v0.14 无已核对 SDK 镜像）：固定 v0.11 文件收窄类型
-  const manifest = loadRulesManifest(MANIFEST_PATH) as RulesManifestV011;
+  const manifest = loadRulesManifest(V011_MANIFEST_PATH) as RulesManifestV011;
   const mismatch = verifyMirror(manifest, MIRROR_DIR);
   assert.equal(mismatch, null, mismatch ?? "");
   // 破坏一个字节必须能检出
@@ -111,7 +110,7 @@ test("S0: 本地 SDK 镜像聚合 hash 与 manifest 一致（漂移检测）", (
   assert.notEqual(createHash("sha256").update("tampered").digest("hex"), aggregate);
 });
 test("S0 v0.14: 内置 v0.14 manifest 加载成功且动态价格字段齐全", () => {
-  const manifest = loadRulesManifest(V014_MANIFEST_PATH);
+  const manifest = loadRulesManifest(MANIFEST_PATH);
   assert.equal(manifest.rulesVersion, "v0.14");
   assert.equal(manifest.schemaVersion, 1);
   assert.equal(manifest.evidence.docs.commit.length, 40);
@@ -147,14 +146,14 @@ test("S0 v0.14: 未知规则版本 fail closed（编译期 RulesVersion + parse 
     () => (loadRulesManifestForVersion as (version: string) => RulesManifest)(unsupportedVersion),
     /unsupported rules version/,
   );
-  const base = JSON.parse(readFileSync(V014_MANIFEST_PATH, "utf8")) as Record<string, unknown>;
+  const base = JSON.parse(readFileSync(MANIFEST_PATH, "utf8")) as Record<string, unknown>;
   assert.throws(() => parseRulesManifest({ ...base, rulesVersion: "v0.15" }), /unsupported rules version/);
   assert.throws(() => parseRulesManifest({ ...base, rulesVersion: "v0.13" }), /unsupported rules version/);
 });
 
 test("S0 v0.14: 动态价格参数只接受已核对组合（fail closed）", () => {
   const readBase = (): Record<string, unknown> =>
-    JSON.parse(readFileSync(V014_MANIFEST_PATH, "utf8")) as Record<string, unknown>;
+    JSON.parse(readFileSync(MANIFEST_PATH, "utf8")) as Record<string, unknown>;
 
   const badGrowth = structuredClone(readBase());
   (badGrowth.rules as Record<string, any>).unitCosts.dynamicPricing.growthFactor = 1.5;
