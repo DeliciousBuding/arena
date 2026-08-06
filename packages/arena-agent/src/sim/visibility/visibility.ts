@@ -148,8 +148,13 @@ export function projectPlayerState(
 
   const visible = visibleCellSet(world, playerId, rules);
   const population = player.units.length;
-  const tier = Math.floor(population / rules.rules.upkeep.tierSize);
-  const upkeepNext = (tier * (tier + 1)) / 2;
+  // v0.14 协议移除 population_tier/upkeep_next_tick 字段 → 投影显式 null
+  // （wire nullable 省略 → domain 显式 null 约定）；v0.11 按旧协议公式推导。
+  const tier =
+    rules.rulesVersion === "v0.14"
+      ? null
+      : Math.floor(population / rules.rules.upkeep.tierSize);
+  const upkeepNext = tier === null ? null : (tier * (tier + 1)) / 2;
 
   const visibleObstacleKeys = [...visible]
     .filter((key) => world.terrain.obstacles.has(key))

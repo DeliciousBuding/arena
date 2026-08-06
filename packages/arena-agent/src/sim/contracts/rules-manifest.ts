@@ -2,9 +2,13 @@
  * 规则 manifest typed loader（S0：官方来源锁定）。
  *
  * 职责：
- * - 加载并校验 `rules-v0.11.json`（required fields + 数值范围）；
+ * - 按 rulesVersion 加载并校验内置规则文件（required fields + 数值范围）；
+ *   v0.11 为默认（历史语义锁定），v0.14 为动态价格基线（官方 changelog
+ *   2026-08-06，docs commit 166ef86 / server commit b24cfcd）；
  * - 版本不匹配必须 fail closed（未核对的规则版本不能被静默加载）；
- * - 提供 mirror 聚合 SHA-256 验证（检测 reference SDK 镜像漂移）；
+ * - 提供 mirror 聚合 SHA-256 验证（检测 reference SDK 镜像漂移；
+ *   v0.11-only——v0.14 的 SDK v0.2.9 镜像尚未核对，见 rules-v0.14.json
+ *   evidence.discrepancies）；
  * - canonical 序列化，供 calibration 报告打 stale 标记。
  *
  * 隔离边界：本文件无网络、无 .env、无 Client import；只读文件系统。
@@ -12,19 +16,144 @@
 
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-export interface RulesManifest {
-  readonly schemaVersion: number;
+/** 已核对的规则版本（加载器只允许这些版本，其余 fail closed）。 */
+export const SUPPORTED_RULES_VERSIONS = ["v0.11", "v0.14"] as const;
+export type RulesVersion = (typeof SUPPORTED_RULES_VERSIONS)[number];
+
+export interface EvidenceDocs {
+  readonly repo: string;
+  readonly commit: string;
   readonly rulesVersion: string;
+  readonly apiVersion: string;
+}
+
+export interface EvidenceServerSource {
+  readonly status: string;
+  readonly note: string;
+}
+
+export interface RulesCore {
+  readonly minCapacity: number;
+  readonly capacityPerUnit: number;
+  readonly maxHp: number;
+  readonly maxShield: number;
+  readonly maxShieldWithBeacon: number;
+  readonly visionRadius: number;
+  readonly startingResources: number;
+  readonly startingWorkerCount: number;
+}
+
+export interface RulesUnits {
+  readonly workerHp: number;
+  readonly vanguardHp: number;
+  readonly rangerHp: number;
+  readonly workerCargoCapacity: number;
+  readonly workerVisionRadius: number;
+  readonly vanguardVisionRadius: number;
+  readonly rangerVisionRadius: number;
+}
+
+export interface RulesEconomy {
+  readonly harvestAmount: number;
+  readonly harvestAmountWithBeacon: number;
+  readonly healCostPerHp: number;
+  readonly repairShieldCost: number;
+  readonly refillEveryTicks: number;
+}
+
+export interface RulesMovement {
+  readonly cellEntityCapacity: number;
+  readonly maxCellsPerTick: number;
+  readonly samePlayerTieBreak: string;
+  readonly crossPlayerContested: string;
+}
+
+export interface RulesSettlement {
+  readonly officialPhaseCount: number;
+  readonly localPhaseCount: number;
+  readonly granularityNote: string;
+}
+
+export interface RulesConstraints {
+  readonly coordinate: {
+    readonly type: string;
+    readonly jsRequirement: string;
+    readonly unsupportedError: string;
+    readonly note: string;
+  };
+  readonly uuidTieBreak: {
+    readonly rule: string;
+    readonly comparator: string;
+    readonly forbidden: readonly string[];
+  };
+  readonly refill: {
+    readonly status: string;
+    readonly simulation: string;
+    readonly note: string;
+  };
+  readonly settlementOrder: string;
+}
+
+/** 两版本共享的规则段（v0.14 沿用 v0.11 数值；v0.14 只替换价格/维护两段）。 */
+export interface RulesCommon {
+  readonly core: RulesCore;
+  readonly units: RulesUnits;
+  readonly economy: RulesEconomy;
+  readonly movement: RulesMovement;
+  readonly settlement: RulesSettlement;
+}
+
+/** v0.11 专属：静态 spawn 价格。 */
+export interface RulesProduction {
+  readonly workerCost: number;
+  readonly vanguardCost: number;
+  readonly rangerCost: number;
+  readonly maxSpawnPerTick: number;
+}
+
+/** v0.11 专属：per-Tick 维护机制。 */
+export interface RulesUpkeep {
+  readonly tierSize: number;
+  readonly deficitProtectionCount: number;
+  readonly deficitDamage: {
+    readonly semantics: string;
+    readonly status: string;
+    readonly note: string;
+  };
+}
+
+/** v0.14 专属：动态价格公式参数（官方 changelog 2026-08-06）。 */
+export interface DynamicPricingParams {
+  /** 前 N 个单位保持 base 价（官方公式中的常量 20）。 */
+  readonly tierSize: number;
+  /** 官方公式 (13/10)；解析器只接受 13/10，其余 fail closed。 */
+  readonly growthFactor: number;
+  /** k 的步长（官方公式中的常量 5）。 */
+  readonly tierStep: number;
+  /** 官方公式 round_half_up；解析器只接受该值，其余 fail closed。 */
+  readonly rounding: "round_half_up";
+}
+
+/** v0.14 专属：动态单位价格（base 价 WORKER=5 / VANGUARD=10 / RANGER=12）。 */
+export interface UnitCostsV014 {
+  readonly base: {
+    readonly WORKER: number;
+    readonly VANGUARD: number;
+    readonly RANGER: number;
+  };
+  readonly dynamicPricing: DynamicPricingParams;
+}
+
+/** v0.11 manifest（schemaVersion 1；含静态价格 + 维护机制）。 */
+export interface RulesManifestV011 {
+  readonly schemaVersion: number;
+  readonly rulesVersion: "v0.11";
   readonly verifiedAt: string;
   readonly evidence: {
-    readonly docs: {
-      readonly repo: string;
-      readonly commit: string;
-      readonly rulesVersion: string;
-      readonly apiVersion: string;
-    };
+    readonly docs: EvidenceDocs;
     readonly sdk: {
       readonly repo: string;
       readonly tag: string;
@@ -35,86 +164,44 @@ export interface RulesManifest {
       readonly mirrorFileCount: number;
       readonly mirrorAggregateSha256: string;
     };
-    readonly serverSource: {
-      readonly status: string;
-      readonly note: string;
-    };
+    readonly serverSource: EvidenceServerSource;
     readonly discrepancies: readonly string[];
   };
-  readonly rules: {
-    readonly core: {
-      readonly minCapacity: number;
-      readonly capacityPerUnit: number;
-      readonly maxHp: number;
-      readonly maxShield: number;
-      readonly maxShieldWithBeacon: number;
-      readonly visionRadius: number;
-      readonly startingResources: number;
-      readonly startingWorkerCount: number;
-    };
-    readonly production: {
-      readonly workerCost: number;
-      readonly vanguardCost: number;
-      readonly rangerCost: number;
-      readonly maxSpawnPerTick: number;
-    };
-    readonly upkeep: {
-      readonly tierSize: number;
-      readonly deficitProtectionCount: number;
-      readonly deficitDamage: {
-        readonly semantics: string;
-        readonly status: string;
-        readonly note: string;
-      };
-    };
-    readonly units: {
-      readonly workerHp: number;
-      readonly vanguardHp: number;
-      readonly rangerHp: number;
-      readonly workerCargoCapacity: number;
-      readonly workerVisionRadius: number;
-      readonly vanguardVisionRadius: number;
-      readonly rangerVisionRadius: number;
-    };
-    readonly economy: {
-      readonly harvestAmount: number;
-      readonly harvestAmountWithBeacon: number;
-      readonly healCostPerHp: number;
-      readonly repairShieldCost: number;
-      readonly refillEveryTicks: number;
-    };
-    readonly movement: {
-      readonly cellEntityCapacity: number;
-      readonly maxCellsPerTick: number;
-      readonly samePlayerTieBreak: string;
-      readonly crossPlayerContested: string;
-    };
-    readonly settlement: {
-      readonly officialPhaseCount: number;
-      readonly localPhaseCount: number;
-      readonly granularityNote: string;
-    };
+  readonly rules: RulesV011;
+  readonly constraints: RulesConstraints;
+}
+
+/** v0.14 manifest（schemaVersion 1；动态价格替换维护，maintenance: removed）。 */
+export interface RulesManifestV014 {
+  readonly schemaVersion: number;
+  readonly rulesVersion: "v0.14";
+  readonly verifiedAt: string;
+  readonly evidence: {
+    readonly docs: EvidenceDocs;
+    readonly serverSource: EvidenceServerSource;
+    readonly discrepancies: readonly string[];
   };
-  readonly constraints: {
-    readonly coordinate: {
-      readonly type: string;
-      readonly jsRequirement: string;
-      readonly unsupportedError: string;
-      readonly note: string;
-    };
-    readonly uuidTieBreak: {
-      readonly rule: string;
-      readonly comparator: string;
-      readonly forbidden: readonly string[];
-    };
-    readonly refill: {
-      readonly status: string;
-      readonly simulation: string;
-      readonly note: string;
-    };
-    readonly settlementOrder: string;
+  readonly rules: RulesV014;
+  readonly constraints: RulesConstraints;
+}
+
+/** v0.11 专属规则段（共享段 + 静态价格 + 维护机制）。 */
+export interface RulesV011 extends RulesCommon {
+  readonly production: RulesProduction;
+  readonly upkeep: RulesUpkeep;
+}
+
+/** v0.14 专属规则段（共享段 + 动态价格；维护机制移除）。 */
+export interface RulesV014 extends RulesCommon {
+  readonly unitCosts: UnitCostsV014;
+  readonly maintenance: {
+    readonly status: "removed";
+    readonly note: string;
   };
 }
+
+/** 版本判别联合：未知版本在 parse 层即拒绝，消费方按 rulesVersion 收窄。 */
+export type RulesManifest = RulesManifestV011 | RulesManifestV014;
 
 export class RulesManifestError extends Error {
   constructor(message: string) {
@@ -129,6 +216,13 @@ const INT_RANGE = { min: 0, max: 1_000_000 };
 function assertIntField(value: unknown, path: string, max = INT_RANGE.max): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < INT_RANGE.min || value > max) {
     throw new RulesManifestError(`invalid integer at ${path}: ${String(value)}`);
+  }
+  return value;
+}
+
+function assertNumberField(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new RulesManifestError(`invalid number at ${path}: ${String(value)}`);
   }
   return value;
 }
@@ -154,11 +248,100 @@ function assertRecord(value: unknown, path: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-/** 深度校验并归一化为 RulesManifest（不可变）。任何必填缺失/类型错误都抛错。 */
-export function parseRulesManifest(raw: unknown): RulesManifest {
-  const root = assertRecord(raw, "root");
-  const schemaVersion = assertIntField(root.schemaVersion, "schemaVersion");
+/* ---------------- 共享规则段校验（两版本共用，错误路径不变） ---------------- */
+
+function parseRulesCore(raw: Record<string, unknown>): RulesCore {
+  return Object.freeze({
+    minCapacity: assertIntField(raw.minCapacity, "rules.core.minCapacity"),
+    capacityPerUnit: assertIntField(raw.capacityPerUnit, "rules.core.capacityPerUnit"),
+    maxHp: assertIntField(raw.maxHp, "rules.core.maxHp"),
+    maxShield: assertIntField(raw.maxShield, "rules.core.maxShield"),
+    maxShieldWithBeacon: assertIntField(raw.maxShieldWithBeacon, "rules.core.maxShieldWithBeacon"),
+    visionRadius: assertIntField(raw.visionRadius, "rules.core.visionRadius"),
+    startingResources: assertIntField(raw.startingResources, "rules.core.startingResources"),
+    startingWorkerCount: assertIntField(raw.startingWorkerCount, "rules.core.startingWorkerCount"),
+  });
+}
+
+function parseRulesUnits(raw: Record<string, unknown>): RulesUnits {
+  return Object.freeze({
+    workerHp: assertIntField(raw.workerHp, "rules.units.workerHp"),
+    vanguardHp: assertIntField(raw.vanguardHp, "rules.units.vanguardHp"),
+    rangerHp: assertIntField(raw.rangerHp, "rules.units.rangerHp"),
+    workerCargoCapacity: assertIntField(raw.workerCargoCapacity, "rules.units.workerCargoCapacity"),
+    workerVisionRadius: assertIntField(raw.workerVisionRadius, "rules.units.workerVisionRadius"),
+    vanguardVisionRadius: assertIntField(raw.vanguardVisionRadius, "rules.units.vanguardVisionRadius"),
+    rangerVisionRadius: assertIntField(raw.rangerVisionRadius, "rules.units.rangerVisionRadius"),
+  });
+}
+
+function parseRulesEconomy(raw: Record<string, unknown>): RulesEconomy {
+  return Object.freeze({
+    harvestAmount: assertIntField(raw.harvestAmount, "rules.economy.harvestAmount"),
+    harvestAmountWithBeacon: assertIntField(raw.harvestAmountWithBeacon, "rules.economy.harvestAmountWithBeacon"),
+    healCostPerHp: assertIntField(raw.healCostPerHp, "rules.economy.healCostPerHp"),
+    repairShieldCost: assertIntField(raw.repairShieldCost, "rules.economy.repairShieldCost"),
+    refillEveryTicks: assertIntField(raw.refillEveryTicks, "rules.economy.refillEveryTicks"),
+  });
+}
+
+function parseRulesMovement(raw: Record<string, unknown>): RulesMovement {
+  return Object.freeze({
+    cellEntityCapacity: assertIntField(raw.cellEntityCapacity, "rules.movement.cellEntityCapacity"),
+    maxCellsPerTick: assertIntField(raw.maxCellsPerTick, "rules.movement.maxCellsPerTick"),
+    samePlayerTieBreak: assertStringField(raw.samePlayerTieBreak, "rules.movement.samePlayerTieBreak"),
+    crossPlayerContested: assertStringField(raw.crossPlayerContested, "rules.movement.crossPlayerContested"),
+  });
+}
+
+function parseRulesSettlement(raw: Record<string, unknown>): RulesSettlement {
+  return Object.freeze({
+    officialPhaseCount: assertIntField(raw.officialPhaseCount, "rules.settlement.officialPhaseCount"),
+    localPhaseCount: assertIntField(raw.localPhaseCount, "rules.settlement.localPhaseCount"),
+    granularityNote: assertStringField(raw.granularityNote, "rules.settlement.granularityNote"),
+  });
+}
+
+function parseRulesCommon(raw: Record<string, unknown>): RulesCommon {
+  return Object.freeze({
+    core: parseRulesCore(assertRecord(raw.core, "rules.core")),
+    units: parseRulesUnits(assertRecord(raw.units, "rules.units")),
+    economy: parseRulesEconomy(assertRecord(raw.economy, "rules.economy")),
+    movement: parseRulesMovement(assertRecord(raw.movement, "rules.movement")),
+    settlement: parseRulesSettlement(assertRecord(raw.settlement, "rules.settlement")),
+  });
+}
+
+function parseConstraints(raw: Record<string, unknown>): RulesConstraints {
+  const coordinate = assertRecord(raw.coordinate, "constraints.coordinate");
+  const uuidTieBreak = assertRecord(raw.uuidTieBreak, "constraints.uuidTieBreak");
+  const refill = assertRecord(raw.refill, "constraints.refill");
+  return Object.freeze({
+    coordinate: Object.freeze({
+      type: assertStringField(coordinate.type, "constraints.coordinate.type"),
+      jsRequirement: assertStringField(coordinate.jsRequirement, "constraints.coordinate.jsRequirement"),
+      unsupportedError: assertStringField(coordinate.unsupportedError, "constraints.coordinate.unsupportedError"),
+      note: assertStringField(coordinate.note, "constraints.coordinate.note"),
+    }),
+    uuidTieBreak: Object.freeze({
+      rule: assertStringField(uuidTieBreak.rule, "constraints.uuidTieBreak.rule"),
+      comparator: assertStringField(uuidTieBreak.comparator, "constraints.uuidTieBreak.comparator"),
+      forbidden: assertStringArray(uuidTieBreak.forbidden, "constraints.uuidTieBreak.forbidden"),
+    }),
+    refill: Object.freeze({
+      status: assertStringField(refill.status, "constraints.refill.status"),
+      simulation: assertStringField(refill.simulation, "constraints.refill.simulation"),
+      note: assertStringField(refill.note, "constraints.refill.note"),
+    }),
+    settlementOrder: assertStringField(raw.settlementOrder, "constraints.settlementOrder"),
+  });
+}
+
+function parseRulesManifestV011(root: Record<string, unknown>): RulesManifestV011 {
   const rulesVersion = assertStringField(root.rulesVersion, "rulesVersion");
+  if (rulesVersion !== "v0.11") {
+    throw new RulesManifestError(`rules version mismatch: manifest=${rulesVersion}, required=v0.11`);
+  }
   const verifiedAt = assertStringField(root.verifiedAt, "verifiedAt");
 
   const evidence = assertRecord(root.evidence, "evidence");
@@ -168,22 +351,12 @@ export function parseRulesManifest(raw: unknown): RulesManifest {
   const discrepancies = assertStringArray(evidence.discrepancies, "evidence.discrepancies");
 
   const rules = assertRecord(root.rules, "rules");
-  const core = assertRecord(rules.core, "rules.core");
   const production = assertRecord(rules.production, "rules.production");
   const upkeep = assertRecord(rules.upkeep, "rules.upkeep");
   const deficitDamage = assertRecord(upkeep.deficitDamage, "rules.upkeep.deficitDamage");
-  const units = assertRecord(rules.units, "rules.units");
-  const economy = assertRecord(rules.economy, "rules.economy");
-  const movement = assertRecord(rules.movement, "rules.movement");
-  const settlement = assertRecord(rules.settlement, "rules.settlement");
 
-  const constraints = assertRecord(root.constraints, "constraints");
-  const coordinate = assertRecord(constraints.coordinate, "constraints.coordinate");
-  const uuidTieBreak = assertRecord(constraints.uuidTieBreak, "constraints.uuidTieBreak");
-  const refill = assertRecord(constraints.refill, "constraints.refill");
-
-  const manifest: RulesManifest = Object.freeze({
-    schemaVersion,
+  return Object.freeze({
+    schemaVersion: 1,
     rulesVersion,
     verifiedAt,
     evidence: Object.freeze({
@@ -212,17 +385,8 @@ export function parseRulesManifest(raw: unknown): RulesManifest {
       }),
       discrepancies: discrepancies,
     }),
-    rules: Object.freeze({
-      core: Object.freeze({
-        minCapacity: assertIntField(core.minCapacity, "rules.core.minCapacity"),
-        capacityPerUnit: assertIntField(core.capacityPerUnit, "rules.core.capacityPerUnit"),
-        maxHp: assertIntField(core.maxHp, "rules.core.maxHp"),
-        maxShield: assertIntField(core.maxShield, "rules.core.maxShield"),
-        maxShieldWithBeacon: assertIntField(core.maxShieldWithBeacon, "rules.core.maxShieldWithBeacon"),
-        visionRadius: assertIntField(core.visionRadius, "rules.core.visionRadius"),
-        startingResources: assertIntField(core.startingResources, "rules.core.startingResources"),
-        startingWorkerCount: assertIntField(core.startingWorkerCount, "rules.core.startingWorkerCount"),
-      }),
+    rules: {
+      ...parseRulesCommon(rules),
       production: Object.freeze({
         workerCost: assertIntField(production.workerCost, "rules.production.workerCost"),
         vanguardCost: assertIntField(production.vanguardCost, "rules.production.vanguardCost"),
@@ -242,65 +406,127 @@ export function parseRulesManifest(raw: unknown): RulesManifest {
           note: assertStringField(deficitDamage.note, "rules.upkeep.deficitDamage.note"),
         }),
       }),
-      units: Object.freeze({
-        workerHp: assertIntField(units.workerHp, "rules.units.workerHp"),
-        vanguardHp: assertIntField(units.vanguardHp, "rules.units.vanguardHp"),
-        rangerHp: assertIntField(units.rangerHp, "rules.units.rangerHp"),
-        workerCargoCapacity: assertIntField(units.workerCargoCapacity, "rules.units.workerCargoCapacity"),
-        workerVisionRadius: assertIntField(units.workerVisionRadius, "rules.units.workerVisionRadius"),
-        vanguardVisionRadius: assertIntField(units.vanguardVisionRadius, "rules.units.vanguardVisionRadius"),
-        rangerVisionRadius: assertIntField(units.rangerVisionRadius, "rules.units.rangerVisionRadius"),
-      }),
-      economy: Object.freeze({
-        harvestAmount: assertIntField(economy.harvestAmount, "rules.economy.harvestAmount"),
-        harvestAmountWithBeacon: assertIntField(economy.harvestAmountWithBeacon, "rules.economy.harvestAmountWithBeacon"),
-        healCostPerHp: assertIntField(economy.healCostPerHp, "rules.economy.healCostPerHp"),
-        repairShieldCost: assertIntField(economy.repairShieldCost, "rules.economy.repairShieldCost"),
-        refillEveryTicks: assertIntField(economy.refillEveryTicks, "rules.economy.refillEveryTicks"),
-      }),
-      movement: Object.freeze({
-        cellEntityCapacity: assertIntField(movement.cellEntityCapacity, "rules.movement.cellEntityCapacity"),
-        maxCellsPerTick: assertIntField(movement.maxCellsPerTick, "rules.movement.maxCellsPerTick"),
-        samePlayerTieBreak: assertStringField(movement.samePlayerTieBreak, "rules.movement.samePlayerTieBreak"),
-        crossPlayerContested: assertStringField(movement.crossPlayerContested, "rules.movement.crossPlayerContested"),
-      }),
-      settlement: Object.freeze({
-        officialPhaseCount: assertIntField(settlement.officialPhaseCount, "rules.settlement.officialPhaseCount"),
-        localPhaseCount: assertIntField(settlement.localPhaseCount, "rules.settlement.localPhaseCount"),
-        granularityNote: assertStringField(settlement.granularityNote, "rules.settlement.granularityNote"),
-      }),
-    }),
-    constraints: Object.freeze({
-      coordinate: Object.freeze({
-        type: assertStringField(coordinate.type, "constraints.coordinate.type"),
-        jsRequirement: assertStringField(coordinate.jsRequirement, "constraints.coordinate.jsRequirement"),
-        unsupportedError: assertStringField(coordinate.unsupportedError, "constraints.coordinate.unsupportedError"),
-        note: assertStringField(coordinate.note, "constraints.coordinate.note"),
-      }),
-      uuidTieBreak: Object.freeze({
-        rule: assertStringField(uuidTieBreak.rule, "constraints.uuidTieBreak.rule"),
-        comparator: assertStringField(uuidTieBreak.comparator, "constraints.uuidTieBreak.comparator"),
-        forbidden: assertStringArray(uuidTieBreak.forbidden, "constraints.uuidTieBreak.forbidden"),
-      }),
-      refill: Object.freeze({
-        status: assertStringField(refill.status, "constraints.refill.status"),
-        simulation: assertStringField(refill.simulation, "constraints.refill.simulation"),
-        note: assertStringField(refill.note, "constraints.refill.note"),
-      }),
-      settlementOrder: assertStringField(constraints.settlementOrder, "constraints.settlementOrder"),
-    }),
+    },
+    constraints: parseConstraints(assertRecord(root.constraints, "constraints")),
   });
+}
+function parseRulesManifestV014(root: Record<string, unknown>): RulesManifestV014 {
+  const rulesVersion = assertStringField(root.rulesVersion, "rulesVersion");
+  if (rulesVersion !== "v0.14") {
+    throw new RulesManifestError(`rules version mismatch: manifest=${rulesVersion}, required=v0.14`);
+  }
+  const verifiedAt = assertStringField(root.verifiedAt, "verifiedAt");
 
+  const evidence = assertRecord(root.evidence, "evidence");
+  const docs = assertRecord(evidence.docs, "evidence.docs");
+  const serverSource = assertRecord(evidence.serverSource, "evidence.serverSource");
+  const discrepancies = assertStringArray(evidence.discrepancies, "evidence.discrepancies");
+
+  const rules = assertRecord(root.rules, "rules");
+  const unitCosts = assertRecord(rules.unitCosts, "rules.unitCosts");
+  const base = assertRecord(unitCosts.base, "rules.unitCosts.base");
+  const dynamicPricing = assertRecord(unitCosts.dynamicPricing, "rules.unitCosts.dynamicPricing");
+  const maintenance = assertRecord(rules.maintenance, "rules.maintenance");
+
+  // 动态价格只核对过官方 changelog 给出的唯一参数组合，其余 fail closed。
+  const growthFactor = assertNumberField(
+    dynamicPricing.growthFactor,
+    "rules.unitCosts.dynamicPricing.growthFactor",
+  );
+  if (growthFactor !== 13 / 10) {
+    throw new RulesManifestError(
+      `unsupported growthFactor: ${growthFactor} (only 13/10 is verified against the official formula)`,
+    );
+  }
+  const rounding = assertStringField(dynamicPricing.rounding, "rules.unitCosts.dynamicPricing.rounding");
+  if (rounding !== "round_half_up") {
+    throw new RulesManifestError(`unsupported rounding: ${rounding} (only round_half_up is verified)`);
+  }
+  const maintenanceStatus = assertStringField(maintenance.status, "rules.maintenance.status");
+  if (maintenanceStatus !== "removed") {
+    throw new RulesManifestError(
+      `unsupported maintenance status: ${maintenanceStatus} (v0.14 removes maintenance)`,
+    );
+  }
+
+  return Object.freeze({
+    schemaVersion: 1,
+    rulesVersion,
+    verifiedAt,
+    evidence: Object.freeze({
+      docs: Object.freeze({
+        repo: assertStringField(docs.repo, "evidence.docs.repo"),
+        commit: assertStringField(docs.commit, "evidence.docs.commit"),
+        rulesVersion: assertStringField(docs.rulesVersion, "evidence.docs.rulesVersion"),
+        apiVersion: assertStringField(docs.apiVersion, "evidence.docs.apiVersion"),
+      }),
+      serverSource: Object.freeze({
+        status: assertStringField(serverSource.status, "evidence.serverSource.status"),
+        note: assertStringField(serverSource.note, "evidence.serverSource.note"),
+      }),
+      discrepancies: discrepancies,
+    }),
+    rules: {
+      ...parseRulesCommon(rules),
+      unitCosts: Object.freeze({
+        base: Object.freeze({
+          WORKER: assertIntField(base.WORKER, "rules.unitCosts.base.WORKER"),
+          VANGUARD: assertIntField(base.VANGUARD, "rules.unitCosts.base.VANGUARD"),
+          RANGER: assertIntField(base.RANGER, "rules.unitCosts.base.RANGER"),
+        }),
+        dynamicPricing: Object.freeze({
+          tierSize: assertIntField(dynamicPricing.tierSize, "rules.unitCosts.dynamicPricing.tierSize", 1_000),
+          growthFactor,
+          tierStep: assertIntField(dynamicPricing.tierStep, "rules.unitCosts.dynamicPricing.tierStep", 1_000),
+          rounding,
+        }),
+      }),
+      maintenance: Object.freeze({
+        status: maintenanceStatus,
+        note: assertStringField(maintenance.note, "rules.maintenance.note"),
+      }),
+    },
+    constraints: parseConstraints(assertRecord(root.constraints, "constraints")),
+  });
+}
+/** 深度校验并归一化（不可变）。按 rulesVersion 分派解析器；任何必填缺失/
+ *  类型错误/未核对版本都抛错。 */
+export function parseRulesManifest(raw: unknown): RulesManifest {
+  const root = assertRecord(raw, "root");
+  const schemaVersion = assertIntField(root.schemaVersion, "schemaVersion");
   if (schemaVersion !== 1) {
     throw new RulesManifestError(`unsupported schemaVersion: ${schemaVersion}`);
   }
-  return manifest;
+  const rulesVersion = assertStringField(root.rulesVersion, "rulesVersion");
+  switch (rulesVersion) {
+    case "v0.11":
+      return parseRulesManifestV011(root);
+    case "v0.14":
+      return parseRulesManifestV014(root);
+    default:
+      throw new RulesManifestError(
+        `unsupported rules version: ${rulesVersion} (supported: ${SUPPORTED_RULES_VERSIONS.join(", ")})`,
+      );
+  }
 }
 
 /** 从文件加载 manifest。文件不存在/解析失败/校验失败一律抛错。 */
 export function loadRulesManifest(path: string): RulesManifest {
   const text = readFileSync(path, "utf8");
   return parseRulesManifest(JSON.parse(text));
+}
+
+/** 内置 contracts 目录（rules-<version>.json 所在）。 */
+const CONTRACTS_DIR = dirname(fileURLToPath(import.meta.url));
+
+/** 按版本选择内置规则文件加载；未知版本先 fail closed，不触碰文件系统。 */
+export function loadRulesManifestForVersion(version: RulesVersion): RulesManifest {
+  if (!SUPPORTED_RULES_VERSIONS.includes(version)) {
+    throw new RulesManifestError(`unsupported rules version: ${version}`);
+  }
+  const manifest = loadRulesManifest(join(CONTRACTS_DIR, `rules-${version}.json`));
+  assertRulesSupported(manifest, version);
+  return manifest;
 }
 
 /**
@@ -334,7 +560,7 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(sort(value), null, 2) + "\n";
 }
 
-/** manifest 内容 hash（SHA-256，canonical）。 */
+/** manifest 内容 hash（SHA-256，canonical；两版本通用）。 */
 export function manifestHash(manifest: RulesManifest): string {
   return createHash("sha256").update(canonicalJson(manifest)).digest("hex");
 }
@@ -356,8 +582,9 @@ export function directoryAggregateSha256(dirPath: string): { aggregate: string; 
   return { aggregate, fileCount: entries.length };
 }
 
-/** 验证本地 SDK 镜像与 manifest 锁定值一致（检测镜像漂移）。返回 null 表示一致。 */
-export function verifyMirror(manifest: RulesManifest, mirrorDir: string): string | null {
+/** 验证本地 SDK 镜像与 manifest 锁定值一致（检测镜像漂移）。返回 null 表示一致。
+ *  仅 v0.11 有已核对的 SDK 镜像；v0.14 镜像核对见 rules-v0.14.json discrepancies。 */
+export function verifyMirror(manifest: RulesManifestV011, mirrorDir: string): string | null {
   const { aggregate, fileCount } = directoryAggregateSha256(mirrorDir);
   if (fileCount !== manifest.evidence.sdk.mirrorFileCount) {
     return `mirror file count mismatch: expected ${manifest.evidence.sdk.mirrorFileCount}, got ${fileCount}`;

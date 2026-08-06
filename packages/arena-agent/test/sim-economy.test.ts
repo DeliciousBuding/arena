@@ -497,3 +497,61 @@ test("S5/S11: Beacon carrier self-destruct 后同 Tick 不可被同格对象重�
   assert.equal(second.world.beacon?.status, "CARRIED");
   assert.equal(second.world.beacon?.carrierId, contender);
 });
+/* ---------------- v0.14 动态价格（spawn 结算接线；新增用例，不改既有断言） ---------------- */
+
+const V014_MANIFEST_PATH = join(here, "..", "src", "sim", "contracts", "rules-v0.14.json");
+const rulesV014 = loadRulesManifest(V014_MANIFEST_PATH);
+const ctxV014: SettlementContext = { rules: rulesV014, rng: () => rng.next() };
+
+function makeWorldV014(
+  players: readonly PlayerSpec[],
+): SimWorld {
+  return worldFromScenario({
+    rulesVersion: "v0.14",
+    tick: 1,
+    players: players.map((p) => ({
+      id: p.id,
+      username: p.username ?? p.id,
+      resources: p.resources,
+      core:
+        p.core === undefined || p.core === null
+          ? null
+          : { id: coreUuid(p.id), position: p.core, hp: 5, shield: 5, state: "NORMAL" },
+      units: p.units.map((u, i) => ({
+        id: u.id,
+        owner: p.id,
+        position: u.position,
+        hp: u.hp ?? 2,
+        unitType: u.unitType ?? "WORKER",
+        cargo: u.cargo ?? 0,
+      })),
+    })),
+    terrain: { obstacles: [], resources: [], piles: [] },
+  });
+}
+
+test("S5 v0.14: spawn 按存活人口计价（pop=20 → 6.5→7），CORE_SPAWN_SUCCEEDED.cost 报实付价", () => {
+  const units = Array.from({ length: 20 }, (_, i) => ({ id: uuid(i + 1), position: [1 + i, 0] as Position }));
+  const world = makeWorldV014([{ id: "p1", resources: 100, core: [0, 0], units }]);
+  const plan = planFor(world, "p1", {}, { type: "SPAWN", unitType: "WORKER" });
+  const result = settleTick(world, new Map([["p1", plan]]), ctxV014);
+  const spawn = result.events.find((e) => e.eventType === "CORE_SPAWN_SUCCEEDED");
+  assert.ok(spawn, "CORE_SPAWN_SUCCEEDED missing");
+  assert.equal(spawn!.values!.cost, 7);
+  assert.equal(result.world.players.get("p1")!.resources, 100 - 7);
+  assert.equal(result.world.players.get("p1")!.units.length, 21);
+});
+
+test("S5 v0.14: 维护机制整体移除（无 UPKEEP_PAID/UPKEEP_DEFICIT，unit 不受损）", () => {
+  // 21 单位 + 0 resources：v0.11 语义会 UPKEEP_PAID(deficit) + UNIT_DAMAGED；
+  // v0.14 维护整体移除，不产生任何维护/判伤事件。
+  const units = Array.from({ length: 21 }, (_, i) => ({ id: uuid(i + 1), position: [1 + i, 0] as Position }));
+  const world = makeWorldV014([{ id: "p1", resources: 0, core: [0, 0], units }]);
+  const result = settleTick(world, new Map([["p1", idlePlans(world).get("p1")!]]), ctxV014);
+  const maintenanceEvents = result.events.filter(
+    (e) => e.eventType === "UPKEEP_PAID" || e.eventType === "UPKEEP_DEFICIT" || e.eventType === "UNIT_DAMAGED",
+  );
+  assert.deepEqual(maintenanceEvents, []);
+  assert.equal(result.world.players.get("p1")!.units.length, 21);
+  assert.equal(result.world.players.get("p1")!.resources, 0);
+});

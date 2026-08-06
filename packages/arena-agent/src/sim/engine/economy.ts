@@ -14,9 +14,12 @@ import { createHash } from "node:crypto";
 import { cellKey, type Plan, type Position, type UnitType } from "../../domain/model.ts";
 import { compareCodeUnit, compareUuidRaw } from "../deterministic/uuid.ts";
 import { CELL_ENTITY_CAPACITY } from "../world/world.ts";
+import { spawnUnitCost } from "../contracts/pricing.ts";
+import type { RulesManifestV011 } from "../contracts/rules-manifest.ts";
 import { dropBeaconOnDeath } from "./beacon.ts";
 import type { SimPlayer, SimUnit, SimWorld } from "../world/types.ts";
 import {
+  EMPTY_OUTCOME,
   eventOf,
   outcome,
   type Phase,
@@ -30,16 +33,9 @@ function capacityOf(ctx: PhaseContext, population: number): number {
   return Math.max(core.minCapacity, population * core.capacityPerUnit);
 }
 
-function upkeepOf(ctx: PhaseContext, population: number): number {
-  const tier = Math.floor(population / ctx.rules.rules.upkeep.tierSize);
+function upkeepOf(rules: RulesManifestV011, population: number): number {
+  const tier = Math.floor(population / rules.rules.upkeep.tierSize);
   return (tier * (tier + 1)) / 2;
-}
-
-function unitCost(ctx: PhaseContext, unitType: UnitType): number {
-  const production = ctx.rules.rules.production;
-  if (unitType === "WORKER") return production.workerCost;
-  if (unitType === "VANGUARD") return production.vanguardCost;
-  return production.rangerCost;
 }
 
 function unitHp(ctx: PhaseContext, unitType: UnitType): number {
@@ -238,11 +234,17 @@ const upkeepPhase: Phase = {
   id: "P04-upkeep-and-deficit",
   officialPhase: 3,
   run: (draft, ctx) => {
+    // v0.14 整体移除维护机制（population_tier/upkeep_next_tick/UPKEEP_PAID/
+    // UPKEEP_DEFICIT），phase 保持注册顺序但不再计费/判伤。
+    if (ctx.rules.rulesVersion === "v0.14") {
+      return EMPTY_OUTCOME;
+    }
+    const rules = ctx.rules;
     const events: ResolutionEvent[] = [];
     const unknownEffects: UnknownEffect[] = [];
     for (const playerId of sortedPlayerIds(draft)) {
       const player = draft.players.get(playerId)!;
-      const due = upkeepOf(ctx, player.units.length);
+      const due = upkeepOf(rules, player.units.length);
       if (due === 0) continue;
       const paid = Math.min(player.resources, due);
       const deficit = due - paid;
@@ -257,12 +259,12 @@ const upkeepPhase: Phase = {
         );
       }
       if (deficit > 0) {
-        applyDeficitDamage(draft, ctx, playerId, deficit, events);
-        if (ctx.rules.rules.upkeep.deficitDamage.status !== "VERIFIED") {
+        applyDeficitDamage(draft, ctx, rules, playerId, deficit, events);
+        if (rules.rules.upkeep.deficitDamage.status !== "VERIFIED") {
           unknownEffects.push({
             tick: draft.tick,
             kind: "rule-assumption",
-            note: `upkeep deficit applied using ${ctx.rules.rules.upkeep.deficitDamage.status} v0.11 semantics`,
+            note: `upkeep deficit applied using ${rules.rules.upkeep.deficitDamage.status} v0.11 semantics`,
           });
         }
       }
@@ -274,6 +276,7 @@ const upkeepPhase: Phase = {
 function applyDeficitDamage(
   draft: SimWorld,
   ctx: PhaseContext,
+  rules: RulesManifestV011,
   playerId: string,
   deficit: number,
   events: ResolutionEvent[],
@@ -281,7 +284,7 @@ function applyDeficitDamage(
   const player = draft.players.get(playerId);
   if (player === undefined || player.core === null) return;
   const corePosition = player.core.position;
-  const protectedCount = ctx.rules.rules.upkeep.deficitProtectionCount;
+  const protectedCount = rules.rules.upkeep.deficitProtectionCount;
   const ordered = [...player.units].sort((a, b) => {
     const distanceDelta = manhattan(b.position, corePosition) - manhattan(a.position, corePosition);
     return distanceDelta !== 0 ? distanceDelta : compareUuidRaw(a.id, b.id);
@@ -575,7 +578,9 @@ function resolveSpawn(
 ): void {
   const player = draft.players.get(playerId)!;
   const core = player.core!;
-  const cost = unitCost(ctx, unitType);
+  // v0.11 静态 base 价；v0.14 动态价（population = P11 存活人口，已含
+  // 同 tick 自毁/战死结算）。
+  const cost = spawnUnitCost(unitType, player.units.length, ctx.rules);
   const colocated = player.units.filter((unit) => cellKey(unit.position) === cellKey(core.position)).length;
   if (colocated >= CELL_ENTITY_CAPACITY - 1) {
     events.push(eventOf(draft.tick, "CORE_SPAWN_FAILED", { reasonCode: "CELL_UNIT_LIMIT", actorId: core.id, position: core.position, values: { limit: CELL_ENTITY_CAPACITY } }));
