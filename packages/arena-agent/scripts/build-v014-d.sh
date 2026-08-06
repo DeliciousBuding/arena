@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# 第四批 v0.14 数据集构建 + 修复部署（2026-08-07d，已执行：t1/t2 各 230
-# samples 落账 registry，生产重启加载 2ffa2e8 修复）
-# 用法：bash scripts/build-v014-d.sh
+# v0.14 数据集构建 + 修复部署（2026-08-07d 已执行：t1/t2 各 230 samples；
+# 生产重启加载 2ffa2e8 修复）
+# 用法：bash scripts/build-v014-d.sh [批次后缀]（默认 d——下一批传 e）
 # 流程：优雅关停 → manifest flush → sim:dataset 构建（stall-run quarantine
 # 自动生效）→ watchdog 自动恢复（加载当前 checkout——含 2ffa2e8 军事单位
 # Core 格禁区修复）。
 set -euo pipefail
+
+BATCH="${1:-d}"
 
 DATA_ROOT="ARENA_REPO_ROOT/data/runtime"
 AGENT_ROOT="ARENA_REPO_ROOT/arena-ts/packages/arena-agent"
@@ -27,8 +29,8 @@ done
 
 echo "[3/5] build datasets (stall-run quarantine active)"
 cd "$AGENT_ROOT"
-npx tsx src/cli/run-sim.ts dataset --manifest "$DATA_ROOT/t1/calibration/$(ls -dt "$DATA_ROOT/t1/calibration"/*/ | head -1 | xargs basename)/manifest.json" --dataset-id t1-v014-20260807d
-npx tsx src/cli/run-sim.ts dataset --manifest "$DATA_ROOT/t2/calibration/$(ls -dt "$DATA_ROOT/t2/calibration"/*/ | head -1 | xargs basename)/manifest.json" --dataset-id t2-v014-20260807d
+npx tsx src/cli/run-sim.ts dataset --manifest "$DATA_ROOT/t1/calibration/$(ls -dt "$DATA_ROOT/t1/calibration"/*/ | head -1 | xargs basename)/manifest.json" --dataset-id "t1-v014-20260807$BATCH"
+npx tsx src/cli/run-sim.ts dataset --manifest "$DATA_ROOT/t2/calibration/$(ls -dt "$DATA_ROOT/t2/calibration"/*/ | head -1 | xargs basename)/manifest.json" --dataset-id "t2-v014-20260807$BATCH"
 
 echo "[4/5] wait for watchdog auto-recovery"
 sleep 75
