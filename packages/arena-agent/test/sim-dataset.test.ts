@@ -207,9 +207,10 @@ function chain(
 ): Record<string, unknown>[] {
   // The v0.11 engine records a server-secret refill EXPECTED_UNKNOWN at every
   // 4th tick, so plain no-op cases at tick % 4 == 0 calibrate INCONCLUSIVE and
-  // get quarantined. Chains that need full tick coverage pass a hard
-  // difference (e.g. afterResources) so those ticks calibrate MISMATCH, which
-  // is published (the recorded outcome is still ground truth).
+  // are published with sampleStatus "inconclusive". Chains that need full tick
+  // coverage pass a hard difference (e.g. afterResources) so those ticks
+  // calibrate MISMATCH, which is published with sampleStatus null (the
+  // recorded outcome is still ground truth).
   return ticks.map((tick) => makeCase(processRunId, tick, runId, caseOptions));
 }
 
@@ -262,6 +263,13 @@ test("sim:dataset derives ml-sample rows, labels and manifest from a MATCH chain
       "calibration-case",
     );
 
+    // MISMATCH cases are published (the recorded outcome is ground truth) but
+    // are neither "conclusive" nor "inconclusive": sampleStatus stays null.
+    assert.equal((first.provenance as Record<string, unknown>).sampleStatus, null);
+    assert.equal(result.report.counts.conclusiveSamples, 0);
+    assert.equal(result.report.counts.inconclusiveSamples, 0);
+    assert.deepEqual(result.report.quarantineByReason, {});
+
     // Manifest consistency.
     const manifest = readJson(join(result.datasetDir, "manifest.json"));
     assert.equal(manifest.schema, "dataset-manifest-v1");
@@ -293,6 +301,50 @@ test("sim:dataset derives ml-sample rows, labels and manifest from a MATCH chain
     assert.equal(schemaValidator.validate("dataset-manifest-v1", manifest), true);
     const registry = readJsonl(join(result.datasetDir, "..", "registry.jsonl"));
     assert.equal(schemaValidator.validate("dataset-registry-entry-v1", registry[registry.length - 1]), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sim:dataset accumulates label windows across per-tick runIds in one consecutive segment", () => {
+  const root = mkdtempSync(join(tmpdir(), "sim-dataset-segment-"));
+  try {
+    // Real recorder shape: runId is per-tick (`<processRunId>:<tenant>:<tick>:<seq>`),
+    // so grouping by runId would yield 1-tick windows. Grouping by
+    // (processRunId, tick-consecutive-segment) must accumulate windows.
+    const processRunId = "p1";
+    const cases = Array.from({ length: 60 }, (_, index) => index + 1).map((tick) =>
+      makeCase(processRunId, tick, `${processRunId}:t2:${tick}:1`));
+    const dataset = writeDataset(root, processRunId, cases);
+    const result = buildDataset(buildOptions(dataset));
+    assert.equal(result.gatePassed, true);
+    assert.equal(result.sampleCount, 60);
+    const samples = readJsonl(join(result.datasetDir, "samples.jsonl"));
+    assert.equal(samples.length, 60);
+    const byTick = new Map<number, Record<string, unknown>>();
+    for (const sample of samples) {
+      const provenance = sample.provenance as Record<string, unknown>;
+      byTick.set(provenance.tick as number, sample);
+    }
+    // One consecutive segment of 60 ticks: windows accumulate and ticks 1..10
+    // get complete 50-tick lookahead.
+    assert.equal(result.report.counts.completeLabelWindows, 10);
+    assert.equal(result.report.counts.incompleteLabelWindows, 50);
+    assert.equal((byTick.get(1)!.label as Record<string, unknown>).windowComplete, true);
+    assert.equal((byTick.get(1)!.label as Record<string, unknown>).windowEndTick, 51);
+    // No-op cases at tick % 4 == 0 calibrate INCONCLUSIVE (refill
+    // EXPECTED_UNKNOWN only) and are published honestly, not quarantined.
+    assert.equal(result.report.counts.quarantineTotal, 0);
+    assert.equal(result.report.counts.inconclusiveSamples, 15);
+    assert.equal(result.report.counts.conclusiveSamples, 45);
+    assert.equal(
+      (byTick.get(4)!.provenance as Record<string, unknown>).sampleStatus,
+      "inconclusive",
+    );
+    assert.equal(
+      (byTick.get(1)!.provenance as Record<string, unknown>).sampleStatus,
+      "conclusive",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -387,8 +439,8 @@ test("sim:dataset computes net20/deathProb20/coreRisk50 from window cases", () =
   }
 });
 
-test("sim:dataset quarantines INCONCLUSIVE cases without publishing them", () => {
-  const root = mkdtempSync(join(tmpdir(), "sim-dataset-quarantine-"));
+test("sim:dataset publishes INCONCLUSIVE EXPECTED_UNKNOWN-only cases with sampleStatus inconclusive", () => {
+  const root = mkdtempSync(join(tmpdir(), "sim-dataset-inconclusive-"));
   try {
     const processRunId = "p1";
     const clean = chain(processRunId, "run-clean", [1, 2, 3]);
@@ -397,22 +449,30 @@ test("sim:dataset quarantines INCONCLUSIVE cases without publishing them", () =>
     const dataset = writeDataset(root, processRunId, [...clean, ...inconclusive]);
     const result = buildDataset(buildOptions(dataset));
     assert.equal(result.gatePassed, true);
-    assert.equal(result.sampleCount, 3);
+    // INCONCLUSIVE with only EXPECTED_UNKNOWN differences is published with an
+    // honest sampleStatus; opponentPlans=absent is the standard calibration
+    // form and is no longer a quarantine condition.
+    assert.equal(result.sampleCount, 6);
     assert.equal(result.report.counts.inconclusiveCases, 3);
-    assert.equal(result.report.counts.quarantineTotal, 3);
-    assert.equal(result.report.counts.casesParsed, 3);
+    assert.equal(result.report.counts.inconclusiveSamples, 3);
+    assert.equal(result.report.counts.conclusiveSamples, 3);
+    assert.equal(result.report.counts.absentOpponentPlansCount, 3);
+    assert.equal(result.report.counts.quarantineTotal, 0);
+    assert.equal(result.report.counts.casesParsed, 6);
+    assert.deepEqual(result.report.quarantine, []);
+    assert.deepEqual(result.report.quarantineByReason, {});
     const samples = readJsonl(join(result.datasetDir, "samples.jsonl"));
-    assert.equal(samples.length, 3);
+    assert.equal(samples.length, 6);
     for (const sample of samples) {
       const provenance = sample.provenance as Record<string, unknown>;
-      assert.equal(provenance.runId, "run-clean");
+      const expectedStatus = provenance.runId === "run-inconclusive" ? "inconclusive" : "conclusive";
+      assert.equal(provenance.sampleStatus, expectedStatus);
     }
-    const reasons = result.report.quarantine.map((entry) => entry.reason);
-    assert.deepEqual(reasons, ["inconclusive", "inconclusive", "inconclusive"]);
     // Calibration taxonomy recorded in the report.
     assert.equal(result.report.calibration.statusCounts.INCONCLUSIVE, 3);
     assert.equal(result.report.calibration.statusCounts.MATCH, 3);
     assert.ok(result.report.calibration.taxonomyCounts.EXPECTED_UNKNOWN > 0);
+    assert.ok(result.report.calibration.expectedUnknownCount > 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -449,6 +509,7 @@ test("sim:dataset quarantines duplicate (runId, tick) cases", () => {
     assert.equal(result.report.counts.duplicateCases, 1);
     assert.equal(result.report.counts.quarantineTotal, 1);
     assert.equal(result.report.quarantine[0]!.reason, "duplicate");
+    assert.deepEqual(result.report.quarantineByReason, { duplicate: 1 });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -460,7 +521,15 @@ test("sim:dataset splits chronologically by run without leakage", () => {
     const processRunId = "p1";
     const cases: Record<string, unknown>[] = [];
     for (let run = 1; run <= 7; run += 1) {
-      cases.push(...chain(processRunId, `run-${run}`, [1, 2, 3, 4, 5], { afterResources: 8 }));
+      // Windows group by (processRunId, tick-consecutive-segment), so each run
+      // needs its own non-adjacent tick range to form a separate segment.
+      const base = (run - 1) * 10;
+      cases.push(...chain(
+        processRunId,
+        `run-${run}`,
+        [base + 1, base + 2, base + 3, base + 4, base + 5],
+        { afterResources: 8 },
+      ));
     }
     const dataset = writeDataset(root, processRunId, cases);
     const result = buildDataset(buildOptions(dataset));
@@ -489,7 +558,9 @@ test("sim:dataset splits chronologically by run without leakage", () => {
     const samples = readJsonl(join(result.datasetDir, "samples.jsonl"));
     for (const sample of samples) {
       const provenance = sample.provenance as Record<string, unknown>;
-      const assigned = runSplit.get(provenance.runId as string);
+      const segmentNumber = Math.floor(((provenance.tick as number) - 1) / 10) + 1;
+      const segmentKey = `seg-${String(segmentNumber).padStart(6, "0")}`;
+      const assigned = runSplit.get(segmentKey);
       assert.notEqual(assigned, undefined);
     }
     assert.equal(report.splits.leakChecks.runCrossesSplit, 0);
@@ -622,6 +693,16 @@ test("sim:dataset schema validator rejects invalid samples (red) and accepts val
     (extraKey as Record<string, unknown>).bogus = 1;
     assert.notDeepEqual(validateMlSample(extraKey), []);
     assert.equal(schemaValidator.validate("ml-sample-v1", extraKey), false);
+
+    const invalidStatus = structuredClone(valid);
+    (invalidStatus.provenance as Record<string, unknown>).sampleStatus = "bogus";
+    assert.notDeepEqual(validateMlSample(invalidStatus), []);
+    assert.equal(schemaValidator.validate("ml-sample-v1", invalidStatus), false);
+
+    const nullStatus = structuredClone(valid);
+    (nullStatus.provenance as Record<string, unknown>).sampleStatus = null;
+    assert.deepEqual(validateMlSample(nullStatus), []);
+    assert.equal(schemaValidator.validate("ml-sample-v1", nullStatus), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

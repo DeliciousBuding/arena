@@ -216,7 +216,7 @@ export function validateMlSample(value: unknown): readonly string[] {
   const provenance = value.provenance;
   if (checkKeys(problems, "provenance", provenance, [
     "rulesVersion", "rulesManifestHash", "sourceCommit", "engine", "processRunId", "runId",
-    "tick", "seed", "source", "observationScope", "opponentPlans", "sourceRefs",
+    "tick", "seed", "source", "observationScope", "opponentPlans", "sampleStatus", "sourceRefs",
   ])) {
     if (!nonEmptyString(provenance.rulesVersion)) {
       problems.push("provenance.rulesVersion", "must be a non-empty string");
@@ -244,6 +244,12 @@ export function validateMlSample(value: unknown): readonly string[] {
     }
     if (provenance.opponentPlans !== "not-included") {
       problems.push("provenance.opponentPlans", "must be not-included");
+    }
+    if (
+      provenance.sampleStatus !== undefined && provenance.sampleStatus !== null &&
+      provenance.sampleStatus !== "conclusive" && provenance.sampleStatus !== "inconclusive"
+    ) {
+      problems.push("provenance.sampleStatus", "must be conclusive, inconclusive, or null");
     }
     if (!Array.isArray(provenance.sourceRefs) || provenance.sourceRefs.length === 0) {
       problems.push("provenance.sourceRefs", "must be a non-empty array");
