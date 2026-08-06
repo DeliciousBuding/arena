@@ -100,6 +100,21 @@ export class World {
   /** 最近一次世界重置发生时的 tick（从未重置 = null）。 */
   lastWorldResetTick: number | null = null;
 
+  /**
+   * C2 RECOVERY（竞品 lifecycle overlay 对照）：Core 重生（替换，全新 UUID）
+   * 后清**相对 Core** 的战场记忆——敌追击积分（pursuitScore/coreDistance）
+   * 与单位巡逻扇区（patrolDirection/patrolRing）基于旧 Core 坐标系，重生后
+   * 失真（竞品 "RECOVERY clears battlefield memory, rebuilds locally"）。
+   * 绝对坐标地图事实（障碍/资源/chunk 观察老化）保留——不随 Core 位置变化。
+   * 返回被清条目数（telemetry/测试可读）。
+   */
+  clearBattlefieldMemory(): number {
+    const cleared = this.enemyMemory.size + this.unitMemories.size;
+    this.enemyMemory.clear();
+    this.unitMemories.clear();
+    return cleared;
+  }
+
   observe(state: TickState): void {
     // 世界重置检测：tick 回退（服务器世界重置/异常）→ 全清本地记忆，避免幽灵障碍/资源
     if (this.tick > state.tick) {

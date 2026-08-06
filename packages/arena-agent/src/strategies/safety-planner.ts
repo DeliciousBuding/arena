@@ -257,6 +257,12 @@ export class SafetyPlanner {
   private currentThreat: ThreatAssessment | null = null;
   /** B5 突击组被拦截后的返回截止 tick（unitId → tick；8-tick 防抖动记忆）。 */
   private detachedReturnUntil = new Map<string, number>();
+  /** C2 RECOVERY：上次见到的我方 Core id（全新 UUID = 重生/替换 → 清战场记忆）。 */
+  private lastCoreId: string | null = null;
+  /** C2 RECOVERY 触发次数（telemetry/测试可读）。 */
+  coreRecoveryCount = 0;
+  /** C2 RECOVERY 事件日志（telemetry/测试可读；正常对局为空）。 */
+  readonly recoveryLog: string[] = [];
 
   constructor(
     config: SafetyPlannerConfig = DEFAULT_SAFETY_CONFIG,
@@ -283,6 +289,18 @@ export class SafetyPlanner {
     this.effectiveAggression =
       input.policy !== undefined ? aggressionOf(input.policy) : (this.config.aggression ?? "defensive");
     this.effectiveWorkerTarget = input.policy?.workerTarget ?? this.config.workerTarget;
+    // C2 RECOVERY（竞品 lifecycle overlay 对照，2026-08-07）：Core 重生 =
+    // 全新 UUID 替换（引擎 P12 respawn：CORE_DESTROYED + CORE_RESPAWNED，
+    // 新 Core 20-30 格重生 + 全新 Worker）。旧追击积分/巡逻扇区基于旧 Core
+    // 坐标系，重生后失真 → 先清战场记忆再 observe（observe 用新 Core 位置
+    // 写入正确记忆）。绝对坐标地图事实（障碍/资源/chunk）保留。正常对局
+    // Core id 不变 → 零变化（生产 t1/t2 无对手不重生，零回归）。
+    if (state.core !== null && this.lastCoreId !== null && state.core.id !== this.lastCoreId) {
+      const cleared = this.world.clearBattlefieldMemory();
+      this.coreRecoveryCount += 1;
+      this.recoveryLog.push(`tick ${state.tick}: core ${this.lastCoreId.slice(0, 8)} → ${state.core.id.slice(0, 8)}，清战场记忆 ${cleared} 条`);
+    }
+    if (state.core !== null) this.lastCoreId = state.core.id;
     this.world.observe(state);
     this.phase.update({
       population: state.population,
