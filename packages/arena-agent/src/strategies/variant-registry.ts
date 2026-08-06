@@ -23,6 +23,7 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "guard-heal-rotation-v1": Object.freeze({ guardHealRotation: true }),
     "detached-squad-v1": Object.freeze({ detachedSquadResponse: true }),
     "bounded-raid-v1": Object.freeze({ boundedRaid: true }),
+    "scout-evade-v1": Object.freeze({ scoutEvade: true }),
   });
 
 /** 解析变体 id → SafetyPlanner 配置覆盖；未知 id 抛错（fail-fast）。 */
