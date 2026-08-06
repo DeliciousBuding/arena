@@ -24,6 +24,7 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "detached-squad-v1": Object.freeze({ detachedSquadResponse: true }),
     "bounded-raid-v1": Object.freeze({ boundedRaid: true }),
     "scout-evade-v1": Object.freeze({ scoutEvade: true }),
+    "ranger-memory-shot-v1": Object.freeze({ rangerMemoryShot: true }),
   });
 
 /** 解析变体 id → SafetyPlanner 配置覆盖；未知 id 抛错（fail-fast）。 */

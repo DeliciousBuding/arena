@@ -190,6 +190,16 @@ export interface SafetyPlannerConfig {
    * （worker 见敌仍 harvest/巡逻，零回归）。
    */
   readonly scoutEvade?: boolean;
+  /**
+   * Ranger 记忆射击（v0.3，实验，B12 竞品 strategy.md "A strike Ranger
+   * may also fire at the remembered cell of a confirmed stationary Core
+   * during a short visibility gap" 对照）：aggressive Ranger 无可见目标
+   * 时，对"确认静止"的敌 Core 记忆格射击（射程内 cell-fire，targetId
+   * null）——短暂视野丢失不浪费射程压制（Vanguard memory 推进的
+   * Ranger 版：Vanguard 走向记忆，Ranger 打记忆）。默认 false = 历史
+   * 行为（无可见目标时移动/守位，零回归）。
+   */
+  readonly rangerMemoryShot?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -926,6 +936,29 @@ export class SafetyPlanner {
         !samePosition(predicted, nearest.position)
       ) {
         set(unit, { type: "SHOOT", targetId: null, expectedCell: predicted }, "shoot_cell");
+        return;
+      }
+    }
+
+    // B12 Ranger 记忆射击（rangerMemoryShot 候选，竞品 strategy.md
+    // "A strike Ranger may also fire at the remembered cell of a confirmed
+    // stationary Core during a short visibility gap"）：aggressive Ranger
+    // 无可见目标时，对"确认静止"（两次观察同位置）的敌 Core 记忆格
+    // cell-fire（射程内）——短暂视野丢失不浪费射程压制（Vanguard memory
+    // 推进的 Ranger 版：Vanguard 走向记忆，Ranger 打记忆）。
+    if (this.config.rangerMemoryShot === true && this.effectiveAggression === "aggressive") {
+      const coreMemory = this.world.enemyHints(60).find(
+        (hint) =>
+          hint.kind === "CORE" &&
+          hint.prevPosition !== undefined &&
+          samePosition(hint.prevPosition, hint.position),
+      );
+      if (coreMemory !== undefined && canShoot(unit.position, coreMemory.position, obstacles)) {
+        set(
+          unit,
+          { type: "SHOOT", targetId: null, expectedCell: coreMemory.position },
+          "ranger_memory_shot",
+        );
         return;
       }
     }
