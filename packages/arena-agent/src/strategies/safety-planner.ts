@@ -180,6 +180,16 @@ export interface SafetyPlannerConfig {
    * 不受影响。默认 false = 历史行为（记忆多远推多远，零回归）。
    */
   readonly boundedRaid?: boolean;
+  /**
+   * worker 遭遇撤离（v0.3，实验，B10 竞品 "Scout And Observer Response"
+   * 对照）：空 worker 视野内（3 格）出现战斗单位（VANGUARD/RANGER）时，
+   * 撤离回 Core（EVADE+RETURN 合一——向 Core 步进即远离敌人，敌占格
+   * 视为硬块绕开）——接触丢失后仍继续回 Core（不恢复旧巡逻线），到
+   * Core 3 格内冷却 3 tick 再恢复巡逻（防敌人尾随立即再逃）。满载
+   * worker 走既有 return_home（已回 Core）。默认 false = 历史行为
+   * （worker 见敌仍 harvest/巡逻，零回归）。
+   */
+  readonly scoutEvade?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -212,6 +222,12 @@ const DETACHED_RESPONSE_RADIUS = 5;
 const DETACHED_RETURN_TICKS = 8;
 /** B6 有界攻坚（竞品 bounded mission distance）：记忆敌 Core 距我方 Core 上限。 */
 const BOUNDED_RAID_DISTANCE = 40;
+/** B10 worker 遭遇撤离（竞品 Scout And Observer Response）：撤离触发半径。 */
+const SCOUT_EVADE_RADIUS = 3;
+/** 到 Core 3 格内后的冷却 tick（竞品 three-Tick cooldown）。 */
+const SCOUT_COOLDOWN_TICKS = 3;
+/** 到达即进入冷却的 Core 距离（竞品 within three cells）。 */
+const SCOUT_HOME_RADIUS = 3;
 
 /** moveFailedAvoidance 绕行（v0.3 实验）：单位连续 MOVE_FAILED 后不再盲目重试
  *  同格——沿主方向垂直的候选方向探路（先 UP/DOWN 再 LEFT/RIGHT，排除障碍格）；
@@ -279,6 +295,8 @@ export class SafetyPlanner {
   private currentThreat: ThreatAssessment | null = null;
   /** B5 突击组被拦截后的返回截止 tick（unitId → tick；8-tick 防抖动记忆）。 */
   private detachedReturnUntil = new Map<string, number>();
+  /** B10 worker 遭遇撤离状态（unitId → 返回截止/冷却截止 tick）。 */
+  private scoutEvadeState = new Map<string, { returnUntil: number; cooldownUntil: number }>();
   /** C2 RECOVERY：上次见到的我方 Core id（全新 UUID = 重生/替换 → 清战场记忆）。 */
   private lastCoreId: string | null = null;
   /** C2 RECOVERY 触发次数（telemetry/测试可读）。 */
@@ -458,6 +476,56 @@ export class SafetyPlanner {
         if (direction !== null) set(unit, { type: "MOVE", direction }, "return_home");
       }
       return;
+    }
+
+    // B10 worker 遭遇撤离（scoutEvade 候选，竞品 Scout And Observer
+    // Response 对照）：空 worker 视野内（3 格）出现战斗单位 → 撤离回
+    // Core（EVADE+RETURN 合一——向 Core 步进即远离敌人，敌占格视为
+    // 硬块绕开）——接触丢失后仍持续回 Core（persistent return flow，
+    // 不恢复旧巡逻线），到 Core 3 格内冷却 3 tick 再恢复（防敌人尾随
+    // 立即再逃）；冷却到期清除状态。
+    if (this.config.scoutEvade === true && home !== null) {
+      const threatened = state.visibleEnemies.some(
+        (enemy) =>
+          enemy.kind === "UNIT" &&
+          enemy.unitType !== "WORKER" &&
+          manhattan(unit.position, enemy.position) <= SCOUT_EVADE_RADIUS,
+      );
+      if (threatened) {
+        this.scoutEvadeState.set(unit.id, {
+          returnUntil: Number.POSITIVE_INFINITY,
+          cooldownUntil: 0,
+        });
+      }
+      const evade = this.scoutEvadeState.get(unit.id);
+      if (evade !== undefined) {
+        // 冷却到期 → 清除状态，恢复正常巡逻/采集
+        if (evade.cooldownUntil > 0 && evade.cooldownUntil <= state.tick) {
+          this.scoutEvadeState.delete(unit.id);
+        } else if (evade.cooldownUntil > state.tick) {
+          set(unit, { type: "WAIT" }, "worker_evade_cooldown");
+          return;
+        } else if (manhattan(unit.position, home) <= SCOUT_HOME_RADIUS) {
+          // 撤离流中到达 Core 3 格内 → 进入冷却（防尾随立即再逃）
+          this.scoutEvadeState.set(unit.id, {
+            returnUntil: Number.POSITIVE_INFINITY,
+            cooldownUntil: state.tick + SCOUT_COOLDOWN_TICKS,
+          });
+          set(unit, { type: "WAIT" }, "worker_evade_cooldown");
+          return;
+        } else {
+          // 敌占格视为硬块（竞品 enemy-occupied cells remain hard blocks）
+          const evadeObstacles = new Set(movementObstacles);
+          for (const enemy of state.visibleEnemies) {
+            if (enemy.kind === "UNIT" && enemy.unitType !== "WORKER") {
+              evadeObstacles.add(cellKey(enemy.position));
+            }
+          }
+          const direction = stepToward(unit.position, home, evadeObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "worker_evade_return");
+          return;
+        }
+      }
     }
 
     if (state.resourceCells.has(cellKey(unit.position))) {
