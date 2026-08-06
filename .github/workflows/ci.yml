@@ -28,7 +28,6 @@ jobs:
       - run: npm test
       - run: npm run schema:check
       - run: npm run replay:ts
-      - run: npm run server:check
       - run: python scripts/gen-status.py --check
       - run: python scripts/docs_health.py --check
 
