@@ -1,95 +1,176 @@
-# Arena Hero 策略追赶方案（v2：从 SafetyPlanner 到 RTS Engine）
+# Arena Hero 策略追赶方案 v2 — Pure Rust RTS Engine
 
-> 来源：第一名算法说明复盘 + 第二名仓库分析（用户提供，2026-08-05）+ 模拟器线差距盘点。
-> 落点：**Rust 决策内核（arena-sim-strategy）**——融合线终态下 Rust 是生产唯一决策实现，
-> 策略改进做在 Rust 一次、模拟=生产（fusion-line.md 核心原则）。
-> 验证工具：simsearch（死锁狩猎）/ optsearch（参数搜索）/ paramscan（网格）/ simgolden（回归）——
-> 这本身就是第二名"offline optimizer"的对应物。
+> 来源：第一名算法说明、第二名公开仓库、TS 生产实证与 Rust 模拟器差距盘点。
+> 落点：Pure Rust `domain + world + strategy + runtime + simulator`。策略只实现一次，生产、回放与模拟共享同一 Rust 逻辑。
 
 ## 1. 核心判断
 
-- 不复制第一名代码；吸收**策略思想**（目标评分/全局匹配/资源记忆/确定性探索/威胁记忆）
-- 不复制第二名代码；吸收**工程定位**（AI 不进 tick 循环、确定性、offline 调参）——我们已天然满足
-- 终态 = 第二名工程框架 + 第一名策略深度 + 自建模拟器验证体系
+- 不复制第一名代码，吸收全局匹配、资源记忆、目标迟滞、时空预约、威胁记忆和 Core 生存思想；
+- 不复制第二名代码，吸收确定性、资源优先、离线优化、长时运行和严格工程边界；
+- AI 不进入 Tick 热路径；
+- 经济闭环和真实 settlement 证据优先于复杂战斗；
+- Pure Rust 直接连接 Hero，不经 Go Host、FFI 或动态库。
 
-## 2. 差距盘点（对照第一名方案）
+目标形态：
 
-| # | 能力 | 现状（Rust strategy） | 差距 |
-|---|---|---|---|
-| 1 | 全局资源匹配（非最近优先） | ✅ `assign_workers` 全局分配（claimed/harvesters + 排序） | 无 |
-| 2 | Worker 生命周期（空载→采→回→提交→重分配） | ✅ harvest/deposit/return_core/yield_full_core | 无 |
-| 3 | 移动容量仲裁/同步占位 | 部分（事后降级仲裁 arbitrate_move_capacity + 占位 WAIT 排队） | 事前预约可增强 |
-| 4 | 资源记忆（采空/空资源格/失败路线） | ❌ 无（模拟器由 refill 管理；planner 无跨 tick 资源记忆） | **缺（v0.1）** |
-| 5 | 分区探索（chunk/frontier/blacklist） | 部分（螺旋扫描带=确定性无缝覆盖，已超越简单分区；无 blacklist） | 部分（v0.2） |
-| 6 | 威胁记忆（last_position/velocity/threat_score） | ❌ 无（仅即时 nearest_enemy + engage 超时） | **缺（v0.3）** |
-| 7 | 静止敌人判断 | ❌ 无 | 缺（v0.3） |
-| 8 | 攻击点预测/追击平衡 | 部分（engage 超时放弃 ✓） | 部分（v0.4） |
-| 9 | Core 防御布防（Ranger 外围/Vanguard 屏障/回收） | ❌ 无 | 缺（v0.4） |
-| 10 | 循环消除（A-B-A/停滞跳出） | ✅ stuck 指纹 + 换目标 | 无 |
-| 11 | 单位配置（12/3/4） | ✅ 可参数化（workerTarget/militaryRatio） | simsearch 验证即可 |
-| 12 | 持久状态/重启恢复 | ❌ 无（planner 内存态） | 延后（生产需求出现再做） |
+```text
+第一名策略深度
++ 第二名工程纪律
++ TS 真实数据/Runtime-Golden
++ Rust 原生生产运行时与模拟器
+```
 
-## 3. 验证基线（v0，当前 Rust 策略，500 tick golden，2026-08-05 实测）
+## 2. 当前 Rust 能力与差距
 
-| 场景 | deposits | spawns | workers(终) | resources(终) |
-|---|---|---|---|---|
-| base（真实拓扑 6 格） | 68 | 13 | 13 | 1 |
-| dense（Core 周围 8 格） | 154 | 16 | 13 | 0 |
-| sparse（远处 3 格+障碍） | 30 | 7 | 9 | 0 |
+| 能力 | 当前 Rust strategy | 下一步 |
+|---|---|---|
+| 全局 Worker 分配 | 已有 `assign_workers`、claimed/harvesters 排序 | 从贪心升级为稳定最小成本匹配，保留目标粘性 |
+| Worker 生命周期 | harvest/deposit/return/yield 已有 | 接真实 settlement telemetry 验证完整闭环 |
+| 移动容量 | 事后仲裁与 WAIT 排队 | 事前 reservation、Core 入口预约、loser 改道 |
+| 资源记忆 | 缺 | R3 首要：耗尽、失败路线、TTL、冷却 |
+| 探索 | 确定性螺旋扫描 | chunk/frontier age、稳定扇区、blacklist、旧区域复查 |
+| 导航 | bounded BFS/stuck 指纹 | 目标迟滞、A-B-A 消环、敌占格风险、长墙/窄口 |
+| 威胁记忆 | 缺，仅即时敌人与 engage timeout | enemy belief、stationary/active、ETA/threat score |
+| Core 防御 | 缺系统化布防 | 多轴防御、Ranger 外围、Vanguard 屏障、恢复与逃生 |
+| 战斗 | 有基础攻击/追击 | 预测攻击格、包抄、堵路、撤退、有限 raid |
+| 重启持久化 | planner 内存态 | 先保证单进程长时；真实需求出现后做原子快照 |
+| 生产 runtime | 尚未 Rust-native | R1/R2：Hero client、exactly-once、lock、submit、telemetry |
 
-经济雪球指标（对比目标）：deposits/资源增长率/人口终值——后续每个 v0.x 改动用
-`cargo test --release -- --ignored bench_` + simgolden --check 回归 + 上述三场景对比。
+## 3. 已有模拟基线
 
-## 3.1 真实数据画像（t3/t4 decision.jsonl 学习，2026-08-06）
+旧 Rust 策略 500 Tick golden：
 
-样本：t3 26 runs/990 行 + t4 38 runs/2740 行（deterministic shadow 记录模式，
-submitEnabled=false；t1/t2 本地 live 未落盘）。关键事实：
+| 场景 | deposits | spawns | workers（终） | resources（终） |
+|---|---:|---:|---:|---:|
+| base | 68 | 13 | 13 | 1 |
+| dense | 154 | 16 | 13 | 0 |
+| sparse | 30 | 7 | 9 | 0 |
 
-- **资源极度稀缺**：t4 resources 0-10 波动、38 runs 全样本仅 **1 次 DEPOSIT**
-  （tick 55866：workers=3、res=5、cargo=1，同 tick 还 spawn+2 explore）；
-  t3 全程 0 deposit、cargo 全 0。真实地图资源比模拟器 sparse 更稀。
-- **explore 绝对主导**：t3 92%（1312/1428）、t4 99.7%（8448/8470）意图为 explore；
-  kinds MOVE 绝对主导（t4 7138/8462）——worker 绝大多数时间空跑巡逻。
-- **人口规模小**：t3 workers 1-2、t4 2-4；spawn 极少（t3 20、t4 8）——资源瓶颈
-  压制经济扩张，符合"经济雪球 > 击杀"前提下的资源受限形态。
-- **capacity_wait 存在**：t3 96、t4 8——容量仲裁在真实形态下可见。
-- **质量**：valid 990/990 + 2740/2740，repaired 0——确定性决策无非法动作。
-- **会话短**：每 run 38-72 tick——服务器会话频繁重置，记忆须会话内尽快生效。
+这些数字只作为回归观察点，不直接代表真实服务器收益。正式比较必须绑定规则、refill、seed、profile 与 scenario hash。
 
-**对 v0.x 的设计输入**：资源记忆（v0.1）与探索 blacklist（v0.2）在真实地图
-价值最高（explore 空跑是最大损失）；sparse 场景是主要对标（30 deposits 基线）；
-v0.5 校准目标 = 模拟器场景意图分布/资源密度向真实画像逼近（explore>90%、
-deposit 每 500 tick 个位数）。
+## 4. 真实 t3/t4 数据画像
 
-## 4. 版本路线（模拟器驱动）
+旧 decision.jsonl 样本显示：
 
-### v0.1 Worker Economy 强化
-- 资源记忆：跨 tick 记录已采空格/确认空资源格（refill 揭示前不重复派工）
-- 满载 Worker 在 Core 满仓时"就近安全等待"替代"堵门"（现有 yield 已部分覆盖，验证边界）
-- 验收：sparse 场景 deposits 提升（当前 30 为基线）；simsearch 死锁数下降
+- 真实资源极稀缺，deposit 很少；
+- explore 意图占比约 92%–99.7%，空跑是最大损失；
+- 人口通常只有 1–4 Worker，资源瓶颈压制扩张；
+- capacity wait 在真实环境可见；
+- 历史计划虽 validator 合法，但“accepted/valid”不能证明动作已经结算；
+- 会话可能短且流会停顿，记忆必须会话内快速产生收益。
 
-### v0.2 Map Memory / 探索
-- blacklist：已确认无价值区域（封闭/采空）降低巡逻优先级
-- 螺旋扫描与 blacklist 结合（当前螺旋是纯几何覆盖，无记忆）
-- 验收：稀疏场景资源发现速度（harvests 首次时间）提升
+由此得到固定优先级：
 
-### v0.3 Threat Model
-- 威胁记忆：enemy last_position + 静止判定（连续 N tick 不动 → stationary）
-- threat_score：距离 Core + 单位类型威胁值 → 影响 worker 路线风险
-- 验收：敌方入侵场景存活率（构造带敌人的 simsearch 场景）
+```text
+settlement 可观测
+→ resource memory
+→ exploration blacklist
+→ move reservation
+→ threat/Core defense
+→ combat optimizer
+```
 
-### v0.4 Combat Optimizer
-- 攻击窗口预测（移动方向外推）
-- Core 防御布防（Ranger 外围/威胁时回收 Worker）
-- 验收：对打场景（top4 对打已有 strategy-search.mts 方法论）
+## 5. 策略版本路线
 
-### v0.5 Offline Optimizer 深化
-- 用真实 t1-4 decision.jsonl 校准模拟器场景参数（单位 ID 形态/意图分布对比）
-- optsearch 目标函数扩展（deposits 权重 vs 存活权重）
+### v0.1 — Worker Economy / Resource Memory
 
-## 5. 工程纪律
+- 资源最后确认时间、采空、失败原因和冷却；
+- 一资源一 Worker，全局成本包含去程、回 Core、风险、拥堵和 sticky bonus；
+- 满仓满载 Worker 安全让位，不堵住 Core spawn；
+- dropped cargo 回收；
+- `planned_spawn_no_effect`、cargo stall 和资源 delta 遥测。
 
-- 每个 v0.x 单独提交，附模拟器基线对比数字
-- 不引入 LLM 进 tick 循环（第二名教训，我们天然遵守）
-- 策略改进只做 Rust 侧（融合线终态）；Go 生产经 F3 shadow 验证后由 Rust 决策
-- 优先级：经济雪球 > 击杀（第一名结论）——战斗最后做
+验收：economy-sparse、resource-far、core-gate 的净经济和尾部表现提升，0 invalid/repair。
+
+### v0.2 — Map Memory / Exploration
+
+- chunk/frontier age；
+- 稳定方向扇区与连续外扩；
+- blacklist 与封闭区域剪枝；
+- 旧区域低频复查；
+- 目标迟滞，避免频繁跨图切换。
+
+验收：首次发现远资源更快、重复覆盖率下降、空探索 Tick 减少。
+
+### v0.3 — Navigation / Reservation
+
+- 障碍感知 A* 或 bounded BFS；
+- 时空预约，格容量 2；
+- Core 入口流量和 spawn/deposit 预约；
+- swap/依赖链处理；
+- route reuse、A-B-A 消环和失败路线冷却。
+
+验收：obstacle-maze/core-gate 中无振荡、无永久 WAIT、决策延迟无长尾。
+
+### v0.4 — Threat Model / Core Survival
+
+- 敌人 last position、reachable set、当前视野排除；
+- stationary/active 分类；
+- 追逃关系和 ETA；
+- Worker 风险路径；
+- Core 重点防御区、双 Ranger 视野环、多轴突围和恢复。
+
+验收：crossfire/enemy-aggressive 的 Core HP AUC 和最差 10% 不低于 TS 基线。
+
+### v0.5 — Combat Optimizer
+
+- 移动敌人有限候选攻击格；
+- Ranger/Vanguard 自适应配比；
+- 包抄、堵路、追击和撤退；
+- Miss 后单单位贴近修正，其余保持拦截；
+- confirmed stationary threat/Core 的有界 raid；
+- 防御单位不被远方目标拉走。
+
+验收：enemy-defensive/enemy-aggressive 场景跨至少 20 paired seeds 有正收益，尾部不恶化。
+
+### v0.6 — Offline Optimizer / Production Calibration
+
+- StrategyProfile 统一输入；
+- simsearch/optsearch/paramscan/simgolden；
+- TS Runtime-Golden 与 Rust replay；
+- 真实意图分布、资源密度、结算失败率校准；
+- 多目标评分：Core、净经济、探索、战斗、稳定性。
+
+优化器只推荐 candidate profile，生产晋级仍走 shadow/bounded-live/canary 门禁。
+
+## 6. 每 Tick 决策链
+
+```text
+receive normalized TickState
+→ update World memory
+→ classify strategic mode and immediate threats
+→ generate forced tasks
+→ global assignment
+→ pathfinding + reservations
+→ combat allocation
+→ validate fail-closed
+→ submit once
+→ observe next-state settlement outcome
+```
+
+优先级：
+
+```text
+manual override（未来）
+> Core 即时生存
+> 当前防御/撤退
+> 单位生存
+> 满载回仓与经济破锁
+> 已有持久任务
+> 资源采集
+> 跟踪/情报复查
+> 探索
+> 安全巡逻
+> WAIT
+```
+
+## 7. 工程纪律
+
+- 每个策略版本独立原子提交；
+- 同时附 scenario、seed、tick、baseline、均值、中位数、p10、失败率和 hard gates；
+- 不通过修改 golden、放宽 validator 或挑最好 seed 宣布提升；
+- 正式运行必须记录实际 Rust git SHA 与 profile/rules/fixture hash；
+- Rust planner invalid/repair 立即终止 run；
+- 不维护 Go planner parity 作为长期目标；
+- 不新增 FFI、Go fallback 或第二套 canonical domain；
+- 生产先验证 settlement 和经济，再扩战斗。
