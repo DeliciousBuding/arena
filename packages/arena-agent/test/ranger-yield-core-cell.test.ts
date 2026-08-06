@@ -92,6 +92,51 @@ test("Ranger 四邻全障碍 → 无锚点 → 不 MOVE（原地守位）", () =
   assert.equal(plan.unitActions[P1_RANGER], undefined, "无合法锚点则不发动作（隐式 WAIT，不堵不挪）");
 });
 
+test("Ranger 让位：Core 四邻全堵（障碍+单位）→ 选单占用邻格（可挤入）", () => {
+  const planner = new SafetyPlanner();
+  // Core [0,0]：UP 障碍、RIGHT 被 2 单位占、LEFT 被 1 单位占、DOWN 空
+  // → 空位 DOWN 优先？不——DOWN 空 → yieldAnchor 第一遍选中 DOWN。
+  // 构造四邻全堵（无空位）：UP 障碍、RIGHT/DOWN/LEFT 各 1 单位
+  const state: TickState = {
+    ...makeState(1, [0, 0]),
+    obstacleCells: new Set(["0,-1"]),
+    units: [
+      { id: P1_RANGER, position: [0, 0] as Position, hp: 2, unitType: "RANGER" as const, cargo: 0 },
+      { id: P1_WORKER, position: [1, 0] as Position, hp: 2, unitType: "WORKER" as const, cargo: 1 },
+      { id: "44444444-4444-4444-4444-444444444401", position: [0, 1] as Position, hp: 2, unitType: "WORKER" as const, cargo: 1 },
+      { id: "44444444-4444-4444-4444-444444444402", position: [-1, 0] as Position, hp: 2, unitType: "WORKER" as const, cargo: 1 },
+    ],
+    workers: [],
+    rangers: [{ id: P1_RANGER, position: [0, 0] as Position, hp: 2, unitType: "RANGER" as const, cargo: 0 }],
+  };
+  const plan = planner.decide({ state });
+  assert.equal(plan.intents[P1_RANGER], "ranger_home", "四邻全堵也尝试让位（挤入单占用格）");
+  const action = plan.unitActions[P1_RANGER];
+  assert.equal(action.type, "MOVE", "有单占用邻格 → 让位动作发出（预裁决裁决容量）");
+});
+
+test("Ranger 让位：Core 四邻全堵且全被占 2 → 无锚点 → 原地等（不 MOVE）", () => {
+  const planner = new SafetyPlanner();
+  // UP 障碍、RIGHT/DOWN/LEFT 各 2 单位 → yieldAnchor 返回 null → 原地
+  const state: TickState = {
+    ...makeState(1, [0, 0]),
+    obstacleCells: new Set(["0,-1"]),
+    units: [
+      { id: P1_RANGER, position: [0, 0] as Position, hp: 2, unitType: "RANGER" as const, cargo: 0 },
+      { id: P1_WORKER, position: [1, 0] as Position, hp: 2, unitType: "WORKER" as const, cargo: 1 },
+      { id: "44444444-4444-4444-4444-444444444401", position: [1, 0] as Position, hp: 2, unitType: "WORKER" as const, cargo: 1 },
+      { id: "44444444-4444-4444-4444-444444444402", position: [0, 1] as Position, hp: 2, unitType: "WORKER" as const, cargo: 1 },
+      { id: "44444444-4444-4444-4444-444444444403", position: [0, 1] as Position, hp: 2, unitType: "WORKER" as const, cargo: 1 },
+      { id: "44444444-4444-4444-4444-444444444404", position: [-1, 0] as Position, hp: 2, unitType: "WORKER" as const, cargo: 1 },
+      { id: "44444444-4444-4444-4444-444444444405", position: [-1, 0] as Position, hp: 2, unitType: "WORKER" as const, cargo: 1 },
+    ],
+    workers: [],
+    rangers: [{ id: P1_RANGER, position: [0, 0] as Position, hp: 2, unitType: "RANGER" as const, cargo: 0 }],
+  };
+  const plan = planner.decide({ state });
+  assert.equal(plan.unitActions[P1_RANGER], undefined, "无锚点 → 不发动作（隐式 WAIT，等下一 tick）");
+});
+
 test("Ranger 有可见敌人 → 追击/守位优先于让位（战斗行为不变）", () => {
   const planner = new SafetyPlanner();
   const enemy: VisibleEntity = { id: "e1", kind: "UNIT", position: [3, 0], hp: 4, unitType: "VANGUARD" };
