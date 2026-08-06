@@ -29,7 +29,7 @@ Arena 是 Arena Hero 的 **TS-only** 安全自主运行时、确定性策略和 
 - **TS 版本回滚演练**已完成（逃生通道须用同部署形态 commit sha 镜像）；
 - **外部参考对照**：榜二（arena-hero-agent）威胁状态机/Core 迁移/Ranger 优先级对照落地或阴性记录，对照线完结；官方规则源（arena-hero-doc）纳入追踪（官方 v0.13 vs 我们服务器实测 v0.11）。
 
-代码门禁已经通过 Windows 与 Linux Node 24；生产长期验收剩余项：t1/t2 分级 soak、Provider shadow 故障注入、combat/Core migration/Beacon/respawn 专项 Runtime-Golden。
+代码门禁已经通过 Windows 与 Linux Node 24；生产长期验收剩余项：t1/t2/t3/t4 分级 soak、Provider shadow 故障注入、combat/Core migration/Beacon/respawn 专项 Runtime-Golden。
 
 ## 原生边界
 
@@ -67,11 +67,11 @@ npx tsx packages/arena-agent/src/cli/run-tenant.ts \
   --config=../data/runtime/configs/t1.json --mode=deterministic --shadow
 ```
 
-双租户 Supervisor（只观察）：
+多租户 Supervisor（只观察）：
 
 ```bash
 npm run arena:supervisor -- \
-  --configs=t1,t2 --mode=deterministic --shadow --port=8120
+  --configs=t1,t2,t3,t4 --mode=deterministic --shadow --port=8120
 ```
 
 > 运行配置默认放在共享数据层 `../data/runtime/configs/`，运行产物写入
