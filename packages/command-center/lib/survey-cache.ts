@@ -41,6 +41,6 @@ export function refreshSurveyCache(): void {
 
 /** 启动后台刷新循环（返回 timer 供测试清理）。 */
 export function startSurveyCacheLoop(intervalMs = 30_000): NodeJS.Timeout {
-  refreshSurveyCache();
+  setTimeout(refreshSurveyCache, 0); // 启动即后台预热，不阻塞首次 listen（2026-08-08）
   return setInterval(refreshSurveyCache, intervalMs);
 }
