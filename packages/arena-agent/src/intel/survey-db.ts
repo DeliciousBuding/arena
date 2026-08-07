@@ -159,7 +159,24 @@ CREATE TABLE IF NOT EXISTS chunks (
   chunk_key TEXT PRIMARY KEY,
   last_seen_tick INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_chunks_last_seen ON chunks(last_seen_tick);`;
+CREATE INDEX IF NOT EXISTS idx_chunks_last_seen ON chunks(last_seen_tick);
+
+-- 稀有事迹持久化（2026-08-08，数据架构审计 A4）：CORE_DESTROYED/夺取/信标/
+-- 自爆/阵亡等——calibration run 轮换后历史事迹不再丢，deeds 查库替代回扫。
+CREATE TABLE IF NOT EXISTS notable_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT NOT NULL,
+  tick INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  actor_id TEXT,
+  target_id TEXT,
+  x INTEGER,
+  y INTEGER,
+  amount INTEGER,
+  unit_type TEXT,
+  UNIQUE(tenant, tick, event_type, actor_id, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notable_events_tick ON notable_events(tick);`;
 
 /** 打开（或创建）某租户的测绘库。write=true 时确保目录存在。 */
 export function openSurveyDb(dataRoot: string, tenant: string, write = false): DatabaseSync {
@@ -245,6 +262,28 @@ export function upsertUnitSeen(
     VALUES (?, ?, ?, ?)
     ON CONFLICT(cell, tick) DO NOTHING
   `).run(key, unitType, controlled ? 1 : 0, tick);
+}
+
+/** 稀有事迹写入（幂等：UNIQUE(tenant,tick,event_type,actor_id,target_id)
+ *  INSERT OR IGNORE——force 重跑不重复。位置/金额/单位类型供 deeds 叙事。 */
+export function recordNotableEvent(
+  db: DatabaseSync,
+  e: {
+    tenant: string;
+    tick: number;
+    eventType: string;
+    actorId: string | null;
+    targetId: string | null;
+    x: number | null;
+    y: number | null;
+    amount: number | null;
+    unitType: string | null;
+  },
+): number {
+  return Number(db.prepare(`
+    INSERT OR IGNORE INTO notable_events (tenant, tick, event_type, actor_id, target_id, x, y, amount, unit_type)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(e.tenant, e.tick, e.eventType, e.actorId, e.targetId, e.x, e.y, e.amount, e.unitType).changes);
 }
 
 /** 已知矿查询（跨 run 累积；可过滤状态/新鲜度）。 */
