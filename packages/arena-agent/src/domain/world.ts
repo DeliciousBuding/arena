@@ -112,7 +112,7 @@ function resourceCellCoveredByVision(
 }
 
 /** chunk 坐标支持负坐标（t1 Core [-619,-154]）：floor 除法而非截断。 */
-function chunkKeyFor(position: Position): string {
+export function chunkKeyFor(position: Position): string {
   const cx = Math.floor(position[0] / CHUNK_SIZE);
   const cy = Math.floor(position[1] / CHUNK_SIZE);
   return `${cx},${cy}`;
@@ -607,6 +607,21 @@ export class World {
       if (this.obstacleMemory.has(key)) continue;
       this.obstacleMemory.add(key);
       n += 1;
+    }
+    return n;
+  }
+
+  /** 启动播种（2026-08-08，测绘库跨 run 探索分区）：把测绘库累积的 chunk 最后
+   *  探索 tick 注入 chunkMemory——"探索过的区域"跨重启保留，frontier 探索
+   *  （未观察分区优先）直接可用，无需重新扫图。只覆盖更新的 tick。 */
+  seedChunkMemory(chunks: readonly { key: string; lastSeenTick: number }[]): number {
+    let n = 0;
+    for (const c of chunks) {
+      const prev = this.chunkMemory.get(c.key);
+      if (prev === undefined || prev < c.lastSeenTick) {
+        this.chunkMemory.set(c.key, c.lastSeenTick);
+        n += 1;
+      }
     }
     return n;
   }

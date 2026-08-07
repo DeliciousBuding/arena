@@ -1,3 +1,5 @@
+// @ts-nocheck — 本文件由 legacy app.js 迁移而来（187KB 命令式 Canvas 引擎），
+// 保持 JS 语义，全量类型化列为独立迁移项（见 DESIGN.md §7 技术债）。
 /* Arena 指挥面板前端引擎 — 由 React（command-center/web）挂载到地图宿主容器。
  * 由 public/app.js 移植：chrome（顶栏/侧栏/决策流/对话框）剥离到 React 组件，
  * 地图/战术/回放/覆盖层保持原生 Canvas + DOM。入口 createMapEngine(host)。 */
@@ -32,13 +34,73 @@ const EVENT_KIND_CN = {
   WAIT: '等待', NOTHING_TO_DO: '无事可做',
 };
 
-const state = {
+/* ============================================================
+ * 内部数据接口：官方快照/事件为 legacy JSON 结构，核心公共 API 类型见 types.ts。
+ * 字段以运行时为准，索引签名兜底（渐进类型化：结构 + 常用字段精确，其余宽松）。
+ * ============================================================ */
+interface Jsonish { [key: string]: any }
+interface ViewState extends Jsonish { cx: number; cy: number; scale: number; ready: boolean; vw?: number; vh?: number }
+interface MapCell extends Jsonish { x: number; y: number }
+interface TickMeterState extends Jsonish { period: number; lastMtime: number; lastTick: number; lastPollMtime: number; lastPollTick: number }
+interface ZoomState extends Jsonish { active: boolean; tx: number; ty: number; ts: number; lastTs: number }
+interface TacticalState extends Jsonish {
+  surveys: Record<string, Jsonish>;
+  worlds: Record<string, Jsonish>;
+  plans: Record<string, Jsonish>;
+  selected: Jsonish | null;
+  mode: string | null;
+  moveGoals: Record<string, [number, number]>;
+  moveRoute: Jsonish | null;
+  attackTarget: Jsonish | null;
+  plan: Jsonish | null;
+  routePreview: Jsonish | null;
+  eventFx: Jsonish[];
+  debris: Jsonish[];
+  fxSeq: number;
+  cmdTelemetry: Record<string, Jsonish>;
+}
+interface ArenaState extends Jsonish {
+  map: Jsonish | null;
+  overview: Jsonish | null;
+  streams: Record<string, Jsonish[]>;
+  events: Record<string, Jsonish[]>;
+  view: ViewState;
+  layers: Record<string, boolean>;
+  tenantsOn: Record<string, boolean>;
+  soloTenant: string | null;
+  tab: string;
+  cellIndex: Map<string, MapCell>;
+  cells: MapCell[];
+  beacons: Jsonish[];
+  coreTrails: Jsonish[];
+  intel: Jsonish | null;
+  enemyMemoryHits: Jsonish[];
+  surveyHits: Map<string, Jsonish>;
+  bounds: { minX: number; minY: number; maxX: number; maxY: number } | null;
+  lastRefresh: number;
+  unitPrev: Map<string, Jsonish>;
+  tickMeter: TickMeterState;
+  drag: Jsonish | null;
+  hover: Jsonish | null;
+  hoverKey: string;
+  streamCollapsed: boolean;
+  streamHeight: number;
+  streamFilterQuiet: boolean;
+  streamLive: Jsonish | null;
+  viewAnim: Jsonish | null;
+  zoom: ZoomState;
+  cc: { tick: number | null; anchor: number };
+  terrainSig: number;
+  tactical: TacticalState;
+}
+
+const state: ArenaState = {
   map: null,
   overview: null,
   streams: {},          // tenant -> rows
   events: {},           // tenant -> events
   view: { cx: 0, cy: 0, scale: 8, ready: false },
-  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true, survey: true, patrol: true, plan: true, trail: true, beaconEdge: true, coreTrail: true },
+  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true, survey: true, patrol: true, plan: true, trail: true, beaconEdge: true, coreTrail: true, enemyMemory: true },
   tenantsOn: { t1: true, t2: true, t3: true, t4: true },
   soloTenant: null,     // null=全局联盟；'t1'..'t4'=单租户
   tab: 'all',           // all | t1 | t2 | t3 | t4 | events
@@ -47,6 +109,8 @@ const state = {
   beacons: [],
   coreTrails: [],
   intel: null,
+  enemyMemoryHits: [],  // 敌情记忆命中点（drawEnemyMemory 构建，hover 用）：{sx,sy,kind,...}
+  surveyHits: new Map(), // 测绘记忆命中（tactSurveyLayer 构建）：cellKey -> {kind,tick,state,seenCount,firstSeen}
   bounds: null,
   lastRefresh: 0,
   /** 单位上一次轮询位置（smooth 插值：poll 之间单位按 POLL_MS 渐变移动）。 */
@@ -92,9 +156,10 @@ function effDpr() {
   return Math.min(dpr, LQ ? DPR_ANIM : DPR_CAP);
 }
 
-let ROOT = document.body; // 挂载时替换为地图宿主容器（createMapEngine(host)）
-const $ = (sel) => ROOT.querySelector(sel);
-let els = {};
+let ROOT: HTMLElement = document.body; // 挂载时替换为地图宿主容器（createMapEngine(host)）
+const $ = (sel: string): HTMLElement | null => ROOT.querySelector(sel);
+/** DOM 元素引用（buildEls 填充；元素由 React 渲染，缺失时置 null 并在使用处保护）。 */
+let els: any = {};
 function buildEls() {
   return {
   canvas: $('#map'), clock: $('#clock'), dataRoot: $('#dataRoot'), badge: $('#refreshBadge'),
@@ -148,13 +213,13 @@ function applyPrefs() {
 }
 /** 图层复选框与 state.layers 同步（恢复持久化后调用一次）。 */
 function syncLayerToggles() {
-  document.querySelectorAll('#layerToggles input').forEach((el) => { el.checked = !!state.layers[el.dataset.layer]; });
+  document.querySelectorAll<HTMLInputElement>('#layerToggles input').forEach((el) => { el.checked = !!state.layers[el.dataset.layer ?? '']; });
 }
 
-let ctx = null; // createMapEngine 时初始化
-const images = {};
+let ctx: any = null; // createMapEngine 时初始化（CanvasRenderingContext2D；legacy 动态数据流，宽松标注）
+const images: Record<string, HTMLImageElement> = {};
 /* 地图提示自动淡出：交互时重现，闲置 4.5s 后淡出（画布更干净） */
-let hintTimer = null;
+let hintTimer: ReturnType<typeof setTimeout> | null = null;
 function pokeHint() {
   if (!els.hint) return;
   els.hint.classList.remove('map-hint-fade');
@@ -170,23 +235,23 @@ let lastTickLabelTick = -1;
  * 避免全量重绘卡顿。参考 MDN Optimizing canvas / Mozilla pinch-zoom 最佳实践：
  * 离屏预渲染、按比例桶重栅格化、动画期间降级（关 shadowBlur 与高成本细节）。 */
 const STATIC_PAD = 1.6;                 // 缓存比视口大 60%：小范围平移免重建
-const staticCache = { canvas: null, cctx: null, cssW: 0, cssH: 0, scale: 0, cx: 0, cy: 0, ready: false };
+const staticCache: { canvas: HTMLCanvasElement | null; cctx: CanvasRenderingContext2D | null; cssW: number; cssH: number; scale: number; cx: number; cy: number; ready: boolean } = { canvas: null, cctx: null, cssW: 0, cssH: 0, scale: 0, cx: 0, cy: 0, ready: false };
 let staticDirty = true;
 let LQ = false; // 动画/缩放阻尼期间降级渲染
 let surveySkipped = false; // 动画期间跳过测绘层后，结束需补一次全质量重建 // 缩放/平移动画期间：低质量模式（关 shadowBlur / 高成本细节）
-function bucketScale(s) {
+function bucketScale(s: number): number {
   const k = Math.round(Math.log2(Math.max(0.05, Math.min(64, s))) * 2) / 2;
   return Math.pow(2, k);
 }
 function invalidateStatic() { staticDirty = true; }
-function staticNeedsRebuild(bs) {
+function staticNeedsRebuild(bs: number): boolean {
   if (staticDirty || !staticCache.ready || staticCache.scale !== bs) return true;
   // 可平移余量 = 缓存覆盖半宽 - 视口半宽（随当前缩放自适应，保证视口不越出缓存）
   const mw = W() / 2 / bs * STATIC_PAD - W() / 2 / state.view.scale;
   const mh = H() / 2 / bs * STATIC_PAD - H() / 2 / state.view.scale;
   return Math.abs(state.view.cx - staticCache.cx) > mw || Math.abs(state.view.cy - staticCache.cy) > mh;
 }
-function renderStaticCache(bs) {
+function renderStaticCache(bs: any) {
   const dpr = effDpr();
   const w = Math.max(1, Math.round(W() * STATIC_PAD)), h = Math.max(1, Math.round(H() * STATIC_PAD));
   if (!staticCache.canvas) { staticCache.canvas = document.createElement('canvas'); staticCache.cctx = staticCache.canvas.getContext('2d', { alpha: false }) ?? staticCache.canvas.getContext('2d'); }
@@ -238,7 +303,7 @@ function blitStatic() {
 const timeFmt = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 
 /* ---------- 素材加载 ---------- */
-function loadImage(url) {
+function loadImage(url: any) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
@@ -357,7 +422,7 @@ function fitView() {
   state.view.ready = true;
   animateView({ cx: (b.minX + b.maxX) / 2, cy: (b.minY + b.maxY) / 2, scale });
 }
-function fitSolo(tenant) {
+function fitSolo(tenant: any) {
   // 只按该租户已测绘的 cells（障碍/资源/单位/核心）自适应；信标在远处时以边缘指示显示，不撑爆核心区
   const cells = state.cells.filter((c) => c.tenant === tenant);
   if (!cells.length) return;
@@ -378,7 +443,7 @@ function animateView(to, duration = 680) {
 /** 滚轮缩放阻尼（惯性，2026-08-07）：每帧按 dt 指数趋近目标视图——帧率无关、
  *  连续跟手（参考地图工具最佳实践：target + exponential smoothing，事件驱动目标，
  *  动画帧驱动趋近）。快速滚轮/触控板捏合不再逐格重启动画，停止后自然惯性收敛。 */
-function stepZoom(ts) {
+function stepZoom(ts: any) {
   const z = state.zoom;
   const dt = Math.min(120, Math.max(1, ts - z.lastTs));
   z.lastTs = ts;
@@ -393,7 +458,7 @@ function stepZoom(ts) {
     z.active = false;
   }
 }
-function applyViewAnim(ts) {
+function applyViewAnim(ts: any) {
   const a = state.viewAnim;
   if (!a) return;
   const p = Math.min(1, (ts - a.t0) / a.duration);
@@ -403,7 +468,7 @@ function applyViewAnim(ts) {
   state.view.scale = a.from.scale + (a.to.scale - a.from.scale) * e;
   if (p >= 1) state.viewAnim = null;
 }
-function project(x, y) {
+function project(x: any, y: any) {
   return { sx: (x - state.view.cx) * state.view.scale + W() / 2, sy: (y - state.view.cy) * state.view.scale + H() / 2 };
 }
 function visibleCells(pad = 1) {
@@ -448,7 +513,7 @@ function captureUnitPrev() {
   for (const k of state.unitPrev.keys()) if (!seen.has(k)) state.unitPrev.delete(k);
 }
 /** 单位当前绘制位置：插值（ease-out）或精确格。 */
-function unitDrawPos(c) {
+function unitDrawPos(c: any) {
   const m = state.unitPrev.get(c.tenant + ':' + c.id);
   if (m && (m.px !== m.x || m.py !== m.y)) {
     const win = m.win || movementWindowMs();
@@ -506,6 +571,7 @@ function draw() {
   if (!replayActive) drawCores(buckets.core, s);
   if (!replayActive && state.layers.coreTrail !== false) drawEnemyCoreTrails(s);
   if (!replayActive && state.layers.coreTrail !== false) drawThreatArrows(s);
+  if (state.layers.enemyMemory !== false) drawEnemyMemory(s); // 敌情记忆 = 情报层：回放模式也画（非当前帧实体）
   if (!replayActive) drawLiveTrails(s);
   drawBeacons(s);
   if (state.hover && !state.drag) drawHoverCell(state.hover, s);
@@ -527,7 +593,7 @@ function draw() {
   }
 }
 /** 全局联盟地图：每租户疆域色晕 + 核心标签（大联盟地图"完全设计"：一眼区分 4 租户领地）。 */
-function drawTenantRegions(s) {
+function drawTenantRegions(s: any) {
   const groups = {};
   for (const c of state.cells) {
     if (state.tenantsOn[c.tenant] === false) continue;
@@ -578,7 +644,7 @@ function drawTenantRegions(s) {
  *  （175Hz 下省掉每帧 canvas 状态切换与渐变创建）。 */
 const bgStars = { canvas: null, cctx: null, w: 0, h: 0 };
 const bgVignette = { canvas: null, cctx: null, w: 0, h: 0 };
-function ensureAtmosphere(w, h) {
+function ensureAtmosphere(w: any, h: any) {
   // 星点层（内容之下）
   if (!bgStars.canvas) { bgStars.canvas = document.createElement('canvas'); bgStars.cctx = bgStars.canvas.getContext('2d', { alpha: true }) ?? bgStars.canvas.getContext('2d'); }
   if (bgStars.w !== w || bgStars.h !== h) {
@@ -615,22 +681,22 @@ function ensureAtmosphere(w, h) {
     vc.fillRect(0, 0, w, h);
   }
 }
-function drawStars(w, h) {
+function drawStars(w: any, h: any) {
   ensureAtmosphere(w, h);
   ctx.drawImage(bgStars.canvas, 0, 0, w, h);
 }
-function drawVignette(w, h) {
+function drawVignette(w: any, h: any) {
   ensureAtmosphere(w, h);
   ctx.drawImage(bgVignette.canvas, 0, 0, w, h);
 }
 /** 背景坐标系网格（2026-08-08 升级）：细格 + 粗格 + 坐标轴（x=0/y=0）。
  *  并入静态缓存（平移/缩放重建一次），坐标数字由 drawGridLabels 动态画。 */
-function gridStepFor(s, targetPx) {
+function gridStepFor(s: any, targetPx: any) {
   let step = 4;
   while (step * s < targetPx && step < 2048) step *= 2;
   return step;
 }
-function drawGrid(w, h) {
+function drawGrid(w: any, h: any) {
   const s = state.view.scale;
   const minor = gridStepFor(s, 22);
   const major = minor * 4;
@@ -659,7 +725,7 @@ function drawGrid(w, h) {
   }
 }
 /** 坐标刻度标签（动态层）：顶边 X 世界坐标 + 左边 Y 世界坐标。动画降级期间跳过。 */
-function drawGridLabels(w, h) {
+function drawGridLabels(w: any, h: any) {
   if (LQ) return;
   const s = state.view.scale;
   const major = gridStepFor(s, 22) * 4;
@@ -684,7 +750,7 @@ function drawGridLabels(w, h) {
   }
   ctx.restore();
 }
-function sprite(img, sx, sy, size) {
+function sprite(img: any, sx: any, sy: any, size: any) {
   if (!img) return;
   const dw = size, dh = size * (img.height / Math.max(1, img.width));
   ctx.drawImage(img, sx - dw / 2, sy - dh / 2, dw, dh);
@@ -696,7 +762,7 @@ function cellAlpha(c, floor = 0.45) {
   if (!state.soloTenant) return floor + 0.18; // 全局地图记忆层略亮
   return floor;
 }
-function drawMeterBar(s, x, y, cell, value, maximum, color, labelColor, displayLabel) {
+function drawMeterBar(s: any, x: any, y: any, cell: any, value: any, maximum: any, color: any, labelColor: any, displayLabel: any) {
   const gap = Math.max(1.5, cell * 0.04), maxWidth = cell * 0.9, barHeight = Math.max(2, cell * 0.06);
   const ratio = maximum > 0 ? Math.max(0, Math.min(1, value / maximum)) : 0;
   let fontSize = Math.max(6, cell * 0.15);
@@ -721,15 +787,15 @@ function drawMeterBar(s, x, y, cell, value, maximum, color, labelColor, displayL
   ctx.strokeRect(barX + .5, y - barHeight / 2 + .5, barWidth - 1, barHeight - 1);
   ctx.restore();
 }
-function drawUnitHealth(s, x, y, cell, hp, maxHp) {
+function drawUnitHealth(s: any, x: any, y: any, cell: any, hp: any, maxHp: any) {
   if (maxHp <= 0 || hp >= maxHp) return;
   drawMeterBar(s, x, y, cell, hp, maxHp, hp > 1 ? '#76b889' : '#c66370', '#e4e4e7', `${hp}/${maxHp}`);
 }
-function drawWorkerCargo(s, x, y, cell, cargo) {
+function drawWorkerCargo(s: any, x: any, y: any, cell: any, cargo: any) {
   if (!cargo) return;
   drawMeterBar(s, x, y, cell, cargo, 2, '#76b889', '#b2d2ba', `×${cargo}`);
 }
-function drawCoreOwnerLabel(s, x, y, cell, username, controlled) {
+function drawCoreOwnerLabel(s: any, x: any, y: any, cell: any, username: any, controlled: any) {
   const label = '@' + (username || '?');
   let fontSize = Math.max(6, Math.min(9, cell * 0.17));
   const maxWidth = cell * 0.95;
@@ -745,7 +811,7 @@ function drawCoreOwnerLabel(s, x, y, cell, username, controlled) {
   ctx.fillText(label, x, y);
   ctx.restore();
 }
-function drawStackBadge(s, x, y, cell, count, color) {
+function drawStackBadge(s: any, x: any, y: any, cell: any, count: any, color: any) {
   const fontSize = Math.max(6, cell * 0.13), label = '×' + count, padding = Math.max(1, cell * 0.045);
   const height = fontSize + padding * 2;
   ctx.save();
@@ -760,8 +826,8 @@ function drawStackBadge(s, x, y, cell, count, color) {
 /** 选中波纹（官方 SELECTION_RIPPLE 900ms，双波非线性扩散） */
 const SELECTION_RIPPLE_MS = 900;
 const selectionRipples = new Map(); // objId -> born
-function startSelectionRipple(id) { if (id) selectionRipples.set(id, performance.now()); }
-function drawSelectionRipple(s, x, y, cell, size, id) {
+function startSelectionRipple(id: any) { if (id) selectionRipples.set(id, performance.now()); }
+function drawSelectionRipple(s: any, x: any, y: any, cell: any, size: any, id: any) {
   const born = selectionRipples.get(id);
   if (born === undefined) return;
   const progress = (performance.now() - born) / SELECTION_RIPPLE_MS;
@@ -784,7 +850,7 @@ function drawSelectionRipple(s, x, y, cell, size, id) {
 }
 /** 石头：低缩放批量实心格（一次 path，性能好、看得清）；高缩放用官方 asteroid 素材。
  *  探测记忆：非最新 tick 的障碍格按新鲜度淡出（交替地形留痕但不喧宾夺主）。 */
-function drawObstacles(cells, s) {
+function drawObstacles(cells: any, s: any) {
   if (!cells.length) return;
   if (s >= 8) {
     for (const c of cells) {
@@ -815,7 +881,7 @@ function drawObstacles(cells, s) {
 }
 /** 矿物：始终可见；高缩放 crystal 素材 + 绿色发光，低缩放亮点。
  *  探测记忆：被采完（非最新 tick 出现）的资源淡出，避免"绿色区域"堆积。 */
-function drawResources(cells, s) {
+function drawResources(cells: any, s: any) {
   if (!cells.length) return;
   if (s >= 6) {
     for (const c of cells) {
@@ -860,7 +926,7 @@ async function loadGlobalPlans() {
 /** 单位移动方向虚线（实时 + 算法决策）：单位在 poll 之间插值移动时，
  *  从上一轮位置到当前插值位置画虚线 + 箭头，直观显示"正在往哪走"。 */
 /** 屏幕线段保底长度：低缩放时太短的线段按方向拉长到 minLen（方向夸张但保持语义）。 */
-function extendScreen(a, b, minLen) {
+function extendScreen(a: any, b: any, minLen: any) {
   const dx = b.sx - a.sx, dy = b.sy - a.sy;
   const len = Math.hypot(dx, dy);
   if (len >= minLen || len < 1e-3) return b;
@@ -875,7 +941,7 @@ function anyUnitsMoving() {
   }
   return false;
 }
-function drawMovementDashes(cells, s) {
+function drawMovementDashes(cells: any, s: any) {
   if (!cells.length || s < 1.2) return;
   const now = performance.now();
   const cell = s; // 缩放 = 格子像素尺寸，几何对齐官方 WorldCanvas drawMoveArrow
@@ -934,7 +1000,7 @@ function drawMovementDashes(cells, s) {
   ctx.restore();
 }
 /** 悬停格高亮（地图响应感）：白 4.5% 底 + 22% 描边圆角格，不挡内容。 */
-function drawHoverCell(c, s) {
+function drawHoverCell(c: any, s: any) {
   const p = project(c.x, c.y);
   const inset = Math.max(1.5, s * 0.06);
   const x = p.sx - s / 2 + inset, y = p.sy - s / 2 + inset;
@@ -948,7 +1014,7 @@ function drawHoverCell(c, s) {
 }
 /** 单位：高缩放素材+色环；低缩放紧凑租户色圆点（不放大图标遮挡地图）。
  *  官方细节：WORKER 载货条（绿）、受伤单位 HP 条、同格堆叠 ×2 徽章、选中波纹。 */
-function drawUnits(cells, s) {
+function drawUnits(cells: any, s: any) {
   if (!cells.length) return;
   const pulse = 1 + 0.1 * Math.sin(performance.now() / 380 + hash2(cells[0].x, cells[0].y, 7) * 0.01);
   if (s >= 6) {
@@ -998,7 +1064,7 @@ function drawUnits(cells, s) {
 /** 实时移动轨迹：live 视图（非回放）用该租户 replay 的 trail 画最近 5 个 tick 的位置轨迹，
  *  让"单位在动"肉眼可见（回放引擎插值动画之外，live 也有运动感）。 */
 const TRAIL_POINTS = 5;
-function drawLiveTrails(s) {
+function drawLiveTrails(s: any) {
   if (!state.layers.trail || !state.soloTenant || !replay.data || replay.data.loadedFor !== state.soloTenant) return;
   if (s < 3) return; // 全局/极低缩放不画轨迹，避免噪声
   const color = TENANT_COLORS[state.soloTenant] ?? '#4591c5';
@@ -1031,7 +1097,7 @@ function drawLiveTrails(s) {
 
 /** 核心：高缩放素材+光环+拥有者标签+盾条/血条；低缩放租户色大点+白描边。
  *  官方细节：drawCoreOwnerLabel / drawCoreShieldBar / drawHealthBar / 选中波纹。 */
-function drawCores(cells, s) {
+function drawCores(cells: any, s: any) {
   if (!cells.length) return;
   if (s >= 6) {
     for (const c of cells) drawCoreSprite(c, s);
@@ -1051,11 +1117,11 @@ function drawCores(cells, s) {
     }
   }
 }
-function coreColor(c) {
+function coreColor(c: any) {
   // 我方核心=租户色；敌方核心=珊瑚红（官方 hostile 语义）
   return c.controlled ? (TENANT_COLORS[c.tenant] ?? '#4591c5') : '#c66370';
 }
-function drawCoreSprite(c, s) {
+function drawCoreSprite(c: any, s: any) {
   const p = project(c.x, c.y);
   const size = s * 0.72;
   const color = coreColor(c);
@@ -1104,7 +1170,7 @@ function drawCoreSprite(c, s) {
 }
 /** 信标：视野内脉冲；视野外屏幕边缘方向指示（不撑爆自适应）。
  *  全局视图下按位置去重（4 租户共享同一世界信标，避免 4 个金色精灵叠在同一格）。 */
-function drawBeacons(s) {
+function drawBeacons(s: any) {
   // 全局视图：4 租户共享同一世界信标，按位置去重，轨迹用"最长历史"的那份绘制；
   // 单租户视图：直接绘制。
   if (state.soloTenant === null) {
@@ -1127,7 +1193,7 @@ function drawBeacons(s) {
 }
 
 /** 单个信标：历史轨迹虚线（越旧越淡）+ 头部方向箭头 + 原位脉冲/精灵。 */
-function drawBeaconAt(s, b) {
+function drawBeaconAt(s: any, b: any) {
   const p = project(b.x, b.y);
   const w = W(), h = H();
   const offscreen = p.sx < -70 || p.sx > w + 70 || p.sy < -70 || p.sy > h + 70;
@@ -1153,7 +1219,7 @@ function drawBeaconAt(s, b) {
 
 /** 信标移动历史：虚线轨迹（租户配色、旧→新渐变透明、线段缓流）+ 头部方向箭头。
  *  数据源：/api/map beacons[].trail（服务端从 calibration case 增量提取）。 */
-function drawBeaconTrail(s, b) {
+function drawBeaconTrail(s: any, b: any) {
   const trail = Array.isArray(b.trail) ? b.trail : null;
   if (!trail || trail.length < 2) return;
   const color = TENANT_COLORS[b.tenant] ?? '#e0b94f';
@@ -1203,7 +1269,7 @@ function drawBeaconTrail(s, b) {
 /** 敌方核心历史轨迹（2026-08-08）：与信标轨迹同机制——虚线 + 旧→新渐变 +
  *  头部方向箭头 + 用户名标签。面板直接看到谁在迁移/逼近（如 jerkman 核心带
  *  信标东移）；数据源 /api/map coreTrails（服务端跨 run 增量提取）。 */
-function drawEnemyCoreTrails(s) {
+function drawEnemyCoreTrails(s: any) {
   const trails = state.coreTrails;
   if (!Array.isArray(trails) || trails.length === 0) return;
   const w = W(), h = H();
@@ -1263,7 +1329,7 @@ function drawEnemyCoreTrails(s) {
 }
 /** 威胁雷达（2026-08-08）：从 HIGH/MEDIUM 风险敌核心画红色虚线箭头指向我方
  *  核心 + 距离标签——面板一眼看到谁在压过来（数据 /api/intel）。 */
-function drawThreatArrows(s) {
+function drawThreatArrows(s: any) {
   const intel = state.intel;
   if (!intel || !Array.isArray(intel.tenants)) return;
   const w = W(), h = H();
@@ -1313,7 +1379,79 @@ function drawThreatArrows(s) {
   }
   ctx.restore();
 }
-function drawEdgeBeacon(b, p) {
+/** 敌情记忆层（2026-08-08）：出视野的敌方核心/战斗单位画半透明标记——
+ *  新鲜度（距 lastSeenTick）决定透明度：≤300 tick 实色 / 300-2000 线性衰减 /
+ *  >2000 tick 敌核保留极淡底线、敌单位不再绘制（动态目标记忆过期快）。
+ *  数据源 /api/intel（30s 缓存）：tenants[].enemyCores + enemyUnitMemory。
+ *  hover 命中点写入 state.enemyMemoryHits（lastSeen 详情 tooltip）。 */
+const ENEMY_MEM_FRESH_WINDOW = 300;
+const ENEMY_MEM_MAX_AGE = 2000;
+function enemyMemAlpha(age: any, freshAlpha: any, minAlpha: any) {
+  if (age <= ENEMY_MEM_FRESH_WINDOW) return freshAlpha;
+  if (age >= ENEMY_MEM_MAX_AGE) return minAlpha;
+  const t = (age - ENEMY_MEM_FRESH_WINDOW) / (ENEMY_MEM_MAX_AGE - ENEMY_MEM_FRESH_WINDOW);
+  return freshAlpha - (freshAlpha - minAlpha) * t;
+}
+function drawEnemyMemory(s: any) {
+  state.enemyMemoryHits = [];
+  const intel = state.intel;
+  if (!intel || !Array.isArray(intel.tenants) || state.layers.enemyMemory === false) return;
+  const w = W(), h = H();
+  const baseTick = state.tickMeter.lastTick || 0;
+  const hits = [];
+  for (const t of intel.tenants) {
+    if (state.soloTenant !== null && t.tenant !== state.soloTenant) continue;
+    if (state.tenantsOn[t.tenant] === false) continue;
+    // 敌核记忆：菱形（与 drawEnemyCoreTrails 同色系，半透明区分可见敌核）
+    for (const e of (t.enemyCores ?? [])) {
+      const px = e.position[0], py = e.position[1];
+      const p = project(px, py);
+      if (p.sx < -400 || p.sx > w + 400 || p.sy < -400 || p.sy > h + 400) continue;
+      const age = Math.max(0, baseTick - (e.lastSeenTick ?? 0));
+      const alpha = enemyMemAlpha(age, 0.5, 0.12);
+      const r = Math.max(6, s * 0.42);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(p.sx, p.sy);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillStyle = '#c66370';
+      ctx.fillRect(-r / 2, -r / 2, r, r);
+      ctx.strokeStyle = 'rgba(255,160,160,.85)';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(-r / 2, -r / 2, r, r);
+      ctx.restore();
+      if (s >= 8 && e.username) {
+        ctx.save();
+        ctx.globalAlpha = Math.min(0.9, alpha * 1.6);
+        ctx.font = `600 ${Math.max(10, Math.round(s * 0.72))}px ${CANVAS_FONT}`;
+        ctx.fillStyle = '#f0b0b6';
+        ctx.textAlign = 'center';
+        ctx.fillText(e.username, p.sx, p.sy - r - 3);
+        ctx.restore();
+      }
+      hits.push({ sx: p.sx, sy: p.sy, x: px, y: py, kind: 'core', tenant: t.tenant, username: e.username ?? null, lastSeenTick: e.lastSeenTick ?? null, raidRisk: e.raidRisk ?? null, distance: e.distanceToFriendlyCore ?? null });
+    }
+    // 敌单位记忆：圆点（>2000 tick 不画）
+    for (const u of (t.enemyUnitMemory ?? [])) {
+      const age = Math.max(0, baseTick - (u.lastSeenTick ?? 0));
+      if (age > ENEMY_MEM_MAX_AGE) continue;
+      const px = u.position[0], py = u.position[1];
+      const p = project(px, py);
+      if (p.sx < -400 || p.sx > w + 400 || p.sy < -400 || p.sy > h + 400) continue;
+      const alpha = enemyMemAlpha(age, 0.42, 0.1);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#e0858f';
+      ctx.beginPath();
+      ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.16), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      hits.push({ sx: p.sx, sy: p.sy, x: px, y: py, kind: 'unit', tenant: t.tenant, unitType: u.unitType ?? 'VANGUARD', lastSeenTick: u.lastSeenTick ?? null });
+    }
+  }
+  state.enemyMemoryHits = hits;
+}
+function drawEdgeBeacon(b: any, p: any) {
   const w = W(), h = H();
   const cx = w / 2, cy = h / 2;
   const dx = p.sx - cx, dy = p.sy - cy;
@@ -1329,7 +1467,7 @@ function drawEdgeBeacon(b, p) {
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(cx + ux * 12, cy + uy * 12); ctx.lineTo(ex - ux * 4, ey - uy * 4); ctx.stroke();
 }
-function roundRect(x, y, w, h, r) {
+function roundRect(x: any, y: any, w: any, h: any, r: any) {
   ctx.beginPath();
   ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r);
   ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
@@ -1337,7 +1475,7 @@ function roundRect(x, y, w, h, r) {
 }
 
 /* ---------- 悬浮提示 ---------- */
-function nearestCell(px, py) {
+function nearestCell(px: any, py: any) {
   let best = null, bestD = Infinity;
   for (const c of visibleCells()) {
     const p = project(c.x, c.y);
@@ -1346,8 +1484,24 @@ function nearestCell(px, py) {
   }
   return bestD <= Math.max(18, state.view.scale) ? best : null;
 }
+/** 敌情记忆命中：最近 12px 内的记忆点（敌核/敌单位），无则 null。 */
+function nearestEnemyMemory(px: any, py: any) {
+  let best = null, bestD = Infinity;
+  for (const m of state.enemyMemoryHits) {
+    const d = Math.hypot(px - m.sx, py - m.sy);
+    if (d < bestD) { bestD = d; best = m; }
+  }
+  return bestD <= 12 ? best : null;
+}
+/** 测绘记忆命中（聚焦租户）：surveyHits 中与指针同格的点，无则 null。 */
+function nearestSurveyMemory(px: any, py: any) {
+  if (!state.soloTenant || state.surveyHits.size === 0) return null;
+  const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+  const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+  return state.surveyHits.get(`${wx},${wy}`) ?? null;
+}
 /** 悬浮信息框（官方 MapFeatureInfo 移植）：图标头 + 坐标 + 动态行 + 指向箭头定位。 */
-function showTooltip(px, py, cell) {
+function showTooltip(px: any, py: any, cell: any) {
   if (!cell) { els.tooltip.hidden = true; return; }
   const color = TENANT_COLORS[cell.tenant] ?? '#999';
   const iconFor = (t) => t === 'core' ? SPRITE.core
@@ -1386,15 +1540,79 @@ function showTooltip(px, py, cell) {
   els.tooltip.dataset.side = side;
 }
 
+/* ---------- 记忆层 tooltip（敌情记忆 / 测绘记忆） ---------- */
+function positionTooltip(px: any, py: any, html: any) {
+  els.tooltip.innerHTML = `<span class="tt-arrow" aria-hidden="true"></span>${html}`;
+  els.tooltip.hidden = false;
+  const tw = els.tooltip.offsetWidth, th = els.tooltip.offsetHeight;
+  const rect = els.canvas.getBoundingClientRect();
+  let left = px + 16, top = py + 16, side = 'left';
+  if (left + tw > rect.width - 8) { left = px - tw - 16; side = 'right'; }
+  if (top + th > rect.height - 8) top = py - th - 16;
+  els.tooltip.style.left = `${left}px`;
+  els.tooltip.style.top = `${top}px`;
+  els.tooltip.dataset.side = side;
+}
+function lastSeenText(lastSeenTick: any) {
+  if (!lastSeenTick) return '未知';
+  const base = state.tickMeter.lastTick || 0;
+  const age = base - lastSeenTick;
+  return `t${fmt(lastSeenTick)}${age > 0 ? ` · ${age} tick 前` : ''}`;
+}
+/** 敌情记忆 tooltip：敌核/敌单位的最后目击详情。 */
+function showMemoryTooltip(px: any, py: any, mem: any) {
+  const color = '#c66370';
+  const lines = [];
+  if (mem.kind === 'core') {
+    lines.push(`<div class="tt-title" style="color:${color}">敌核 · ${escapeHtml(mem.username ?? '未知')}</div>`);
+    lines.push(`<div class="tt-row"><span>坐标</span><b>${mem.x}, ${mem.y}</b></div>`);
+    lines.push(`<div class="tt-row"><span>最后目击</span><b>${lastSeenText(mem.lastSeenTick)}</b></div>`);
+    if (mem.raidRisk) {
+      const rc = mem.raidRisk === 'CRITICAL' ? 'var(--danger)' : mem.raidRisk === 'HIGH' ? 'var(--warn)' : 'var(--text-dim)';
+      lines.push(`<div class="tt-row"><span>威胁</span><b style="color:${rc}">${mem.raidRisk}</b></div>`);
+    }
+    if (mem.distance != null) lines.push(`<div class="tt-row"><span>距我方核心</span><b>${mem.distance} 格</b></div>`);
+  } else {
+    lines.push(`<div class="tt-title" style="color:${color}">敌方 ${TACT_UNIT_CN[mem.unitType] ?? mem.unitType}</div>`);
+    lines.push(`<div class="tt-row"><span>坐标</span><b>${mem.x}, ${mem.y}</b></div>`);
+    lines.push(`<div class="tt-row"><span>最后目击</span><b>${lastSeenText(mem.lastSeenTick)}</b></div>`);
+  }
+  lines.push(`<div class="tt-row"><span>归属租户</span><b>${mem.tenant.toUpperCase()}</b></div>`);
+  lines.push(`<div class="tt-row"><span>记忆</span><b style="color:var(--amber)">出视野 · 非当前 tick</b></div>`);
+  positionTooltip(px, py, lines.join(''));
+}
+/** 测绘记忆 tooltip：聚焦租户的矿/障碍记忆详情（状态/首次看到/seen 次数）。 */
+function showSurveyTooltip(px: any, py: any, info: any) {
+  const lines = [];
+  if (info.kind === 'resource') {
+    const st = info.state ?? 'visible';
+    const stCn = st === 'visible' ? '活跃' : st === 'stale' ? '待确认' : st === 'harvested' ? '采过' : st === 'empty' ? '已确认空' : st;
+    const stColor = st === 'visible' ? 'var(--green-resource)' : st === 'stale' ? 'var(--text-dim)' : 'var(--text-faint)';
+    lines.push(`<div class="tt-title" style="color:var(--green-resource)">矿 · 记忆</div>`);
+    lines.push(`<div class="tt-row"><span>坐标</span><b>${info.x}, ${info.y}</b></div>`);
+    lines.push(`<div class="tt-row"><span>状态</span><b style="color:${stColor}">${stCn}</b></div>`);
+    if (info.seenCount != null) lines.push(`<div class="tt-row"><span>见过</span><b>${info.seenCount} 次</b></div>`);
+    lines.push(`<div class="tt-row"><span>最后看到</span><b>${lastSeenText(info.tick)}</b></div>`);
+    if (info.firstSeen != null) lines.push(`<div class="tt-row"><span>首次看到</span><b>t${fmt(info.firstSeen)}</b></div>`);
+  } else {
+    lines.push(`<div class="tt-title" style="color:var(--text-dim)">障碍 · 记忆</div>`);
+    lines.push(`<div class="tt-row"><span>坐标</span><b>${info.x}, ${info.y}</b></div>`);
+    lines.push(`<div class="tt-row"><span>最后看到</span><b>${lastSeenText(info.tick)}</b></div>`);
+  }
+  lines.push(`<div class="tt-row"><span>归属租户</span><b>${info.tenant.toUpperCase()}</b></div>`);
+  lines.push(`<div class="tt-row"><span>记忆</span><b style="color:var(--amber)">已探索 · 非当前 tick</b></div>`);
+  positionTooltip(px, py, lines.join(''));
+}
+
 /* ---------- 租户卡片 ---------- */
-function statusOf(t) {
+function statusOf(t: any) {
   const s = state.overview?.tenants?.find((x) => x.tenant === t);
   if (!s) return { cls: 'stale', label: '无数据' };
   if (s.live) return { cls: 'live', label: '在线' };
   if (s.fileFresh) return { cls: 'fresh', label: '数据新鲜' };
   return { cls: 'stale', label: '离线' };
 }
-function toggleSolo(tenant) {
+function toggleSolo(tenant: any) {
   state.soloTenant = state.soloTenant === tenant ? null : tenant;
   invalidateStatic();
   if (state.soloTenant) {
@@ -1531,12 +1749,12 @@ function tickClock() {
   const frac = has ? Math.min(1, elapsed / m.period) : 0;
   emit('tick', { clock: timeFmt.format(new Date()), tick: m.lastTick, period: m.period, frac });
 }
-function markRefresh(ok) {
+function markRefresh(ok: any) {
   emit('refresh', ok);
 }
 
 /** 光标锚定缩放（阻尼目标版）：连续滚轮/键盘/按钮在 target 上累积，逐帧由 stepZoom 平滑趋近。 */
-function zoomTo(sx, sy, factor) {
+function zoomTo(sx: any, sy: any, factor: any) {
   const rect = els.canvas.getBoundingClientRect();
   const base = state.zoom.active ? { cx: state.zoom.tx, cy: state.zoom.ty, scale: state.zoom.ts } : { cx: state.view.cx, cy: state.view.cy, scale: state.view.scale };
   const ns = Math.min(64, Math.max(0.05, base.scale * factor));
@@ -1586,11 +1804,25 @@ function bindEvents() {
     if (hoverTimer !== null) return;
     hoverTimer = setTimeout(() => {
       hoverTimer = null;
+      // 敌情记忆优先：命中敌核/敌单位记忆点则显示 lastSeen 详情，不走格子 hover
+      const mem = nearestEnemyMemory(px, py);
+      if (mem) {
+        if (state.hover) { state.hover = null; state.hoverKey = ''; }
+        showMemoryTooltip(px, py, mem);
+        return;
+      }
       const cell = nearestCell(px, py);
       state.hover = cell;
       const hk = cell ? cell.tenant + ':' + cell.type + ':' + cell.x + ',' + cell.y : '';
       if (hk !== state.hoverKey) { state.hoverKey = hk; draw(); } // 悬停格变化才重绘（低开销）
-      showTooltip(px, py, cell);
+      if (cell) {
+        showTooltip(px, py, cell);
+      } else {
+        // 无可见格命中 → 测绘记忆（聚焦租户的矿/障碍记忆详情）
+        const surveyMem = nearestSurveyMemory(px, py);
+        if (surveyMem) showSurveyTooltip(px, py, surveyMem);
+        else els.tooltip.hidden = true;
+      }
       // MOVE 模式：悬停任意格实时预览远距离路线（含雾区绕行 + ETA）
       const tac = T();
       if (tac.mode === 'MOVE' && tac.selected && tac.worlds[tac.selected.tenant]) {
@@ -1810,8 +2042,8 @@ const TICK_MS = 15000;
 const replay = { data: null, frame: 0, playing: false, speed: 1, loadedFor: null, tickStart: 0, progress: 0 };
 const TACT_RANGER_RAYS = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]];
 const T = () => state.tactical;
-function tactCoreCapacity(pop) { return Math.max(10, Math.max(0, pop) * 5); }
-function tactUnitCost(unitType, pop) {
+function tactCoreCapacity(pop: any) { return Math.max(10, Math.max(0, pop) * 5); }
+function tactUnitCost(unitType: any, pop: any) {
   const base = TACT_UNIT_BASE_COST[unitType];
   const exp = pop < 20 ? 0 : Math.floor((pop - 20) / 5) + 1;
   return Math.round(base * Math.pow(1.3, exp));
@@ -1824,7 +2056,7 @@ async function tactLoadWorld(tenant, force) {
     return null;
   } catch { return null; }
 }
-function tactObjectAt(world, x, y) {
+function tactObjectAt(world: any, x: any, y: any) {
   if (!world) return null;
   for (const o of world.state.objects) {
     if (o.kind === 'OBSTACLE' || o.kind === 'RESOURCE') continue;
@@ -1833,13 +2065,13 @@ function tactObjectAt(world, x, y) {
   }
   return null;
 }
-function tactTerrain(world, kind) {
+function tactTerrain(world: any, kind: any) {
   const s = new Set();
   if (!world) return s;
   for (const o of world.state.objects) if (o.kind === kind) for (const p of o.positions ?? []) s.add(pKey(p));
   return s;
 }
-function tactHostileAt(world, pos, includeOwnCore) {
+function tactHostileAt(world: any, pos: any, includeOwnCore: any) {
   for (const o of world.state.objects) {
     if (o.kind !== 'UNIT' && o.kind !== 'CORE') continue;
     const p = o.position; if (!p || p[0] !== pos[0] || p[1] !== pos[1]) continue;
@@ -1848,7 +2080,7 @@ function tactHostileAt(world, pos, includeOwnCore) {
   }
   return false;
 }
-function tactMoveTargets(world, obj) {
+function tactMoveTargets(world: any, obj: any) {
   if (!obj || obj.controlled !== true || !obj.position) return [];
   if (obj.kind !== 'UNIT' && obj.kind !== 'CORE') return [];
   const obstacles = tactTerrain(world, 'OBSTACLE'), resources = tactTerrain(world, 'RESOURCE');
@@ -1864,7 +2096,7 @@ function tactMoveTargets(world, obj) {
   }
   return out;
 }
-function tactFindPath(world, from, to, tenant) {
+function tactFindPath(world: any, from: any, to: any, tenant: any) {
   const obstacles = tactTerrain(world, 'OBSTACLE');
   // 合并测绘层已知障碍（雾区记忆）：远距离移动应绕开探索过的石头，而非直线穿雾
   const tac = T();
@@ -1896,7 +2128,7 @@ function tactFindPath(world, from, to, tenant) {
   }
   return null;
 }
-function tactRangerRange(world, obj) {
+function tactRangerRange(world: any, obj: any) {
   const obstacles = tactTerrain(world, 'OBSTACLE');
   const out = [];
   for (const [dx, dy] of TACT_RANGER_RAYS) {
@@ -1908,7 +2140,7 @@ function tactRangerRange(world, obj) {
   }
   return out;
 }
-function tactRangerTargets(world, obj) {
+function tactRangerTargets(world: any, obj: any) {
   const out = [];
   for (const o of world.state.objects) {
     if (!o.id || o.controlled !== false || !o.position) continue;
@@ -1920,7 +2152,7 @@ function tactRangerTargets(world, obj) {
   }
   return out;
 }
-function tactVisibility(world) {
+function tactVisibility(world: any) {
   const radiusFor = (o) => o.kind === 'CORE' ? 5 : o.unit_type === 'WORKER' ? 3 : o.unit_type === 'VANGUARD' ? 4 : 5;
   const out = [];
   for (const o of world.state.objects) {
@@ -1930,7 +2162,7 @@ function tactVisibility(world) {
   }
   return out;
 }
-function tactAvailability(world, obj) {
+function tactAvailability(world: any, obj: any) {
   const actions = { SELF_DESTRUCT: true, WAIT: true }, spawns = {}, reasons = {};
   if (!obj || obj.controlled !== true || !obj.position) return { actions, spawns, reasons };
   const beacon = world.state.champion_beacon ?? {};
@@ -2021,7 +2253,7 @@ function toast(msg, tone = 'info') {
 }
 /** 信标边缘指示由图层开关 state.layers.beaconEdge 控制（持久化见 savePrefs）。 */
 /** 重新触发面板入场动画（租户切换时内容已变，让面板丝滑重现）。 */
-function popPanel(el) {
+function popPanel(el: any) {
   if (!el || el.hidden) return;
   el.style.animation = 'none';
   void el.offsetWidth;
@@ -2049,7 +2281,7 @@ function exitSolo() {
   els.mapGlobal.hidden = true;
   syncSoloBadge();
 }
-function tactActionTypes(obj) {
+function tactActionTypes(obj: any) {
   const world = T().worlds[T().selected.tenant];
   const av = tactAvailability(world, obj);
   const isCore = obj.kind === 'CORE';
@@ -2137,7 +2369,7 @@ function tactRenderActionDialog() {
   els.actionDialog.querySelectorAll('[data-spawn]').forEach((b) => b.addEventListener('click', () => tactSpawn(b.dataset.spawn)));
   els.actionDialog.querySelector('[data-cancel-goal]')?.addEventListener('click', () => { delete tac.moveGoals[obj.id]; tac.moveRoute = null; tac.routePreview = null; clearUnitCommands(sel.tenant, obj.id); tactRenderActionDialog(); draw(); });
 }
-function tactChooseAction(type) {
+function tactChooseAction(type: any) {
   const tac = T(), sel = tac.selected;
   if (!sel) return;
   const world = tac.worlds[sel.tenant];
@@ -2169,7 +2401,7 @@ function tactChooseAction(type) {
 /** 面板拖拽位置（拖动后持久到本次选中；新选中重置回默认锚点）。 */
 let panelDrag = {};
 /** 卡片拖拽（2026-08-08）：按住头部可挪开卡片，不再挡地图选点。 */
-function makeDraggable(el, handleSel, key) {
+function makeDraggable(el: any, handleSel: any, key: any) {
   if (!el || !el.querySelector) return;
   const handle = el.querySelector(handleSel) || el;
   handle.style.cursor = 'grab';
@@ -2200,12 +2432,12 @@ function makeDraggable(el, handleSel, key) {
   handle.addEventListener('pointerdown', onDown);
 }
 /** 进入地图选点模式：收起动作卡（不挡地图），提示条引导点击。 */
-function enterTargetingMode(tip) {
+function enterTargetingMode(tip: any) {
   els.actionDialog.hidden = true;
   if (els.hint) { els.hint.textContent = tip; els.hint.classList.remove('map-hint-fade'); }
 }
 
-function tactSpawn(unitType) {
+function tactSpawn(unitType: any) {
   const tac = T(), sel = tac.selected;
   if (!sel || sel.obj.kind !== 'CORE') return;
   const world = tac.worlds[sel.tenant];
@@ -2242,7 +2474,7 @@ function tactRenderInspect() {
   if (svd) { els.inspectPanel.style.left = `${svd.left}px`; els.inspectPanel.style.top = `${svd.top}px`; els.inspectPanel.style.right = 'auto'; }
   makeDraggable(els.inspectPanel, '.panel-title', 'inspectPanel');
 }
-function tactRenderAssets(tenant) {
+function tactRenderAssets(tenant: any) {
   const world = T().worlds[tenant];
   if (!world) { els.assetPanel.hidden = true; return; }
   const controlled = world.state.objects.filter((o) => o.controlled === true && (o.kind === 'UNIT' || o.kind === 'CORE'));
@@ -2267,7 +2499,7 @@ function tactRenderAssets(tenant) {
     tactSelect(tenant, o);
   }));
 }
-function tactRenderHud(tenant) {
+function tactRenderHud(tenant: any) {
   const world = T().worlds[tenant];
   if (!world) { els.fleetHud.hidden = true; return; }
   const st = world.state;
@@ -2296,6 +2528,7 @@ function tactRenderHud(tenant) {
     const healTotal = (lc.spends ?? []).find((x) => x.kind === 'core_heal')?.total ?? 0;
     const units = lc.units ?? [];
     const alive = units.filter((u) => u.state === 'alive').reduce((s, u) => s + u.count, 0);
+    const dead = units.filter((u) => u.state !== 'alive').reduce((s, u) => s + u.count, 0);
     const unitLabel = ['WORKER', 'VANGUARD', 'RANGER'].map((t) => {
       const c = units.find((u) => u.state === 'alive' && u.type === t)?.count ?? 0;
       return c ? c + (t === 'WORKER' ? '工' : t === 'VANGUARD' ? '锋' : '射') : '';
@@ -2306,6 +2539,7 @@ function tactRenderHud(tenant) {
       '<span class="hud-val" title="治疗/修复消耗">疗 ' + healTotal + '</span>' +
       '<span class="hud-val dim" title="累计消费总额">耗 ' + spendTotal + '</span>' +
       '<span class="hud-val" title="存活单位">存 ' + alive + (unitLabel ? ' · ' + unitLabel : '') + '</span>' +
+      '<span class="hud-val" style="color:var(--danger)" title="累计阵亡单位">亡 ' + dead + '</span>' +
       '<span class="hud-val dim">采 ' + (lc.harvestCount ?? 0) + '</span>' +
       '</div>';
   }
@@ -2344,7 +2578,7 @@ async function replayLoad(tenant) {
     return replay.data;
   } catch { return null; }
 }
-function replayStepFrame(delta) {
+function replayStepFrame(delta: any) {
   if (!replay.data) return;
   replay.frame = Math.max(0, Math.min(replay.data.ticks.length - 1, replay.frame + delta));
   replay.progress = 0;
@@ -2369,7 +2603,7 @@ function replayCycleSpeed() {
   updateReplayUI();
 }
 /** 插值：frame-1 → frame 之间按 progress(0-1) 平滑移动 */
-function replayInterp(obj, frame, progress) {
+function replayInterp(obj: any, frame: any, progress: any) {
   if (!obj.trail || !obj.trail.length) return null;
   const b = obj.trail[Math.min(frame, obj.trail.length - 1)];
   const a = obj.trail[Math.max(0, frame - 1)];
@@ -2378,7 +2612,7 @@ function replayInterp(obj, frame, progress) {
   const y = a ? a.y + (b.y - a.y) * progress : b.y;
   return { x, y, hp: b.hp, shield: b.shield, cargo: b.cargo, t: b.t };
 }
-function replayDrawLayer(s) {
+function replayDrawLayer(s: any) {
   const f = replay.frame;
   const prog = replay.playing ? replay.progress : 1;
   if (T().fxFrame !== f) { T().fxFrame = f; tactSpawnEventFx(replay.data.ticks[f]); }
@@ -2527,11 +2761,33 @@ function tactDrawRoute(path, opts = {}) {
   ctx.restore();
 }
 
-function tactSurveyLayer(s) {
+function tactSurveyLayer(s: any) {
   if (!state.soloTenant || !state.layers.survey) return;
   const survey = T().surveys[state.soloTenant];
   if (!survey) return;
+  state.surveyHits = new Map(); // 记忆命中索引（hover 详情）
   const cell = Math.max(2, s);
+  // 探索分区底纹（2026-08-08，chunks 表）：已探索 16×16 分区淡蓝底——
+  // "探索过的范围"一眼可见（用户反馈"地图只能看见当前范围"的 Fog 层解），
+  // 未探索区自然暗色。只画视口内 chunk（性能）。
+  if (survey.chunks && survey.chunks.length) {
+    ctx.save();
+    const chunkPx = 16 * state.view.scale;
+    ctx.fillStyle = 'rgba(64,110,160,.09)';
+    const cap = Math.min(survey.chunks.length, 500);
+    for (let i = 0; i < cap; i++) {
+      const ch = survey.chunks[i];
+      if (!Number.isFinite(ch.cx) || !Number.isFinite(ch.cy)) {
+        const kv = String(ch.key).split(',').map(Number);
+        ch.cx = kv[0]; ch.cy = kv[1];
+      }
+      if (!Number.isFinite(ch.cx) || !Number.isFinite(ch.cy)) continue;
+      const p = project(ch.cx * 16, ch.cy * 16);
+      if (p.sx + chunkPx < 0 || p.sy + chunkPx < 0 || p.sx > W() || p.sy > H()) continue;
+      ctx.fillRect(p.sx, p.sy, chunkPx, chunkPx);
+    }
+    ctx.restore();
+  }
   const maxTick = survey.tickMax ?? 0;
   const ageAlpha = (tick) => {
     if (!maxTick) return 0.5;
@@ -2547,6 +2803,7 @@ function tactSurveyLayer(s) {
       ctx.globalAlpha = ageAlpha(c.tick);
       ctx.fillStyle = 'rgba(96,106,116,.28)';
       ctx.fillRect(p.sx - cell / 2, p.sy - cell / 2, cell, cell);
+      state.surveyHits.set(`${c.x},${c.y}`, { kind: 'obstacle', x: c.x, y: c.y, tick: c.tick, tenant: state.soloTenant });
     }
     ctx.restore();
   }
@@ -2564,6 +2821,7 @@ function tactSurveyLayer(s) {
       const st = c.state ?? "visible";
       const r = Math.max(2, s * 0.17);
       ctx.globalAlpha = ageAlpha(c.tick) * (st === "visible" ? 0.95 : 0.55);
+      state.surveyHits.set(`${c.x},${c.y}`, { kind: 'resource', x: c.x, y: c.y, tick: c.tick, state: st, seenCount: c.seenCount, firstSeen: c.firstSeenTick, tenant: state.soloTenant });
       if (st === "empty") {
         // 已确认空：暗色小方块 + X 语义（不误导成矿）
         ctx.fillStyle = 'rgba(80,86,92,.55)';
@@ -2603,7 +2861,7 @@ function tactSurveyLayer(s) {
     ctx.restore();
   }
 }
-function tactDrawLayer(s) {
+function tactDrawLayer(s: any) {
   const tac = T();
   if (!tac.selected) return;
   const sel = tac.selected, world = tac.worlds[sel.tenant], obj = sel.obj;
@@ -2678,7 +2936,7 @@ function tactDrawLayer(s) {
 }
 /** 巡逻环（arena-hero-guide SQUAD_PATROL_RADII=(12,19,26,32) 移植）：聚焦租户时
  *  以 Core 为圆心画方环（切比雪夫移动 = 方环语义），弱化虚线。 */
-function tactPatrolLayer(s) {
+function tactPatrolLayer(s: any) {
   if (!state.soloTenant || !state.layers.patrol) return;
   const world = T().worlds[state.soloTenant];
   if (!world) return;
@@ -2708,7 +2966,7 @@ function tactPatrolLayer(s) {
  *  从最新决策计划绘制每个受控单位的 MOVE/SWEEP/SHOOT 标记 + Core START_MOVE 方向——
  *  让"单位在动/在打"无需点选即可在地图上可见。 */
 /** 全局联盟视图的伪世界（合并测绘 cells → 障碍/单位/核心），供 tactFindPath 算人类目标路径。 */
-function mergedWorldFor(tenant) {
+function mergedWorldFor(tenant: any) {
   const objects = [];
   for (const c of state.cells) {
     if (c.tenant !== tenant) continue;
@@ -2725,7 +2983,7 @@ async function refreshAllCommands() {
 /** 人类指令目标动线（2026-08-08）：待执行 goal（mine/goto）从单位当前位置到目标的
  *  完整寻路路径，跨 tick 持续可见（缓存 key = tick+起点+目标，每 tick/移动重算一次）。
  *  全局联盟视图 + 聚焦视图都画；goal 被服务端对账清理（satisfied/unknown）后自然消失。 */
-function drawHumanGoalPaths(s) {
+function drawHumanGoalPaths(s: any) {
   const tac = T();
   if (!state.layers.plan) return;
   const solo = state.soloTenant;
@@ -2767,7 +3025,7 @@ function drawHumanGoalPaths(s) {
   }
 }
 
-function tactPlanLayer(s) {
+function tactPlanLayer(s: any) {
   if (!state.layers.plan) return;
   const tac = T();
   const solo = state.soloTenant;
@@ -2910,7 +3168,7 @@ async function tactRefreshActivity(tenant) {
   } catch { /* 忽略，下次刷新重试 */ }
 }
 /** 命令窗口倒计时（官方 CommandCountdown 移植）：最近观测计划 tick 起 15s，≤5s 变红。 */
-function setCommandWindowTick(tick) {
+function setCommandWindowTick(tick: any) {
   if (!Number.isFinite(tick)) return;
   if (state.cc.tick !== tick) { state.cc.tick = tick; state.cc.anchor = performance.now(); }
 }
@@ -2988,7 +3246,7 @@ const FX_KIND_CN = {
   CORE_SPAWN_SUCCEEDED: { text: '产', color: '#5fd4e8', size: 12 },
   UNIT_HEAL_SUCCEEDED: { text: '✚', color: '#76b889', size: 12 },
 };
-function tactSpawnEventFx(frameTick) {
+function tactSpawnEventFx(frameTick: any) {
   const d = replay.data;
   if (!d || !d.eventFrames) return;
   const frame = d.eventFrames.find((f) => f.tick === frameTick);
@@ -3022,7 +3280,7 @@ function tactSpawnEventFx(frameTick) {
   if (tac.debris.length > 240) tac.debris.splice(0, tac.debris.length - 240);
 }
 /** 官方 shotCurve 移植：弹道抛物线（法向侧偏 + 弓高 + 起终点内收）。 */
-function shotCurveFx(a, b, cell) {
+function shotCurveFx(a: any, b: any, cell: any) {
   const dx = b.sx - a.sx, dy = b.sy - a.sy, length = Math.hypot(dx, dy);
   if (!length) return null;
   const ux = dx / length, uy = dy / length, px = -uy, py = ux;
@@ -3036,7 +3294,7 @@ function shotCurveFx(a, b, cell) {
   return { startX, startY, controlX, controlY, endX, endY };
 }
 /** 官方 drawResolvedShot 移植：飞行弹丸 + 命中/未中特效（回放战斗可视化）。 */
-function drawResolvedShotFx(a, b, cell, progress, hit) {
+function drawResolvedShotFx(a: any, b: any, cell: any, progress: any, hit: any) {
   const curve = shotCurveFx(a, b, cell); if (!curve) return;
   const flightEnd = 0.76, flight = Math.min(1, progress / flightEnd), eased = 1 - Math.pow(1 - flight, 3);
   const inv = 1 - eased;
@@ -3077,7 +3335,7 @@ function drawResolvedShotFx(a, b, cell, progress, hit) {
   ctx.restore();
 }
 /** 官方 drawResolvedSweep 移植：横扫剑光（VANGUARD 清扫回放可视化）。 */
-function drawResolvedSweepFx(a, b, cell, progress) {
+function drawResolvedSweepFx(a: any, b: any, cell: any, progress: any) {
   const dx = b.sx - a.sx, dy = b.sy - a.sy, direction = Math.atan2(dy, dx);
   if (!Math.hypot(dx, dy)) return;
   const attackProgress = Math.min(1, progress / 0.72), eased = 1 - Math.pow(1 - attackProgress, 3);
@@ -3105,7 +3363,7 @@ function drawResolvedSweepFx(a, b, cell, progress) {
   }
   ctx.restore();
 }
-function tactDrawEventFx(s) {
+function tactDrawEventFx(s: any) {
   const tac = T();
   if (!tac.eventFx.length) return;
   const now = performance.now();
@@ -3167,7 +3425,7 @@ function tactDrawEventFx(s) {
 
 /** 地图要素信息卡（官方 MapFeatureInfo 移植）：点击信标/资源/障碍弹出。
  *  复用「地图点击有反馈」原则：任何点击都有可见结果，避免"点了没反应"。 */
-function tactShowFeature(cell, px, py) {
+function tactShowFeature(cell: any, px: any, py: any) {
   const el = els.featurePanel;
   if (!el) return;
   // 判定要素类型：信标优先（beacons 独立于 cells），其次 resource/obstacle cell
@@ -3450,7 +3708,7 @@ async function tactRefreshCommands(tenant) {
   } catch { /* 忽略 */ }
 }
 /** 消费人类指令遥测：出现新拒绝/新完成时 toast 提示（按签名去重，防重复弹）。 */
-function consumeCommandTelemetry(tenant, tele, prevTele) {
+function consumeCommandTelemetry(tenant: any, tele: any, prevTele: any) {
   const tac = T();
   const sig = JSON.stringify({ a: tele.applied ?? [], r: tele.rejected ?? [], s: tele.satisfied ?? [] });
   const prevSig = prevTele ? JSON.stringify({ a: prevTele.applied ?? [], r: prevTele.rejected ?? [], s: prevTele.satisfied ?? [] }) : null;
@@ -3469,7 +3727,7 @@ function consumeCommandTelemetry(tenant, tele, prevTele) {
   else if (!rejected.length && applied.length) toast(`人类指令已生效 · ${applied.map((u) => shortId(u)).join('、')}`, 'info');
 }
 /** 人类指令状态快照：{ mode, actions:[], goals:[], updatedAt, telemetry }。 */
-function commandStatusText(tenant) {
+function commandStatusText(tenant: any) {
   const c = T().commands;
   if (!c || c.mode !== 'override') return null;
   const n = (c.actions?.length ?? 0) + (c.goals?.length ?? 0);
@@ -3485,7 +3743,7 @@ function commandStatusText(tenant) {
   return `人类指挥 · ${parts.join(' · ')}`;
 }
 /** 单位级人类指令遥测状态行（HTML）：已生效 / 已完成 / 被拒+原因。 */
-function unitTelemetryOf(tenant, unitId) {
+function unitTelemetryOf(tenant: any, unitId: any) {
   const c = T().commands;
   if (!c || !c.telemetry) return null;
   const t = c.telemetry;
@@ -3497,12 +3755,12 @@ function unitTelemetryOf(tenant, unitId) {
   if (!parts.length) return null;
   return `人类指挥 · ${parts.join(' ')}`;
 }
-function commandGoalOf(tenant, unitId) {
+function commandGoalOf(tenant: any, unitId: any) {
   const c = T().commands;
   if (!c) return null;
   return (c.goals ?? []).find((g) => g.unitId === unitId) ?? null;
 }
-function commandActionOf(tenant, unitId) {
+function commandActionOf(tenant: any, unitId: any) {
   const c = T().commands;
   if (!c) return null;
   return (c.actions ?? []).find((a) => a.unitId === unitId) ?? null;
@@ -3510,7 +3768,7 @@ function commandActionOf(tenant, unitId) {
 
 /* ---------- React 挂载桥 ---------- */
 const _subs = new Set();
-function emit(topic, payload) {
+function emit(topic: any, payload: any) {
   for (const cb of _subs) { try { cb(topic, payload); } catch (e) { console.error('emit', topic, e); } }
 }
 export function createMapEngine(host) {

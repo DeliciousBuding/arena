@@ -15,6 +15,7 @@ import { test } from "node:test";
 
 import {
   coreSpendsSummary,
+  knownChunks,
   knownObstacles,
   knownResources,
   markResourceState,
@@ -26,6 +27,7 @@ import {
   resourceLifecycle,
   touchUnitSeen,
   unitLifecycleRows,
+  upsertChunk,
   upsertCoreHunt,
   upsertObstacles,
   upsertResources,
@@ -243,4 +245,34 @@ test("World: seedObstacleMemory 注入障碍记忆（重启后导航直接准确
   assert.equal(n, 2, "重复注入去重：只计 1 次");
   const snap = world.snapshot();
   assert.ok(snap.obstacles.includes("1,1") && snap.obstacles.includes("2,2"), "障碍已入记忆");
+});
+
+test("survey-db: 探索分区——upsertChunk 只进不退 + knownChunks 过滤", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-chunk-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    upsertChunk(db, "-39,-10", 100);
+    upsertChunk(db, "-39,-10", 50);
+    upsertChunk(db, "-39,-10", 200);
+    upsertChunk(db, "0,0", 150);
+    const all = knownChunks(db, 0);
+    assert.equal(all.length, 2, "两个 chunk");
+    const c1 = all.find((c) => c.key === "-39,-10")!;
+    assert.equal(c1.lastSeenTick, 200, "MAX 语义：只进不退");
+    const recent = knownChunks(db, 160);
+    assert.equal(recent.length, 1, "按最后探索 tick 过滤");
+    assert.equal(recent[0].key, "-39,-10");
+    db.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("World: seedChunkMemory 注入探索分区（跨重启 Fog 记忆）", () => {
+  const world = new World();
+  const n = world.seedChunkMemory([{ key: "-39,-10", lastSeenTick: 100 }, { key: "0,0", lastSeenTick: 50 }]);
+  assert.equal(n, 2);
+  // 更新鲜的覆盖，更旧的不覆盖
+  const n2 = world.seedChunkMemory([{ key: "-39,-10", lastSeenTick: 80 }, { key: "0,0", lastSeenTick: 90 }]);
+  assert.equal(n2, 1, "只覆盖更新的 tick");
 });

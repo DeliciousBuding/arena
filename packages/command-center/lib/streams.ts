@@ -132,7 +132,7 @@ export function loadReplay(tenant: string): ReplayPayload | null {
   for (const file of caseFiles) {
     const tick = parseTick(file);
     const path = join(calibrationDir(tenant), runDir, "cases", file);
-    let raw: { before?: { state?: { objects?: Array<Record<string, unknown>>; events?: Array<Record<string, unknown>> } } } | null = null;
+    let raw: { before?: { state?: { objects?: Array<Record<string, unknown>>; events?: Array<Record<string, unknown>> } }; after?: { state?: { objects?: Array<Record<string, unknown>>; events?: Array<Record<string, unknown>> } } } | null = null;
     try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
     const st = raw?.after?.state ?? raw?.before?.state;
     const byId = new Map<string, Record<string, unknown>>();
@@ -228,7 +228,7 @@ export function loadEvents(tenant: string, n: number): { tenant: string; generat
   for (const file of caseFiles) {
     const fileTick = parseTick(file);
     const path = join(calibrationDir(tenant), runDir, "cases", file);
-    let raw: { before?: { state?: { events?: Array<Record<string, unknown>> } } } | null = null;
+    let raw: { before?: { state?: { events?: Array<Record<string, unknown>> } }; after?: { state?: { events?: Array<Record<string, unknown>> } } } | null = null;
     try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
     // 事件在 tick 完成后的 after.state（before 是 tick 起点，events 恒空——2026-08-08 修复）
     const evs = raw?.after?.state?.events ?? raw?.before?.state?.events;

@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { useEngine } from "../lib/bridge";
+import { useShell } from "../lib/shell";
 
 interface TickPayload { clock: string; tick: number; period: number; frac: number }
 
-export function TopBar({ onIntel, onRedeem }: { onIntel: () => void; onRedeem: () => void }) {
+export function TopBar() {
   const engine = useEngine();
+  const { openRight } = useShell();
   const [tick, setTick] = useState<TickPayload | null>(null);
   const [dataRoot, setDataRoot] = useState<string>("");
   const [refreshOk, setRefreshOk] = useState<boolean>(true);
@@ -44,11 +46,11 @@ export function TopBar({ onIntel, onRedeem }: { onIntel: () => void; onRedeem: (
           <span id="tickLabel" className={`dim${urgent ? " warn" : ""}`}>tick {tick ? `${tick.tick} · ${Math.round((tick.period ?? 15000) / 1000)}s` : "—"}</span>
           <span className={`tick-bar${urgent ? " warn" : ""}`}><i id="tickFill" style={{ transform: `scaleX(${frac.toFixed(3)})` }} /></span>
         </span>
-        <button id="intelBtn" className="btn" type="button" title="官方排行榜威胁画像（谁在打我们）" onClick={onIntel}>
+        <button id="intelBtn" className="btn" type="button" title="官方排行榜威胁画像（谁在打我们）" onClick={() => openRight("intel")}>
           威胁情报
-          {encounteredCount > 0 ? <span className="btn-count" title={`目击过的敌方玩家数（唯一账号）· 详情见威胁情报对话框`}>{encounteredCount}</span> : null}
+          {encounteredCount > 0 ? <span className="btn-count" title={`目击过的敌方玩家数（唯一账号）· 详情见右侧威胁情报面板`}>{encounteredCount}</span> : null}
         </button>
-        <button id="redeemBtn" className="btn primary" type="button" onClick={onRedeem}>兑换码</button>
+        <button id="redeemBtn" className="btn primary" type="button" onClick={() => openRight("redeem")}>兑换码</button>
       </div>
     </header>
   );

@@ -18,6 +18,8 @@ export interface SurveyData {
   fromDb?: boolean;
   tenant?: string;
   runId?: string;
+  /** 探索分区（chunks 表，2026-08-08）：16×16 chunk 最后探索 tick，前端 Fog 层用。 */
+  chunks?: Array<Record<string, unknown>>;
 }
 
 /** 测绘库（survey-db）：优先于 calibration 扫描——calibration case 只覆盖
@@ -35,7 +37,7 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
   }
   try {
     const resources = db.prepare(
-      "SELECT x, y, last_seen_tick AS tick, state, seen_count AS seenCount FROM resources ORDER BY last_seen_tick DESC",
+      "SELECT x, y, last_seen_tick AS tick, first_seen_tick AS firstSeenTick, state, seen_count AS seenCount FROM resources ORDER BY last_seen_tick DESC",
     ).all() as Array<Record<string, unknown>>;
     const obstacles = db.prepare(
       "SELECT x, y, last_seen_tick AS tick FROM obstacles ORDER BY last_seen_tick DESC",
@@ -44,6 +46,12 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
       "SELECT x, y, last_seen_tick AS tick, owner, source FROM core_hunts ORDER BY last_seen_tick DESC",
     ).all() as Array<Record<string, unknown>>;
     const meta = db.prepare("SELECT MAX(last_tick) AS m, SUM(cases_synced) AS c FROM sync_meta").get() as { m: number | null; c: number | null };
+    const chunks = (db.prepare(
+      "SELECT chunk_key AS key, last_seen_tick AS lastSeenTick FROM chunks ORDER BY last_seen_tick DESC",
+    ).all() as Array<Record<string, unknown>>).map((r) => {
+      const [cx, cy] = String(r.key).split(",").map(Number);
+      return { ...r, cx, cy };
+    });
     return {
       obstacleCells: obstacles,
       resourceCells: resources,
@@ -51,6 +59,7 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
       caseCount: Number(meta?.c ?? 0),
       tickMax: Number(meta?.m ?? 0),
       fromDb: true,
+      chunks,
     };
   } catch {
     return null;
@@ -59,8 +68,44 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
   }
 }
 
+
+/** 探索分区（chunks 表，2026-08-08）：跨 run 累积的 16×16 chunk 最后探索 tick，
+ *  供前端 Fog 层渲染「探索过的范围」（未探索分区自然暗色）。库缺失/空 = 空数组。 */
+export function loadChunksDb(tenant: string, maxAgeTicks = 20_000): Array<Record<string, unknown>> {
+  const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(file)) return [];
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+  } catch {
+    return [];
+  }
+  try {
+    const rows = db.prepare(
+      "SELECT chunk_key AS key, last_seen_tick AS lastSeenTick FROM chunks ORDER BY last_seen_tick DESC",
+    ).all() as Array<Record<string, unknown>>;
+    if (rows.length === 0) return [];
+    let maxTick = 0;
+    for (const r of rows) if (Number(r.lastSeenTick) > maxTick) maxTick = Number(r.lastSeenTick);
+    const cutoff = maxTick - maxAgeTicks;
+    const out: Array<Record<string, unknown>> = [];
+    for (const r of rows) {
+      if (Number(r.lastSeenTick) < cutoff) continue;
+      const key = String(r.key);
+      const [cx, cy] = key.split(",").map(Number);
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+      out.push({ key, cx, cy, lastSeenTick: Number(r.lastSeenTick) });
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
 /** 生命周期摘要：从测绘库读 unit_lifecycle / core_spends / resource_events
- *  聚合（单位/矿物标注 + 消费记账）。库缺失 = null。 */
+ *  聚合（单位/矿物标注 + 消费记账），并带最近阵亡明细（面板舰队索引展示）。
+ *  库缺失 = null。 */
 export function loadLifecycleDb(tenant: string): Record<string, unknown> | null {
   const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
   if (!existsSync(file)) return null;
@@ -83,12 +128,16 @@ export function loadLifecycleDb(tenant: string): Record<string, unknown> | null 
     const fails = db.prepare(
       "SELECT COUNT(*) AS count FROM resource_events WHERE event_type = 'HARVEST_FAILED'",
     ).get() as { count: number };
+    const recentDeaths = db.prepare(
+      "SELECT unit_type AS type, birth_tick AS birthTick, death_tick AS deathTick, death_pos AS deathPos, death_reason AS deathReason FROM unit_lifecycle WHERE death_tick IS NOT NULL ORDER BY death_tick DESC LIMIT 8",
+    ).all() as Array<Record<string, unknown>>;
     return {
       units,
       spends,
       harvestCount: Number(harvests?.count ?? 0),
       lastHarvestTick: harvests?.last_tick === null ? null : Number(harvests?.last_tick ?? 0),
       harvestFailCount: Number(fails?.count ?? 0),
+      recentDeaths,
     };
   } catch {
     return null;
