@@ -38,6 +38,8 @@ import {
   DEFAULT_SAFETY_CONFIG,
   type AggressionLevel,
   type SafetyPlannerConfig,
+  type ThreatProfile,
+  type ThreatTier,
 } from "./safety-planner-config.ts";
 import {
   aggressiveShotPriority,
@@ -123,6 +125,12 @@ const BEACON_GRAB_DEFAULT_MAX_DIST = 80;
  *  小队 1V+3R+1W 埋伏，信标 Vanguard 被击杀）。由 militaryHunt 攻坚处理，
  *  敌核心被摧毁后我方单位在格上经主循环自动拾取。 */
 const BEACON_CONTEST_RADIUS = 10;
+/** 威胁自适应（2026-08-07，排行榜威胁画像"留强"）：AGGRESSOR（伤害 top30）
+ *  攻坚成型门槛叠加 +2；ELITE_AGGRESSOR（伤害 top10，猛攻蛆头子）叠加 +4。 */
+const THREAT_AGGRESSOR_ATTACK_FORCE_BONUS = 2;
+const THREAT_ELITE_ATTACK_FORCE_BONUS = 4;
+/** 威胁自适应守家预留：高威胁对手至少留 2 个 Vanguard 守家（防偷家/反打）。 */
+const THREAT_ADAPTIVE_RESERVE_GUARDS = 2;
 /** B6 有界攻坚（竞品 bounded mission distance）：记忆敌 Core 距我方 Core 上限。
  *  40→64（2026-08-07 对齐官方 guide ASSAULT_HOME_CORE_DISTANCE=64，Chebyshev）：
  *  旧 40 把"65 格外的近敌基地"误判为远征送死——t2 生产实证：敌方 jerkman 核心
@@ -234,13 +242,60 @@ export class SafetyPlanner {
   /** C2 RECOVERY 事件日志（telemetry/测试可读；正常对局为空）。 */
   readonly recoveryLog: string[] = [];
 
+  /** 官方排行榜威胁画像（username → tier，2026-08-07）：由 tenant-runtime 从
+   *  data/leaderboard/ 快照加载注入；缺省空 Map = 无威胁情报（零回归）。
+   *  可变 Map（seedThreatProfiles 装配用），消费端只读。 */
+  private readonly threatProfiles = new Map<string, ThreatProfile>();
+
   constructor(
     config: SafetyPlannerConfig = DEFAULT_SAFETY_CONFIG,
     world = new World(),
+    threatProfiles: ReadonlyMap<string, ThreatProfile> = new Map(),
   ) {
     this.config = config;
     this.world = world;
     this.phase = new PhaseMachine(config.phase);
+    for (const [username, profile] of threatProfiles) {
+      this.threatProfiles.set(username, profile);
+    }
+  }
+
+  /** 当前主要攻坚目标（排行榜威胁画像用）：coreHuntTargets 首个 CORE 目击
+   *  目标（排序 = CORE 优先 → 新鲜度）。无目标返回 null。 */
+  private currentHuntTarget(): CoreHuntTarget | null {
+    return this.world.coreHuntTargets().find((target) => target.source === "CORE") ?? null;
+  }
+
+  /** 攻坚目标所有者的威胁等级（威胁自适应）：owner 未知/画像缺失 → null
+   *  （不触发自适应，走基础配置）。 */
+  private threatTierOf(target: CoreHuntTarget | null): ThreatTier | null {
+    const owner = target?.owner;
+    if (typeof owner !== "string" || owner.length === 0) return null;
+    const profile = this.threatProfiles.get(owner);
+    if (profile === undefined) return null;
+    return profile.tier === "STANDARD" ? null : profile.tier;
+  }
+
+  /** 威胁自适应生效时的前压成型门槛：基础 attackForce + 高威胁加成（防御
+   *  变体关闭/无画像/目标非高威胁 = 返回基础值，零回归）。 */
+  private adaptiveAttackForce(): number {
+    const base = this.config.attackForce ?? 0;
+    if (this.config.threatAdaptiveDefense !== true || base <= 0) return base;
+    const tier = this.threatTierOf(this.currentHuntTarget());
+    if (tier === "ELITE_AGGRESSOR") return base + THREAT_ELITE_ATTACK_FORCE_BONUS;
+    if (tier === "AGGRESSOR") return base + THREAT_AGGRESSOR_ATTACK_FORCE_BONUS;
+    return base;
+  }
+
+  /** 威胁自适应生效时的守家 Vanguard 预留数：高威胁对手至少留 2 个（叠加
+   *  strikeGroupReserve=1 之上）；关闭/非高威胁 = 基础预留（0 或 1）。 */
+  private adaptiveReserveGuards(): number {
+    if (this.config.threatAdaptiveDefense !== true) {
+      return this.config.strikeGroupReserve === true ? 1 : 0;
+    }
+    const tier = this.threatTierOf(this.currentHuntTarget());
+    if (tier === "ELITE_AGGRESSOR" || tier === "AGGRESSOR") return THREAT_ADAPTIVE_RESERVE_GUARDS;
+    return this.config.strikeGroupReserve === true ? 1 : 0;
   }
 
   /** 启动播种（持久敌情测绘，2026-08-07）：从历史 calibration cases 提取的最后
@@ -248,6 +303,14 @@ export class SafetyPlanner {
    *  清零→军队空转"）。返回实际播种数。 */
   seedCoreHuntTargets(targets: readonly CoreHuntTarget[]): number {
     return this.world.seedCoreHuntTargets(targets);
+  }
+
+  /** 注入官方排行榜威胁画像（2026-08-07，deterministic-planner 装配用）：
+   *  覆盖式设置——构造后由装配点传入；空 Map 清空画像（零回归）。 */
+  seedThreatProfiles(profiles: ReadonlyMap<string, ThreatProfile>): void {
+    for (const [username, profile] of profiles) {
+      this.threatProfiles.set(username, profile);
+    }
   }
 
   /** 敌情狩猎扫掠点：远距离（>清扫圈）直接朝基地中心；近距离按单位序号绕基地
@@ -767,7 +830,10 @@ export class SafetyPlanner {
       // 规模未达 attackForce 时守家蓄势（兵力成型再前压，避免零星送死）；
       // 达标后前压攻坚。默认 attackForce=0 = 关闭（历史行为）。
       const military = state.vanguards.length + state.rangers.length;
-      const forceGate = (this.config.attackForce ?? 0) > 0 && military < (this.config.attackForce ?? 0);
+      // 威胁自适应（2026-08-07）：攻坚目标所有者是排行榜高伤害玩家（猛攻蛆）
+      // 时提高成型门槛——成建制更足才前压（防单薄送死 + 防远征时被偷家）。
+      const force = this.adaptiveAttackForce();
+      const forceGate = force > 0 && military < force;
       if (forceGate) {
         const home = state.core === null ? null : homeCell(state.core.position, militaryObstacles, index);
         if (home !== null && !samePosition(unit.position, home)) {
@@ -777,12 +843,15 @@ export class SafetyPlanner {
         return;
       }
       // B7 守卫预留（strikeGroupReserve 候选，竞品 _strike_group_ids 对照）：
-      // 攻坚时按 id 排序保留 1 个 Vanguard 守家（官方拆家留守卫
-      // VANGUARD_CORE_GUARDS=1 防换家/反打），其余全压拆家——家不空防。
+      // 攻坚时按 id 排序保留 N 个 Vanguard 守家（官方拆家留守卫
+      // VANGUARD_CORE_GUARDS=1 防换家/反打；威胁自适应叠加到 2——高伤害对手
+      // 趁远征偷家/反打的概率更高），其余全压拆家——家不空防。
+      const reserveGuards = this.adaptiveReserveGuards();
+      const sortedVanguards = [...state.vanguards].map((v) => v.id).sort();
       const reserveGuard =
-        this.config.strikeGroupReserve === true &&
-        state.vanguards.length >= 2 &&
-        [...state.vanguards].map((v) => v.id).sort().at(-1) === unit.id;
+        reserveGuards > 0 &&
+        sortedVanguards.length > reserveGuards &&
+        sortedVanguards.slice(-reserveGuards).includes(unit.id);
       if (reserveGuard) {
         const home = state.core === null ? null : homeCell(state.core.position, militaryObstacles, index);
         if (home !== null && !samePosition(unit.position, home)) {
@@ -1221,7 +1290,10 @@ export class SafetyPlanner {
       // 核心先集结、全员到齐再共同出击"。兵力 < attackForce 时守家重建，
       // 达标后 Vanguard+Ranger 成建制压上（与 Vanguard forceGate 同门槛）。
       const military = state.vanguards.length + state.rangers.length;
-      const forceGate = (this.config.attackForce ?? 0) > 0 && military < (this.config.attackForce ?? 0);
+      // 威胁自适应（2026-08-07）：与 Vanguard forceGate 同口径——高威胁对手
+      // 时门槛提高，Ranger 不单薄前压送死。
+      const force = this.adaptiveAttackForce();
+      const forceGate = force > 0 && military < force;
       const enemyCoreMemory = forceGate
         ? undefined
         : this.world.coreHuntTargets().find(
