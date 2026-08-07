@@ -203,6 +203,28 @@ function loadStream(tenant, n) {
   return { tenant, generatedAt: new Date().toISOString(), rows };
 }
 
+/** 完整世界快照：最新 calibration case 的 before.state（供前端交互计算：寻路/攻击范围/动作可用性）。 */
+function loadWorld(tenant) {
+  const runDir = latestRunDir(tenant);
+  if (runDir === null) return { tenant, generatedAt: new Date().toISOString(), state: null, caseFile: null };
+  const caseFiles = listCases(tenant, runDir);
+  if (!caseFiles.length) return { tenant, generatedAt: new Date().toISOString(), state: null, caseFile: null };
+  const file = caseFiles[caseFiles.length - 1];
+  const path = join(calibrationDir(tenant), runDir, "cases", file);
+  let raw;
+  try { raw = JSON.parse(readFileSync(path, "utf8")); } catch (error) {
+    return { tenant, generatedAt: new Date().toISOString(), state: null, caseFile: null, error: String(error?.message ?? error) };
+  }
+  return {
+    tenant,
+    generatedAt: new Date().toISOString(),
+    runId: runDir,
+    caseFile: file,
+    tick: raw?.before?.tick ?? null,
+    state: raw?.before?.state ?? null,
+  };
+}
+
 /** 指挥操作事件流：从 outcome.jsonl 尾部聚合 events（SPAWN/DEPOSIT/HARVEST/SHOT 等），按 tick 倒序。 */
 const EVENT_KINDS = new Set(["SPAWN", "DEPOSIT_SUCCEEDED", "DEPOSIT_FAILED", "HARVEST", "SHOT_HIT", "SHOT_MISSED", "SWEEP", "PICKUP_BEACON", "DROP_BEACON", "SELF_DESTRUCT", "HEAL", "CORE_DESTROYED", "UNIT_DESTROYED", "RESPAWN", "REPAIR_SHIELD", "WAIT"]);
 function loadEvents(tenant, n) {
@@ -341,6 +363,10 @@ const server = createServer(async (req, res) => {
       const tenant = url.searchParams.get("tenant") ?? "t1";
       const n = Number(url.searchParams.get("n") ?? 60);
       return sendJson(res, loadStream(tenant, Math.min(Math.max(n, 1), 200)));
+    }
+    if (pathname === "/api/world") {
+      const tenant = url.searchParams.get("tenant") ?? "t1";
+      return sendJson(res, loadWorld(tenant));
     }
     if (pathname === "/api/events") {
       const tenant = url.searchParams.get("tenant") ?? "t1";

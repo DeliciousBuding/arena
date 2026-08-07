@@ -35,6 +35,14 @@ const state = {
   lastRefresh: 0,
   drag: null,
   hover: null,
+  tactical: {
+    worlds: {},       // tenant -> { state, tick }
+    selected: null,   // { tenant, obj }
+    mode: null,       // null | MOVE | SHOOT | SWEEP
+    moveGoals: {},    // objId -> [x, y]（演练移动目标）
+    moveRoute: null,  // { tenant, obj, path }
+    attackTarget: null, // { tenant, obj }
+  },
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -48,6 +56,9 @@ const els = {
   shopCookie: $('#shopCookie'), cookieSave: $('#cookieSave'), cookieTest: $('#cookieTest'),
   shopAccount: $('#shopAccount'), shopList: $('#shopList'),
   viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'),
+  actionDialog: $('#actionDialog'), inspectPanel: $('#inspectPanel'),
+  beaconIndicator: $('#beaconIndicator'), pendingPanel: $('#pendingPanel'),
+  fleetHud: $('#fleetHud'), assetPanel: $('#assetPanel'), assetList: $('#assetList'),
 };
 
 const ctx = els.canvas.getContext('2d');
@@ -208,6 +219,7 @@ function draw() {
   drawUnits(buckets.unit, s);
   drawCores(buckets.core, s);
   drawBeacons(s);
+  tactDrawLayer(s);
   if (!state.cells.length) {
     ctx.fillStyle = '#56626c'; ctx.font = '13px ui-monospace, Consolas, monospace';
     ctx.textAlign = 'center';
@@ -489,11 +501,22 @@ function renderTenantToggles() {
 }
 function toggleSolo(tenant) {
   state.soloTenant = state.soloTenant === tenant ? null : tenant;
-  if (state.soloTenant) fitSolo(state.soloTenant);
-  else fitView();
+  if (state.soloTenant) {
+    fitSolo(state.soloTenant);
+    tactShowTenant(tenant);
+  } else {
+    fitView();
+    tactClear();
+  }
   renderTenantCards();
   const global = state.soloTenant === null;
   els.viewGlobal.classList.toggle('active', global);
+}
+async function tactShowTenant(tenant) {
+  const world = await tactLoadWorld(tenant);
+  if (!world) return;
+  tactRenderAssets(tenant);
+  tactRenderHud(tenant);
 }
 
 /* ---------- 决策流 ---------- */
@@ -694,6 +717,17 @@ function bindEvents() {
     els.canvas.setPointerCapture(e.pointerId);
     state.drag = { x: e.clientX, y: e.clientY, cx: state.view.cx, cy: state.view.cy };
   });
+  // 点击判定：抬起时位移 < 6px 视为点击（选中/战术目标），否则为拖拽
+  els.canvas.addEventListener('pointerup', (e) => {
+    if (!state.drag) return;
+    const d = state.drag;
+    state.drag = null;
+    const moved = Math.hypot(e.clientX - d.x, e.clientY - d.y);
+    if (moved < 6) {
+      const rect = els.canvas.getBoundingClientRect();
+      handleCanvasClick(e.clientX - rect.left, e.clientY - rect.top);
+    }
+  });
   let hoverTimer = null;
   els.canvas.addEventListener('pointermove', (e) => {
     const rect = els.canvas.getBoundingClientRect();
@@ -796,14 +830,481 @@ async function boot() {
   setInterval(() => { pollStreams(); }, POLL_MS);
   let lastAnim = 0;
   const animLoop = (ts) => {
-    if (ts - lastAnim > 300 && state.beacons.length && state.layers.beacon) {
+    if (ts - lastAnim > 300 && (state.beacons.length && state.layers.beacon || state.tactical.selected || state.tactical.mode)) {
       lastAnim = ts;
       draw();
     }
     requestAnimationFrame(animLoop);
   };
   requestAnimationFrame(animLoop);
+  // 战术层：Esc 取消；信标方向指示器定时刷新
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (state.tactical.mode || state.tactical.selected) tactClear();
+    else if (els.redeemDialog.open) els.redeemDialog.close();
+  });
+  updateBeaconIndicator();
+  setInterval(updateBeaconIndicator, 500);
 }
+/* ============ 战术交互层（官方 Arena Hero 移植 · 只读演练模式） ============ */
+const TACT_UNIT_BASE_COST = { WORKER: 5, VANGUARD: 10, RANGER: 12 };
+const TACT_UNIT_CN = { WORKER: '工人', VANGUARD: '先锋', RANGER: '游侠', CORE: '核心' };
+const TACT_ACTION_CN = {
+  MOVE: '移动', HARVEST: '采集', DEPOSIT: '回仓', SWEEP: '清扫', SHOOT: '攻击',
+  PICKUP_BEACON: '拾取信标', DROP_BEACON: '放置信标', SELF_DESTRUCT: '自毁',
+  HEAL: '维修', WAIT: '等待', REPAIR_SHIELD: '修复护盾',
+  START_MOVE: '开始移动', CANCEL_MOVE: '取消移动',
+};
+const TACT_STEPS = [{ d: 'UP', dx: 0, dy: -1 }, { d: 'RIGHT', dx: 1, dy: 0 }, { d: 'DOWN', dx: 0, dy: 1 }, { d: 'LEFT', dx: -1, dy: 0 }];
+const TACT_RANGER_RAYS = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]];
+const pKey = (p) => `${p[0]},${p[1]}`;
+const samePos = (a, b) => a && b && a[0] === b[0] && a[1] === b[1];
+const T = () => state.tactical;
+function tactCoreCapacity(pop) { return Math.max(10, Math.max(0, pop) * 5); }
+function tactUnitCost(unitType, pop) {
+  const base = TACT_UNIT_BASE_COST[unitType];
+  const exp = pop < 20 ? 0 : Math.floor((pop - 20) / 5) + 1;
+  return Math.round(base * Math.pow(1.3, exp));
+}
+async function tactLoadWorld(tenant) {
+  if (T().worlds[tenant]) return T().worlds[tenant];
+  try {
+    const w = await getJSON(`/api/world?tenant=${tenant}`);
+    if (w.state) { const world = { state: w.state, tick: w.tick, caseFile: w.caseFile, tenant }; T().worlds[tenant] = world; return world; }
+    return null;
+  } catch { return null; }
+}
+function tactObjectAt(world, x, y) {
+  if (!world) return null;
+  for (const o of world.state.objects) {
+    if (o.kind === 'OBSTACLE' || o.kind === 'RESOURCE') continue;
+    const p = o.position;
+    if (p && p[0] === x && p[1] === y) return o;
+  }
+  return null;
+}
+function tactTerrain(world, kind) {
+  const s = new Set();
+  if (!world) return s;
+  for (const o of world.state.objects) if (o.kind === kind) for (const p of o.positions ?? []) s.add(pKey(p));
+  return s;
+}
+function tactHostileAt(world, pos, includeOwnCore) {
+  for (const o of world.state.objects) {
+    if (o.kind !== 'UNIT' && o.kind !== 'CORE') continue;
+    const p = o.position; if (!p || p[0] !== pos[0] || p[1] !== pos[1]) continue;
+    if (o.controlled === false) return true;
+    if (includeOwnCore && o.kind === 'CORE') return true;
+  }
+  return false;
+}
+function tactMoveTargets(world, obj) {
+  if (!obj || obj.controlled !== true || !obj.position) return [];
+  if (obj.kind !== 'UNIT' && obj.kind !== 'CORE') return [];
+  const obstacles = tactTerrain(world, 'OBSTACLE'), resources = tactTerrain(world, 'RESOURCE');
+  const out = [];
+  for (const { dx, dy } of TACT_STEPS) {
+    const t = [obj.position[0] + dx, obj.position[1] + dy], k = pKey(t);
+    if (obstacles.has(k)) continue;
+    if (obj.kind === 'CORE') {
+      if (resources.has(k)) continue;
+      if (tactHostileAt(world, t, true)) continue;
+    } else if (tactHostileAt(world, t, false)) continue;
+    out.push(t);
+  }
+  return out;
+}
+function tactFindPath(world, from, to) {
+  const obstacles = tactTerrain(world, 'OBSTACLE');
+  if (obstacles.has(pKey(to))) return null;
+  const entities = new Set();
+  for (const o of world.state.objects) {
+    if (o.kind !== 'UNIT' && o.kind !== 'CORE') continue;
+    const p = o.position; if (p) entities.add(pKey(p));
+  }
+  entities.delete(pKey(from));
+  const goalK = pKey(to);
+  const queue = [[from]], visited = new Set([pKey(from)]);
+  const LIMIT = 4000;
+  while (queue.length) {
+    const path = queue.shift();
+    const cur = path[path.length - 1];
+    if (pKey(cur) === goalK) return path;
+    if (path.length >= LIMIT) return null;
+    for (const { dx, dy } of TACT_STEPS) {
+      const n = [cur[0] + dx, cur[1] + dy], k = pKey(n);
+      if (visited.has(k) || obstacles.has(k)) continue;
+      if (k !== goalK && entities.has(k)) continue;
+      visited.add(k);
+      queue.push([...path, n]);
+    }
+  }
+  return null;
+}
+function tactRangerRange(world, obj) {
+  const obstacles = tactTerrain(world, 'OBSTACLE');
+  const out = [];
+  for (const [dx, dy] of TACT_RANGER_RAYS) {
+    for (let d = 1; d <= 3; d++) {
+      const p = [obj.position[0] + dx * d, obj.position[1] + dy * d];
+      if (obstacles.has(pKey(p))) break;
+      out.push(p);
+    }
+  }
+  return out;
+}
+function tactRangerTargets(world, obj) {
+  const out = [];
+  for (const o of world.state.objects) {
+    if (!o.id || o.controlled !== false || !o.position) continue;
+    const dx = o.position[0] - obj.position[0], dy = o.position[1] - obj.position[1];
+    const dist = Math.max(Math.abs(dx), Math.abs(dy));
+    if (dist < 1 || dist > 3) continue;
+    if (dx !== 0 && dy !== 0 && Math.abs(dx) !== Math.abs(dy)) continue;
+    out.push(o);
+  }
+  return out;
+}
+function tactVisibility(world) {
+  const radiusFor = (o) => o.kind === 'CORE' ? 5 : o.unit_type === 'WORKER' ? 3 : o.unit_type === 'VANGUARD' ? 4 : 5;
+  const out = [];
+  for (const o of world.state.objects) {
+    if (o.controlled !== true || !o.position) continue;
+    if (o.kind !== 'CORE' && o.kind !== 'UNIT') continue;
+    out.push({ x: o.position[0], y: o.position[1], r: radiusFor(o) });
+  }
+  return out;
+}
+function tactAvailability(world, obj) {
+  const actions = { SELF_DESTRUCT: true, WAIT: true }, spawns = {};
+  if (!obj || obj.controlled !== true || !obj.position) return { actions, spawns };
+  const beacon = world.state.champion_beacon ?? {};
+  const carries = beacon.status === 'CARRIED' && beacon.carrier_id === obj.id;
+  const atGround = beacon.status === 'GROUND' && samePos(beacon.position, obj.position);
+  if (obj.kind === 'CORE') {
+    const normal = obj.state !== 'MOVING';
+    actions.HEAL = normal; actions.REPAIR_SHIELD = normal;
+    actions.START_MOVE = normal && tactMoveTargets(world, obj).length > 0;
+    actions.CANCEL_MOVE = !normal;
+    actions.PICKUP_BEACON = normal && atGround;
+    actions.DROP_BEACON = normal && carries;
+    spawns.WORKER = normal; spawns.VANGUARD = normal; spawns.RANGER = normal;
+    return { actions, spawns };
+  }
+  const canMove = tactMoveTargets(world, obj).length > 0;
+  const atOwnCore = world.state.objects.some((o) => o.kind === 'CORE' && o.controlled === true && o.position && samePos(o.position, obj.position));
+  const atResource = world.state.objects.some((o) => o.kind === 'RESOURCE' && (o.positions ?? []).some((p) => samePos(p, obj.position)));
+  actions.MOVE = canMove;
+  if (obj.unit_type === 'WORKER') {
+    actions.HARVEST = (obj.cargo ?? 0) === 0 && atResource;
+    actions.DEPOSIT = (obj.cargo ?? 0) > 0 && atOwnCore;
+    actions.HEAL = atOwnCore;
+  } else if (obj.unit_type === 'VANGUARD') {
+    actions.SWEEP = true; actions.HEAL = atOwnCore;
+  } else if (obj.unit_type === 'RANGER') {
+    actions.SHOOT = true; actions.HEAL = atOwnCore;
+  }
+  actions.PICKUP_BEACON = atGround;
+  actions.DROP_BEACON = carries;
+  return { actions, spawns };
+}
+async function tactSelect(tenant, obj) {
+  const world = await tactLoadWorld(tenant);
+  if (!world) return;
+  const tac = T();
+  tac.selected = { tenant, obj };
+  tac.mode = null; tac.moveRoute = null; tac.attackTarget = null;
+  tactRenderActionDialog();
+  tactRenderInspect();
+  tactRenderAssets(tenant);
+  tactRenderHud(tenant);
+  draw();
+}
+function tactClear() {
+  const tac = T();
+  tac.selected = null; tac.mode = null; tac.moveRoute = null; tac.attackTarget = null;
+  els.actionDialog.hidden = true; els.inspectPanel.hidden = true;
+  els.assetPanel.hidden = true; els.fleetHud.hidden = true;
+  draw();
+}
+function tactActionTypes(obj) {
+  const world = T().worlds[T().selected.tenant];
+  const av = tactAvailability(world, obj);
+  const isCore = obj.kind === 'CORE';
+  const types = isCore ? (obj.state === 'MOVING' ? ['CANCEL_MOVE'] : ['HEAL', 'REPAIR_SHIELD', 'START_MOVE'])
+    : obj.unit_type === 'WORKER' ? ['MOVE', 'HARVEST', 'DEPOSIT']
+    : obj.unit_type === 'VANGUARD' ? ['MOVE', 'SWEEP']
+    : ['MOVE', 'SHOOT'];
+  if (av.actions.PICKUP_BEACON) types.push('PICKUP_BEACON');
+  if (av.actions.DROP_BEACON) types.push('DROP_BEACON');
+  if (!isCore) types.push('HEAL');
+  types.push('SELF_DESTRUCT', 'WAIT');
+  return { types, av };
+}
+function tactRenderActionDialog() {
+  const tac = T(), sel = tac.selected;
+  if (!sel) { els.actionDialog.hidden = true; return; }
+  const world = tac.worlds[sel.tenant];
+  if (!world) return;
+  const obj = sel.obj;
+  const { types, av } = tactActionTypes(obj);
+  const isCore = obj.kind === 'CORE';
+  const art = isCore ? 'CORE' : (obj.unit_type ?? 'WORKER');
+  const artPath = art === 'CORE' ? SPRITE.core : unitSpritePath(art);
+  const name = isCore ? '核心' : (TACT_UNIT_CN[obj.unit_type] ?? obj.unit_type);
+  const pop = world.state.population ?? 0;
+  const costHtml = isCore ? `<div class="act-spawn-row"><span class="act-spawn-label">生产单位 · 资源 ${world.state.resources ?? 0} / ${tactCoreCapacity(pop)}</span><div class="act-spawn-grid">${['WORKER','VANGUARD','RANGER'].map((u) => {
+    const cost = tactUnitCost(u, pop);
+    return `<button class="act-spawn" data-spawn="${u}" title="演练：生产 ${TACT_UNIT_CN[u]}（${cost} 资源）"><img src="${unitSpritePath(u)}" alt="" /><span>${TACT_UNIT_CN[u]}</span><b>${cost}</b></button>`;
+  }).join('')}</div></div>` : '';
+  const goal = tac.moveGoals[obj.id];
+  const goalRow = goal ? `<div class="act-goal"><span>演练路线 → [${goal[0]}, ${goal[1]}]</span><button data-cancel-goal>清除</button></div>` : '';
+  const modeBadge = tac.mode ? `<div class="act-mode-badge">${tac.mode === 'MOVE' ? '点击地图选择移动目标…' : tac.mode === 'SHOOT' ? '点击敌方单位选择攻击目标…' : '点击相邻格选择清扫方向…'}</div>` : '';
+  els.actionDialog.innerHTML = `
+    <div class="act-head">
+      <span class="act-icon"><img src="${artPath}" alt="" /></span>
+      <div class="act-id">
+        <b>${name} · ${sel.tenant.toUpperCase()}</b>
+        <span class="mono">${obj.hp} HP${obj.shield !== undefined ? ` · ${obj.shield} SHD` : ''}${(obj.cargo ?? 0) > 0 ? ` · 载货 ${obj.cargo}` : ''}</span>
+        <span class="mono dim">[${obj.position[0]}, ${obj.position[1]}]${obj.controlled ? '' : ' · 敌方'}</span>
+      </div>
+      <button class="act-close" data-close aria-label="关闭">✕</button>
+    </div>
+    ${modeBadge}
+    <div class="act-grid">${types.map((t2) => {
+      const available = av.actions[t2] === true;
+      const danger = t2 === 'SELF_DESTRUCT';
+      return `<button class="act-btn ${danger ? 'danger' : ''}" data-action="${t2}" ${available ? '' : 'disabled'} title="${available ? '演练：' + TACT_ACTION_CN[t2] : '当前不可用'}">${TACT_ACTION_CN[t2] ?? t2}</button>`;
+    }).join('')}</div>
+    ${costHtml}
+    ${goalRow}
+    <div class="act-note">只读演练 · 不提交到 Arena</div>
+  `;
+  const p = project(obj.position[0], obj.position[1]);
+  const rect = els.canvas.getBoundingClientRect();
+  els.actionDialog.hidden = false;
+  els.actionDialog.style.left = '0px'; els.actionDialog.style.top = '0px';
+  const dw = els.actionDialog.offsetWidth, dh = els.actionDialog.offsetHeight;
+  let left = p.sx + 18, top = p.sy - dh / 2;
+  if (left + dw > rect.width - 8) left = p.sx - dw - 18;
+  if (top < 8) top = 8;
+  if (top + dh > rect.height - 8) top = rect.height - dh - 8;
+  els.actionDialog.style.left = `${left}px`;
+  els.actionDialog.style.top = `${top}px`;
+  els.actionDialog.querySelector('[data-close]')?.addEventListener('click', tactClear);
+  els.actionDialog.querySelectorAll('[data-action]').forEach((b) => b.addEventListener('click', () => tactChooseAction(b.dataset.action)));
+  els.actionDialog.querySelectorAll('[data-spawn]').forEach((b) => b.addEventListener('click', () => tactSpawn(b.dataset.spawn)));
+  els.actionDialog.querySelector('[data-cancel-goal]')?.addEventListener('click', () => { delete tac.moveGoals[obj.id]; tac.moveRoute = null; tactRenderActionDialog(); draw(); });
+}
+function tactChooseAction(type) {
+  const tac = T(), sel = tac.selected;
+  if (!sel) return;
+  const world = tac.worlds[sel.tenant];
+  if (!world) return;
+  const obj = sel.obj;
+  const av = tactAvailability(world, obj);
+  if (av.actions[type] !== true) return;
+  if (type === 'MOVE' || type === 'START_MOVE') { tac.mode = 'MOVE'; tactRenderActionDialog(); draw(); return; }
+  if (type === 'SHOOT') { tac.mode = 'SHOOT'; tactRenderActionDialog(); draw(); return; }
+  if (type === 'SWEEP') { tac.mode = 'SWEEP'; tactRenderActionDialog(); draw(); return; }
+  if (type === 'SELF_DESTRUCT') {
+    if (!window.confirm(`演练：确认 ${obj.kind === 'CORE' ? '核心' : '单位'} 自毁？`)) return;
+  }
+  tac.mode = null;
+  tactRenderActionDialog();
+}
+function tactSpawn(unitType) {
+  const tac = T(), sel = tac.selected;
+  if (!sel || sel.obj.kind !== 'CORE') return;
+  const world = tac.worlds[sel.tenant];
+  const cost = tactUnitCost(unitType, world?.state.population ?? 0);
+  if (window.confirm(`演练：核心生产 ${TACT_UNIT_CN[unitType]}（${cost} 资源）？`)) { tac.mode = null; tactRenderActionDialog(); }
+}
+function tactRenderInspect() {
+  const tac = T(), sel = tac.selected;
+  if (!sel) { els.inspectPanel.hidden = true; return; }
+  const world = tac.worlds[sel.tenant], obj = sel.obj;
+  const rows = [
+    ['租户', sel.tenant.toUpperCase()],
+    ['类型', obj.kind === 'CORE' ? '核心' : (TACT_UNIT_CN[obj.unit_type] ?? obj.unit_type)],
+    ['坐标', `[${obj.position[0]}, ${obj.position[1]}]`],
+    ['HP', obj.hp],
+    ['归属', obj.controlled ? '我方' : '敌方'],
+  ];
+  if (obj.shield !== undefined) rows.push(['护盾', obj.shield]);
+  if (obj.cargo !== undefined) rows.push(['载货', obj.cargo]);
+  if (obj.owner_username) rows.push(['拥有者', obj.owner_username]);
+  if (obj.state === 'MOVING') rows.push(['状态', `移动中 → [${obj.destination?.[0] ?? '?'}, ${obj.destination?.[1] ?? '?'}]`]);
+  const goal = tac.moveGoals[obj.id];
+  if (goal) rows.push(['演练路线', `→ [${goal[0]}, ${goal[1]}]`]);
+  els.inspectPanel.hidden = false;
+  els.inspectPanel.innerHTML = `<h3 class="panel-title">单位详情 · DETAILS</h3>${rows.map(([k, v]) => `<div class="ins-row"><span>${k}</span><b>${v}</b></div>`).join('')}`;
+}
+function tactRenderAssets(tenant) {
+  const world = T().worlds[tenant];
+  if (!world) { els.assetPanel.hidden = true; return; }
+  const controlled = world.state.objects.filter((o) => o.controlled === true && (o.kind === 'UNIT' || o.kind === 'CORE'));
+  els.assetPanel.hidden = false;
+  els.assetPanel.querySelector('.panel-title').textContent = `舰队索引 · ${tenant.toUpperCase()} · ${controlled.length}`;
+  els.assetList.innerHTML = controlled.map((o) => {
+    const art = o.kind === 'CORE' ? 'CORE' : (o.unit_type ?? 'WORKER');
+    const artPath = art === 'CORE' ? SPRITE.core : unitSpritePath(art);
+    const selected = T().selected?.obj?.id === o.id;
+    return `<button class="asset-row ${selected ? 'active' : ''}" data-asset="${o.id}">
+      <span class="asset-icon"><img src="${artPath}" alt="" /></span>
+      <span class="asset-name">${o.kind === 'CORE' ? '核心' : (TACT_UNIT_CN[o.unit_type] ?? o.unit_type)}</span>
+      <span class="mono asset-pos">[${o.position[0]}, ${o.position[1]}]</span>
+      <span class="mono asset-hp">${o.hp} HP</span>
+    </button>`;
+  }).join('') || '<div class="stream-empty">无受控单位</div>';
+  els.assetList.querySelectorAll('[data-asset]').forEach((b) => b.addEventListener('click', () => {
+    const o = world.state.objects.find((x) => x.id === b.dataset.asset);
+    if (o) tactSelect(tenant, o);
+  }));
+}
+function tactRenderHud(tenant) {
+  const world = T().worlds[tenant];
+  if (!world) { els.fleetHud.hidden = true; return; }
+  const st = world.state;
+  const cap = tactCoreCapacity(st.population ?? 0);
+  els.fleetHud.hidden = false;
+  els.fleetHud.innerHTML = `<div class="hud-row">
+    <span class="hud-label">${tenant.toUpperCase()} · HUD</span>
+    <span class="hud-val"><img src="${UNIT_ICONS.resource}" alt="" /> ${st.resources ?? 0} <i>/ ${cap}</i></span>
+    <span class="hud-val"><img src="${UNIT_ICONS.population}" alt="" /> ${st.population ?? 0}</span>
+    <span class="hud-val mono">tick ${st.tick ?? '—'}</span>
+  </div>`;
+}
+function tactDrawLayer(s) {
+  const tac = T();
+  if (!tac.selected) return;
+  const sel = tac.selected, world = tac.worlds[sel.tenant], obj = sel.obj;
+  if (!world || !obj.position) return;
+  const color = TENANT_COLORS[sel.tenant] ?? '#4591c5';
+  const p = project(obj.position[0], obj.position[1]);
+  const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
+  ring(p.sx, p.sy, 16 + 3 * pulse, color, 2.5);
+  for (const v of tactVisibility(world)) {
+    const vp = project(v.x, v.y);
+    ctx.save();
+    ctx.fillStyle = 'rgba(69,145,197,.05)';
+    ctx.beginPath(); ctx.arc(vp.sx, vp.sy, v.r * s, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(69,145,197,.16)';
+    ctx.lineWidth = 1; ctx.stroke();
+    ctx.restore();
+  }
+  if (tac.mode === 'MOVE') {
+    for (const t of tactMoveTargets(world, obj)) {
+      const tp = project(t[0], t[1]);
+      ctx.fillStyle = 'rgba(118,184,137,.55)';
+      ctx.beginPath(); ctx.arc(tp.sx, tp.sy, Math.max(3, s * 0.3), 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  if (tac.moveRoute) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(118,184,137,.9)'; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    for (let i = 0; i < tac.moveRoute.path.length; i++) {
+      const rp = project(tac.moveRoute.path[i][0], tac.moveRoute.path[i][1]);
+      if (i === 0) ctx.moveTo(rp.sx, rp.sy); else ctx.lineTo(rp.sx, rp.sy);
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+    const end = project(tac.moveRoute.path[tac.moveRoute.path.length - 1][0], tac.moveRoute.path[tac.moveRoute.path.length - 1][1]);
+    ctx.fillStyle = '#76b889';
+    ctx.beginPath(); ctx.arc(end.sx, end.sy, Math.max(4, s * 0.35), 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+  if (tac.mode === 'SHOOT' && obj.unit_type === 'RANGER') {
+    for (const t of tactRangerRange(world, obj)) {
+      const tp = project(t[0], t[1]);
+      ctx.fillStyle = 'rgba(198,99,112,.26)';
+      ctx.beginPath(); ctx.arc(tp.sx, tp.sy, Math.max(2.5, s * 0.28), 0, Math.PI * 2); ctx.fill();
+    }
+    for (const tg of tactRangerTargets(world, obj)) {
+      const tp = project(tg.position[0], tg.position[1]);
+      ring(tp.sx, tp.sy, 12, '#c66370', 2);
+    }
+  }
+  if (tac.mode === 'SWEEP' && obj.unit_type === 'VANGUARD') {
+    for (const { dx, dy } of TACT_STEPS) {
+      const tp = project(obj.position[0] + dx, obj.position[1] + dy);
+      ctx.fillStyle = 'rgba(216,182,78,.35)';
+      ctx.beginPath(); ctx.arc(tp.sx, tp.sy, Math.max(3, s * 0.3), 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  if (tac.attackTarget) {
+    const tp = project(tac.attackTarget.obj.position[0], tac.attackTarget.obj.position[1]);
+    ring(tp.sx, tp.sy, 14, '#c66370', 2.5);
+  }
+}
+async function handleCanvasClick(px, py) {
+  const tac = T();
+  const cell = nearestCell(px, py);
+  if (tac.mode === 'MOVE' && tac.selected) {
+    const world = tac.worlds[tac.selected.tenant];
+    if (world) {
+      // 移动目标可为任意格（世界坐标反算），不需要命中已测绘 cell
+      const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+      const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+      const path = tactFindPath(world, tac.selected.obj.position, [wx, wy]);
+      if (path) {
+        tac.moveGoals[tac.selected.obj.id] = [wx, wy];
+        tac.moveRoute = { path };
+        tac.mode = null;
+        tactRenderActionDialog(); tactRenderInspect(); draw();
+      }
+    }
+    return;
+  }
+  if (tac.mode === 'SHOOT' && tac.selected && cell) {
+    const world = tac.worlds[tac.selected.tenant];
+    if (world) {
+      const target = tactObjectAt(world, cell.x, cell.y);
+      if (target && target.controlled === false) {
+        tac.attackTarget = { obj: target };
+        tac.mode = null;
+        tactRenderActionDialog(); tactRenderInspect(); draw();
+      }
+    }
+    return;
+  }
+  if (tac.mode === 'SWEEP' && tac.selected && cell) {
+    tac.mode = null;
+    tactRenderActionDialog(); draw();
+    return;
+  }
+  if (cell && (cell.type === 'unit' || cell.type === 'core')) {
+    const world = await tactLoadWorld(cell.tenant);
+    const obj = world ? tactObjectAt(world, cell.x, cell.y) : null;
+    if (obj) { await tactSelect(cell.tenant, obj); return; }
+  }
+  tactClear();
+}
+function updateBeaconIndicator() {
+  const els2 = els.beaconIndicator;
+  const b = state.beacons[0];
+  if (!b || !state.view.ready) { els2.hidden = true; return; }
+  const p = project(b.x, b.y);
+  const w = W(), h = H();
+  if (p.sx >= 0 && p.sx <= w && p.sy >= 0 && p.sy <= h) { els2.hidden = true; return; }
+  const cx = w / 2, cy = h / 2;
+  const dx = p.sx - cx, dy = p.sy - cy;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len;
+  const inset = 40;
+  const k = Math.min((w / 2 - inset) / Math.abs(ux || 1e-9), (h / 2 - inset) / Math.abs(uy || 1e-9));
+  const ex = cx + ux * k, ey = cy + uy * k;
+  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+  els2.hidden = false;
+  els2.style.left = `${ex}px`;
+  els2.style.top = `${ey}px`;
+  els2.innerHTML = `<button class="beacon-arrow" title="定位信标 [${b.x}, ${b.y}]" style="transform:rotate(${angle + 90}deg)"></button>`;
+  els2.querySelector('.beacon-arrow').addEventListener('click', () => {
+    state.view.cx = b.x; state.view.cy = b.y;
+    draw();
+  });
+}
+
 function renderLegend() {
   els.legendList.innerHTML = `
     <li><span class="sw core"></span>核心</li>
