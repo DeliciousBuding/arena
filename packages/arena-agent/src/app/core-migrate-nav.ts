@@ -24,6 +24,14 @@ export function chebyshev(a: Pos, b: Pos): number {
   return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
 }
 
+/** Manhattan 距离（核心仅能沿四向移动，实际步数 = |dx|+|dy|；用于增益评分——
+ *  2026-08-08 t4 生产实证：Chebyshev 增益在 dx 主导时 UP/DOWN gain 全 0、
+ *  平局仲裁随机选向 → 垂直竖井里 DOWN/UP 拉锯 1.5h 卡死；Manhattan 让次轴向
+ *  正确减距（DOWN 明显优于 UP），直接推进而非绕障振荡）。 */
+export function manhattan(a: Pos, b: Pos): number {
+  return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
+}
+
 export function beaconDist(p: Pos): number {
   return Math.max(Math.abs(p[0] - BEACON[0]), Math.abs(p[1] - BEACON[1]));
 }
@@ -41,6 +49,13 @@ export interface NavState {
   lastPos: Pos | null;
   /** 位置未变轮数。 */
   stuckStreak: number;
+}
+
+/** 合并障碍集合：survey 全局测绘 ∪ calibration 当前视野（保留动态障碍感知）。 */
+export function mergeObstacleSets(survey: ReadonlySet<string>, calibration: ReadonlySet<string>): Set<string> {
+  const merged = new Set(survey);
+  for (const c of calibration) merged.add(c);
+  return merged;
 }
 
 export function createNavState(): NavState {
@@ -64,20 +79,32 @@ export function planDirection(
   state: NavState,
   recentlyFailed: ReadonlySet<string>,
 ): Plan {
-  const base = chebyshev(core, target);
+  const base = manhattan(core, target);
   const inBeaconZone = beaconDist(core) <= beaconSafe;
+  // 主轴优先仲裁（2026-08-08）：Manhattan 增益在 dx≫dy 时 LEFT/DOWN gain 可能
+  // 相等（两轴都减 1）——优先减主导轴（|dx|≥|dy| 时先 LEFT/RIGHT），否则任意
+  // 减轴都行但按主轴先走更稳（与 Chebyshev 历史行为一致）。
+  const primaryAxis: "x" | "y" =
+    Math.abs(target[0] - core[0]) >= Math.abs(target[1] - core[1]) ? "x" : "y";
+  const isPrimary = (d: Dir): boolean =>
+    primaryAxis === "x" ? d === "LEFT" || d === "RIGHT" : d === "UP" || d === "DOWN";
   const scored = DIRECTIONS
     .filter((d) => !obstacles.has(nextPos(core, d).join(",")))
     .map((d) => {
       const n = nextPos(core, d);
-      const gain = base - chebyshev(n, target);
+      const gain = base - manhattan(n, target);
       // 信标圈内：靠近信标的方向剔除（严格小于才算靠近，避免原地打转）
       const towardBeacon = inBeaconZone && beaconDist(n) < beaconDist(core) - 0.001;
       return { d, gain, towardBeacon };
     })
     .filter((x) => !x.towardBeacon)
     .filter((x) => !recentlyFailed.has(`${x.d}:${core.join(",")}`))
-    .sort((a, b) => b.gain - a.gain || STABLE_ORD.indexOf(a.d) - STABLE_ORD.indexOf(b.d));
+    .sort(
+      (a, b) =>
+        b.gain - a.gain ||
+        Number(isPrimary(b.d)) - Number(isPrimary(a.d)) ||
+        STABLE_ORD.indexOf(a.d) - STABLE_ORD.indexOf(b.d),
+    );
 
   if (scored.length === 0) {
     return { dir: null, candidates: [], detour: false };
