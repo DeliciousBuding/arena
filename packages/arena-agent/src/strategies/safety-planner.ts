@@ -143,6 +143,9 @@ const BEACON_GRAB_DEFAULT_MAX_DIST = 80;
  *  小队 1V+3R+1W 埋伏，信标 Vanguard 被击杀）。由 militaryHunt 攻坚处理，
  *  敌核心被摧毁后我方单位在格上经主循环自动拾取。 */
 const BEACON_CONTEST_RADIUS = 10;
+/** 信标移动判定窗口（beaconGrab 防追标，2026-08-08）：近 10 tick 内信标
+ *  出现过 ≥2 个不同位置 = 在移动（敌方核心携带/漂移）——不单独 fetch。 */
+const BEACON_MOVE_WINDOW_TICKS = 10;
 /** 威胁自适应（2026-08-07，排行榜威胁画像"留强"）：AGGRESSOR（伤害 top30）
  *  攻坚成型门槛叠加 +2；ELITE_AGGRESSOR（伤害 top10，猛攻蛆头子）叠加 +4。 */
 const THREAT_AGGRESSOR_ATTACK_FORCE_BONUS = 2;
@@ -216,7 +219,16 @@ export function workerDenseDirection(index: number): number {
 export class SafetyPlanner {
   readonly world: World;
   readonly phase: PhaseMachine;
-  readonly config: SafetyPlannerConfig;
+  private configValue: SafetyPlannerConfig;
+  /** 当前 SafetyPlanner 配置（热加载 2026-08-08：updateConfig 原子替换引用，
+   *  World/巡逻记忆不丢；所有决策路径经 this.config 实时读取）。 */
+  get config(): SafetyPlannerConfig {
+    return this.configValue;
+  }
+  /** 热加载配置快照（tick 间调用；非法配置由调用方先校验，这里只做引用替换）。 */
+  updateConfig(config: SafetyPlannerConfig): void {
+    this.configValue = config;
+  }
   /** 本 decide 生效的 aggression（policy 优先，其次 config.aggression）。 */
   private effectiveAggression: AggressionLevel = "defensive";
   /** 本 decide 生效的 workerTarget（policy 优先，其次 config.workerTarget）。 */
@@ -282,7 +294,7 @@ export class SafetyPlanner {
     world = new World(),
     threatProfiles: ReadonlyMap<string, ThreatProfile> = new Map(),
   ) {
-    this.config = config;
+    this.configValue = config;
     this.world = world;
     this.phase = new PhaseMachine(config.phase);
     for (const [username, profile] of threatProfiles) {
@@ -475,6 +487,11 @@ export class SafetyPlanner {
     if (beacon.status === "CARRIED") {
       return beacon.carrierId === unit.id ? "return" : null;
     }
+    // 追移动信标 = 追敌方载者（t2 生产实证 2026-08-08：信标被 jerkman 核心
+    // 带着沿 y=0 东移，vanguard 单骑北上追标 = 送人头）。近 10 tick 信标移动过
+    // （≥2 个不同位置）→ 视为敌方携带/漂移，不单独 fetch；等信标静止（真掉落）
+    // 再拾取（静止 GROUND 信标 = 无主可拿）。
+    if (this.world.beaconMoving(BEACON_MOVE_WINDOW_TICKS)) return null;
     // 信标在已知敌核心附近（敌方基地/战区）→ 不单独 fetch：单骑深入送死
     // （t2 生产实证：信标即 jerkman 核心所在地，小队埋伏）。由 militaryHunt
     // 攻坚处理；敌核心被摧毁后我方单位在格上经主循环 PICKUP_BEACON 自动拾取。
@@ -1695,3 +1712,5 @@ export class SafetyPlanner {
     return { type: "SPAWN", unitType };
   }
 }
+
+
