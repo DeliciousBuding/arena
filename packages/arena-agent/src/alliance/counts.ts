@@ -62,12 +62,19 @@ export function estimatedForce(sightings: readonly EntitySighting[], nowTick: nu
   return sum;
 }
 
-/** 汇总四种口径（counts.ts 语义的单一入口）。 */
-export function computeForceCounts(sightings: readonly EntitySighting[], nowTick: number): AllianceForceCounts {
+/** 汇总四种口径（counts.ts 语义的单一入口）。
+ *  historicalSightingCount 语义是原始观测**条数**（含重复，审计用）——调用方若
+ *  持有去重前的原始观测（如 snapshot 构建），应通过 opts.historicalSightingCount
+ *  传入真实条数；缺省回退为去重后条数（保守下限）。 */
+export function computeForceCounts(
+  sightings: readonly EntitySighting[],
+  nowTick: number,
+  opts: { readonly historicalSightingCount?: number } = {},
+): AllianceForceCounts {
   return {
     currentVisibleCombat: currentVisibleCombat(sightings, nowTick),
     recentUniqueCombat: recentUniqueCombat(sightings, nowTick),
-    historicalSightingCount: historicalSightingCount(sightings),
+    historicalSightingCount: opts.historicalSightingCount ?? historicalSightingCount(sightings),
     estimatedForce: estimatedForce(sightings, nowTick),
   };
 }
