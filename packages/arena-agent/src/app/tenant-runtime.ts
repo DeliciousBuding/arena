@@ -22,7 +22,7 @@ import { performance } from "node:perf_hooks";
 
 import { loadRuntimeConfig, resolveCircuitBreaker, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
 import { loadPersistentEnemyIntel } from "./enemy-intel.ts";
-import { loadThreatProfiles } from "./official-intel.ts";
+import { loadThreatProfiles, threatProfilesEqual } from "./official-intel.ts";
 import { resolveArenaDataRoot, resolveTenantBaseDir } from "./data-root.ts";
 import { SingleWriterLock } from "./single-writer-lock.ts";
 import { newProcessRunId, readGitSha, writeRunManifest, type RunManifest } from "./run-manifest.ts";
@@ -57,6 +57,7 @@ import {
 import { planHashOf } from "../telemetry/decision-trace.ts";
 import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
 import { sha256Canonical } from "../domain/integrity.ts";
+import { AllianceShadowWriter } from "../alliance/shadow.ts";
 import {
   RuntimeGoldenRecorder,
   type RuntimeGoldenRecorderResult,
@@ -68,6 +69,11 @@ export const RULES_VERSION = "v0.14";
  *  生产实测 t1 capacity_wait:DEPOSIT 死锁 60+ ticks 才被人工发现，16 ticks（≈2 个
  *  MacroPolicy 周期）是"足够确认异常、又不会频繁误报"的折中。 */
 export const STALL_WARNING_TICKS = 16;
+
+/** 威胁画像热刷新间隔（2026-08-08）：leaderboard 快照由外部计划任务每 15 分钟
+ *  拉取（ArenaLeaderboardIntel → docs/progress/leaderboard-intel.py），四线每 5
+ *  分钟重读一次（间隔 < 快照间隔，保证拉取后 5 分钟内生效；内容不变零抖动）。 */
+const THREAT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 /** 威胁评估诊断字段（v0.3-lite，2026-08-06）：从 outcome state 计算 tick 级威胁
  *  （可见敌/受击基础版；enemyHints 记忆增强——moving/pursuit——待 planner 侧
@@ -170,6 +176,10 @@ export interface TenantRunOptions {
   readonly startupSyncTurns?: number;
   /** S8b：默认关闭；仅旁路记录 accepted full-plan + 相邻 raw states。 */
   readonly recordCalibration?: boolean;
+  /** Alliance shadow（Phase 1 收尾）：默认关闭；每 interval tick 从 live state
+   *  构建联盟快照写 telemetry/alliance-shadow.jsonl（只读影子，零决策影响）。 */
+  readonly recordAllianceShadow?: boolean;
+  readonly allianceShadowIntervalTicks?: number;
   /** 测试注入；生产由 recordCalibration 创建。 */
   readonly calibrationRecorder?: RuntimeGoldenRecorder;
 }
@@ -285,6 +295,15 @@ export async function runTenant(
     cleanupStack.push(() => decisionWriter.close());
     const outcomeWriter = new JsonlWriter(join(dirs.telemetryDir, "outcome.jsonl"));
     cleanupStack.push(() => outcomeWriter.close());
+    // Alliance shadow（默认关）：每 interval tick 输出联盟快照帧（spec Phase 1）。
+    const allianceShadowWriter = options.recordAllianceShadow === true
+      ? new AllianceShadowWriter({
+          tenantId: config.tenantId,
+          processRunId,
+          path: join(dirs.telemetryDir, "alliance-shadow.jsonl"),
+          intervalTicks: options.allianceShadowIntervalTicks,
+        })
+      : null;
 
     // S8b recorder 默认关闭。初始化失败也只写独立告警，绝不阻断 live loop。
     const recorderWarningPath = join(dirs.telemetryDir, "calibration-recorder.jsonl");
@@ -558,6 +577,44 @@ export async function runTenant(
       }
     };
 
+    // 威胁画像热刷新（2026-08-08）：leaderboard 快照由外部计划任务每 15 分钟
+    // 拉取（ArenaLeaderboardIntel → docs/progress/leaderboard-intel.py），四线每 5
+    // 分钟重读一次快照，内容变化才替换（掉榜用户立即移除，零抖动；纯只读 +
+    // 降级：快照缺失/解析失败返回空 Map → 威胁自适应关闭，与"无情报"历史一致，
+    // 下次快照恢复自动回来）。
+    let lastThreatProfiles = threatProfiles;
+    const refreshThreatProfiles = (): void => {
+      try {
+        const next = loadThreatProfiles(dataRoot);
+        if (threatProfilesEqual(lastThreatProfiles, next)) return;
+        lastThreatProfiles = next;
+        planner.replaceThreatProfiles(next);
+        appendJsonlLine(
+          join(dirs.telemetryDir, "runtime.jsonl"),
+          JSON.stringify(sanitizeValue({
+            processRunId,
+            tenantId: config.tenantId,
+            telemetryType: "threat_profiles_refreshed",
+            profiles: next.size,
+          })),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        appendJsonlLine(
+          join(dirs.telemetryDir, "runtime.jsonl"),
+          JSON.stringify(sanitizeValue({
+            processRunId,
+            tenantId: config.tenantId,
+            telemetryType: "threat_profiles_refresh_failed",
+            message,
+          })),
+        );
+      }
+    };
+    const threatRefreshTimer = setInterval(refreshThreatProfiles, THREAT_REFRESH_INTERVAL_MS);
+    refreshThreatProfiles(); // 启动立即检查一次（避免首次快照缺失导致长空窗）
+    cleanupStack.push(() => clearInterval(threatRefreshTimer));
+
     // 触发源 1：文件监听（父目录 + 400ms debounce，兼容编辑器原子替换/重命名）。
     let configWatch: ReturnType<typeof watch> | null = null;
     let configReloadTimer: NodeJS.Timeout | null = null;
@@ -636,6 +693,8 @@ export async function runTenant(
     let liveSubmitCount = 0;
 
     const onTick = (outcome: TickOutcome): void => {
+      // Alliance shadow（默认关）：只读快照，IO 失败不阻塞。
+      allianceShadowWriter?.onState(outcome.state);
       const decision = outcome.decision;
       const intentCounts = decision === undefined
         ? {}

@@ -12,6 +12,7 @@ import {
   buildThreatProfiles,
   loadLatestLeaderboardSnapshot,
   loadThreatProfiles,
+  threatProfilesEqual,
   tierOfDamageRank,
   type LeaderboardSnapshot,
 } from "../src/app/official-intel.ts";
@@ -103,4 +104,28 @@ test("loadThreatProfiles：dataRoot/leaderboard 快照 → 非空画像", () => 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("threatProfilesEqual：内容全等 true；任一字段变化/掉榜/新增 false", () => {
+  const a = buildThreatProfiles(SNAPSHOT);
+  const b = buildThreatProfiles(SNAPSHOT);
+  assert.equal(threatProfilesEqual(a, b), true, "同一快照内容全等");
+  // 伤害分变化
+  const changedScore = buildThreatProfiles({
+    ...SNAPSHOT,
+    damage_dealt: SNAPSHOT.damage_dealt.map((r, i) => (i === 0 ? { ...r, score: r.score + 1 } : r)),
+  });
+  assert.equal(threatProfilesEqual(a, changedScore), false, "伤害分变化应不等");
+  // 掉榜（用户移除）
+  const removed = buildThreatProfiles({
+    ...SNAPSHOT,
+    damage_dealt: SNAPSHOT.damage_dealt.filter((r) => r.username !== "jerkman"),
+  });
+  assert.equal(threatProfilesEqual(a, removed), false, "掉榜应不等");
+  // 新增用户
+  const added = buildThreatProfiles({
+    ...SNAPSHOT,
+    damage_dealt: [...SNAPSHOT.damage_dealt, { rank: 50, username: "newbie", score: 300 }],
+  });
+  assert.equal(threatProfilesEqual(a, added), false, "新增应不等");
 });
