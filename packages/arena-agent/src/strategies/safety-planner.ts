@@ -202,12 +202,15 @@ export interface SafetyPlannerInput {
 }
 
 /** Deterministic, side-effect-free with respect to the game. World memory is local to this planner. */
-/** worker 密集扫图方位（worker-dense-scan-v1，纯函数可测）：16 方位分散——
- *  (index*3+7)%16 与 8 方位 (index*3+7)%8 同构；12 worker 覆盖全部 16 方位
- *  （8 方位下 12 worker 每方位 1-2，密集模式每方位 0-1 但方位数翻倍 →
- *  相邻方位间距减半，盲区小）。 */
+/** worker 密集扫图方位（worker-dense-scan-v1，纯函数可测）：16 方位分两层——
+ *  - index<8：偶数槽 = 8 方位同构（卡+对角，(index*3+7)%8 ×2）——≤8 worker 时
+ *    覆盖与历史 8 方位完全一致（对角远矿不回归，A/B 实证：旧纯 %16 分布在
+ *    对角远矿场景 4.0→2.0 劣化，因初始方位漏对角）；
+ *  - index≥8：奇数槽 = 半八分位填充——多 worker 才加密（8→16 方位间距减半），
+ *    稀疏资源发现率 +80%（A/B 实证）。 */
 export function workerDenseDirection(index: number): number {
-  return (index * 3 + 7) % 16;
+  if (index < 8) return ((index * 3 + 7) % 8) * 2;
+  return (((index - 8) * 3 + 7) % 8) * 2 + 1;
 }
 
 export class SafetyPlanner {
@@ -859,7 +862,9 @@ export class SafetyPlanner {
                   // 固定偏移保证不同 worker 取不同老化位次，老方位优先 + 覆盖分散。
                   (index * 3 + 7) % directionCount,
                 )
-              : (memory.patrolDirection + 3) % directionCount;
+              : this.config.workerDenseScan === true
+                ? (memory.patrolDirection + 6) % directionCount
+                : (memory.patrolDirection + 3) % directionCount;
           memory.patrolRing = (memory.patrolRing + 1) % EXPLORE_RING_COUNT;
         }
         else memory.patrolStarted = true;

@@ -33,6 +33,16 @@ test("worker-dense-scan：16 方位与 8 方位初始分布不同（更细网格
   assert.equal(new Set(denseSeeds).size, 12, `16 方位 12 worker 覆盖 12 个方位（无重复）`);
 });
 
+test("worker-dense-scan：前 8 worker = 8 方位覆盖（卡+对角，对角不回归）", () => {
+  // 偶数槽 (index*3+7)%8 ×2 = 8 方位 (index*3+7)%8 的 2 倍——≤8 worker 时
+  // 覆盖与历史 8 方位完全一致（A/B 实证：对角远矿场景 %16 纯分布 4.0→2.0 劣化）
+  for (let i = 0; i < 8; i++) {
+    const dense = workerDenseDirection(i);
+    const legacy = (i * 3 + 7) % EXPLORE_DIRECTION_COUNT;
+    assert.equal(dense, legacy * 2, `worker ${i}: dense=${dense} legacy=${legacy}`);
+  }
+});
+
 test("worker-dense-scan：workerDenseDirection 恒在 16 方位内（确定性）", () => {
   for (let i = 0; i < 100; i++) {
     const d = workerDenseDirection(i);
