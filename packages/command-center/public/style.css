@@ -1328,3 +1328,18 @@ body::after {
 .fold-summary { display: flex; align-items: baseline; gap: 12px; margin-top: 7px; font-size: 11px; color: var(--text-dim); }
 .fold-summary b { font-variant-numeric: tabular-nums; color: var(--text); }
 .fold-summary .fold-ellipsis { opacity: .5; letter-spacing: 1px; }
+
+/* ---------- 数据管线健康（2026-08-08） ---------- */
+#healthChip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: rgba(255,255,255,.03); color: var(--text-dim);
+  white-space: nowrap; cursor: help; transition: all .25s var(--ease);
+}
+#healthChip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--success); box-shadow: 0 0 7px rgba(87,189,132,.6); }
+#healthChip.warn { border-color: rgba(211,173,85,.4); color: var(--warn); }
+#healthChip.warn::before { background: var(--warn); box-shadow: 0 0 7px rgba(211,173,85,.6); }
+#healthChip.err { border-color: rgba(221,98,109,.45); color: var(--danger); }
+#healthChip.err::before { background: var(--danger); box-shadow: 0 0 7px rgba(221,98,109,.6); }
+#healthChip:hover { background: rgba(255,255,255,.06); }

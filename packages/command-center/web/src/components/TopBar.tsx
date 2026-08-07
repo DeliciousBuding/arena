@@ -3,6 +3,9 @@ import { useEngine } from "../lib/bridge";
 import { useShell } from "../lib/shell";
 
 interface TickPayload { clock: string; tick: number; period: number; frac: number }
+interface HealthPayload {
+  global?: { healthy?: boolean; maxLagTicks?: number; avgLagTicks?: number; staleTenants?: string[]; missingTenants?: string[] };
+}
 
 export function TopBar() {
   const engine = useEngine();
@@ -11,6 +14,7 @@ export function TopBar() {
   const [dataRoot, setDataRoot] = useState<string>("");
   const [refreshOk, setRefreshOk] = useState<boolean>(true);
   const [encounteredCount, setEncounteredCount] = useState(0);
+  const [health, setHealth] = useState<HealthPayload | null>(null);
 
   useEffect(() => {
     if (!engine) return;
@@ -26,6 +30,21 @@ export function TopBar() {
       }
     });
   }, [engine]);
+
+  // 数据管线健康（2026-08-08）：survey-db 同步水位 vs live tick 滞后——测绘记录层
+  // 是否健康前进一眼可读（后端 /api/health/pipeline，15s 缓存）。
+  useEffect(() => {
+    let stop = false;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/health/pipeline", { cache: "no-store" });
+        if (r.ok && !stop) setHealth((await r.json()) as HealthPayload);
+      } catch { /* 端点暂不可用则保持上次状态 */ }
+    };
+    load();
+    const timer = setInterval(load, 15000);
+    return () => { stop = true; clearInterval(timer); };
+  }, []);
 
   const frac = tick?.frac ?? 0;
   const urgent = frac > 0.82;
@@ -51,6 +70,20 @@ export function TopBar() {
           {encounteredCount > 0 ? <span className="btn-count" title={`目击过的敌方玩家数（唯一账号）· 详情见右侧威胁情报面板`}>{encounteredCount}</span> : null}
         </button>
         <button id="redeemBtn" className="btn primary" type="button" onClick={() => openRight("redeem")}>兑换码</button>
+        <span id="healthChip" className={`health-chip${health?.global?.healthy === false ? (health.global.missingTenants?.length ? " err" : " warn") : " ok"}`}
+          title={(() => {
+            const g = health?.global;
+            if (!g) return "数据管线健康状态（加载中）";
+            const parts = [];
+            if (g.missingTenants?.length) parts.push(`测绘缺失 ${g.missingTenants.join(",").toUpperCase()}`);
+            if (g.staleTenants?.length) parts.push(`测绘滞后 ${g.staleTenants.join(",").toUpperCase()}`);
+            parts.push(`最大滞后 ${g.maxLagTicks ?? 0} tick · 平均 ${g.avgLagTicks ?? 0} tick`);
+            return "数据管线健康 · " + parts.join(" · ");
+          })()}>
+          {health?.global?.healthy === false
+            ? (health.global.missingTenants?.length ? "测绘缺失" : `测绘滞后 ${health.global.maxLagTicks ?? "?"}t`)
+            : "测绘同步"}
+        </span>
       </div>
     </header>
   );
