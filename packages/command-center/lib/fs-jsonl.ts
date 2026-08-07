@@ -3,7 +3,7 @@
  * run-case 枚举、几何工具。所有 lib 模块从这里取共享基础。
  * 运行时 Node 24（type stripping 直接执行），类型检查走 tsc --noEmit。
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, openSync, readSync, closeSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,10 +23,35 @@ export const runtimeDir = (tenant: string): string => join(DATA_ROOT, "runtime",
 export const calibrationDir = (tenant: string): string => join(runtimeDir(tenant), "calibration");
 export const telemetryDir = (tenant: string): string => join(runtimeDir(tenant), "telemetry");
 
-/** 读 JSONL 文件尾部最多 maxLines 行（容错坏行）。 */
+/** 读 JSONL 文件尾部最多 maxLines 行（容错坏行）。
+ *  性能：seek 只读尾部块（maxLines×1KB，下限 64KB、上限 2MB），不再全量读
+ *  outcome.jsonl（4 租户合计 ~14MB/次 → 面板 overview/stream 由 20s+ 降至毫秒级）。
+ *  截断起点落在行中间时丢弃首段残行；文件小于块大小时退化为全量读（等价旧行为）。 */
 export function readJsonlTail(filePath: string, maxLines: number): Record<string, unknown>[] {
   if (!existsSync(filePath)) return [];
-  const text = readFileSync(filePath, "utf8");
+  const size = statSync(filePath).size;
+  const want = Math.max(64 * 1024, Math.min(2 * 1024 * 1024, maxLines * 1024));
+  const start = Math.max(0, size - want);
+  let text: string;
+  if (start === 0) {
+    text = readFileSync(filePath, "utf8");
+  } else {
+    const fd = openSync(filePath, "r");
+    try {
+      const buf = Buffer.alloc(size - start);
+      let off = 0;
+      while (off < buf.length) {
+        const n = readSync(fd, buf, off, buf.length - off, start + off);
+        if (n <= 0) break;
+        off += n;
+      }
+      text = buf.toString("utf8");
+      const nl = text.indexOf("\n");
+      if (nl >= 0) text = text.slice(nl + 1); // 去掉截断产生的首段残行
+    } finally {
+      closeSync(fd);
+    }
+  }
   const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
   const rows: Record<string, unknown>[] = [];
   for (const line of lines.slice(-maxLines)) {
