@@ -104,6 +104,10 @@ CREATE TABLE IF NOT EXISTS sync_meta (
 );
 CREATE INDEX IF NOT EXISTS idx_resources_last_seen ON resources(last_seen_tick);
 CREATE INDEX IF NOT EXISTS idx_core_hunts_last_seen ON core_hunts(last_seen_tick);
+-- 单位目击热区查询索引（2026-08-08，数据架构审计 A3）：敌情热区
+-- 按 controlled=0 全表扫（t1 15 万行）——加 (controlled, tick) 索引；
+-- CREATE INDEX IF NOT EXISTS 幂等，下次 openSurveyDb 自动生效。
+CREATE INDEX IF NOT EXISTS idx_units_seen_controlled_tick ON units_seen(controlled, tick);
 
 -- 矿物生命周期事件（2026-08-08）：矿格 × tick 的采集/失败序列
 CREATE TABLE IF NOT EXISTS resource_events (
