@@ -95,6 +95,101 @@ const cellKey = (x, y) => `${x},${y}`;
 const SURVEY_CASE_LIMIT = 24; // 每个租户累积测绘最多取最近 N 个 case（覆盖与新鲜度平衡）
 const RUN_SCAN = 30; // 联盟情报扫描 run 数（平衡覆盖与性能）
 const INTEL_CASE_LIMIT = 24; // 联盟情报每个 run 取最近 N 个 case（与测绘一致，保证核心目击不丢） // 对齐 enemy-intel SCAN_RUNS（历史敌核心目击在旧 run） // 联盟情报扫描的最近 run 数（历史敌核心目击在旧 run）
+/** 信标历史轨迹（跨 run 增量缓存，2026-08-08）：全局信标 = 全玩家共享同一对象，
+ *  位置随携带者迁移而移动（实测 1 格/4-5 tick）。逐 case 收集 champion_beacon
+ *  位置 → 去重连续同格 → {x,y,tick} 点列，供前端画虚线轨迹 + 方向箭头。
+ *  跨 run：租户 agent 重启会产生新 calibration run（实测 t2 数小时多 run），
+ *  只取最新 run 会让轨迹只剩最近几格——合并最近 BEACON_TRAIL_RUNS 个 run 保留
+ *  历史轨迹。增量：同一最新 run 新 case 只追加新点；run 变更才重建。 */
+const beaconTrailCache = new Map(); // tenant -> { latestRun, latestFile, trail }
+const BEACON_TRAIL_RUNS = 6; // 跨最近 N 个 run 合并历史（run 重启不丢轨迹）
+const BEACON_TRAIL_CASE_LIMIT = 300; // 每 run 最多扫 N 个 case（首扫/重建成本上限）
+const BEACON_TRAIL_MAX_POINTS = 96; // 轨迹点数上限（超长滚动保留最近）
+
+function runsByMaxTick(tenant) {
+  const base = calibrationDir(tenant);
+  if (!existsSync(base)) return [];
+  const names = readdirSync(base, { withFileTypes: true })
+    .filter((d) => d.isDirectory()).map((d) => d.name);
+  const out = [];
+  for (const name of names) {
+    const casesDir = join(base, name, "cases");
+    if (!existsSync(casesDir)) continue;
+    let maxTick = -1;
+    for (const f of readdirSync(casesDir)) { const t = parseTick(f); if (t > maxTick) maxTick = t; }
+    if (maxTick >= 0) out.push({ run: name, maxTick });
+  }
+  out.sort((a, b) => b.maxTick - a.maxTick);
+  return out;
+}
+
+function beaconPointsFromRun(tenant, runDir, maxCases) {
+  const files = listCases(tenant, runDir).slice(-maxCases);
+  const pts = [];
+  let lastKey = null;
+  for (const file of files) {
+    const path = join(calibrationDir(tenant), runDir, "cases", file);
+    let raw;
+    try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+    const cb = raw?.before?.state?.champion_beacon;
+    if (!cb?.position) continue;
+    const x = cb.position[0], y = cb.position[1];
+    const key = x + "," + y;
+    if (key === lastKey) continue; // 连续同格去重（不动 = 不堆点）
+    lastKey = key;
+    pts.push({ x, y, tick: parseTick(file) });
+  }
+  return pts;
+}
+
+function loadBeaconTrail(tenant) {
+  const runs = runsByMaxTick(tenant).slice(0, BEACON_TRAIL_RUNS);
+  if (!runs.length) return [];
+  const latestRun = runs[0].run;
+  const latestFiles = listCases(tenant, latestRun);
+  const latestFile = latestFiles.length ? latestFiles[latestFiles.length - 1] : null;
+  const cached = beaconTrailCache.get(tenant);
+  if (cached && cached.latestRun === latestRun && cached.latestFile === latestFile) return cached.trail;
+  let trail = [];
+  if (cached && cached.latestRun === latestRun && cached.latestFile) {
+    // 增量：同一最新 run，只补新 case
+    const files = listCases(tenant, latestRun);
+    const from = files.indexOf(cached.latestFile);
+    if (from >= 0) {
+      trail = [...cached.trail];
+      let lastKey = trail.length ? trail[trail.length - 1].x + "," + trail[trail.length - 1].y : null;
+      for (let i = from + 1; i < files.length; i++) {
+        const file = files[i];
+        const path = join(calibrationDir(tenant), latestRun, "cases", file);
+        let raw;
+        try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+        const cb = raw?.before?.state?.champion_beacon;
+        if (!cb?.position) continue;
+        const key = cb.position[0] + "," + cb.position[1];
+        if (key === lastKey) continue;
+        lastKey = key;
+        trail.push({ x: cb.position[0], y: cb.position[1], tick: parseTick(file) });
+        if (trail.length > BEACON_TRAIL_MAX_POINTS) trail.shift();
+      }
+    }
+  }
+  if (trail.length === 0) {
+    // 重建：跨最近 N 个 run 合并（按 tick 升序），连续同格去重，超长滚动保留最近
+    const all = [];
+    for (const r of runs) all.push(...beaconPointsFromRun(tenant, r.run, BEACON_TRAIL_CASE_LIMIT));
+    all.sort((a, b) => a.tick - b.tick);
+    let lastKey = null;
+    for (const pt of all) {
+      const key = pt.x + "," + pt.y;
+      if (key === lastKey) continue;
+      lastKey = key;
+      trail.push(pt);
+      if (trail.length > BEACON_TRAIL_MAX_POINTS) trail.shift();
+    }
+  }
+  beaconTrailCache.set(tenant, { latestRun, latestFile, trail });
+  return trail;
+}
 function loadMergedMap() {
   const cells = new Map();
   const perTenant = [];
@@ -163,7 +258,7 @@ function loadMergedMap() {
       try {
         const lastRaw = JSON.parse(readFileSync(lastPath, "utf8"));
         const cb = lastRaw?.before?.state?.champion_beacon;
-        if (cb?.position) beacon = { x: cb.position[0], y: cb.position[1], status: cb.status ?? "GROUND", carrier_id: cb.carrier_id ?? null };
+        if (cb?.position) beacon = { x: cb.position[0], y: cb.position[1], status: cb.status ?? "GROUND", carrier_id: cb.carrier_id ?? null, trail: loadBeaconTrail(tenant) };
       } catch { /* 忽略 beacon 读取失败 */ }
     }
     perTenant.push({ tenant, runId: runDir, caseCount: caseFiles.length, latestTick: latestTick === 0 ? null : latestTick, beacon });
@@ -1010,3 +1105,5 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`Arena 指挥面板：http://127.0.0.1:${PORT}`);
   console.log(`数据根（只读）：${DATA_ROOT}`);
 });
+
+

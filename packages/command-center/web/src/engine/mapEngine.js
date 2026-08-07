@@ -410,9 +410,15 @@ function visibleCells(pad = 1) {
     state.layers[c.type] !== false);
 }
 
+/** 单位移动动画窗口 = tick 周期（~15s，与顶部读条同步）：poll 3s 只做数据
+ *  采样，动画跨整个 tick——"tick 走完 = 单位到位"，单位全程可见移动，
+ *  不再出现"读条还有 12s 单位已停在终点"的观感矛盾。 */
+function movementWindowMs() {
+  const p = state.tickMeter.period;
+  return Number.isFinite(p) && p > 0 ? p : 15000;
+}
 /** 单位平滑插值快照（2026-08-07）：poll 拿到新单位位置时保留旧位置
- *  （px,py → x,y），draw 之间按 POLL_MS 渐变移动——tick ~15s、poll 3s，
- *  单位移动不再"跳格子"，而是非线性（ease-out）滑动。 */
+ *  （px,py → x,y），draw 之间按 movementWindowMs() 渐变移动（与 tick 同步）。 */
 function captureUnitPrev() {
   const now = performance.now();
   const seen = new Set();
@@ -432,10 +438,14 @@ function captureUnitPrev() {
 /** 单位当前绘制位置：插值（ease-out）或精确格。 */
 function unitDrawPos(c) {
   const m = state.unitPrev.get(c.tenant + ':' + c.id);
-  if (m && (m.px !== m.x || m.py !== m.y) && performance.now() - m.ts < POLL_MS * 2) {
-    const t = Math.min(1, (performance.now() - m.ts) / POLL_MS);
-    const e = 1 - Math.pow(1 - t, 2); // ease-out：起步快、收尾缓（丝滑）
-    return { x: m.px + (m.x - m.px) * e, y: m.py + (m.y - m.py) * e };
+  if (m && (m.px !== m.x || m.py !== m.y)) {
+    const win = movementWindowMs();
+    const elapsed = performance.now() - m.ts;
+    if (elapsed < win) {
+      const t = Math.min(1, elapsed / win);
+      const e = 1 - Math.pow(1 - t, 2); // ease-out：起步快、收尾缓（丝滑）
+      return { x: m.px + (m.x - m.px) * e, y: m.py + (m.y - m.py) * e };
+    }
   }
   return { x: c.x, y: c.y };
 }
@@ -788,7 +798,7 @@ function extendScreen(a, b, minLen) {
 function anyUnitsMoving() {
   const now = performance.now();
   for (const m of state.unitPrev.values()) {
-    if (Math.hypot(m.x - m.px, m.y - m.py) >= 0.4 && now - m.ts < POLL_MS * 2) return true;
+    if (Math.hypot(m.x - m.px, m.y - m.py) >= 0.4 && now - m.ts < movementWindowMs()) return true;
   }
   return false;
 }
@@ -808,7 +818,7 @@ function drawMovementDashes(cells, s) {
     const m = state.unitPrev.get(c.tenant + ':' + c.id);
     if (!m) continue;
     const dist = Math.hypot(m.x - m.px, m.y - m.py);
-    if (dist < 0.4 || now - m.ts >= POLL_MS * 2) continue;
+    if (dist < 0.4 || now - m.ts >= movementWindowMs()) continue;
     const from = project(m.px, m.py);
     const to = project(m.x, m.y);
     const dx = to.sx - from.sx, dy = to.sy - from.sy;
@@ -1022,36 +1032,100 @@ function drawCoreSprite(c, s) {
 /** 信标：视野内脉冲；视野外屏幕边缘方向指示（不撑爆自适应）。
  *  全局视图下按位置去重（4 租户共享同一世界信标，避免 4 个金色精灵叠在同一格）。 */
 function drawBeacons(s) {
-  const seenPos = new Set();
+  // 全局视图：4 租户共享同一世界信标，按位置去重，轨迹用"最长历史"的那份绘制；
+  // 单租户视图：直接绘制。
+  if (state.soloTenant === null) {
+    const byPos = new Map();
+    for (const b of state.beacons) {
+      if (state.tenantsOn[b.tenant] === false) continue;
+      const key = b.x + ',' + b.y;
+      const cur = byPos.get(key);
+      const curLen = cur && Array.isArray(cur.trail) ? cur.trail.length : 0;
+      const bLen = Array.isArray(b.trail) ? b.trail.length : 0;
+      if (!cur || bLen > curLen) byPos.set(key, b);
+    }
+    for (const b of byPos.values()) drawBeaconAt(s, b);
+    return;
+  }
   for (const b of state.beacons) {
-    if (state.tenantsOn[b.tenant] === false) continue;
-    if (state.soloTenant !== null && b.tenant !== state.soloTenant) continue;
-    const key = b.x + ',' + b.y;
-    if (!state.soloTenant && seenPos.has(key)) continue;
-    seenPos.add(key);
-    const p = project(b.x, b.y);
-    const w = W(), h = H();
-    const offscreen = p.sx < -70 || p.sx > w + 70 || p.sy < -70 || p.sy > h + 70;
-    if (offscreen) {
-      // 边缘方向指示只在聚焦单一租户时显示（全局 4 信标同时指向会太吵）
-      if (state.soloTenant && state.layers.beaconEdge !== false) drawEdgeBeacon(b, p);
-      continue;
-    }
-    const size = Math.max(14, s * (b.status === 'CARRIED' ? 0.58 : 0.98));
-    if (state.soloTenant && state.layers.beacon) {
-      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 420);
-      ring(p.sx, p.sy, size * 0.9, `rgba(224,185,79,${0.18 + 0.22 * pulse})`, 1.6);
-    } else {
-      ring(p.sx, p.sy, size * 0.9, 'rgba(224,185,79,.14)', 1.2);
-    }
-    if (images[SPRITE.beacon]) sprite(images[SPRITE.beacon], p.sx, p.sy, size);
-    else {
-      ctx.fillStyle = '#e0b94f';
-      ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(3, size * 0.3), 0, Math.PI * 2); ctx.fill();
-    }
+    if (b.tenant !== state.soloTenant) continue;
+    drawBeaconAt(s, b);
   }
 }
-function drawEdgeBeacon(b, p) {
+
+/** 单个信标：历史轨迹虚线（越旧越淡）+ 头部方向箭头 + 原位脉冲/精灵。 */
+function drawBeaconAt(s, b) {
+  const p = project(b.x, b.y);
+  const w = W(), h = H();
+  const offscreen = p.sx < -70 || p.sx > w + 70 || p.sy < -70 || p.sy > h + 70;
+  if (offscreen) {
+    // 边缘方向指示只在聚焦单一租户时显示（全局 4 信标同时指向会太吵）
+    if (state.soloTenant && state.layers.beaconEdge !== false) drawEdgeBeacon(b, p);
+    return;
+  }
+  if (state.layers.beacon !== false) drawBeaconTrail(s, b);
+  const size = Math.max(14, s * (b.status === 'CARRIED' ? 0.58 : 0.98));
+  if (state.soloTenant && state.layers.beacon) {
+    const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 420);
+    ring(p.sx, p.sy, size * 0.9, `rgba(224,185,79,${0.18 + 0.22 * pulse})`, 1.6);
+  } else {
+    ring(p.sx, p.sy, size * 0.9, 'rgba(224,185,79,.14)', 1.2);
+  }
+  if (images[SPRITE.beacon]) sprite(images[SPRITE.beacon], p.sx, p.sy, size);
+  else {
+    ctx.fillStyle = '#e0b94f';
+    ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(3, size * 0.3), 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+/** 信标移动历史：虚线轨迹（租户配色、旧→新渐变透明、线段缓流）+ 头部方向箭头。
+ *  数据源：/api/map beacons[].trail（服务端从 calibration case 增量提取）。 */
+function drawBeaconTrail(s, b) {
+  const trail = Array.isArray(b.trail) ? b.trail : null;
+  if (!trail || trail.length < 2) return;
+  const color = TENANT_COLORS[b.tenant] ?? '#e0b94f';
+  const w = W(), h = H();
+  const pts = [];
+  for (const pt of trail) {
+    const q = project(pt.x, pt.y);
+    if (q.sx < -400 || q.sx > w + 400 || q.sy < -400 || q.sy > h + 400) continue; // 离屏极远不画
+    pts.push(q);
+  }
+  if (pts.length < 2) return;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const dashPhase = (Date.now() / 90) % 12; // 虚线缓流（marching ants）
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], z = pts[i];
+    const t = i / pts.length; // 0 旧 → 1 新
+    ctx.globalAlpha = 0.10 + 0.50 * t;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1, 1.3 + 0.7 * t);
+    ctx.setLineDash([6, 5]);
+    ctx.lineDashOffset = -dashPhase;
+    ctx.beginPath();
+    ctx.moveTo(a.sx, a.sy);
+    ctx.lineTo(z.sx, z.sy);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  // 头部箭头：最新两段方向
+  const last = pts[pts.length - 1], prev = pts[pts.length - 2];
+  const dx = last.sx - prev.sx, dy = last.sy - prev.sy;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len;
+  const al = Math.min(15, Math.max(6, s * 0.55));
+  ctx.globalAlpha = 0.9;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(last.sx + ux * al, last.sy + uy * al);
+  ctx.lineTo(last.sx - uy * al * 0.45, last.sy + ux * al * 0.45);
+  ctx.lineTo(last.sx + uy * al * 0.45, last.sy - ux * al * 0.45);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}function drawEdgeBeacon(b, p) {
   const w = W(), h = H();
   const cx = w / 2, cy = h / 2;
   const dx = p.sx - cx, dy = p.sy - cy;
@@ -2937,3 +3011,4 @@ export function createMapEngine(host) {
   });
   return api;
 }
+
