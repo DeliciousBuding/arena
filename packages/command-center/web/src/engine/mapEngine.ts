@@ -2767,6 +2767,27 @@ function tactSurveyLayer(s: any) {
   if (!survey) return;
   state.surveyHits = new Map(); // 记忆命中索引（hover 详情）
   const cell = Math.max(2, s);
+  // 探索分区底纹（2026-08-08，chunks 表）：已探索 16×16 分区淡蓝底——
+  // "探索过的范围"一眼可见（用户反馈"地图只能看见当前范围"的 Fog 层解），
+  // 未探索区自然暗色。只画视口内 chunk（性能）。
+  if (survey.chunks && survey.chunks.length) {
+    ctx.save();
+    const chunkPx = 16 * state.view.scale;
+    ctx.fillStyle = 'rgba(64,110,160,.09)';
+    const cap = Math.min(survey.chunks.length, 500);
+    for (let i = 0; i < cap; i++) {
+      const ch = survey.chunks[i];
+      if (!Number.isFinite(ch.cx) || !Number.isFinite(ch.cy)) {
+        const kv = String(ch.key).split(',').map(Number);
+        ch.cx = kv[0]; ch.cy = kv[1];
+      }
+      if (!Number.isFinite(ch.cx) || !Number.isFinite(ch.cy)) continue;
+      const p = project(ch.cx * 16, ch.cy * 16);
+      if (p.sx + chunkPx < 0 || p.sy + chunkPx < 0 || p.sx > W() || p.sy > H()) continue;
+      ctx.fillRect(p.sx, p.sy, chunkPx, chunkPx);
+    }
+    ctx.restore();
+  }
   const maxTick = survey.tickMax ?? 0;
   const ageAlpha = (tick) => {
     if (!maxTick) return 0.5;

@@ -2,14 +2,14 @@
 
 > 本文件记录 `arena-hero-web`（官方前端）到 command-center 的移植覆盖与验证状态。
 > 视觉体系 SSOT：`packages/command-center/DESIGN.md`；实现主体：
-> `packages/command-center/web/src/engine/mapEngine.js`（React 挂载，同构复用
+> `packages/command-center/web/src/engine/mapEngine.ts`（React 挂载，同构复用
 > `public/style.css` + `web/src/styles/theme.css`）。
 
 ## 1. 移植覆盖总览（对照官方组件/库）
 
 | 官方组件 | 本面板实现 | 状态 |
 |---|---|---|
-| WorldCanvas | mapEngine.js 全量（地形块缓存/滚轮缩放/选中波纹/单位插值） | ✅ 已移植 |
+| WorldCanvas | mapEngine.ts 全量（地形块缓存/滚轮缩放/选中波纹/单位插值） | ✅ 已移植 |
 | GameHUD | fleetHud + 顶栏 tick 读条 | ✅ 已移植 |
 | CommandCountdown | commandCountdown（15s 倒计时，≤5s 变红） | ✅ 已移植 |
 | PendingCommands | pendingPanel（HUMAN/AGENT 分区 + 折叠） | ✅ 已移植 |
@@ -26,7 +26,7 @@
 官方 lib（actionAvailability/combatPreview/combatAnimation/commandPlans/
 pathfinding/movementPreview/movementAnimation/exploration/visibility/
 worldCanvasPerformance/destruction/resourceActivity/各 art）均已移植到
-mapEngine.js 对应函数。
+mapEngine.ts 对应函数。
 
 ## 2. 本次新增：地图要素信息卡（官方 MapFeatureInfo 等价物）
 
@@ -63,8 +63,8 @@ mapEngine.js 对应函数。
 
 ## 4. 待办（后续候选）
 
-1. 兑换码 cookie 接入：server `/api/shop*`/`/api/redeem` 已就绪，等用户提供
-   linuxdoshop 有效 cookie。
+1. ~~兑换码 cookie 接入~~ ✅ 已实现（2026-08-08）：右栏兑换码面板（Cookie 输入/保存、
+   库存徽章/限购、兑换下单 + 本地历史），替换原 stub `/api/redeem` 通道。
 2. RespawnOverlay 增强"摧毁者"信息：官方读 `events[].values.destroyed_by`，
    当前 server `loadEvents` 未映射该字段；世界 ACTIVE 时无 respawn 场景，
    优先级低。
@@ -86,9 +86,9 @@ mapEngine.js 对应函数。
 - 修复：聚焦时侧栏 smooth-scroll 到 HUD；退出/返回全局时回顶部。
 - 实测：聚焦 t1 后 fleetHud relY 1326→259、assetPanel 1516→449（均可见）。
 
-### 5.3 并行 agent 边界（2026-08-08 状态）
-- 并行 agent 正独占：`lib/survey.ts`、`server.ts`、`public/style.css`、`DESIGN.md`、
+### 5.3 并行 agent 边界（2026-08-08，已合并）
+- 并行 agent 曾独占：`lib/survey.ts`、`server.ts`、`public/style.css`、`DESIGN.md`、
   `web/src/components/Sidebar.tsx`、`web/src/engine/mapEngine.js`（enemyMemory 敌情记忆层）。
-- 已验证：其 WIP 构建通过、不破坏已有功能（全流程冒烟 0 报错）、图层开关/持久化
-  对新图层兼容。**勿提交/勿覆盖这些文件的并行 WIP。**
-- 我的独立提交均未触碰上述文件。
+- 后续会话已合并其 WIP：敌情记忆层/测绘 hover 已上线（DESIGN.md 2026-08-08 条目）；
+  `mapEngine.js` → `mapEngine.ts`（全量 TS，`tsc --noEmit` 零错误）。
+- 教训：并行 WIP 合并前先跑 `npm run typecheck` + 构建 + 浏览器冒烟。
