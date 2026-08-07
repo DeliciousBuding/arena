@@ -94,4 +94,9 @@ rm -f "$RUNTIME_ROOT/t1/locks/"*.lock "$RUNTIME_ROOT/t2/locks/"*.lock "$RUNTIME_
 cd "$REPO" || exit 1
 nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --port=8120 >> "$LOG" 2>&1 &
 echo "$(now) supervisor restarted (pid $!)" >> "$LOG"
+# 测绘库增量同步（2026-08-08，survey-db 联动）：重启后同步最新 run 的
+# calibration case → 测绘库（幂等；供下次启动 seed + 面板 /api/survey）。
+# 只读 calibration + 写 survey 库，与 supervisor 无 writer 冲突。
+(cd "$REPO" && npm run survey:sync --silent -- --tenants=t1,t2,t3,t4 --latest-only) >> "$LOG" 2>&1 || true
+
 

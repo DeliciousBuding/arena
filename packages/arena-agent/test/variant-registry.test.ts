@@ -26,6 +26,7 @@ test("variant registry: known ids resolve to expected config overrides", () => {
   assert.deepEqual(resolveSafetyVariantConfig("move-failed-avoidance-v1"), { moveFailedAvoidance: true });
   assert.deepEqual(resolveSafetyVariantConfig("threat-breakout-v1"), { threatBreakout: true });
   assert.deepEqual(resolveSafetyVariantConfig("core-evade-v1"), { coreEvade: true });
+  assert.deepEqual(resolveSafetyVariantConfig("harvest-memory-mine-v1"), { harvestMemoryMine: true });
 });
 
 test("variant registry: unknown id fails fast", () => {
@@ -83,3 +84,4 @@ test("runtime config schema: accepts variants field and rejects malformed values
   assert.equal(validator.Check({ ...base, variants: [42] }), false);
   assert.equal(validator.Check({ ...base, variants: "threat-recall-v1" }), false);
 });
+

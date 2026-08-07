@@ -104,6 +104,12 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 默认 false = 历史行为（迁移中也追交，零回归）。
      */
     "core-moving-hold-v1": Object.freeze({ coreMovingHold: true }),
+    /**
+     * 记忆矿主动开采（2026-08-08，harvest-memory-mine-v1，survey-db 联动）：
+     * 无可见资源且无活跃采集目标时从已知矿记忆（含跨 run 测绘 seed）挑最近
+     * 的去挖——"矿发现了没标注/没分配去挖"的算法端闭环。默认 false 零回归。
+     */
+    "harvest-memory-mine-v1": Object.freeze({ harvestMemoryMine: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),
@@ -214,4 +220,5 @@ export function resolveDeterministicVariantsConfig(
   if (ids === undefined || ids.length === 0) return {};
   return Object.assign({}, ...ids.map((id) => resolveDeterministicVariantConfig(id)));
 }
+
 

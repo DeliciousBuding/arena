@@ -31,6 +31,7 @@ import { LeaseRegistry } from "../runtime/lease-registry.ts";
 import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
 import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
+import { knownResources, openSurveyDb } from "../intel/survey-db.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
@@ -46,7 +47,7 @@ import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
 import { manhattan } from "../domain/nav.ts";
 import { assessThreat, coreDamagedThisTick } from "../domain/threat.ts";
-import type { TickState } from "../domain/model.ts";
+import type { Position, TickState } from "../domain/model.ts";
 import type { AgentDecisionRuntime, DecisionModeName, DecisionResult, SubmissionModeName } from "../runtime/decision-types.ts";
 import {
   appendJsonlLine,
@@ -492,10 +493,11 @@ export async function runTenant(
       decisionMode === "deterministic"
         ? { ...DEFAULT_SAFETY_CONFIG, ...variantConfig }
         : { ...AGGRESSIVE_SAFETY_CONFIG, ...variantConfig };
+    const surveyResourceCells = loadSurveyResourceSeed(dataRoot, config.tenantId);
     const planner: DeterministicPlanner | SafetyPlanner =
       decisionMode === "deterministic"
         ? Object.keys(variantConfig).length === 0
-          ? new DeterministicPlanner()
+          ? new DeterministicPlanner(undefined, undefined, undefined, undefined, undefined, undefined, [], new Map(), surveyResourceCells)
           : new DeterministicPlanner(
               new WorkerTaskPlanner(),
               new SafetyPlanner(baseSafetyConfig),
@@ -505,8 +507,12 @@ export async function runTenant(
               deterministicVariantConfig.spawnReserve,
               initialCoreHuntTargets,
               threatProfiles,
+              surveyResourceCells,
             )
         : new SafetyPlanner(baseSafetyConfig, undefined, threatProfiles);
+    if (planner instanceof SafetyPlanner && surveyResourceCells.length > 0) {
+      planner.world.seedResourceMemory(surveyResourceCells, 0);
+    }
 
     // 配置热加载（2026-08-08）：重读 config 文件 → schema/变体校验 → 原子替换
     // planner 配置快照（保留 World/巡逻/攻坚记忆）→ configGeneration+1 → telemetry。
@@ -957,3 +963,26 @@ async function createPiRuntime(
 export function readDecisionMode(config: TenantRuntimeConfig): DecisionModeName {
   return config.decisionMode;
 }
+
+
+
+/** 跨 run 测绘种子（2026-08-08，survey-db 联动）：从测绘库读最近确认的活跃矿
+ *  （state ∈ visible/stale、last_seen 距今 ≤ maxAgeTicks）注入 worker 记忆——
+ *  重启后不再从零探索。库缺失/损坏/无矿 = 空数组零回归（不阻塞生产启动）。 */
+function loadSurveyResourceSeed(dataRoot: string, tenantId: string, maxAgeTicks = 20_000): readonly Position[] {
+  try {
+    const db = openSurveyDb(dataRoot, tenantId, false);
+    const rows = knownResources(db, { states: ["visible", "stale"] });
+    db.close();
+    if (rows.length === 0) return [];
+    let maxTick = 0;
+    for (const row of rows) if (row.lastSeenTick > maxTick) maxTick = row.lastSeenTick;
+    const cutoff = maxTick - maxAgeTicks;
+    return rows
+      .filter((row) => row.lastSeenTick >= cutoff)
+      .map((row) => [row.x, row.y] as const);
+  } catch {
+    return [];
+  }
+}
+
