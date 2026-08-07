@@ -66,6 +66,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "raid-defense-v1": Object.freeze({ raidDefense: true }),
     /**
+     * 核心通道清障（2026-08-07，core-clearance-v1）：核心格容量 2（含 Core）
+     * 且是 worker 卸货唯一通道——军事守位回退到核心格 = 卸货死锁（生产 t2
+     * 实证：Vanguard 占核心格 → 满载 worker 4 邻格全 WAIT、DEPOSIT_FAILED
+     * 77%，手操移开下 tick 又被放回）。启用后军事绝不站核心格（守位回退外圈
+     * Chebyshev 2）、已在核心格的军事/满载 worker 自动疏散让位。默认 false。
+     */
+    "core-clearance-v1": Object.freeze({ coreClearance: true }),
+    /**
      * worker 密集扫图（2026-08-07，worker-dense-scan-v1）：worker 巡逻 8→16
      * 方位（DENSE_DELTAS），相邻方位间距减半——资源稀缺时盲区大（生产实测
      * avgVisible 0.5-0.6 格/tick，8 方位在半径 24 处相邻 ~18 格 > 视野 3×2）。
