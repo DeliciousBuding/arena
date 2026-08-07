@@ -1213,10 +1213,13 @@ function renderStream() {
   const rprev = state.rowKeys[state.tab] || new Set();
   const rcur = new Set();
   let rNew = 0;
+  let quietCount = 0;
   const rhtml = rows.slice(0, 120).map((r) => {
     const color = TENANT_COLORS[r.tenant] ?? '#999';
     const outcome = String(r.deadlineOutcome ?? '');
     const submit = String(r.submitResult ?? '');
+    const quiet = outcome === 'not_applicable' && submit === 'accepted';
+    if (quiet) quietCount++;
     const outCls = submit === 'accepted' ? 'accepted' : submit === 'rejected' ? 'rejected' : (outcome.includes('timeout') || outcome.includes('missed')) ? 'timeout' : '';
     const kindCn = DECISION_KIND_CN[outcome] ?? '决策';
     const badge = submit !== '' ? (DECISION_KIND_CN[submit] ?? submit) : outcome !== '' ? (DECISION_KIND_CN[outcome] ?? outcome) : '—';
@@ -1230,7 +1233,7 @@ function renderStream() {
     const key = `${r.tenant}:${r.tick}:${outcome}:${submit}:${r.agentLatencyMs ?? ''}:${r.selectionLatencyMs ?? ''}`;
     rcur.add(key);
     if (!rprev.has(key)) rNew++;
-    return `<div class="stream-line${rprev.has(key) ? '' : ' st-new'}" style="--tc:${color}">
+    return `<div class="stream-line${rprev.has(key) ? '' : ' st-new'}${quiet ? ' st-quiet' : ''}" style="--tc:${color}">
       <span class="st-tenant">${r.tenant.toUpperCase()}</span>
       <span class="st-tick">${fmt(r.tick)}</span>
       <span class="st-kind" style="color:${color}">${kindCn}</span>
@@ -1240,7 +1243,7 @@ function renderStream() {
   }).join('');
   state.rowKeys[state.tab] = rcur;
   els.streamBody.innerHTML = rhtml;
-  setStreamCount(`${rows.length} 条`, rNew > 0);
+  setStreamCount(`${Math.min(rows.length, 120)} 条 · ${Math.min(rows.length, 120) - quietCount} 实际决策`, rNew > 0);
   streamScrollFollow(rNew > 0);
   // 折叠胶囊：最新一条决策
   if (rows.length) {
