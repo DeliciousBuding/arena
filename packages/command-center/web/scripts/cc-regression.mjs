@@ -119,20 +119,27 @@ async function main() {
       });
       if (workerRow >= 0) {
         await page.click(`#assetList .asset-row:nth-child(${workerRow + 1})`, { timeout: 4000 });
-        await sleep(800);
-        await page.click('#actionDialog [data-action="MOVE"]', { timeout: 4000 }).catch(() => {});
-        await sleep(500);
+        // 等动作框出现（点资产行→选中→渲染动作框有竞态，必须显式等待而非 .catch 吞错）
+        await page.waitForSelector('#actionDialog [data-action="MOVE"]', { timeout: 6000 });
+        await page.click('#actionDialog [data-action="MOVE"]', { timeout: 4000 });
+        // 等目标模式条出现（证明已进入 MOVE 模式）
+        await page.waitForSelector('.act-targeting', { timeout: 4000 });
+        // 点击目标格：地图任意点可能落在障碍/不可达（MOVE 正确反馈并保持模式），
+        // 故多点尝试直到 goal 落盘（最多 6 点，覆盖不同相机位置）。
         const cv = await page.$("#map");
         const box = await cv.boundingBox();
-        await page.mouse.click(box.x + box.width * 0.55, box.y + box.height * 0.5);
-        await sleep(1200);
-        const cmds = await page.evaluate(async () => {
-          const r = await fetch("/api/commands?tenant=t1", { cache: "no-store" });
-          const j = await r.json();
-          return { goals: (j.goals ?? []).length, commands: (j.commands ?? []).length };
-        });
-        goalOk = cmds.goals > 0 || cmds.commands > 0;
-        goalOk ? ok("人类指挥 UI 链（goal 落盘）", JSON.stringify(cmds)) : bad("人类指挥 UI 链（goal 落盘）", JSON.stringify(cmds));
+        const pts = [[0.55,0.5],[0.5,0.42],[0.62,0.56],[0.44,0.52],[0.52,0.62],[0.58,0.44]];
+        for (const [fx, fy] of pts) {
+          await page.mouse.click(box.x + box.width * fx, box.y + box.height * fy);
+          await sleep(900);
+          const cmds = await page.evaluate(async () => {
+            const r = await fetch("/api/commands?tenant=t1", { cache: "no-store" });
+            const j = await r.json();
+            return { goals: (j.goals ?? []).length, commands: (j.commands ?? []).length };
+          });
+          if (cmds.goals > 0 || cmds.commands > 0) { goalOk = true; ok("人类指挥 UI 链（goal 落盘）", JSON.stringify(cmds)); break; }
+        }
+        if (!goalOk) bad("人类指挥 UI 链（goal 落盘）", "6 个点击点均未落盘");
       } else {
         bad("人类指挥 UI 链", "未找到 worker 资产行");
       }

@@ -20,12 +20,10 @@ export function SidePanel({ side, open, width, onToggle, rail, children }: SideP
       className={`side-panel ${side}${open ? "" : " collapsed"}`}
       style={{ width: open ? width : RAIL_WIDTH, ["--panel-w" as string]: `${width}px` }}
     >
-      <div className="side-panel-body">
-        {children}
-        <button type="button" className="side-toggle" title={open ? (side === "left" ? "折叠左栏" : "折叠右栏") : "展开"} onClick={onToggle} aria-expanded={open}>
-          {side === "left" ? (open ? "«" : "»") : (open ? "»" : "«")}
-        </button>
-      </div>
+      <div className="side-panel-body">{children}</div>
+      <button type="button" className="side-toggle" title={open ? (side === "left" ? "折叠左栏" : "折叠右栏") : "展开"} onClick={onToggle} aria-expanded={open}>
+        {side === "left" ? (open ? "«" : "»") : (open ? "»" : "«")}
+      </button>
       <div className="side-rail" aria-hidden={open}>
         {rail}
       </div>

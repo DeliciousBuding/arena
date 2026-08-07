@@ -74,7 +74,7 @@ mapEngine.ts 对应函数。
    人类指挥 UI 链（写后清除）/API 健康，12/12 通过；`playwright-core` 入 web devDependencies；
    替换 `C:\Users\Ding\tmp\cc-*.cjs` 55 个散件。
 
-## 5. 2026-08-08 续：官方子集审计 + 侧栏 HUD 可见性修复
+## 5. 2026-08-08 续：官方子集审计 + 侧栏 HUD 可见性修复 + 结构化重构
 
 ### 5.1 官方 web 完整子集审计（commit f656002）
 - 逐项对照 `reference/arena-hero-web/src` 全部 60+ 文件，见
@@ -95,3 +95,18 @@ mapEngine.ts 对应函数。
 - 后续会话已合并其 WIP：敌情记忆层/测绘 hover 已上线（DESIGN.md 2026-08-08 条目）；
   `mapEngine.js` → `mapEngine.ts`（全量 TS，`tsc --noEmit` 零错误）。
 - 教训：并行 WIP 合并前先跑 `npm run typecheck` + 构建 + 浏览器冒烟。
+
+## 6. 2026-08-08 续：三栏壳 + 前端结构化重构（2026-08-08 完成）
+
+- **三栏布局（AppShell）**：左栏（租户/图层/视图）+ 地图 + 右栏（VSCode tab 容器：
+  决策流 / 威胁情报 / 兑换码）。左右栏折叠为 40px 窄条（SidePanel），折叠状态 + tab
+  `arena-cc-web.prefs` 持久化；折叠/展开引擎 `resize()`。
+- **弹窗收口**：`Dialogs.tsx` 删除，全部弹窗/对话框迁入右栏面板
+  （`right/IntelPanel`、`right/RedeemPanel`、`right/RedeemCard`），不再模态遮挡地图。
+- **引擎 TS 化（进行中）**：`mapEngine.js` → `mapEngine.ts`（187KB 命令式 Canvas 引擎）；
+  **注意**：`mapEngine.ts` 顶部仍标 `// @ts-nocheck`（自 .js 迁移后从未全类型化，
+  全量类型化列为独立迁移项，见 DESIGN.md 技术债）；web typecheck 其余文件（React 组件/
+  utils.ts/api.ts）全绿。公共逻辑已抽 `engine/utils.ts`、`engine/api.ts`（类型化版本）；
+  **旧 `engine/api.js` / `engine/utils.js` 仍保留在仓**（未删除，待确认调用方后清理）。
+- **UI 状态壳**：`lib/shell.tsx`（ShellContext）+ `lib/shopApi.ts`（商店 API 封装）。
+- 该轮前端重构独立于并行 agent 边界——所有涉及文件本轮已合并入库。

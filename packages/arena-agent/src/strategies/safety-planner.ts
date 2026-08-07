@@ -1251,11 +1251,20 @@ export class SafetyPlanner {
       // PREY_WORKER_RADIUS 内且不在敌核心记忆 PREY_CORE_SAFE 格内（避开守军）
       // → 最近 Vanguard 优先追击清剿，高于蓄势/打野。其余 Vanguard 照常
       // （防扎堆：只让距离最近的 1 个去）。邻接敌已被上方 SWEEP 分支处理。
-      if (this.config.vanguardPreyWorker === true) {
-        const prey = enemies.find(
-          (enemy) => enemy.kind === "UNIT" && enemy.unitType === "WORKER",
-        );
-        if (prey !== undefined && state.core !== null && manhattan(unit.position, prey.position) <= PREY_WORKER_RADIUS) {
+      if (this.config.vanguardPreyWorker === true && state.core !== null) {
+        // 最近猎手-猎物配对（2026-08-08 优化）：所有可见敌 WORKER 里选"距任一
+        // Vanguard 最近"的一个——旧版 enemies.find 取列表第一个，若第一个很远但
+        // 另一个在 12 格内会漏猎。再只让离它最近的 1 个 Vanguard 追击（防扎堆）。
+        let prey: (typeof enemies)[number] | undefined;
+        let preyDist = Infinity;
+        for (const enemy of enemies) {
+          if (enemy.kind !== "UNIT" || enemy.unitType !== "WORKER") continue;
+          for (const v of state.vanguards) {
+            const d = manhattan(v.position, enemy.position);
+            if (d < preyDist) { preyDist = d; prey = enemy; }
+          }
+        }
+        if (prey !== undefined && preyDist <= PREY_WORKER_RADIUS) {
           // 只认 CORE 来源目标（WORKER_INFER 是从该 WORKER 本身推断的基地候选，
           // 位置≈WORKER，会误判"在敌核心旁"导致永不追击——2026-08-08 实测）。
           const nearEnemyCore = this.world.coreHuntTargets().some(

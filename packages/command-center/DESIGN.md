@@ -117,6 +117,10 @@
   等级）；榜单 top3 保持 warn 色 rank。威胁 tab 默认前 30 行 + 榜外我方账号自动置顶
   （`ir-pin-sep` 分隔标注），`展开全部` 显示全量；行内 tier 标签保持精英/攻坚/常规三档胶囊。
   顶栏「威胁情报」按钮带实时 `btn-count` 徽标（/api/intel 目击唯一账号数，3s 轮询）。
+- **目标模式条（2026-08-08）**：MOVE/SHOOT/SWEEP 后动作框不消失——底部居中显示紧凑
+  目标模式条（脉冲点 + 指令文本「点矿=采矿任务 · 点空地=移动任务」+ ✕ 取消按钮），
+  `pointer-events:none` 穿透画布（不挡选点，仅取消按钮可点）；提交或取消后自动消失。
+  解决「点了没反应」与「卡片挡住选点」两类交互问题；不可达目标 toast 反馈并保持模式。
 - **信标轨迹独立图层（2026-08-08）**：`layers.beaconTrail` 单独控制信标历史轨迹虚线
   （原与信标精灵共用 `beacon` 开关；用户反馈「冠军之星太烦」→ 可只关轨迹留精灵）。
 - **敌情记忆层（2026-08-08）**：出视野的敌方核心/战斗单位以半透明标记常驻地图——
@@ -165,16 +169,16 @@
 - 不把租户色/语义色用于装饰（发光、渐变、大色块背景）。
 - 改字体/颜色先改本文件与 `:root`，再动组件。
 
-## 7. 真实指挥（人类最高控制权，2026-08-07）
+## 8. 真实指挥（人类最高控制权，2026-08-07）
 
 - 意图式指挥：点工人-点移动-点目标格 = 下达持续任务。点矿格 到 mine 采矿意图（到达自动 HARVEST、
   满仓自动回仓 DEPOSIT、目标采空 satisfied 交还 agent）；点空地 到 goto 移动意图（到位即完成）。
   MOVE/SHOOT/SWEEP/SPAWN/采集/回仓/治疗等 = 一键动作（单 tick 覆盖，最高优先）。
 - 交互反馈：动作按钮 title=提交（人类指挥）；动作框顶部「人类指挥已接管 N 条指令」徽章；
   提交/拒绝/意图完成均有 toast；动作框与舰队 HUD 实时回显指令状态；清除指令即交还 agent。
-- 架构：前端（React /app）到 server.ts /api/command* 到 data/runtime/human-commands/<tenant>.json
-  （数据层）到 human-override.ts（tenant 主循环提交前合并，复用 validatePlan 净校验 + 逐条拒绝原因）
-  到 官方 SDK 提交（单一 writer 不变）。mode=disabled 一键交还 agent 全权。
-- React 前端：web/（Vite+React+TS+Bun，全量 TS）。React 管 chrome（三栏布局 + 右栏面板），
-  src/engine/mapEngine.ts 管地图/战术/回放；视觉单一源 = public/style.css（React 直接 import）。
-  构建 bun run build 到 web/dist 到 /app/。
+- 架构：前端（React /app）→ `server.ts` `/api/command*` → `data/runtime/human-commands/<tenant>.json`
+  （数据层）→ `human-override.ts`（tenant 主循环提交前合并，复用 validatePlan 净校验 + 逐条拒绝原因）
+  → 官方 SDK 提交（单一 writer 不变）。mode=disabled 一键交还 agent 全权。
+- React 前端：`web/`（Vite+React+TS+Bun，全量 TS）。React 管 chrome（三栏布局 + 右栏面板），
+  `src/engine/mapEngine.ts` 管地图/战术/回放；视觉单一源 = `public/style.css`（React 直接 import）。
+  构建 `bun run build` 到 `web/dist` 到 `/app/`。
