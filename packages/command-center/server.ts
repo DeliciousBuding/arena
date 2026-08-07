@@ -26,6 +26,7 @@ import { loadAllianceSnapshot, refreshAllianceSnapshot } from "./lib/alliance-sn
 import { loadAllianceAdvice, refreshAllianceAdvice } from "./lib/alliance-advice.ts";
 import { loadEnemyHeat, refreshEnemyHeat } from "./lib/enemy-heat.ts";
 import { loadPipelineHealth, refreshPipelineHealth } from "./lib/pipeline-health.ts";
+import { loadAllianceDeeds, refreshAllianceDeeds } from "./lib/alliance-deeds.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
 import { loadLeaderboardIntel, loadOurUsernames } from "./lib/leaderboard.ts";
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
@@ -139,7 +140,13 @@ app.get("/api/deeds", async (c) => {
     return c.json({ error: "非法租户" }, 400);
   }
   const deeds = await loadDeeds(tenant, limit);
-  return c.json({ generatedAt: new Date().toISOString(), tenant, limit, deeds });
+  // 联盟事迹并入（2026-08-08）：tenant=all 时叠加联盟级叙事（新敌核/热区/
+  // 抢矿/资源濒危），按 tick 倒序同 tick 高星优先。
+  if (tenant === "all") {
+    deeds.push(...loadAllianceDeeds());
+    deeds.sort((a, b) => (b.tick - a.tick) || (b.star - a.star));
+  }
+  return c.json({ generatedAt: new Date().toISOString(), tenant, limit, allianceMerged: tenant === "all", deeds });
 });
 app.get("/api/alliance/survey", (c) => {
   // 联盟共享测绘（2026-08-08）：四租户 survey-db 聚合（敌核/矿/障碍/探索分区
@@ -393,6 +400,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
       refreshAllianceAdvice(); // 联盟参谋建议 30s 缓存（读快照/共享测绘缓存，快）
       refreshEnemyHeat(); // 敌情热区 30s 缓存（读 units_seen 聚合，快）
       refreshPipelineHealth(); // 数据管线健康 15s 缓存（读 survey 水位/世界，快）
+      refreshAllianceDeeds(); // 联盟事迹 45s 缓存（读快照/共享测绘/热区缓存，快）
       void supervisorState(); // 8120 健康状态 5s 缓存（/api/overview、/api/tenants 首开即快）
     } catch { /* 数据缺失/临时 IO 失败不阻塞启动 */ }
   };
