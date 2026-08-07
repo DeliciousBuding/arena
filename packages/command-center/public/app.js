@@ -461,7 +461,12 @@ function draw() {
   if (replayActive) replayDrawLayer(s);
   const ztxt = `×${state.view.scale.toFixed(1)}`;
   if (els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽/方向键平移 · 滚轮缩放 · 双击适应 · G 全局 · ${ztxt}`; }
-  if (els.zoomLevel && els.zoomLevel.textContent !== ztxt) els.zoomLevel.textContent = ztxt;
+  if (els.zoomLevel && els.zoomLevel.textContent !== ztxt) {
+    els.zoomLevel.textContent = ztxt;
+    els.zoomLevel.classList.remove('pop');
+    void els.zoomLevel.offsetWidth;
+    els.zoomLevel.classList.add('pop');
+  }
   if (!state.cells.length) {
     ctx.fillStyle = '#56626c'; ctx.font = '600 12px ' + CANVAS_FONT;
     ctx.textAlign = 'center';
