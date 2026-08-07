@@ -1259,8 +1259,18 @@ function renderStream() {
   const tabs = [{ id: 'all', label: '统一决策' }];
   TENANTS.forEach((t) => tabs.push({ id: t, label: t.toUpperCase() }));
   tabs.push({ id: 'events', label: '事件' });
-  els.streamTabs.innerHTML = tabs.map((t) =>
-    `<button data-tab="${t.id}" class="${state.tab === t.id ? 'active' : ''}" role="tab">${t.label}</button>`).join('');
+  // 标签页计数徽标（只看决策过滤时按实际决策计数；events 按事件数）
+  const quietRow = (r) => String(r.deadlineOutcome ?? '') === 'not_applicable';
+  const tabCount = (id) => {
+    if (id === 'events') { let n = 0; for (const t of TENANTS) n += (state.events[t] ?? []).length; return n; }
+    const rows = id === 'all' ? TENANTS.flatMap((t) => (state.streams[t] ?? []).map((r) => ({ tenant: t, ...r }))) : (state.streams[id] ?? []);
+    const kept = state.streamFilterQuiet ? rows.filter((r) => !quietRow(r)) : rows;
+    return kept.length;
+  };
+  els.streamTabs.innerHTML = tabs.map((t) => {
+    const n = tabCount(t.id);
+    return `<button data-tab="${t.id}" class="${state.tab === t.id ? 'active' : ''}" role="tab">${t.label}${n > 0 ? `<span class="tab-badge">${Math.min(n, 999)}</span>` : ''}</button>`;
+  }).join('');
   els.streamTabs.querySelectorAll('button').forEach((b) =>
     b.addEventListener('click', () => { state.tab = b.dataset.tab; els.streamBody.scrollTop = 0; savePrefs(); pollStreams(); }));
 
