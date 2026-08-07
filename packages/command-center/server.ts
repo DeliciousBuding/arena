@@ -18,7 +18,7 @@ import { DATA_ROOT, TENANTS } from "./lib/fs-jsonl.ts";
 import { supervisorState } from "./lib/supervisor.ts";
 import { loadMergedMap } from "./lib/map.ts";
 import { loadOverview, loadStream, loadReplay, loadPlan, loadWorld, loadEvents } from "./lib/streams.ts";
-import { loadSurveyDb, loadLifecycleDb, loadSurvey } from "./lib/survey.ts";
+import { loadSurveyDb, loadLifecycleDb, loadSurvey, loadResourceTimeline, loadSpendTrend, loadUnitLifecycleDb } from "./lib/survey.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
 import { loadLeaderboardIntel, loadOurUsernames } from "./lib/leaderboard.ts";
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
@@ -90,9 +90,29 @@ app.get("/api/survey", (c) => {
       caseCount: s.caseCount,
       tickMax: s.tickMax,
       lifecycle: loadLifecycleDb(t),
+      spendsTrend: loadSpendTrend(t, 1000),
+      unitsDetail: loadUnitLifecycleDb(t, 500),
     };
   }
   return c.json(out);
+});
+app.get("/api/survey/mine", (c) => {
+  // 矿格生命周期详情（2026-08-08）：当前状态 + 采集/失败时间线。
+  // ?tenant=t1&cell=x,y；cell 缺省从 resources 表取最近活跃矿。
+  const tenant = c.req.query("tenant") ?? "t1";
+  const cellQ = c.req.query("cell") ?? "";
+  const s = loadSurveyDb(tenant);
+  if (!s) return c.json({ tenant, error: "survey db missing" });
+  const [x, y] = cellQ.split(",").map((v) => Number(v.trim()));
+  let mine = null;
+  if (Number.isFinite(x) && Number.isFinite(y)) {
+    mine = (s.resourceCells as Array<Record<string, unknown>>).find((r) => Number(r.x) === x && Number(r.y) === y) ?? null;
+  } else {
+    mine = (s.resourceCells as Array<Record<string, unknown>>).sort((a, b) => Number(b.tick ?? 0) - Number(a.tick ?? 0))[0] ?? null;
+  }
+  if (!mine) return c.json({ tenant, mine: null, timeline: [] });
+  const cell = `${mine.x},${mine.y}`;
+  return c.json({ tenant, mine, cell, timeline: loadResourceTimeline(tenant, cell) });
 });
 app.get("/api/events", (c) => {
   const tenant = c.req.query("tenant") ?? "t1";

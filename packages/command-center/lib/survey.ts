@@ -153,3 +153,68 @@ export function loadSurvey(tenant: string): SurveyData | null {
   surveyCache.set(tenant, { runId: runDir, survey });
   return survey;
 }
+/** 矿格生命周期时间线：resource_events 按格返回采集/失败序列（升序），
+ *  供前端矿卡展示「发现→采→空→refill」。库缺失/无事件 = 空数组。 */
+export function loadResourceTimeline(tenant: string, cell: string): Array<Record<string, unknown>> {
+  const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(file)) return [];
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+  } catch {
+    return [];
+  }
+  try {
+    return db.prepare(
+      "SELECT tick, event_type AS eventType, reason_code AS reason, amount, actor_id AS actorId FROM resource_events WHERE cell = ? ORDER BY tick ASC LIMIT 500",
+    ).all(cell) as Array<Record<string, unknown>>;
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
+/** 消费趋势：core_spends 按 kind × tick 分桶聚合（每桶 N ticks），
+ *  供消费审计面板画趋势线。返回 [{bucketStart, kind, count, total}]。 */
+export function loadSpendTrend(tenant: string, bucketTicks = 1000): Array<Record<string, unknown>> {
+  const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(file)) return [];
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+  } catch {
+    return [];
+  }
+  try {
+    return db.prepare(
+      "SELECT (tick / ?) * ? AS bucketStart, kind, COUNT(*) AS count, SUM(amount) AS total FROM core_spends GROUP BY bucketStart, kind ORDER BY bucketStart ASC, kind",
+    ).all(bucketTicks, bucketTicks) as Array<Record<string, unknown>>;
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
+/** 单位生命周期明细：每个单位的出生/死亡/最近目击（unit_lifecycle 全量），
+ *  供前端单位卡/审计面板。库缺失 = 空数组。 */
+export function loadUnitLifecycleDb(tenant: string, limit = 200): Array<Record<string, unknown>> {
+  const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(file)) return [];
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+  } catch {
+    return [];
+  }
+  try {
+    return db.prepare(
+      "SELECT unit_id AS unitId, unit_type AS unitType, birth_tick AS birthTick, birth_pos AS birthPos, death_tick AS deathTick, death_pos AS deathPos, death_reason AS deathReason, last_seen_tick AS lastSeenTick, last_seen_pos AS lastSeenPos, current_state AS state FROM unit_lifecycle ORDER BY last_seen_tick DESC LIMIT ?",
+    ).all(limit) as Array<Record<string, unknown>>;
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
