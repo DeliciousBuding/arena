@@ -1077,3 +1077,14 @@ body::after {
 .cmd-tele .dim { color: var(--text-faint); }
 .cmd-clear { min-height: 24px; padding: 0 8px; font-size: 10.5px; flex: none; }
 .cmd-clear:disabled { opacity: .3; cursor: default; }
+
+/* ---------- 浏览器渲染优化（高刷/高分/合成层） ----------
+ * contain: layout paint —— 把各区域渲染隔离，滚动/动画时浏览器不重排整个文档；
+ * will-change: transform 只给动画元素（避免滥用，浏览器合成层成本高）。 */
+#topbar, #sidebar, #streamPane { contain: layout paint; }
+#mapPane { contain: layout paint; }
+/* #map 缩放走画布内 setTransform，不用 CSS transform——不设 will-change（避免空占合成层） */
+.panel, .tenant-card { contain: layout paint; }
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
