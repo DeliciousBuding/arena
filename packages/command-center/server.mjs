@@ -45,19 +45,31 @@ function readJsonlTail(filePath, maxLines) {
   return rows;
 }
 
-/** 最近一个有 calibration cases 的 run 目录名（从最新往前找，跳过空 run）。 */
+/** 最近一个有 calibration cases 的 run 目录名：按 run 内最高 case tick 选
+ *  （UUID 字典序 ≠ 时间序——旧 bug：新 run 80d2d3d6 排在旧 run fffa09fa 前，
+ *  面板恒显示旧 run 的 stale tick，即"界面卡住显示旧数据"根因）。 */
 function latestRunDir(tenant) {
   const base = calibrationDir(tenant);
   if (!existsSync(base)) return null;
   const runs = readdirSync(base, { withFileTypes: true })
     .filter((d) => d.isDirectory())
-    .map((d) => d.name)
-    .sort();
-  for (let i = runs.length - 1; i >= 0; i--) {
-    const casesDir = join(base, runs[i], "cases");
-    if (existsSync(casesDir) && readdirSync(casesDir).some((f) => f.endsWith(".json"))) return runs[i];
+    .map((d) => d.name);
+  let best = null;
+  let bestTick = -1;
+  for (const name of runs) {
+    const casesDir = join(base, name, "cases");
+    if (!existsSync(casesDir)) continue;
+    let maxTick = -1;
+    for (const f of readdirSync(casesDir)) {
+      const tick = parseTick(f);
+      if (tick > maxTick) maxTick = tick;
+    }
+    if (maxTick > bestTick) {
+      bestTick = maxTick;
+      best = name;
+    }
   }
-  return null;
+  return best;
 }
 
 function listCases(tenant, runDir) {
