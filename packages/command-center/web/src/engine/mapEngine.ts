@@ -2463,7 +2463,28 @@ function makeDraggable(el: any, handleSel: any, key: any) {
 }
 /** 进入地图选点模式：收起动作卡（不挡地图），提示条引导点击。 */
 function enterTargetingMode(tip: any) {
-  els.actionDialog.hidden = true;
+  const sel = T().selected;
+  if (sel && sel.obj && sel.obj.position) {
+    // 紧凑目标模式条（2026-08-08）：MOVE/SHOOT/SWEEP 后保留在选中单位旁的可见指令条
+    // + 取消按钮——解决"点了没反应/不知道怎么取消"（旧行为直接隐藏动作框只剩底部小字）。
+    const p = project(sel.obj.position[0], sel.obj.position[1]);
+    els.actionDialog.innerHTML = `
+      <div class="act-targeting">
+        <span class="at-dot" />
+        <span class="at-text">${escapeHtml(tip)}</span>
+        <button class="at-cancel" data-cancel-target type="button">✕ 取消</button>
+      </div>`;
+    els.actionDialog.hidden = false;
+    // 固定底部居中（不跟随单位）：目标区是整张地图，条放边缘不挡选点；
+    // .act-targeting pointer-events:none 只让取消按钮可点，画布点击全部穿透。
+    const rect = els.canvas.getBoundingClientRect();
+    const dw = els.actionDialog.offsetWidth, dh = els.actionDialog.offsetHeight;
+    els.actionDialog.style.left = `${Math.max(8, (rect.width - dw) / 2)}px`;
+    els.actionDialog.style.top = `${Math.max(8, rect.height - dh - 44)}px`;
+    els.actionDialog.querySelector('[data-cancel-target]')?.addEventListener('click', tactClear);
+  } else {
+    els.actionDialog.hidden = true;
+  }
   if (els.hint) { els.hint.textContent = tip; els.hint.classList.remove('map-hint-fade'); }
 }
 
