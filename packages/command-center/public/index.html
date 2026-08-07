@@ -83,6 +83,14 @@
       <div id="actionDialog" class="action-dialog" hidden></div>
       <div id="inspectPanel" class="panel inspect-panel" hidden></div>
       <div id="pendingPanel" class="panel pending-panel" hidden></div>
+      <div id="resourceActivity" class="panel-strong activity-panel" hidden>
+        <h2 class="act-title">资源活动 · RESOURCE ACTIVITY</h2>
+        <ul id="activityList" class="act-list"></ul>
+      </div>
+      <div id="commandCountdown" class="cmd-countdown" hidden>
+        <div class="cc-head"><span class="mono cc-label">命令窗口</span><span id="ccTime" class="mono cc-time">15.0s</span></div>
+        <div class="cc-track"><div id="ccFill" class="cc-fill"></div></div>
+      </div>
       <div id="mapControls">
         <button id="zoomIn" class="ctl" type="button" title="放大">+</button>
         <button id="zoomOut" class="ctl" type="button" title="缩小">−</button>
