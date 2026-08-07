@@ -231,7 +231,7 @@ body::after {
   background: linear-gradient(180deg, rgba(21,21,21,.92), rgba(12,12,12,.94));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 11px 13px;
+  padding: 9px 12px;
   cursor: pointer;
   box-shadow: var(--shadow-card);
   transition: transform .25s var(--ease), border-color .25s ease, box-shadow .3s ease, background .3s ease;
@@ -271,12 +271,12 @@ body::after {
 .dot.fresh { background: var(--warn); box-shadow: 0 0 8px rgba(211,173,85,.5); }
 .dot.stale { background: #4a4a4f; }
 .dot.err { background: var(--danger); box-shadow: 0 0 8px rgba(221,98,109,.7); }
-.tenant-card .metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 12px; margin-top: 9px; }
+.tenant-card .metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 10px; margin-top: 7px; }
 .tenant-card .metric { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.tenant-card .metric img { width: 16px; height: 16px; object-fit: contain; opacity: .85; flex: none; }
+.tenant-card .metric img { width: 14px; height: 14px; object-fit: contain; opacity: .85; flex: none; }
 .tenant-card .metric .k { font-size: 10px; color: var(--text-faint); margin-left: 2px; }
 .tenant-card .metric .v {
-  font-family: var(--font-mono); font-size: 13.5px; font-weight: 650; color: var(--text);
+  font-family: var(--font-mono); font-size: 12.5px; font-weight: 650; color: var(--text);
   border-radius: 4px; transition: color .3s ease;
 }
 .tenant-card .metric .v.flash { animation: valueFlash .7s var(--ease); }
@@ -370,6 +370,20 @@ body::after {
 #mapControls {
   position: absolute; right: 14px; bottom: 14px; z-index: 3;
   display: flex; flex-direction: column; gap: 7px;
+}
+.ctl-global {
+  width: auto; height: 30px; padding: 0 11px; border-radius: 8px;
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .12em;
+  background: rgba(255,255,255,.08); color: #fff;
+}
+.ctl-global:hover { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.4); }
+.ctl-global[hidden] { display: none !important; }
+#mapControls .ctl-label {
+  width: 42px; height: 26px; display: grid; place-items: center;
+  border-radius: 7px; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .04em;
+  color: var(--text-dim); background: rgba(12,12,12,.85); border: 1px solid var(--border-strong);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 8px 22px rgba(0,0,0,.3); user-select: none;
 }
 #mapControls .ctl {
   width: 42px; height: 42px; border-radius: var(--radius-md);
@@ -716,7 +730,8 @@ body::after {
 
 /* ---------- 待执行命令面板（PendingCommands 移植） ---------- */
 .pending-panel {
-  position: absolute; right: 14px; top: 118px; z-index: 7;
+  /* 右上被地图控件(右下)与检查面板(右上)占用，改放左上避免互相遮挡 */
+  position: absolute; left: 14px; top: 14px; z-index: 7;
   width: min(280px, calc(100% - 28px));
   background: linear-gradient(180deg, rgba(12,12,12,.92), rgba(8,8,8,.96));
   border: 1px solid var(--border-strong); border-radius: var(--radius-lg);

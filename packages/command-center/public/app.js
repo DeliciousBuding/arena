@@ -68,7 +68,7 @@ const els = {
   redeemResult: $('#redeemResult'), redeemHistory: $('#redeemHistory'),
   shopCookie: $('#shopCookie'), cookieSave: $('#cookieSave'), cookieTest: $('#cookieTest'),
   shopAccount: $('#shopAccount'), shopList: $('#shopList'),
-  viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'), streamLive: $('#streamLive'),
+  zoomLevel: $('#zoomLevel'), mapGlobal: $('#mapGlobal'), viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'), streamLive: $('#streamLive'),
   actionDialog: $('#actionDialog'), inspectPanel: $('#inspectPanel'),
   beaconIndicator: $('#beaconIndicator'), pendingPanel: $('#pendingPanel'),
   replayBar: $('#replayBar'), rbTick: $('#rbTick'), rbMaxTick: $('#rbMaxTick'),
@@ -386,6 +386,7 @@ function draw() {
   if (replayActive) replayDrawLayer(s);
   const ztxt = `×${state.view.scale.toFixed(1)}`;
   if (els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽平移 · 滚轮缩放 · 双击适应 · ${ztxt}`; }
+  if (els.zoomLevel && els.zoomLevel.textContent !== ztxt) els.zoomLevel.textContent = ztxt;
   if (!state.cells.length) {
     ctx.fillStyle = '#56626c'; ctx.font = '600 12px ' + CANVAS_FONT;
     ctx.textAlign = 'center';
@@ -1032,6 +1033,7 @@ function toggleSolo(tenant) {
   renderTenantCards();
   const global = state.soloTenant === null;
   els.viewGlobal.classList.toggle('active', global);
+  els.mapGlobal.hidden = global;
 }
 /** 重生覆盖层（官方 RespawnOverlay 移植）：世界 status=RESPAWNING 时全屏提示。 */
 function tactRenderRespawn(tenant) {
@@ -1459,7 +1461,8 @@ function bindEvents() {
     if (card) toggleSolo(card.dataset.tenant);
   });
   // 视图切换
-  els.viewGlobal.addEventListener('click', () => { state.soloTenant = null; invalidateStatic(); fitView(); renderTenantCards(); els.viewGlobal.classList.add('active'); });
+  els.viewGlobal.addEventListener('click', () => { state.soloTenant = null; invalidateStatic(); fitView(); renderTenantCards(); els.viewGlobal.classList.add('active'); els.mapGlobal.hidden = true; });
+  els.mapGlobal.addEventListener('click', () => { state.soloTenant = null; invalidateStatic(); fitView(); tactClear(); renderTenantCards(); els.viewGlobal.classList.add('active'); els.mapGlobal.hidden = true; });
   els.viewFit.addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
   // 回放控制
   els.rbPlay.addEventListener('click', replayToggle);
@@ -1766,6 +1769,7 @@ function tactClear() {
   els.replayBar.hidden = true;
   els.activityPanel.hidden = true; els.commandCountdown.hidden = true;
   els.respawnOverlay.hidden = true;
+  if (els.mapGlobal) els.mapGlobal.hidden = !state.soloTenant;
   draw();
 }
 function tactActionTypes(obj) {
