@@ -649,35 +649,57 @@ function anyUnitsMoving() {
 function drawMovementDashes(cells, s) {
   if (!cells.length || s < 1.2) return;
   const now = performance.now();
+  const cell = s; // 缩放 = 格子像素尺寸，几何对齐官方 WorldCanvas drawMoveArrow
+  const lineW = Math.max(1.5, cell * 0.035);
+  const dash = [Math.max(4, cell * 0.12), Math.max(3, cell * 0.09)];
+  const dashLen = dash[0] + dash[1];
+  const startOff = cell * 0.29, endOff = cell * 0.25;
+  const head = Math.max(7, cell * 0.18);
+  const flow = (now / 70) % dashLen; // 虚线流动：向移动方向滚动（流水感 = 正在移动）
   ctx.save();
-  ctx.lineWidth = Math.max(1, s * 0.09);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   for (const c of cells) {
     const m = state.unitPrev.get(c.tenant + ':' + c.id);
     if (!m) continue;
     const dist = Math.hypot(m.x - m.px, m.y - m.py);
     if (dist < 0.4 || now - m.ts >= POLL_MS * 2) continue;
-    const pos = unitDrawPos(c);
-    const to = project(pos.x, pos.y);
-    // 单位当前插值位置 → 移动方向上的可见方向矢量（低缩放保底 10px）
-    const dx = pos.x - m.px, dy = pos.y - m.py;
-    const wl = Math.hypot(dx, dy) || 1;
-    const ext = Math.max(10, s * 1.1);
-    const tip = { sx: to.sx + dx / wl * ext, sy: to.sy + dy / wl * ext };
+    const from = project(m.px, m.py);
+    const to = project(m.x, m.y);
+    const dx = to.sx - from.sx, dy = to.sy - from.sy;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    // 官方几何：线从起点格内缩进、终点格内收；箭头 tip 再内收 cell*.12
+    const sx = from.sx + ux * startOff, sy = from.sy + uy * startOff;
+    const ex = to.sx - ux * endOff, ey = to.sy - uy * endOff;
+    const tipX = to.sx - ux * cell * 0.12, tipY = to.sy - uy * cell * 0.12;
+    const wingX = -uy, wingY = ux;
     const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#c66370';
+    // ① 起点标记：实心点 + 白描边环（"从哪里出发"）
     ctx.save();
-    ctx.strokeStyle = color; ctx.globalAlpha = 0.5;
-    ctx.setLineDash([4, 4]);
-    ctx.lineDashOffset = -((now / 70) % 8); // 虚线流动：向移动方向滚动（流水感，动态=正在移动）
-    ctx.beginPath(); ctx.moveTo(to.sx, to.sy); ctx.lineTo(tip.sx, tip.sy); ctx.stroke();
-    ctx.setLineDash([]); ctx.lineDashOffset = 0;
-    const ang = Math.atan2(tip.sy - to.sy, tip.sx - to.sx);
-    const sz = Math.max(3, Math.min(10, s * 0.26));
-    ctx.fillStyle = color; ctx.globalAlpha = 0.9;
+    ctx.globalAlpha = 0.9; ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(from.sx, from.sy, Math.max(1.6, cell * 0.07), 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.65)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(from.sx, from.sy, Math.max(2.6, cell * 0.11), 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    // ② 虚线连接（原版 dash pattern + 柔和辉光，流动动画）
+    ctx.save();
+    ctx.strokeStyle = color; ctx.globalAlpha = 0.55; ctx.lineWidth = lineW;
+    ctx.setLineDash(dash); ctx.lineDashOffset = -flow;
+    ctx.shadowColor = color; ctx.shadowBlur = 3;
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+    ctx.setLineDash([]); ctx.lineDashOffset = 0; ctx.shadowBlur = 0;
+    // ③ 箭头（官方几何：head 内收 + 垂直翼 .42）
+    ctx.globalAlpha = 0.9; ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.moveTo(tip.sx, tip.sy);
-    ctx.lineTo(tip.sx - Math.cos(ang - 0.45) * sz, tip.sy - Math.sin(ang - 0.45) * sz);
-    ctx.lineTo(tip.sx - Math.cos(ang + 0.45) * sz, tip.sy - Math.sin(ang + 0.45) * sz);
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(ex - ux * head + wingX * head * 0.42, ey - uy * head + wingY * head * 0.42);
+    ctx.lineTo(ex - ux * head - wingX * head * 0.42, ey - uy * head - wingY * head * 0.42);
     ctx.closePath(); ctx.fill();
+    // ④ 终点标记：目标环 + 中心点（"到哪里去"）
+    ctx.strokeStyle = color; ctx.lineWidth = lineW;
+    ctx.beginPath(); ctx.arc(to.sx, to.sy, Math.max(3, cell * 0.14), 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(to.sx, to.sy, Math.max(1.2, cell * 0.04), 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
   ctx.restore();
@@ -2206,6 +2228,13 @@ function tactPlanLayer(s) {
         const to = extendScreen(from, project(o.position[0] + st.dx * 2, o.position[1] + st.dy * 2), 9);
         dash(from, to, color, 0.65, 1.5);
         arrow(from, to, color);
+        // 起点/终点标记：与官方 moveArrow 一致，一眼看出"从哪到哪"
+        ctx.save();
+        ctx.fillStyle = color; ctx.globalAlpha = 0.85;
+        ctx.beginPath(); ctx.arc(from.sx, from.sy, Math.max(1.6, s * 0.06), 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.7;
+        ctx.beginPath(); ctx.arc(to.sx, to.sy, Math.max(3, s * 0.12), 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
         drew = true;
       } else if (action.type === 'SWEEP' && action.direction) {
         const st = stepOf(action.direction);
