@@ -186,3 +186,23 @@ test("beaconGrab 开启：信标静止（真掉落）连续多 tick → 仍正�
   assert.equal(plan.intents["v0"], "vanguard_beacon_fetch", "静止 GROUND 信标仍由最近 Vanguard 拾取");
 });
 
+
+test("beaconGrab 开启：信标刚停下（30 tick 窗口内移动过）→ 仍不 fetch（敌方停靠嫌疑）", () => {
+  const planner = new SafetyPlanner(GRAB_CONFIG);
+  const v0: Position[] = [[12, 0]];
+  planner.decide({ state: makeState(1, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  planner.decide({ state: makeState(2, { vanguards: v0, beacon: { position: [11, 0], status: "GROUND", carrierId: null } }) });
+  // tick3：信标停在 [11,0]——窗口内仍有 2 个不同位置（刚停靠）→ 不 fetch
+  const plan = planner.decide({ state: makeState(3, { vanguards: v0, beacon: { position: [11, 0], status: "GROUND", carrierId: null } }) });
+  assert.notEqual(plan.intents["v0"], "vanguard_beacon_fetch", "刚停下 = 敌方停靠嫌疑，不单骑深入");
+});
+
+test("beaconGrab 开启：信标彻底静止（窗口内单一位置）→ 正常 fetch（真掉落）", () => {
+  const planner = new SafetyPlanner(GRAB_CONFIG);
+  const v0: Position[] = [[12, 0]];
+  planner.decide({ state: makeState(1, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  planner.decide({ state: makeState(2, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  planner.decide({ state: makeState(3, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  const plan = planner.decide({ state: makeState(4, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  assert.equal(plan.intents["v0"], "vanguard_beacon_fetch", "窗口内单一位置 = 真掉落，可拾取");
+});
