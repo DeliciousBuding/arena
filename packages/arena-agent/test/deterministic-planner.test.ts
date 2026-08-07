@@ -506,16 +506,33 @@ test("DeterministicPlanner：无资源时继承完整 Safety 基线（Worker 巡
 });
 
 test("DeterministicPlanner：资源离开视野后继续跨 Tick 追踪，不退化为 WAIT", () => {
+  // Core 移远 [20,20]（半径 5 不覆盖远端资源）；tick100 w1 [5,0]（视野 3 覆盖 [8,0]）
+  // → GO_RESOURCE；tick101 w1 折返 [2,0]（距 [8,0] 6 > 3，Core 距 >5）→ 真正离开
+  // 所有观察者视野 → stale 记忆仍追踪（go_harvest_mem），不退化为 WAIT。
   const planner = new DeterministicPlanner();
-  const seen = makeState(100, [core(), unit("w1", 0, 0)]);
-  const p1 = planner.decide({ state: { ...seen, resourceCells: new Set(["3,0"]) } });
+  const seen = makeState(100, [core(20, 20), unit("w1", 5, 0)]);
+  const p1 = planner.decide({ state: { ...seen, resourceCells: new Set(["8,0"]) } });
   assert.equal(p1.unitActions["w1"]?.type, "MOVE");
   assert.equal(p1.intents["w1"], "GO_RESOURCE");
 
-  const hidden = makeState(101, [core(), unit("w1", 1, 0)]);
+  const hidden = makeState(101, [core(20, 20), unit("w1", 2, 0)]);
   const p2 = planner.decide({ state: hidden });
   assert.equal(p2.unitActions["w1"]?.type, "MOVE");
   assert.equal(p2.intents["w1"], "go_harvest_mem");
+});
+
+test("DeterministicPlanner：视野内资源消失（确认采空）→ harvested，不再跨 Tick 追踪", () => {
+  // 视线感知资源失效（2026-08-08）：资源 [3,0] 在 Core [0,0] 半径 5 视野内却不在
+  // 本轮 resourceCells → 确认被采空 → 立即 harvested 负记忆 → worker 不再追空矿
+  // （旧行为 stale 32 tick 内仍提示 → 继续 go_harvest_mem 追已消失的矿）。
+  const planner = new DeterministicPlanner();
+  const seen = makeState(100, [core(), unit("w1", 0, 0)]);
+  const p1 = planner.decide({ state: { ...seen, resourceCells: new Set(["3,0"]) } });
+  assert.equal(p1.intents["w1"], "GO_RESOURCE");
+
+  const emptied = makeState(101, [core(), unit("w1", 1, 0)]);
+  const p2 = planner.decide({ state: emptied });
+  assert.equal(p2.intents["w1"], "patrol", "视野内确认采空 → 不再追空矿");
 });
 
 test("DeterministicPlanner：sticky——上一 Tick 分配缓存（防抖动）", () => {
