@@ -35,6 +35,8 @@ const state = {
   lastRefresh: 0,
   drag: null,
   hover: null,
+  streamCollapsed: false,
+  viewAnim: null,
   tactical: {
     surveys: {},      // tenant -> { obstacleCells, resourceCells, ... }（累积测绘）
     worlds: {},       // tenant -> { state, tick }
@@ -56,7 +58,7 @@ const els = {
   redeemResult: $('#redeemResult'), redeemHistory: $('#redeemHistory'),
   shopCookie: $('#shopCookie'), cookieSave: $('#cookieSave'), cookieTest: $('#cookieTest'),
   shopAccount: $('#shopAccount'), shopList: $('#shopList'),
-  viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'),
+  viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'),
   actionDialog: $('#actionDialog'), inspectPanel: $('#inspectPanel'),
   beaconIndicator: $('#beaconIndicator'), pendingPanel: $('#pendingPanel'),
   fleetHud: $('#fleetHud'), assetPanel: $('#assetPanel'), assetList: $('#assetList'),
@@ -169,17 +171,11 @@ function fitView() {
   if (!state.bounds || !state.cells.length) return;
   const b = state.bounds;
   const w = Math.max(1, W()), h = Math.max(1, H());
-  const pad = 24;
   const spanX = Math.max(1, b.maxX - b.minX + 2);
   const spanY = Math.max(1, b.maxY - b.minY + 2);
-  const scale = Math.min(w / spanX, h / spanY);
-  state.view = {
-    cx: (b.minX + b.maxX) / 2,
-    cy: (b.minY + b.maxY) / 2,
-    scale: Math.min(64, Math.max(0.05, scale)),
-    ready: true,
-  };
-  draw();
+  const scale = Math.min(64, Math.max(0.05, Math.min(w / spanX, h / spanY)));
+  state.view.ready = true;
+  animateView({ cx: (b.minX + b.maxX) / 2, cy: (b.minY + b.maxY) / 2, scale });
 }
 function fitSolo(tenant) {
   // 只按该租户已测绘的 cells（障碍/资源/单位/核心）自适应；信标在远处时以边缘指示显示，不撑爆核心区
@@ -190,9 +186,23 @@ function fitSolo(tenant) {
   const b = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
   const w = Math.max(1, W()), h = Math.max(1, H());
   const spanX = Math.max(1, b.maxX - b.minX + 2), spanY = Math.max(1, b.maxY - b.minY + 2);
-  const scale = Math.min(w / spanX, h / spanY);
-  state.view = { cx: (b.minX + b.maxX) / 2, cy: (b.minY + b.maxY) / 2, scale: Math.min(64, Math.max(0.05, scale)), ready: true };
-  draw();
+  const scale = Math.min(64, Math.max(0.05, Math.min(w / spanX, h / spanY)));
+  state.view.ready = true;
+  animateView({ cx: (b.minX + b.maxX) / 2, cy: (b.minY + b.maxY) / 2, scale });
+}
+/** 视口补间动画：easeOutCubic 非线性过渡（聚焦/全局切换、双击适应） */
+function animateView(to, duration = 680) {
+  state.viewAnim = { from: { cx: state.view.cx, cy: state.view.cy, scale: state.view.scale }, to, t0: performance.now(), duration };
+}
+function applyViewAnim(ts) {
+  const a = state.viewAnim;
+  if (!a) return;
+  const p = Math.min(1, (ts - a.t0) / a.duration);
+  const e = 1 - Math.pow(1 - p, 3);
+  state.view.cx = a.from.cx + (a.to.cx - a.from.cx) * e;
+  state.view.cy = a.from.cy + (a.to.cy - a.from.cy) * e;
+  state.view.scale = a.from.scale + (a.to.scale - a.from.scale) * e;
+  if (p >= 1) state.viewAnim = null;
 }
 function project(x, y) {
   return { sx: (x - state.view.cx) * state.view.scale + W() / 2, sy: (y - state.view.cy) * state.view.scale + H() / 2 };
@@ -222,6 +232,8 @@ function draw() {
   drawCores(buckets.core, s);
   drawBeacons(s);
   tactDrawLayer(s);
+  const ztxt = `×${state.view.scale.toFixed(1)}`;
+  if (els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽平移 · 滚轮缩放 · 双击适应 · ${ztxt}`; }
   if (!state.cells.length) {
     ctx.fillStyle = '#56626c'; ctx.font = '13px ui-monospace, Consolas, monospace';
     ctx.textAlign = 'center';
@@ -379,10 +391,19 @@ function drawBeacons(s) {
     if (state.soloTenant !== null && b.tenant !== state.soloTenant) continue;
     const p = project(b.x, b.y);
     const w = W(), h = H();
-    if (p.sx < -70 || p.sx > w + 70 || p.sy < -70 || p.sy > h + 70) { drawEdgeBeacon(b, p); continue; }
+    const offscreen = p.sx < -70 || p.sx > w + 70 || p.sy < -70 || p.sy > h + 70;
+    if (offscreen) {
+      // 边缘方向指示只在聚焦单一租户时显示（全局 4 信标同时指向会太吵）
+      if (state.soloTenant) drawEdgeBeacon(b, p);
+      continue;
+    }
     const size = Math.max(14, s * (b.status === 'CARRIED' ? 0.58 : 0.98));
-    const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 420);
-    ring(p.sx, p.sy, size * 0.9, `rgba(224,185,79,${0.25 + 0.35 * pulse})`, 2);
+    if (state.soloTenant && state.layers.beacon) {
+      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 420);
+      ring(p.sx, p.sy, size * 0.9, `rgba(224,185,79,${0.18 + 0.22 * pulse})`, 1.6);
+    } else {
+      ring(p.sx, p.sy, size * 0.9, 'rgba(224,185,79,.14)', 1.2);
+    }
     if (images[SPRITE.beacon]) sprite(images[SPRITE.beacon], p.sx, p.sy, size);
     else {
       ctx.fillStyle = '#e0b94f';
@@ -544,7 +565,8 @@ function renderStream() {
     const all = [];
     for (const t of TENANTS) for (const ev of state.events[t] ?? []) all.push({ tenant: t, ...ev });
     all.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
-    if (!all.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无事件数据</div>'; return; }
+    if (!all.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无事件数据</div>'; els.streamCount.textContent = '0 条'; return; }
+    els.streamCount.textContent = `${all.length} 条`;
     els.streamBody.innerHTML = all.slice(0, 120).map((e) => {
       const color = TENANT_COLORS[e.tenant] ?? '#999';
       const evColor = e.kind.startsWith('SHOT') || e.kind.includes('DESTROYED') || e.kind.includes('FAILED') ? '#c66370'
@@ -565,6 +587,7 @@ function renderStream() {
   }
   rows.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
   if (!rows.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无决策数据</div>'; return; }
+  els.streamCount.textContent = `${rows.length} 条`;
   els.streamBody.innerHTML = rows.slice(0, 120).map((r) => {
     const color = TENANT_COLORS[r.tenant] ?? '#999';
     const outcome = String(r.deadlineOutcome ?? '');
@@ -726,6 +749,7 @@ function bindEvents() {
   // 地图交互
   els.canvas.addEventListener('pointerdown', (e) => {
     els.canvas.setPointerCapture(e.pointerId);
+    state.viewAnim = null;
     state.drag = { x: e.clientX, y: e.clientY, cx: state.view.cx, cy: state.view.cy };
   });
   // 点击判定：抬起时位移 < 6px 视为点击（选中/战术目标），否则为拖拽
@@ -764,6 +788,7 @@ function bindEvents() {
   els.canvas.addEventListener('pointerleave', () => { els.tooltip.hidden = true; });
   els.canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
+    state.viewAnim = null;
     const rect = els.canvas.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     const factor = Math.exp(-e.deltaY * 0.0012);
@@ -809,6 +834,12 @@ function bindEvents() {
   // 视图切换
   els.viewGlobal.addEventListener('click', () => { state.soloTenant = null; fitView(); renderTenantCards(); els.viewGlobal.classList.add('active'); });
   els.viewFit.addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
+  // 决策流折叠
+  els.streamToggle.addEventListener('click', () => {
+    state.streamCollapsed = !state.streamCollapsed;
+    els.streamPane.classList.toggle('collapsed', state.streamCollapsed);
+    els.streamToggle.setAttribute('aria-expanded', String(!state.streamCollapsed));
+  });
   // 官方商店 / 兑换码
   els.redeemBtn.addEventListener('click', openRedeem);
   els.redeemClose.addEventListener('click', () => els.redeemDialog.close());
@@ -841,7 +872,10 @@ async function boot() {
   setInterval(() => { pollStreams(); }, POLL_MS);
   let lastAnim = 0;
   const animLoop = (ts) => {
-    if (ts - lastAnim > 300 && (state.beacons.length && state.layers.beacon || state.tactical.selected || state.tactical.mode)) {
+    if (state.viewAnim) {
+      applyViewAnim(ts);
+      draw();
+    } else if (ts - lastAnim > 300 && ((state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
       lastAnim = ts;
       draw();
     }
@@ -1330,7 +1364,7 @@ async function handleCanvasClick(px, py) {
 }
 function updateBeaconIndicator() {
   const els2 = els.beaconIndicator;
-  const b = state.beacons[0];
+  const b = state.soloTenant ? state.beacons.find((x) => x.tenant === state.soloTenant) : null;
   if (!b || !state.view.ready) { els2.hidden = true; return; }
   const p = project(b.x, b.y);
   const w = W(), h = H();
