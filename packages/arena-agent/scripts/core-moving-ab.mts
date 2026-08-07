@@ -54,7 +54,9 @@ function migrationScenario(seed: number) {
 const SEEDS = [1, 2, 3];
 const TICKS = 60;
 
-function runVariant(overrides: Partial<SafetyPlannerConfig>, seed: number) {
+type PlannerKind = "safety" | "deterministic";
+
+function runVariant(overrides: Partial<SafetyPlannerConfig>, seed: number, plannerKind: PlannerKind = "safety") {
   const result = runEpisode({
     scenario: migrationScenario(seed),
     rulesPath: MANIFEST_PATH,
@@ -62,7 +64,7 @@ function runVariant(overrides: Partial<SafetyPlannerConfig>, seed: number) {
     ticks: TICKS,
     tenants: [
       {
-        id: "p1", planner: "safety",
+        id: "p1", planner: plannerKind,
         plannerConfig: { ...DEFAULT_SAFETY_CONFIG, ...overrides },
         policy: { posture: "balanced", workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: null },
       },
@@ -89,11 +91,13 @@ function runVariant(overrides: Partial<SafetyPlannerConfig>, seed: number) {
 
 console.log(`v0.14 核心迁移交仓 A/B（${TICKS} ticks × ${SEEDS.length} seeds，Core [0,0]→[0,1] MOVING×${MIGRATION_TICKS}tick）`);
 console.log("=".repeat(80));
+for (const plannerKind of ["safety", "deterministic"] as const) {
+  console.log(`\n[planner=${plannerKind}]`);
 for (const [label, cfg] of [
   ["baseline（追交）", {}],
   ["coreMovingHold（持货待命）", { coreMovingHold: true }],
 ] as const) {
-  const outcomes = SEEDS.map((seed) => runVariant(cfg as Partial<SafetyPlannerConfig>, seed));
+  const outcomes = SEEDS.map((seed) => runVariant(cfg as Partial<SafetyPlannerConfig>, seed, plannerKind));
   const avgFail = outcomes.reduce((s, o) => s + o.depositFailed, 0) / outcomes.length;
   const avgOk = outcomes.reduce((s, o) => s + o.depositOk, 0) / outcomes.length;
   const avgRes = outcomes.reduce((s, o) => s + o.resources, 0) / outcomes.length;
@@ -101,4 +105,5 @@ for (const [label, cfg] of [
   for (const [i, o] of outcomes.entries()) {
     console.log(`  seed ${i + 1}: fail=${o.depositFailed} ok=${o.depositOk} res=${o.resources} | ${o.reasonText}`);
   }
+}
 }
