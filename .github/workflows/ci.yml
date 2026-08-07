@@ -29,3 +29,31 @@ jobs:
       - run: npm run replay:ts
       - run: python scripts/gen-status.py --check
       - run: python scripts/docs_health.py --check
+
+  command-center:
+    name: Command Center (server tsc + web typecheck + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            packages/command-center/package-lock.json
+            packages/command-center/web/package-lock.json
+      - name: Install server deps
+        working-directory: packages/command-center
+        run: npm ci
+      - name: Server typecheck
+        working-directory: packages/command-center
+        run: npm run check
+      - name: Install web deps
+        working-directory: packages/command-center/web
+        run: npm ci
+      - name: Web typecheck
+        working-directory: packages/command-center/web
+        run: npm run typecheck
+      - name: Web build
+        working-directory: packages/command-center/web
+        run: npm run build
