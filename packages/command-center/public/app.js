@@ -7,6 +7,8 @@ const TENANT_COLORS = { t1: '#69b3d8', t2: '#57bd84', t3: '#a892d6', t4: '#dd626
 const TENANT_LABEL = { t1: '租户 1', t2: '租户 2', t3: '租户 3', t4: '租户 4' };
 const POLL_MS = 3000;
 const UNIT_ICONS = { resource: '/assets/ui/icons/resource.png', population: '/assets/ui/icons/population.png' };
+/** Canvas font: bold sans stack - Geist for latin, PingFang/YaHei/Noto Sans CJK for CJK (never SimSun). */
+const CANVAS_FONT = '"Geist", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
 const DECISION_KIND_CN = {
   accepted: '接受', rejected: '拒绝', timeout: '超时', missed: '错过', aborted: '中止',
   not_applicable: '不适用', in_progress: '进行中', unknown: '未知',
@@ -384,7 +386,7 @@ function draw() {
   const ztxt = `×${state.view.scale.toFixed(1)}`;
   if (els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽平移 · 滚轮缩放 · 双击适应 · ${ztxt}`; }
   if (!state.cells.length) {
-    ctx.fillStyle = '#56626c'; ctx.font = '13px "Geist Mono", ui-monospace, Consolas, monospace';
+    ctx.fillStyle = '#56626c'; ctx.font = '600 12px ' + CANVAS_FONT;
     ctx.textAlign = 'center';
     ctx.fillText('等待测绘数据…', w / 2, h / 2);
   }
@@ -419,7 +421,7 @@ function drawTenantRegions(s) {
     const lp = project(lx, ly);
     if (s >= 2.5) {
       const label = `${t.toUpperCase()} · ${TENANT_LABEL[t]}`;
-      ctx.font = '600 ' + Math.max(9, Math.min(13, s * 0.34)) + 'px "Geist Mono", ui-monospace, Consolas, monospace';
+      ctx.font = '600 ' + Math.max(9, Math.min(13, s * 0.34)) + 'px ' + CANVAS_FONT;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       const tw = ctx.measureText(label).width;
       const pad = 6, hh = 13;
@@ -470,13 +472,13 @@ function drawMeterBar(s, x, y, cell, value, maximum, color, labelColor, displayL
   const ratio = maximum > 0 ? Math.max(0, Math.min(1, value / maximum)) : 0;
   let fontSize = Math.max(6, cell * 0.15);
   ctx.save();
-  ctx.font = '600 ' + fontSize + 'px "Geist Mono", ui-monospace, Consolas, monospace';
+  ctx.font = '600 ' + fontSize + 'px ' + CANVAS_FONT;
   ctx.textBaseline = 'middle';
   let labelWidth = ctx.measureText(displayLabel).width;
   const preferredBarWidth = cell * 0.35;
   if (labelWidth + gap + preferredBarWidth > maxWidth) {
     fontSize = Math.max(cell * 0.1, fontSize * (maxWidth - gap - preferredBarWidth) / labelWidth);
-    ctx.font = '600 ' + fontSize + 'px "Geist Mono", ui-monospace, Consolas, monospace';
+    ctx.font = '600 ' + fontSize + 'px ' + CANVAS_FONT;
     labelWidth = ctx.measureText(displayLabel).width;
   }
   const barWidth = Math.max(cell * 0.2, Math.min(preferredBarWidth, maxWidth - labelWidth - gap));
@@ -503,9 +505,9 @@ function drawCoreOwnerLabel(s, x, y, cell, username, controlled) {
   let fontSize = Math.max(6, Math.min(9, cell * 0.17));
   const maxWidth = cell * 0.95;
   ctx.save();
-  ctx.font = '600 ' + fontSize + 'px "Geist Mono", ui-monospace, Consolas, monospace';
+  ctx.font = '600 ' + fontSize + 'px ' + CANVAS_FONT;
   const measured = ctx.measureText(label).width;
-  if (measured > maxWidth) { fontSize = Math.max(5.5, fontSize * maxWidth / measured); ctx.font = '600 ' + fontSize + 'px "Geist Mono", ui-monospace, Consolas, monospace'; }
+  if (measured > maxWidth) { fontSize = Math.max(5.5, fontSize * maxWidth / measured); ctx.font = '600 ' + fontSize + 'px ' + CANVAS_FONT; }
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
   ctx.lineWidth = Math.max(1.6, fontSize * 0.28); ctx.strokeStyle = 'rgba(0,0,0,.9)';
   ctx.strokeText(label, x, y);
@@ -518,7 +520,7 @@ function drawStackBadge(s, x, y, cell, count, color) {
   const fontSize = Math.max(6, cell * 0.13), label = '×' + count, padding = Math.max(1, cell * 0.045);
   const height = fontSize + padding * 2;
   ctx.save();
-  ctx.font = '600 ' + fontSize + 'px "Geist Mono", ui-monospace, Consolas, monospace';
+  ctx.font = '600 ' + fontSize + 'px ' + CANVAS_FONT;
   const width = ctx.measureText(label).width + padding * 2;
   ctx.fillStyle = 'rgba(0,0,0,.92)'; ctx.strokeStyle = color; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.roundRect(x - width / 2, y - height / 2, width, height, height / 2); ctx.fill(); ctx.stroke();
@@ -2019,7 +2021,7 @@ function tactDrawRoute(path, opts = {}) {
   // ETA 徽标（步数 = 到 tick）
   if (opts.eta !== undefined && !opts.faint) {
     const label = (opts.eta === 0 ? '已到' : opts.eta + ' tick');
-    ctx.font = '600 11px "Geist Mono", ui-monospace, Consolas, monospace';
+    ctx.font = '600 11px ' + CANVAS_FONT;
     const tw = ctx.measureText(label).width;
     const bx = end.sx - tw / 2 - 4, by = end.sy - d - 22;
     ctx.fillStyle = 'rgba(10,14,18,.88)';
@@ -2139,7 +2141,7 @@ function tactPatrolLayer(s) {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = 'rgba(122,160,198,.55)';
-    ctx.font = '9px "Geist Mono", ui-monospace, Consolas, monospace';
+    ctx.font = '600 9px ' + CANVAS_FONT;
     ctx.fillText(String(r), cp.sx - pr + 3, cp.sy - pr + 10);
   }
   ctx.restore();
@@ -2385,7 +2387,7 @@ function tactDrawEventFx(s) {
     ctx.save();
     ctx.globalAlpha = Math.max(0, fade);
     ctx.fillStyle = fx.color;
-    ctx.font = '700 ' + fx.size + 'px "Geist Mono", ui-monospace, Consolas, monospace';
+    ctx.font = '700 ' + fx.size + 'px ' + CANVAS_FONT;
     ctx.textAlign = 'center';
     ctx.shadowColor = fx.color; ctx.shadowBlur = 8;
     ctx.fillText(fx.text, p.sx, p.sy - t * 26 - 10);
