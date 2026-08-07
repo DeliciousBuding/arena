@@ -3,11 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Arena 本地指挥面板：4 租户全局测绘地图 + 资源展示 + 实时决策流（只读，Node 内置能力）",
+  "description": "Arena 本地指挥面板：4 租户全局测绘地图 + 资源展示 + 实时决策流（只读，Hono + TypeScript）",
   "scripts": {
-    "start": "node server.mjs",
+    "start": "node server.ts",
     "start:cc": "node scripts/start-cc.mjs",
     "start:cc:bg": "node scripts/start-cc.mjs --hidden",
-    "stop:cc": "node scripts/start-cc.mjs --stop"
+    "stop:cc": "node scripts/start-cc.mjs --stop",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.0",
+    "hono": "^4.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2"
   }
 }
