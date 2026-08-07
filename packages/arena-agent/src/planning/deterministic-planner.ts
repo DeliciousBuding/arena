@@ -282,6 +282,12 @@ function compareWorstMoveFirst(a: MoveCandidate, b: MoveCandidate): number {
 }
 
 const WORKER_RECOVERY_FLOOR = 2;
+/** 冷启动 worker 扩编目标（2026-08-07，t3/t4 生产实证）：worker 数未达该值
+ *  时产 worker 豁免 spawnReserve——资源刚够成本就扩编（t4 实证：2W res 5 <
+ *  WORKER 5 + reserve 2 = 7 → 永不产第 3 个 worker → 经济停滞）。v3.0
+ *  MIN_BOOTSTRAP_WORKERS=3 放大到 6：workerTarget=12 的一半，尽早建立
+ *  采集网后再进入正常 reserve 保护。 */
+const BOOTSTRAP_WORKER_TARGET = 6;
 const WORKER_SPAWN_COST = 5;
 /** 补员保留资源（不因扩编掏空国库；emergency 时也可用满额 5）。 */
 const WORKER_SPAWN_RESERVE = 2;
@@ -434,7 +440,12 @@ export function selectDeterministicCoreAction(
           };
         }
       } else if (state.workers.length < workerTarget && !needMilitary) {
-        if (state.resources >= spawnCosts.WORKER + (emergency ? 0 : spawnReserve)) {
+        // 冷启动扩编（2026-08-07）：worker < BOOTSTRAP_WORKER_TARGET 时豁免
+        // spawnReserve——资源刚够成本就产 worker，打破"res < cost+reserve
+        // 永远产不起"的冷启动冻结（t4 生产实证 2W res 5 卡住）。达标后恢复
+        // reserve 保护（防掏空国库）。
+        const reserve = (emergency || state.workers.length < BOOTSTRAP_WORKER_TARGET) ? 0 : spawnReserve;
+        if (state.resources >= spawnCosts.WORKER + reserve) {
           return {
             action: { type: "SPAWN", unitType: "WORKER" },
             intent: emergency ? "emergency_spawn_worker" : "spawn_worker_target",

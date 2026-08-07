@@ -277,7 +277,8 @@ test("DeterministicPlanner：资源路径 MOVE_CONTESTED 后绕行，不连续�
 });
 
 test("DeterministicPlanner：decide 输出合法 Plan（validatePlan 过）", () => {
-  const state = makeState(100, [core(), unit("w1", 1, 0), unit("w2", 2, 0)]);
+  // res 4 < WORKER 成本 5（bootstrap 阶段豁免 reserve 也不产）→ coreAction null
+  const state = makeState(100, [core(), unit("w1", 1, 0), unit("w2", 2, 0)], 4);
   // 注入资源格（reduceTurn 不推导——直接改 resourceCells）
   const withCells: TickState = { ...state, resourceCells: new Set(["5,0", "5,1"]) };
   const planner = new DeterministicPlanner();
@@ -423,8 +424,13 @@ test("deterministic Core：policy.workerTarget 驱动目标补员（spawn_worker
   assert.deepEqual(plan.coreAction, { type: "SPAWN", unitType: "WORKER" });
   assert.equal(plan.intents.core, "spawn_worker_target");
 
-  // 资源不足 reserve（5+2=7 门槛，只有 6）→ 不补员
-  const poor = makeState(100, [core(0, 0), unit("w1", 1, 0), unit("w2", 2, 0)], 6);
+  // 资源不足 reserve（5+2=7 门槛，只有 6）→ 不补员（worker 6 已达 bootstrap
+  // 目标，恢复 reserve 保护——bootstrap 豁免只在 worker<6 时生效）
+  const poor = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0),
+    unit("w4", 4, 0), unit("w5", 5, 0), unit("w6", 6, 0),
+  ], 6);
   const poorPlan = new DeterministicPlanner().decide({ state: poor, policy });
   assert.equal(poorPlan.coreAction, null);
 
