@@ -34,10 +34,14 @@ MAX_CARGO="${MAX_CARGO:-0}"
 DEPOSITS=$(echo "$LAST" | grep -oE '"DEPOSIT_SUCCEEDED"' | wc -l)
 DELTA=$(echo "$LAST" | grep -oE '"coreResourceDelta":-?[0-9.]+' | sed 's/.*://' | awk '{s+=$1} END{print s+0}')
 
-# 合法 0 卸货保护：容量满 / 核心迁移中 / 核心不在场 = 卸货本来就会失败，不视为停摆
+# 合法 0 卸货保护：容量满 / 核心迁移中 / 核心不在场 = 卸货本来就会失败，不视为停摆。
+# CORE_MOVING/CORE_NOT_PRESENT 失败事件是旧信号；core-moving-hold-v1（2026-08-08）
+# 上线后迁移期 cargo worker 持货静默 WAIT（不再产生失败事件）——outcome 新增
+# coreState 字段直接判核心迁移窗口，避免把合法迁移误判为停摆杀重启（丢记忆）。
 LOCKED=$(echo "$LAST" | grep -oE '"reasonCode":"(CORE_RESOURCE_FULL|CORE_MOVING|CORE_NOT_PRESENT)"' | wc -l)
+CORE_MOVING_STATE=$(echo "$LAST" | grep -oE '"coreState":"MOVING"' | wc -l)
 
-if [ "$MAX_CARGO" -ge 2 ] && [ "$DEPOSITS" -eq 0 ] && [ "${DELTA%.*}" -eq 0 ] && [ "$LOCKED" -eq 0 ]; then
+if [ "$MAX_CARGO" -ge 2 ] && [ "$DEPOSITS" -eq 0 ] && [ "${DELTA%.*}" -eq 0 ] && [ "$LOCKED" -eq 0 ] && [ "$CORE_MOVING_STATE" -eq 0 ]; then
   echo "STALL:$TENANT"
 else
   echo "OK:$TENANT"
