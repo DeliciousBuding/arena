@@ -52,6 +52,30 @@ function queryCoreHunts(db) {
   ).all();
 }
 
+
+/** 生命周期摘要（2026-08-08）：单位/消费/采集聚合——与主面板 lib/survey.ts
+ *  loadLifecycleDb 同 SQL，独立服务也能直接消费生命周期数据。 */
+function queryLifecycle(db) {
+  const units = db.prepare(
+    "SELECT current_state AS state, unit_type AS type, COUNT(*) AS count FROM unit_lifecycle GROUP BY state, unit_type",
+  ).all();
+  const spends = db.prepare(
+    "SELECT kind, COUNT(*) AS count, SUM(amount) AS total FROM core_spends GROUP BY kind ORDER BY total DESC",
+  ).all();
+  const harvests = db.prepare(
+    "SELECT COUNT(*) AS count, MAX(tick) AS last_tick FROM resource_events WHERE event_type = 'HARVEST_SUCCEEDED'",
+  ).get();
+  const fails = db.prepare(
+    "SELECT COUNT(*) AS count FROM resource_events WHERE event_type = 'HARVEST_FAILED'",
+  ).get();
+  return {
+    units,
+    spends,
+    harvestCount: Number(harvests?.count ?? 0),
+    lastHarvestTick: harvests?.last_tick === null ? null : Number(harvests?.last_tick ?? 0),
+    harvestFailCount: Number(fails?.count ?? 0),
+  };
+}
 function sendJson(res, status, body) {
   const text = JSON.stringify(body);
   res.writeHead(status, {
@@ -88,6 +112,7 @@ const server = createServer(async (req, res) => {
             resources: queryResources(db, states, Number.isFinite(maxAge) ? maxAge : null),
             obstacles: queryObstacles(db),
             coreHunts: queryCoreHunts(db),
+            lifecycle: queryLifecycle(db),
           };
         } finally {
           db.close();
