@@ -2235,7 +2235,10 @@ function tactRenderAssets(tenant) {
   }).join('') || '<div class="stream-empty">无受控单位</div>';
   els.assetList.querySelectorAll('[data-asset]').forEach((b) => b.addEventListener('click', () => {
     const o = world.state.objects.find((x) => x.id === b.dataset.asset);
-    if (o) tactSelect(tenant, o);
+    if (!o) return;
+    // 官方 selectFromAssetList：选中并居中定位到该单位
+    if (o.position) { state.view.cx = o.position[0]; state.view.cy = o.position[1]; state.viewAnim = null; }
+    tactSelect(tenant, o);
   }));
 }
 function tactRenderHud(tenant) {
