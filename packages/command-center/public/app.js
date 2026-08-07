@@ -98,6 +98,44 @@ const els = {
   respawnOverlay: $('#respawnOverlay'), roTick: $('#roTick'),
 };
 
+
+
+/* ---------- 偏好持久化（本机 localStorage，非敏感） ---------- */
+const PREFS_KEY = 'arena-cc.prefs';
+const PREFS_TABS = ['all', 't1', 't2', 't3', 't4', 'events'];
+function loadPrefs() {
+  try { return JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}') || {}; } catch { return {}; }
+}
+function savePrefs() {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({
+      streamCollapsed: state.streamCollapsed,
+      streamFilterQuiet: state.streamFilterQuiet,
+      tab: state.tab,
+      layers: state.layers,
+    }));
+  } catch { /* 隐私模式等场景忽略 */ }
+}
+/** 启动时恢复持久化偏好：折叠/只看决策/标签页/图层开关。 */
+function applyPrefs() {
+  const p = loadPrefs();
+  if (typeof p.streamCollapsed === 'boolean') state.streamCollapsed = p.streamCollapsed;
+  if (typeof p.streamFilterQuiet === 'boolean') state.streamFilterQuiet = p.streamFilterQuiet;
+  if (PREFS_TABS.includes(p.tab)) state.tab = p.tab;
+  if (p.layers && typeof p.layers === 'object') {
+    for (const k of Object.keys(state.layers)) if (typeof p.layers[k] === 'boolean') state.layers[k] = p.layers[k];
+  }
+  // 同步 DOM 表达（折叠类 / aria / 只看决策按钮态）
+  els.streamPane.classList.toggle('collapsed', state.streamCollapsed);
+  els.streamToggle.setAttribute('aria-expanded', String(!state.streamCollapsed));
+  els.streamFilter.classList.toggle('on', state.streamFilterQuiet);
+  els.streamFilter.title = state.streamFilterQuiet ? '显示全部（含无需决策）' : '只显示实际决策（隐藏无需决策行）';
+}
+/** 图层复选框与 state.layers 同步（恢复持久化后调用一次）。 */
+function syncLayerToggles() {
+  document.querySelectorAll('#layerToggles input').forEach((el) => { el.checked = !!state.layers[el.dataset.layer]; });
+}
+
 let ctx = els.canvas.getContext('2d');
 const images = {};
 
@@ -1166,7 +1204,7 @@ function renderStream() {
   els.streamTabs.innerHTML = tabs.map((t) =>
     `<button data-tab="${t.id}" class="${state.tab === t.id ? 'active' : ''}" role="tab">${t.label}</button>`).join('');
   els.streamTabs.querySelectorAll('button').forEach((b) =>
-    b.addEventListener('click', () => { state.tab = b.dataset.tab; els.streamBody.scrollTop = 0; pollStreams(); }));
+    b.addEventListener('click', () => { state.tab = b.dataset.tab; els.streamBody.scrollTop = 0; savePrefs(); pollStreams(); }));
 
   if (state.tab === 'events') {
     const all = [];
@@ -1491,7 +1529,7 @@ function bindEvents() {
   $('#fitBtn').addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
   // 图层
   document.querySelectorAll('#layerToggles input').forEach((el) => {
-    el.addEventListener('change', () => { state.layers[el.dataset.layer] = el.checked; invalidateStatic(); draw(); });
+    el.addEventListener('change', () => { state.layers[el.dataset.layer] = el.checked; invalidateStatic(); draw(); savePrefs(); });
   });
   // 租户开关
   els.tenantToggles.addEventListener('change', (e) => {
@@ -1522,6 +1560,7 @@ function bindEvents() {
       els.streamFilter.classList.toggle('on', state.streamFilterQuiet);
       els.streamFilter.title = state.streamFilterQuiet ? '显示全部（含无需决策）' : '只显示实际决策（隐藏无需决策行）';
       els.streamBody.scrollTop = 0;
+      savePrefs();
       pollStreams();
     });
   }
@@ -1535,6 +1574,7 @@ function bindEvents() {
       const dot = els.streamToggle.querySelector('.st-dot');
       if (dot) dot.classList.remove('has-new');
     }
+    savePrefs();
   });
   // "最新"悬浮按钮：点击回到顶部（最新）；手动回到顶部自动隐藏
   if (els.streamJump) {
@@ -1584,6 +1624,8 @@ function bindEvents() {
 
 /* ---------- 启动 ---------- */
 async function boot() {
+  applyPrefs();
+  syncLayerToggles();
   bindEvents();
   resizeCanvas();
   tickClock();
