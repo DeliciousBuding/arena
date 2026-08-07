@@ -1574,8 +1574,8 @@ function bindEvents() {
     if (card) toggleSolo(card.dataset.tenant);
   });
   // 视图切换
-  els.viewGlobal.addEventListener('click', () => { state.soloTenant = null; invalidateStatic(); fitView(); renderTenantCards(); els.viewGlobal.classList.add('active'); els.mapGlobal.hidden = true; });
-  els.mapGlobal.addEventListener('click', () => { state.soloTenant = null; invalidateStatic(); fitView(); tactClear(); renderTenantCards(); els.viewGlobal.classList.add('active'); els.mapGlobal.hidden = true; });
+  els.viewGlobal.addEventListener('click', exitSolo);
+  els.mapGlobal.addEventListener('click', exitSolo);
   els.viewFit.addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
   // 回放控制
   els.rbPlay.addEventListener('click', replayToggle);
@@ -1740,8 +1740,7 @@ async function boot() {
     if (e.key === '-' || e.key === '_') { const r = els.canvas.getBoundingClientRect(); zoomTo(r.width / 2, r.height / 2, 1 / 1.5); return; }
     if (e.key === 'f' || e.key === 'F') { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); return; }
     if (e.key === 'g' || e.key === 'G') {
-      state.soloTenant = null; invalidateStatic(); fitView(); tactClear(); renderTenantCards();
-      els.viewGlobal.classList.add('active'); if (els.mapGlobal) els.mapGlobal.hidden = true;
+      exitSolo();
       return;
     }
     if (e.key === 'Escape') {
@@ -1937,11 +1936,22 @@ function tactClear() {
   tac.selected = null; tac.mode = null; tac.moveRoute = null; tac.routePreview = null; tac.attackTarget = null;
   els.actionDialog.hidden = true; els.inspectPanel.hidden = true;
   els.assetPanel.hidden = true; els.fleetHud.hidden = true;
+  replay.playing = false; // 停掉回放引擎：退出单租户后不再 60fps 空转重绘
   els.replayBar.hidden = true;
   els.activityPanel.hidden = true; els.commandCountdown.hidden = true;
   els.respawnOverlay.hidden = true;
   if (els.mapGlobal) els.mapGlobal.hidden = !state.soloTenant;
   draw();
+}
+/** 退出单租户回全局联盟：清空战术层/回放 + 视图适应 + UI 同步（viewGlobal / mapGlobal / G 键共用）。 */
+function exitSolo() {
+  state.soloTenant = null;
+  tactClear();
+  invalidateStatic();
+  fitView();
+  renderTenantCards();
+  els.viewGlobal.classList.add('active');
+  els.mapGlobal.hidden = true;
 }
 function tactActionTypes(obj) {
   const world = T().worlds[T().selected.tenant];
