@@ -579,6 +579,18 @@ export class SafetyPlanner {
 
   decide(input: SafetyPlannerInput): Plan {
     const { state } = input;
+    // 旧核验证协议（2026-08-08，ref 对齐）：DESTRUCTION_PARTICIPATION（CORE）
+    // 事件 = 敌核心被摧毁强信号 → 立即删除记忆（军事不再打空城）。比清扫确认
+    // 更快更准：清扫确认要等 2 次视野覆盖，事件是服务器结算的直接证据。
+    for (const event of state.events) {
+      if (
+        event.eventType === "DESTRUCTION_PARTICIPATION" &&
+        (event.reasonCode === "CORE" || event.reasonCode === "ATTACK") &&
+        event.position !== undefined
+      ) {
+        this.world.forgetCoreHuntAt(event.position);
+      }
+    }
     this.effectivePolicy = input.policy ?? null;
     // focusRegion 防呆（生产实测 2026-08-05）：policy 层曾输出 [1500,1500]/
     // [-1500,1500]/[0,0] 等不可达远点，全部 worker 被 go_focus 直线支走 → 0 采集、
