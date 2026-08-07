@@ -271,6 +271,7 @@ async function poll() {
     state.beacons = map.beacons ?? [];
     state.coreTrails = map.coreTrails ?? [];
     state.intel = intel ?? null;
+    emit('intel', state.intel);
     state.bounds = map.bounds ?? null;
     state.cellIndex = new Map();
     for (const c of state.cells) state.cellIndex.set(`${c.x},${c.y}`, c);
@@ -1467,7 +1468,7 @@ async function tactLoadExploration(tenant) {
   if (T().surveys[tenant]) return T().surveys[tenant];
   try {
     const e = await getJSON(`/api/exploration?tenant=${tenant}`);
-    if (e.survey) { T().surveys[tenant] = e.survey; return e.survey; }
+    if (e.survey) { T().surveys[tenant] = e.survey; if (e.lifecycle) T().surveys[tenant].lifecycle = e.lifecycle; return e.survey; }
     return null;
   } catch { return null; }
 }
@@ -2230,6 +2231,27 @@ function tactRenderHud(tenant) {
     <span class="hud-val">${survey.coreCells.length} 敌核</span>
     <span class="hud-val dim">${survey.caseCount} case · tick ${survey.tickMax}</span>
   </div>` : '';
+  const lc = survey?.lifecycle;
+  let lcRow = '';
+  if (lc) {
+    const spendTotal = (lc.spends ?? []).reduce((s, x) => s + (x.total ?? 0), 0);
+    const spawnTotal = (lc.spends ?? []).find((x) => x.kind === 'spawn')?.total ?? 0;
+    const healTotal = (lc.spends ?? []).find((x) => x.kind === 'core_heal')?.total ?? 0;
+    const units = lc.units ?? [];
+    const alive = units.filter((u) => u.state === 'alive').reduce((s, u) => s + u.count, 0);
+    const unitLabel = ['WORKER', 'VANGUARD', 'RANGER'].map((t) => {
+      const c = units.find((u) => u.state === 'alive' && u.type === t)?.count ?? 0;
+      return c ? c + (t === 'WORKER' ? '工' : t === 'VANGUARD' ? '锋' : '射') : '';
+    }).filter(Boolean).join('/');
+    lcRow = '<div class="hud-row hud-survey">' +
+      '<span class="hud-label">生命</span>' +
+      '<span class="hud-val" style="color:var(--green-resource)" title="累计产兵消耗">产 ' + spawnTotal + '</span>' +
+      '<span class="hud-val" title="治疗/修复消耗">疗 ' + healTotal + '</span>' +
+      '<span class="hud-val dim" title="累计消费总额">耗 ' + spendTotal + '</span>' +
+      '<span class="hud-val" title="存活单位">存 ' + alive + (unitLabel ? ' · ' + unitLabel : '') + '</span>' +
+      '<span class="hud-val dim">采 ' + (lc.harvestCount ?? 0) + '</span>' +
+      '</div>';
+  }
   const cmdStatus = commandStatusText(tenant);
   const tele = T().commands && T().commands.telemetry;
   const hudCmd = cmdStatus
@@ -2246,7 +2268,7 @@ function tactRenderHud(tenant) {
     <span class="hud-val"><img src="${UNIT_ICONS.resource}" alt="" /> ${st.resources ?? 0} <i>/ ${cap}</i></span>
     <span class="hud-val"><img src="${UNIT_ICONS.population}" alt="" /> ${st.population ?? 0}</span>
     <span class="hud-val mono">tick ${world.tick ?? st.tick ?? '—'}</span>
-  </div>${surveyRow}${hudCmd}`;
+  </div>${surveyRow}${lcRow}${hudCmd}`;
 }
 /* ============ 回放引擎（连续 tick 快照 → 单位移动动画 + 15s 读条） ============ */
 async function replayLoad(tenant) {
@@ -3366,6 +3388,7 @@ export function createMapEngine(host) {
   });
   return api;
 }
+
 
 
 

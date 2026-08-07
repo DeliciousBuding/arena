@@ -99,6 +99,13 @@
 - **租户卡 row3**：2 列 grid（`1fr 1fr`）+ `nowrap/ellipsis`，避免 5 项 flex 换行凌乱；字号 ≥10.5px。
 - **商店对话框**：官方商店 eyebrow 小标题（`OFFICIAL STORE · LINUXDO`）+ 18px 主标题层级；底部说明
   12.5px/1.7 行高；分区（Cookie/商品/历史）间距 16-20px。
+- **排行榜对话框（威胁情报）**：三 tab（威胁/信标/核心）+ 摘要 chips（`我方在榜 N` / `遭遇玩家 N`）
+  + 过滤 chips（全部/我方/遭遇，过滤后无结果给明确空态文案）。行标注语义（身份，非装饰）：
+  我方账号 = 白色提升行 + 白底徽章 `我们 · T1`（内含租户色小方块，`--rc` token）；遭遇玩家 =
+  极淡中性底 + 描边徽章 `遭遇`（内含目击租户色圆点，hover title 显示最后目击 tick/距核心/威胁
+  等级）；榜单 top3 保持 warn 色 rank。威胁 tab 默认前 30 行 + 榜外我方账号自动置顶
+  （`ir-pin-sep` 分隔标注），`展开全部` 显示全量；行内 tier 标签保持精英/攻坚/常规三档胶囊。
+  顶栏「威胁情报」按钮带实时 `btn-count` 徽标（/api/intel 目击唯一账号数，3s 轮询）。
 - **决策流头部结构**：`#streamToggle`（圆点+标题+计数+chevron）与 `#streamFilter`（只看决策胶囊按钮）
   是**同级兄弟**，禁止按钮嵌套按钮（非法 HTML 会导致点击拦截/冒泡异常）；折叠时隐藏过滤按钮、显示 live 胶囊。
 - **只看决策过滤**：`#streamFilter` 激活（`.on`）后隐藏 `deadlineOutcome === 'not_applicable'` 的
