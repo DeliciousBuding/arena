@@ -32,7 +32,7 @@ import { LeaseRegistry } from "../runtime/lease-registry.ts";
 import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
 import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
-import { knownCoreHunts, knownObstacles, knownResources, openSurveyDb } from "../intel/survey-db.ts";
+import { knownChunks, knownCoreHunts, knownObstacles, knownResources, openSurveyDb } from "../intel/survey-db.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
@@ -518,6 +518,7 @@ export async function runTenant(
         : { ...AGGRESSIVE_SAFETY_CONFIG, ...variantConfig };
     const surveyResourceCells = loadSurveyResourceSeed(dataRoot, config.tenantId);
     const surveyObstacleCells = loadSurveyObstacleSeed(dataRoot, config.tenantId);
+    const surveyChunks = loadSurveyChunkSeed(dataRoot, config.tenantId);
     const planner: DeterministicPlanner | SafetyPlanner =
       decisionMode === "deterministic"
         ? Object.keys(variantConfig).length === 0
@@ -539,6 +540,7 @@ export async function runTenant(
       if (surveyResourceCells.length > 0) planner.world.seedResourceMemory(surveyResourceCells, 0);
       if (surveyObstacleCells.length > 0) planner.world.seedObstacleMemory(surveyObstacleCells);
       if (surveyCoreHunts.length > 0) planner.world.seedCoreHuntTargets(surveyCoreHunts);
+      if (surveyChunks.length > 0) planner.world.seedChunkMemory(surveyChunks);
     }
 
     // 配置热加载（2026-08-08）：重读 config 文件 → schema/变体校验 → 原子替换
@@ -1088,6 +1090,23 @@ function loadSurveyObstacleSeed(dataRoot: string, tenantId: string): readonly Po
     db.close();
     if (rows.length === 0) return [];
     return rows.map((row) => [row.x, row.y] as const);
+  } catch {
+    return [];
+  }
+}
+/** 跨 run 测绘种子（2026-08-08，探索分区记忆）：从测绘库读最近探索的 chunk
+ *  （chunks 表，last_seen 距今 ≤ maxAgeTicks）注入 World.chunkMemory——
+ *  "探索过的区域"跨重启保留，frontier 探索（未观察分区优先）不丢。 */
+function loadSurveyChunkSeed(dataRoot: string, tenantId: string, maxAgeTicks = 20_000): readonly { key: string; lastSeenTick: number }[] {
+  try {
+    const db = openSurveyDb(dataRoot, tenantId, false);
+    const rows = knownChunks(db, 0);
+    db.close();
+    if (rows.length === 0) return [];
+    let maxTick = 0;
+    for (const row of rows) if (row.lastSeenTick > maxTick) maxTick = row.lastSeenTick;
+    const cutoff = maxTick - maxAgeTicks;
+    return rows.filter((row) => row.lastSeenTick >= cutoff);
   } catch {
     return [];
   }
