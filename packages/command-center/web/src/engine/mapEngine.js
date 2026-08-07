@@ -2400,18 +2400,24 @@ function tactRenderPending() {
     return parts.join(' · ');
   };
   const rows = [];
+  const tenant = state.soloTenant;
+  const humanUnits = new Set([
+    ...(T().commands?.actions ?? []).map((c) => c.unitId),
+    ...(T().commands?.goals ?? []).map((g) => g.unitId),
+  ]);
+  const coreId = world ? world.state.objects.find((o) => o.kind === 'CORE' && o.controlled === true)?.id ?? null : null;
   const coreAction = plan.coreAction ?? plan.core_action;
-  if (coreAction) rows.push({ key: 'core', actor: '核心 · CORE', act: actCN(coreAction) });
+  if (coreAction) rows.push({ key: 'core', actor: '核心 · CORE', act: actCN(coreAction), human: coreId !== null && humanUnits.has(coreId) });
   const unitActions = plan.unitActions ?? plan.unit_actions ?? {};
   const entries = Object.entries(unitActions).sort(([a], [b]) => a.localeCompare(b));
   for (const [id, action] of entries) {
     const o = byId.get(id);
     const type = o && o.unit_type ? TACT_UNIT_CN[o.unit_type] : '单位';
-    rows.push({ key: id, actor: type + ' · ' + shortId(id), act: actCN(action) });
+    rows.push({ key: id, actor: type + ' · ' + shortId(id), act: actCN(action), human: humanUnits.has(id) });
   }
   if (!rows.length) { els.pendingPanel.hidden = true; return; }
   const collapsed = tac.pendingCollapsed === true;
-  const body = rows.map((r) => '<li class="pp-row"><span class="pp-actor">' + escapeHtml(r.actor) + '</span><span class="pp-src src-agent">AGENT</span><span class="pp-act">' + escapeHtml(r.act) + '</span></li>').join('');
+  const body = rows.map((r) => '<li class="pp-row"><span class="pp-actor">' + escapeHtml(r.actor) + '</span><span class="pp-src ' + (r.human ? 'src-manual' : 'src-agent') + '">' + (r.human ? 'HUMAN' : 'AGENT') + '</span><span class="pp-act">' + escapeHtml(r.act) + '</span></li>').join('');
   els.pendingPanel.innerHTML = '<button type="button" class="pp-toggle" data-pp-toggle aria-expanded="' + (collapsed ? 'false' : 'true') + '">' +
     '<span class="pp-dot"></span><span class="pp-title">待执行命令 · tick ' + tac.plan.tick + '</span>' +
     '<span class="pp-count mono" title="有效指令数">' + rows.length + '</span><span class="pp-chev">' + (collapsed ? '▸' : '▾') + '</span></button>' +
