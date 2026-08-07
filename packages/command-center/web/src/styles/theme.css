@@ -7,3 +7,43 @@ body { overflow: hidden; }
 #root > #layout { flex: 1; min-height: 0; }
 #root > #streamPane { flex: none; }
 #mapPane { min-width: 0; }
+
+/* ---------- 地图要素信息卡（官方 MapFeatureInfo 移植） ----------
+ * 点击信标/资源/障碍弹出；复用设计 token（黑底、白字、无左竖条）。 */
+.feature-panel {
+  position: absolute; right: 12px; top: 12px; z-index: 6;
+  width: 220px; padding: 0;
+}
+.feature-panel .fp-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+}
+.feature-panel .fp-icon {
+  width: 26px; height: 26px; object-fit: contain; flex: none;
+}
+.feature-panel .fp-title {
+  font-family: var(--font-display); font-weight: 700; font-size: 12px;
+  color: var(--text); letter-spacing: .02em;
+}
+.feature-panel .fp-sub { font-family: var(--font-mono); font-weight: 500; font-size: 10px; color: var(--text-dim); margin-top: 1px; }
+.feature-panel .fp-close {
+  margin-left: auto; flex: none; width: 24px; height: 24px;
+  display: grid; place-items: center; border-radius: 6px;
+  color: var(--text-dim); cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.feature-panel .fp-close:hover { background: rgba(255,255,255,.08); color: var(--text); }
+.feature-panel .fp-body { padding: 6px 12px 10px; }
+.feature-panel .fp-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 10px; padding: 5px 0; font-size: 11px;
+  color: var(--text-dim); font-weight: 500;
+  border-bottom: 1px solid rgba(255,255,255,.04);
+}
+.feature-panel .fp-row:last-child { border-bottom: 0; }
+.feature-panel .fp-row b { color: var(--text); font-family: var(--font-mono); font-weight: 600; font-size: 10px; text-align: right; }
+.feature-panel .fp-row .fp-tag {
+  font-family: var(--font-mono); font-weight: 600; font-size: 9px;
+  padding: 2px 6px; border-radius: 4px; letter-spacing: .04em;
+}
+.feature-panel[hidden] { display: none; }

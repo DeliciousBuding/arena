@@ -107,7 +107,7 @@ function buildEls() {
   shopCookie: $('#shopCookie'), cookieSave: $('#cookieSave'), cookieTest: $('#cookieTest'),
   shopAccount: $('#shopAccount'), shopList: $('#shopList'),
   zoomLevel: $('#zoomLevel'), mapGlobal: $('#mapGlobal'), soloBadge: $('#soloBadge'), viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'), streamLive: $('#streamLive'), streamFilter: $('#streamFilter'),
-  actionDialog: $('#actionDialog'), inspectPanel: $('#inspectPanel'),
+  actionDialog: $('#actionDialog'), inspectPanel: $('#inspectPanel'), featurePanel: $('#featurePanel'),
   beaconIndicator: $('#beaconIndicator'), pendingPanel: $('#pendingPanel'),
   replayBar: $('#replayBar'), rbTick: $('#rbTick'), rbMaxTick: $('#rbMaxTick'),
   rbFill: $('#rbFill'), rbCountdown: $('#rbCountdown'),
@@ -472,6 +472,8 @@ if (typeof window !== 'undefined') {
     tactSelect,
     tactClear,
     tactChooseAction,
+    draw,
+    tactShowFeature,
     get tac() { return T(); },
   };
 }
@@ -1739,6 +1741,7 @@ async function boot() {
     }
     if (e.key === 'Escape') {
       if (state.tactical.mode || state.tactical.selected) tactClear();
+      else if (els.featurePanel && !els.featurePanel.hidden) { els.featurePanel.hidden = true; }
       else if (state.soloTenant) exitSolo();
     }
   });
@@ -1930,6 +1933,7 @@ async function tactSelect(tenant, obj) {
   if (!world) return;
   const tac = T();
   tac.selected = { tenant, obj };
+  if (els.featurePanel) els.featurePanel.hidden = true;
   tac.mode = null; tac.moveRoute = null; tac.routePreview = null; tac.attackTarget = null;
   panelDrag = {}; // 新选中：卡片回到默认锚点
   startSelectionRipple(obj.id);
@@ -1942,7 +1946,7 @@ async function tactSelect(tenant, obj) {
 function tactClear() {
   const tac = T();
   tac.selected = null; tac.mode = null; tac.moveRoute = null; tac.routePreview = null; tac.attackTarget = null;
-  els.actionDialog.hidden = true; els.inspectPanel.hidden = true;
+  els.actionDialog.hidden = true; els.inspectPanel.hidden = true; els.featurePanel.hidden = true;
   els.assetPanel.hidden = true; els.fleetHud.hidden = true;
   replay.playing = false; // 停掉回放引擎：退出单租户后不再 60fps 空转重绘
   els.replayBar.hidden = true;
@@ -3107,7 +3111,57 @@ function tactDrawEventFx(s) {
   }
 }
 
-async function handleCanvasClick(px, py) {
+/** 地图要素信息卡（官方 MapFeatureInfo 移植）：点击信标/资源/障碍弹出。
+ *  复用「地图点击有反馈」原则：任何点击都有可见结果，避免"点了没反应"。 */
+function tactShowFeature(cell, px, py) {
+  const el = els.featurePanel;
+  if (!el) return;
+  // 判定要素类型：信标优先（beacons 独立于 cells），其次 resource/obstacle cell
+  let kind = null, status = null, pos = null, tenant = null;
+  if (cell) {
+    if (cell.type === 'resource' || cell.type === 'obstacle') {
+      kind = cell.type === 'resource' ? '资源' : '障碍';
+      pos = [cell.x, cell.y];
+      tenant = cell.tenant;
+    }
+  }
+  if (!kind && state.beacons.length) {
+    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+    for (const b of state.beacons) {
+      if (b.x === wx && b.y === wy) {
+        kind = '信标'; status = b.status; pos = [b.x, b.y]; tenant = b.tenant;
+        break;
+      }
+    }
+  }
+  if (!kind) { el.hidden = true; return; }
+  const color = TENANT_COLORS[tenant] ?? '#e0b94f';
+  const icon = kind === '信标' ? SPRITE.beacon : kind === '资源' ? SPRITE.crystal[0] : null;
+  const rows = [];
+  rows.push(`<div class="fp-row"><span>坐标</span><b>[${pos[0]}, ${pos[1]}]</b></div>`);
+  if (kind === '信标') {
+    const st = status === 'CARRIED' ? '被携带' : status === 'GROUND' ? '在地面' : '未知';
+    rows.push(`<div class="fp-row"><span>状态</span><b><span class="fp-tag" style="background:${hexA('#d9a62e', 0.16)};color:#e0b94f">${st}</span></b></div>`);
+    rows.push(`<div class="fp-row"><span>归属租户</span><b style="color:${color}">${tenant.toUpperCase()}</b></div>`);
+    rows.push(`<div class="fp-row"><span>冠军奖励</span><b>持续占位 +奖励</b></div>`);
+  } else if (kind === '资源') {
+    rows.push(`<div class="fp-row"><span>类型</span><b>矿物</b></div>`);
+    if (cell && !cell.fresh) rows.push(`<div class="fp-row"><span>记忆</span><b style="color:var(--amber)">已探索 · 非当前</b></div>`);
+  } else {
+    rows.push(`<div class="fp-row"><span>阻挡</span><b>无法通行</b></div>`);
+  }
+  el.innerHTML = `<div class="fp-head">
+      ${icon ? `<img class="fp-icon" src="${icon}" alt="" draggable="false" />` : '<span class="fp-icon" style="color:#a2a2a8;display:grid;place-items:center">▦</span>'}
+      <div class="fp-title">${kind}</div>
+      <div class="fp-sub">${tenant ? tenant.toUpperCase() : ''} · 地图要素</div>
+      <button type="button" class="fp-close" data-fp-close title="关闭（Esc）">✕</button>
+    </div>
+    <div class="fp-body">${rows.join('')}</div>`;
+  el.hidden = false;
+  el.querySelector('[data-fp-close]')?.addEventListener('click', () => { el.hidden = true; });
+  makeDraggable(el, '.fp-head', 'featurePanel');
+}async function handleCanvasClick(px, py) {
   const tac = T();
   const cell = nearestCell(px, py);
   if (tac.mode === 'MOVE' && tac.selected) {
@@ -3173,6 +3227,22 @@ async function handleCanvasClick(px, py) {
     const obj = world ? tactObjectAt(world, cell.x, cell.y) : null;
     if (obj) { await tactSelect(cell.tenant, obj); return; }
     if (!cell.fresh) { toast('该单位/核心为已探索记忆，已不在当前 tick', 'warn'); return; }
+  }
+  // 地图要素信息卡（官方 MapFeatureInfo 移植）：点击资源/障碍/信标弹卡，不再"点了没反应"
+  if (cell && (cell.type === 'resource' || cell.type === 'obstacle')) {
+    tactShowFeature(cell, px, py);
+    draw();
+    return;
+  }
+  const beaconHit = (() => {
+    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+    return state.beacons.some((b) => b.x === wx && b.y === wy);
+  })();
+  if (beaconHit) {
+    tactShowFeature(null, px, py);
+    draw();
+    return;
   }
   tactClear();
 }

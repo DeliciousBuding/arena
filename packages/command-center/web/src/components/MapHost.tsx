@@ -42,6 +42,7 @@ export function MapHost() {
         </div>
         <div id="actionDialog" className="action-dialog" hidden />
         <div id="inspectPanel" className="panel inspect-panel" hidden />
+        <div id="featurePanel" className="panel feature-panel" hidden />
         <div id="pendingPanel" className="panel pending-panel" hidden />
         <div id="resourceActivity" className="panel-strong activity-panel" hidden>
           <h2 className="act-title">资源活动 · RESOURCE ACTIVITY</h2>
