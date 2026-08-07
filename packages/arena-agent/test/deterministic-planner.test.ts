@@ -19,7 +19,7 @@ import {
 } from "../src/planning/deterministic-planner.ts";
 import { reduceTurn, type TurnLike } from "../src/domain/state-reducer.ts";
 import { validatePlan } from "../src/domain/plan-validator.ts";
-import { SafetyPlanner } from "../src/strategies/safety-planner.ts";
+import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../src/strategies/safety-planner.ts";
 import {
   chebyshev,
   EXPLORE_DIRECTION_COUNT,
@@ -618,4 +618,36 @@ test("DeterministicPlanner：Beacon 拾取不破坏计划合法性（含容量�
   const validation = validatePlan(withBeacon, plan);
   assert.equal(validation.valid, true, JSON.stringify(validation.issues));
   assert.deepEqual(plan.unitActions["w1"], { type: "PICKUP_BEACON" });
+});
+
+test("DeterministicPlanner：coreMovingHold——核心 MOVING 时 cargo worker 持货待命（不追交）", () => {
+  const movingCore = (): PlayerState["objects"][number] => ({
+    kind: "CORE", id: "c1", controlled: true, owner_username: "fixture_user",
+    position: [0, 0], hp: 5, shield: 5, state: "MOVING",
+    move_direction: "DOWN", move_progress: 1, move_required_ticks: 4, destination: [0, 1],
+  });
+  const holdConfig = { coreMovingHold: true };
+  const planner = new DeterministicPlanner(
+    undefined,
+    new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...holdConfig }),
+    new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...holdConfig }),
+  );
+  // 满载 worker 站在核心格：迁移中必须 WAIT（引擎会拒 DEPOSIT——CORE_MOVING）
+  const movingState = makeState(100, [movingCore(), unit("w1", 0, 0, "WORKER", 1)]);
+  const plan = planner.decide({ state: movingState });
+  assert.deepEqual(plan.unitActions["w1"], { type: "WAIT" }, "MOVING + coreMovingHold → 持货待命");
+
+  // 对照组 1：核心 NORMAL + coreMovingHold → 正常 DEPOSIT
+  const normalState = makeState(101, [core(), unit("w1", 0, 0, "WORKER", 1)]);
+  const normalPlan = planner.decide({ state: normalState });
+  assert.equal(normalPlan.unitActions["w1"]?.type, "DEPOSIT", "NORMAL → 正常交仓");
+
+  // 对照组 2：核心 MOVING 但 coreMovingHold=false（历史行为）→ 仍 DEPOSIT（零回归）
+  const legacy = new DeterministicPlanner(
+    undefined,
+    new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG }),
+    new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG }),
+  );
+  const legacyPlan = legacy.decide({ state: movingState });
+  assert.equal(legacyPlan.unitActions["w1"]?.type, "DEPOSIT", "无 coreMovingHold → 保持历史追交行为");
 });

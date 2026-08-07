@@ -5,7 +5,7 @@
  * - 格子键统一 "x,y"（与 domain model.ts 的 cellKey 同格式）
  */
 
-import { cellKey, parseCellKey, type Position, type TickState, type UnitType } from "../domain/model.ts";
+import { cellKey, parseCellKey, type CoreState, type Position, type TickState, type UnitType } from "../domain/model.ts";
 
 /** 受控单位快照（planner 只读所需字段）。 */
 export interface PlanningUnit {
@@ -54,6 +54,9 @@ export interface PlanningSnapshot {
   readonly enemyUnits: readonly EnemyUnit[];
   readonly corePosition: Position | null;
   readonly coreHp: number | null;
+  /** 受控核心迁移状态（2026-08-07，core-moving-hold-v1）：MOVING 时
+   *  deterministic worker 的 DEPOSIT 必须持货待命，不能追交空跑。 */
+  readonly coreState: CoreState | null;
   readonly beacon: BeaconInfo;
   /** 敌人距离衰减风险：key "x,y" → 威胁值（无敌人覆盖的格查不到，视为 0）。 */
   readonly threatMap: ReadonlyMap<string, number>;
@@ -121,6 +124,7 @@ export function extractPlanningSnapshot(state: TickState): PlanningSnapshot {
     enemyUnits,
     corePosition: state.core?.position ?? null,
     coreHp: state.core?.hp ?? null,
+    coreState: state.core?.state ?? null,
     beacon: {
       position: state.beacon.position,
       status: state.beacon.status,
