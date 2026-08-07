@@ -33,6 +33,10 @@ const state = {
   beacons: [],
   bounds: null,
   lastRefresh: 0,
+  /** 单位上一次轮询位置（smooth 插值：poll 之间单位按 POLL_MS 渐变移动）。 */
+  unitPrev: new Map(),
+  /** 世界 tick 周期估计（官方 ~15s/tick）：由 overview tick/mtime 差分推算。 */
+  tickMeter: { period: 15000, lastMtime: 0, lastTick: 0, lastPollMtime: 0, lastPollTick: 0 },
   drag: null,
   hover: null,
   streamCollapsed: false,
@@ -74,6 +78,7 @@ const els = {
   fleetHud: $('#fleetHud'), assetPanel: $('#assetPanel'), assetList: $('#assetList'),
   activityPanel: $('#resourceActivity'), activityList: $('#activityList'),
   commandCountdown: $('#commandCountdown'), ccTime: $('#ccTime'), ccFill: $('#ccFill'),
+  tickLabel: $('#tickLabel'), tickFill: $('#tickFill'),
   respawnOverlay: $('#respawnOverlay'), roTick: $('#roTick'),
 };
 
@@ -221,10 +226,32 @@ async function poll() {
     sig = (sig ^ (n * 2654435761)) >>> 0;
     if (sig !== state.terrainSig) { state.terrainSig = sig; invalidateStatic(); }
     if (overview?.dataRoot) els.dataRoot.textContent = overview.dataRoot;
+    // 单位平滑插值：记录上一轮位置，poll 之间 draw 时按 POLL_MS 渐变移动
+    captureUnitPrev();
+    // 世界 tick 周期估计（~15s）：采样 (tick, mtime) 序列，取窗口跨度斜率——
+    // 单次 poll 差分噪声大（tick 可能跨多档/漏档），窗口两端差分最稳
+    const t0 = overview?.tenants?.[0];
+    if (t0 && Number.isFinite(t0.mtime) && Number.isFinite(t0.latest?.tick)) {
+      const m = state.tickMeter;
+      const tick = t0.latest.tick;
+      const mt = t0.mtime;
+      m.samples = m.samples || [];
+      const last = m.samples[m.samples.length - 1];
+      if (!last || last.tick !== tick) {
+        m.samples.push({ tick, mt });
+        if (m.samples.length > 24) m.samples.shift();
+        if (m.samples.length >= 3) {
+          const a = m.samples[0], b = m.samples[m.samples.length - 1];
+          const dM = b.mt - a.mt, dT = b.tick - a.tick;
+          if (dM > 0 && dT > 0) m.period = Math.max(3000, Math.min(60000, dM / dT)); // mtime 已是 epoch ms，周期 = dM/dT (ms)
+        }
+      }
+      m.lastMtime = mt; m.lastTick = tick;
+    }
     if (!state.view.ready && state.bounds && state.cells.length) fitView();
     renderTenantCards();
     renderTenantToggles();
-    if (!state.view.ready) draw();
+    draw();
     if (state.soloTenant) tactRefreshLive(state.soloTenant);
   } catch (err) {
     els.badge.className = 'badge err';
@@ -305,6 +332,36 @@ function visibleCells(pad = 1) {
     Math.abs(c.x - cx) <= vw && Math.abs(c.y - cy) <= vh &&
     state.tenantsOn[c.tenant] !== false && (state.soloTenant === null || c.tenant === state.soloTenant) &&
     state.layers[c.type] !== false);
+}
+
+/** 单位平滑插值快照（2026-08-07）：poll 拿到新单位位置时保留旧位置
+ *  （px,py → x,y），draw 之间按 POLL_MS 渐变移动——tick ~15s、poll 3s，
+ *  单位移动不再"跳格子"，而是非线性（ease-out）滑动。 */
+function captureUnitPrev() {
+  const now = performance.now();
+  const seen = new Set();
+  for (const c of state.cells) {
+    if (c.type !== 'unit') continue;
+    const k = c.tenant + ':' + c.id;
+    seen.add(k);
+    const prev = state.unitPrev.get(k);
+    if (!prev) state.unitPrev.set(k, { x: c.x, y: c.y, px: c.x, py: c.y, ts: now });
+    else if (prev.x !== c.x || prev.y !== c.y) {
+      prev.px = prev.x; prev.py = prev.y; prev.x = c.x; prev.y = c.y; prev.ts = now;
+    }
+  }
+  // 清理已消失的单位（防 Map 无限增长）
+  for (const k of state.unitPrev.keys()) if (!seen.has(k)) state.unitPrev.delete(k);
+}
+/** 单位当前绘制位置：插值（ease-out）或精确格。 */
+function unitDrawPos(c) {
+  const m = state.unitPrev.get(c.tenant + ':' + c.id);
+  if (m && (m.px !== m.x || m.py !== m.y) && performance.now() - m.ts < POLL_MS * 2) {
+    const t = Math.min(1, (performance.now() - m.ts) / POLL_MS);
+    const e = 1 - Math.pow(1 - t, 2); // ease-out：起步快、收尾缓（丝滑）
+    return { x: m.px + (m.x - m.px) * e, y: m.py + (m.y - m.py) * e };
+  }
+  return { x: c.x, y: c.y };
 }
 
 /* ---------- 渲染 ---------- */
@@ -588,6 +645,7 @@ function ring(x, y, r, color, width = 1.5, dash = []) {
  *  官方细节：WORKER 载货条（绿）、受伤单位 HP 条、同格堆叠 ×2 徽章、选中波纹。 */
 function drawUnits(cells, s) {
   if (!cells.length) return;
+  const pulse = 1 + 0.1 * Math.sin(performance.now() / 380 + hash2(cells[0].x, cells[0].y, 7) * 0.01);
   if (s >= 6) {
     const byCell = new Map();
     for (const c of cells) {
@@ -596,12 +654,13 @@ function drawUnits(cells, s) {
       arr.push(c); byCell.set(k, arr);
     }
     for (const c of cells) {
-      const p = project(c.x, c.y);
+      const pos = unitDrawPos(c);
+      const p = project(pos.x, pos.y);
       const size = s * (c.unitType === 'RANGER' ? 0.68 : 0.62);
       const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#c66370';
       ctx.save();
       ctx.globalAlpha = cellAlpha(c, 0.55);
-      ring(p.sx, p.sy, size * 0.72, c.controlled ? color : 'rgba(198,99,112,.55)', c.controlled ? 1.8 : 1.2, c.controlled ? [] : [3, 3]);
+      ring(p.sx, p.sy, size * 0.72 * pulse, c.controlled ? color : 'rgba(198,99,112,.55)', c.controlled ? 1.8 : 1.2, c.controlled ? [] : [3, 3]);
       const path = unitSpritePath(c.unitType);
       if (images[path]) sprite(images[path], p.sx, p.sy, size);
       else {
@@ -620,12 +679,13 @@ function drawUnits(cells, s) {
     return;
   }
   for (const c of cells) {
-    const p = project(c.x, c.y);
+    const pos = unitDrawPos(c);
+    const p = project(pos.x, pos.y);
     const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#c66370';
     ctx.save();
     ctx.globalAlpha = cellAlpha(c, 0.55);
     ctx.fillStyle = c.controlled ? color : 'rgba(198,99,112,.7)';
-    ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(1.8, s * 0.42), 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(1.8, s * 0.42 * pulse), 0, Math.PI * 2); ctx.fill();
     if (c.controlled) { ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 1; ctx.stroke(); }
     ctx.restore();
   }
@@ -1047,6 +1107,15 @@ function renderStream() {
 /* ---------- 顶部状态 ---------- */
 function tickClock() {
   els.clock.textContent = timeFmt.format(new Date());
+  const m = state.tickMeter;
+  if (m.lastMtime > 0 && m.period > 0) {
+    const elapsed = Math.max(0, Date.now() - m.lastMtime);
+    const frac = Math.min(1, elapsed / m.period);
+    els.tickFill.style.transform = `scaleX(${frac.toFixed(3)})`;
+    els.tickLabel.textContent = `tick ${fmt(m.lastTick)} · ${Math.round(m.period / 1000)}s`;
+    const meter = els.tickLabel.closest('.tick-meter');
+    if (meter) meter.classList.toggle('warn', frac > 0.82);
+  }
 }
 function markRefresh(ok) {
   els.badge.className = ok ? 'badge ok' : 'badge err';
@@ -1340,7 +1409,7 @@ async function boot() {
       draw();
     } else if (animating) {
       draw();
-    } else if (ts - lastAnim > 120 && ((state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
+    } else if (ts - lastAnim > 120 && ((state.cells.length && state.layers.unit) || (state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
       lastAnim = ts;
       draw();
     }
