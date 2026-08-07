@@ -136,6 +136,7 @@ test("shadow policy: member 输入顺序不影响 mission/directive 结果", () 
     missions: d.missions,
     directives: d.directives,
     roles: [...d.roles.entries()],
+    taskForces: d.taskForces,
   });
   assert.deepEqual(project(left), project(right));
   assert.equal(left.treasuryTenant, "t1");
@@ -179,4 +180,51 @@ test("shadow policy market: 某租户受压时，空闲盟友竞价 ESCORT 回�
   assert.equal(assist?.kind, "ESCORT");
   assert.equal(assist?.defendTenant, "t1");
   assert.match(assist?.scope ?? "", /alliance-market/);
+});
+
+
+test("shadow policy joint RAID: guarded Core creates two tenant slots and a real cross-tenant TaskForce", () => {
+  const s = snapshot([
+    member("t1", { corePosition:[0,0], military:7, resources:15, activeFleetIds:["t1:home:0","t1:strike:0"] }),
+    member("t2", { corePosition:[5,0], military:6, resources:12, activeFleetIds:["t2:home:0","t2:strike:0"] }),
+    member("t3", { corePosition:[45,0], military:3, resources:30, activeFleetIds:["t3:home:0","t3:strike:0"] }),
+  ], [
+    sighting("CORE:enemy", "CORE", [20,0]),
+    sighting("UNIT:g1", "UNIT", [19,0], { unitType:"VANGUARD" }),
+    sighting("UNIT:g2", "UNIT", [21,1], { unitType:"RANGER" }),
+  ]);
+  const d = decideAllianceShadowPolicy(s, { threatSummary: { coreWeight: 0, unitWeight: 0 } });
+  const raids = d.missions.filter((m) => m.kind === "RAID" && m.targetEntityKey === "CORE:enemy");
+  assert.equal(raids.length, 2, `guarded Core 应有两个联合攻坚 mission: ${JSON.stringify(d.missions)}`);
+  assert.deepEqual(new Set(raids.map((m) => m.id.includes("t1") ? "t1" : m.id.includes("t2") ? "t2" : "other")), new Set(["t1","t2"]));
+  assert.equal(d.taskForces.length, 1);
+  const tf = d.taskForces[0]!;
+  assert.equal(tf.synchronization, "RALLY_BEFORE_ENGAGE");
+  assert.deepEqual(new Set(tf.fleetRefs.map((r) => `${r.tenantId}:${r.fleetId}`)), new Set(["t1:t1:strike:0","t2:t2:strike:0"]));
+  assert.ok(tf.commanderTenant === "t1" || tf.commanderTenant === "t2");
+  assert.ok(raids.some((m) => m.id === tf.missionId), "TaskForce missionId 必须引用真实 commander mission");
+});
+
+test("shadow policy joint RAID: no fabricated TaskForce when one selected tenant has no active fleet", () => {
+  const s = snapshot([
+    member("t1", { corePosition:[0,0], military:7, activeFleetIds:["t1:home:0","t1:strike:0"] }),
+    member("t2", { corePosition:[5,0], military:6, activeFleetIds:[] }),
+  ], [
+    sighting("CORE:enemy", "CORE", [20,0]),
+    sighting("UNIT:g1", "UNIT", [19,0], { unitType:"VANGUARD" }),
+    sighting("UNIT:g2", "UNIT", [21,1], { unitType:"RANGER" }),
+  ]);
+  const d = decideAllianceShadowPolicy(s, { threatSummary: { coreWeight: 0, unitWeight: 0 } });
+  assert.equal(d.missions.filter((m) => m.kind === "RAID").length, 2, "联合任务建议仍可存在");
+  assert.equal(d.taskForces.length, 0, "缺真实 activeFleetId 时不得伪造 FleetRef");
+});
+
+test("shadow policy RAID: isolated Core stays single-slot and does not create joint TaskForce", () => {
+  const s = snapshot([
+    member("t1", { corePosition:[0,0], military:7, activeFleetIds:["t1:home:0","t1:strike:0"] }),
+    member("t2", { corePosition:[5,0], military:6, activeFleetIds:["t2:home:0","t2:strike:0"] }),
+  ], [sighting("CORE:enemy", "CORE", [20,0])]);
+  const d = decideAllianceShadowPolicy(s);
+  assert.equal(d.missions.filter((m) => m.kind === "RAID").length, 1);
+  assert.equal(d.taskForces.length, 0);
 });

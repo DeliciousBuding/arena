@@ -11,7 +11,7 @@ function candidate(o: { hash?: string; friendlyFire?: number; expired?: number; 
   return {
     episode: baseline(o.hash ?? "world-a"),
     kpi: { friendlyFireMetricSupported: true, allianceSafetyRejectCount: o.friendlyFire ?? 0, expiredDirectiveConsumed: o.expired ?? 0, directorErrorCount: o.errors ?? 0, fallbackAvailability: o.fallback ?? 1 } as AllianceEpisodeResult["kpi"],
-    trace: [{ tick: 1, snapshotRevision: 1, directorRan: true, directiveCount: 1, missionCount: 1, missionKinds: o.kinds ?? ["RETREAT"], retreatRecommendationCount: o.retreats ?? 1, directorError: null, evaluations: [{ tenantId: "t2", revision: 1, consume: true, reason: null, planSource: o.source ?? "baseline-shadow" }] }],
+    trace: [{ tick: 1, snapshotRevision: 1, directorRan: true, directiveCount: 1, missionCount: 1, missionKinds: o.kinds ?? ["RETREAT"], taskForceCount: 0, taskForceTenantCount: 0, retreatRecommendationCount: o.retreats ?? 1, directorError: null, evaluations: [{ tenantId: "t2", revision: 1, consume: true, reason: null, planSource: o.source ?? "baseline-shadow" }] }],
     replayFootprint: { seed: 1, rulesVersion: "v0.14", directorKind: "shadow-policy-v1", configHash: "abc" },
   } as AllianceEpisodeResult;
 }

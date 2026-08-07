@@ -12,7 +12,7 @@
  * greedy 相比，这能避免“先抢了局部最近矿，迫使另一 Worker 跨图”的典型局部最优。
  */
 
-import { manhattan } from "../domain/nav.ts";
+import { manhattan, shortestPathDistances } from "../domain/nav.ts";
 import { type Position } from "../domain/model.ts";
 import { forcedTaskFor, type Task } from "./task.ts";
 import type { PlanningSnapshot, PlanningUnit } from "./planning-snapshot.ts";
@@ -42,12 +42,23 @@ export interface WorkerTaskPlannerConfig {
 export const DEFAULT_STICKY_BONUS = 0.5;
 export const DEFAULT_CONGESTION_PENALTY = 1.0;
 
-// 代价模型常数（数值化：travel/return = 曼哈顿距离 ×1.0，见总裁决 RP2）
-const RESOURCE_VALUE = 1.0; // 单次 HARVEST 期望资源产出
-const TRAVEL_WEIGHT = 1.0; // travel_time = 距离 ×1.0
-const RETURN_WEIGHT = 1.0; // return_time = 回 Core 距离 ×1.0
-const BEACON_BONUS = 2.0; // 目标格恰为 GROUND 信标时的加成
-const EXPLORATION_GAIN = 0.0; // 预留：GO_RESOURCE 目标是已知资源格，探索增益暂为 0
+// 代价模型常数：路径代价来自已知障碍上的最短路距离；搜索预算未覆盖时退回
+// Manhattan + UNKNOWN_ROUTE_PENALTY（“未知”≠“永久不可达”）。
+const RESOURCE_VALUE = 1.0;
+const TRAVEL_WEIGHT = 1.0;
+const RETURN_WEIGHT = 1.0;
+const BEACON_BONUS = 2.0;
+const EXPLORATION_GAIN = 0.0;
+const UNKNOWN_ROUTE_PENALTY = 8.0;
+/** 记忆矿仍保持历史 40 格主动开采边界，避免 seeded 老矿诱发跨图远征。 */
+const MEMORY_MAX_DIRECT_DISTANCE = 40;
+/** stale 资源置信惩罚：每老 1 tick +0.20，最多 8；seed 再加 2。 */
+const STALE_AGE_WEIGHT = 0.20;
+const STALE_MAX_PENALTY = 8.0;
+const SEEDED_PENALTY = 2.0;
+/** 热路径路由预算：只精算局部 24 格，最多展开 1024 节点；远处用近似代价。 */
+const ASSIGNMENT_ROUTE_RADIUS = 24;
+const ASSIGNMENT_ROUTE_NODE_BUDGET = 1024;
 
 /** sticky 机制：上一 Tick 该 Worker 的任务目标格与本次候选一致时返回 amount，否则 0。
  *  Leader 集成时把上一 Tick 的分配结果作为 previousAssignments 传入 plan() 即可。 */
@@ -115,13 +126,39 @@ export class WorkerTaskPlanner {
     // 若未来加入不可达判定，可把不可达候选提升到 forbiddenCost，仍复用同一求解器。
     const pool = [...unassigned].sort((a, b) => a.id.localeCompare(b.id));
     if (pool.length > 0) {
-      const realCosts = pool.map((worker) => availableCells.map((key) =>
-        -this.netValue(worker, key, snapshot, previousAssignments, claimedCells)));
-      const finiteCosts = realCosts.flat().filter(Number.isFinite);
+      const targetPositions = availableCells
+        .map((key) => snapshot.resourceCells.get(key)?.position)
+        .filter((position): position is Position => position !== undefined);
+      const routingObstacles = new Set([...snapshot.obstacleCells, ...snapshot.enemyCells]);
+      const routingOptions = { searchRadius: ASSIGNMENT_ROUTE_RADIUS, nodeBudget: ASSIGNMENT_ROUTE_NODE_BUDGET, abandonFactor: 3 };
+      const travelFields = new Map<string, ReadonlyMap<string, number>>();
+      if (routingObstacles.size > 0) {
+        for (const worker of pool) {
+          travelFields.set(worker.id, shortestPathDistances(
+            worker.position, targetPositions, routingObstacles, routingOptions,
+          ));
+        }
+      }
+      const returnField = snapshot.corePosition === null || routingObstacles.size === 0
+        ? new Map<string, number>()
+        : shortestPathDistances(snapshot.corePosition, targetPositions, routingObstacles, routingOptions);
+
+      const realNetValues = pool.map((worker) => availableCells.map((key) =>
+        this.netValue(
+          worker, key, snapshot, previousAssignments, claimedCells,
+          travelFields.get(worker.id)?.get(key), returnField.get(key), routingObstacles.size > 0,
+        )));
+      const finiteCosts = realNetValues.flat()
+        .filter(Number.isFinite)
+        .map((net) => -net);
       const maxReal = finiteCosts.length > 0 ? Math.max(...finiteCosts) : 0;
+      // eligible real task is always preferred over WAIT (historical semantics); WAIT beats
+      // explicit ineligible task. This preserves “use all known mines” without forcing a
+      // worker to violate the memory-distance safety boundary.
       const waitCost = maxReal + 1_000_000;
-      const matrix = realCosts.map((row) => [
-        ...row,
+      const forbiddenCost = waitCost + 1_000_000;
+      const matrix = realNetValues.map((row) => [
+        ...row.map((net) => Number.isFinite(net) ? -net : forbiddenCost),
         ...Array.from({ length: pool.length }, () => waitCost),
       ]);
       const columns = minimumCostAssignment(matrix);
@@ -151,26 +188,45 @@ export class WorkerTaskPlanner {
     snapshot: PlanningSnapshot,
     previousAssignments: readonly Assignment[],
     claimedCells: ReadonlySet<string>,
+    routedTravelDistance?: number,
+    routedReturnDistance?: number,
+    hasRoutingObstacles = false,
   ): number {
     const cell = snapshot.resourceCells.get(key);
     if (cell === undefined) {
       return Number.NEGATIVE_INFINITY; // 防御分支：候选均来自 resourceCells
     }
-    const travelTime = TRAVEL_WEIGHT * manhattan(worker.position, cell.position);
-    const returnTime =
-      snapshot.corePosition === null
-        ? 0 // Core 不在位无回程（骨架：Leader 集成时再定）
-        : RETURN_WEIGHT * manhattan(cell.position, snapshot.corePosition);
-    const threatRisk = snapshot.threatMap.get(key) ?? 0; // 敌人距离倒数衰减
-    const congestion = claimedCells.has(key) ? this.congestionPenalty : 0; // 唯一性硬约束下恒为 0
+    const directTravel = manhattan(worker.position, cell.position);
+    if (cell.visible === false && directTravel > MEMORY_MAX_DIRECT_DISTANCE) {
+      return Number.NEGATIVE_INFINITY;
+    }
+    // 目标格当前被敌方实体占据时，不把 Worker 分配过去；下一 Tick 敌人离开后
+    // candidate 会自然恢复，无需把动态占位写成永久障碍。
+    if (snapshot.enemyCells.has(key)) return Number.NEGATIVE_INFINITY;
+    const travelDistance = routedTravelDistance ?? directTravel + (hasRoutingObstacles ? UNKNOWN_ROUTE_PENALTY : 0);
+    const directReturn = snapshot.corePosition === null ? 0 : manhattan(cell.position, snapshot.corePosition);
+    const returnDistance = snapshot.corePosition === null
+      ? 0
+      : routedReturnDistance ?? directReturn + (hasRoutingObstacles ? UNKNOWN_ROUTE_PENALTY : 0);
+    const travelTime = TRAVEL_WEIGHT * travelDistance;
+    const returnTime = RETURN_WEIGHT * returnDistance;
+    const threatRisk = snapshot.threatMap.get(key) ?? 0;
+    const congestion = claimedCells.has(key) ? this.congestionPenalty : 0;
     const explorationGain = EXPLORATION_GAIN;
+    const age = cell.visible === false
+      ? Math.max(0, snapshot.tick - (cell.lastSeenTick ?? snapshot.tick))
+      : 0;
+    const stalePenalty = cell.visible === false
+      ? Math.min(STALE_MAX_PENALTY, age * STALE_AGE_WEIGHT) + (cell.seeded === true ? SEEDED_PENALTY : 0)
+      : 0;
     const beaconBonus =
       snapshot.beacon.status === "GROUND" && sameCell(snapshot.beacon.position, cell.position)
         ? BEACON_BONUS
         : 0;
     const sticky = applyStickyBonus(worker.id, key, previousAssignments, this.stickyBonus);
     return (
-      RESOURCE_VALUE - travelTime - returnTime - threatRisk - congestion + explorationGain + beaconBonus + sticky
+      RESOURCE_VALUE - travelTime - returnTime - threatRisk - congestion - stalePenalty
+      + explorationGain + beaconBonus + sticky
     );
   }
 }

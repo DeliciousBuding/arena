@@ -352,6 +352,21 @@ export class SafetyPlanner {
     }
   }
 
+  /** Deterministic 经济 overlay 的安全边界：必须与 worker Safety 召回使用同一
+   * 半径事实，避免“Safety 让 worker 缩家，但 WorkerTaskPlanner 又把它派到远矿”。
+   * 需在 decide() 之后读取（currentThreat 已更新）。Infinity = 不限制。 */
+  resourceAssignmentMaxDistanceFromCore(state: TickState): number {
+    const home = state.core?.position ?? null;
+    if (home === null) return Number.POSITIVE_INFINITY;
+    const recallActive =
+      this.config.threatRecall === true &&
+      (state.visibleEnemies.some((enemy) => manhattan(enemy.position, home) <= THREAT_RECALL_DISTANCE) ||
+        (this.config.raidDefense === true &&
+          this.raidUnitDistance(state) <= (this.config.raidWatchRadius ?? RAID_UNIT_WATCH_RADIUS)));
+    const breakoutActive = this.config.threatBreakout === true && this.currentThreat?.level === "BREAKOUT";
+    return recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
+  }
+
   /** 当前主要攻坚目标（排行榜威胁画像用）：coreHuntTargets 首个 CORE 目击
    *  目标（排序 = CORE 优先 → 新鲜度）。无目标返回 null。 */
   private currentHuntTarget(): CoreHuntTarget | null {
@@ -844,20 +859,8 @@ export class SafetyPlanner {
     // 巡逻/探索半径缩到守家圈（RECALL_PATROL_RADIUS），不放远探/远采。
     // BREAKOUT 全面收缩（threatBreakout，v0.3 实验）：多轴包围（无逃逸方向）
     // 时同样缩家——被包围时外出即送死，等包围解除再恢复。
-    const recallActive =
-      this.config.threatRecall === true &&
-      (state.visibleEnemies.some(
-        (enemy) => home !== null && manhattan(enemy.position, home) <= THREAT_RECALL_DISTANCE,
-      ) ||
-        // 快攻防御（raid-defense-v1，2026-08-07）：警戒半径放宽到 18——小股
-        // 部队更早进入防区即召回 worker 缩家圈（不等贴脸）。
-        (this.config.raidDefense === true &&
-          home !== null &&
-          this.raidUnitDistance(state) <= (this.config.raidWatchRadius ?? RAID_UNIT_WATCH_RADIUS)));
-    const breakoutActive =
-      this.config.threatBreakout === true && this.currentThreat?.level === "BREAKOUT";
-    const maxPatrolRadius =
-      recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
+    const maxPatrolRadius = this.resourceAssignmentMaxDistanceFromCore(state);
+    const resourceRestricted = Number.isFinite(maxPatrolRadius);
 
     if (unit.cargo > 0) {
       // 核心迁移中交仓待命（core-moving-hold-v1，2026-08-07）：MOVING 期间
@@ -973,7 +976,7 @@ export class SafetyPlanner {
     if (visibleResources.length > 0) {
       const target = nearest(visibleResources, unit.position);
       // 召回期间只采守家圈内的矿（远矿等威胁解除再采）
-      if (recallActive && target !== null && home !== null && manhattan(target, home) > maxPatrolRadius) {
+      if (resourceRestricted && target !== null && home !== null && manhattan(target, home) > maxPatrolRadius) {
         memory.workerMode = "patrol";
         memory.harvestTarget = null;
       } else {

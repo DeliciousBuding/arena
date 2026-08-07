@@ -672,3 +672,30 @@ test("config 验证: 重复/越界/非法 period fail fast", () => {
 
 
 
+
+
+test("TaskForce metadata: simulator trace preserves cross-tenant coordination while plans remain baseline", () => {
+  const director = {
+    kind: "taskforce-trace-test",
+    decide(snapshot: any) {
+      const now = snapshot.tickWindow[1];
+      return {
+        directives: [],
+        missions: [{
+          id: `m-${snapshot.revision}`, revision: snapshot.revision, kind: "RAID", priority: 80,
+          target: [16, 0], issuedAtTick: now, expiresAtTick: now + 8, status: "ACTIVE", source: "auto",
+        }],
+        taskForces: [{
+          id: `tf-${snapshot.revision}`, missionId: `m-${snapshot.revision}`,
+          fleetRefs: [{ fleetId: "p1:strike:0", tenantId: "p1" }, { fleetId: "p2:strike:0", tenantId: "p2" }],
+          commanderTenant: "p1", synchronization: "RALLY_BEFORE_ENGAGE",
+        }],
+      };
+    },
+  };
+  const baseline = runEpisode(baseEpisodeConfig());
+  const result = runAllianceEpisode(allianceConfig({ director: director as never, directorPeriodTicks: 1 }));
+  assert.equal(result.episode.finalWorldHash, baseline.finalWorldHash, "TaskForce 仍不得接管 settlement plan");
+  assert.ok(result.trace.every((entry) => entry.taskForceCount === 1));
+  assert.ok(result.trace.every((entry) => entry.taskForceTenantCount === 2));
+});
