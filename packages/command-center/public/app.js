@@ -2015,8 +2015,8 @@ function tactVisibility(world) {
   return out;
 }
 function tactAvailability(world, obj) {
-  const actions = { SELF_DESTRUCT: true, WAIT: true }, spawns = {};
-  if (!obj || obj.controlled !== true || !obj.position) return { actions, spawns };
+  const actions = { SELF_DESTRUCT: true, WAIT: true }, spawns = {}, reasons = {};
+  if (!obj || obj.controlled !== true || !obj.position) return { actions, spawns, reasons };
   const beacon = world.state.champion_beacon ?? {};
   const carries = beacon.status === 'CARRIED' && beacon.carrier_id === obj.id;
   const atGround = beacon.status === 'GROUND' && samePos(beacon.position, obj.position);
@@ -2027,25 +2027,37 @@ function tactAvailability(world, obj) {
     actions.CANCEL_MOVE = !normal;
     actions.PICKUP_BEACON = normal && atGround;
     actions.DROP_BEACON = normal && carries;
+    if (!normal) { reasons.HEAL = '核心移动中，无法维修'; reasons.REPAIR_SHIELD = '核心移动中，无法修盾'; }
+    if (!actions.START_MOVE) reasons.START_MOVE = '核心移动不可用（无可行路径）';
+    if (!actions.PICKUP_BEACON) reasons.PICKUP_BEACON = '信标不在核心所在格';
+    if (!actions.DROP_BEACON) reasons.DROP_BEACON = '核心未携带信标';
     spawns.WORKER = normal; spawns.VANGUARD = normal; spawns.RANGER = normal;
-    return { actions, spawns };
+    return { actions, spawns, reasons };
   }
   const canMove = tactMoveTargets(world, obj).length > 0;
   const atOwnCore = world.state.objects.some((o) => o.kind === 'CORE' && o.controlled === true && o.position && samePos(o.position, obj.position));
   const atResource = world.state.objects.some((o) => o.kind === 'RESOURCE' && (o.positions ?? []).some((p) => samePos(p, obj.position)));
   actions.MOVE = canMove;
+  if (!canMove) reasons.MOVE = '无可达移动目标（周围被障碍堵死）';
   if (obj.unit_type === 'WORKER') {
     actions.HARVEST = (obj.cargo ?? 0) === 0 && atResource;
     actions.DEPOSIT = (obj.cargo ?? 0) > 0 && atOwnCore;
     actions.HEAL = atOwnCore;
+    if ((obj.cargo ?? 0) > 0) reasons.HARVEST = '载货已满，先回仓交付';
+    else if (!atResource) reasons.HARVEST = '需站在资源格上才能采集';
+    if ((obj.cargo ?? 0) === 0) reasons.DEPOSIT = '无载货可交付';
+    else if (!atOwnCore) reasons.DEPOSIT = '需回到己方核心旁';
   } else if (obj.unit_type === 'VANGUARD') {
     actions.SWEEP = true; actions.HEAL = atOwnCore;
   } else if (obj.unit_type === 'RANGER') {
     actions.SHOOT = true; actions.HEAL = atOwnCore;
   }
+  if (!atOwnCore) reasons.HEAL = '需在己方核心旁才能维修';
   actions.PICKUP_BEACON = atGround;
   actions.DROP_BEACON = carries;
-  return { actions, spawns };
+  if (!atGround) reasons.PICKUP_BEACON = '信标不在脚下（当前格）';
+  if (!carries) reasons.DROP_BEACON = '未携带信标';
+  return { actions, spawns, reasons };
 }
 async function tactSelect(tenant, obj) {
   const world = await tactLoadWorld(tenant);
@@ -2164,7 +2176,10 @@ function tactRenderActionDialog() {
     <div class="act-grid">${types.map((t2) => {
       const available = av.actions[t2] === true;
       const danger = t2 === 'SELF_DESTRUCT';
-      return `<button class="act-btn ${danger ? 'danger' : ''}" data-action="${t2}" ${available ? '' : 'disabled'} title="${available ? '演练：' + TACT_ACTION_CN[t2] : '当前不可用'}">${TACT_ACTION_CN[t2] ?? t2}</button>`;
+      const reason = av.reasons?.[t2];
+      if (!available && !reason) return `<button class="act-btn ${danger ? 'danger' : ''}" data-action="${t2}" disabled title="当前不可用">${TACT_ACTION_CN[t2] ?? t2}</button>`;
+      if (!available) return `<button class="act-btn blocked" data-blocked="${t2}" data-reason="${escapeHtml(reason)}" title="${escapeHtml(reason)}">${TACT_ACTION_CN[t2] ?? t2}</button>`;
+      return `<button class="act-btn ${danger ? 'danger' : ''}" data-action="${t2}" title="演练：${TACT_ACTION_CN[t2]}">${TACT_ACTION_CN[t2] ?? t2}</button>`;
     }).join('')}</div>
     ${costHtml}
     ${goalRow}
@@ -2183,6 +2198,11 @@ function tactRenderActionDialog() {
   els.actionDialog.style.top = `${top}px`;
   els.actionDialog.querySelector('[data-close]')?.addEventListener('click', tactClear);
   els.actionDialog.querySelectorAll('[data-action]').forEach((b) => b.addEventListener('click', () => tactChooseAction(b.dataset.action)));
+  els.actionDialog.querySelectorAll('[data-blocked]').forEach((b) => b.addEventListener('click', () => {
+    toast(b.dataset.reason || '当前不可用', 'warn');
+    b.classList.add('shake');
+    setTimeout(() => b.classList.remove('shake'), 400);
+  }));
   els.actionDialog.querySelectorAll('[data-spawn]').forEach((b) => b.addEventListener('click', () => tactSpawn(b.dataset.spawn)));
   els.actionDialog.querySelector('[data-cancel-goal]')?.addEventListener('click', () => { delete tac.moveGoals[obj.id]; tac.moveRoute = null; tac.routePreview = null; tactRenderActionDialog(); draw(); });
 }
