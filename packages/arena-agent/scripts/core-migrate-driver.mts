@@ -99,8 +99,13 @@ function readLatestCore(tenant: string): CalibCase | null {
     }
     // 合并 survey 全局测绘障碍（2026-08-08 修复）：calibration 视野障碍只有十几个且
     // 不稳定（t4 x=400 峡谷实证——(399,-155) 实为可走格却被视野障碍困住），
-    // survey 库是全量累积测绘，路径规划更准。
-    return mergeObstacleSets(loadSurveyObstacles(args.tenant), obstacles);
+    // survey 库是全量累积测绘，路径规划更准。返回完整 CalibCase（Set 会被
+    // 消费方 live.core 解引用崩溃——2026-08-08 03:3x 三驱动启动即崩实证）。
+    return {
+      tick: j.after.tick,
+      core: { id: core.id, position: [core.position[0], core.position[1]], state: core.state ?? 'NORMAL' },
+      obstacles: mergeObstacleSets(loadSurveyObstacles(args.tenant), obstacles),
+    };
   } catch {
     return null;
   }
