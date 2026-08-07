@@ -221,11 +221,18 @@ export class World {
       const cell = cellKey(event.position);
       if (event.eventType === "HARVEST_FAILED") {
         // reasonCode 分流：CARGO_FULL 表示格子仍有资源（cargo 满）——不写失败
-        // 冷却、不降级；RESOURCE_DEPLETED 表示格子已耗尽——写失败冷却 + 降级 stale。
+        // 冷却、不降级；RESOURCE_DEPLETED（被他人采空）→ 失败冷却 + 降级 stale。
+        // NOT_RESOURCE_CELL（记忆格已不存在/已耗尽——t4 实证 go_harvest_mem 104
+        // 意图仅 12 次成功、worker 跨 30-78 格追空记忆）→ 记 harvested 负记忆
+        // （不进 hints，visited-empty 立即失效，杜绝多 worker 反复追同一死矿）。
+        // 不写 failedCells：refill 后重新可见即恢复（failedCells 会误压可见矿）。
         if (event.reasonCode === "RESOURCE_DEPLETED") {
           this.failedCells.set(cell, state.tick);
           const memory = this.resourceMemory.get(cell);
           if (memory?.state === "visible") memory.state = "stale";
+        } else if (event.reasonCode === "NOT_RESOURCE_CELL") {
+          const memory = this.resourceMemory.get(cell);
+          if (memory !== undefined) memory.state = "harvested";
         }
       } else if (event.eventType === "HARVEST_SUCCEEDED") {
         const previous = this.resourceMemory.get(cell);
