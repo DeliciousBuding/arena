@@ -6,6 +6,21 @@
 > **只读保证**：不写 `data/runtime/`、不连接 Arena、不启动任何 writer。仅读取
 > `ARENA_DATA_ROOT` 下的 calibration/telemetry JSONL，以及 supervisor Debug API（127.0.0.1:8120，仅 t1/t2）。
 
+## 生产策略变体（2026-08-07）
+
+- `strike-core-v1`：攻坚变体（aggressive 爆兵前压打水晶）——军事成型（attackForce=6）
+  后 Vanguard 前压敌 Core、Ranger 断敌经济 + 记忆射击、留 1 Vanguard 守家、超 40 格
+  有界攻坚回撤；确定性 core 侧 vanguardRatio=0.5 + accumulateThreshold=30 积累期爆兵。
+- `move-failed-avoidance-v1`：MOVE_FAILED 连续失败 ≥2 走垂直绕行（打破进攻争格僵局）。
+- 生产启用 = 在 `data/runtime/configs/{t1,t2}.json` 的 `variants` 字段声明（如
+  `["move-failed-avoidance-v1", "strike-core-v1"]`）；改配置后先跑
+  `npx tsx scripts/validate-config.mts` 验证，再经 supervisor `POST /shutdown` 优雅重启。
+- t1/t2 已于 2026-08-07 10:00 UTC 启用（t1 现状：5V+4R+12W、资源 41→爆兵；vanguard_pressure 前压中）。
+
+## 已知修复
+
+- `latestRunDir` 按 run 内最高 case tick 选 run（UUID 字典序 ≠ 时间序——旧 bug 导致
+  面板恒显示旧 run 的 stale tick，即"界面卡住显示旧数据"根因）。
 ## 启动
 
 ```bash
