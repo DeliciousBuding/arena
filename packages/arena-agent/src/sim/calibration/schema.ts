@@ -14,6 +14,15 @@ export interface CalibrationCaseMetadata {
   readonly runId: string | null;
 }
 
+/** 单名对手（N=2 世界）：plan + 归属单位（投影不携带敌方归属——见 CalibrationCaseV1.opponents 注释）。 */
+export interface CalibrationCaseOpponent {
+  readonly tenantId: string;
+  readonly plan: Plan;
+  readonly unitIds: readonly string[];
+  /** 该对手 Core 的 id（投影中敌方 Core 可见但需归属；无 Core 时为 null）。 */
+  readonly coreId?: string | null;
+}
+
 export interface CalibrationObservation {
   readonly tick: number;
   readonly state: PlayerState;
@@ -34,8 +43,16 @@ export interface CalibrationCaseV1 {
    * Opponent plan, present only when metadata.opponentPlans is "complete"
    * (synthetic match cases). Calibration replays it so visible opponent
    * units move instead of standing still, shrinking replay-vs-original drift.
+   * 仅 N=2 世界使用；N>2 世界用 opponents（本字段与 opponents 互斥）。
    */
   readonly opponentPlan?: Plan;
+  /**
+   * 多名对手（N>2 世界，2026-08-07）：每名对手的 plan + 其单位 id 集合。
+   * 玩家投影（PlayerState）不携带敌方单位归属（owner identity 保密），
+   * 重放时需本字段显式提供归属才能正确执行多名对手的计划。仅 TS 侧
+   * 扩展字段——共享 schema 未声明（与 opponentPlan 同现状）。
+   */
+  readonly opponents?: readonly CalibrationCaseOpponent[];
   readonly after: CalibrationObservation;
 }
 
@@ -399,10 +416,10 @@ export function parseCalibrationCase(rawValue: unknown): CalibrationCaseV1 {
     raw,
     [
       "schema", "caseId", "tenantId", "rulesVersion", "seed", "metadata", "before",
-      "plan", "opponentPlan", "after",
+      "plan", "opponentPlan", "opponents", "after",
     ],
     "root",
-    ["opponentPlan"],
+    ["opponentPlan", "opponents"],
   );
   if (raw.schema !== CALIBRATION_CASE_SCHEMA) {
     throw new CalibrationCaseError(`unsupported schema ${String(raw.schema)}`);
@@ -410,6 +427,8 @@ export function parseCalibrationCase(rawValue: unknown): CalibrationCaseV1 {
   const before = parseObservation(raw.before, "before");
   const plan = parsePlan(raw.plan);
   const opponentPlan = raw.opponentPlan === undefined ? undefined : parsePlan(raw.opponentPlan);
+  const opponents =
+    raw.opponents === undefined ? undefined : parseOpponents(raw.opponents, "opponents");
   const after = parseObservation(raw.after, "after");
   if (plan.tick !== before.tick) {
     throw new CalibrationCaseError(`plan.tick ${plan.tick} does not match before.tick ${before.tick}`);
@@ -419,19 +438,84 @@ export function parseCalibrationCase(rawValue: unknown): CalibrationCaseV1 {
       `opponentPlan.tick ${opponentPlan.tick} does not match before.tick ${before.tick}`,
     );
   }
+  if (opponents !== undefined) {
+    for (const opponent of opponents) {
+      if (opponent.plan.tick !== before.tick) {
+        throw new CalibrationCaseError(
+          `opponents[${opponent.tenantId}].plan.tick ${opponent.plan.tick} does not match before.tick ${before.tick}`,
+        );
+      }
+    }
+  }
+  if (opponentPlan !== undefined && opponents !== undefined) {
+    throw new CalibrationCaseError("opponentPlan and opponents are mutually exclusive");
+  }
   if (after.tick !== before.tick + 1) {
     throw new CalibrationCaseError(`after.tick ${after.tick} must equal before.tick + 1`);
+  }
+  const tenantId = nonEmptyString(raw.tenantId, "tenantId");
+  if (opponents !== undefined) {
+    for (const opponent of opponents) {
+      if (opponent.tenantId === tenantId) {
+        throw new CalibrationCaseError(`opponents[].tenantId must differ from case tenantId`);
+      }
+    }
   }
   return {
     schema: CALIBRATION_CASE_SCHEMA,
     caseId: nonEmptyString(raw.caseId, "caseId"),
-    tenantId: nonEmptyString(raw.tenantId, "tenantId"),
+    tenantId,
     rulesVersion: nonEmptyString(raw.rulesVersion, "rulesVersion"),
     seed: safeInt(raw.seed, "seed"),
     metadata: parseMetadata(raw.metadata),
     before,
     plan,
     ...(opponentPlan === undefined ? {} : { opponentPlan }),
+    ...(opponents === undefined ? {} : { opponents }),
     after,
   };
+}
+
+function parseOpponents(value: unknown, path: string): readonly CalibrationCaseOpponent[] {
+  if (!Array.isArray(value)) throw new CalibrationCaseError(`${path} must be an array`);
+  if (value.length === 0) throw new CalibrationCaseError(`${path} must not be empty`);
+  const seen = new Set<string>();
+  const seenEntityIds = new Set<string>();
+  return value.map((entryValue, index) => {
+    const entryPath = `${path}[${index}]`;
+    const entry = record(entryValue, entryPath);
+    exactKeys(entry, ["tenantId", "plan", "unitIds", "coreId"], entryPath, ["coreId"]);
+    const tenantId = nonEmptyString(entry.tenantId, `${entryPath}.tenantId`);
+    if (seen.has(tenantId)) {
+      throw new CalibrationCaseError(`${entryPath}.tenantId is duplicated`);
+    }
+    seen.add(tenantId);
+    const plan = parsePlan(entry.plan);
+    const rawUnitIds = entry.unitIds;
+    if (!Array.isArray(rawUnitIds)) {
+      throw new CalibrationCaseError(`${entryPath}.unitIds must be an array`);
+    }
+    const unitIds = rawUnitIds.map((id, idIndex) => {
+      const unitId = nonEmptyString(id, `${entryPath}.unitIds[${idIndex}]`);
+      if (seenEntityIds.has(unitId)) {
+        throw new CalibrationCaseError(`${entryPath}.unitIds[${idIndex}] is assigned more than once`);
+      }
+      seenEntityIds.add(unitId);
+      return unitId;
+    });
+    if (new Set(unitIds).size !== unitIds.length) {
+      throw new CalibrationCaseError(`${entryPath}.unitIds must not contain duplicates`);
+    }
+    const coreId =
+      entry.coreId === undefined || entry.coreId === null
+        ? undefined
+        : nonEmptyString(entry.coreId, `${entryPath}.coreId`);
+    if (coreId !== undefined) {
+      if (seenEntityIds.has(coreId)) {
+        throw new CalibrationCaseError(`${entryPath}.coreId is assigned more than once`);
+      }
+      seenEntityIds.add(coreId);
+    }
+    return { tenantId, plan, unitIds, ...(coreId === undefined ? {} : { coreId }) };
+  });
 }

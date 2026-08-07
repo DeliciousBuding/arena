@@ -364,23 +364,46 @@ interface RawPlayerState {
 
 /**
  * 从真实 PlayerState（fixture JSON 结构）构造 SimWorld。
- * 只载入 controlled 对象（己方视图）；uncontrolled（敌人）在 MVP 无对手阶段
+ * 只载入 controlled 对象（己方视图）；uncontrolled（敌人）在无对手上下文
  * 忽略并在 provenance 标注。返回 { world, droppedEnemies }。
+ *
+ * 对手归属（2026-08-07 多人支持）：玩家投影不携带敌方单位 owner 身份，
+ * 单人对手走 legacy opponentPlayerId（所有 uncontrolled 归一名对手）；
+ * 多人对手走 opponents（unitIds/coreId 显式归属，未命中者 drop 并计入
+ * droppedEnemies——诚实标注，不猜测归属）。
  */
 export function worldFromRawState(
   raw: RawPlayerState,
   playerId: string,
   rulesVersion: string,
-  options: { readonly opponentPlayerId?: string } = {},
+  options:
+    | { readonly opponentPlayerId?: string; readonly opponents?: undefined }
+    | { readonly opponentPlayerId?: undefined; readonly opponents?: readonly {
+        readonly id: string;
+        readonly unitIds: ReadonlySet<string>;
+        readonly coreId?: string;
+      }[] } = {},
 ): SimWorld {
   const obstacles = new Set<string>();
   const resourceCells = new Map<string, { readonly cell: Position }>();
   const units: SimUnit[] = [];
   let core: SimCore | null = null;
-  const opponentUnits: SimUnit[] = [];
-  let opponentCore: SimCore | null = null;
-  let opponentUsername: string | null = null;
+  const byOpponent = new Map<
+    string,
+    { username: string | null; core: SimCore | null; units: SimUnit[] }
+  >();
   let droppedEnemies = 0;
+
+  const ownerOfUnit = (id: string): string | null => {
+    if (options.opponentPlayerId !== undefined) return options.opponentPlayerId;
+    const match = options.opponents?.find((opponent) => opponent.unitIds.has(id));
+    return match?.id ?? null;
+  };
+  const ownerOfCore = (id: string): string | null => {
+    if (options.opponentPlayerId !== undefined) return options.opponentPlayerId;
+    const match = options.opponents?.find((opponent) => opponent.coreId === id);
+    return match?.id ?? null;
+  };
 
   for (const obj of raw.objects) {
     switch (obj.kind) {
@@ -420,30 +443,39 @@ export function worldFromRawState(
                 ? null
                 : asPosition(obj.destination, "core.destination"),
           };
-        } else if (options.opponentPlayerId !== undefined) {
-          opponentUsername = obj.owner_username ?? null;
-          opponentCore = {
-            id: obj.id!,
-            position: obj.position!,
-            hp: Number(obj.hp),
-            shield: Number(obj.shield),
-            state: obj.state === "MOVING" ? "MOVING" : "NORMAL",
-            moveDirection: (obj.move_direction as Direction | null) ?? null,
-            moveProgress:
-              obj.move_progress === null || obj.move_progress === undefined
-                ? null
-                : Number(obj.move_progress),
-            moveRequiredTicks:
-              obj.move_required_ticks === null || obj.move_required_ticks === undefined
-                ? null
-                : Number(obj.move_required_ticks),
-            destination:
-              obj.destination === null || obj.destination === undefined
-                ? null
-                : asPosition(obj.destination, "core.destination"),
-          };
         } else {
-          droppedEnemies += 1;
+          const ownerId = ownerOfCore(obj.id!);
+          if (ownerId !== null) {
+            const entry = byOpponent.get(ownerId) ?? {
+              username: null,
+              core: null,
+              units: [],
+            };
+            entry.username = obj.owner_username ?? null;
+            entry.core = {
+              id: obj.id!,
+              position: obj.position!,
+              hp: Number(obj.hp),
+              shield: Number(obj.shield),
+              state: obj.state === "MOVING" ? "MOVING" : "NORMAL",
+              moveDirection: (obj.move_direction as Direction | null) ?? null,
+              moveProgress:
+                obj.move_progress === null || obj.move_progress === undefined
+                  ? null
+                  : Number(obj.move_progress),
+              moveRequiredTicks:
+                obj.move_required_ticks === null || obj.move_required_ticks === undefined
+                  ? null
+                  : Number(obj.move_required_ticks),
+              destination:
+                obj.destination === null || obj.destination === undefined
+                  ? null
+                  : asPosition(obj.destination, "core.destination"),
+            };
+            byOpponent.set(ownerId, entry);
+          } else {
+            droppedEnemies += 1;
+          }
         }
         break;
       }
@@ -459,17 +491,26 @@ export function worldFromRawState(
             unitType: (obj.unit_type as UnitType) ?? "WORKER",
             cargo: Number(obj.cargo ?? 0),
           });
-        } else if (options.opponentPlayerId !== undefined) {
-          opponentUnits.push({
-            id: obj.id!,
-            owner: options.opponentPlayerId,
-            position: obj.position!,
-            hp: Number(obj.hp),
-            unitType: (obj.unit_type as UnitType) ?? "WORKER",
-            cargo: 0,
-          });
         } else {
-          droppedEnemies += 1;
+          const ownerId = ownerOfUnit(obj.id!);
+          if (ownerId !== null) {
+            const entry = byOpponent.get(ownerId) ?? {
+              username: null,
+              core: null,
+              units: [],
+            };
+            entry.units.push({
+              id: obj.id!,
+              owner: ownerId,
+              position: obj.position!,
+              hp: Number(obj.hp),
+              unitType: (obj.unit_type as UnitType) ?? "WORKER",
+              cargo: 0,
+            });
+            byOpponent.set(ownerId, entry);
+          } else {
+            droppedEnemies += 1;
+          }
         }
         break;
       }
@@ -491,26 +532,48 @@ export function worldFromRawState(
     units,
   };
 
+  const opponentPlayers: [string, SimPlayer][] =
+    options.opponentPlayerId !== undefined
+      ? (() => {
+          const entry =
+            byOpponent.get(options.opponentPlayerId) ?? {
+              username: null,
+              core: null,
+              units: [],
+            };
+          return [[
+            options.opponentPlayerId,
+            {
+              id: options.opponentPlayerId,
+              username: entry.username ?? "opponent",
+              status: "ACTIVE" as const,
+              respawnAtTick: null,
+              resources: 0,
+              core: entry.core,
+              units: entry.units,
+            } satisfies SimPlayer,
+          ]];
+        })()
+      : [...byOpponent.entries()].map(([id, entry]) => [
+          id,
+          {
+            id,
+            username: entry.username ?? "opponent",
+            status: "ACTIVE" as const,
+            respawnAtTick: null,
+            resources: 0,
+            core: entry.core,
+            units: entry.units,
+          } satisfies SimPlayer,
+        ]);
+
   const world: SimWorld = {
     tick: 1,
     resolvedTickCount: 0,
     rulesVersion,
     players: new Map([
       [playerId, player],
-      ...(options.opponentPlayerId === undefined
-        ? []
-        : [[
-            options.opponentPlayerId,
-            {
-              id: options.opponentPlayerId,
-              username: opponentUsername ?? "opponent",
-              status: "ACTIVE" as const,
-              respawnAtTick: null,
-              resources: 0,
-              core: opponentCore,
-              units: opponentUnits,
-            } satisfies SimPlayer,
-          ] as const]),
+      ...opponentPlayers,
     ]),
     terrain: { obstacles, resources: resourceCells, piles: new Map() },
     beacon:
