@@ -186,7 +186,7 @@ export function resolveMoveCapacity(
   for (const candidate of rejected) {
     const sourceKey = cellKey(candidate.source);
     let rerouted = false;
-    if (isPatrolIntent(candidate.intent)) {
+    if (canReroute(candidate.intent)) {
       for (const direction of REROUTE_ORDER[candidate.direction]) {
         const destination = stepCell(candidate.source, direction);
         const destinationKey = cellKey(destination);
@@ -271,6 +271,21 @@ function movePriority(cargo: number, intent: string): number {
 
 function isPatrolIntent(intent: string): boolean {
   return intent === "patrol" || intent === "WAIT_UNCLAIMED" || intent.startsWith("capacity_reroute:patrol");
+}
+
+/** 可容量绕行意图：被容量拒绝时绕行到相邻格继续接近目标（而非死 WAIT）。
+ *  go_harvest/go_harvest_mem/GO_RESOURCE 加入（2026-08-08，t2 生产实证：
+ *  5 worker 持续 capacity_wait:go_harvest_mem——记忆矿/可见矿被容量拒只能
+ *  死等，位置不动触发 stuck 回退后重新选同一矿再卡，恶性循环；绕行让
+ *  worker 持续朝目标推进，下 tick sticky 目标继续）。 */
+function canReroute(intent: string): boolean {
+  return (
+    isPatrolIntent(intent) ||
+    intent === "GO_RESOURCE" ||
+    intent === "go_harvest" ||
+    intent === "go_harvest_mem" ||
+    intent.startsWith("capacity_reroute:")
+  );
 }
 
 function compareBestMoveFirst(a: MoveCandidate, b: MoveCandidate): number {

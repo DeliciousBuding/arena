@@ -78,6 +78,8 @@ function TenantCards() {
   const engine = useEngine();
   const solo = engine?.getState().soloTenant ?? null;
   const tenants = overview?.tenants ?? [];
+  // 目录树折叠（2026-08-08）：点折叠按钮收起详情，只留摘要行；独立于聚焦。
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   return (
     <div id="tenantCards" className="stack">
       {tenants.map((t) => {
@@ -86,6 +88,7 @@ function TenantCards() {
         const st = statusOf(t);
         const L = t.latest ?? {};
         const isSolo = solo === tenant;
+        const isFolded = collapsed[tenant] === true;
         return (
           <div
             key={tenant}
@@ -109,7 +112,20 @@ function TenantCards() {
               <span className={`dot ${st.cls}`} title={st.label} />
               <span className="tenant-name">{tenant.toUpperCase()}</span>
               <span className="tenant-tag">{TENANT_LABEL[tenant] ?? ""}</span>
+              <button type="button" className={`tc-fold${isFolded ? " folded" : ""}`} title={isFolded ? "展开详情" : "折叠详情"}
+                aria-expanded={!isFolded}
+                onClick={(ev) => { ev.stopPropagation(); setCollapsed((p) => ({ ...p, [tenant]: !isFolded })); }}>
+                {isFolded ? "▸" : "▾"}
+              </button>
             </div>
+            {isFolded ? (
+              <div className="fold-summary">
+                <span>资源 <b>{fmt(L.resources)}</b></span>
+                <span>tick <b>{fmt(L.tick)}</b></span>
+                <span className="fold-ellipsis">…</span>
+              </div>
+            ) : (
+            <>
             <div className="metrics">
               <div className="metric"><span className="v">{fmt(L.resources)}</span><span className="k">资源</span></div>
               <div className="metric"><span className={`v ${(L.resourceDelta ?? 0) > 0 ? "delta-pos" : (L.resourceDelta ?? 0) < 0 ? "delta-neg" : ""}`}>{fmt(L.resourceDelta, 0)}</span><span className="k">增量</span></div>
@@ -122,6 +138,8 @@ function TenantCards() {
               <span>均值 <b>{fmt(L.workerMeanDistance)}</b></span>
               <span>可见资源 <b>{fmt(L.visibleResources)}</b></span>
             </div>
+            </>
+            )}
           </div>
         );
       })}
