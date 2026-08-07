@@ -248,6 +248,7 @@ export function loadEvents(tenant: string, n: number): { tenant: string; generat
         hp: values.hp ?? null,
         source: values.source ?? null,
         capacity: values.capacity ?? null,
+        destroyedBy: values.destroyed_by ?? null,
       });
     }
   }

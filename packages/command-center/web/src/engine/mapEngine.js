@@ -1411,14 +1411,38 @@ function toggleSolo(tenant) {
   els.mapGlobal.hidden = global;
   syncSoloBadge();
 }
-/** 重生覆盖层（官方 RespawnOverlay 移植）：世界 status=RESPAWNING 时全屏提示。 */
-function tactRenderRespawn(tenant) {
+/** 重生覆盖层（官方 RespawnOverlay 移植）：世界 status=RESPAWNING 时全屏提示，
+ *  并显示摧毁者（官方读 events[].values.destroyed_by，自毁 reason=SELF_DESTRUCT）。 */
+let respawnDestroys = {}; // tenant -> { destroyedBy, selfDestructed }（缓存，避免每次 poll 重拉）
+async function tactRenderRespawn(tenant) {
   const world = T().worlds[tenant];
   const respawning = world && world.state && world.state.status === 'RESPAWNING';
   els.respawnOverlay.hidden = !respawning;
-  if (respawning) {
-    const rt = world.state.respawn_at_tick;
-    els.roTick.textContent = `重生 tick · ${Number.isFinite(rt) ? fmt(rt) : '待定'}`;
+  if (!respawning) return;
+  const rt = world.state.respawn_at_tick;
+  const title = els.respawnOverlay.querySelector('.ro-title');
+  const sub = els.respawnOverlay.querySelector('#roTick');
+  if (sub) sub.textContent = `重生 tick · ${Number.isFinite(rt) ? fmt(rt) : '待定'}`;
+  // 摧毁者信息（缓存于本次会话；失败静默降级为通用提示）
+  if (title && !respawnDestroys[tenant]) {
+    respawnDestroys[tenant] = { pending: true };
+    try {
+      const r = await getJSON(`/api/events?tenant=${tenant}&n=200`);
+      const evs = Array.isArray(r.events) ? r.events : [];
+      const coreDestroyed = [...evs].reverse().find((e) => e.kind === 'CORE_DESTROYED');
+      if (coreDestroyed) {
+        const by = coreDestroyed.destroyedBy;
+        const self = coreDestroyed.reason === 'SELF_DESTRUCT';
+        const byName = Array.isArray(by) ? by.filter(Boolean).join('、') : (typeof by === 'string' && by.trim() ? by.trim() : null);
+        respawnDestroys[tenant] = { destroyedBy: byName, selfDestructed: self };
+        title.textContent = self ? '核心自毁 · 等待重生' : (byName ? `核心被 ${byName} 摧毁 · 等待重生` : '核心被摧毁 · 等待重生');
+      } else {
+        respawnDestroys[tenant] = { destroyedBy: null, selfDestructed: false };
+      }
+    } catch { respawnDestroys[tenant] = { destroyedBy: null, selfDestructed: false }; }
+  } else if (title && respawnDestroys[tenant] && !respawnDestroys[tenant].pending) {
+    const d = respawnDestroys[tenant];
+    title.textContent = d.selfDestructed ? '核心自毁 · 等待重生' : (d.destroyedBy ? `核心被 ${d.destroyedBy} 摧毁 · 等待重生` : '核心被摧毁 · 等待重生');
   }
 }
 async function tactShowTenant(tenant) {
