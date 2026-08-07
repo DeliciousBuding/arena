@@ -435,6 +435,7 @@ function draw() {
   const w = W(), h = H();
   ctx.clearRect(0, 0, w, h);
   drawGrid(w, h);
+  drawStars(w, h);
   const s = state.view.scale;
   LQ = false; // 底图缓存始终全质量渲染（重建频率低）
   const bs = bucketScale(s);
@@ -467,6 +468,7 @@ function draw() {
     void els.zoomLevel.offsetWidth;
     els.zoomLevel.classList.add('pop');
   }
+  drawVignette(w, h); // 最后画暗角：收拢视觉焦点
   if (!state.cells.length) {
     ctx.fillStyle = '#56626c'; ctx.font = '600 12px ' + CANVAS_FONT;
     ctx.textAlign = 'center';
@@ -518,6 +520,35 @@ function drawTenantRegions(s) {
     }
   }
   ctx.restore();
+}
+/** 画布氛围层（极淡星点 + 边缘暗角）：确定性伪随机，resize 重建一次，每帧廉价绘制。
+ *  星点极低对比（alpha .04-.14）不干扰数据层，暗角把视觉焦点收拢到地图中心。 */
+const bgStars = { list: [], w: 0, h: 0 };
+function ensureStars(w, h) {
+  if (bgStars.w === w && bgStars.h === h && bgStars.list.length) return;
+  bgStars.w = w; bgStars.h = h; bgStars.list = [];
+  let seed = 0x9e3779b9;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const n = Math.max(40, Math.floor(w * h / 9000));
+  for (let i = 0; i < n; i++) bgStars.list.push({ x: rnd() * w, y: rnd() * h, r: rnd() * 1.1 + 0.3, a: rnd() * 0.10 + 0.04 });
+}
+function drawStars(w, h) {
+  ensureStars(w, h);
+  ctx.save();
+  ctx.fillStyle = '#cfe0ff';
+  for (const st of bgStars.list) {
+    ctx.globalAlpha = st.a;
+    ctx.beginPath(); ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawVignette(w, h) {
+  const r0 = Math.min(w, h) * 0.34, r1 = Math.max(w, h) * 0.74;
+  const g = ctx.createRadialGradient(w / 2, h / 2, r0, w / 2, h / 2, r1);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,.34)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
 }
 function drawGrid(w, h) {
   ctx.strokeStyle = 'rgba(104,117,167,.08)';
