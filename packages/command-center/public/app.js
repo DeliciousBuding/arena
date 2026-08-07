@@ -72,6 +72,7 @@ const els = {
   fleetHud: $('#fleetHud'), assetPanel: $('#assetPanel'), assetList: $('#assetList'),
   activityPanel: $('#resourceActivity'), activityList: $('#activityList'),
   commandCountdown: $('#commandCountdown'), ccTime: $('#ccTime'), ccFill: $('#ccFill'),
+  respawnOverlay: $('#respawnOverlay'), roTick: $('#roTick'),
 };
 
 const ctx = els.canvas.getContext('2d');
@@ -765,6 +766,16 @@ function toggleSolo(tenant) {
   const global = state.soloTenant === null;
   els.viewGlobal.classList.toggle('active', global);
 }
+/** 重生覆盖层（官方 RespawnOverlay 移植）：世界 status=RESPAWNING 时全屏提示。 */
+function tactRenderRespawn(tenant) {
+  const world = T().worlds[tenant];
+  const respawning = world && world.state && world.state.status === 'RESPAWNING';
+  els.respawnOverlay.hidden = !respawning;
+  if (respawning) {
+    const rt = world.state.respawn_at_tick;
+    els.roTick.textContent = `重生 tick · ${Number.isFinite(rt) ? fmt(rt) : '待定'}`;
+  }
+}
 async function tactShowTenant(tenant) {
   const [world, expl, rp, plan] = await Promise.all([
     tactLoadWorld(tenant), tactLoadExploration(tenant), replayLoad(tenant), tactLoadPlan(tenant),
@@ -776,6 +787,7 @@ async function tactShowTenant(tenant) {
   tactRenderHud(tenant);
   tactRenderPending();
   tactRefreshActivity(tenant);
+  tactRenderRespawn(tenant);
   draw();
 }
 /** 战术层实时刷新（2026-08-07）：聚焦单租户时每轮 poll 重取世界+计划，
@@ -795,6 +807,7 @@ async function tactRefreshLive(tenant) {
       if (byId) sel.obj = byId;
     }
     tactRenderPending();
+    tactRenderRespawn(tenant);
     draw();
   } catch { /* 保持上次快照，下次重试 */ }
 }
@@ -1158,7 +1171,7 @@ async function boot() {
     } else if (state.viewAnim) {
       applyViewAnim(ts);
       draw();
-    } else if (ts - lastAnim > 300 && ((state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
+    } else if (ts - lastAnim > 120 && ((state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
       lastAnim = ts;
       draw();
     }
@@ -1350,6 +1363,7 @@ async function tactSelect(tenant, obj) {
   const tac = T();
   tac.selected = { tenant, obj };
   tac.mode = null; tac.moveRoute = null; tac.routePreview = null; tac.attackTarget = null;
+  startSelectionRipple(obj.id);
   tactRenderActionDialog();
   tactRenderInspect();
   tactRenderAssets(tenant);
@@ -1363,6 +1377,7 @@ function tactClear() {
   els.assetPanel.hidden = true; els.fleetHud.hidden = true;
   els.replayBar.hidden = true;
   els.activityPanel.hidden = true; els.commandCountdown.hidden = true;
+  els.respawnOverlay.hidden = true;
   draw();
 }
 function tactActionTypes(obj) {
@@ -1703,28 +1718,34 @@ function tactSurveyLayer(s) {
   const survey = T().surveys[state.soloTenant];
   if (!survey) return;
   const cell = Math.max(2, s);
+  const maxTick = survey.tickMax ?? 0;
+  const ageAlpha = (tick) => {
+    if (!maxTick) return 0.5;
+    const age = Math.max(0, maxTick - (tick ?? maxTick));
+    return age <= 1 ? 0.55 : age <= 8 ? 0.4 : 0.24; // 越久越淡（探测记忆）
+  };
   if (survey.obstacleCells.length) {
-    ctx.fillStyle = 'rgba(96,106,116,.30)';
-    ctx.beginPath();
+    ctx.save();
     for (const c of survey.obstacleCells) {
       const p = project(c.x, c.y);
-      ctx.rect(p.sx - cell / 2, p.sy - cell / 2, cell, cell);
+      ctx.globalAlpha = ageAlpha(c.tick);
+      ctx.fillStyle = 'rgba(96,106,116,.32)';
+      ctx.fillRect(p.sx - cell / 2, p.sy - cell / 2, cell, cell);
     }
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(139,183,212,.08)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    ctx.restore();
   }
   if (survey.resourceCells.length) {
-    ctx.fillStyle = 'rgba(118,184,137,.42)';
-    ctx.beginPath();
+    ctx.save();
     for (const c of survey.resourceCells) {
       const p = project(c.x, c.y);
-      const r = Math.max(2, s * 0.28);
-      ctx.moveTo(p.sx + r, p.sy); // 断连：批量 arc 同 path 会互相连线成多边形
+      ctx.globalAlpha = ageAlpha(c.tick) * 0.85;
+      ctx.fillStyle = 'rgba(118,184,137,.45)';
+      const r = Math.max(2, s * 0.26);
+      ctx.beginPath();
       ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
+      ctx.fill();
     }
-    ctx.fill();
+    ctx.restore();
   }
 }
 function tactDrawLayer(s) {
