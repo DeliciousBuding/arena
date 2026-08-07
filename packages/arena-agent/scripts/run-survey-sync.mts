@@ -8,7 +8,9 @@
  *
  * 幂等：sync_meta 记每 run 已同步 tick，重复执行只补增量。
  */
+import { appendFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { join } from "node:path";
 import { syncTenantSurvey } from "../src/intel/survey-sync.ts";
 
 const DEFAULT_DATA_ROOT = resolve(import.meta.dirname, "..", "..", "..", "data");
@@ -32,11 +34,24 @@ if (tenants.length === 0) {
   process.exit(2);
 }
 
+const lines: string[] = [];
 for (const tenant of tenants) {
   const summary = syncTenantSurvey(dataRoot, tenant, { latestRunOnly: latestOnly });
-  console.log(
+  const line =
     `[survey] ${tenant}: runs=${summary.runs} cases=${summary.cases} ` +
-      `resources=${summary.resources} obstacles=${summary.obstacles} coreHunts=${summary.coreHunts}`,
-  );
+    `resources=${summary.resources} obstacles=${summary.obstacles} coreHunts=${summary.coreHunts}`;
+  lines.push(line);
+  console.log(line);
 }
-console.log(`[survey] done (data-root=${dataRoot})`);
+const done = `[survey] done (data-root=${dataRoot})`;
+console.log(done);
+// 同步日志落盘（2026-08-08，综合调试）：data/runtime/survey/sync.log 追加
+try {
+  const logDir = join(dataRoot, "runtime", "survey");
+  mkdirSync(logDir, { recursive: true });
+  const stamp = new Date().toISOString().replace("T", " ").slice(0, 19);
+  appendFileSync(join(logDir, "sync.log"), [`[${stamp}] ${lines.join(" | ")}`, done, ""].join("\n"));
+} catch {
+  // 日志写失败不影响同步结果
+}
+
