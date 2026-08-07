@@ -32,12 +32,8 @@
 
   <main id="layout">
     <aside id="sidebar">
-      <div id="fleetHud" class="panel fleet-hud" hidden></div>
+      <!-- 监控核心信息置顶：租户卡 → 图例 → 图层 → 视图切换；单租户专属（舰队HUD/索引）放下方 -->
       <div id="tenantCards" class="stack"></div>
-      <section id="assetPanel" class="panel" hidden>
-        <h3 class="panel-title">舰队索引 · FLEET INDEX</h3>
-        <div id="assetList" class="asset-list"></div>
-      </section>
       <section class="panel">
         <h3 class="panel-title">图例</h3>
         <ul id="legendList" class="legend"></ul>
@@ -63,6 +59,12 @@
           <button id="viewGlobal" class="btn active" type="button">全局联盟</button>
           <button id="viewFit" class="btn" type="button">适应视口</button>
         </div>
+      </section>
+
+      <div id="fleetHud" class="panel fleet-hud" hidden></div>
+      <section id="assetPanel" class="panel" hidden>
+        <h3 class="panel-title">舰队索引 · FLEET INDEX</h3>
+        <div id="assetList" class="asset-list"></div>
       </section>
     </aside>
 
@@ -108,6 +110,8 @@
         </div>
       </div>
       <div id="mapControls">
+        <button id="mapGlobal" class="ctl ctl-global" type="button" title="返回全局联盟地图" hidden>全局</button>
+        <span id="zoomLevel" class="ctl-label" title="当前缩放">×8.0</span>
         <button id="zoomIn" class="ctl" type="button" title="放大">+</button>
         <button id="zoomOut" class="ctl" type="button" title="缩小">−</button>
         <button id="fitBtn" class="ctl" type="button" title="适应视口">⤢</button>
