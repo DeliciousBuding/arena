@@ -4,11 +4,13 @@
  * 每 tick 为每个 tenant 生成一个 case（before/after 经 projectPlayerState
  * 投影为官方 PlayerState），manifest 严格格式（sha256 全链路）。
  *
- * 用法：cd packages/arena-agent && npx tsx scripts/synthetic-case-gen.mts <scenario> <outDir> [ticks] [p2Posture] [p1MilitaryRatio]
- * 例：npx tsx scripts/synthetic-case-gen.mts scripts/scenarios/strike-group-exchange.json D:/x/syn-run 80 balanced 0.5
+ * 用法：cd packages/arena-agent && npx tsx scripts/synthetic-case-gen.mts <scenario> <outDir> [ticks] [p2Posture] [p1MilitaryRatio] [p1AccumulateThreshold] [p1WorkerTarget]
+ * 例：npx tsx scripts/synthetic-case-gen.mts scripts/scenarios/strike-group-exchange.json D:/x/syn-run 300 harvest 0 12 6
  * p2Posture 可选（默认 aggressive）——对手策略变体（balanced/harvest）；
  * p1MilitaryRatio 可选（默认 0）——我方军事产兵比例（>0 可产生完整
- * 战斗演化——补充兵力、推进拆家）。
+ * 战斗演化——补充兵力、推进拆家）；p1AccumulateThreshold 可选（默认
+ * 0）——爆兵积累阈值（达标后持续产兵推进——终局拆家数据）；
+ * p1WorkerTarget 可选（默认 4）——worker 目标（>初始数可激活采集经济）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -25,6 +27,8 @@ const OUT_DIR = resolve(process.argv[3]);
 const TICKS = Number(process.argv[4] ?? 60);
 const P2_POSTURE = (process.argv[5] ?? "aggressive") as "aggressive" | "balanced" | "harvest";
 const P1_MILITARY_RATIO = Number(process.argv[6] ?? 0);
+const P1_ACCUMULATE_THRESHOLD = Number(process.argv[7] ?? 0);
+const P1_WORKER_TARGET = Number(process.argv[8] ?? 4);
 const RULES_PATH = "src/sim/contracts/rules-v0.14.json";
 const RUNTIME_GOLDEN_SCHEMA = "runtime-golden-dataset-v1";
 
@@ -54,7 +58,14 @@ const result = runEpisode({
   seed,
   ticks: TICKS,
   tenants: [
-    { id: "p1", planner: "safety", policy: { posture: "aggressive", workerTarget: 4, militaryRatio: P1_MILITARY_RATIO, focusRegion: null, attackPriority: "core" } },
+    {
+      id: "p1",
+      planner: "safety",
+      policy: { posture: "aggressive", workerTarget: P1_WORKER_TARGET, militaryRatio: P1_MILITARY_RATIO, focusRegion: null, attackPriority: "core" },
+      plannerConfig: {
+        ...(P1_ACCUMULATE_THRESHOLD > 0 ? { accumulateThreshold: P1_ACCUMULATE_THRESHOLD } : {}),
+      },
+    },
     { id: "p2", planner: "safety", policy: { posture: P2_POSTURE, workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: P2_POSTURE === "aggressive" ? "core" : "balanced" } },
   ],
   onTickRecorded: ({ tick, before, after, plans, events }) => {
