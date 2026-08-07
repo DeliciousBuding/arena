@@ -651,3 +651,25 @@ test("DeterministicPlanner：coreMovingHold——核心 MOVING 时 cargo worker 
   const legacyPlan = legacy.decide({ state: movingState });
   assert.equal(legacyPlan.unitActions["w1"]?.type, "DEPOSIT", "无 coreMovingHold → 保持历史追交行为");
 });
+
+test("热加载：SafetyPlanner.updateConfig 原子替换配置（实例保留，World 记忆不丢）", () => {
+  const planner = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, workerDenseScan: false });
+  assert.equal(planner.config.workerDenseScan, false);
+  planner.updateConfig({ ...DEFAULT_SAFETY_CONFIG, workerDenseScan: true, frontierPriority: true });
+  assert.equal(planner.config.workerDenseScan, true);
+  assert.equal(planner.config.frontierPriority, true);
+  assert.equal(planner.config.coreMovingHold, undefined);
+});
+
+test("热加载：DeterministicPlanner.updateConfig 同步内部 SafetyPlanner + deterministic 参数", () => {
+  const fallback = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, workerDenseScan: false });
+  const patrol = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, workerDenseScan: false });
+  const det = new DeterministicPlanner(undefined, fallback, patrol);
+  det.updateConfig({ ...DEFAULT_SAFETY_CONFIG, workerDenseScan: true }, { vanguardRatio: 0.75, accumulateThreshold: 30 });
+  assert.equal(fallback.config.workerDenseScan, true, "fallback SafetyPlanner 已热更");
+  assert.equal(patrol.config.workerDenseScan, true, "patrol SafetyPlanner 已热更");
+  // deterministic 参数经 decide 消费（selectDeterministicCoreAction 读实例字段）
+  const state = makeState(100, [core(), unit("w1", 1, 0)], 40);
+  const plan = det.decide({ state });
+  assert.equal(typeof plan.coreAction, "object");
+});

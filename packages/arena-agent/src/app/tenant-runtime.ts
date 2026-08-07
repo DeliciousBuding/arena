@@ -16,8 +16,8 @@
 
 import { ArenaHeroClient } from "@arena/arena-hero-ts";
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, watch } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { loadRuntimeConfig, resolveCircuitBreaker, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
@@ -486,21 +486,101 @@ export async function runTenant(
     // 加载（纯只读，缺失/降级 = 空 Map 零回归）；供攻坚"留强"决策消费——
     // 攻坚目标所有者是高伤害玩家（猛攻蛆）时提高成型门槛 + 增加守家预留。
     const threatProfiles = loadThreatProfiles(dataRoot);
-    const planner =
+    // 热加载配置代数（2026-08-08）：每次 config 热替换 +1，tick 归属当前配置代。
+    let configGeneration = 1;
+    const baseSafetyConfig =
+      decisionMode === "deterministic"
+        ? { ...DEFAULT_SAFETY_CONFIG, ...variantConfig }
+        : { ...AGGRESSIVE_SAFETY_CONFIG, ...variantConfig };
+    const planner: DeterministicPlanner | SafetyPlanner =
       decisionMode === "deterministic"
         ? Object.keys(variantConfig).length === 0
           ? new DeterministicPlanner()
           : new DeterministicPlanner(
               new WorkerTaskPlanner(),
-              new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...variantConfig }),
-              new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...variantConfig }),
+              new SafetyPlanner(baseSafetyConfig),
+              new SafetyPlanner(baseSafetyConfig),
               deterministicVariantConfig.vanguardRatio,
               deterministicVariantConfig.accumulateThreshold ?? 0,
               deterministicVariantConfig.spawnReserve,
               initialCoreHuntTargets,
               threatProfiles,
             )
-        : new SafetyPlanner({ ...AGGRESSIVE_SAFETY_CONFIG, ...variantConfig }, undefined, threatProfiles);
+        : new SafetyPlanner(baseSafetyConfig, undefined, threatProfiles);
+
+    // 配置热加载（2026-08-08）：重读 config 文件 → schema/变体校验 → 原子替换
+    // planner 配置快照（保留 World/巡逻/攻坚记忆）→ configGeneration+1 → telemetry。
+    // 非法配置保持 last-good（返回错误，绝不让 live loop 崩溃）。
+    const reloadConfig = (): { applied: boolean; error?: string } => {
+      try {
+        const nextConfig = loadRuntimeConfig(configPath);
+        const nextVariant = resolveVariantsConfig(nextConfig.variants);
+        const nextDet = resolveDeterministicVariantsConfig(nextConfig.variants);
+        const nextSafety =
+          decisionMode === "deterministic"
+            ? { ...DEFAULT_SAFETY_CONFIG, ...nextVariant }
+            : { ...AGGRESSIVE_SAFETY_CONFIG, ...nextVariant };
+        if (planner instanceof DeterministicPlanner) {
+          planner.updateConfig(nextSafety, nextDet);
+        } else {
+          planner.updateConfig(nextSafety);
+        }
+        configGeneration += 1;
+        appendJsonlLine(
+          join(dirs.telemetryDir, "runtime.jsonl"),
+          JSON.stringify(sanitizeValue({
+            processRunId,
+            tenantId: config.tenantId,
+            telemetryType: "config_reload",
+            configGeneration,
+            variants: nextConfig.variants ?? [],
+          })),
+        );
+        return { applied: true };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        appendJsonlLine(
+          join(dirs.telemetryDir, "runtime.jsonl"),
+          JSON.stringify(sanitizeValue({
+            processRunId,
+            tenantId: config.tenantId,
+            telemetryType: "config_reload_failed",
+            message,
+          })),
+        );
+        return { applied: false, error: message };
+      }
+    };
+
+    // 触发源 1：文件监听（父目录 + 400ms debounce，兼容编辑器原子替换/重命名）。
+    let configWatch: ReturnType<typeof watch> | null = null;
+    let configReloadTimer: NodeJS.Timeout | null = null;
+    try {
+      configWatch = watch(dirname(configPath), { persistent: false }, (_eventType, filename) => {
+        if (filename !== basename(configPath)) return;
+        if (configReloadTimer !== null) clearTimeout(configReloadTimer);
+        configReloadTimer = setTimeout(() => {
+          configReloadTimer = null;
+          reloadConfig();
+        }, 400);
+      });
+      cleanupStack.push(() => {
+        if (configReloadTimer !== null) clearTimeout(configReloadTimer);
+        configWatch?.close();
+      });
+    } catch {
+      // 文件监听失败不阻断 live（仍可用 Supervisor API 触发）。
+    }
+    // 触发源 2：Supervisor IPC（POST /config-reload 转发）。
+    const onIpcMessage = (msg: unknown): void => {
+      if (typeof msg === "object" && msg !== null && (msg as { type?: string }).type === "arena.config_reload") {
+        reloadConfig();
+      }
+    };
+    process.on("message", onIpcMessage);
+    cleanupStack.push(() => {
+      process.off("message", onIpcMessage);
+    });
     const coordinator = new DecisionCoordinator({
       runtime,
       planner,
@@ -579,6 +659,7 @@ export async function runTenant(
           selectionLatencyMs: decision.selectionLatencyMs,
           abortRequested: decision.abortRequested,
           rotationGeneration: runtimeGeneration,
+          configGeneration,
           submitResult: outcome.submitAttempted
             ? outcome.accepted
               ? "accepted"
