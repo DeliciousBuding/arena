@@ -1157,6 +1157,7 @@ function toggleSolo(tenant) {
   if (state.soloTenant) {
     fitSolo(state.soloTenant);
     tactShowTenant(tenant);
+    toast(`已聚焦 ${tenant.toUpperCase()} · 点「${tenant.toUpperCase()} · 聚焦」徽章或按 G 返回全局`, 'info');
   } else {
     fitView();
     tactClear();
@@ -1760,6 +1761,25 @@ function bindEvents() {
     els.soloBadge.addEventListener('click', () => { if (state.soloTenant) exitSolo(); });
     els.soloBadge.title = '点击返回全局联盟';
   }
+  // 信标边缘指示：事件委托（DOM 重建不丢点击）；点箭头跳到信标（保留当前缩放，不再被 fitSolo 覆盖）
+  els.beaconIndicator.addEventListener('click', (e) => {
+    const close = e.target.closest('.beacon-close');
+    if (close) {
+      beaconDismissed = true;
+      els.beaconIndicator.hidden = true;
+      toast('已隐藏信标边缘指示（本次聚焦，点 T 键恢复）');
+      return;
+    }
+    const arrow = e.target.closest('.beacon-arrow');
+    if (!arrow || !state.soloTenant) return;
+    const b = state.beacons.find((x) => x.tenant === state.soloTenant);
+    if (b) {
+      state.view.cx = b.x; state.view.cy = b.y;
+      state.viewAnim = null; state.zoom.active = false;
+      draw();
+      toast(`已跳转到信标 [${b.x}, ${b.y}]`);
+    }
+  });
   els.cookieSave.addEventListener('click', saveShopCookie);
   els.cookieTest.addEventListener('click', async () => {
     const v = els.shopCookie.value.trim();
@@ -1870,6 +1890,12 @@ async function boot() {
     if (e.key === 'f' || e.key === 'F') { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); return; }
     if (e.key === 'g' || e.key === 'G') {
       exitSolo();
+      return;
+    }
+    if (e.key === 't' || e.key === 'T') {
+      beaconDismissed = !beaconDismissed;
+      updateBeaconIndicator();
+      toast(beaconDismissed ? '信标边缘指示已隐藏（再按 T 恢复）' : '信标边缘指示已恢复');
       return;
     }
     if (e.key === 'Escape') {
@@ -3058,8 +3084,7 @@ async function handleCanvasClick(px, py) {
 function updateBeaconIndicator() {
   const els2 = els.beaconIndicator;
   const b = state.soloTenant ? state.beacons.find((x) => x.tenant === state.soloTenant) : null;
-  if (!b || !state.view.ready) { els2.hidden = true; return; }
-  if (beaconDismissed) { els2.hidden = true; return; }
+  if (!b || !state.view.ready || beaconDismissed) { els2.hidden = true; return; }
   const p = project(b.x, b.y);
   const w = W(), h = H();
   if (p.sx >= 0 && p.sx <= w && p.sy >= 0 && p.sy <= h) { els2.hidden = true; return; }
@@ -3076,22 +3101,20 @@ function updateBeaconIndicator() {
   else if (ex > avoidR && ey < avoidT) ex = Math.max(inset, avoidR - 34);
   const angle = Math.atan2(dy, dx) * 180 / Math.PI;
   els2.hidden = false;
-  els2.style.left = `${ex}px`;
-  els2.style.top = `${ey}px`;
-  els2.innerHTML = `<div class="beacon-arrow-wrap">
-    <button class="beacon-arrow" title="定位信标 [${b.x}, ${b.y}]" style="transform:rotate(${angle + 90}deg)"></button>
-    <button class="beacon-close" title="隐藏信标指示（本次聚焦）">✕</button>
-  </div>`;
-  els2.querySelector('.beacon-arrow').addEventListener('click', () => {
-    state.view.cx = b.x; state.view.cy = b.y;
-    fitSolo(state.soloTenant);
-    draw();
-  });
-  els2.querySelector('.beacon-close').addEventListener('click', () => {
-    beaconDismissed = true;
-    els2.hidden = true;
-    toast('已隐藏信标边缘指示（本次聚焦）');
-  });
+  // 位置/角度变化才重绘 DOM，否则 500ms 重建会吃掉点击（"关不掉"根因）
+  const moved = Math.abs(ex - els2._x) > 1 || Math.abs(ey - els2._y) > 1 || Math.abs(angle - els2._a) > 1;
+  if (moved || !els2.querySelector('.beacon-arrow')) {
+    els2._x = ex; els2._y = ey; els2._a = angle;
+    els2.style.left = `${ex}px`;
+    els2.style.top = `${ey}px`;
+    els2.innerHTML = `<div class="beacon-arrow-wrap">
+      <button class="beacon-arrow" title="定位信标 [${b.x}, ${b.y}]（点击跳转）" style="transform:rotate(${angle + 90}deg)"></button>
+      <button class="beacon-close" title="隐藏信标指示（本次聚焦）">✕</button>
+    </div>`;
+  } else {
+    els2.style.left = `${ex}px`;
+    els2.style.top = `${ey}px`;
+  }
 }
 
 function renderLegend() {
