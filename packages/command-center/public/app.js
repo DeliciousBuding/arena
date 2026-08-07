@@ -42,9 +42,11 @@ const state = {
   streamCollapsed: false,
   viewAnim: null,
   cc: { tick: null, anchor: 0 }, // 命令窗口：最近观测到的计划 tick + 观测时刻（15s 倒计时）
+  terrainSig: 0,               // 障碍/资源测绘签名：仅地形变化时重建底图缓存
   tactical: {
     surveys: {},      // tenant -> { obstacleCells, resourceCells, ... }（累积测绘）
     worlds: {},       // tenant -> { state, tick }
+    plans: {},        // tenant -> { tick, plan } 最新决策计划（全局联盟 4 租户算法决策虚线）
     selected: null,   // { tenant, obj }
     mode: null,       // null | MOVE | SHOOT | SWEEP
     moveGoals: {},    // objId -> [x, y]（演练移动目标）
@@ -81,8 +83,77 @@ const els = {
   respawnOverlay: $('#respawnOverlay'), roTick: $('#roTick'),
 };
 
-const ctx = els.canvas.getContext('2d');
+let ctx = els.canvas.getContext('2d');
 const images = {};
+
+/* ---------- 静态地形缓存（缩放性能核心） ----------
+ * 慢层（租户疆域 / 测绘 / 障碍 / 资源）按"缩放桶"离屏预渲染；
+ * 缩放 / 平移期间每帧只贴一次底图 + 重绘少量动态层（单位/核心/信标/轨迹/特效），
+ * 避免全量重绘卡顿。参考 MDN Optimizing canvas / Mozilla pinch-zoom 最佳实践：
+ * 离屏预渲染、按比例桶重栅格化、动画期间降级（关 shadowBlur 与高成本细节）。 */
+const STATIC_PAD = 1.6;                 // 缓存比视口大 60%：小范围平移免重建
+const staticCache = { canvas: null, cctx: null, cssW: 0, cssH: 0, scale: 0, cx: 0, cy: 0, ready: false };
+let staticDirty = true;
+let LQ = false; // 缩放/平移动画期间：低质量模式（关 shadowBlur / 高成本细节）
+function bucketScale(s) {
+  const k = Math.round(Math.log2(Math.max(0.05, Math.min(64, s))) * 2) / 2;
+  return Math.pow(2, k);
+}
+function invalidateStatic() { staticDirty = true; }
+function staticNeedsRebuild(bs) {
+  if (staticDirty || !staticCache.ready || staticCache.scale !== bs) return true;
+  // 可平移余量 = 缓存覆盖半宽 - 视口半宽（随当前缩放自适应，保证视口不越出缓存）
+  const mw = W() / 2 / bs * STATIC_PAD - W() / 2 / state.view.scale;
+  const mh = H() / 2 / bs * STATIC_PAD - H() / 2 / state.view.scale;
+  return Math.abs(state.view.cx - staticCache.cx) > mw || Math.abs(state.view.cy - staticCache.cy) > mh;
+}
+function renderStaticCache(bs) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(W() * STATIC_PAD)), h = Math.max(1, Math.round(H() * STATIC_PAD));
+  if (!staticCache.canvas) { staticCache.canvas = document.createElement('canvas'); staticCache.cctx = staticCache.canvas.getContext('2d'); }
+  const dw = Math.max(1, Math.round(w * dpr)), dh = Math.max(1, Math.round(h * dpr));
+  if (staticCache.canvas.width !== dw) staticCache.canvas.width = dw;
+  if (staticCache.canvas.height !== dh) staticCache.canvas.height = dh;
+  staticCache.cssW = w; staticCache.cssH = h;
+  const cctx = staticCache.cctx;
+  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cctx.clearRect(0, 0, w, h);
+  const ax = state.view.cx, ay = state.view.cy;
+  const prevCtx = ctx, prevView = state.view;
+  ctx = cctx;
+  // 缓存画布即"视口"：vw/vh 覆盖使 project/visibleCells 以画布中心为锚（内容铺满画布，blit 对齐画布中心）
+  state.view = { ...prevView, cx: ax, cy: ay, scale: bs, vw: w, vh: h };
+  try {
+    const s = bs;
+    if (!state.soloTenant) drawTenantRegions(s);
+    tactSurveyLayer(s);
+    const cells = visibleCells();
+    const buckets = { obstacle: [], resource: [] };
+    for (const c of cells) if (buckets[c.type]) buckets[c.type].push(c);
+    drawObstacles(buckets.obstacle, s);
+    drawResources(buckets.resource, s);
+  } finally {
+    ctx = prevCtx;
+    state.view = prevView;
+  }
+  staticCache.scale = bs;
+  staticCache.cx = ax;
+  staticCache.cy = ay;
+  staticCache.ready = true;
+  staticDirty = false;
+}
+function blitStatic() {
+  if (!staticCache.ready) return;
+  const c = staticCache;
+  const k = state.view.scale / c.scale;
+  const sx = (c.cx - state.view.cx) * state.view.scale + W() / 2;
+  const sy = (c.cy - state.view.cy) * state.view.scale + H() / 2;
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.scale(k, k);
+  ctx.drawImage(c.canvas, -c.cssW / 2, -c.cssH / 2, c.cssW, c.cssH);
+  ctx.restore();
+}
 
 function hash2(a, b, salt) {
   let h = (Math.imul(a + salt * 7919, 73856093) ^ Math.imul(b + salt * 104729, 19349663)) >>> 0;
@@ -148,6 +219,13 @@ async function poll() {
     state.bounds = map.bounds ?? null;
     state.cellIndex = new Map();
     for (const c of state.cells) state.cellIndex.set(`${c.x},${c.y}`, c);
+    // 静态层脏检查：仅当障碍/资源测绘变化才重建底图缓存（单位移动不触发重建）
+    let sig = 0, n = 0;
+    for (const c of state.cells) {
+      if (c.type === 'obstacle' || c.type === 'resource') { sig = (sig + c.x * 73856093 + c.y * 19349663 + (c.type === 'obstacle' ? 1 : 2)) >>> 0; n++; }
+    }
+    sig = (sig ^ (n * 2654435761)) >>> 0;
+    if (sig !== state.terrainSig) { state.terrainSig = sig; invalidateStatic(); }
     if (overview?.dataRoot) els.dataRoot.textContent = overview.dataRoot;
     // 单位平滑插值：记录上一轮位置，poll 之间 draw 时按 POLL_MS 渐变移动
     captureUnitPrev();
@@ -176,6 +254,7 @@ async function poll() {
     renderTenantToggles();
     draw();
     if (state.soloTenant) tactRefreshLive(state.soloTenant);
+    else loadGlobalPlans();
   } catch (err) {
     els.badge.className = 'badge err';
     els.badge.textContent = '数据离线';
@@ -203,9 +282,10 @@ function resizeCanvas() {
   els.canvas.width = Math.max(1, Math.round(rect.width * dpr));
   els.canvas.height = Math.max(1, Math.round(rect.height * dpr));
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  invalidateStatic();
 }
-function W() { return els.canvas.getBoundingClientRect().width; }
-function H() { return els.canvas.getBoundingClientRect().height; }
+function W() { return state.view.vw ?? els.canvas.getBoundingClientRect().width; }
+function H() { return state.view.vh ?? els.canvas.getBoundingClientRect().height; }
 
 function fitView() {
   if (!state.bounds || !state.cells.length) return;
@@ -247,9 +327,9 @@ function applyViewAnim(ts) {
 function project(x, y) {
   return { sx: (x - state.view.cx) * state.view.scale + W() / 2, sy: (y - state.view.cy) * state.view.scale + H() / 2 };
 }
-function visibleCells() {
+function visibleCells(pad = 1) {
   const cx = state.view.cx, cy = state.view.cy, s = state.view.scale;
-  const vw = W() / 2 / s + 2, vh = H() / 2 / s + 2;
+  const vw = W() / 2 / s * pad + 2, vh = H() / 2 / s * pad + 2;
   return state.cells.filter((c) =>
     Math.abs(c.x - cx) <= vw && Math.abs(c.y - cy) <= vh &&
     state.tenantsOn[c.tenant] !== false && (state.soloTenant === null || c.tenant === state.soloTenant) &&
@@ -292,20 +372,22 @@ function draw() {
   ctx.clearRect(0, 0, w, h);
   drawGrid(w, h);
   const s = state.view.scale;
-  if (!state.soloTenant) drawTenantRegions(s);
-  tactSurveyLayer(s);
+  LQ = false; // 底图缓存始终全质量渲染（重建频率低）
+  const bs = bucketScale(s);
+  if (staticNeedsRebuild(bs)) renderStaticCache(bs);
+  blitStatic();
+  LQ = !!state.viewAnim; // 动画期间仅动态层降级：关 shadowBlur / 高成本细节
+  const replayActive = replay.data && replay.loadedFor === state.soloTenant;
   tactPatrolLayer(s);
   tactPlanLayer(s);
   tactDrawEventFx(s);
   const drawCells = visibleCells();
-  const buckets = { obstacle: [], resource: [], unit: [], core: [] };
-  const replayActive = replay.data && replay.loadedFor === state.soloTenant;
+  const buckets = { unit: [], core: [] };
   for (const c of drawCells) {
     if (replayActive && (c.type === 'unit' || c.type === 'core')) continue; // 回放接管单位/核心
     if (buckets[c.type]) buckets[c.type].push(c);
   }
-  drawObstacles(buckets.obstacle, s);
-  drawResources(buckets.resource, s);
+  if (!replayActive) drawMovementDashes(buckets.unit, s);
   if (!replayActive) drawUnits(buckets.unit, s);
   if (!replayActive) drawCores(buckets.core, s);
   if (!replayActive) drawLiveTrails(s);
@@ -530,8 +612,7 @@ function drawResources(cells, s) {
       const p = project(c.x, c.y);
       ctx.save();
       ctx.globalAlpha = cellAlpha(c, 0.55);
-      ctx.shadowColor = 'rgba(87,189,132,.35)';
-      ctx.shadowBlur = 3;
+      if (!LQ) { ctx.shadowColor = 'rgba(87,189,132,.35)'; ctx.shadowBlur = 3; }
       const path = SPRITE.crystal[hash2(c.x, c.y, 13) % SPRITE.crystal.length];
       if (images[path]) sprite(images[path], p.sx, p.sy, Math.max(7, s * 0.92));
       else { ctx.fillStyle = '#57bd84'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.3), 0, Math.PI * 2); ctx.fill(); }
@@ -563,6 +644,59 @@ function ring(x, y, r, color, width = 1.5, dash = []) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
   ctx.setLineDash([]);
 }
+/** 全局联盟：加载 4 租户最新决策计划（算法 MOVE/SHOOT 虚线），不阻塞 poll。 */
+async function loadGlobalPlans() {
+  const results = await Promise.allSettled(TENANTS.map((t) => getJSON('/api/plan?tenant=' + t)));
+  results.forEach((r, i) => {
+    const t = TENANTS[i];
+    if (r.status === 'fulfilled' && r.value && r.value.plan) T().plans[t] = { tick: r.value.tick, plan: r.value.plan };
+  });
+}
+/** 单位移动方向虚线（实时 + 算法决策）：单位在 poll 之间插值移动时，
+ *  从上一轮位置到当前插值位置画虚线 + 箭头，直观显示"正在往哪走"。 */
+/** 屏幕线段保底长度：低缩放时太短的线段按方向拉长到 minLen（方向夸张但保持语义）。 */
+function extendScreen(a, b, minLen) {
+  const dx = b.sx - a.sx, dy = b.sy - a.sy;
+  const len = Math.hypot(dx, dy);
+  if (len >= minLen || len < 1e-3) return b;
+  const k = minLen / len;
+  return { sx: a.sx + dx * k, sy: a.sy + dy * k };
+}
+function drawMovementDashes(cells, s) {
+  if (!cells.length || s < 1.2) return;
+  const now = performance.now();
+  ctx.save();
+  ctx.lineWidth = Math.max(1, s * 0.09);
+  for (const c of cells) {
+    const m = state.unitPrev.get(c.tenant + ':' + c.id);
+    if (!m) continue;
+    const dist = Math.hypot(m.x - m.px, m.y - m.py);
+    if (dist < 0.4 || now - m.ts >= POLL_MS * 2) continue;
+    const pos = unitDrawPos(c);
+    const to = project(pos.x, pos.y);
+    // 单位当前插值位置 → 移动方向上的可见方向矢量（低缩放保底 10px）
+    const dx = pos.x - m.px, dy = pos.y - m.py;
+    const wl = Math.hypot(dx, dy) || 1;
+    const ext = Math.max(10, s * 1.1);
+    const tip = { sx: to.sx + dx / wl * ext, sy: to.sy + dy / wl * ext };
+    const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#c66370';
+    ctx.save();
+    ctx.strokeStyle = color; ctx.globalAlpha = 0.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(to.sx, to.sy); ctx.lineTo(tip.sx, tip.sy); ctx.stroke();
+    ctx.setLineDash([]);
+    const ang = Math.atan2(tip.sy - to.sy, tip.sx - to.sx);
+    const sz = Math.max(3, Math.min(10, s * 0.26));
+    ctx.fillStyle = color; ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(tip.sx, tip.sy);
+    ctx.lineTo(tip.sx - Math.cos(ang - 0.45) * sz, tip.sy - Math.sin(ang - 0.45) * sz);
+    ctx.lineTo(tip.sx - Math.cos(ang + 0.45) * sz, tip.sy - Math.sin(ang + 0.45) * sz);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+}
 /** 单位：高缩放素材+色环；低缩放紧凑租户色圆点（不放大图标遮挡地图）。
  *  官方细节：WORKER 载货条（绿）、受伤单位 HP 条、同格堆叠 ×2 徽章、选中波纹。 */
 function drawUnits(cells, s) {
@@ -593,10 +727,10 @@ function drawUnits(cells, s) {
       if (state.soloTenant && T().selected && T().selected.obj && T().selected.obj.id === c.id) {
         drawSelectionRipple(s, p.sx, p.sy, s, size, c.id);
       }
-      if (c.unitType === 'WORKER' && s >= 8) drawWorkerCargo(s, p.sx, p.sy, s, c.cargo ?? 0);
-      if (typeof c.hp === 'number' && s >= 10) drawUnitHealth(s, p.sx, p.sy + size * 0.5, s, c.hp, maxUnitHp(c.unitType));
+      if (c.unitType === 'WORKER' && s >= 8 && !LQ) drawWorkerCargo(s, p.sx, p.sy, s, c.cargo ?? 0);
+      if (typeof c.hp === 'number' && s >= 10 && !LQ) drawUnitHealth(s, p.sx, p.sy + size * 0.5, s, c.hp, maxUnitHp(c.unitType));
       const stack = byCell.get(c.x + ',' + c.y) || [];
-      if (stack.length > 1) drawStackBadge(s, p.sx, p.sy - size * 0.7, s, stack.length, color);
+      if (stack.length > 1 && !LQ) drawStackBadge(s, p.sx, p.sy - size * 0.7, s, stack.length, color);
     }
     return;
   }
@@ -679,10 +813,10 @@ function drawCoreSprite(c, s) {
   ctx.save();
   ctx.globalAlpha = cellAlpha(c, 0.85);
   if (c.controlled) {
-    ctx.shadowColor = color; ctx.shadowBlur = 12;
+    if (!LQ) { ctx.shadowColor = color; ctx.shadowBlur = 12; }
   } else {
     ctx.globalAlpha *= 0.85;
-    ctx.shadowColor = color; ctx.shadowBlur = 6;
+    if (!LQ) { ctx.shadowColor = color; ctx.shadowBlur = 6; }
   }
   if (images[SPRITE.core]) sprite(images[SPRITE.core], p.sx, p.sy, size);
   else {
@@ -708,13 +842,13 @@ function drawCoreSprite(c, s) {
     drawSelectionRipple(s, p.sx, p.sy, s, size, c.id);
   }
   // 拥有者标签（官方 @username）
-  if (s >= 10 && c.owner) drawCoreOwnerLabel(s, p.sx, p.sy - size * 0.86, s, c.owner, c.controlled);
+  if (s >= 10 && c.owner && !LQ) drawCoreOwnerLabel(s, p.sx, p.sy - size * 0.86, s, c.owner, c.controlled);
   // 盾条 + 血条（官方 drawMeterBar；携带冠军信标时盾上限 10）
   const shieldMax = 10;
-  if (typeof c.shield === 'number' && s >= 8) {
+  if (typeof c.shield === 'number' && s >= 8 && !LQ) {
     drawMeterBar(s, p.sx, p.sy + size * 0.56, s, c.shield, shieldMax, '#8f91c7', '#c7c8e7', `${c.shield} SHD`);
   }
-  if (typeof c.hp === 'number' && s >= 8) {
+  if (typeof c.hp === 'number' && s >= 8 && !LQ) {
     const color2 = c.hp > 3 ? '#76b889' : c.hp > 1 ? '#d8b64e' : '#c66370';
     drawMeterBar(s, p.sx, p.sy + size * 0.72, s, c.hp, 5, color2, '#d4d4d8', `${c.hp}/${5}`);
   }
@@ -879,6 +1013,7 @@ function renderTenantToggles() {
 }
 function toggleSolo(tenant) {
   state.soloTenant = state.soloTenant === tenant ? null : tenant;
+  invalidateStatic();
   if (state.soloTenant) {
     fitSolo(state.soloTenant);
     tactShowTenant(tenant);
@@ -912,6 +1047,7 @@ async function tactShowTenant(tenant) {
   tactRenderPending();
   tactRefreshActivity(tenant);
   tactRenderRespawn(tenant);
+  invalidateStatic();
   draw();
 }
 /** 战术层实时刷新（2026-08-07）：聚焦单租户时每轮 poll 重取世界+计划，
@@ -1230,7 +1366,7 @@ function bindEvents() {
     const wy = state.view.cy + (sy - rect.height / 2) / state.view.scale;
     const tx = wx - (sx - rect.width / 2) / ns;
     const ty = wy - (sy - rect.height / 2) / ns;
-    animateView({ cx: tx, cy: ty, scale: ns }, 130);
+    animateView({ cx: tx, cy: ty, scale: ns }, 150);
   }
   els.canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -1244,12 +1380,13 @@ function bindEvents() {
   $('#fitBtn').addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
   // 图层
   document.querySelectorAll('#layerToggles input').forEach((el) => {
-    el.addEventListener('change', () => { state.layers[el.dataset.layer] = el.checked; draw(); });
+    el.addEventListener('change', () => { state.layers[el.dataset.layer] = el.checked; invalidateStatic(); draw(); });
   });
   // 租户开关
   els.tenantToggles.addEventListener('change', (e) => {
     if (e.target.matches('input[data-tenant]')) {
       state.tenantsOn[e.target.dataset.tenant] = e.target.checked;
+      invalidateStatic();
       draw();
     }
   });
@@ -1259,7 +1396,7 @@ function bindEvents() {
     if (card) toggleSolo(card.dataset.tenant);
   });
   // 视图切换
-  els.viewGlobal.addEventListener('click', () => { state.soloTenant = null; fitView(); renderTenantCards(); els.viewGlobal.classList.add('active'); });
+  els.viewGlobal.addEventListener('click', () => { state.soloTenant = null; invalidateStatic(); fitView(); renderTenantCards(); els.viewGlobal.classList.add('active'); });
   els.viewFit.addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
   // 回放控制
   els.rbPlay.addEventListener('click', replayToggle);
@@ -1313,6 +1450,9 @@ async function boot() {
   let lastAnim = 0;
   const animLoop = (ts) => {
     updateCommandCountdown();
+    // 视图动画与回放可并行：回放自动播放不再饿死 fitSolo/zoom 动画（修复聚焦时视图冻结在半路）
+    const animating = !!state.viewAnim;
+    if (animating) applyViewAnim(ts);
     if (replay.data && replay.playing) {
       const elapsed = ts - replay.tickStart;
       replay.progress = Math.min(1, elapsed / (TICK_MS / replay.speed));
@@ -1323,8 +1463,7 @@ async function boot() {
       }
       updateReplayUI();
       draw();
-    } else if (state.viewAnim) {
-      applyViewAnim(ts);
+    } else if (animating) {
       draw();
     } else if (ts - lastAnim > 120 && ((state.cells.length && state.layers.unit) || (state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
       lastAnim = ts;
@@ -1985,69 +2124,89 @@ function tactPatrolLayer(s) {
  *  从最新决策计划绘制每个受控单位的 MOVE/SWEEP/SHOOT 标记 + Core START_MOVE 方向——
  *  让"单位在动/在打"无需点选即可在地图上可见。 */
 function tactPlanLayer(s) {
-  if (!state.soloTenant || !state.layers.plan) return;
+  if (!state.layers.plan) return;
   const tac = T();
-  const plan = tac.plan && tac.plan.plan;
-  const world = tac.worlds[state.soloTenant];
-  if (!plan || !world) return;
-  const byId = new Map();
-  for (const o of world.state.objects) {
-    if (o.kind === 'UNIT' || o.kind === 'CORE') if (o.id && o.position) byId.set(o.id, o);
-  }
-  const color = TENANT_COLORS[state.soloTenant] ?? '#4591c5';
+  const solo = state.soloTenant;
+  const scopes = solo ? [solo] : TENANTS;
+  const colorOf = (t) => TENANT_COLORS[t] ?? '#4591c5';
   const stepOf = (dir) => TACT_STEPS.find((t) => t.d === dir);
-  const unitActions = plan.unitActions ?? plan.unit_actions ?? {};
-  ctx.save();
-  for (const [id, action] of Object.entries(unitActions)) {
-    const o = byId.get(id);
-    if (!o || o.controlled !== true || !o.position) continue;
-    const from = project(o.position[0], o.position[1]);
-    if (action.type === 'MOVE' && action.direction) {
-      const st = stepOf(action.direction);
-      if (!st) continue;
-      const to = project(o.position[0] + st.dx, o.position[1] + st.dy);
-      ctx.strokeStyle = color; ctx.globalAlpha = 0.75; ctx.lineWidth = 1.6;
-      ctx.beginPath(); ctx.moveTo(from.sx, from.sy); ctx.lineTo(to.sx, to.sy); ctx.stroke();
-      const ang = Math.atan2(to.sy - from.sy, to.sx - from.sx);
-      const sz = Math.max(3, s * 0.2);
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(to.sx, to.sy);
-      ctx.lineTo(to.sx - Math.cos(ang - 0.5) * sz, to.sy - Math.sin(ang - 0.5) * sz);
-      ctx.lineTo(to.sx - Math.cos(ang + 0.5) * sz, to.sy - Math.sin(ang + 0.5) * sz);
-      ctx.closePath(); ctx.fill();
-      ctx.globalAlpha = 1;
-    } else if (action.type === 'SWEEP' && action.direction) {
-      const st = stepOf(action.direction);
-      if (!st) continue;
-      const tp = project(o.position[0] + st.dx, o.position[1] + st.dy);
-      ring(tp.sx, tp.sy, Math.max(4, s * 0.32), 'rgba(216,182,78,.85)', 1.8);
-    } else if (action.type === 'SHOOT' && action.expectedCell) {
-      const to = project(action.expectedCell[0], action.expectedCell[1]);
-      ctx.strokeStyle = 'rgba(198,99,112,.9)'; ctx.globalAlpha = 0.9; ctx.lineWidth = 1.5;
-      ctx.setLineDash([3, 3]);
-      ctx.beginPath(); ctx.moveTo(from.sx, from.sy); ctx.lineTo(to.sx, to.sy); ctx.stroke();
-      ctx.setLineDash([]);
-      ring(to.sx, to.sy, Math.max(4, s * 0.32), 'rgba(198,99,112,.9)', 1.6);
-      ctx.globalAlpha = 1;
+  const dash = (from, to, color, alpha, width) => {
+    ctx.save();
+    ctx.strokeStyle = color; ctx.globalAlpha = alpha; ctx.lineWidth = width;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(from.sx, from.sy); ctx.lineTo(to.sx, to.sy); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  };
+  const arrow = (from, to, color) => {
+    const ang = Math.atan2(to.sy - from.sy, to.sx - from.sx);
+    const sz = Math.max(3, s * 0.2);
+    ctx.save();
+    ctx.fillStyle = color; ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(to.sx, to.sy);
+    ctx.lineTo(to.sx - Math.cos(ang - 0.5) * sz, to.sy - Math.sin(ang - 0.5) * sz);
+    ctx.lineTo(to.sx - Math.cos(ang + 0.5) * sz, to.sy - Math.sin(ang + 0.5) * sz);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  };
+  let drew = false;
+  for (const tenant of scopes) {
+    const plan = solo ? tac.plan?.plan : tac.plans?.[tenant];
+    if (!plan) continue;
+    // byId：优先精确 world（单租户）；全局用合并测绘 cells 的单位/核心位置
+    let byId = new Map();
+    const world = tac.worlds[tenant];
+    if (world && world.state?.objects) {
+      for (const o of world.state.objects) if ((o.kind === 'UNIT' || o.kind === 'CORE') && o.id && o.position) byId.set(o.id, o);
+    } else {
+      for (const c of state.cells) {
+        if (c.tenant !== tenant || !c.id) continue;
+        if (c.type === 'unit') byId.set(c.id, { id: c.id, position: [c.x, c.y], controlled: c.controlled, kind: 'UNIT' });
+        else if (c.type === 'core') byId.set(c.id, { id: c.id, position: [c.x, c.y], controlled: c.controlled, kind: 'CORE' });
+      }
     }
-  }
-  const coreAction = plan.coreAction ?? plan.core_action;
-  if (coreAction && (coreAction.type === 'START_MOVE' || coreAction.type === 'MOVE') && coreAction.direction) {
-    const coreObj = world.state.objects.find((o) => o.kind === 'CORE' && o.controlled === true);
-    const core = coreObj && coreObj.id ? byId.get(coreObj.id) : null;
-    if (core && core.position) {
+    const color = colorOf(tenant);
+    const unitActions = plan.unitActions ?? plan.unit_actions ?? {};
+    for (const [id, action] of Object.entries(unitActions)) {
+      const o = byId.get(id);
+      if (!o || o.controlled !== true || !o.position) continue;
+      const from = project(o.position[0], o.position[1]);
+      if (action.type === 'MOVE' && action.direction) {
+        const st = stepOf(action.direction);
+        if (!st) continue;
+        // 虚线 2 格（低缩放保底 9px）+ 箭头：算法决策的移动方向一眼可见
+        const to = extendScreen(from, project(o.position[0] + st.dx * 2, o.position[1] + st.dy * 2), 9);
+        dash(from, to, color, 0.65, 1.5);
+        arrow(from, to, color);
+        drew = true;
+      } else if (action.type === 'SWEEP' && action.direction) {
+        const st = stepOf(action.direction);
+        if (!st) continue;
+        const tp = project(o.position[0] + st.dx, o.position[1] + st.dy);
+        ring(tp.sx, tp.sy, Math.max(4, s * 0.32), 'rgba(216,182,78,.85)', 1.8);
+        drew = true;
+      } else if (action.type === 'SHOOT' && action.expectedCell) {
+        const to = extendScreen(from, project(action.expectedCell[0], action.expectedCell[1]), 9);
+        dash(from, to, 'rgba(198,99,112,.9)', 0.9, 1.5);
+        ring(to.sx, to.sy, Math.max(4, s * 0.32), 'rgba(198,99,112,.9)', 1.6);
+        drew = true;
+      }
+    }
+    const coreAction = plan.coreAction ?? plan.core_action;
+    if (coreAction && (coreAction.type === 'START_MOVE' || coreAction.type === 'MOVE') && coreAction.direction) {
       const st = stepOf(coreAction.direction);
-      if (st) {
-        const from = project(core.position[0], core.position[1]);
-        const to = project(core.position[0] + st.dx, core.position[1] + st.dy);
-        ctx.strokeStyle = '#d9a62e'; ctx.lineWidth = 2; ctx.globalAlpha = 0.9;
-        ctx.beginPath(); ctx.moveTo(from.sx, from.sy); ctx.lineTo(to.sx, to.sy); ctx.stroke();
-        ctx.globalAlpha = 1;
+      const coreObj = [...byId.values()].find((o) => o.kind === 'CORE' && o.controlled === true);
+      if (st && coreObj && coreObj.position) {
+        const from = project(coreObj.position[0], coreObj.position[1]);
+        const to = extendScreen(from, project(coreObj.position[0] + st.dx * 2, coreObj.position[1] + st.dy * 2), 12);
+        dash(from, to, '#d9a62e', 0.9, 2);
+        arrow(from, to, '#d9a62e');
+        drew = true;
       }
     }
   }
-  ctx.restore();
+  if (!drew) return;
 }
 
 /** 资源活动面板（官方 ResourceActivity 移植）：最近资源/战斗/信标事件，左下角悬浮，不挡交互。 */
