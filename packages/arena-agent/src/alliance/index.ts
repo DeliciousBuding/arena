@@ -6,3 +6,5 @@ export * from "./types.ts";
 export * from "./sightings.ts";
 export * from "./counts.ts";
 export * from "./threat-field.ts";
+export * from "./roster.ts";
+export * from "./snapshot.ts";
