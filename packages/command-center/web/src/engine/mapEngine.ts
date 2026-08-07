@@ -326,17 +326,30 @@ async function loadSprites() {
 /* ---------- 数据拉取 ---------- */
 
 async function poll() {
+  // 逐端点容错（2026-08-08）：单个端点慢/失败不再整轮 abort——并行 agent 高 CPU 时
+  // overview/map 可能 >8s，原来 Promise.all 一挂全挂导致"界面卡住/单位冻结"。
+  // 成功才覆盖 state，失败保留上一轮数据（地图/单位不闪没）。
+  const [oR, mR, iR] = await Promise.allSettled([
+    getJSON('/api/overview', 30000), getJSON('/api/map', 30000), getJSON('/api/intel', 30000),
+  ]);
+  const overview = oR.status === 'fulfilled' ? oR.value : null;
+  const map = mR.status === 'fulfilled' ? mR.value : null;
+  const intel = iR.status === 'fulfilled' ? iR.value : null;
   try {
-    const [overview, map, intel] = await Promise.all([
-      getJSON('/api/overview'), getJSON('/api/map'), getJSON('/api/intel').catch(() => null),
-    ]);
-    state.overview = overview;
+    if (overview) state.overview = overview;
+    if (intel) { state.intel = intel; emit('intel', intel); }
+    if (!map) {
+      // 地图端点失败：保留上一轮 cells 继续渲染（插值/动画不中断），下轮 poll 恢复
+      captureUnitPrev();
+      if (!state.view.ready && state.bounds && state.cells.length) fitView();
+      emit('overview', state.overview);
+      draw();
+      return;
+    }
     state.map = map;
     state.cells = map.cells ?? [];
     state.beacons = map.beacons ?? [];
     state.coreTrails = map.coreTrails ?? [];
-    state.intel = intel ?? null;
-    emit('intel', state.intel);
     state.bounds = map.bounds ?? null;
     state.cellIndex = new Map();
     // 索引键 = `tenant:x,y`（与后端 loadMergedMap 对齐，2026-08-08）：
