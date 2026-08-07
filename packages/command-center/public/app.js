@@ -659,11 +659,16 @@ function drawCoreSprite(c, s) {
     drawMeterBar(s, p.sx, p.sy + size * 0.72, s, c.hp, 5, color2, '#d4d4d8', `${c.hp}/${5}`);
   }
 }
-/** 信标：视野内脉冲；视野外屏幕边缘方向指示（不撑爆自适应） */
+/** 信标：视野内脉冲；视野外屏幕边缘方向指示（不撑爆自适应）。
+ *  全局视图下按位置去重（4 租户共享同一世界信标，避免 4 个金色精灵叠在同一格）。 */
 function drawBeacons(s) {
+  const seenPos = new Set();
   for (const b of state.beacons) {
     if (state.tenantsOn[b.tenant] === false) continue;
     if (state.soloTenant !== null && b.tenant !== state.soloTenant) continue;
+    const key = b.x + ',' + b.y;
+    if (!state.soloTenant && seenPos.has(key)) continue;
+    seenPos.add(key);
     const p = project(b.x, b.y);
     const w = W(), h = H();
     const offscreen = p.sx < -70 || p.sx > w + 70 || p.sy < -70 || p.sy > h + 70;
@@ -1586,7 +1591,7 @@ function tactRenderHud(tenant) {
     <span class="hud-label">${tenant.toUpperCase()} · HUD</span>
     <span class="hud-val"><img src="${UNIT_ICONS.resource}" alt="" /> ${st.resources ?? 0} <i>/ ${cap}</i></span>
     <span class="hud-val"><img src="${UNIT_ICONS.population}" alt="" /> ${st.population ?? 0}</span>
-    <span class="hud-val mono">tick ${st.tick ?? '—'}</span>
+    <span class="hud-val mono">tick ${world.tick ?? st.tick ?? '—'}</span>
   </div>${surveyRow}`;
 }
 /* ============ 回放引擎（连续 tick 快照 → 单位移动动画 + 15s 读条） ============ */
