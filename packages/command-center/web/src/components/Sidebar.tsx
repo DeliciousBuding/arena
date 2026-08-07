@@ -163,6 +163,90 @@ function ViewSwitch() {
   );
 }
 
+/* ---------------- 人类指挥状态（全局视图可见，4 租户） ---------------- */
+interface CmdStore { mode?: string; actions?: unknown[]; goals?: unknown[]; telemetry?: { applied?: string[]; rejected?: { unitId: string; reason: string }[]; satisfied?: string[] } | null }
+function useCommandStores(): Record<string, CmdStore> {
+  const [stores, setStores] = useState<Record<string, CmdStore>>({});
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      const results = await Promise.allSettled(TENANTS.map((t) => fetch("/api/commands?tenant=" + t, { cache: "no-store" }).then((r) => r.json())));
+      if (!alive) return;
+      const next: Record<string, CmdStore> = {};
+      results.forEach((r, i) => { if (r.status === "fulfilled") next[TENANTS[i]] = r.value as CmdStore; });
+      setStores(next);
+    };
+    load();
+    const timer = setInterval(load, 3000);
+    return () => { alive = false; clearInterval(timer); };
+  }, []);
+  return stores;
+}
+async function ccPostJson(path: string, body: unknown): Promise<boolean> {
+  try {
+    const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    return res.ok;
+  } catch { return false; }
+}
+function CommandStatusPanel() {
+  const stores = useCommandStores();
+  const engine = useEngine();
+  const total = TENANTS.reduce((acc, t) => {
+    const st = stores[t];
+    return acc + (st ? (st.actions?.length ?? 0) + (st.goals?.length ?? 0) : 0);
+  }, 0);
+  const anyOverride = TENANTS.some((t) => stores[t]?.mode === "override");
+  return (
+    <section className="panel cmd-panel">
+      <h3 className="panel-title">人类指挥 · HUMAN COMMAND
+        {total > 0 ? <span className="cmd-total mono" title="全联盟人类指令总数">{total}</span> : null}
+      </h3>
+      <div className="cmd-toggle-row">
+        <span className="cmd-toggle-label">{anyOverride ? "接管中 · 命令优先于 agent" : "已交还 agent 全权"}</span>
+        <button
+          type="button"
+          className={`btn cmd-toggle-btn${anyOverride ? " active" : ""}`}
+          title={anyOverride ? "一键交还 agent 全权（清空人类指令）" : "启用人类最高控制权"}
+          onClick={async () => {
+            const nextMode = anyOverride ? "disabled" : "override";
+            if (nextMode === "disabled" && total > 0 && !window.confirm("确认清空全部人类指令并交还 agent 全权？")) return;
+            for (const t of TENANTS) {
+              if (nextMode === "disabled") await ccPostJson("/api/command/clear", { tenant: t });
+              await ccPostJson("/api/command/mode", { tenant: t, mode: nextMode });
+            }
+            setTimeout(() => window.location.reload(), 400);
+          }}
+        >{anyOverride ? "交还 Agent" : "人类接管"}</button>
+      </div>
+      <ul className="cmd-list">
+        {TENANTS.map((t) => {
+          const st = stores[t];
+          const n = st ? (st.actions?.length ?? 0) + (st.goals?.length ?? 0) : 0;
+          const tele = st?.telemetry;
+          const applied = tele?.applied?.length ?? 0;
+          const rej = tele?.rejected?.length ?? 0;
+          const done = tele?.satisfied?.length ?? 0;
+          const color = TENANT_COLORS[t] ?? "#999";
+          return (
+            <li key={t} className={"cmd-row" + (n > 0 ? " active" : "")} data-tenant={t}>
+              <span className="cmd-tenant" style={{ color }}>{t.toUpperCase()}</span>
+              <span className="cmd-n mono">{n} 指令</span>
+              <span className="cmd-tele mono">
+                {applied > 0 ? <b className="ok">✓{applied}</b> : null}
+                {rej > 0 ? <b className="no">✗{rej}</b> : null}
+                {done > 0 ? <b className="done">✓{done}</b> : null}
+                {n === 0 ? <span className="dim">—</span> : null}
+              </span>
+              <button type="button" className="btn cmd-clear" title={`清空 ${t.toUpperCase()} 人类指令`} disabled={n === 0}
+                onClick={async () => { await ccPostJson("/api/command/clear", { tenant: t }); setTimeout(() => window.location.reload(), 300); }}>清空</button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 /** 引擎把 fleetHud / assetPanel 写入这些容器（位于布局内，引擎 els 可解析）。 */
 function EngineContainers() {
   return (
@@ -180,6 +264,7 @@ export function Sidebar() {
   return (
     <aside id="sidebar">
       <TenantCards />
+      <CommandStatusPanel />
       <section className="panel"><h3 className="panel-title">图例</h3><Legend /></section>
       <section className="panel"><h3 className="panel-title">图层</h3><LayerToggles /></section>
       <section className="panel"><h3 className="panel-title">租户视图</h3><ViewSwitch /></section>
