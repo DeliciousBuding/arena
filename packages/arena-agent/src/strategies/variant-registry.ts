@@ -41,6 +41,12 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
       boundedRaid: true,
       rangerMemoryShot: true,
       strikeGroupReserve: true,
+      // 攻坚搜索补强（2026-08-07）：16 方位密集搜索（覆盖 off-diagonal 敌 Core
+      // 几何盲区——8 方位最近 Manhattan 7 > 视野 4）+ 同环 20 tick 时间预算强制
+      // 升环（破"争格/振荡永不外扩"）+ 敌 Core 记忆窗口 1200（发现即长时前压）。
+      militarySearchDense: true,
+      militaryRingHoldTicks: 20,
+      enemyCoreMemoryTicks: 1200,
     }),
   });
 

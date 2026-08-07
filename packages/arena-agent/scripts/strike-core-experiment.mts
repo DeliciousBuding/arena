@@ -14,6 +14,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runEpisode, type EpisodeTenant } from "../src/sim/harness/episode.ts";
+import { resolvePlannerVariant } from "../src/sim/tools/planner-variants.ts";
+import { DeterministicPlanner } from "../src/planning/deterministic-planner.ts";
 import type { MacroPolicy } from "../src/runtime/macro-policy.ts";
 
 const MANIFEST_PATH = "src/sim/contracts/rules-v0.14.json";
@@ -28,16 +30,6 @@ const SCENARIOS = [
 const SEEDS = [1, 2, 3];
 const TICKS = 300;
 const RESULT_FILE = "strike-core-result.txt";
-
-const STRIKE_CONFIG = {
-  aggression: "aggressive" as const,
-  attackForce: 6,
-  boundedRaid: true,
-  rangerMemoryShot: true,
-  strikeGroupReserve: true,
-  accumulateThreshold: 30,
-  vanguardRatio: 0.5,
-};
 
 const DEFENSIVE_POLICY: MacroPolicy = {
   posture: "balanced",
@@ -68,23 +60,23 @@ interface Outcome {
 
 function runScenario(scenarioPath: string, arm: Arm, seed: number): Outcome {
   const scenario = JSON.parse(readFileSync(scenarioPath, "utf-8"));
-  const p1Tenant: EpisodeTenant = {
-    id: "p1",
-    planner: "deterministic",
-    policy: arm === "defensive" ? DEFENSIVE_POLICY : AGGRESSIVE_POLICY,
-    plannerConfig: arm === "strike" ? STRIKE_CONFIG : {},
-  };
-  const p2Tenant: EpisodeTenant = {
-    id: "p2",
-    planner: "deterministic",
-    policy: DEFENSIVE_POLICY,
-  };
   const result = runEpisode({
     scenario: { ...scenario, seed },
     rulesPath: MANIFEST_PATH,
     seed,
     ticks: TICKS,
-    tenants: [p1Tenant, p2Tenant],
+    tenants: [
+      { id: "p1", planner: "deterministic", policy: arm === "defensive" ? DEFENSIVE_POLICY : AGGRESSIVE_POLICY },
+      { id: "p2", planner: "deterministic", policy: DEFENSIVE_POLICY },
+    ],
+    plannerFactory: (tenant) => {
+      if (tenant.id !== "p1") return new DeterministicPlanner();
+      if (arm === "defensive") return new DeterministicPlanner();
+      if (arm === "aggressive") {
+        return new DeterministicPlanner(undefined, undefined, undefined, undefined, 0);
+      }
+      return resolvePlannerVariant("strike-core-v1").create("p1");
+    },
   });
   let p1CoreAlive = true;
   let p2CoreAlive = true;
