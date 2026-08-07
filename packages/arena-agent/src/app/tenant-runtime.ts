@@ -660,6 +660,17 @@ export async function runTenant(
             : workerDistances.reduce((total, distance) => total + distance, 0) / workerDistances.length,
           failedEvents,
           events: outcome.state.events.map((e) => e.eventType),
+          humanOverride: outcome.humanOverride === undefined || outcome.humanOverride === null
+              || (!outcome.humanOverride.active && outcome.humanOverride.applied.length === 0
+                && outcome.humanOverride.rejected.length === 0 && outcome.humanOverride.satisfied.length === 0)
+            ? undefined
+            : {
+                active: outcome.humanOverride.active,
+                applied: outcome.humanOverride.applied,
+                rejected: outcome.humanOverride.rejected.map((r) => ({ unitId: r.unitId, reason: r.reason })),
+                satisfied: outcome.humanOverride.satisfied,
+                updatedAt: outcome.humanOverride.updatedAt ?? null,
+              },
         };
         outcomeWriter.write(outcomeRecord);
         // 死循环检测与自动跳出（2026-08-05 生产事故后）：StallDetector 多模式

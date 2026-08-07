@@ -75,6 +75,8 @@ const state = {
     eventFx: [],      // 回放/事件特效 [{ x, y, kind, text, born }]
     debris: [],       // 销毁碎片 [{ x, y, vx, vy, color, born, life }]
     fxSeq: 0,
+    // 人类指令遥测追踪：{ tenant -> { sig, lastAppliedAt } }（拒绝/满足 toast 去重）
+    cmdTelemetry: {},
   },
 };
 
@@ -1714,6 +1716,7 @@ function tactRenderActionDialog() {
   const goalRow = sgoal
     ? `<div class="act-goal"><span>${sgoal.kind === 'mine' ? '采矿任务' : '移动任务'} → [${sgoal.target[0]}, ${sgoal.target[1]}] · 人类指挥</span><button data-cancel-goal>清除指令</button></div>`
     : (tac.moveGoals[obj.id] ? `<div class="act-goal"><span>本地路线 → [${tac.moveGoals[obj.id][0]}, ${tac.moveGoals[obj.id][1]}]</span></div>` : '');
+  const unitTele = unitTelemetryOf(sel.tenant, obj.id);
   const cmdStatus = commandStatusText(sel.tenant);
   const modeBadge = tac.mode ? `<div class="act-mode-badge">${tac.mode === 'MOVE' ? '点矿=自动采矿任务 · 点空地=移动任务' : tac.mode === 'SHOOT' ? '点击敌方单位 → 锁定并提交攻击' : '点击单位相邻格选择清扫方向并提交'}</div>` : '';
   els.actionDialog.innerHTML = `
@@ -1737,6 +1740,7 @@ function tactRenderActionDialog() {
     }).join('')}</div>
     ${costHtml}
     ${goalRow}
+    ${unitTele ? `<div class="act-goal act-tele">${unitTele}</div>` : ''}
     ${cmdStatus ? `<div class="act-mode-badge cmd-status">${cmdStatus}</div>` : ''}
     <div class="act-note">${isCore ? '核心 · 生产/移动为真实命令' : obj.unit_type === 'RANGER' ? '游侠 · 远程射击：点敌方目标提交攻击' : obj.unit_type === 'VANGUARD' ? '先锋 · 近战：点相邻格提交清扫' : '工人 · 点矿=自动采矿（到达挖、满仓回）'} · 人类指挥最高优先</div>
   `;
@@ -1861,12 +1865,22 @@ function tactRenderHud(tenant) {
     <span class="hud-val dim">${survey.caseCount} case · tick ${survey.tickMax}</span>
   </div>` : '';
   const cmdStatus = commandStatusText(tenant);
+  const tele = T().commands && T().commands.telemetry;
+  const hudCmd = cmdStatus
+    ? `<div class="hud-row hud-survey"><span class="hud-label">指挥</span><span class="hud-val" style="color:var(--warn)">${cmdStatus}</span>${
+        tele && (tele.applied ?? []).length ? `<span class="hud-val" style="color:var(--success)" title="已生效单位">${tele.applied.length}✓</span>` : ''
+      }${
+        tele && (tele.satisfied ?? []).length ? `<span class="hud-val" style="color:var(--cyan-signal, #5fd4e8)" title="已完成意图">${tele.satisfied.length}✓</span>` : ''
+      }${
+        tele && (tele.rejected ?? []).length ? `<span class="hud-val" style="color:var(--danger)" title="被拒指令">${tele.rejected.length}✗</span>` : ''
+      }</div>`
+    : '';
   els.fleetHud.innerHTML = `<div class="hud-row">
     <span class="hud-label">${tenant.toUpperCase()} · HUD</span>
     <span class="hud-val"><img src="${UNIT_ICONS.resource}" alt="" /> ${st.resources ?? 0} <i>/ ${cap}</i></span>
     <span class="hud-val"><img src="${UNIT_ICONS.population}" alt="" /> ${st.population ?? 0}</span>
     <span class="hud-val mono">tick ${world.tick ?? st.tick ?? '—'}</span>
-  </div>${surveyRow}${cmdStatus ? `<div class="hud-row hud-survey"><span class="hud-label">指挥</span><span class="hud-val" style="color:var(--warn)">人类已接管 · 命令优先于 agent</span></div>` : ''}`;
+  </div>${surveyRow}${hudCmd}`;
 }
 /* ============ 回放引擎（连续 tick 快照 → 单位移动动画 + 15s 读条） ============ */
 async function replayLoad(tenant) {
@@ -2768,18 +2782,61 @@ async function tactRefreshCommands(tenant) {
   const tac = T();
   try {
     const r = await getJSON(`/api/commands?tenant=${tenant}`);
+    const prev = tac.commands;
     tac.commands = r;
+    const tele = r && r.telemetry ? r.telemetry : null;
+    if (tele) consumeCommandTelemetry(tenant, tele, prev && prev.telemetry ? prev.telemetry : null);
   } catch { /* 忽略 */ }
   tactRenderActionDialog();
   tactRenderHud(tenant);
 }
-/** 人类指令状态快照：{ mode, actions:[], goals:[], updatedAt }。 */
+/** 消费人类指令遥测：出现新拒绝/新完成时 toast 提示（按签名去重，防重复弹）。 */
+function consumeCommandTelemetry(tenant, tele, prevTele) {
+  const tac = T();
+  const sig = JSON.stringify({ a: tele.applied ?? [], r: tele.rejected ?? [], s: tele.satisfied ?? [] });
+  const prevSig = prevTele ? JSON.stringify({ a: prevTele.applied ?? [], r: prevTele.rejected ?? [], s: prevTele.satisfied ?? [] }) : null;
+  const seen = tac.cmdTelemetry[tenant];
+  if (seen && seen.sig === sig) return; // 同一状态不重复提示
+  tac.cmdTelemetry[tenant] = { sig, at: Date.now() };
+  if (prevSig === null) return; // 首次加载不弹历史
+  const rejected = (tele.rejected ?? []).filter((rj) => !(prevTele?.rejected ?? []).some((p) => p.unitId === rj.unitId));
+  const satisfied = (tele.satisfied ?? []).filter((u) => !(prevTele?.satisfied ?? []).includes(u));
+  const applied = (tele.applied ?? []).filter((u) => !(prevTele?.applied ?? []).includes(u));
+  if (rejected.length) {
+    const rs = rejected.map((rj) => `[${shortId(rj.unitId)}] ${escapeHtml(rj.reason)}`).join('；');
+    toast(`指令被拒绝：${rs}`, 'warn');
+  }
+  if (satisfied.length) toast(`意图完成 · ${satisfied.map((u) => shortId(u)).join('、')} 已交还 agent`, 'info');
+  else if (!rejected.length && applied.length) toast(`人类指令已生效 · ${applied.map((u) => shortId(u)).join('、')}`, 'info');
+}
+/** 人类指令状态快照：{ mode, actions:[], goals:[], updatedAt, telemetry }。 */
 function commandStatusText(tenant) {
   const c = T().commands;
   if (!c || c.mode !== 'override') return null;
   const n = (c.actions?.length ?? 0) + (c.goals?.length ?? 0);
-  if (n === 0) return null;
-  return `人类指挥已接管 · ${n} 条指令`;
+  const tele = c.telemetry;
+  let parts = [];
+  if (n > 0) parts.push(`${n} 条指令`);
+  if (tele) {
+    if ((tele.applied ?? []).length) parts.push(`${tele.applied.length} 已生效`);
+    if ((tele.rejected ?? []).length) parts.push(`${tele.rejected.length} 被拒`);
+    if ((tele.satisfied ?? []).length) parts.push(`${tele.satisfied.length} 已完成`);
+  }
+  if (!parts.length) return null;
+  return `人类指挥 · ${parts.join(' · ')}`;
+}
+/** 单位级人类指令遥测状态行（HTML）：已生效 / 已完成 / 被拒+原因。 */
+function unitTelemetryOf(tenant, unitId) {
+  const c = T().commands;
+  if (!c || !c.telemetry) return null;
+  const t = c.telemetry;
+  const parts = [];
+  if ((t.applied ?? []).includes(unitId)) parts.push('<b class="ok">已生效</b>');
+  if ((t.satisfied ?? []).includes(unitId)) parts.push('<b class="done">已完成</b>');
+  const rej = (t.rejected ?? []).find((rj) => rj.unitId === unitId);
+  if (rej) parts.push(`<b class="no">被拒</b><span class="dim">${escapeHtml(rej.reason)}</span>`);
+  if (!parts.length) return null;
+  return `人类指挥 · ${parts.join(' ')}`;
 }
 function commandGoalOf(tenant, unitId) {
   const c = T().commands;

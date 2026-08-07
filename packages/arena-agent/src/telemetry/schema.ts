@@ -114,6 +114,16 @@ export const OutcomeTraceSchema = Type.Object({
   healCount: Type.Optional(Type.Integer()),
   unitLossCount: Type.Optional(Type.Integer()),
   events: Type.Array(Type.String()),
+  humanOverride: Type.Optional(Type.Object({
+    active: Type.Boolean(),
+    applied: Type.Array(Type.String()),
+    rejected: Type.Array(Type.Object({
+      unitId: Type.String(),
+      reason: Type.String(),
+    })),
+    satisfied: Type.Array(Type.String()),
+    updatedAt: Type.Union([Type.String(), Type.Null()]),
+  })),
 });
 
 /** 返回首个错误的字段路径 + 消息（无错误返回 null）。 */

@@ -764,18 +764,17 @@ function writeHumanStore(tenant, store) {
   writeFileSync(join(dir, `${tenant}.json`), JSON.stringify(out, null, 2));
   return out;
 }
-/** 从 outcome.jsonl 尾部读取最近一条 humanOverride 遥测（applied/rejected/satisfied）。 */
+/** 从 outcome.jsonl 读取最新一条 humanOverride 遥测（applied/rejected/satisfied）。
+ *  只取最后一行（最新 tick）：指令清空后新 outcome 无 humanOverride → null（避免 stale 拒绝状态常驻）。 */
 function latestHumanOverride(tenant) {
   const file = join(telemetryDir(tenant), "outcome.jsonl");
   if (!existsSync(file)) return null;
-  const rows = readJsonlTail(file, 12);
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const r = rows[i];
-    if (r && r.humanOverride && (r.humanOverride.active || (r.humanOverride.rejected ?? []).length > 0 || (r.humanOverride.satisfied ?? []).length > 0)) {
-      return { tick: r.tick ?? null, ...r.humanOverride };
-    }
-  }
-  return null;
+  const rows = readJsonlTail(file, 4);
+  const last = rows[rows.length - 1] ?? null;
+  if (!last || !last.humanOverride) return null;
+  const h = last.humanOverride;
+  if (!h.active && (h.applied ?? []).length === 0 && (h.rejected ?? []).length === 0 && (h.satisfied ?? []).length === 0) return null;
+  return { tick: last.tick ?? null, ...h };
 }
 
 const VALID_ACTION_TYPES = new Set([
@@ -991,9 +990,9 @@ const server = createServer(async (req, res) => {
       return res.end(body);
     }
     if (pathname === "/") {
-      const body = readFileSync(join(PUBLIC_DIR, "index.html"));
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      return res.end(body);
+      // 统一前端入口：重定向到 React 版 /app/（唯一真实指挥 UI；legacy public/ 仅作样式/素材源）
+      res.writeHead(302, { location: "/app/" });
+      return res.end();
     }
     const file = join(PUBLIC_DIR, pathname.slice(1));
     if (existsSync(file) && statSync(file).isFile()) {
