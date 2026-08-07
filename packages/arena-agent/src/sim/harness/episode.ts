@@ -90,6 +90,17 @@ export interface EpisodeConfig {
   ) => Plan | null | undefined;
   /** Optional read-only performance observer; never participates in simulation semantics. */
   readonly onTickSettled?: (measurement: EpisodeTickMeasurement) => void;
+  /**
+   * Alliance 前置钩子（2026-08-08）：在每 tick 的 per-tenant planner 循环前调用，
+   * 传入 settling 前的完整 SimWorld。供 alliance 层采集 member reports 和
+   * 触发 director replan（director 必须在 tenant planner 前运行以注入 directive）。
+   * 只读回调，不参与模拟语义。
+   */
+  readonly onBeforePlanners?: (args: {
+    readonly tick: number;
+    readonly world: SimWorld;
+    readonly rules: RulesManifest;
+  }) => void;
   /** Synthetic calibration 记录钩子（2026-08-07）：每 tick 结算后回调
    *  before/after 世界 + plans + events——synthetic 对打数据管道用
    *  （projectPlayerState 生成官方格式 calibration case）。只读，不参与
@@ -234,6 +245,10 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
   for (let step = 0; step < config.ticks; step += 1) {
     const tickStarted = performance.now();
     const before = world;
+
+    // Alliance 前置钩子：在 per-tenant planner 前提供全景 SimWorld
+    config.onBeforePlanners?.({ tick: before.tick, world: before, rules });
+
     const settlementPlans = new Map<string, Plan>();
     const plans: Record<string, Plan> = {};
     const planHashes: Record<string, string> = {};
