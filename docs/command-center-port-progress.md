@@ -70,3 +70,25 @@ mapEngine.js 对应函数。
    优先级低。
 3. 信标轨迹图层独立开关（当前 `layers.beacon` 同时管精灵+轨迹，可拆）。
 4. 全流程 Playwright 回归脚本入库（当前验证脚本在 `C:\Users\Ding\tmp\cc-*.cjs`）。
+
+## 5. 2026-08-08 续：官方子集审计 + 侧栏 HUD 可见性修复
+
+### 5.1 官方 web 完整子集审计（commit f656002）
+- 逐项对照 `reference/arena-hero-web/src` 全部 60+ 文件，见
+  `docs/command-center-official-subset.md`。
+- 结论：核心组件 13/13、核心 lib 15/15、交互细节 5/5 全覆盖，本面板是官方超集
+  （人类最高控制权 / 4 租户联盟测绘 / 回放引擎 / 威胁雷达 / 信标+敌核轨迹）。
+- 跳过项均有场景理由（auth 账号、营销落地页、单局新手教学，与指挥台定位冲突）。
+
+### 5.2 侧栏 HUD 不可见 UX 修复（commit fca2cb5）
+- 问题：侧栏内容高（租户卡+图例+图层+视图 ≈1328px）把 fleetHud/assetPanel 推到
+  可视区外（relY≈1326/1516 vs 可视 751）——聚焦租户后用户看不到资源/测绘/舰队。
+- 修复：聚焦时侧栏 smooth-scroll 到 HUD；退出/返回全局时回顶部。
+- 实测：聚焦 t1 后 fleetHud relY 1326→259、assetPanel 1516→449（均可见）。
+
+### 5.3 并行 agent 边界（2026-08-08 状态）
+- 并行 agent 正独占：`lib/survey.ts`、`server.ts`、`public/style.css`、`DESIGN.md`、
+  `web/src/components/Sidebar.tsx`、`web/src/engine/mapEngine.js`（enemyMemory 敌情记忆层）。
+- 已验证：其 WIP 构建通过、不破坏已有功能（全流程冒烟 0 报错）、图层开关/持久化
+  对新图层兼容。**勿提交/勿覆盖这些文件的并行 WIP。**
+- 我的独立提交均未触碰上述文件。
