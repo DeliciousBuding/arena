@@ -1,7 +1,8 @@
 /**
  * 有界攻坚测试（2026-08-07，B6 竞品 "exceeds the bounded mission distance"
  * 对照）：boundedRaid——aggressive 敌 Core 记忆推进时，记忆位置距我方
- * Core 超上限（40 格 Chebyshev）= 远征送死 → 取消攻坚回 Core 守位；
+ * Core 超上限（64 格 Chebyshev，对齐官方 guide ASSAULT_HOME_CORE_DISTANCE）
+ * = 远征送死 → 取消攻坚回 Core 守位；
  * 近距记忆/可见敌人不受影响。默认关闭零回归。
  */
 
@@ -58,9 +59,10 @@ test("boundedRaid 默认关闭：远距记忆敌 Core 仍推进（历史行为�
   assert.deepEqual(plan.unitActions["v1"], { type: "MOVE", direction: "RIGHT" });
 });
 
-test("boundedRaid 开启：远距记忆敌 Core（>40 格）→ 取消攻坚回 Core", () => {
+test("boundedRaid 开启：远距记忆敌 Core（>64 格）→ 取消攻坚回 Core", () => {
   const planner = new SafetyPlanner(BOUNDED_CONFIG);
-  planner.decide({ state: makeState(1, [enemyCore([52, 0])]), policy: PRESSURE_POLICY });
+  // 敌 Core [70,0] 记忆距 p1 Core 70 > 64 → 远征送死回 Core
+  planner.decide({ state: makeState(1, [enemyCore([70, 0])]), policy: PRESSURE_POLICY });
   const plan = planner.decide({ state: makeState(2, []), policy: PRESSURE_POLICY });
   assert.equal(plan.intents["v1"], "vanguard_bounded_return");
   assert.deepEqual(plan.unitActions["v1"], { type: "MOVE", direction: "LEFT" }, "朝自家 Core 返回");
@@ -77,27 +79,37 @@ test("boundedRaid 开启：近距记忆敌 Core（≤40 格）→ 正常推进",
   };
   planner.decide({ state: nearState, policy: PRESSURE_POLICY });
   const plan = planner.decide({ state: makeState(2, []), policy: PRESSURE_POLICY });
-  assert.equal(plan.intents["v1"], "vanguard_pressure_memory", "12 格（≤40）不算远征");
+  assert.equal(plan.intents["v1"], "vanguard_pressure_memory", "12 格（≤64）不算远征");
 });
 
-test("boundedRaid 开启：边界 40 格不触发（>40 才超限）", () => {
+test("boundedRaid 开启：边界 64 格不触发（>64 才超限）", () => {
   const planner = new SafetyPlanner(BOUNDED_CONFIG);
-  // v1 [38,0] 视野内敌 Core [40,0]（记忆距 p1 Core 恰好 40 = 上限）→ 不超限
-  const boundary = makeState(1, [enemyCore([40, 0])]);
+  // v1 [62,0] 视野内敌 Core [64,0]（记忆距 p1 Core 恰好 64 = 上限）→ 不超限
+  const boundary = makeState(1, [enemyCore([64, 0])]);
   const boundaryState = {
     ...boundary,
-    units: [{ id: "v1", position: [38, 0] as Position, hp: 4, unitType: "VANGUARD" as const, cargo: 0 }],
-    vanguards: [{ id: "v1", position: [38, 0] as Position, hp: 4, unitType: "VANGUARD" as const, cargo: 0 }],
+    units: [{ id: "v1", position: [62, 0] as Position, hp: 4, unitType: "VANGUARD" as const, cargo: 0 }],
+    vanguards: [{ id: "v1", position: [62, 0] as Position, hp: 4, unitType: "VANGUARD" as const, cargo: 0 }],
   };
   planner.decide({ state: boundaryState, policy: PRESSURE_POLICY });
   const plan = planner.decide({ state: makeState(2, []), policy: PRESSURE_POLICY });
-  assert.equal(plan.intents["v1"], "vanguard_pressure_memory", "40 格边界不触发");
+  assert.equal(plan.intents["v1"], "vanguard_pressure_memory", "64 格边界不触发");
+});
+
+test("boundedRaid 开启：65 格内近敌基地（t2 jerkman 场景 Chebyshev 49）→ 允许远征", () => {
+  const planner = new SafetyPlanner(BOUNDED_CONFIG);
+  // t2 生产实证：jerkman 核心 [-38,0] vs 我方 [-54,49] = Chebyshev 49 ≤64——
+  // 旧 40 上限把它误判远征、军事 bounded_return 全体回家永不还击。
+  // 记忆敌 Core [49,0]（Chebyshev 49 ≤64）→ vanguard_pressure_memory 正常推进
+  planner.decide({ state: makeState(1, [enemyCore([49, 0])]), policy: PRESSURE_POLICY });
+  const plan = planner.decide({ state: makeState(2, []), policy: PRESSURE_POLICY });
+  assert.equal(plan.intents["v1"], "vanguard_pressure_memory", "49 格（≤64）允许直接远征");
 });
 
 test("boundedRaid 开启：可见敌人时不受影响（memory 分支仅在无敌人时）", () => {
   const planner = new SafetyPlanner(BOUNDED_CONFIG);
-  // tick1 记忆远距敌 Core；tick2 有可见敌人 → pressure 目标（attackPriority core）
-  planner.decide({ state: makeState(1, [enemyCore([52, 0])]), policy: PRESSURE_POLICY });
+  // tick1 记忆远距敌 Core（>64）；tick2 有可见敌人 → pressure 目标（attackPriority core）
+  planner.decide({ state: makeState(1, [enemyCore([70, 0])]), policy: PRESSURE_POLICY });
   const plan = planner.decide({ state: makeState(2, [enemyCore([49, 0])]), policy: PRESSURE_POLICY });
   assert.notEqual(plan.intents["v1"], "vanguard_bounded_return", "有可见敌人走正常 pressure");
   assert.ok(
