@@ -229,6 +229,17 @@ body::after {
   color: var(--text-faint); text-transform: uppercase; margin-bottom: 10px; font-weight: var(--weight-medium);
 }
 
+/* 侧栏分区折叠（2026-08-08）：点标题收起大区块，1080p 下也能露出图层/视图开关 */
+.panel.collapsible .sec-head { cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 0; transition: color .2s var(--ease); }
+.panel.collapsible .sec-head:hover { color: var(--text); }
+.panel.collapsible .sec-head:focus-visible { outline: 1px solid var(--border-strong); outline-offset: 2px; border-radius: 4px; }
+.panel.collapsible .sec-title { flex: 1; min-width: 0; }
+.panel.collapsible .sec-chev { flex: none; font-size: 10px; color: var(--text-faint); transition: transform .25s var(--ease); }
+.panel.collapsible.closed .sec-chev { transform: rotate(-90deg); }
+.panel.collapsible.closed { padding-bottom: 8px; }
+.panel.collapsible .sec-body { animation: secIn .25s var(--ease); }
+@keyframes secIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+.panel.collapsible.closed .sec-body { display: none; }
 /* ---------- 租户卡片 ---------- */
 .stack { display: flex; flex-direction: column; gap: 10px; }
 .tenant-card {
