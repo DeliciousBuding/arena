@@ -191,7 +191,24 @@ test("三个 Worker 两个资源格 → 两个 GO_RESOURCE + 一个 WAIT（vangu
   assertUniqueCells(plan);
 });
 
-test("贪心选最近：Worker[0,0] 在 [1,0] 与 [10,10] 之间选 [1,0]", () => {
+
+test("最小费用匹配：避免 greedy 局部最优导致第二 Worker 跨图", () => {
+  // 距离矩阵（忽略共同 return cost）：
+  //   w1[0,0] -> r1[1,0]=1, r2[-2,0]=2
+  //   w2[2,0] -> r1[1,0]=1, r2[-2,0]=4
+  // greedy 按稳定顺序会先拿 w1-r1，总代价 5；Hungarian 应给 w1-r2 + w2-r1，总代价 3。
+  const snap = snapshotOf(makeTurn([worker("w1", 0, 0), worker("w2", 2, 0)], {
+    resourceCells: new Set(["1,0", "-2,0"]),
+    core: null,
+  }));
+  const plan = new WorkerTaskPlanner().plan(snap);
+  const byWorker = new Map(plan.assignments.map((a) => [a.unitId, a.task] as const));
+  assert.equal(byWorker.get("w1")?.targetCellKey, "-2,0");
+  assert.equal(byWorker.get("w2")?.targetCellKey, "1,0");
+  assertUniqueCells(plan);
+});
+
+test("最小费用匹配：单 Worker 在 [1,0] 与 [10,10] 之间选 [1,0]", () => {
   const snap = snapshotOf(
     makeTurn([worker("w1", 0, 0)], { resourceCells: new Set(["1,0", "10,10"]) }),
   );

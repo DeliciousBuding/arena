@@ -1,4 +1,4 @@
-/** WorkerTaskPlanner：全局任务分配（确定性贪心）。
+/** WorkerTaskPlanner：全局任务分配（确定性最小费用匹配）。
  *
  * 背景（长期主线第一个确定性收益升级）：同一 Tick 多个空 Worker 在同一资源格
  * HARVEST 时，只有 UUID 最低者成功，其余全部失败——因此必须由本模块做全局
@@ -7,15 +7,16 @@
  * 代价模型（总裁决 RP2）：
  *   cost = expected_resource_value - travel_time - return_time
  *          - threat_risk - congestion + exploration_gain + beacon_bonus
- * 按净收益（上式即净收益）确定性贪心：每轮取净收益最大的 (Worker, 资源格) 对，
- * 已指派资源格从候选移除。初期单位数 <20，贪心足够；匈牙利算法留作后续替换
- * （替换时 netValue() 的代价矩阵可直接复用）。
+ * 把净收益取负转成 cost matrix，使用 Hungarian 全局最小费用匹配。资源列只
+ * 出现一次，因此“一矿一 Worker”是结构性约束；额外 dummy 列代表 WAIT。与逐对
+ * greedy 相比，这能避免“先抢了局部最近矿，迫使另一 Worker 跨图”的典型局部最优。
  */
 
 import { manhattan } from "../domain/nav.ts";
 import { type Position } from "../domain/model.ts";
 import { forcedTaskFor, type Task } from "./task.ts";
 import type { PlanningSnapshot, PlanningUnit } from "./planning-snapshot.ts";
+import { minimumCostAssignment } from "../algorithms/min-cost-assignment.ts";
 
 /** 格子键："x,y"（与 domain model.ts 的 cellKey 同格式）。 */
 export function cellKey(x: number, y: number): string {
@@ -109,39 +110,35 @@ export class WorkerTaskPlanner {
       .filter((key) => !claimedCells.has(key))
       .sort(); // 字典序：确定性迭代顺序
 
-    // 确定性贪心：每轮取净收益最大的 (Worker, 资源格) 对；并列时取先出现的
-    // （Worker 按 id 升序、资源格按键字典序，均确定）。已选 Worker 与资源格
-    // 从候选移除。匈牙利算法替换点：把 netValue 矩阵交给匹配器即可。
+    // Hungarian 全局最优：rows=worker；columns=resource + 每 worker 一个 dummy WAIT。
+    // dummy cost 取高于任一真实候选的确定性上界，因此资源数不足时才 WAIT；
+    // 若未来加入不可达判定，可把不可达候选提升到 forbiddenCost，仍复用同一求解器。
     const pool = [...unassigned].sort((a, b) => a.id.localeCompare(b.id));
-    while (pool.length > 0 && availableCells.length > 0) {
-      let best: { worker: PlanningUnit; cellKey: string; net: number } | null = null;
-      for (const worker of pool) {
-        for (const key of availableCells) {
-          const net = this.netValue(worker, key, snapshot, previousAssignments, claimedCells);
-          if (best === null || net > best.net) {
-            best = { worker, cellKey: key, net };
-          }
+    if (pool.length > 0) {
+      const realCosts = pool.map((worker) => availableCells.map((key) =>
+        -this.netValue(worker, key, snapshot, previousAssignments, claimedCells)));
+      const finiteCosts = realCosts.flat().filter(Number.isFinite);
+      const maxReal = finiteCosts.length > 0 ? Math.max(...finiteCosts) : 0;
+      const waitCost = maxReal + 1_000_000;
+      const matrix = realCosts.map((row) => [
+        ...row,
+        ...Array.from({ length: pool.length }, () => waitCost),
+      ]);
+      const columns = minimumCostAssignment(matrix);
+      for (let rowIndex = 0; rowIndex < pool.length; rowIndex += 1) {
+        const worker = pool[rowIndex]!;
+        const column = columns[rowIndex]!;
+        if (column >= availableCells.length) {
+          assignments.push({ unitId: worker.id, task: { type: "WAIT" } });
+          continue;
         }
+        const key = availableCells[column]!;
+        const cell = snapshot.resourceCells.get(key);
+        assignments.push({
+          unitId: worker.id,
+          task: { type: "GO_RESOURCE", target: cell?.position, targetCellKey: key },
+        });
       }
-      if (best === null) {
-        break; // 不可达：pool 与 availableCells 均非空
-      }
-      const cell = snapshot.resourceCells.get(best.cellKey);
-      assignments.push({
-        unitId: best.worker.id,
-        task: {
-          type: "GO_RESOURCE",
-          target: cell?.position,
-          targetCellKey: best.cellKey,
-        },
-      });
-      pool.splice(pool.indexOf(best.worker), 1);
-      availableCells.splice(availableCells.indexOf(best.cellKey), 1);
-    }
-
-    // 无任务可做的剩余 Worker → WAIT
-    for (const worker of pool) {
-      assignments.push({ unitId: worker.id, task: { type: "WAIT" } });
     }
 
     return { assignments };
