@@ -37,5 +37,5 @@ runs/run-*/n/
 # 模拟器 worktree（独立分支，模拟器工程专用）
 .worktrees/
 
-# 生成物：status.md 的 SSOT 在协调根 docs/generated/（arena-ts 内副本仅为本仓生成产物）
+# 生成物：status.md 的 SSOT 在协调根 docs/generated/（gen-status.py 直接写根仓；本地不再保留副本，2026-08-07）
 docs/generated/

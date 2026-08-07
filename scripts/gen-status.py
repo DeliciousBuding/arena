@@ -14,7 +14,10 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "docs" / "generated" / "status.md"
+# 输出到协调根仓 docs/generated/status.md（AGENTS/MASTER 引用的唯一权威位置；
+# 2026-08-07 neat-freak：旧值写 arena-ts/docs/generated（未跟踪孤儿副本），
+# 导致根仓 status.md 长期过时且双副本并存）。
+OUT = ROOT.parent / "docs" / "generated" / "status.md"
 SDK_PKG_DIR = ROOT / "packages" / "arena-hero-ts"
 AGENT_PKG_DIR = ROOT / "packages" / "arena-agent"
 SDK_TEST_DIR = SDK_PKG_DIR / "test"
@@ -140,7 +143,7 @@ def main() -> None:
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(content, encoding="utf-8")
-    print(f"已生成 {OUT.relative_to(ROOT)}")
+    print(f"已生成 {OUT}")
     for name, value, _ in rows:
         print(f"  {name}: {value}")
 
