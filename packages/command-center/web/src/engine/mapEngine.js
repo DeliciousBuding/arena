@@ -261,8 +261,8 @@ async function loadSprites() {
 
 async function poll() {
   try {
-    const [overview, map] = await Promise.all([
-      getJSON('/api/overview'), getJSON('/api/map'),
+    const [overview, map, intel] = await Promise.all([
+      getJSON('/api/overview'), getJSON('/api/map'), getJSON('/api/intel').catch(() => null),
     ]);
     state.overview = overview;
     state.map = map;
@@ -280,8 +280,6 @@ async function poll() {
     sig = (sig ^ (n * 2654435761)) >>> 0;
     if (sig !== state.terrainSig) { state.terrainSig = sig; invalidateStatic(); }
     if (overview?.dataRoot) emit('dataRoot', overview.dataRoot);
-    // 单位平滑插值：记录上一轮位置，poll 之间 draw 时按 POLL_MS 渐变移动
-    captureUnitPrev();
     // 世界 tick 周期估计（~15s）：采样 (tick, mtime) 序列，取窗口跨度斜率——
     // 单次 poll 差分噪声大（tick 可能跨多档/漏档），窗口两端差分最稳
     const t0 = overview?.tenants?.[0];
@@ -302,6 +300,8 @@ async function poll() {
       }
       m.lastMtime = mt; m.lastTick = tick;
     }
+    // 单位平滑插值（先更新 tickMeter 再 capture：动画窗口对齐 tick 边界，见 captureUnitPrev）
+    captureUnitPrev();
     if (!state.view.ready && state.bounds && state.cells.length) fitView();
     emit('overview', state.overview);
     draw();
@@ -424,14 +424,21 @@ function movementWindowMs() {
 function captureUnitPrev() {
   const now = performance.now();
   const seen = new Set();
+  const m = state.tickMeter;
+  const win = movementWindowMs();
+  // 动画终点对齐 tick 边界：overview mtime ≈ 最新 case 写入时刻（tick 起点）。
+  // 窗口 = 发现时刻 → 本 tick 结束（rem），线性走完 = 单位到位，不提前/不拖尾。
+  const boundary = Number.isFinite(m.lastMtime) && m.lastMtime > 0 ? m.lastMtime : null;
+  const rem = boundary == null ? null : (boundary + win) - Date.now();
   for (const c of state.cells) {
     if (c.type !== 'unit') continue;
     const k = c.tenant + ':' + c.id;
     seen.add(k);
     const prev = state.unitPrev.get(k);
-    if (!prev) state.unitPrev.set(k, { x: c.x, y: c.y, px: c.x, py: c.y, ts: now });
+    if (!prev) state.unitPrev.set(k, { x: c.x, y: c.y, px: c.x, py: c.y, ts: now, win });
     else if (prev.x !== c.x || prev.y !== c.y) {
       prev.px = prev.x; prev.py = prev.y; prev.x = c.x; prev.y = c.y; prev.ts = now;
+      prev.win = rem == null ? win : Math.max(500, Math.min(win, rem));
     }
   }
   // 清理已消失的单位（防 Map 无限增长）
@@ -441,17 +448,26 @@ function captureUnitPrev() {
 function unitDrawPos(c) {
   const m = state.unitPrev.get(c.tenant + ':' + c.id);
   if (m && (m.px !== m.x || m.py !== m.y)) {
-    const win = movementWindowMs();
+    const win = m.win || movementWindowMs();
     const elapsed = performance.now() - m.ts;
     if (elapsed < win) {
-      const t = Math.min(1, elapsed / win);
-      const e = 1 - Math.pow(1 - t, 2); // ease-out：起步快、收尾缓（丝滑）
-      return { x: m.px + (m.x - m.px) * e, y: m.py + (m.y - m.py) * e };
+      const t = Math.min(1, elapsed / win); // 线性：单位进度 = tick 读条进度（不提前到终点）
+      return { x: m.px + (m.x - m.px) * t, y: m.py + (m.y - m.py) * t };
     }
   }
   return { x: c.x, y: c.y };
 }
 
+// 调试观测钩子（本地指挥面板）：暴露引擎内部状态，供 Playwright/控制台精确验证动画/测绘。
+// 仅在浏览器环境启用；不影响绘制逻辑。
+if (typeof window !== 'undefined') {
+  window.__arena = {
+    get state() { return state; },
+    unitDrawPos,
+    movementWindowMs,
+    captureUnitPrev,
+  };
+}
 /* ---------- 渲染 ---------- */
 function draw() {
   const w = W(), h = H();
@@ -801,7 +817,7 @@ function extendScreen(a, b, minLen) {
 function anyUnitsMoving() {
   const now = performance.now();
   for (const m of state.unitPrev.values()) {
-    if (Math.hypot(m.x - m.px, m.y - m.py) >= 0.4 && now - m.ts < movementWindowMs()) return true;
+    if (Math.hypot(m.x - m.px, m.y - m.py) >= 0.4 && now - m.ts < (m.win || movementWindowMs())) return true;
   }
   return false;
 }
@@ -821,7 +837,7 @@ function drawMovementDashes(cells, s) {
     const m = state.unitPrev.get(c.tenant + ':' + c.id);
     if (!m) continue;
     const dist = Math.hypot(m.x - m.px, m.y - m.py);
-    if (dist < 0.4 || now - m.ts >= movementWindowMs()) continue;
+    if (dist < 0.4 || now - m.ts >= (m.win || movementWindowMs())) continue;
     const from = project(m.px, m.py);
     const to = project(m.x, m.y);
     const dx = to.sx - from.sx, dy = to.sy - from.sy;
@@ -2473,16 +2489,24 @@ function tactPlanLayer(s) {
       if (action.type === 'MOVE' && action.direction) {
         const st = stepOf(action.direction);
         if (!st) continue;
-        // 虚线 2 格（低缩放保底 9px）+ 箭头：算法决策的移动方向一眼可见
-        const to = extendScreen(from, project(o.position[0] + st.dx * 2, o.position[1] + st.dy * 2), 9);
-        dash(from, to, color, 0.65, 1.5);
-        arrow(from, to, color);
+        // 起点=本 tick 起点（unitPrev.px），终点=当前实时位（unitPrev.x）：after.state 下计划已执行完，
+        // 画"实际走的这一步"而非从当前位置外推旧方向（避免误导假线）；未移动则跳过。
+        const pv = state.unitPrev.get(tenant + ':' + id);
+        const sx = pv ? pv.px : o.position[0] - st.dx;
+        const sy = pv ? pv.py : o.position[1] - st.dy;
+        const ex = pv ? pv.x : o.position[0];
+        const ey = pv ? pv.y : o.position[1];
+        const f0 = project(sx, sy);
+        const t0 = extendScreen(f0, project(ex, ey), 9);
+        if (Math.hypot(t0.sx - f0.sx, t0.sy - f0.sy) < 1) continue;
+        dash(f0, t0, color, 0.65, 1.5);
+        arrow(f0, t0, color);
         // 起点/终点标记：与官方 moveArrow 一致，一眼看出"从哪到哪"
         ctx.save();
         ctx.fillStyle = color; ctx.globalAlpha = 0.85;
-        ctx.beginPath(); ctx.arc(from.sx, from.sy, Math.max(1.6, s * 0.06), 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(f0.sx, f0.sy, Math.max(1.6, s * 0.06), 0, Math.PI * 2); ctx.fill();
         ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.7;
-        ctx.beginPath(); ctx.arc(to.sx, to.sy, Math.max(3, s * 0.12), 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(t0.sx, t0.sy, Math.max(3, s * 0.12), 0, Math.PI * 2); ctx.stroke();
         ctx.restore();
         drew = true;
       } else if (action.type === 'SWEEP' && action.direction) {
