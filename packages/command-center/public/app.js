@@ -170,10 +170,10 @@ function fitView() {
   draw();
 }
 function fitSolo(tenant) {
+  // 只按该租户已测绘的 cells（障碍/资源/单位/核心）自适应；信标在远处时以边缘指示显示，不撑爆核心区
   const cells = state.cells.filter((c) => c.tenant === tenant);
-  const beacons = state.beacons.filter((b) => b.tenant === tenant);
-  const pts = [...cells.map((c) => [c.x, c.y]), ...beacons.map((b) => [b.x, b.y])];
-  if (!pts.length) return;
+  if (!cells.length) return;
+  const pts = cells.map((c) => [c.x, c.y]);
   const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
   const b = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
   const w = Math.max(1, W()), h = Math.max(1, H());
@@ -198,86 +198,92 @@ function visibleCells() {
 function draw() {
   const w = W(), h = H();
   ctx.clearRect(0, 0, w, h);
-  // 网格（世界坐标对齐）
-  ctx.strokeStyle = 'rgba(104,117,167,.08)';
-  ctx.lineWidth = 1;
-  const step = 32 / state.view.scale;
-  if (step >= 4) {
-    const startX = Math.floor((state.view.cx - w / 2 / state.view.scale) / step) * step;
-    const startY = Math.floor((state.view.cy - h / 2 / state.view.scale) / step) * step;
-    ctx.beginPath();
-    for (let x = startX; x <= state.view.cx + w / 2 / state.view.scale; x += step) {
-      const p = project(x, state.view.cy - h / 2 / state.view.scale);
-      ctx.moveTo(p.sx, 0); ctx.lineTo(p.sx, h);
-    }
-    for (let y = startY; y <= state.view.cy + h / 2 / state.view.scale; y += step) {
-      const p = project(state.view.cx - w / 2 / state.view.scale, y);
-      ctx.moveTo(0, p.sy); ctx.lineTo(w, p.sy);
-    }
-    ctx.stroke();
-  }
+  drawGrid(w, h);
   const s = state.view.scale;
   const drawCells = visibleCells();
-  // 1) 障碍 + 资源（底层）
-  for (const c of drawCells) {
-    if (c.type === 'obstacle') drawObstacle(c, s);
-  }
-  for (const c of drawCells) {
-    if (c.type === 'resource') drawResource(c, s);
-  }
-  // 2) 单位 + 核心
-  for (const c of drawCells) {
-    if (c.type === 'unit') drawUnit(c, s);
-  }
-  for (const c of drawCells) {
-    if (c.type === 'core') drawCore(c, s);
-  }
-  // 3) 信标
-  if (state.layers.beacon) {
-    for (const b of state.beacons) {
-      if (state.tenantsOn[b.tenant] === false) continue;
-      if (state.soloTenant !== null && b.tenant !== state.soloTenant) continue;
-      drawBeacon(b, s);
-    }
-  }
-  // 4) 边界 / 离线提示
+  const buckets = { obstacle: [], resource: [], unit: [], core: [] };
+  for (const c of drawCells) if (buckets[c.type]) buckets[c.type].push(c);
+  drawObstacles(buckets.obstacle, s);
+  drawResources(buckets.resource, s);
+  drawUnits(buckets.unit, s);
+  drawCores(buckets.core, s);
+  drawBeacons(s);
   if (!state.cells.length) {
     ctx.fillStyle = '#56626c'; ctx.font = '13px ui-monospace, Consolas, monospace';
     ctx.textAlign = 'center';
     ctx.fillText('等待测绘数据…', w / 2, h / 2);
   }
 }
-
+function drawGrid(w, h) {
+  ctx.strokeStyle = 'rgba(104,117,167,.08)';
+  ctx.lineWidth = 1;
+  const step = 32 / state.view.scale;
+  if (step < 4) return;
+  const startX = Math.floor((state.view.cx - w / 2 / state.view.scale) / step) * step;
+  const startY = Math.floor((state.view.cy - h / 2 / state.view.scale) / step) * step;
+  ctx.beginPath();
+  for (let x = startX; x <= state.view.cx + w / 2 / state.view.scale; x += step) {
+    const p = project(x, state.view.cy - h / 2 / state.view.scale);
+    ctx.moveTo(p.sx, 0); ctx.lineTo(p.sx, h);
+  }
+  for (let y = startY; y <= state.view.cy + h / 2 / state.view.scale; y += step) {
+    const p = project(state.view.cx - w / 2 / state.view.scale, y);
+    ctx.moveTo(0, p.sy); ctx.lineTo(w, p.sy);
+  }
+  ctx.stroke();
+}
 function sprite(img, sx, sy, size) {
   if (!img) return;
   const dw = size, dh = size * (img.height / Math.max(1, img.width));
   ctx.drawImage(img, sx - dw / 2, sy - dh / 2, dw, dh);
 }
-
-function drawObstacle(c, s) {
-  const p = project(c.x, c.y);
-  const cell = Math.max(3, Math.round(s));
-  if (s >= 11) {
-    const path = SPRITE.obstacle[hash2(c.x, c.y, 7) % SPRITE.obstacle.length];
-    if (images[path]) sprite(images[path], p.sx, p.sy, cell * 0.86);
-    else { ctx.fillStyle = '#3a4046'; roundRect(p.sx - cell / 2, p.sy - cell / 2, cell, cell, 3); }
-  } else {
-    ctx.fillStyle = 'rgba(70,78,86,.55)';
-    const r = Math.max(1.2, s * 0.35);
-    ctx.beginPath(); ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2); ctx.fill();
+/** 石头：低缩放批量实心格（一次 path，性能好、看得清）；高缩放用官方 asteroid 素材 */
+function drawObstacles(cells, s) {
+  if (!cells.length) return;
+  if (s >= 8) {
+    for (const c of cells) {
+      const p = project(c.x, c.y);
+      const path = SPRITE.obstacle[hash2(c.x, c.y, 7) % SPRITE.obstacle.length];
+      if (images[path]) sprite(images[path], p.sx, p.sy, s * 0.86);
+      else { ctx.fillStyle = '#4a525a'; roundRect(p.sx - s / 2, p.sy - s / 2, s, s, 3); }
+    }
+    return;
   }
+  const cell = Math.max(2, s);
+  ctx.fillStyle = '#454c54';
+  ctx.beginPath();
+  for (const c of cells) {
+    const p = project(c.x, c.y);
+    ctx.rect(p.sx - cell / 2, p.sy - cell / 2, cell, cell);
+  }
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(139,183,212,.12)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
 }
-function drawResource(c, s) {
-  const p = project(c.x, c.y);
-  const cell = Math.max(3, Math.round(s));
-  if (s >= 9) {
-    const path = SPRITE.crystal[hash2(c.x, c.y, 13) % SPRITE.crystal.length];
-    if (images[path]) sprite(images[path], p.sx, p.sy, cell * 0.92);
-    else { ctx.fillStyle = '#76b889'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2, cell * 0.3), 0, Math.PI * 2); ctx.fill(); }
-  } else {
-    ctx.fillStyle = 'rgba(118,184,137,.7)';
-    ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(1.4, s * 0.28), 0, Math.PI * 2); ctx.fill();
+/** 矿物：始终可见；高缩放 crystal 素材 + 绿色发光，低缩放亮点 */
+function drawResources(cells, s) {
+  if (!cells.length) return;
+  if (s >= 6) {
+    ctx.save();
+    ctx.shadowColor = 'rgba(118,184,137,.6)';
+    ctx.shadowBlur = 8;
+    for (const c of cells) {
+      const p = project(c.x, c.y);
+      const path = SPRITE.crystal[hash2(c.x, c.y, 13) % SPRITE.crystal.length];
+      if (images[path]) sprite(images[path], p.sx, p.sy, Math.max(7, s * 0.92));
+      else { ctx.fillStyle = '#76b889'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.3), 0, Math.PI * 2); ctx.fill(); }
+    }
+    ctx.restore();
+    return;
   }
+  ctx.fillStyle = 'rgba(118,184,137,.85)';
+  ctx.beginPath();
+  for (const c of cells) {
+    const p = project(c.x, c.y);
+    ctx.arc(p.sx, p.sy, Math.max(1.6, s * 0.32), 0, Math.PI * 2);
+  }
+  ctx.fill();
 }
 function unitSpritePath(type) {
   if (type === 'VANGUARD') return SPRITE.vanguard;
@@ -290,23 +296,52 @@ function ring(x, y, r, color, width = 1.5, dash = []) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
   ctx.setLineDash([]);
 }
-function drawUnit(c, s) {
-  const p = project(c.x, c.y);
-  const size = Math.max(10, s * (c.unitType === 'RANGER' ? 0.68 : 0.62));
-  const color = TENANT_COLORS[c.tenant] ?? '#999';
-  ring(p.sx, p.sy, size * 0.72, c.controlled ? color : 'rgba(150,160,170,.4)', c.controlled ? 1.8 : 1.2, c.controlled ? [] : [3, 3]);
-  const path = unitSpritePath(c.unitType);
-  if (images[path]) sprite(images[path], p.sx, p.sy, size);
-  else {
-    ctx.fillStyle = c.controlled ? color : '#7c858d';
-    ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2, size * 0.25), 0, Math.PI * 2); ctx.fill();
+/** 单位：高缩放素材+色环；低缩放紧凑租户色圆点（不放大图标遮挡地图） */
+function drawUnits(cells, s) {
+  if (!cells.length) return;
+  if (s >= 6) {
+    for (const c of cells) {
+      const p = project(c.x, c.y);
+      const size = s * (c.unitType === 'RANGER' ? 0.68 : 0.62);
+      const color = TENANT_COLORS[c.tenant] ?? '#999';
+      ring(p.sx, p.sy, size * 0.72, c.controlled ? color : 'rgba(150,160,170,.45)', c.controlled ? 1.8 : 1.2, c.controlled ? [] : [3, 3]);
+      const path = unitSpritePath(c.unitType);
+      if (images[path]) sprite(images[path], p.sx, p.sy, size);
+      else {
+        ctx.fillStyle = c.controlled ? color : '#7c858d';
+        ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2, size * 0.25), 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    return;
+  }
+  for (const c of cells) {
+    const p = project(c.x, c.y);
+    const color = TENANT_COLORS[c.tenant] ?? '#999';
+    ctx.fillStyle = c.controlled ? color : 'rgba(150,160,170,.55)';
+    ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(1.8, s * 0.42), 0, Math.PI * 2); ctx.fill();
+    if (c.controlled) { ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 1; ctx.stroke(); }
   }
 }
-function drawCore(c, s) {
+/** 核心：高缩放素材+光环+HP条；低缩放租户色大点+白描边 */
+function drawCores(cells, s) {
+  if (!cells.length) return;
+  if (s >= 6) {
+    for (const c of cells) drawCoreSprite(c, s);
+    return;
+  }
+  for (const c of cells) {
+    const p = project(c.x, c.y);
+    const color = TENANT_COLORS[c.tenant] ?? '#999';
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(3, s * 0.6), 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 1.2; ctx.stroke();
+  }
+}
+function drawCoreSprite(c, s) {
   const p = project(c.x, c.y);
-  const size = Math.max(14, s * 0.72);
+  const size = s * 0.72;
   const color = TENANT_COLORS[c.tenant] ?? '#999';
-  ctx.shadowColor = color; ctx.shadowBlur = 14;
+  ctx.shadowColor = color; ctx.shadowBlur = 12;
   if (images[SPRITE.core]) sprite(images[SPRITE.core], p.sx, p.sy, size);
   else {
     ctx.fillStyle = color;
@@ -314,9 +349,8 @@ function drawCore(c, s) {
   }
   ctx.shadowBlur = 0;
   ring(p.sx, p.sy, size * 0.62, color, 2);
-  // HP 条
   if (typeof c.hp === 'number') {
-    const bw = Math.max(16, size * 1.1), bh = 3;
+    const bw = Math.max(14, size * 1.1), bh = 3;
     const bx = p.sx - bw / 2, by = p.sy + size * 0.62 + 4;
     ctx.fillStyle = 'rgba(255,255,255,.12)';
     ctx.fillRect(bx, by, bw, bh);
@@ -324,16 +358,39 @@ function drawCore(c, s) {
     ctx.fillRect(bx, by, bw * Math.max(0, Math.min(1, c.hp / 5)), bh);
   }
 }
-function drawBeacon(b, s) {
-  const p = project(b.x, b.y);
-  const size = Math.max(16, s * (b.status === 'CARRIED' ? 0.58 : 0.98));
-  const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 420);
-  ring(p.sx, p.sy, size * 0.9, `rgba(224,185,79,${0.25 + 0.35 * pulse})`, 2);
-  if (images[SPRITE.beacon]) sprite(images[SPRITE.beacon], p.sx, p.sy, size);
-  else {
-    ctx.fillStyle = '#e0b94f';
-    ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(3, size * 0.3), 0, Math.PI * 2); ctx.fill();
+/** 信标：视野内脉冲；视野外屏幕边缘方向指示（不撑爆自适应） */
+function drawBeacons(s) {
+  for (const b of state.beacons) {
+    if (state.tenantsOn[b.tenant] === false) continue;
+    if (state.soloTenant !== null && b.tenant !== state.soloTenant) continue;
+    const p = project(b.x, b.y);
+    const w = W(), h = H();
+    if (p.sx < -70 || p.sx > w + 70 || p.sy < -70 || p.sy > h + 70) { drawEdgeBeacon(b, p); continue; }
+    const size = Math.max(14, s * (b.status === 'CARRIED' ? 0.58 : 0.98));
+    const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 420);
+    ring(p.sx, p.sy, size * 0.9, `rgba(224,185,79,${0.25 + 0.35 * pulse})`, 2);
+    if (images[SPRITE.beacon]) sprite(images[SPRITE.beacon], p.sx, p.sy, size);
+    else {
+      ctx.fillStyle = '#e0b94f';
+      ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(3, size * 0.3), 0, Math.PI * 2); ctx.fill();
+    }
   }
+}
+function drawEdgeBeacon(b, p) {
+  const w = W(), h = H();
+  const cx = w / 2, cy = h / 2;
+  const dx = p.sx - cx, dy = p.sy - cy;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len;
+  const margin = 36;
+  const k = Math.min((w / 2 - margin) / Math.abs(ux || 1e-9), (h / 2 - margin) / Math.abs(uy || 1e-9));
+  const ex = cx + ux * k, ey = cy + uy * k;
+  const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
+  ctx.fillStyle = `rgba(224,185,79,${0.4 + 0.45 * pulse})`;
+  ctx.beginPath(); ctx.arc(ex, ey, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(224,185,79,.6)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(cx + ux * 12, cy + uy * 12); ctx.lineTo(ex - ux * 4, ey - uy * 4); ctx.stroke();
 }
 function roundRect(x, y, w, h, r) {
   ctx.beginPath();
@@ -401,7 +458,7 @@ function renderTenantCards() {
     const deltaCls = delta === null ? '' : delta > 0 ? 'delta-pos' : delta < 0 ? 'delta-neg' : '';
     const deltaTxt = delta === null ? '—' : (delta > 0 ? '+' : '') + fmt(delta);
     const solo = state.soloTenant === t.tenant;
-    return `<div class="tenant-card" data-tenant="${t.tenant}" style="--tc:${color}" role="button" tabindex="0">
+    return `<div class="tenant-card${solo ? ' solo' : ''}" data-tenant="${t.tenant}" style="--tc:${color}" role="button" tabindex="0">
       <div class="row1">
         <span class="dot ${st.cls}" title="${st.label}"></span>
         <span class="tenant-name">${t.tenant.toUpperCase()}</span>
@@ -423,9 +480,7 @@ function renderTenantCards() {
     </div>`;
   }).join('');
   els.tenantCards.innerHTML = html;
-  els.tenantCards.querySelectorAll('.tenant-card').forEach((card) => {
-    card.addEventListener('click', () => toggleSolo(card.dataset.tenant));
-  });
+  // 点击事件用容器委托（见 bindEvents），避免 poll 重建 DOM 时丢失/重复绑定
 }
 function renderTenantToggles() {
   els.tenantToggles.innerHTML = TENANTS.map((t) =>
@@ -639,6 +694,7 @@ function bindEvents() {
     els.canvas.setPointerCapture(e.pointerId);
     state.drag = { x: e.clientX, y: e.clientY, cx: state.view.cx, cy: state.view.cy };
   });
+  let hoverTimer = null;
   els.canvas.addEventListener('pointermove', (e) => {
     const rect = els.canvas.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
@@ -648,9 +704,14 @@ function bindEvents() {
       state.view.cx = state.drag.cx - dx;
       state.view.cy = state.drag.cy - dy;
       draw();
-    } else {
-      showTooltip(px, py, nearestCell(px, py));
+      return;
     }
+    // hover 提示节流，避免 mousemove 高频全量计算卡顿
+    if (hoverTimer !== null) return;
+    hoverTimer = setTimeout(() => {
+      hoverTimer = null;
+      showTooltip(px, py, nearestCell(px, py));
+    }, 40);
   });
   const endDrag = (e) => { if (state.drag) { state.drag = null; } };
   els.canvas.addEventListener('pointerup', endDrag);
@@ -695,6 +756,11 @@ function bindEvents() {
       draw();
     }
   });
+  // 租户卡片点击（事件委托）：点击同租户取消聚焦回全局；点击不同租户聚焦
+  els.tenantCards.addEventListener('click', (e) => {
+    const card = e.target.closest('.tenant-card');
+    if (card) toggleSolo(card.dataset.tenant);
+  });
   // 视图切换
   els.viewGlobal.addEventListener('click', () => { state.soloTenant = null; fitView(); renderTenantCards(); els.viewGlobal.classList.add('active'); });
   els.viewFit.addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
@@ -728,7 +794,15 @@ async function boot() {
     markRefresh(true);
   }, POLL_MS);
   setInterval(() => { pollStreams(); }, POLL_MS);
-  setInterval(() => draw(), 600); // beacon 脉冲动画
+  let lastAnim = 0;
+  const animLoop = (ts) => {
+    if (ts - lastAnim > 300 && state.beacons.length && state.layers.beacon) {
+      lastAnim = ts;
+      draw();
+    }
+    requestAnimationFrame(animLoop);
+  };
+  requestAnimationFrame(animLoop);
 }
 function renderLegend() {
   els.legendList.innerHTML = `
