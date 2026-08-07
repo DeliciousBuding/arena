@@ -37,6 +37,7 @@ import {
 import type { PlanProvider } from "../runtime/decision-types.ts";
 import type { MacroPolicy } from "../runtime/macro-policy.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
+import { type CoreHuntTarget } from "../domain/world.ts";
 import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snapshot.ts";
 import { WorkerTaskPlanner, type Assignment } from "./worker-task-planner.ts";
 
@@ -471,6 +472,10 @@ export class DeterministicPlanner implements PlanProvider {
     vanguardRatio: number | undefined = undefined,
     accumulateThreshold = 0,
     spawnReserve = WORKER_SPAWN_RESERVE,
+    /** 启动播种的敌情狩猎目标（2026-08-07 持久敌情测绘）：注入两个内部
+     *  SafetyPlanner 的 World——重启后军事仍记得历史 calibration 里的最后
+     *  已知敌基地（解决"重启→记忆清零→军队空转"）。缺省空 = 零回归。 */
+    initialCoreHuntTargets: readonly CoreHuntTarget[] = [],
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
@@ -478,6 +483,10 @@ export class DeterministicPlanner implements PlanProvider {
     this.vanguardRatio = vanguardRatio;
     this.accumulateThreshold = accumulateThreshold;
     this.spawnReserve = spawnReserve;
+    if (initialCoreHuntTargets.length > 0) {
+      fallbackPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
+      patrolPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
+    }
   }
 
   decide(input: DeterministicPlannerInput): Plan {

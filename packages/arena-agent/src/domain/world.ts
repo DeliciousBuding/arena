@@ -1,5 +1,5 @@
-import { cellKey, parseCellKey, type Position, type TickState, type UnitType } from "./model.ts";
-import { exploreRadiusForRing, exploreTarget } from "./nav.ts";
+import { cellKey, parseCellKey, type Position, type TickState, type UnitType, type VisibleEntity } from "./model.ts";
+import { chebyshev, exploreRadiusForRing, exploreTarget } from "./nav.ts";
 
 export type ResourceState = "visible" | "stale" | "harvested";
 export type WorkerMode = "patrol" | "go_harvest";
@@ -14,6 +14,20 @@ const TRANSIENT_MOVE_FAILURE_REASONS = new Set([
 /** 资源记忆 TTL：stale/harvested 超过 64 ticks（≈4 个 refill 周期）删除，
  *  防"幽灵资源"——记忆中的资源格实际已被采空/不再 refill。 */
 const RESOURCE_MEMORY_TTL_TICKS = 64;
+
+/** 敌情狩猎（2026-08-07，持久敌情测绘）：CORE 目击目标 sticky 窗口
+ *  （≈2000 tick ≈ 敌 Core 残血回满/迁移周期——回访最后已知基地仍有效）。 */
+const CORE_HUNT_STICKY_TICKS = 2000;
+/** 敌情狩猎：WORKER_INFER（轨迹/单次目击推断）目标记忆窗口——推断会漂移，短于 CORE。 */
+const CORE_HUNT_WORKER_INFER_TICKS = 400;
+/** 敌情狩猎：敌 Worker 轨迹反推基地的方向延伸距离（格）。 */
+const CORE_HUNT_INFER_EXTEND = 8;
+/** 敌情狩猎：敌 Worker 单次目击（无轨迹）时"远离最近我方单位"的猜测距离（格）。 */
+const CORE_HUNT_SINGLE_EXTEND = 8;
+/** 敌情狩猎：单次目击猜测的 8 方位候选（与巡逻探索同构，覆盖全向）。 */
+const HUNT_AWAY_DELTAS: readonly (readonly [number, number])[] = [
+  [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1],
+];
 
 /** 地图分块尺寸（frontier 探索）：16×16 格 chunk——巡逻环 8..40、
  *  视野 5，chunk 过大（32）环内 8 方位常落同块无区分，过小（8）碎片化噪声。
@@ -55,6 +69,17 @@ export interface EnemyMemory {
   lastSeenTick: number;
 }
 
+/** 敌情狩猎目标（2026-08-07，持久敌情测绘）：敌 Core 基地候选——发现即长期
+ *  保留，即使短 TTL 战术记忆过期，部队仍会回访最后已知基地清扫（竞品
+ *  "old Core coordinate 标为待确认并按区域彻查"）。来源：
+ *  - CORE：直接目击敌 Core（最高置信，sticky）；
+ *  - WORKER_INFER：由敌 Worker 轨迹/单次目击推断的基地候选（较短窗口）。 */
+export interface CoreHuntTarget {
+  readonly position: Position;
+  readonly lastSeenTick: number;
+  readonly source: "CORE" | "WORKER_INFER";
+}
+
 export interface UnitMemory {
   workerMode: WorkerMode;
   harvestTarget: Position | null;
@@ -81,6 +106,12 @@ export interface WorldSnapshot {
     lastSeenTick: number;
   }[];
   readonly unitModes: Readonly<Record<string, WorkerMode>>;
+  /** 敌情狩猎目标（快照/测绘：指挥面板可渲染敌方基地候选）。 */
+  readonly coreHuntTargets: readonly {
+    position: Position;
+    source: "CORE" | "WORKER_INFER";
+    lastSeenTick: number;
+  }[];
 }
 
 export class World {
@@ -95,6 +126,9 @@ export class World {
    *  观察来源 = 视野实体格（障碍/资源/敌人/我方单位/Core/Beacon）——
    *  巡逻/采集到达的区域随实体观察自然更新老化。 */
   private readonly chunkMemory = new Map<string, number>();
+  /** 敌情狩猎记忆（sticky）：敌 Core 基地候选（绝对坐标——C2 RECOVERY 不清，
+   *  属战略 intel 而非相对 Core 的战场记忆）。 */
+  private readonly coreHuntMemory = new Map<string, CoreHuntTarget>();
   /** 世界重置计数（tick 回退检测触发；决策层 telemetry/测试可读）。 */
   worldResetCount = 0;
   /** 最近一次世界重置发生时的 tick（从未重置 = null）。 */
@@ -125,6 +159,7 @@ export class World {
       this.unitMoveFailures.clear();
       this.unitMemories.clear();
       this.chunkMemory.clear();
+      this.coreHuntMemory.clear();
       this.worldResetCount += 1;
       this.lastWorldResetTick = state.tick;
     }
@@ -226,6 +261,28 @@ export class World {
         unitType: enemy.unitType,
         lastSeenTick: state.tick,
       });
+      // 敌情狩猎（2026-08-07）：CORE 目击 → sticky 基地目标；WORKER 目击 →
+      // 推断基地候选（轨迹双向延伸 / 单次目击远离我方猜测——竞品 worker
+      // trajectory 推断 Core 方向）。同一格保留更新鲜的目击。
+      if (enemy.kind === "CORE") {
+        this.coreHuntMemory.set(cellKey(enemy.position), {
+          position: enemy.position,
+          lastSeenTick: state.tick,
+          source: "CORE",
+        });
+      } else if (enemy.unitType === "WORKER") {
+        for (const anchor of this.inferWorkerCoreAnchors(enemy, state)) {
+          const key = cellKey(anchor);
+          const existing = this.coreHuntMemory.get(key);
+          if (existing === undefined || existing.lastSeenTick < state.tick) {
+            this.coreHuntMemory.set(key, {
+              position: anchor,
+              lastSeenTick: state.tick,
+              source: "WORKER_INFER",
+            });
+          }
+        }
+      }
     }
 
     const liveUnits = new Set(state.units.map((unit) => unit.id));
@@ -324,6 +381,97 @@ export class World {
       .sort((a, b) => b.lastSeenTick - a.lastSeenTick || a.id.localeCompare(b.id));
   }
 
+  /** 敌情狩猎目标（排序：CORE 目击优先 → 新鲜度 → 坐标 tie-break）。
+   *  CORE 目击 sticky（maxAge = CORE_HUNT_STICKY_TICKS）；WORKER_INFER
+   *  短窗口（CORE_HUNT_WORKER_INFER_TICKS）——推断目标会漂移。 */
+  coreHuntTargets(maxAge?: number): readonly CoreHuntTarget[] {
+    const coreAge = maxAge ?? CORE_HUNT_STICKY_TICKS;
+    const workerAge = maxAge ?? CORE_HUNT_WORKER_INFER_TICKS;
+    return [...this.coreHuntMemory.values()]
+      .filter((target) => {
+        const age = this.tick - target.lastSeenTick;
+        return age <= (target.source === "CORE" ? coreAge : workerAge);
+      })
+      .sort((a, b) => {
+        const pa = a.source === "CORE" ? 1 : 0;
+        const pb = b.source === "CORE" ? 1 : 0;
+        return (
+          pb - pa ||
+          b.lastSeenTick - a.lastSeenTick ||
+          a.position[0] - b.position[0] ||
+          a.position[1] - b.position[1]
+        );
+      });
+  }
+
+  /** 启动播种（持久敌情测绘，2026-08-07）：从本租户历史 calibration cases
+   *  提取的"最后已知敌 Core 位置"注入——重启后军事仍记得敌方基地（解决
+   *  "重启→记忆清零→军队空转"）。更新鲜的目击不覆盖。返回实际播种数。 */
+  seedCoreHuntTargets(targets: readonly CoreHuntTarget[]): number {
+    let seeded = 0;
+    for (const target of targets) {
+      const key = cellKey(target.position);
+      const existing = this.coreHuntMemory.get(key);
+      if (existing === undefined || existing.lastSeenTick < target.lastSeenTick) {
+        this.coreHuntMemory.set(key, { ...target });
+        seeded += 1;
+      }
+    }
+    return seeded;
+  }
+
+  /** 敌 Worker 目击 → 基地候选锚点（竞品 "worker trajectory 推断 Core 方向"）：
+   *  - 有轨迹（prevPosition 且移动）：Worker 在 Core 与资源间往返——基地在轨迹
+   *    两端之一，双向各延伸 CORE_HUNT_INFER_EXTEND（诚实覆盖，不猜来向）；
+   *  - 单次目击（无轨迹）：沿"离最近我方单位最远"的 8 方位猜测（竞品保守
+   *    "单次目击沿远离最近我方单位方向给出猜测"）。 */
+  private inferWorkerCoreAnchors(
+    enemy: VisibleEntity,
+    state: TickState,
+  ): readonly Position[] {
+    const anchors: Position[] = [];
+    const previous = this.enemyMemory.get(enemy.id);
+    if (previous?.prevPosition !== undefined) {
+      const dx = enemy.position[0] - previous.prevPosition[0];
+      const dy = enemy.position[1] - previous.prevPosition[1];
+      const steps = Math.max(Math.abs(dx), Math.abs(dy));
+      if (steps > 0) {
+        const nx = dx / steps;
+        const ny = dy / steps;
+        anchors.push([
+          enemy.position[0] + Math.round(nx * CORE_HUNT_INFER_EXTEND),
+          enemy.position[1] + Math.round(ny * CORE_HUNT_INFER_EXTEND),
+        ]);
+        anchors.push([
+          enemy.position[0] - Math.round(nx * CORE_HUNT_INFER_EXTEND),
+          enemy.position[1] - Math.round(ny * CORE_HUNT_INFER_EXTEND),
+        ]);
+      }
+    }
+    if (anchors.length === 0) {
+      if (state.units.length === 0) return [enemy.position];
+      let best: Position = enemy.position;
+      let bestScore = -1;
+      for (const [dx, dy] of HUNT_AWAY_DELTAS) {
+        const candidate: Position = [
+          enemy.position[0] + dx * CORE_HUNT_SINGLE_EXTEND,
+          enemy.position[1] + dy * CORE_HUNT_SINGLE_EXTEND,
+        ];
+        let minD = Number.POSITIVE_INFINITY;
+        for (const unit of state.units) {
+          const d = chebyshev(candidate, unit.position);
+          if (d < minD) minD = d;
+        }
+        if (minD > bestScore) {
+          bestScore = minD;
+          best = candidate;
+        }
+      }
+      anchors.push(best);
+    }
+    return anchors;
+  }
+
   /**
    * frontier 探索方位选择：8 方位按"当前巡逻环探测点所在 chunk 观察老化"排序，
    * 观察最老（lastSeen 最小）的方位优先；老化相同按方位升序（确定性 tie-break，
@@ -372,6 +520,13 @@ export class World {
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([id, memory]) => [id, memory.workerMode]),
       ),
+      coreHuntTargets: [...this.coreHuntMemory.values()]
+        .sort((a, b) => b.lastSeenTick - a.lastSeenTick || a.position[0] - b.position[0] || a.position[1] - b.position[1])
+        .map((target) => ({
+          position: target.position,
+          source: target.source,
+          lastSeenTick: target.lastSeenTick,
+        })),
     };
   }
 }
