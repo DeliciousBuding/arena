@@ -46,6 +46,7 @@ const state = {
   cells: [],
   beacons: [],
   coreTrails: [],
+  intel: null,
   bounds: null,
   lastRefresh: 0,
   /** 单位上一次轮询位置（smooth 插值：poll 之间单位按 POLL_MS 渐变移动）。 */
@@ -269,6 +270,7 @@ async function poll() {
     state.cells = map.cells ?? [];
     state.beacons = map.beacons ?? [];
     state.coreTrails = map.coreTrails ?? [];
+    state.intel = intel ?? null;
     state.bounds = map.bounds ?? null;
     state.cellIndex = new Map();
     for (const c of state.cells) state.cellIndex.set(`${c.x},${c.y}`, c);
@@ -495,6 +497,7 @@ function draw() {
   if (!replayActive) drawUnits(buckets.unit, s);
   if (!replayActive) drawCores(buckets.core, s);
   if (!replayActive && state.layers.coreTrail !== false) drawEnemyCoreTrails(s);
+  if (!replayActive && state.layers.coreTrail !== false) drawThreatArrows(s);
   if (!replayActive) drawLiveTrails(s);
   drawBeacons(s);
   if (state.hover && !state.drag) drawHoverCell(state.hover, s);
@@ -1206,6 +1209,58 @@ function drawEnemyCoreTrails(s) {
     }
     ctx.restore();
   }
+}
+/** 威胁雷达（2026-08-08）：从 HIGH/MEDIUM 风险敌核心画红色虚线箭头指向我方
+ *  核心 + 距离标签——面板一眼看到谁在压过来（数据 /api/intel）。 */
+function drawThreatArrows(s) {
+  const intel = state.intel;
+  if (!intel || !Array.isArray(intel.tenants)) return;
+  const w = W(), h = H();
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (const t of intel.tenants) {
+    if (state.soloTenant !== null && t.tenant !== state.soloTenant) continue;
+    if (!Array.isArray(t.ourCore) || !Array.isArray(t.enemyCores)) continue;
+    const home = project(t.ourCore[0], t.ourCore[1]);
+    for (const e of t.enemyCores) {
+      if (e.raidRisk !== 'HIGH' && e.raidRisk !== 'MEDIUM') continue;
+      const p = project(e.position[0], e.position[1]);
+      const off = p.sx < -200 || p.sx > w + 200 || p.sy < -200 || p.sy > h + 200;
+      if (off) continue;
+      const dx = home.sx - p.sx, dy = home.sy - p.sy;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len, uy = dy / len;
+      // 虚线箭头（源→我方核心），HIGH 更亮
+      const strong = e.raidRisk === 'HIGH';
+      ctx.setLineDash([7, 6]);
+      ctx.lineDashOffset = -(Date.now() / 140) % 13;
+      ctx.strokeStyle = strong ? 'rgba(255,90,90,.85)' : 'rgba(255,150,120,.55)';
+      ctx.lineWidth = strong ? 2 : 1.4;
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.moveTo(p.sx, p.sy);
+      ctx.lineTo(home.sx - ux * 14, home.sy - uy * 14);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // 箭头尖（靠近我方核心侧）
+      const tipX = home.sx - ux * 18, tipY = home.sy - uy * 18;
+      ctx.fillStyle = strong ? '#ff5a5a' : 'rgba(255,150,120,.7)';
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(tipX - ux * 10 + uy * 5, tipY - uy * 10 - ux * 5);
+      ctx.lineTo(tipX - ux * 10 - uy * 5, tipY - uy * 10 + ux * 5);
+      ctx.closePath();
+      ctx.fill();
+      // 距离标签（箭尾附近）
+      if (s >= 8 && typeof e.distanceToFriendlyCore === 'number') {
+        ctx.font = `600 ${Math.max(10, Math.round(s * 0.7))}px Inter, system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = strong ? '#ff8f8f' : 'rgba(255,180,160,.75)';
+        ctx.fillText(`${e.raidRisk} ${e.distanceToFriendlyCore}`, p.sx, p.sy - 10);
+      }
+    }
+  }
+  ctx.restore();
 }
 function drawEdgeBeacon(b, p) {
   const w = W(), h = H();

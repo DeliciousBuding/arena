@@ -915,6 +915,26 @@ function loadAllianceIntel() {
     intel.totalEnemyCores += enemyCores.length;
   }
   intel.enemies.sort((a, b) => (b.lastSeenTick - a.lastSeenTick) || a.username.localeCompare(b.username));
+  // 信标状态 + 载者推断（2026-08-08）：轨迹最近点 = 当前位置；近 12 tick 内移动过
+  // = 载者活动（敌方核心携带/漂移）；距信标 ≤30 的已知敌核心 = 载者猜测（如 jerkman）。
+  intel.beacons = [];
+  for (const t of intel.tenants) {
+    if (!t.runId) continue;
+    const trail = loadBeaconTrail(t.tenant);
+    if (!trail.length) continue;
+    const last = trail[trail.length - 1];
+    const prev = trail.length >= 2 ? trail[trail.length - 2] : null;
+    const moving = prev !== null && (last.tick - prev.tick) <= 12 && (last.x !== prev.x || last.y !== prev.y);
+    let carrierGuess = null;
+    let carrierDist = null;
+    let best = 31;
+    for (const e of intel.enemies) {
+      const d = Math.max(Math.abs(e.position[0] - last.x), Math.abs(e.position[1] - last.y));
+      if (d < best) { best = d; carrierGuess = e.username; }
+    }
+    if (best <= 30) carrierDist = best;
+    intel.beacons.push({ tenant: t.tenant, x: last.x, y: last.y, tick: last.tick, moving, carrierGuess, carrierDist });
+  }
   intelCache = { at: Date.now(), data: intel };
   return intel;
 }
