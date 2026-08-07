@@ -2754,6 +2754,8 @@ function replayDrawLayer(s: any) {
       ctx.fillStyle = p.hp > 3 ? '#76b889' : p.hp > 1 ? '#d8b64e' : '#c66370';
       ctx.fillRect(bx, by, bw * Math.max(0, Math.min(1, p.hp / 5)), bh);
     }
+    // 人类指挥中标记（聚焦=回放接管单位绘制，需在此补画）
+    if (c.controlled && unitHumanCommandOf(state.soloTenant, c.id)) drawHumanMarker(s, pr.sx, pr.sy, size, c.id);
   }
   // 单位
   for (const u of replay.data.units) {
@@ -2776,6 +2778,8 @@ function replayDrawLayer(s: any) {
       ctx.fillStyle = '#76b889';
       ctx.beginPath(); ctx.arc(pr.sx, pr.sy - size * 0.62, Math.max(1.6, s * 0.14), 0, Math.PI * 2); ctx.fill();
     }
+    // 人类指挥中标记（聚焦=回放接管单位绘制，需在此补画）
+    if (u.controlled && unitHumanCommandOf(state.soloTenant, u.id)) drawHumanMarker(s, pr.sx, pr.sy, size, u.id);
   }
 }
 function updateReplayUI() {
@@ -3101,7 +3105,7 @@ function drawHumanGoalPaths(s: any) {
   const scopes = solo ? [solo] : TENANTS;
   for (const tenant of scopes) {
     const store = tac.commandsByTenant ? tac.commandsByTenant[tenant] : (solo === tenant ? tac.commands : null);
-    const goals = store && Array.isArray(store.goals) ? store.goals : [];
+    const goals = store && Array.isArray(store.goals) ? store.goals.filter((g) => Array.isArray(g.target) && g.target.length >= 2) : [];
     if (!goals.length) continue;
     const world = tac.worlds[tenant] || mergedWorldFor(tenant);
     if (!world || !world.state || !Array.isArray(world.state.objects)) continue;
