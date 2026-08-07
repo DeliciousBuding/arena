@@ -1,0 +1,286 @@
+{
+  "rulesVersion": "v0.14",
+  "tick": 1,
+  "seed": 1,
+  "players": [
+    {
+      "id": "p1",
+      "username": "p1",
+      "resources": 30,
+      "core": {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "position": [
+          0,
+          0
+        ],
+        "hp": 5,
+        "shield": 5,
+        "state": "NORMAL"
+      },
+      "units": [
+        {
+          "id": "22222222-2222-2222-2222-222222222211",
+          "owner": "p1",
+          "position": [
+            4,
+            0
+          ],
+          "hp": 4,
+          "unitType": "VANGUARD",
+          "cargo": 0
+        },
+        {
+          "id": "22222222-2222-2222-2222-222222222212",
+          "owner": "p1",
+          "position": [
+            4,
+            1
+          ],
+          "hp": 4,
+          "unitType": "VANGUARD",
+          "cargo": 0
+        },
+        {
+          "id": "22222222-2222-2222-2222-222222222213",
+          "owner": "p1",
+          "position": [
+            4,
+            2
+          ],
+          "hp": 4,
+          "unitType": "VANGUARD",
+          "cargo": 0
+        },
+        {
+          "id": "22222222-2222-2222-2222-222222222201",
+          "owner": "p1",
+          "position": [
+            3,
+            3
+          ],
+          "hp": 2,
+          "unitType": "WORKER",
+          "cargo": 0
+        },
+        {
+          "id": "22222222-2222-2222-2222-222222222202",
+          "owner": "p1",
+          "position": [
+            3,
+            4
+          ],
+          "hp": 2,
+          "unitType": "WORKER",
+          "cargo": 0
+        },
+        {
+          "id": "38d56fa6-0cde-425f-a96a-8df29f7ea98d",
+          "unitType": "WORKER",
+          "position": [
+            0,
+            1
+          ],
+          "hp": 2,
+          "cargo": 0
+        },
+        {
+          "id": "90dad172-4b97-4e88-87ec-52bd8e031de4",
+          "unitType": "WORKER",
+          "position": [
+            0,
+            2
+          ],
+          "hp": 2,
+          "cargo": 0
+        },
+        {
+          "id": "ac070e20-73da-4a89-a587-f22813367327",
+          "unitType": "WORKER",
+          "position": [
+            0,
+            3
+          ],
+          "hp": 2,
+          "cargo": 0
+        },
+        {
+          "id": "4f5229ba-1551-4c3a-97c5-4b1a7fcb1d91",
+          "unitType": "WORKER",
+          "position": [
+            0,
+            4
+          ],
+          "hp": 2,
+          "cargo": 0
+        }
+      ]
+    },
+    {
+      "id": "p2",
+      "username": "p2",
+      "resources": 30,
+      "core": {
+        "id": "44444444-4444-4444-4444-444444444444",
+        "position": [
+          12,
+          0
+        ],
+        "hp": 5,
+        "shield": 5,
+        "state": "NORMAL"
+      },
+      "units": [
+        {
+          "id": "55555555-5555-5555-5555-555555555511",
+          "owner": "p2",
+          "position": [
+            8,
+            0
+          ],
+          "hp": 4,
+          "unitType": "VANGUARD",
+          "cargo": 0
+        },
+        {
+          "id": "55555555-5555-5555-5555-555555555512",
+          "owner": "p2",
+          "position": [
+            8,
+            1
+          ],
+          "hp": 4,
+          "unitType": "VANGUARD",
+          "cargo": 0
+        },
+        {
+          "id": "55555555-5555-5555-5555-555555555501",
+          "owner": "p2",
+          "position": [
+            9,
+            3
+          ],
+          "hp": 2,
+          "unitType": "WORKER",
+          "cargo": 0
+        },
+        {
+          "id": "55555555-5555-5555-5555-555555555502",
+          "owner": "p2",
+          "position": [
+            9,
+            4
+          ],
+          "hp": 2,
+          "unitType": "WORKER",
+          "cargo": 0
+        },
+        {
+          "id": "26a6d7dc-f4fa-4d99-b0f5-2489a93ce3fd",
+          "unitType": "WORKER",
+          "position": [
+            12,
+            1
+          ],
+          "hp": 2,
+          "cargo": 0
+        },
+        {
+          "id": "40ff2a78-d69a-49ae-b1bf-ad26b71d4338",
+          "unitType": "WORKER",
+          "position": [
+            12,
+            2
+          ],
+          "hp": 2,
+          "cargo": 0
+        },
+        {
+          "id": "83954d37-521d-4a8b-8d72-69b310d205eb",
+          "unitType": "WORKER",
+          "position": [
+            12,
+            3
+          ],
+          "hp": 2,
+          "cargo": 0
+        },
+        {
+          "id": "95f2240f-54ed-4068-ba41-27afb2b0d577",
+          "unitType": "WORKER",
+          "position": [
+            12,
+            4
+          ],
+          "hp": 2,
+          "cargo": 0
+        }
+      ]
+    }
+  ],
+  "terrain": {
+    "obstacles": [],
+    "resources": [
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        3,
+        0
+      ],
+      [
+        3,
+        1
+      ],
+      [
+        3,
+        2
+      ],
+      [
+        8,
+        0
+      ],
+      [
+        8,
+        1
+      ],
+      [
+        8,
+        2
+      ],
+      [
+        9,
+        0
+      ],
+      [
+        9,
+        1
+      ],
+      [
+        9,
+        2
+      ]
+    ]
+  },
+  "beacon": {
+    "position": [
+      100,
+      100
+    ],
+    "status": "GROUND",
+    "carrierId": null
+  },
+  "evaluation": {
+    "p1Posture": "aggressive",
+    "p1AttackPriority": "core"
+  },
+  "name": "strike-group-exchange-econ2"
+}
