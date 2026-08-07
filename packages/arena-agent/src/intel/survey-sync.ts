@@ -26,7 +26,9 @@ import {
   upsertObstacles,
   upsertResources,
   upsertUnitSeen,
+  upsertChunk,
 } from "./survey-db.ts";
+import { chunkKeyFor } from "../domain/world.ts";
 
 export interface SyncOptions {
   /** 已打开的测绘库（缺省 = 自动打开 write）。 */
@@ -246,7 +248,12 @@ export function syncTenantSurvey(
         upsertUnitSeen(db, u, u.unitType, u.controlled, tick);
         if (u.controlled && u.id !== null) touchUnitSeen(db, u.id, u.unitType, tick, u);
       }
-      // 生命周期事件（2026-08-08）：spawn/destroy/harvest/heal/repair
+      // 探索分区（2026-08-08）：case 内所有物体位置 → 16×16 chunk 最后探索 tick
+      // ——"探索过的区域"跨 run 记忆（有物体 = 该 chunk 被探索过）。
+      for (const pos of [...objects.resources, ...objects.obstacles, ...objects.coreHunts.map((h) => ({ x: h.x, y: h.y })), ...objects.unitSeen.map((u) => ({ x: u.x, y: u.y }))]) {
+        upsertChunk(db, chunkKeyFor([pos.x, pos.y]), tick);
+      }
+            // 生命周期事件（2026-08-08）：spawn/destroy/harvest/heal/repair
       const lc = parseCaseLifecycle(raw, tick);
       for (const b of lc.births) recordUnitBirth(db, b.unitId, b.unitType, b.tick, b.pos);
       for (const d of lc.deaths) recordUnitDeath(db, d.unitId, d.tick, d.pos);

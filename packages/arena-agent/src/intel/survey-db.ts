@@ -146,7 +146,16 @@ CREATE TABLE IF NOT EXISTS core_spends (
 -- 幂等键：SQLite UNIQUE 对 NULL 无效（repair 的 unit_id 可能 NULL），用 COALESCE
 -- 表达式唯一索引保证 force 重跑不重复记账（与 resource_events/unit_lifecycle 对齐）。
 CREATE UNIQUE INDEX IF NOT EXISTS idx_core_spends_dedup ON core_spends(kind, tick, amount, COALESCE(unit_type, ''), COALESCE(unit_id, ''));
-CREATE INDEX IF NOT EXISTS idx_core_spends_kind ON core_spends(kind, tick);`;
+CREATE INDEX IF NOT EXISTS idx_core_spends_kind ON core_spends(kind, tick);
+
+-- 探索分区（2026-08-08）：16×16 chunk 的最后探索 tick——"探索过的区域"跨
+-- run 记忆（重启后 Fog 层/未观察分区优先不丢）。数据源 = calibration case
+-- 物体位置推导（有物体 = 该 chunk 被探索过）。
+CREATE TABLE IF NOT EXISTS chunks (
+  chunk_key TEXT PRIMARY KEY,
+  last_seen_tick INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_last_seen ON chunks(last_seen_tick);`;
 
 /** 打开（或创建）某租户的测绘库。write=true 时确保目录存在。 */
 export function openSurveyDb(dataRoot: string, tenant: string, write = false): DatabaseSync {
@@ -275,6 +284,22 @@ export function knownObstacles(db: DatabaseSync): readonly SurveyObstacleRow[] {
   }));
 }
 
+
+/** 探索分区 upsert：chunk 最后探索 tick（有物体即探索过）。 */
+export function upsertChunk(db: DatabaseSync, chunkKey: string, tick: number): void {
+  db.prepare(
+    "INSERT INTO chunks (chunk_key, last_seen_tick) VALUES (?, ?) " +
+    "ON CONFLICT(chunk_key) DO UPDATE SET last_seen_tick = MAX(last_seen_tick, excluded.last_seen_tick)",
+  ).run(chunkKey, tick);
+}
+
+/** 已知探索分区：返回最后探索 tick ≥ cutoff 的 chunk（跨 run 累积）。 */
+export function knownChunks(db: DatabaseSync, minLastSeenTick: number): readonly { key: string; lastSeenTick: number }[] {
+  const rows = db.prepare(
+    "SELECT chunk_key AS key, last_seen_tick AS lastSeenTick FROM chunks WHERE last_seen_tick >= ? ORDER BY last_seen_tick DESC",
+  ).all(minLastSeenTick) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({ key: String(r.key), lastSeenTick: Number(r.lastSeenTick) }));
+}
 /** 已知敌核心基地。 */
 export function knownCoreHunts(db: DatabaseSync): readonly SurveyCoreHuntRow[] {
   const rows = db.prepare(
