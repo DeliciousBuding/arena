@@ -84,6 +84,15 @@ export interface DecisionTraceRecord {
   readonly threatAxes?: number;
 }
 
+/** 人类指令合并结果（遥测精简版；完整结果在 TickOutcome.humanOverride）。 */
+export interface HumanOverrideTrace {
+  readonly active: boolean;
+  readonly applied: readonly string[];
+  readonly rejected: readonly { readonly unitId: string; readonly reason: string }[];
+  readonly satisfied: readonly string[];
+  readonly updatedAt: string | null;
+}
+
 /** OutcomeTrace：执行后发生了什么（核心资源变化/产出/损耗/事件流水）。 */
 export interface OutcomeTraceRecord {
   readonly processRunId: string;
@@ -107,6 +116,8 @@ export interface OutcomeTraceRecord {
   readonly healCount?: number;
   readonly unitLossCount?: number;
   readonly events: string[];
+  /** 人类最高控制权合并结果（applied/rejected/satisfied，供指挥面板回显）。 */
+  readonly humanOverride?: HumanOverrideTrace;
 }
 
 export interface FailedEventTrace {

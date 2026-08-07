@@ -775,6 +775,13 @@ body::after {
 .act-goal button { border: none; background: transparent; color: var(--text-dim); cursor: pointer; font-size: 10px; }
 .act-goal button:hover { color: var(--danger); }
 .act-note { margin-top: 10px; text-align: center; font-size: 9.5px; color: var(--text-faint); letter-spacing: .08em; }
+/* 人类指令遥测状态行（已生效/已完成/被拒+原因） */
+.act-goal.act-tele { justify-content: flex-start; gap: 6px; font-family: var(--font-sans); font-size: 10.5px; }
+.act-tele b { font-weight: 700; }
+.act-tele b.ok { color: var(--success); }
+.act-tele b.done { color: var(--cyan-signal, #5fd4e8); }
+.act-tele b.no { color: var(--danger); }
+.act-tele .dim { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 信标方向指示（BeaconDirectionIndicator 风格） */
 #beaconIndicator { position: absolute; z-index: 7; pointer-events: auto; opacity: 0; transform: scale(.85); transition: opacity .25s var(--ease), transform .25s var(--ease); }
