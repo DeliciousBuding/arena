@@ -25,6 +25,41 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "bounded-raid-v1": Object.freeze({ boundedRaid: true }),
     "scout-evade-v1": Object.freeze({ scoutEvade: true }),
     "ranger-memory-shot-v1": Object.freeze({ rangerMemoryShot: true }),
+    /**
+     * 攻坚候选（2026-08-07 用户导向"爆兵打对面水晶"，安全侧 = 军事单位行为）：
+     * - aggression=aggressive：Vanguard 记忆推进敌 Core / Ranger 断敌经济；
+     * - attackForce=6：军事规模达标才前压（避免零星送死）；
+     * - boundedRaid：敌 Core 超 40 格视为远征送死，回撤守家；
+     * - rangerMemoryShot：视野丢失时对记忆中的敌 Core 格保持射击压制；
+     * - strikeGroupReserve：留 1 个 Vanguard 守家（防换家）。
+     * 配套 deterministic 侧（DETERMINISTIC_VARIANT_CONFIG）：vanguardRatio=0.5
+     * 交替产兵 + accumulateThreshold=30 积累期爆兵节奏。
+     */
+    "strike-core-v1": Object.freeze({
+      aggression: "aggressive",
+      attackForce: 6,
+      boundedRaid: true,
+      rangerMemoryShot: true,
+      strikeGroupReserve: true,
+    }),
+  });
+
+/** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要
+ *  影响"产什么兵"（vanguardRatio/accumulateThreshold/spawnReserve）时注册到这里。
+ *  与 VARIANT_SAFETY_CONFIG 同 id 配对——"变体启用 = 配置声明"在 deterministic
+ *  模式同样成立（tenant-runtime 把两部分都喂给对应构造器）。 */
+export interface DeterministicVariantConfig {
+  /** VANGUARD 目标占比 [0,1]（缺省 undefined = 交替产兵，历史行为）。 */
+  readonly vanguardRatio?: number;
+  /** 爆兵阈值：resources 达标前只产 Worker 积累、达标后全力爆兵（0 = 关闭）。 */
+  readonly accumulateThreshold?: number;
+  /** 补员 reserve（缺省 2 = 生产行为零回归）。 */
+  readonly spawnReserve?: number;
+}
+
+export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, DeterministicVariantConfig>> =
+  Object.freeze({
+    "strike-core-v1": Object.freeze({ vanguardRatio: 0.5, accumulateThreshold: 30 }),
   });
 
 /** 解析变体 id → SafetyPlanner 配置覆盖；未知 id 抛错（fail-fast）。 */
@@ -33,6 +68,17 @@ export function resolveSafetyVariantConfig(id: string): Partial<SafetyPlannerCon
   if (config === undefined) {
     throw new Error(
       `unknown safety variant: ${id} (registered: ${Object.keys(VARIANT_SAFETY_CONFIG).join(", ")})`,
+    );
+  }
+  return config;
+}
+
+/** 解析变体 id → DeterministicPlanner 参数覆盖；未知 id 抛错（fail-fast）。 */
+export function resolveDeterministicVariantConfig(id: string): DeterministicVariantConfig {
+  const config = DETERMINISTIC_VARIANT_CONFIG[id];
+  if (config === undefined) {
+    throw new Error(
+      `unknown deterministic variant: ${id} (registered: ${Object.keys(DETERMINISTIC_VARIANT_CONFIG).join(", ")})`,
     );
   }
   return config;
@@ -49,4 +95,12 @@ export function resolveVariantsConfig(
 ): Partial<SafetyPlannerConfig> {
   if (ids === undefined || ids.length === 0) return {};
   return Object.assign({}, ...ids.map((id) => resolveSafetyVariantConfig(id)));
+}
+
+/** 解析 config.variants 列表 → 合并的 DeterministicPlanner 参数覆盖（缺省/空 = 零覆盖）。 */
+export function resolveDeterministicVariantsConfig(
+  ids: readonly string[] | undefined,
+): DeterministicVariantConfig {
+  if (ids === undefined || ids.length === 0) return {};
+  return Object.assign({}, ...ids.map((id) => resolveDeterministicVariantConfig(id)));
 }

@@ -92,6 +92,21 @@ export const PLANNER_VARIANTS: readonly PlannerVariant[] = Object.freeze([
     create: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...VARIANT_SAFETY_CONFIG["core-evade-v1"] }),
   }),
   Object.freeze({
+    id: "strike-core-v1",
+    description:
+      "攻坚候选（2026-08-07 用户导向）：deterministic 爆兵前压打水晶——积累期只产 Worker（accumulateThreshold=30）达标爆兵（vanguardRatio=0.5），军事成型（attackForce=6）前压拆 Core；Ranger 断敌经济 + 记忆射击，Vanguard 留 1 守家，超 40 格有界攻坚回撤",
+    create: () => {
+      const safety = { ...DEFAULT_SAFETY_CONFIG, ...VARIANT_SAFETY_CONFIG["strike-core-v1"] };
+      return new DeterministicPlanner(
+        new WorkerTaskPlanner(),
+        new SafetyPlanner(safety),
+        new SafetyPlanner(safety),
+        0.5,
+        30,
+      );
+    },
+  }),
+  Object.freeze({
     id: "safety",
     description: "内置 SafetyPlanner（默认配置）",
     create: () => new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
