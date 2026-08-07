@@ -1432,7 +1432,9 @@ async function refreshShop() {
     const data = await shopRequest('/api/shop');
     renderShopItems(data.products ?? []);
   } catch (err) {
-    els.shopList.innerHTML = `<div class="stream-empty">加载官方商品失败：${escapeHtml(err.message)}</div>`;
+    els.shopList.innerHTML = `<div class="stream-empty">加载官方商品失败：${escapeHtml(err.message)}
+      <button type="button" class="btn ghost" id="shopRetry" style="margin-top:8px">重试</button></div>`;
+    els.shopList.querySelector('#shopRetry')?.addEventListener('click', refreshShop);
   }
 }
 function renderShopItems(products) {
@@ -1699,7 +1701,10 @@ function bindEvents() {
   els.redeemClose.addEventListener('click', () => els.redeemDialog.close());
   els.cookieSave.addEventListener('click', saveShopCookie);
   els.cookieTest.addEventListener('click', async () => {
-    if (els.shopCookie.value.trim()) localStorage.setItem(SHOP_COOKIE_KEY, els.shopCookie.value.trim());
+    const v = els.shopCookie.value.trim();
+    if (!v) { showRedeemResult('err', '请先粘贴官方商店 Cookie 再连接'); return; }
+    localStorage.setItem(SHOP_COOKIE_KEY, v);
+    showRedeemResult('pending', '正在连接官方商店…');
     await refreshAccount();
   });
   els.shopCookie.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveShopCookie(); } });
