@@ -887,6 +887,16 @@ body::after {
 .asset-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .asset-pos { font-size: 9px; color: var(--text-faint); }
 .asset-hp { font-size: 9px; color: var(--text-dim); }
+/* 人类指挥中标记（2026-08-08）：舰队索引里被人工接管的单位——琥珀描边行 + H 徽章，
+   一眼看出哪些单位不是 agent 全自动（琥珀 = 指挥中状态语义，不撞租户色） */
+.asset-row.human { border-color: rgba(211,173,85,.5); background: rgba(211,173,85,.06); }
+.asset-row.human:hover { background: rgba(211,173,85,.1); }
+.asset-h {
+  flex: none; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 4px;
+  display: inline-grid; place-items: center;
+  font-size: 10px; font-weight: 800; line-height: 1; color: #1a1408;
+  background: #d3ad55; box-shadow: 0 0 8px rgba(211,173,85,.45);
+}
 
 /* 单位详情面板 */
 .inspect-panel { position: absolute; right: 12px; top: 12px; z-index: 5; width: 190px; }

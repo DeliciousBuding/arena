@@ -1070,6 +1070,8 @@ function drawUnits(cells: any, s: any) {
       if (typeof c.hp === 'number' && s >= 10 && !LQ) drawUnitHealth(s, p.sx, p.sy + size * 0.5, s, c.hp, maxUnitHp(c.unitType));
       const stack = byCell.get(c.x + ',' + c.y) || [];
       if (stack.length > 1 && !LQ) drawStackBadge(s, p.sx, p.sy - size * 0.7, s, stack.length, color);
+      const human = unitHumanCommandOf(c.tenant, c.id);
+      if (human && !LQ) drawHumanMarker(s, p.sx, p.sy, size, c.id);
     }
     return;
   }
@@ -1083,7 +1085,35 @@ function drawUnits(cells: any, s: any) {
     ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(1.8, s * 0.42 * pulse), 0, Math.PI * 2); ctx.fill();
     if (c.controlled) { ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 1; ctx.stroke(); }
     ctx.restore();
+    if (unitHumanCommandOf(c.tenant, c.id)) drawHumanMarker(s, p.sx, p.sy, Math.max(3, s * 0.8), c.id);
   }
+}
+/** 人类指挥中标记（2026-08-08）：受控单位有活跃人类 goal/action 时画琥珀色虚线环 +
+ *  头部小 H 标签——指挥官一眼看到哪些单位已被人工接管（区别于 agent 自动的租户色环）。
+ *  琥珀 = 指挥中状态语义（与待执行面板 src-manual 蓝不同：地图上用 warn 色更醒目，
+ *  且不与其他租户色（蓝/绿/紫/红）撞色）。 */
+function drawHumanMarker(s: any, sx: any, sy: any, cell: any, id: any) {
+  ctx.save();
+  const r = Math.max(5, cell * 0.85);
+  ctx.strokeStyle = 'rgba(211,173,85,.9)';
+  ctx.lineWidth = Math.max(1.2, cell * 0.06);
+  ctx.setLineDash([Math.max(3, cell * 0.14), Math.max(2, cell * 0.1)]);
+  ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+  // 头部 H 标签（仅缩放到够大显示，避免低缩放噪点）
+  if (s >= 6) {
+    const fs = Math.max(9, Math.round(s * 0.34));
+    ctx.font = `700 ${fs}px ${CANVAS_FONT}`;
+    const tw = ctx.measureText('H').width;
+    const bx = sx + r + 2, by = sy - r - fs;
+    ctx.fillStyle = 'rgba(8,8,8,.78)';
+    ctx.beginPath(); ctx.roundRect(bx - 2, by - 1, tw + 5, fs + 4, 4); ctx.fill();
+    ctx.fillStyle = '#d3ad55';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText('H', bx + 0.5, by + (fs + 4) / 2 + 0.5);
+    ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+  }
+  ctx.restore();
 }
 /** 实时移动轨迹（动线持久化 2026-08-08）：live 视图用该租户 replay 的 trail 画
  *  最近 12 个 tick 的连续移动折线——旧段低透明持久、近 3 点提亮 + 端点头/尾点，
@@ -1756,6 +1786,10 @@ async function tactRefreshLive(tenant) {
     }
     tactRenderPending();
     tactRenderRespawn(tenant);
+    // 每 poll 刷新人类指令状态（goal 被服务端对账清除/新指令落地后，待执行面板与
+    // 资产行 H 徽章即时跟随；此前 solo 模式 poll 不刷 commands，外部清除后残留）
+    await tactRefreshCommands(tenant);
+    tactRenderAssets(tenant);
     draw();
   } catch { /* 保持上次快照，下次重试 */ }
 }
@@ -2559,8 +2593,10 @@ function tactRenderAssets(tenant: any) {
     const art = o.kind === 'CORE' ? 'CORE' : (o.unit_type ?? 'WORKER');
     const artPath = art === 'CORE' ? SPRITE.core : unitSpritePath(art);
     const selected = T().selected?.obj?.id === o.id;
-    return `<button class="asset-row ${selected ? 'active' : ''}" data-asset="${o.id}">
+    const human = unitHumanCommandOf(tenant, o.id);
+    return `<button class="asset-row ${selected ? 'active' : ''}${human ? ' human' : ''}" data-asset="${o.id}" ${human ? 'title="人类指挥中 · 点击查看/清除指令"' : ''}>
       <span class="asset-icon"><img src="${artPath}" alt="" /></span>
+      ${human ? '<span class="asset-h" title="人类指挥中">H</span>' : ''}
       <span class="asset-name">${o.kind === 'CORE' ? '核心' : (TACT_UNIT_CN[o.unit_type] ?? o.unit_type)}</span>
       <span class="mono asset-pos">[${o.position[0]}, ${o.position[1]}]</span>
       <span class="mono asset-hp">${o.hp} HP</span>
@@ -3804,6 +3840,7 @@ async function tactRefreshCommands(tenant) {
       if (tele) consumeCommandTelemetry(tenant, tele, prev && prev.telemetry ? prev.telemetry : null);
       tactRenderActionDialog();
       tactRenderHud(tenant);
+      tactRenderAssets(tenant); // 指令落地/清除后 H 徽章即时出现/消失
     }
   } catch { /* 忽略 */ }
 }
@@ -3864,6 +3901,21 @@ function commandActionOf(tenant: any, unitId: any) {
   const c = T().commands;
   if (!c) return null;
   return (c.actions ?? []).find((a) => a.unitId === unitId) ?? null;
+}
+/** 单位是否有活跃人类指令（goal 或一键 action）——舰队索引/地图「指挥中」标记。
+ *  全局联盟用 commandsByTenant（refreshAllCommands 每 poll 刷新），聚焦用 T().commands。 */
+function unitHumanCommandOf(tenant: any, unitId: any): 'goal' | 'cmd' | null {
+  const byT = T().commandsByTenant ? T().commandsByTenant[tenant] : null;
+  if (byT) {
+    if ((byT.goals ?? []).some((g) => g.unitId === unitId)) return 'goal';
+    if ((byT.actions ?? []).some((a) => a.unitId === unitId)) return 'cmd';
+  }
+  const c = T().commands;
+  if (c && c.tenant === tenant && c.mode === 'override') {
+    if ((c.goals ?? []).some((g) => g.unitId === unitId)) return 'goal';
+    if ((c.actions ?? []).some((a) => a.unitId === unitId)) return 'cmd';
+  }
+  return null;
 }
 
 /* ---------- React 挂载桥 ---------- */
