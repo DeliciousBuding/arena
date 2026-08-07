@@ -163,7 +163,7 @@ function Legend() {
 
 const LAYERS: Array<[string, string]> = [
   ["obstacle", "障碍"], ["resource", "资源"], ["unit", "单位"], ["core", "核心"], ["beacon", "信标"], ["beaconTrail", "信标轨迹"],
-  ["survey", "测绘"], ["patrol", "巡逻环"], ["plan", "计划箭头"], ["trail", "移动轨迹"], ["beaconEdge", "信标指示"], ["coreTrail", "敌核轨迹"], ["enemyMemory", "敌情记忆"],
+  ["survey", "测绘"], ["patrol", "巡逻环"], ["plan", "计划箭头"], ["trail", "移动轨迹"], ["beaconEdge", "信标指示"], ["coreTrail", "敌核轨迹"], ["enemyMemory", "敌情记忆"], ["enemyHeat", "敌情热区"],
 ];
 
 function LayerToggles() {
