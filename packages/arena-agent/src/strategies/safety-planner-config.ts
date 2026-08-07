@@ -2,6 +2,28 @@ import type { PhaseConfig } from "../domain/phase-machine.ts";
 
 export type AggressionLevel = "defensive" | "aggressive";
 
+/** 威胁等级（2026-08-07，排行榜威胁画像）：按官方伤害输出排名分级——伤害
+ *  高 = 猛攻倾向（用户裁决"伤害高就是猛攻蛆"）。ELITE_AGGRESSOR 最危险。 */
+export type ThreatTier = "STANDARD" | "AGGRESSOR" | "ELITE_AGGRESSOR";
+
+/** 单用户威胁画像（来自官方排行榜快照）。 */
+export interface ThreatProfile {
+  readonly username: string;
+  readonly damageScore: number;
+  readonly damageRank: number;
+  readonly coreScore: number;
+  readonly coreRank: number;
+  readonly tier: ThreatTier;
+}
+
+/** 伤害输出排名 → 威胁等级：1-10 = ELITE_AGGRESSOR（猛攻蛆头子）；11-30 =
+ *  AGGRESSOR；其余 = STANDARD。纯函数（official-intel 加载器复用）。 */
+export function tierOfDamageRank(rank: number): ThreatTier {
+  if (rank >= 1 && rank <= 10) return "ELITE_AGGRESSOR";
+  if (rank <= 30) return "AGGRESSOR";
+  return "STANDARD";
+}
+
 export interface SafetyPlannerConfig {
   readonly reserveWealthy: number;
   readonly reserveEarly: number;
@@ -247,6 +269,14 @@ export interface SafetyPlannerConfig {
    * （带伤 worker 继续采集/巡逻，零回归）。
    */
   readonly idleHealReturn?: boolean;
+  /**
+   * 威胁自适应防守（2026-08-07，排行榜威胁画像接入）：攻坚目标所有者是
+   * 排行榜高伤害玩家（"猛攻蛆"）时"留强"——提高前压成型门槛（attackForce
+   * 之上叠加）并增加守家 Vanguard 预留（strikeGroupReserve 之上叠加），
+   * 防高威胁对手趁我方主力远征时偷家/反打。默认 false = 历史行为（不看
+   * 对手身份，零回归）。
+   */
+  readonly threatAdaptiveDefense?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -268,3 +298,5 @@ export const AGGRESSIVE_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
   ...DEFAULT_SAFETY_CONFIG,
   aggression: "aggressive",
 });
+
+

@@ -22,6 +22,7 @@ import { performance } from "node:perf_hooks";
 
 import { loadRuntimeConfig, resolveCircuitBreaker, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
 import { loadPersistentEnemyIntel } from "./enemy-intel.ts";
+import { loadThreatProfiles } from "./official-intel.ts";
 import { resolveArenaDataRoot, resolveTenantBaseDir } from "./data-root.ts";
 import { SingleWriterLock } from "./single-writer-lock.ts";
 import { newProcessRunId, readGitSha, writeRunManifest, type RunManifest } from "./run-manifest.ts";
@@ -481,6 +482,10 @@ export async function runTenant(
       decisionMode === "deterministic" && variantConfig.militaryHunt === true
         ? loadPersistentEnemyIntel(dirs.calibrationDir)
         : [];
+    // 官方排行榜威胁画像（2026-08-07，威胁自适应）：从 data/leaderboard/ 快照
+    // 加载（纯只读，缺失/降级 = 空 Map 零回归）；供攻坚"留强"决策消费——
+    // 攻坚目标所有者是高伤害玩家（猛攻蛆）时提高成型门槛 + 增加守家预留。
+    const threatProfiles = loadThreatProfiles(dataRoot);
     const planner =
       decisionMode === "deterministic"
         ? Object.keys(variantConfig).length === 0
@@ -493,8 +498,9 @@ export async function runTenant(
               deterministicVariantConfig.accumulateThreshold ?? 0,
               deterministicVariantConfig.spawnReserve,
               initialCoreHuntTargets,
+              threatProfiles,
             )
-        : new SafetyPlanner({ ...AGGRESSIVE_SAFETY_CONFIG, ...variantConfig });
+        : new SafetyPlanner({ ...AGGRESSIVE_SAFETY_CONFIG, ...variantConfig }, undefined, threatProfiles);
     const coordinator = new DecisionCoordinator({
       runtime,
       planner,

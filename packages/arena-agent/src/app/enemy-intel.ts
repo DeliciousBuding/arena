@@ -101,8 +101,10 @@ export function loadPersistentEnemyIntel(calibrationRoot: string): readonly Core
       position: s.position,
       lastSeenTick: s.tick,
       source: "CORE" as const,
+      owner: s.owner,
     }));
   } catch {
     return [];
   }
 }
+

@@ -78,6 +78,10 @@ export interface CoreHuntTarget {
   readonly position: Position;
   readonly lastSeenTick: number;
   readonly source: "CORE" | "WORKER_INFER";
+  /** 敌方 Core 所有者用户名（2026-08-07，排行榜威胁画像接入）：enemy-intel
+   *  播种时从 calibration 提取；用于把官方排行榜"猛攻蛆"威胁等级映射到
+   *  攻坚目标——高威胁对手留强防守。缺省 null/undefined = 未知所有者。 */
+  readonly owner?: string | null;
 }
 
 export interface UnitMemory {
@@ -111,6 +115,7 @@ export interface WorldSnapshot {
     position: Position;
     source: "CORE" | "WORKER_INFER";
     lastSeenTick: number;
+    owner?: string | null;
   }[];
 }
 
@@ -269,6 +274,7 @@ export class World {
           position: enemy.position,
           lastSeenTick: state.tick,
           source: "CORE",
+          owner: enemy.ownerUsername ?? null,
         });
       } else if (enemy.unitType === "WORKER") {
         for (const anchor of this.inferWorkerCoreAnchors(enemy, state)) {
@@ -530,3 +536,4 @@ export class World {
     };
   }
 }
+

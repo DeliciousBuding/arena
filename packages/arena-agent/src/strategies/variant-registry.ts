@@ -31,6 +31,15 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "beacon-grab-v1": Object.freeze({ beaconGrab: true, beaconGrabMaxDist: 80 }),
     "move-failed-avoidance-v1": Object.freeze({ moveFailedAvoidance: true }),
+    /**
+     * 威胁自适应防守（2026-08-07，排行榜威胁画像接入）：攻坚目标 owner 命中
+     * 官方排行榜高伤害玩家（ELITE_AGGRESSOR=damage top10 / AGGRESSOR=top30）
+     * 时"留强"——成型门槛 +2/+4（叠加 attackForce）+ 守家预留 1→2 Vanguard。
+     * 高伤害玩家 = 猛攻蛆（用户裁决），进攻同时防偷家/反打。无画像/降级 =
+     * 零回归。配套 external 数据源：docs/progress/leaderboard-intel.py 拉取
+     * data/leaderboard/ 快照，运行时只读本地文件不联网。
+     */
+    "threat-adaptive-defense-v1": Object.freeze({ threatAdaptiveDefense: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),
@@ -126,3 +135,4 @@ export function resolveDeterministicVariantsConfig(
   if (ids === undefined || ids.length === 0) return {};
   return Object.assign({}, ...ids.map((id) => resolveDeterministicVariantConfig(id)));
 }
+

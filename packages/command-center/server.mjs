@@ -532,6 +532,41 @@ function sendJson(res, value, status = 200) {
   res.end(body);
 }
 
+/** 排行榜威胁情报（2026-08-07，官方 /api/v1/leaderboard 快照接入）：读取
+ *  data/leaderboard/ 最新快照（leaderboard-intel.py 拉取），返回三榜 + 威胁
+ *  分级（伤害 top10 = ELITE_AGGRESSOR 猛攻蛆头子 / top30 = AGGRESSOR）。
+ *  快照缺失 = null（面板显示降级提示，不报错）。纯只读。 */
+function loadLeaderboardIntel() {
+  const dir = join(DATA_ROOT, "leaderboard");
+  if (!existsSync(dir)) return null;
+  const files = readdirSync(dir)
+    .filter((name) => /^leaderboard-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.json$/.test(name))
+    .sort()
+    .reverse();
+  if (files.length === 0) return null;
+  try {
+    const raw = JSON.parse(readFileSync(join(dir, files[0]), "utf8"));
+    if (!Array.isArray(raw.damage_dealt)) return null;
+    const tierOf = (rank) => (rank >= 1 && rank <= 10 ? "ELITE_AGGRESSOR" : rank <= 30 ? "AGGRESSOR" : "STANDARD");
+    const profiles = raw.damage_dealt.map((row) => ({
+      username: row.username,
+      rank: row.rank,
+      damage: row.score,
+      tier: tierOf(row.rank),
+    }));
+    return {
+      generatedAt: new Date().toISOString(),
+      snapshot: files[0],
+      beacon_ticks_held: raw.beacon_ticks_held ?? [],
+      damage_dealt: raw.damage_dealt ?? [],
+      core_destruction_participations: raw.core_destruction_participations ?? [],
+      profiles,
+    };
+  } catch {
+    return null;
+  }
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
   const pathname = url.pathname;
@@ -586,6 +621,11 @@ const server = createServer(async (req, res) => {
       const tenant = url.searchParams.get("tenant") ?? "t1";
       const n = Number(url.searchParams.get("n") ?? 60);
       return sendJson(res, loadEvents(tenant, n));
+    }
+    if (pathname === "/api/leaderboard") {
+      const intel = loadLeaderboardIntel();
+      if (!intel) return sendJson(res, { generatedAt: new Date().toISOString(), error: "排行榜快照缺失（运行 docs/progress/leaderboard-intel.py 拉取）" }, 404);
+      return sendJson(res, intel);
     }
     if (pathname === "/api/shop" && req.method === "GET") {
       const data = await shopProducts();

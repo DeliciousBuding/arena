@@ -38,6 +38,7 @@ import type { PlanProvider } from "../runtime/decision-types.ts";
 import type { MacroPolicy } from "../runtime/macro-policy.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { type CoreHuntTarget } from "../domain/world.ts";
+import type { ThreatProfile } from "../strategies/safety-planner-config.ts";
 import { unitSpawnCosts } from "../domain/pricing.ts";
 import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snapshot.ts";
 import { WorkerTaskPlanner, type Assignment } from "./worker-task-planner.ts";
@@ -477,6 +478,8 @@ export class DeterministicPlanner implements PlanProvider {
   private surgeActive = false;
   /** 补员 reserve（第十轮实验配置；默认 2 = 生产行为零回归）。 */
   private readonly spawnReserve: number;
+  /** 官方排行榜威胁画像（2026-08-07，威胁自适应）：透传内部 SafetyPlanner。 */
+  private readonly threatProfiles: ReadonlyMap<string, ThreatProfile>;
   private previousAssignments: readonly Assignment[] = [];
 
   constructor(
@@ -490,6 +493,10 @@ export class DeterministicPlanner implements PlanProvider {
      *  SafetyPlanner 的 World——重启后军事仍记得历史 calibration 里的最后
      *  已知敌基地（解决"重启→记忆清零→军队空转"）。缺省空 = 零回归。 */
     initialCoreHuntTargets: readonly CoreHuntTarget[] = [],
+    /** 官方排行榜威胁画像（2026-08-07，威胁自适应）：透传给内部两个
+     *  SafetyPlanner——攻坚目标所有者是高伤害玩家时"留强"（提高成型门槛 +
+     *  增加守家预留）。缺省空 Map = 无威胁情报（零回归）。 */
+    threatProfiles: ReadonlyMap<string, ThreatProfile> = new Map(),
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
@@ -497,10 +504,13 @@ export class DeterministicPlanner implements PlanProvider {
     this.vanguardRatio = vanguardRatio;
     this.accumulateThreshold = accumulateThreshold;
     this.spawnReserve = spawnReserve;
+    this.threatProfiles = threatProfiles;
     if (initialCoreHuntTargets.length > 0) {
       fallbackPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
       patrolPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
     }
+    fallbackPlanner.seedThreatProfiles(threatProfiles);
+    patrolPlanner.seedThreatProfiles(threatProfiles);
   }
 
   decide(input: DeterministicPlannerInput): Plan {
