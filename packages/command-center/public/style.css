@@ -739,6 +739,8 @@ body::after {
   background: rgba(0,0,0,.84); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
   animation: dialogIn .45s var(--ease);
 }
+/* hidden 属性必须压过 display:grid，否则一开页面就常显"核心被摧毁"覆盖层 */
+.respawn-overlay[hidden] { display: none !important; }
 .respawn-overlay::before {
   content: ""; position: absolute; inset: 0; pointer-events: none;
   background: radial-gradient(circle at center, rgba(221,98,109,.07), transparent 42%);
