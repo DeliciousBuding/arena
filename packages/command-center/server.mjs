@@ -93,6 +93,8 @@ const cellKey = (x, y) => `${x},${y}`;
  *    case 的每个 tick 位置都堆成 cell，导致单位成片、核心像有两个）。
  */
 const SURVEY_CASE_LIMIT = 24; // 每个租户累积测绘最多取最近 N 个 case（覆盖与新鲜度平衡）
+const RUN_SCAN = 30; // 联盟情报扫描 run 数（平衡覆盖与性能）
+const INTEL_CASE_LIMIT = 24; // 联盟情报每个 run 取最近 N 个 case（与测绘一致，保证核心目击不丢） // 对齐 enemy-intel SCAN_RUNS（历史敌核心目击在旧 run） // 联盟情报扫描的最近 run 数（历史敌核心目击在旧 run）
 function loadMergedMap() {
   const cells = new Map();
   const perTenant = [];
@@ -532,6 +534,72 @@ function sendJson(res, value, status = 200) {
   res.end(body);
 }
 
+/** 联盟情报（2026-08-07，全局共享地图）：合并 4 租户 calibration 里的
+ * 敌人测绘（敌核心 owner/位置/最后目击 tick + 敌方活动单位数），并关联官方
+ * 排行榜威胁画像（伤害 top10=ELITE_AGGRESSOR 猛攻蛆 / top30=AGGRESSOR）。
+ * 4 租户是官方平台账号（区域隔离但共享排行榜）——情报可全局共享：谁在打
+ * 我们、谁强、在哪。纯只读。 */
+/** 联盟情报缓存（30s，与排行榜缓存一致——面板轮询不重复扫描 calibration）。 */
+let intelCache = { at: 0, data: null };
+function loadAllianceIntel() {
+  const now = Date.now();
+  if (intelCache.data !== null && now - intelCache.at < 30_000) return intelCache.data;
+  const intel = { generatedAt: new Date().toISOString(), tenants: [], enemies: [], totalEnemyCores: 0 };
+  const lb = loadLeaderboardIntel();
+  const tierOf = (rank) => (rank >= 1 && rank <= 10 ? "ELITE_AGGRESSOR" : rank <= 30 ? "AGGRESSOR" : "STANDARD");
+  for (const tenant of TENANTS) {
+    const runDir = latestRunDir(tenant);
+    if (runDir === null) { intel.tenants.push({ tenant, runId: null, enemyCores: [], enemyUnits: 0 }); continue; }
+    // 扫最近 RUN_SCAN 个 run（历史敌核心目击在旧 run——enemy-intel 同口径），
+    // 每个 run 取 INTEL_CASE_LIMIT 个 case（核心是慢速目标，8 个足够捕获目击）：
+    const runDirs = readdirSync(calibrationDir(tenant), { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort((a, b) => {
+        const ta = listCases(tenant, a).map(parseTick).reduce((x, y) => Math.max(x, y), 0);
+        const tb = listCases(tenant, b).map(parseTick).reduce((x, y) => Math.max(x, y), 0);
+        return tb - ta;
+      })
+      .slice(0, RUN_SCAN);
+    const seenCores = new Map(); // owner -> { position, tick }
+    let enemyUnits = 0;
+    for (const rd of runDirs) {
+      const caseFiles = listCases(tenant, rd).slice(-INTEL_CASE_LIMIT);
+      for (const file of caseFiles) {
+        const tick = parseTick(file);
+        let raw;
+        try { raw = JSON.parse(readFileSync(join(calibrationDir(tenant), rd, "cases", file), "utf8")); } catch { continue; }
+        const state = raw?.before?.state;
+        if (!state?.objects) continue;
+        for (const obj of state.objects) {
+          if (obj.kind === "CORE" && !obj.controlled && obj.owner_username) {
+            const prev = seenCores.get(obj.owner_username);
+            if (prev === undefined || tick > prev.tick) seenCores.set(obj.owner_username, { position: obj.position, tick });
+          } else if (obj.kind === "UNIT" && !obj.controlled && obj.unit_type !== "WORKER") {
+            enemyUnits += 1;
+          }
+        }
+      }
+    }
+    const enemyCores = [...seenCores.entries()].map(([username, info]) => {
+      const profile = lb?.profiles?.find((p) => p.username === username);
+      return {
+        username,
+        position: info.position,
+        lastSeenTick: info.tick,
+        tier: profile?.tier ?? "STANDARD",
+        damageRank: profile?.rank ?? null,
+      };
+    }).sort((a, b) => (b.lastSeenTick - a.lastSeenTick) || a.username.localeCompare(b.username));
+    intel.tenants.push({ tenant, runId: runDir, enemyCores, enemyUnits });
+    intel.enemies.push(...enemyCores.map((e) => ({ ...e, tenant })));
+    intel.totalEnemyCores += enemyCores.length;
+  }
+  intel.enemies.sort((a, b) => (b.lastSeenTick - a.lastSeenTick) || a.username.localeCompare(b.username));
+  intelCache = { at: Date.now(), data: intel };
+  return intel;
+}
+
 /** 排行榜威胁情报（2026-08-07，官方 /api/v1/leaderboard 快照接入）：读取
  *  data/leaderboard/ 最新快照（leaderboard-intel.py 拉取），返回三榜 + 威胁
  *  分级（伤害 top10 = ELITE_AGGRESSOR 猛攻蛆头子 / top30 = AGGRESSOR）。
@@ -626,6 +694,9 @@ const server = createServer(async (req, res) => {
       const intel = loadLeaderboardIntel();
       if (!intel) return sendJson(res, { generatedAt: new Date().toISOString(), error: "排行榜快照缺失（运行 docs/progress/leaderboard-intel.py 拉取）" }, 404);
       return sendJson(res, intel);
+    }
+    if (pathname === "/api/intel") {
+      return sendJson(res, loadAllianceIntel());
     }
     if (pathname === "/api/shop" && req.method === "GET") {
       const data = await shopProducts();
