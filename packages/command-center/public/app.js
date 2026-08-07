@@ -10,8 +10,24 @@ const UNIT_ICONS = { resource: '/assets/ui/icons/resource.png', population: '/as
 /** Canvas font: bold sans stack - Geist for latin, PingFang/YaHei/Noto Sans CJK for CJK (never SimSun). */
 const CANVAS_FONT = '"Geist", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
 const DECISION_KIND_CN = {
-  accepted: '接受', rejected: '拒绝', timeout: '超时', missed: '错过', aborted: '中止',
-  not_applicable: '不适用', in_progress: '进行中', unknown: '未知',
+  accepted: '已接受', rejected: '已拒绝', timeout: '超时', missed: '错过', aborted: '中止',
+  not_applicable: '无需决策', in_progress: '进行中', unknown: '未知',
+};
+/** 事件 kind → 中文（事件标签页阅读性） */
+const EVENT_KIND_CN = {
+  UNIT_MOVE_FAILED: '移动失败', CORE_MOVE_FAILED: '核心移动失败',
+  SPAWN_SUCCEEDED: '生产成功', SPAWN_FAILED: '生产失败',
+  HARVEST_SUCCEEDED: '采集成功', HARVEST_FAILED: '采集失败',
+  DEPOSIT_SUCCEEDED: '交付成功', DEPOSIT_FAILED: '交付失败',
+  SHOT_HIT: '射击命中', SHOT_MISSED: '射击未中', SHOT_BLOCKED: '射击被挡',
+  SWEEP_RESOLVED: '清扫解除', SWEEP_FAILED: '清扫失败',
+  PICKUP_BEACON_SUCCEEDED: '拾取信标', PICKUP_BEACON_FAILED: '拾取信标失败',
+  DROP_BEACON_SUCCEEDED: '放置信标', DROP_BEACON_FAILED: '放置信标失败',
+  SELF_DESTRUCT: '自毁', HEAL_SUCCEEDED: '治疗成功', HEAL_FAILED: '治疗失败', REPAIR_SHIELD_SUCCEEDED: '护盾修复',
+  UNIT_DESTROYED: '单位被摧毁', CORE_DESTROYED: '核心被摧毁', CORE_DAMAGED: '核心受损', RESPAWN: '重生',
+  CORE_RESOURCES_CAPTURED: '夺取敌方资源', CORE_RESOURCE_OVERFLOW_DESTROYED: '溢出资源销毁', WORKER_CARGO_DROPPED: '掉落载货',
+  UNIT_HEAL_SUCCEEDED: '单位治疗', UNIT_HEAL_FAILED: '单位治疗失败', CORE_HEAL_SUCCEEDED: '核心治疗', CORE_HEAL_FAILED: '核心治疗失败',
+  WAIT: '等待', NOTHING_TO_DO: '无事可做',
 };
 
 const state = {
@@ -1171,7 +1187,7 @@ function renderStream() {
       return `<div class="stream-line${eprev.has(key) ? '' : ' st-new'}" style="--tc:${color}">
         <span class="st-tenant">${e.tenant.toUpperCase()}</span>
         <span class="st-tick">${fmt(e.tick)}</span>
-        <span class="st-kind" style="color:${evColor}">${e.kind}</span>
+        <span class="st-kind" style="color:${evColor}">${EVENT_KIND_CN[e.kind] ?? e.kind}</span>
         <span class="st-detail">${detail}</span>
       </div>`;
     }).join('');
@@ -1182,7 +1198,7 @@ function renderStream() {
     if (all.length) {
       const e0 = all[0];
       const detail = [e0.actor ? 'actor ' + shortId(e0.actor) : '', e0.target ? 'target ' + shortId(e0.target) : '', e0.amount != null ? '×' + e0.amount : ''].filter(Boolean).join(' ');
-      state.streamLive = { tenant: e0.tenant, tick: e0.tick, text: (e0.kind + (detail ? ' · ' + detail : '')).trim() };
+      state.streamLive = { tenant: e0.tenant, tick: e0.tick, text: ((EVENT_KIND_CN[e0.kind] ?? e0.kind) + (detail ? ' · ' + detail : '')).trim() };
     } else state.streamLive = null;
     updateStreamLive();
     return;
@@ -1202,7 +1218,8 @@ function renderStream() {
     const outcome = String(r.deadlineOutcome ?? '');
     const submit = String(r.submitResult ?? '');
     const outCls = submit === 'accepted' ? 'accepted' : submit === 'rejected' ? 'rejected' : (outcome.includes('timeout') || outcome.includes('missed')) ? 'timeout' : '';
-    const badge = submit !== '' ? submit : outcome !== '' ? outcome : '—';
+    const kindCn = DECISION_KIND_CN[outcome] ?? '决策';
+    const badge = submit !== '' ? (DECISION_KIND_CN[submit] ?? submit) : outcome !== '' ? (DECISION_KIND_CN[outcome] ?? outcome) : '—';
     const lat = [];
     if (r.agentLatencyMs != null) lat.push(`agent ${fmt(r.agentLatencyMs)}ms`);
     if (r.selectionLatencyMs != null) lat.push(`select ${fmt(r.selectionLatencyMs)}ms`);
@@ -1216,7 +1233,7 @@ function renderStream() {
     return `<div class="stream-line${rprev.has(key) ? '' : ' st-new'}" style="--tc:${color}">
       <span class="st-tenant">${r.tenant.toUpperCase()}</span>
       <span class="st-tick">${fmt(r.tick)}</span>
-      <span class="st-kind" style="color:${color}">${outcome !== '' ? outcome.replace(/_/g, ' ') : 'decision'}</span>
+      <span class="st-kind" style="color:${color}">${kindCn}</span>
       <span class="st-detail">${detail}</span>
       <span class="st-badge ${outCls}">${badge}</span>
     </div>`;
@@ -1228,7 +1245,7 @@ function renderStream() {
   // 折叠胶囊：最新一条决策
   if (rows.length) {
     const r0 = rows[0];
-    const out = String(r0.deadlineOutcome ?? '').replace(/_/g, ' ') || 'decision';
+    const out = DECISION_KIND_CN[String(r0.deadlineOutcome ?? '')] ?? '决策';
     const lat = [r0.agentLatencyMs != null ? 'agent ' + fmt(r0.agentLatencyMs) + 'ms' : '', r0.selectionLatencyMs != null ? 'select ' + fmt(r0.selectionLatencyMs) + 'ms' : ''].filter(Boolean).join(' · ');
     state.streamLive = { tenant: r0.tenant, tick: r0.tick, text: (out + (lat ? ' · ' + lat : '')).trim() };
   } else state.streamLive = null;
