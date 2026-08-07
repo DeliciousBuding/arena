@@ -26,6 +26,7 @@
         <span id="tickLabel" class="dim">tick —</span>
         <span id="tickBar" class="tick-bar"><i id="tickFill"></i></span>
       </span>
+      <button id="intelBtn" class="btn" type="button" title="官方排行榜威胁画像（谁在打我们）">威胁情报</button>
       <button id="redeemBtn" class="btn primary" type="button">兑换码</button>
     </div>
   </header>
@@ -136,6 +137,21 @@
     <div id="streamBody"></div>
     <button id="streamJump" class="stream-jump" type="button" hidden>↑ 最新</button>
   </section>
+
+  <dialog id="intelDialog" class="shop-dialog intel-dialog">
+    <div id="intelForm">
+      <div class="dialog-head">
+        <div class="dh-text">
+          <p class="dialog-eyebrow">THREAT INTEL · OFFICIAL LEADERBOARD</p>
+          <h2>威胁情报 · 排行榜</h2>
+        </div>
+        <button type="button" id="intelClose" class="btn ghost" aria-label="关闭">✕</button>
+      </div>
+      <div id="intelTabs" class="intel-tabs" role="tablist"></div>
+      <div id="intelBody" class="intel-body"><div class="stream-empty">加载威胁情报…</div></div>
+      <p id="intelMeta" class="dialog-note"></p>
+    </div>
+  </dialog>
 
   <dialog id="redeemDialog" class="shop-dialog">
     <div id="redeemForm">
