@@ -45,6 +45,15 @@ if [ "$READY" = '"ready":true' ]; then
         STALL:*) STALL_TENANT="$TENANT";;
       esac
     fi
+    # 经济停摆检查（2026-08-08 t1/t2/t3 复盘后新增）：决策活跃（单位在动）但
+    # 满载 worker 持续 0 卸货、资源零增长——"假活"冻结（t1 1214 tick、t2
+    # 2950 tick 全队持货 WAIT 实证）。decision-stall 只查"0 动作"查不到。
+    if [ -z "$STALL_TENANT" ]; then
+      ECONOMY_STALL=$(bash "$REPO/scripts/check-economy-stall.sh" "$DATA_ROOT" "$TENANT" 2>/dev/null)
+      case "$ECONOMY_STALL" in
+        STALL:*) STALL_TENANT="$TENANT";;
+      esac
+    fi
   done
   if [ -z "$STALL_TENANT" ]; then
     exit 0
@@ -85,3 +94,4 @@ rm -f "$RUNTIME_ROOT/t1/locks/"*.lock "$RUNTIME_ROOT/t2/locks/"*.lock "$RUNTIME_
 cd "$REPO" || exit 1
 nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --port=8120 >> "$LOG" 2>&1 &
 echo "$(now) supervisor restarted (pid $!)" >> "$LOG"
+

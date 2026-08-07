@@ -97,7 +97,13 @@ export function actionFromWire(action: Record<string, unknown>): UnitAction | Co
       return { type, direction: direction as Direction } as UnitAction | CoreAction;
     }
     case "SHOOT": {
-      const targetId = action.targetId === null || action.targetId === undefined ? null : String(action.targetId);
+      // 2026-08-08 修复：cell-fire 指令 targetId 可能为空串 ""（指挥面板空格射击）——
+      // 空串与 null 语义等价（空格射击），统一归一为 null，否则 calibration
+      // schema（nullableIdentifier 拒绝空串）会丢弃整条 case（生产 t1 实测
+      // 194 次 targetId must be a non-empty string）。
+      const rawTargetId = action.targetId;
+      const targetId =
+        rawTargetId === null || rawTargetId === undefined || rawTargetId === "" ? null : String(rawTargetId);
       const ec = action.expectedCell;
       if (!Array.isArray(ec) || ec.length !== 2 || !ec.every((n) => Number.isInteger(n))) return null;
       return { type: "SHOOT", targetId, expectedCell: [Number(ec[0]), Number(ec[1])] } as UnitAction;
@@ -298,3 +304,4 @@ export function applyHumanOverrides(
     updatedAt: store.updatedAt ?? null,
   };
 }
+
