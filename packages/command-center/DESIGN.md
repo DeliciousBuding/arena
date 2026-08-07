@@ -97,9 +97,20 @@
 - **`[hidden]` 语义兜底**：全局 `[hidden] { display: none !important; }` —— `display:flex` 等声明不得覆盖
   hidden 属性（曾致回放条 `TICK - / -` / 最新按钮在实时模式常显）。
 - **租户卡 row3**：2 列 grid（`1fr 1fr`）+ `nowrap/ellipsis`，避免 5 项 flex 换行凌乱；字号 ≥10.5px。
-- **商店对话框**：官方商店 eyebrow 小标题（`OFFICIAL STORE · LINUXDO`）+ 18px 主标题层级；底部说明
-  12.5px/1.7 行高；分区（Cookie/商品/历史）间距 16-20px。
-- **排行榜对话框（威胁情报）**：三 tab（威胁/信标/核心）+ 摘要 chips（`我方在榜 N` / `遭遇玩家 N`）
+- **三栏布局 + 可折叠侧栏（2026-08-08）**：`#layout` = flex 三列（左栏 292px / 地图 1fr / 右栏 340px）。
+  左右栏共用 `SidePanel`：展开 = 内容面板，折叠 = 40px 窄条（VSCode 侧边栏模式）——窄条内竖排图标
+  （左栏 = 租户色点，右栏 = 决策流/情报/兑换码 tab 图标，active 白色 2px 左竖条 `railIn` 动画）；
+  宽度过渡 260ms `cubic-bezier(.22,1,.36,1)`，折叠钮悬浮栏边缘中点（hover 上浮/阴影）。折叠/展开后
+  引擎 `resize()` 同步画布。折叠状态与右栏 tab 持久化（`arena-cc-web.prefs`）。
+- **右栏 tab 容器（rp）**：tab 条 = 12px sans + 图标 + 白 2px 下划线 scaleX 动画（复用 .tabs 语言）；
+  面板内容 `.rp-pane` 进入动画 `rpFadeUp`（240ms 上移淡入）；面板头部 = eyebrow + 15px 标题 + ghost
+  刷新按钮（hover 旋转 180°）。
+- **商店面板（右栏）**：eyebrow 小标题（`OFFICIAL STORE · LINUXDO`）+ 15px 主标题层级；分区
+  （Cookie/账户/商品/历史）间距 10-12px；商品卡片 `shop-item`：名称 + meta 行（价格 + 库存徽章 +
+  限购），hover 上浮 1px + 阴影。
+- **库存徽章（`available_stock` 三档语义色）**：`库存 N` = success 描边/底色；`仅剩 ≤5` = warn（琥珀）；
+  `缺货` = danger + 卡片 `.sold-out` 灰化（opacity .55 + 去饱和）+ 按钮禁用。徽章入场 240ms 渐入。
+- **威胁情报面板（右栏）**：三 tab（威胁/信标/核心）+ 摘要 chips（`我方在榜 N` / `遭遇玩家 N`）
   + 过滤 chips（全部/我方/遭遇，过滤后无结果给明确空态文案）。行标注语义（身份，非装饰）：
   我方账号 = 白色提升行 + 白底徽章 `我们 · T1`（内含租户色小方块，`--rc` token）；遭遇玩家 =
   极淡中性底 + 描边徽章 `遭遇`（内含目击租户色圆点，hover title 显示最后目击 tick/距核心/威胁
@@ -159,8 +170,9 @@
   MOVE/SHOOT/SWEEP/SPAWN/采集/回仓/治疗等 = 一键动作（单 tick 覆盖，最高优先）。
 - 交互反馈：动作按钮 title=提交（人类指挥）；动作框顶部「人类指挥已接管 N 条指令」徽章；
   提交/拒绝/意图完成均有 toast；动作框与舰队 HUD 实时回显指令状态；清除指令即交还 agent。
-- 架构：前端（React /app）到 server.mjs /api/command* 到 data/runtime/human-commands/<tenant>.json
+- 架构：前端（React /app）到 server.ts /api/command* 到 data/runtime/human-commands/<tenant>.json
   （数据层）到 human-override.ts（tenant 主循环提交前合并，复用 validatePlan 净校验 + 逐条拒绝原因）
   到 官方 SDK 提交（单一 writer 不变）。mode=disabled 一键交还 agent 全权。
-- React 前端：web/（Vite+React+TS+Bun）。React 管 chrome，src/engine/mapEngine.js 管地图/战术/回放；
-  视觉单一源 = public/style.css（React 直接 import）。构建 bun run build 到 web/dist 到 /app/。
+- React 前端：web/（Vite+React+TS+Bun，全量 TS）。React 管 chrome（三栏布局 + 右栏面板），
+  src/engine/mapEngine.ts 管地图/战术/回放；视觉单一源 = public/style.css（React 直接 import）。
+  构建 bun run build 到 web/dist 到 /app/。

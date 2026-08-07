@@ -3,14 +3,14 @@
 > 目标硬性要求：**官方 arena-hero-web 是我们这边的完整子集**——官方 web 能做的
 > 指挥操作与大地图展示，本指挥面板都具备（或为官方超集）。
 > 本文档逐项对照 `ARENA_REPO_ROOT\reference\arena-hero-web\src`，
-> 记录覆盖状态与证据；实现主体：`packages/command-center/web/src/engine/mapEngine.js`
+> 记录覆盖状态与证据；实现主体：`packages/command-center/web/src/engine/mapEngine.ts`
 > + React 组件（`web/src/components/*`）+ server（`packages/command-center/lib/*`）。
 
 ## 1. 官方 game 组件 → 本面板（全部已覆盖）
 
 | 官方组件 | 本面板实现 | 状态 |
 |---|---|---|
-| WorldCanvas | mapEngine.js 全量（地形块缓存/滚轮缩放/选中波纹/单位插值/combat fx） | ✅ 超集 |
+| WorldCanvas | mapEngine.ts 全量（地形块缓存/滚轮缩放/选中波纹/单位插值/combat fx） | ✅ 超集 |
 | GameHUD / CommandCountdown | fleetHud + commandCountdown（15s 倒计时，≤5s 变红） | ✅ |
 | PendingCommands | pendingPanel（HUMAN/AGENT 分区 + 折叠 + 有效指令计数） | ✅ |
 | MapControls | mapControls（+/−/适应视口/全局切换） | ✅ |

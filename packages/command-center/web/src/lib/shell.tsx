@@ -1,11 +1,12 @@
 import { createContext, useContext } from "react";
 
 /** 右栏面板标签：决策流 / 威胁情报 / 兑换码 */
-export type RightTab = "logs" | "intel" | "redeem";
+export type RightTab = "logs" | "intel" | "survey" | "redeem";
 
 export const RIGHT_TABS: Array<{ id: RightTab; label: string; railIcon: string; railTitle: string }> = [
   { id: "logs", label: "决策流", railIcon: "≣", railTitle: "决策流 · 日志" },
   { id: "intel", label: "威胁情报", railIcon: "◎", railTitle: "威胁情报 · 排行榜" },
+  { id: "survey", label: "测绘", railIcon: "◈", railTitle: "测绘 · 矿/探索/生命周期" },
   { id: "redeem", label: "兑换码", railIcon: "⛃", railTitle: "官方商店 · 兑换码" },
 ];
 

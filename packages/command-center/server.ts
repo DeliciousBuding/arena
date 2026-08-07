@@ -18,7 +18,7 @@ import { DATA_ROOT, TENANTS } from "./lib/fs-jsonl.ts";
 import { supervisorState } from "./lib/supervisor.ts";
 import { loadMergedMap } from "./lib/map.ts";
 import { loadOverview, loadStream, loadReplay, loadPlan, loadWorld, loadEvents } from "./lib/streams.ts";
-import { loadSurveyDb, loadLifecycleDb, loadSurvey, loadResourceTimeline, loadSpendTrend, loadUnitLifecycleDb } from "./lib/survey.ts";
+import { loadSurveyDb, loadLifecycleDb, loadSurvey, loadResourceTimeline, loadSpendTrend, loadUnitLifecycleDb, loadChunksDb } from "./lib/survey.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
 import { loadLeaderboardIntel, loadOurUsernames } from "./lib/leaderboard.ts";
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
@@ -92,6 +92,7 @@ app.get("/api/survey", (c) => {
       lifecycle: loadLifecycleDb(t),
       spendsTrend: loadSpendTrend(t, 1000),
       unitsDetail: loadUnitLifecycleDb(t, 500),
+      chunks: loadChunksDb(t, 20_000),
     };
   }
   return c.json(out);
