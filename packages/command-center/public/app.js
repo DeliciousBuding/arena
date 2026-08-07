@@ -2574,6 +2574,10 @@ function updateBeaconIndicator() {
   const inset = 40;
   const k = Math.min((w / 2 - inset) / Math.abs(ux || 1e-9), (h / 2 - inset) / Math.abs(uy || 1e-9));
   const ex = cx + ux * k, ey = cy + uy * k;
+  // 避开右下角地图控件（缩放/全局按钮）与右上检查面板：边缘指示箭头不压按钮
+  const avoidR = w - 74, avoidB = h - 252, avoidT = 74;
+  if (ex > avoidR && ey > avoidB) ex = Math.max(inset, avoidR - 34);
+  else if (ex > avoidR && ey < avoidT) ex = Math.max(inset, avoidR - 34);
   const angle = Math.atan2(dy, dx) * 180 / Math.PI;
   els2.hidden = false;
   els2.style.left = `${ex}px`;
