@@ -1755,6 +1755,11 @@ function bindEvents() {
   els.intelBtn.addEventListener('click', openIntel);
   els.intelClose.addEventListener('click', () => els.intelDialog.close());
   els.intelDialog.addEventListener('click', (e) => { if (e.target === els.intelDialog) els.intelDialog.close(); });
+  // 聚焦徽章可点击：返回全局联盟（悬停 title 提示）
+  if (els.soloBadge) {
+    els.soloBadge.addEventListener('click', () => { if (state.soloTenant) exitSolo(); });
+    els.soloBadge.title = '点击返回全局联盟';
+  }
   els.cookieSave.addEventListener('click', saveShopCookie);
   els.cookieTest.addEventListener('click', async () => {
     const v = els.shopCookie.value.trim();
@@ -2067,6 +2072,24 @@ function tactClear() {
   if (els.mapGlobal) els.mapGlobal.hidden = !state.soloTenant;
   draw();
 }
+/** 全局轻提示：每次点击/操作都有反馈（解决"点了没反应"）。 */
+let toastTimer = null;
+function toast(msg, tone = 'info') {
+  let el = document.getElementById('uiToast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'uiToast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.className = `ui-toast ${tone}`;
+  void el.offsetWidth;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
+}
+/** 信标边缘指示的会话级关闭（用户反馈"关不掉"）：点 ✕ 后本次聚焦不再显示。 */
+let beaconDismissed = false;
 /** 重新触发面板入场动画（租户切换时内容已变，让面板丝滑重现）。 */
 function popPanel(el) {
   if (!el || el.hidden) return;
@@ -2085,6 +2108,7 @@ function syncSoloBadge() {
 /** 退出单租户回全局联盟：清空战术层/回放 + 视图适应 + UI 同步（viewGlobal / mapGlobal / G 键共用）。 */
 function exitSolo() {
   state.soloTenant = null;
+  beaconDismissed = false;
   tactClear();
   invalidateStatic();
   fitView();
@@ -2144,7 +2168,7 @@ function tactRenderActionDialog() {
     }).join('')}</div>
     ${costHtml}
     ${goalRow}
-    <div class="act-note">只读演练 · 不提交到 Arena</div>
+    <div class="act-note">${isCore ? '核心 · 只读演练（生产/移动为预览）' : obj.unit_type === 'RANGER' ? '游侠 · 远程射击（射程内点敌方目标）' : obj.unit_type === 'VANGUARD' ? '先锋 · 近战单位：清扫相邻格，无法远程攻击' : '工人 · 采集/回仓（预览）'} · 不提交到 Arena</div>
   `;
   const p = project(obj.position[0], obj.position[1]);
   const rect = els.canvas.getBoundingClientRect();
@@ -2171,7 +2195,12 @@ function tactChooseAction(type) {
   const av = tactAvailability(world, obj);
   if (av.actions[type] !== true) return;
   if (type === 'MOVE' || type === 'START_MOVE') { tac.mode = 'MOVE'; tac.routePreview = null; tactRenderActionDialog(); draw(); return; }
-  if (type === 'SHOOT') { tac.mode = 'SHOOT'; tactRenderActionDialog(); draw(); return; }
+  if (type === 'SHOOT') {
+    if (obj.unit_type !== 'RANGER') { toast('近战单位无法远程攻击：先锋可清扫相邻格，游侠才能射击', 'warn'); return; }
+    const inRange = tactRangerRange(world, obj).some((t) => tactObjectAt(world, t[0], t[1])?.controlled === false);
+    if (!inRange) { toast('射程内无敌方目标', 'warn'); return; }
+    tac.mode = 'SHOOT'; tactRenderActionDialog(); draw(); return;
+  }
   if (type === 'SWEEP') { tac.mode = 'SWEEP'; tactRenderActionDialog(); draw(); return; }
   if (type === 'SELF_DESTRUCT') {
     if (!window.confirm(`演练：确认 ${obj.kind === 'CORE' ? '核心' : '单位'} 自毁？`)) return;
@@ -2984,6 +3013,11 @@ async function handleCanvasClick(px, py) {
         tac.attackTarget = { obj: target };
         tac.mode = null;
         tactRenderActionDialog(); tactRenderInspect(); draw();
+        toast(`已锁定攻击目标 [${target.position[0]}, ${target.position[1]}]（演练预览）`, 'info');
+      } else if (target) {
+        toast('只能攻击敌方单位/核心（已探索记忆中的目标已不存在）', 'warn');
+      } else {
+        toast('该位置无当前目标（可能是已探索记忆，非当前 tick）', 'warn');
       }
     }
     return;
@@ -2997,6 +3031,7 @@ async function handleCanvasClick(px, py) {
     const world = await tactLoadWorld(cell.tenant);
     const obj = world ? tactObjectAt(world, cell.x, cell.y) : null;
     if (obj) { await tactSelect(cell.tenant, obj); return; }
+    if (!cell.fresh) { toast('该单位/核心为已探索记忆，已不在当前 tick', 'warn'); return; }
   }
   tactClear();
 }
@@ -3004,6 +3039,7 @@ function updateBeaconIndicator() {
   const els2 = els.beaconIndicator;
   const b = state.soloTenant ? state.beacons.find((x) => x.tenant === state.soloTenant) : null;
   if (!b || !state.view.ready) { els2.hidden = true; return; }
+  if (beaconDismissed) { els2.hidden = true; return; }
   const p = project(b.x, b.y);
   const w = W(), h = H();
   if (p.sx >= 0 && p.sx <= w && p.sy >= 0 && p.sy <= h) { els2.hidden = true; return; }
@@ -3022,10 +3058,19 @@ function updateBeaconIndicator() {
   els2.hidden = false;
   els2.style.left = `${ex}px`;
   els2.style.top = `${ey}px`;
-  els2.innerHTML = `<button class="beacon-arrow" title="定位信标 [${b.x}, ${b.y}]" style="transform:rotate(${angle + 90}deg)"></button>`;
+  els2.innerHTML = `<div class="beacon-arrow-wrap">
+    <button class="beacon-arrow" title="定位信标 [${b.x}, ${b.y}]" style="transform:rotate(${angle + 90}deg)"></button>
+    <button class="beacon-close" title="隐藏信标指示（本次聚焦）">✕</button>
+  </div>`;
   els2.querySelector('.beacon-arrow').addEventListener('click', () => {
     state.view.cx = b.x; state.view.cy = b.y;
+    fitSolo(state.soloTenant);
     draw();
+  });
+  els2.querySelector('.beacon-close').addEventListener('click', () => {
+    beaconDismissed = true;
+    els2.hidden = true;
+    toast('已隐藏信标边缘指示（本次聚焦）');
   });
 }
 
