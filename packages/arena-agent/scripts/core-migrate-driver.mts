@@ -19,7 +19,7 @@ import { writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createNavState, notePosition, planDirection, chebyshev, mergeObstacleSets, type Dir, type Pos } from "../src/app/core-migrate-nav.ts";
+import { createNavState, notePosition, planDirection, chebyshev, mergeObstacleSets, DIRECTIONS, type Dir, type Pos } from "../src/app/core-migrate-nav.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = process.env.ARENA_DATA_ROOT ?? "ARENA_REPO_ROOT/data";
@@ -195,6 +195,15 @@ for (let step = 0; step < args.maxSteps; step += 1) {
     recentlyFailed.add(`${nav.lastDir}:${core.join(",")}`);
     log(`停滞 ${nav.stuckStreak} 轮，记录 ${nav.lastDir}@(${core.join(",")}) 失败，换方向`);
     nav.detourDir = null; // 换向时重置绕障记忆
+    // 失败记忆有界（2026-08-08 t2 (-30,38) 死锁实证）：CORE_DESTINATION_TERRAIN_BLOCKED
+    // 是服务端真值（我们的障碍数据可能失真）；CELL_UNIT_LIMIT 是 worker 占位（瞬态，
+    // worker 让开即恢复）。若失败方向无界累积，四方向全进失败集 → "无可行方向" →
+    // 永不重试，核心永久冻结。四方向全失败或条目超限 → 清空重评（瞬态阻塞自愈）。
+    const cellFailures = DIRECTIONS.filter((d) => recentlyFailed.has(`${d}:${core.join(",")}`)).length;
+    if (cellFailures >= 4 || recentlyFailed.size >= 16) {
+      recentlyFailed.clear();
+      log(`失败记忆超限（${cellFailures}/4），清空重评`);
+    }
   } else if (nav.stuckStreak === 0) {
     recentlyFailed.clear();
   }
