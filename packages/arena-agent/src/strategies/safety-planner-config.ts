@@ -124,6 +124,17 @@ export interface SafetyPlannerConfig {
    */
   readonly threatRecall?: boolean;
   /**
+   * 远端军事回援（2026-08-07，竞品 "敌方战斗单位已经进入 Core 防区时，
+   * 所有非守家单位跳过集结等待并立即回援" 对照）：可见敌方**战斗单位**
+   * （VANGUARD/RANGER，非 WORKER/CORE）进入 Core 防区（12 =
+   * THREAT_FALLBACK_RADIUS，与 threat 评估/worker 召回同口径）→ 所有
+   * 非守家军事（Vanguard/Ranger）立即回 Core 守位——优先于攻坚/打野/
+   * 环搜（家被拆一切白搭）。触发后保持回援 8 tick（防敌人闪失→立刻折返
+   * 抖动）；返回期间邻接敌仍 SWEEP/射程反击优先。默认 false = 历史行为
+   * （远端军事继续原任务，零回归）。
+   */
+  readonly remoteReinforce?: boolean;
+  /**
    * 防御轴分桶守卫轮转（v0.3，实验，B4 竞品 defense distribution 对照）：
    * 可见战斗敌按相对 Core 的主接近方向分 4 轴桶（N/E/S/W），威胁轴按
    * 最近敌距离升序排序；第 i 个防守者取排序后第 (i % 轴数) 轴的外层守位

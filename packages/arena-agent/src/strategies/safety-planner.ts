@@ -106,6 +106,15 @@ const HEAL_ROTATION_HOLD_TICKS = 12;
 const DETACHED_RESPONSE_RADIUS = 5;
 /** 被拦截后回 Core 守位的最少 tick（竞品 "at least eight Ticks"）。 */
 const DETACHED_RETURN_TICKS = 8;
+/** 远端军事回援保持窗口（remoteReinforce 候选，竞品 "敌方战斗单位已经进入
+ *  Core 防区时，所有非守家单位跳过集结等待并立即回援"）：触发回援后即使敌
+ *  人闪失（离开 12 格防区），8 tick 内仍继续回 Core——防"敌进 12 → 军事掉头
+ *  → 敌退 12 → 军事折返"的抖动（与 B5 detachedReturn 同 8-tick 语义）。 */
+const REINFORCE_HOLD_TICKS = 8;
+/** 守家圈半径（Chebyshev/Manhattan 口径统一用 Manhattan，与 threatRecall 同）：
+ *  距 Core ≤4 视为守家队（Vanguard 3 格外层屏 / Ranger 2 格内层屏），回援
+ *  只针对圈外远端军事——圈内单位走既有防御逻辑（不打断正在进行的防守）。 */
+const REINFORCE_HOME_RING = 4;
 /** B6 有界攻坚（竞品 bounded mission distance）：记忆敌 Core 距我方 Core 上限。 */
 const BOUNDED_RAID_DISTANCE = 40;
 /** 军事打野沿环扫描时间预算：同一八分点目标 >N tick 未到达强制换向（防障碍点卡死）。 */
@@ -189,6 +198,8 @@ export class SafetyPlanner {
   private currentThreat: ThreatAssessment | null = null;
   /** B5 突击组被拦截后的返回截止 tick（unitId → tick；8-tick 防抖动记忆）。 */
   private detachedReturnUntil = new Map<string, number>();
+  /** 远端军事回援状态（unitId → 回援截止 tick；remoteReinforce 候选）。 */
+  private reinforceUntil = new Map<string, number>();
   /** 军事打野沿环扫描状态（unitId → 当前环已扫八分点数 + 上次到达 tick）：
    *  2026-08-07 攻坚发现修复——旧版"单点到达即进环"在 8 方位点之间留缝，
    *  敌 Core 恰在缝里（t1 敌 Core 距 Core ~15 格、角度 -62°，NE/NW 环线差 8 格）
@@ -234,6 +245,31 @@ export class SafetyPlanner {
     if (reach > HUNT_SWEEP_RADIUS) return target;
     const [dx, dy] = DENSE_DELTAS[(index * 3 + 7) % DENSE_DELTAS.length]!;
     return [target[0] + dx * 2, target[1] + dy * 2];
+  }
+
+  /** 远端军事回援（remoteReinforce 候选，竞品 "敌方战斗单位已经进入 Core
+   *  防区时，所有非守家单位跳过集结等待并立即回援"）：可见敌方**战斗单位**
+   * （VANGUARD/RANGER，非 WORKER/CORE）进入 Core 防区（12 =
+   *  THREAT_FALLBACK_RADIUS，与 threat 评估/worker 召回同口径）→ 远端军事
+   *  单位应回 Core 守位。守家圈内（≤4：Vanguard 3 格外层屏 / Ranger 2 格
+   *  内层屏）单位已是守家队，走既有防御逻辑（邻接 SWEEP/射程射击/威胁轴
+   *  守位）——回援只针对远端单位。触发（homeThreat）刷新回援窗口
+   * （+REINFORCE_HOLD_TICKS）；窗口内即使敌人闪失仍保持回援（防抖动）。 */
+  private shouldReinforce(
+    state: TickState,
+    unit: UnitSnapshot,
+    enemies: readonly VisibleEntity[],
+  ): boolean {
+    if (this.config.remoteReinforce !== true || state.core === null) return false;
+    if (manhattan(unit.position, state.core.position) <= REINFORCE_HOME_RING) return false;
+    const homeThreat = enemies.some(
+      (enemy) =>
+        enemy.kind === "UNIT" &&
+        enemy.unitType !== "WORKER" &&
+        manhattan(enemy.position, state.core!.position) <= THREAT_RECALL_DISTANCE,
+    );
+    if (homeThreat) this.reinforceUntil.set(unit.id, state.tick + REINFORCE_HOLD_TICKS);
+    return (this.reinforceUntil.get(unit.id) ?? 0) >= state.tick;
   }
 
   decide(input: SafetyPlannerInput): Plan {
@@ -630,6 +666,17 @@ export class SafetyPlanner {
       return;
     }
 
+    // 远端军事回援（remoteReinforce 候选，竞品 "敌方战斗单位已经进入 Core
+    // 防区时，所有非守家单位跳过集结等待并立即回援"）：可见敌方战斗单位进入
+    // Core 防区（12 = THREAT_FALLBACK_RADIUS）→ 远端 Vanguard 立即回 Core
+    // 守位——优先于攻坚/打野/环搜（家被拆一切白搭）。触发后保持回援 8 tick
+    // （防敌人闪失→立刻折返抖动）；返回期间邻接敌仍由上方 SWEEP 分支反击。
+    if (this.shouldReinforce(state, unit, enemies)) {
+      const direction = stepToward(unit.position, approachTarget ?? state.core!.position, militaryObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_reinforce");
+      return;
+    }
+
     if (this.effectiveAggression === "aggressive") {
       // 爆兵蓄势 gate（2026-08-06 用户导向"以爆兵为目的打对面水晶"）：军事
       // 规模未达 attackForce 时守家蓄势（兵力成型再前压，避免零星送死）；
@@ -979,6 +1026,17 @@ export class SafetyPlanner {
         );
         return;
       }
+    }
+
+    // 远端军事回援（remoteReinforce 候选，竞品 "敌方战斗单位已经进入 Core
+    // 防区时，所有非守家单位跳过集结等待并立即回援"）：可见敌方战斗单位进入
+    // Core 防区（12 = THREAT_FALLBACK_RADIUS）→ 远端 Ranger 立即回 Core
+    // 守位——优先于打野/环搜（家被拆一切白搭）。射击分支在上方已优先（射程
+    // 内有敌就开火，不跑路）；回援途中进入射程自然接敌。
+    if (this.shouldReinforce(state, unit, enemies)) {
+      const direction = stepToward(unit.position, approachTarget ?? state.core!.position, militaryObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_reinforce");
+      return;
     }
 
     // B8 守卫轮换治疗（guardHealRotation 候选）：defensive Ranger 受伤且无射程
