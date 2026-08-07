@@ -1,6 +1,6 @@
 /* Arena 指挥面板前端 — 零依赖原生 JS + Canvas（官方素材渲染） */
 const TENANTS = ['t1', 't2', 't3', 't4'];
-const TENANT_COLORS = { t1: '#4591c5', t2: '#76b889', t3: '#a58bd6', t4: '#c66370' };
+const TENANT_COLORS = { t1: '#69b3d8', t2: '#57bd84', t3: '#a892d6', t4: '#dd626d' };
 const TENANT_LABEL = { t1: '租户 1', t2: '租户 2', t3: '租户 3', t4: '租户 4' };
 const POLL_MS = 3000;
 const SPRITE = {
@@ -774,14 +774,19 @@ function statusOf(t) {
 }
 function renderTenantCards() {
   if (!state.overview) return;
+  state.prevMetrics = state.prevMetrics || {};
+  const nextMetrics = {};
   const html = state.overview.tenants.map((t) => {
     const color = TENANT_COLORS[t.tenant] ?? '#999';
     const st = statusOf(t.tenant);
     const L = t.latest ?? {};
+    const prev = state.prevMetrics[t.tenant] || {};
+    const flash = (k, v) => (prev[k] !== undefined && prev[k] !== v ? ' flash' : '');
     const delta = typeof L.resourceDelta === 'number' ? L.resourceDelta : null;
     const deltaCls = delta === null ? '' : delta > 0 ? 'delta-pos' : delta < 0 ? 'delta-neg' : '';
     const deltaTxt = delta === null ? '—' : (delta > 0 ? '+' : '') + fmt(delta);
     const solo = state.soloTenant === t.tenant;
+    nextMetrics[t.tenant] = { resources: L.resources, workers: L.workers, events: L.events, tick: L.tick };
     return `<div class="tenant-card${solo ? ' solo' : ''}" data-tenant="${t.tenant}" style="--tc:${color}" role="button" tabindex="0">
       <div class="row1">
         <span class="dot ${st.cls}" title="${st.label}"></span>
@@ -789,10 +794,10 @@ function renderTenantCards() {
         <span class="tenant-tag">${TENANT_LABEL[t.tenant] ?? ''}</span>
       </div>
       <div class="metrics">
-        <div class="metric"><img src="${UNIT_ICONS.resource}" alt="" /><span class="v">${fmt(L.resources)}</span><span class="k">资源</span></div>
+        <div class="metric"><img src="${UNIT_ICONS.resource}" alt="" /><span class="v${flash('resources', L.resources)}">${fmt(L.resources)}</span><span class="k">资源</span></div>
         <div class="metric"><span class="v ${deltaCls}">${deltaTxt}</span><span class="k">增量</span></div>
-        <div class="metric"><img src="${UNIT_ICONS.population}" alt="" /><span class="v">${fmt(L.workers)}</span><span class="k">工人</span></div>
-        <div class="metric"><span class="v">${fmt(L.events)}</span><span class="k">事件</span></div>
+        <div class="metric"><img src="${UNIT_ICONS.population}" alt="" /><span class="v${flash('workers', L.workers)}">${fmt(L.workers)}</span><span class="k">工人</span></div>
+        <div class="metric"><span class="v${flash('events', L.events)}">${fmt(L.events)}</span><span class="k">事件</span></div>
       </div>
       <div class="row3">
         <span>tick <b>${fmt(L.tick)}</b></span>
@@ -804,6 +809,7 @@ function renderTenantCards() {
     </div>`;
   }).join('');
   els.tenantCards.innerHTML = html;
+  state.prevMetrics = nextMetrics;
   // 点击事件用容器委托（见 bindEvents），避免 poll 重建 DOM 时丢失/重复绑定
 }
 function renderTenantToggles() {
@@ -900,18 +906,25 @@ function renderStream() {
     all.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
     if (!all.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无事件数据</div>'; els.streamCount.textContent = '0 条'; return; }
     els.streamCount.textContent = `${all.length} 条`;
-    els.streamBody.innerHTML = all.slice(0, 120).map((e) => {
+    state.rowKeys = state.rowKeys || {};
+    const eprev = state.rowKeys.events || new Set();
+    const ecur = new Set();
+    const ehtml = all.slice(0, 120).map((e) => {
       const color = TENANT_COLORS[e.tenant] ?? '#999';
-      const evColor = e.kind.startsWith('SHOT') || e.kind.includes('DESTROYED') || e.kind.includes('FAILED') ? '#c66370'
-        : e.kind.includes('SUCCEEDED') || e.kind === 'SPAWN' || e.kind === 'PICKUP_BEACON' || e.kind === 'HEAL' ? '#76b889' : '#d8b64e';
+      const evColor = e.kind.startsWith('SHOT') || e.kind.includes('DESTROYED') || e.kind.includes('FAILED') ? '#dd626d'
+        : e.kind.includes('SUCCEEDED') || e.kind === 'SPAWN' || e.kind === 'PICKUP_BEACON' || e.kind === 'HEAL' ? '#57bd84' : '#d3ad55';
       const detail = [e.actor ? `actor ${shortId(e.actor)}` : '', e.target ? `target ${shortId(e.target)}` : '', e.amount != null ? `×${e.amount}` : ''].filter(Boolean).join(' ');
-      return `<div class="stream-line" style="--tc:${color}">
+      const key = `${e.tenant}:${e.tick}:${e.kind}:${e.actor ?? ''}:${e.target ?? ''}:${e.amount ?? ''}`;
+      ecur.add(key);
+      return `<div class="stream-line${eprev.has(key) ? '' : ' st-new'}" style="--tc:${color}">
         <span class="st-tenant">${e.tenant.toUpperCase()}</span>
         <span class="st-tick">${fmt(e.tick)}</span>
         <span class="st-kind" style="color:${evColor}">${e.kind}</span>
         <span class="st-detail">${detail}</span>
       </div>`;
     }).join('');
+    state.rowKeys.events = ecur;
+    els.streamBody.innerHTML = ehtml;
     return;
   }
   const rows = [];
@@ -921,7 +934,10 @@ function renderStream() {
   rows.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
   if (!rows.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无决策数据</div>'; return; }
   els.streamCount.textContent = `${rows.length} 条`;
-  els.streamBody.innerHTML = rows.slice(0, 120).map((r) => {
+  state.rowKeys = state.rowKeys || {};
+  const rprev = state.rowKeys[state.tab] || new Set();
+  const rcur = new Set();
+  const rhtml = rows.slice(0, 120).map((r) => {
     const color = TENANT_COLORS[r.tenant] ?? '#999';
     const outcome = String(r.deadlineOutcome ?? '');
     const submit = String(r.submitResult ?? '');
@@ -934,7 +950,9 @@ function renderStream() {
     if (r.abortRequested) extra.push('中止请求');
     if (r.rotationGeneration != null) extra.push(`rot ${r.rotationGeneration}`);
     const detail = [lat.join(' · '), extra.join(' · ')].filter(Boolean).join(' · ');
-    return `<div class="stream-line" style="--tc:${color}">
+    const key = `${r.tenant}:${r.tick}:${outcome}:${submit}:${r.agentLatencyMs ?? ''}:${r.selectionLatencyMs ?? ''}`;
+    rcur.add(key);
+    return `<div class="stream-line${rprev.has(key) ? '' : ' st-new'}" style="--tc:${color}">
       <span class="st-tenant">${r.tenant.toUpperCase()}</span>
       <span class="st-tick">${fmt(r.tick)}</span>
       <span class="st-kind" style="color:${color}">${outcome !== '' ? outcome.replace(/_/g, ' ') : 'decision'}</span>
@@ -942,6 +960,8 @@ function renderStream() {
       <span class="st-badge ${outCls}">${badge}</span>
     </div>`;
   }).join('');
+  state.rowKeys[state.tab] = rcur;
+  els.streamBody.innerHTML = rhtml;
 }
 
 /* ---------- 顶部状态 ---------- */
