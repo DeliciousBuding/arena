@@ -143,9 +143,11 @@ const BEACON_GRAB_DEFAULT_MAX_DIST = 80;
  *  小队 1V+3R+1W 埋伏，信标 Vanguard 被击杀）。由 militaryHunt 攻坚处理，
  *  敌核心被摧毁后我方单位在格上经主循环自动拾取。 */
 const BEACON_CONTEST_RADIUS = 10;
-/** 信标移动判定窗口（beaconGrab 防追标，2026-08-08）：近 10 tick 内信标
- *  出现过 ≥2 个不同位置 = 在移动（敌方核心携带/漂移）——不单独 fetch。 */
-const BEACON_MOVE_WINDOW_TICKS = 10;
+/** 信标移动判定窗口（beaconGrab 防追标，2026-08-08）：近 30 tick 内信标
+ *  出现过 ≥2 个不同位置 = 在移动/刚停下（敌方核心携带中或停靠）——不单独 fetch；
+ *  彻底静止 30+ tick（真掉落/无主）才拾取。10 tick 只挡"正在追"，挡不住
+ *  "敌方刚停靠"（t2 实证：信标 68891 后停 [-11,-1]，疑似 jerkman 停靠）。 */
+const BEACON_MOVE_WINDOW_TICKS = 30;
 /** 威胁自适应（2026-08-07，排行榜威胁画像"留强"）：AGGRESSOR（伤害 top30）
  *  攻坚成型门槛叠加 +2；ELITE_AGGRESSOR（伤害 top10，猛攻蛆头子）叠加 +4。 */
 const THREAT_AGGRESSOR_ATTACK_FORCE_BONUS = 2;
@@ -1712,5 +1714,6 @@ export class SafetyPlanner {
     return { type: "SPAWN", unitType };
   }
 }
+
 
 
