@@ -77,7 +77,7 @@ if [ -n "$STRAY" ]; then
   sleep 3
 fi
 
-# 3) 清理死锁（进程已确认死透；只清 t1/t2——t3/t4 锁归 Rust 线）
+# 3) 清理死锁（进程已确认死透；t1-t4 全部由 TS 线管理）
 rm -f "$RUNTIME_ROOT/t1/locks/"*.lock "$RUNTIME_ROOT/t2/locks/"*.lock "$RUNTIME_ROOT/t3/locks/"*.lock "$RUNTIME_ROOT/t4/locks/"*.lock
 
 # 4) 重启 live supervisor（脱离当前会话，日志追加；--record-calibration 旁路
