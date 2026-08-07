@@ -2,6 +2,8 @@
  * 基准场景库统一评估（2026-08-07）：候选变体在标准场景矩阵上的 A/B。
  * 每个场景 × 每个变体 × seeds 1-3 跑 episode——KPI 矩阵（p1 Core 存活/
  * p2 被拆/拆毁 tick/资源），对照组 = 全关。
+ * 双人定向：仅评估 N=2 场景（N>2 的 three-way 等由多玩家专项测试覆盖，
+ * 本矩阵跳过并打印原因——tenants 与 players 必须严格一一对应，fail-closed）。
  *
  * 用法：cd packages/arena-agent && npx tsx scripts/evaluate-variants.mts
  */
@@ -94,6 +96,12 @@ console.log("-".repeat(120));
 for (const file of scenarioFiles) {
   const path = join(SCENARIO_DIR, file);
   const name = file.replace(".json", "");
+  const scenario = JSON.parse(readFileSync(path, "utf-8"));
+  const playerCount = (scenario.players ?? []).length;
+  if (playerCount !== 2) {
+    console.log(`${name.padEnd(16)} | 跳过（N=${playerCount} 世界；本 A/B 矩阵为双人定向评估）`);
+    continue;
+  }
   const cells: string[] = [];
   for (const variant of VARIANTS) {
     const outcomes = SEEDS.map((seed) => runScenario(path, variant, seed));
