@@ -113,6 +113,14 @@ const THREAT_RECALL_DISTANCE = 12;
 const RECALL_PATROL_RADIUS = 4;
 /** 记忆矿开采距离上限（Manhattan，默认 40 = 探索最外环）：防追 70+ 格远矿。 */
 const HARVEST_MEMORY_MAX_DIST = 40;
+/** 记忆矿格容量（2026-08-08，t3 生产实证）：同一记忆矿格最多分配 2 worker——
+ *  否则 10 worker 抢 1 格集体 capacity_wait 死锁（与 deterministic-planner 的
+ *  CELL_ENTITY_CAPACITY=2 同口径）。 */
+const HARVEST_MEM_CELL_CAPACITY = 2;
+/** 记忆矿卡死回退阈值（2026-08-08，t3 生产实证）：go_harvest_mem 连续 N tick
+ *  未推进（容量争抢/路径被堵，非 patrol intent 无法 capacity_reroute）→ 清空
+ *  目标回退巡逻，防永久 WAIT 死锁。 */
+const HARVEST_MEM_STUCK_TICKS = 8;
 /** Core 迁移 TTR 预撤离阈值（竞品 time-to-range ≤16 tick）。 */
 const TTR_PRE_EVADE_TICKS = 16;
 /** B9 迁移取消冷却（coreMigrationCancel）：取消后 N tick 内不重触发 START_MOVE。 */
@@ -265,6 +273,14 @@ export class SafetyPlanner {
   /** MOVE_FAILED 连续失败计数（moveFailedAvoidance）：单位连续 N tick 移动被
    *  结算拒绝时改走垂直绕行格，避免无反馈重试同格死循环。 */
   private moveFailedStreak = new Map<string, number>();
+  /** 记忆矿卡死防护（2026-08-08，t3 生产实证）：worker 连续 go_harvest_mem 未推进
+   *  的 tick 数（capacity_wait 是 planner 内部拒绝，不产生 MOVE_FAILED 事件，
+   *  需独立计数）。 */
+  private harvestMemStuck = new Map<string, number>();
+  /** 上 tick worker 位置（记忆矿卡死检测：位置未变 = 未推进）。 */
+  private lastWorkerPos = new Map<string, Position>();
+  /** 本 tick 记忆矿分配计数（cellKey -> worker 数；容量感知防 10 抢 1）。 */
+  private allocatedMines = new Map<string, number>();
   /** 本 tick 威胁评估（threatBreakout 用）：decide 入口计算一次供 worker 消费。 */
   private currentThreat: ThreatAssessment | null = null;
   /** B5 突击组被拦截后的返回截止 tick（unitId → tick；8-tick 防抖动记忆）。 */
@@ -669,6 +685,9 @@ export class SafetyPlanner {
         }
       }
     }
+    // 记忆矿容量感知 + 卡死检测的 per-tick 状态（2026-08-08，t3 生产实证修复）。
+    this.allocatedMines = new Map<string, number>();
+    for (const unit of state.units) this.lastWorkerPos.set(unit.id, unit.position);
 
     const actions: Record<string, UnitAction> = {};
     const intents: Record<string, string> = {};
@@ -930,12 +949,36 @@ export class SafetyPlanner {
       memory.harvestTarget !== null &&
       hints.some((hint) => samePosition(hint, memory.harvestTarget!))
     ) {
-      const inRecallRange = home === null || manhattan(memory.harvestTarget, home) <= maxPatrolRadius;
-      if (inRecallRange) {
-        const direction = stepToward(unit.position, memory.harvestTarget, movementObstacles);
-        if (direction !== null) set(unit, { type: "MOVE", direction }, "go_harvest_mem");
+      // 记忆矿卡死回退（2026-08-08，t3 生产实证 10 worker 集体 capacity_wait：
+      // 记忆矿目标格容量饱和/路径被堵时，go_harvest_mem 非 patrol 意图无法
+      // capacity_reroute → 永久 WAIT 死锁，经济冻结、无法产兵）。连续未推进
+      // HARVEST_MEM_STUCK_TICKS 清空目标回退巡逻（重新选矿/找可见矿）。
+      const prevPos = this.lastWorkerPos.get(unit.id);
+      const stuck = this.harvestMemStuck.get(unit.id) ?? 0;
+      const goMem = (): boolean => {
+        const inRecallRange = home === null || manhattan(memory.harvestTarget!, home) <= maxPatrolRadius;
+        if (inRecallRange) {
+          const direction = stepToward(unit.position, memory.harvestTarget!, movementObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "go_harvest_mem");
+        }
+        return true;
+      };
+      if (prevPos !== undefined && samePosition(prevPos, unit.position)) {
+        this.harvestMemStuck.set(unit.id, stuck + 1);
+        if (stuck + 1 >= HARVEST_MEM_STUCK_TICKS) {
+          memory.workerMode = "patrol";
+          memory.harvestTarget = null;
+          this.harvestMemStuck.delete(unit.id);
+          // 落入下方 patrol/focus 逻辑（不 return）
+        } else {
+          goMem();
+          return;
+        }
+      } else {
+        this.harvestMemStuck.delete(unit.id);
+        goMem();
+        return;
       }
-      return;
     }
 
     // 记忆矿主动开采（harvest-memory-mine-v1，2026-08-08，survey-db 联动）：
@@ -948,12 +991,16 @@ export class SafetyPlanner {
       let bestDist = Number.POSITIVE_INFINITY;
       for (const hint of hints) {
         const d = manhattan(unit.position, hint);
+        // 容量感知（2026-08-08，t3 生产实证）：同一记忆矿格最多 HARVEST_MEM_CELL_CAPACITY
+        // 个 worker——否则 10 worker 抢 1 格集体 capacity_wait 死锁（矿格容量 2）。
+        if ((this.allocatedMines.get(cellKey(hint)) ?? 0) >= HARVEST_MEM_CELL_CAPACITY) continue;
         if (d <= maxDist && (home === null || manhattan(hint, home) <= maxPatrolRadius) && d < bestDist) {
           best = hint;
           bestDist = d;
         }
       }
       if (best !== null) {
+        this.allocatedMines.set(cellKey(best), (this.allocatedMines.get(cellKey(best)) ?? 0) + 1);
         memory.workerMode = "go_harvest";
         memory.harvestTarget = best;
         if (!samePosition(unit.position, best)) {
