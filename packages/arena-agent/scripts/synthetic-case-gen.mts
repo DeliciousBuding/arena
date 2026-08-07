@@ -4,13 +4,15 @@
  * 每 tick 为每个 tenant 生成一个 case（before/after 经 projectPlayerState
  * 投影为官方 PlayerState），manifest 严格格式（sha256 全链路）。
  *
- * 用法：cd packages/arena-agent && npx tsx scripts/synthetic-case-gen.mts <scenario> <outDir> [ticks] [p2Posture] [p1MilitaryRatio] [p1AccumulateThreshold] [p1WorkerTarget]
- * 例：npx tsx scripts/synthetic-case-gen.mts scripts/scenarios/strike-group-exchange.json D:/x/syn-run 300 harvest 0 12 6
+ * 用法：cd packages/arena-agent && npx tsx scripts/synthetic-case-gen.mts <scenario> <outDir> [ticks] [p2Posture] [p1MilitaryRatio] [p1AccumulateThreshold] [p1WorkerTarget] [p1AttackForce]
+ * 例：npx tsx scripts/synthetic-case-gen.mts scripts/scenarios/strike-defense-2.json D:/x/syn-run 500 harvest 0 0 4 6
  * p2Posture 可选（默认 aggressive）——对手策略变体（balanced/harvest）；
  * p1MilitaryRatio 可选（默认 0）——我方军事产兵比例（>0 可产生完整
  * 战斗演化——补充兵力、推进拆家）；p1AccumulateThreshold 可选（默认
  * 0）——爆兵积累阈值（达标后持续产兵推进——终局拆家数据）；
- * p1WorkerTarget 可选（默认 4）——worker 目标（>初始数可激活采集经济）。
+ * p1WorkerTarget 可选（默认 4）——worker 目标（>初始数可激活采集经济）；
+ * p1AttackForce 可选（默认 0）——爆兵蓄势门槛（军事规模达标再前压——
+ * 避免零星送死——攻破防守的战术验证）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -29,6 +31,7 @@ const P2_POSTURE = (process.argv[5] ?? "aggressive") as "aggressive" | "balanced
 const P1_MILITARY_RATIO = Number(process.argv[6] ?? 0);
 const P1_ACCUMULATE_THRESHOLD = Number(process.argv[7] ?? 0);
 const P1_WORKER_TARGET = Number(process.argv[8] ?? 4);
+const P1_ATTACK_FORCE = Number(process.argv[9] ?? 0);
 const RULES_PATH = "src/sim/contracts/rules-v0.14.json";
 const RUNTIME_GOLDEN_SCHEMA = "runtime-golden-dataset-v1";
 
@@ -64,6 +67,7 @@ const result = runEpisode({
       policy: { posture: "aggressive", workerTarget: P1_WORKER_TARGET, militaryRatio: P1_MILITARY_RATIO, focusRegion: null, attackPriority: "core" },
       plannerConfig: {
         ...(P1_ACCUMULATE_THRESHOLD > 0 ? { accumulateThreshold: P1_ACCUMULATE_THRESHOLD } : {}),
+        ...(P1_ATTACK_FORCE > 0 ? { attackForce: P1_ATTACK_FORCE } : {}),
       },
     },
     { id: "p2", planner: "safety", policy: { posture: P2_POSTURE, workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: P2_POSTURE === "aggressive" ? "core" : "balanced" } },
