@@ -18,7 +18,7 @@ const state = {
   streams: {},          // tenant -> rows
   events: {},           // tenant -> events
   view: { cx: 0, cy: 0, scale: 8, ready: false },
-  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true, survey: true, patrol: true, plan: true },
+  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true, survey: true, patrol: true, plan: true, trail: true },
   tenantsOn: { t1: true, t2: true, t3: true, t4: true },
   soloTenant: null,     // null=全局联盟；'t1'..'t4'=单租户
   tab: 'all',           // all | t1 | t2 | t3 | t4 | events
@@ -354,7 +354,7 @@ function draw() {
     if (replayActive && (c.type === 'unit' || c.type === 'core')) continue; // 回放接管单位/核心
     if (buckets[c.type]) buckets[c.type].push(c);
   }
-  if (!replayActive) drawMovementDashes(buckets.unit, s);
+  if (!replayActive && state.layers.trail) drawMovementDashes(buckets.unit, s);
   if (!replayActive) drawUnits(buckets.unit, s);
   if (!replayActive) drawCores(buckets.core, s);
   if (!replayActive) drawLiveTrails(s);
@@ -704,7 +704,7 @@ function drawUnits(cells, s) {
  *  让"单位在动"肉眼可见（回放引擎插值动画之外，live 也有运动感）。 */
 const TRAIL_POINTS = 5;
 function drawLiveTrails(s) {
-  if (!state.soloTenant || !replay.data || replay.data.loadedFor !== state.soloTenant) return;
+  if (!state.layers.trail || !state.soloTenant || !replay.data || replay.data.loadedFor !== state.soloTenant) return;
   if (s < 3) return; // 全局/极低缩放不画轨迹，避免噪声
   const color = TENANT_COLORS[state.soloTenant] ?? '#4591c5';
   for (const u of replay.data.units) {
@@ -1041,6 +1041,15 @@ async function tactLoadExploration(tenant) {
 }
 
 /* ---------- 决策流 ---------- */
+/** 决策流条数更新：折叠时新行到达 → 圆点琥珀提醒（展开后清除）。 */
+function setStreamCount(text) {
+  const prev = els.streamCount.textContent;
+  els.streamCount.textContent = text;
+  if (state.streamCollapsed && prev !== text) {
+    const dot = els.streamToggle.querySelector('.st-dot');
+    if (dot) dot.classList.add('has-new');
+  }
+}
 function renderStream() {
   const tabs = [{ id: 'all', label: '统一决策' }];
   TENANTS.forEach((t) => tabs.push({ id: t, label: t.toUpperCase() }));
@@ -1054,8 +1063,8 @@ function renderStream() {
     const all = [];
     for (const t of TENANTS) for (const ev of state.events[t] ?? []) all.push({ tenant: t, ...ev });
     all.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
-    if (!all.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无事件数据</div>'; els.streamCount.textContent = '0 条'; return; }
-    els.streamCount.textContent = `${all.length} 条`;
+    if (!all.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无事件数据</div>'; setStreamCount('0 条'); return; }
+    setStreamCount(`${all.length} 条`);
     state.rowKeys = state.rowKeys || {};
     const eprev = state.rowKeys.events || new Set();
     const ecur = new Set();
@@ -1083,7 +1092,7 @@ function renderStream() {
   }
   rows.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
   if (!rows.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无决策数据</div>'; return; }
-  els.streamCount.textContent = `${rows.length} 条`;
+  setStreamCount(`${rows.length} 条`);
   state.rowKeys = state.rowKeys || {};
   const rprev = state.rowKeys[state.tab] || new Set();
   const rcur = new Set();
@@ -1359,6 +1368,10 @@ function bindEvents() {
     state.streamCollapsed = !state.streamCollapsed;
     els.streamPane.classList.toggle('collapsed', state.streamCollapsed);
     els.streamToggle.setAttribute('aria-expanded', String(!state.streamCollapsed));
+    if (!state.streamCollapsed) {
+      const dot = els.streamToggle.querySelector('.st-dot');
+      if (dot) dot.classList.remove('has-new');
+    }
   });
   // 官方商店 / 兑换码
   els.redeemBtn.addEventListener('click', openRedeem);
