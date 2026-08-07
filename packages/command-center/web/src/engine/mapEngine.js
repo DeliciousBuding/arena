@@ -3209,6 +3209,14 @@ function tactShowFeature(cell, px, py) {
         const kind = isResource ? 'mine' : 'goto';
         submitGoal(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy], kind === 'mine' ? `采矿 → [${wx}, ${wy}]` : `移动 → [${wx}, ${wy}]`);
         tactRenderActionDialog(); tactRenderInspect(); draw();
+      } else {
+        // 目标不可达（路径被堵/在障碍中）——官方 routeBlocked/routeUnknown 语义
+        const blockedCell = state.cellIndex.get(wx + ',' + wy);
+        const onObstacle = blockedCell && blockedCell.type === 'obstacle' || (world.state && world.state.objects || []).some((o) => o.kind === 'OBSTACLE' && (o.positions || []).some((p) => p[0] === wx && p[1] === wy));
+        var msg = onObstacle ? ('目标 [' + wx + ', ' + wy + '] 是障碍，无法到达') : ('目标 [' + wx + ', ' + wy + '] 不可达（路径被堵）');
+        toast(msg, 'warn');
+        // 保持 MOVE 模式让用户重选
+        draw();
       }
     }
     return;
