@@ -19,6 +19,7 @@ import {
   type OutcomeTraceRecord,
   type RuntimeTraceRecord,
 } from "../src/telemetry/decision-trace.ts";
+import { validateTraceRecord } from "../src/telemetry/schema.ts";
 import {
   JsonlWriter,
   rotatedJsonlPaths,
@@ -96,6 +97,13 @@ test("decisionTrace 字段齐全", () => {
   assert.equal(record.decisionSource, "hybrid");
   assert.equal(record.planHash, "sha256:abc");
   assert.equal(record.intentCounts?.patrol, 2);
+});
+test("decisionTrace：人类指令源 human 通过 trace 校验（回归 2026-08-07 t1 崩溃）", () => {
+  // human-command-v1 给 DecisionSource 类型加 "human" 但漏同步运行时 schema——
+  // 人类指令激活时 source="human" 触发 invalid trace record（t1 exitCode=1）。
+  const record = decisionTrace({ ...DT, decisionSource: "human" });
+  assert.equal(record.decisionSource, "human");
+  assert.doesNotThrow(() => validateTraceRecord(record));
 });
 
 test("outcomeTrace 字段齐全", () => {
