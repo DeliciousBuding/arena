@@ -80,6 +80,16 @@ const state = {
   },
 };
 
+/** 高刷/高分适配：DPR 上限（4K/5K 屏 dpr 可达 2-3，canvas 像素 = css×dpr²，
+ *  175Hz 下满 DPR 会撑爆 fill-rate；cap 2.0 平衡清晰度与帧率——业界常见做法）。
+ *  动画/缩放期间再降到 1.5（LQ 降级）：静止恢复全清晰度。 */
+const DPR_CAP = 2.0;
+const DPR_ANIM = 1.5;
+function effDpr() {
+  const dpr = window.devicePixelRatio || 1;
+  return Math.min(dpr, LQ ? DPR_ANIM : DPR_CAP);
+}
+
 let ROOT = document.body; // 挂载时替换为地图宿主容器（createMapEngine(host)）
 const $ = (sel) => ROOT.querySelector(sel);
 let els = {};
@@ -175,9 +185,9 @@ function staticNeedsRebuild(bs) {
   return Math.abs(state.view.cx - staticCache.cx) > mw || Math.abs(state.view.cy - staticCache.cy) > mh;
 }
 function renderStaticCache(bs) {
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = effDpr();
   const w = Math.max(1, Math.round(W() * STATIC_PAD)), h = Math.max(1, Math.round(H() * STATIC_PAD));
-  if (!staticCache.canvas) { staticCache.canvas = document.createElement('canvas'); staticCache.cctx = staticCache.canvas.getContext('2d'); }
+  if (!staticCache.canvas) { staticCache.canvas = document.createElement('canvas'); staticCache.cctx = staticCache.canvas.getContext('2d', { alpha: false }) ?? staticCache.canvas.getContext('2d'); }
   const dw = Math.max(1, Math.round(w * dpr)), dh = Math.max(1, Math.round(h * dpr));
   if (staticCache.canvas.width !== dw) staticCache.canvas.width = dw;
   if (staticCache.canvas.height !== dh) staticCache.canvas.height = dh;
@@ -193,6 +203,7 @@ function renderStaticCache(bs) {
   try {
     const s = bs;
     if (!state.soloTenant) drawTenantRegions(s);
+    drawGrid(W(), H()); // 网格线并入静态缓存：平移/缩放重建一次，不再每帧画
     if (!LQ) tactSurveyLayer(s); else surveySkipped = true; // 动画期间跳过最贵的测绘记忆层，结束补建
     const cells = visibleCells();
     const buckets = { obstacle: [], resource: [] };
@@ -321,7 +332,7 @@ async function pollStreams() {
 
 /* ---------- 地图投影 / 交互 ---------- */
 function resizeCanvas() {
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = effDpr();
   const rect = els.canvas.getBoundingClientRect();
   els.canvas.width = Math.max(1, Math.round(rect.width * dpr));
   els.canvas.height = Math.max(1, Math.round(rect.height * dpr));
@@ -433,8 +444,7 @@ function unitDrawPos(c) {
 function draw() {
   const w = W(), h = H();
   ctx.clearRect(0, 0, w, h);
-  drawGrid(w, h);
-  drawStars(w, h);
+  drawStars(w, h); // 氛围层（星点+暗角）离屏缓存 blit
   const s = state.view.scale;
   const animating = !!state.viewAnim || state.zoom.active;
   LQ = animating; // 动画/缩放阻尼期间降级：静态缓存跳过测绘记忆层，动态层关 shadowBlur
@@ -522,34 +532,56 @@ function drawTenantRegions(s) {
   }
   ctx.restore();
 }
-/** 画布氛围层（极淡星点 + 边缘暗角）：确定性伪随机，resize 重建一次，每帧廉价绘制。
- *  星点极低对比（alpha .04-.14）不干扰数据层，暗角把视觉焦点收拢到地图中心。 */
-const bgStars = { list: [], w: 0, h: 0 };
-function ensureStars(w, h) {
-  if (bgStars.w === w && bgStars.h === h && bgStars.list.length) return;
-  bgStars.w = w; bgStars.h = h; bgStars.list = [];
-  let seed = 0x9e3779b9;
-  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
-  const n = Math.max(40, Math.floor(w * h / 9000));
-  for (let i = 0; i < n; i++) bgStars.list.push({ x: rnd() * w, y: rnd() * h, r: rnd() * 1.1 + 0.3, a: rnd() * 0.10 + 0.04 });
+/** 画布氛围层（极淡星点 + 边缘暗角）：确定性伪随机。
+ *  高刷优化：星点/暗角合并预渲染到离屏 canvas，仅 resize 重建一次，
+ *  draw 时单次 drawImage blit——不再每帧画 ~N 个 arc + radial gradient
+ *  （175Hz 下省掉每帧 canvas 状态切换与渐变创建）。 */
+const bgStars = { canvas: null, cctx: null, w: 0, h: 0 };
+const bgVignette = { canvas: null, cctx: null, w: 0, h: 0 };
+function ensureAtmosphere(w, h) {
+  // 星点层（内容之下）
+  if (!bgStars.canvas) { bgStars.canvas = document.createElement('canvas'); bgStars.cctx = bgStars.canvas.getContext('2d', { alpha: true }) ?? bgStars.canvas.getContext('2d'); }
+  if (bgStars.w !== w || bgStars.h !== h) {
+    bgStars.w = w; bgStars.h = h;
+    bgStars.canvas.width = Math.max(1, Math.round(w));
+    bgStars.canvas.height = Math.max(1, Math.round(h));
+    const cctx = bgStars.cctx;
+    cctx.clearRect(0, 0, w, h);
+    let seed = 0x9e3779b9;
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    const n = Math.max(40, Math.floor(w * h / 9000));
+    cctx.save();
+    cctx.fillStyle = '#cfe0ff';
+    for (let i = 0; i < n; i++) {
+      const x = rnd() * w, y = rnd() * h, r = rnd() * 1.1 + 0.3, a = rnd() * 0.10 + 0.04;
+      cctx.globalAlpha = a;
+      cctx.beginPath(); cctx.arc(x, y, r, 0, Math.PI * 2); cctx.fill();
+    }
+    cctx.restore();
+  }
+  // 暗角层（内容之上，收拢视觉焦点）
+  if (!bgVignette.canvas) { bgVignette.canvas = document.createElement('canvas'); bgVignette.cctx = bgVignette.canvas.getContext('2d', { alpha: true }) ?? bgVignette.canvas.getContext('2d'); }
+  if (bgVignette.w !== w || bgVignette.h !== h) {
+    bgVignette.w = w; bgVignette.h = h;
+    bgVignette.canvas.width = Math.max(1, Math.round(w));
+    bgVignette.canvas.height = Math.max(1, Math.round(h));
+    const vc = bgVignette.cctx;
+    vc.clearRect(0, 0, w, h);
+    const r0 = Math.min(w, h) * 0.34, r1 = Math.max(w, h) * 0.74;
+    const g = vc.createRadialGradient(w / 2, h / 2, r0, w / 2, h / 2, r1);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(1, 'rgba(0,0,0,.34)');
+    vc.fillStyle = g;
+    vc.fillRect(0, 0, w, h);
+  }
 }
 function drawStars(w, h) {
-  ensureStars(w, h);
-  ctx.save();
-  ctx.fillStyle = '#cfe0ff';
-  for (const st of bgStars.list) {
-    ctx.globalAlpha = st.a;
-    ctx.beginPath(); ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.restore();
+  ensureAtmosphere(w, h);
+  ctx.drawImage(bgStars.canvas, 0, 0, w, h);
 }
 function drawVignette(w, h) {
-  const r0 = Math.min(w, h) * 0.34, r1 = Math.max(w, h) * 0.74;
-  const g = ctx.createRadialGradient(w / 2, h / 2, r0, w / 2, h / 2, r1);
-  g.addColorStop(0, 'rgba(0,0,0,0)');
-  g.addColorStop(1, 'rgba(0,0,0,.34)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, w, h);
+  ensureAtmosphere(w, h);
+  ctx.drawImage(bgVignette.canvas, 0, 0, w, h);
 }
 function drawGrid(w, h) {
   ctx.strokeStyle = 'rgba(104,117,167,.08)';
@@ -1369,15 +1401,34 @@ async function boot() {
     emit('refresh', true);
   }, POLL_MS);
   setInterval(() => { pollStreams(); }, POLL_MS);
+  // 高刷/低耗调度（175Hz 显示器）：有动画/回放/单位移动/命令倒计时时 rAF 全速
+  // （~175fps），空闲时降频 setTimeout（~8fps）只做轻量检查——175Hz 下 rAF 每帧
+  // 回调（5.7ms 一次）即使不 draw 也会空转 CPU，降频后显著省电/省 CPU。
+  let frameMode = 'idle'; // idle | active
   let lastAnim = 0;
-  const animLoop = (ts) => {
-    updateCommandCountdown();
-    // 视图动画与回放可并行：回放自动播放不再饿死 fitSolo/zoom 动画（修复聚焦时视图冻结在半路）
+  let lastCountdown = 0;
+  const scheduleFrame = () => {
+    if (frameMode === 'active') requestAnimationFrame(animLoop);
+    else setTimeout(animLoop, 120);
+  };
+  const animLoop = (rawTs) => {
+    const ts = rawTs ?? performance.now(); // setTimeout 回调无 rAF 时间戳
     const animating = !!state.viewAnim;
-    if (animating) applyViewAnim(ts);
     const zooming = state.zoom.active;
+    const replaying = !!(replay.data && replay.playing);
+    const moving = anyUnitsMoving();
+    // 命令倒计时不算 active（100ms 节流更新即可，不必撑 175fps）
+    const active = animating || zooming || replaying || moving || !!state.tactical.moveRoute || !!state.tactical.routePreview || !!state.tactical.selected || !!state.tactical.mode;
+    // 模式切换：idle→active 立即补一帧（避免切换延迟）；active→idle 自然降频
+    if (active && frameMode !== 'active') { frameMode = 'active'; }
+    else if (!active && frameMode !== 'idle') { frameMode = 'idle'; }
+    // 命令窗口倒计时节流：100ms 更新一次（175Hz 下不用每帧写 DOM）
+    if (active || state.soloTenant) {
+      if (ts - lastCountdown >= 100) { lastCountdown = ts; updateCommandCountdown(); }
+    }
+    if (animating) applyViewAnim(ts);
     if (zooming) stepZoom(ts);
-    if (replay.data && replay.playing) {
+    if (replaying) {
       const elapsed = ts - replay.tickStart;
       replay.progress = Math.min(1, elapsed / (TICK_MS / replay.speed));
       if (elapsed >= TICK_MS / replay.speed) {
@@ -1389,11 +1440,11 @@ async function boot() {
       draw();
     } else if (animating || zooming) {
       draw();
-    } else if (ts - lastAnim > ((anyUnitsMoving() || state.tactical.moveRoute || state.tactical.routePreview) ? 50 : 120) && ((state.cells.length && (state.layers.unit || state.layers.trail)) || (state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
+    } else if (active && ts - lastAnim > (moving ? 50 : 120)) {
       lastAnim = ts;
       draw();
     }
-    requestAnimationFrame(animLoop);
+    scheduleFrame();
   };
   requestAnimationFrame(animLoop);
   // 键盘导航：方向键平移 / +/- 缩放 / F 适应视口 / G 返回全局 / Esc 取消
@@ -2863,7 +2914,9 @@ function emit(topic, payload) {
 export function createMapEngine(host) {
   ROOT = host;
   els = buildEls();
-  ctx = els.canvas.getContext('2d');
+  // 高刷/浏览器优化：alpha:false（画布始终不透明，跳过 alpha 合成）+
+  // desynchronized（低延迟合成，减少输入到像素延迟；不影响内容绘制）
+  ctx = els.canvas.getContext('2d', { alpha: false, desynchronized: true }) ?? els.canvas.getContext('2d');
   const api = {
     toggleSolo: (t) => toggleSolo(t),
     exitSolo: () => exitSolo(),
