@@ -81,7 +81,14 @@
   地图控件=右下（含缩放读数 `×N` + 「全局」返回按钮，单租户时显示）、信标边缘指示自动避让控件区、
   命令窗口倒计时=顶中。
 - **决策流折叠**：折叠后仍显示最新决策胶囊（`.st-live`），新行到达圆点琥珀提醒；
-  折叠/只看决策/标签页/图层开关全部持久化到本机 `localStorage`（`arena-cc.prefs`），刷新恢复。
+  折叠/只看决策/标签页/图层开关/决策流高度全部持久化到本机 `localStorage`（`arena-cc.prefs`），刷新恢复。
+- **决策流高度拖拽**：顶部 `.stream-grip` 把手拖拽调高（140-460px，`ns-resize`），拖动期间逐帧同步画布
+  位图防拉伸，松手持久化；折叠时把手隐藏、高度归 38px，展开恢复记忆高度。
+- **`[hidden]` 语义兜底**：全局 `[hidden] { display: none !important; }` —— `display:flex` 等声明不得覆盖
+  hidden 属性（曾致回放条 `TICK - / -` / 最新按钮在实时模式常显）。
+- **租户卡 row3**：2 列 grid（`1fr 1fr`）+ `nowrap/ellipsis`，避免 5 项 flex 换行凌乱；字号 ≥10.5px。
+- **商店对话框**：官方商店 eyebrow 小标题（`OFFICIAL STORE · LINUXDO`）+ 18px 主标题层级；底部说明
+  12.5px/1.7 行高；分区（Cookie/商品/历史）间距 16-20px。
 - **决策流头部结构**：`#streamToggle`（圆点+标题+计数+chevron）与 `#streamFilter`（只看决策胶囊按钮）
   是**同级兄弟**，禁止按钮嵌套按钮（非法 HTML 会导致点击拦截/冒泡异常）；折叠时隐藏过滤按钮、显示 live 胶囊。
 - **只看决策过滤**：`#streamFilter` 激活（`.on`）后隐藏 `not_applicable + accepted` 的无需决策行，
