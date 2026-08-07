@@ -7,6 +7,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_ROOT, TENANTS, calibrationDir, latestRunDir, listCases, parseTick } from "./fs-jsonl.ts";
+import { TtlCache } from "./cache.ts";
 
 export interface LeaderboardProfile {
   username: string;
@@ -23,7 +24,11 @@ export interface LeaderboardIntel {
   profiles: LeaderboardProfile[];
 }
 
+const leaderboardCache = new TtlCache<LeaderboardIntel>(30_000); // 快照 5 分钟更新一次，30s 缓存足够
+
 export function loadLeaderboardIntel(): LeaderboardIntel | null {
+  const hit = leaderboardCache.get("latest");
+  if (hit !== undefined) return hit;
   const dir = join(DATA_ROOT, "leaderboard");
   if (!existsSync(dir)) return null;
   const files = readdirSync(dir)
@@ -45,7 +50,7 @@ export function loadLeaderboardIntel(): LeaderboardIntel | null {
       damage: row.score,
       tier: tierOf(row.rank),
     }));
-    return {
+    const result: LeaderboardIntel = {
       generatedAt: new Date().toISOString(),
       snapshot: files[0],
       beacon_ticks_held: raw.beacon_ticks_held ?? [],
@@ -53,6 +58,8 @@ export function loadLeaderboardIntel(): LeaderboardIntel | null {
       core_destruction_participations: raw.core_destruction_participations ?? [],
       profiles,
     };
+    leaderboardCache.set("latest", result);
+    return result;
   } catch {
     return null;
   }

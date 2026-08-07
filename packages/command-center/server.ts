@@ -19,6 +19,7 @@ import { supervisorState } from "./lib/supervisor.ts";
 import { loadMergedMap } from "./lib/map.ts";
 import { loadOverview, loadStream, loadReplay, loadPlan, loadWorld, loadEvents } from "./lib/streams.ts";
 import { loadSurveyDb, loadLifecycleDb, loadSurvey, loadResourceTimeline, loadSpendTrend, loadUnitLifecycleDb, loadChunksDb } from "./lib/survey.ts";
+import { loadTenantSurveyCached, startSurveyCacheLoop } from "./lib/survey-cache.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
 import { loadLeaderboardIntel, loadOurUsernames } from "./lib/leaderboard.ts";
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
@@ -62,14 +63,16 @@ app.get("/api/replay", (c) => {
 app.get("/api/plan", (c) => c.json(loadPlan(c.req.query("tenant") ?? "t1")));
 app.get("/api/exploration", (c) => {
   const tenant = c.req.query("tenant") ?? "t1";
-  const survey = loadSurveyDb(tenant) ?? loadSurvey(tenant); // 测绘库优先（跨 run），缺失回退 calibration
+  // 内存缓存优先（2026-08-08 UX 优化）：测绘/生命周期后台 30s 刷新，请求毫秒级
+  const cached = loadTenantSurveyCached(tenant);
+  const survey = cached.survey ?? loadSurvey(tenant); // 缓存缺失回退 calibration 扫描
   if (!survey) return c.json({ tenant, generatedAt: new Date().toISOString(), survey: null });
   const world = loadWorld(tenant) as { state?: Record<string, unknown> | null; caseFile?: string | null; tick?: number | null };
   return c.json({
     tenant,
     generatedAt: new Date().toISOString(),
     survey,
-    lifecycle: loadLifecycleDb(tenant),
+    lifecycle: cached.lifecycle,
     current: world.state ? { caseFile: world.caseFile, tick: world.tick, objects: world.state.objects, resources: world.state.resources, population: world.state.population, champion_beacon: world.state.champion_beacon } : null,
   });
 });
@@ -81,7 +84,8 @@ app.get("/api/survey", (c) => {
   const tenants = tenant === "all" ? [...TENANTS] : [tenant];
   const out: Record<string, unknown> = { generatedAt: new Date().toISOString(), tenants: {} };
   for (const t of tenants) {
-    const s = loadSurveyDb(t);
+    const cached = loadTenantSurveyCached(t);
+    const s = cached.survey;
     if (!s) { (out.tenants as Record<string, unknown>)[t] = { error: "survey db missing" }; continue; }
     (out.tenants as Record<string, unknown>)[t] = {
       resources: s.resourceCells.filter((r) => states.includes(String(r.state))),
@@ -89,10 +93,11 @@ app.get("/api/survey", (c) => {
       coreHunts: s.coreCells,
       caseCount: s.caseCount,
       tickMax: s.tickMax,
-      lifecycle: loadLifecycleDb(t),
-      spendsTrend: loadSpendTrend(t, 1000),
-      unitsDetail: loadUnitLifecycleDb(t, 500),
-      chunks: loadChunksDb(t, 20_000),
+      lifecycle: cached.lifecycle,
+      spendsTrend: cached.spendsTrend,
+      unitsDetail: cached.unitsDetail,
+      chunks: cached.chunks,
+      cachedAt: cached.cachedAt,
     };
   }
   return c.json(out);
@@ -317,4 +322,7 @@ app.onError((err, c) => {
 serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: number }) => {
   console.log(`Arena 指挥面板：http://127.0.0.1:${info.port}`);
   console.log(`数据根（只读）：${DATA_ROOT}`);
+  // 测绘内存缓存后台预热 + 30s 刷新（2026-08-08 UX 优化：前端请求读缓存毫秒级）
+  startSurveyCacheLoop(30_000);
+  console.log("测绘缓存：后台预热 + 30s 刷新已启动");
 });
