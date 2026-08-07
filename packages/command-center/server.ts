@@ -25,6 +25,7 @@ import { loadAllianceSurvey, refreshAllianceSurvey, TENANT_COLORS } from "./lib/
 import { loadAllianceSnapshot, refreshAllianceSnapshot } from "./lib/alliance-snapshot.ts";
 import { loadAllianceAdvice, refreshAllianceAdvice } from "./lib/alliance-advice.ts";
 import { loadEnemyHeat, refreshEnemyHeat } from "./lib/enemy-heat.ts";
+import { loadPipelineHealth, refreshPipelineHealth } from "./lib/pipeline-health.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
 import { loadLeaderboardIntel, loadOurUsernames } from "./lib/leaderboard.ts";
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
@@ -182,6 +183,11 @@ app.get("/api/leaderboard", (c) => {
   });
 });
 app.get("/api/intel", (c) => c.json(loadAllianceIntel()));
+app.get("/api/health/pipeline", (c) => {
+  // 数据管线健康（2026-08-08）：survey-db 同步水位 vs live tick 滞后/数据量/
+  // 缓存新鲜度——测绘记录层是否健康前进一眼可读。15s 缓存。
+  return c.json(loadPipelineHealth());
+});
 app.get("/api/intel/heat", (c) => {
   // 敌情热区（2026-08-08）：survey-db units_seen 聚合为敌方活动热力图
   // （16×16 桶，兵力构成/新鲜度）——地图「敌情热区」层 + 联盟威胁先验。
@@ -386,6 +392,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
       refreshAllianceSnapshot(); // 联盟态势快照 30s 缓存（读 survey/世界缓存，快）
       refreshAllianceAdvice(); // 联盟参谋建议 30s 缓存（读快照/共享测绘缓存，快）
       refreshEnemyHeat(); // 敌情热区 30s 缓存（读 units_seen 聚合，快）
+      refreshPipelineHealth(); // 数据管线健康 15s 缓存（读 survey 水位/世界，快）
       void supervisorState(); // 8120 健康状态 5s 缓存（/api/overview、/api/tenants 首开即快）
     } catch { /* 数据缺失/临时 IO 失败不阻塞启动 */ }
   };
