@@ -606,6 +606,35 @@ body::after {
 .intel-row.ir-top { background: linear-gradient(90deg, rgba(255,255,255,.05), transparent); }
 .intel-row.ir-top .ir-rank { color: var(--warn); font-weight: 700; }
 
+/* ---------- 全局轻提示（toast）：每次点击都有反馈，杜绝"点了没反应" ---------- */
+#uiToast {
+  position: fixed; left: 50%; top: 66px; z-index: 90;
+  transform: translateX(-50%) translateY(-8px);
+  max-width: min(480px, calc(100vw - 32px));
+  padding: 8px 16px; border-radius: 999px;
+  background: rgba(10,10,10,.92); border: 1px solid var(--border-strong);
+  color: var(--text); font-family: var(--font-mono); font-size: 12px; letter-spacing: .03em;
+  box-shadow: var(--shadow-float); backdrop-filter: blur(12px);
+  opacity: 0; pointer-events: none; transition: opacity .28s var(--ease), transform .28s var(--ease);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#uiToast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#uiToast.warn { color: var(--warn); border-color: rgba(211,173,85,.45); }
+#uiToast.err { color: var(--danger); border-color: rgba(221,98,109,.5); }
+
+/* 信标边缘指示：加关闭按钮（用户反馈"关不掉"） */
+.beacon-arrow-wrap { display: flex; align-items: center; gap: 6px; }
+.beacon-close {
+  width: 22px; height: 22px; border-radius: 999px; border: 1px solid var(--border-strong);
+  background: rgba(10,10,10,.85); color: var(--text-dim); font-size: 11px; cursor: pointer;
+  display: grid; place-items: center; transition: all .2s var(--ease);
+}
+.beacon-close:hover { color: #fff; border-color: rgba(255,255,255,.35); background: rgba(255,255,255,.1); }
+
+/* 聚焦徽章可点击：返回全局联盟（悬停提示） */
+#soloBadge { cursor: pointer; transition: filter .2s ease, transform .2s var(--ease); }
+#soloBadge:hover { filter: brightness(1.3); transform: translateY(-1px); }
+
 /* ---------- 无障碍：减少动态 ---------- */
 /* [hidden] 语义全局兜底：display:flex 等声明不得覆盖 hidden 属性（曾致回放条/最新按钮实时模式常显） */
 [hidden] { display: none !important; }
