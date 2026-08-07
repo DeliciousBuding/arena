@@ -73,15 +73,12 @@ export function resolveSafetyVariantConfig(id: string): Partial<SafetyPlannerCon
   return config;
 }
 
-/** 解析变体 id → DeterministicPlanner 参数覆盖；未知 id 抛错（fail-fast）。 */
+/** 解析变体 id → DeterministicPlanner 参数覆盖。变体 id 的合法性统一由
+ *  resolveSafetyVariantConfig 负责（所有生产变体都注册在安全侧）；这里对
+ *  没有 deterministic 部分（如 move-failed-avoidance-v1）的变体返回 {} =
+ *  零覆盖，不抛错（"无 deterministic 声明 = 不影响 core 生产"是正确语义）。 */
 export function resolveDeterministicVariantConfig(id: string): DeterministicVariantConfig {
-  const config = DETERMINISTIC_VARIANT_CONFIG[id];
-  if (config === undefined) {
-    throw new Error(
-      `unknown deterministic variant: ${id} (registered: ${Object.keys(DETERMINISTIC_VARIANT_CONFIG).join(", ")})`,
-    );
-  }
-  return config;
+  return DETERMINISTIC_VARIANT_CONFIG[id] ?? {};
 }
 
 /** 判断 id 是否为已注册的安全变体（config schema 校验用）。 */
