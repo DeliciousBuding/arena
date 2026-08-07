@@ -804,6 +804,9 @@ body::after {
 }
 .rb-btn:hover { border-color: rgba(255,255,255,.3); background: rgba(255,255,255,.09); color: #fff; }
 .rb-btn:active { transform: scale(.92); }
+/* 回放已到最新：进度条转琥珀，倒计时文字提示"已到最新" */
+.replay-bar.at-end #rbFill { background: var(--warn); box-shadow: 0 0 8px rgba(211,173,85,.5); }
+.replay-bar.at-end .rb-count { color: var(--warn); }
 
 /* ---------- 待执行命令面板（PendingCommands 移植） ---------- */
 .pending-panel {
