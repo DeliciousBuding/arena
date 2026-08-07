@@ -14,15 +14,23 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import {
+  coreSpendsSummary,
   knownObstacles,
   knownResources,
   markResourceState,
   openSurveyDb,
+  recordCoreSpend,
+  recordResourceEvent,
+  recordUnitBirth,
+  recordUnitDeath,
+  resourceLifecycle,
+  touchUnitSeen,
+  unitLifecycleRows,
   upsertCoreHunt,
   upsertObstacles,
   upsertResources,
 } from "../src/intel/survey-db.ts";
-import { parseCaseObjects, syncTenantSurvey } from "../src/intel/survey-sync.ts";
+import { parseCaseLifecycle, parseCaseObjects, syncTenantSurvey } from "../src/intel/survey-sync.ts";
 import type { TickState } from "../src/domain/model.ts";
 import { World } from "../src/domain/world.ts";
 
@@ -171,4 +179,61 @@ test("World: seedResourceMemory 恒进 hints（不受新鲜度窗口滤除）", 
 
 
 
+
+
+test("survey-db: 生命周期——单位出生/目击/死亡 + 矿采集事件 + 消费记账", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-lc-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    // 单位出生 + 目击 + 死亡
+    recordUnitBirth(db, "u1", "WORKER", 100, { x: 1, y: 1 });
+    touchUnitSeen(db, "u1", "WORKER", 150, { x: 2, y: 2 });
+    recordUnitDeath(db, "u1", 200, { x: 5, y: 5 });
+    const rows = unitLifecycleRows(db, { state: "dead" });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].birthTick, 100);
+    assert.equal(rows[0].deathTick, 200);
+    assert.equal(rows[0].lastSeenTick, 150, "死亡后 last_seen 保留最近目击");
+    // 矿采集事件 + 消费
+    recordResourceEvent(db, "3,3", 120, "HARVEST_SUCCEEDED", null, 1, "u1");
+    recordResourceEvent(db, "3,3", 121, "HARVEST_FAILED", "RESOURCE_DEPLETED", null, "u1");
+    recordCoreSpend(db, "spawn", 100, 5, "WORKER", "u1");
+    recordCoreSpend(db, "core_heal", 150, 3, null, null);
+    const spends = coreSpendsSummary(db);
+    assert.equal(spends.length, 2);
+    const spawn = spends.find((s) => s.kind === "spawn")!;
+    assert.equal(spawn.total, 5);
+    const lc = resourceLifecycle(db);
+    // 资源表没有该矿记录（recordResourceEvent 不建资源行）——事件已落库
+    db.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("survey-sync: parseCaseLifecycle 提取出生/死亡/采集/消费", () => {
+  const lc = parseCaseLifecycle({
+    after: {
+      state: {
+        events: [
+          { event_type: "CORE_SPAWN_SUCCEEDED", target_id: "u1", actor_id: "core1", position: [0, 0], values: { unit_type: "WORKER", cost: 5 } },
+          { event_type: "UNIT_DESTROYED", actor_id: "u2", position: [9, 9], values: null },
+          { event_type: "HARVEST_SUCCEEDED", actor_id: "u3", position: [3, 3], values: { amount: 1 } },
+          { event_type: "HARVEST_FAILED", actor_id: "u3", position: [3, 3], reason_code: "RESOURCE_DEPLETED", values: null },
+          { event_type: "CORE_HEAL_SUCCEEDED", actor_id: "core1", position: [0, 0], values: { cost: 3 } },
+          { event_type: "UNIT_MOVE_SUCCEEDED", actor_id: "u4", position: [1, 1], values: null },
+        ],
+      },
+    },
+  }, 500);
+  assert.equal(lc.births.length, 1);
+  assert.equal(lc.births[0].unitType, "WORKER");
+  assert.equal(lc.deaths.length, 1);
+  assert.equal(lc.deaths[0].unitId, "u2");
+  assert.equal(lc.harvests.length, 1);
+  assert.equal(lc.harvestFails.length, 1);
+  assert.equal(lc.harvestFails[0].reason, "RESOURCE_DEPLETED");
+  assert.equal(lc.spends.length, 2, "spawn + core_heal 记账");
+  assert.equal(lc.spends.find((s) => s.kind === "spawn")!.amount, 5);
+});
 
