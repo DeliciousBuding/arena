@@ -17,6 +17,18 @@
   `npx tsx scripts/validate-config.mts` 验证，再经 supervisor `POST /shutdown` 优雅重启。
 - t1/t2 已于 2026-08-07 10:00 UTC 启用（t1 现状：5V+4R+12W、资源 41→爆兵；vanguard_pressure 前压中）。
 
+## 设计体系（2026-08-07 Achromatic 极简重构）
+
+- **基调**：黑白灰 achromatic（Vercel/Geist 理念）——近黑 `#030303` 背景、低透明度白边框
+  （`rgba(255,255,255,.06-.15)`）、阴影代替实体边框、单一白色强调（主按钮白底黑字）。
+- **圆角**：收敛为 3 档 `--radius-sm/md/lg`（6/10/14px），取代原 `--gold-*` 四档。
+- **语义色**：`success/warn/danger` 仅用于数据与状态（连接徽章、决策结果、delta 正负）；
+  租户色 t1-t4 保留为地图/卡片身份标识（降饱和 muted 版）。
+- **微动效**：租户卡数值变化 200ms 闪烁（`prevMetrics` 对比打 `.flash`）、
+  决策流/事件新行 slide-in（`rowKeys` diff 打 `.st-new`）、按钮按压缩放、
+  面板入场 `panelIn` 非线性动画；`prefers-reduced-motion` 全量降级。
+- **对齐**：JS `TENANT_COLORS` 与 CSS `--t1..--t4` 同步 muted 版本，跨地图/卡片一致。
+
 ## 已知修复
 
 - `latestRunDir` 按 run 内最高 case tick 选 run（UUID 字典序 ≠ 时间序——旧 bug 导致
