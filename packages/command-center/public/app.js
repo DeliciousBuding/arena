@@ -331,8 +331,8 @@ function drawUnits(cells, s) {
     for (const c of cells) {
       const p = project(c.x, c.y);
       const size = s * (c.unitType === 'RANGER' ? 0.68 : 0.62);
-      const color = TENANT_COLORS[c.tenant] ?? '#999';
-      ring(p.sx, p.sy, size * 0.72, c.controlled ? color : 'rgba(150,160,170,.45)', c.controlled ? 1.8 : 1.2, c.controlled ? [] : [3, 3]);
+      const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#c66370';
+      ring(p.sx, p.sy, size * 0.72, c.controlled ? color : 'rgba(198,99,112,.55)', c.controlled ? 1.8 : 1.2, c.controlled ? [] : [3, 3]);
       const path = unitSpritePath(c.unitType);
       if (images[path]) sprite(images[path], p.sx, p.sy, size);
       else {
@@ -344,8 +344,8 @@ function drawUnits(cells, s) {
   }
   for (const c of cells) {
     const p = project(c.x, c.y);
-    const color = TENANT_COLORS[c.tenant] ?? '#999';
-    ctx.fillStyle = c.controlled ? color : 'rgba(150,160,170,.55)';
+    const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#c66370';
+    ctx.fillStyle = c.controlled ? color : 'rgba(198,99,112,.7)';
     ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(1.8, s * 0.42), 0, Math.PI * 2); ctx.fill();
     if (c.controlled) { ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 1; ctx.stroke(); }
   }
@@ -359,24 +359,44 @@ function drawCores(cells, s) {
   }
   for (const c of cells) {
     const p = project(c.x, c.y);
-    const color = TENANT_COLORS[c.tenant] ?? '#999';
+    const color = coreColor(c);
     ctx.fillStyle = color;
     ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(3, s * 0.6), 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.strokeStyle = c.controlled ? 'rgba(255,255,255,.55)' : 'rgba(0,0,0,.6)'; ctx.lineWidth = 1.2; ctx.stroke();
   }
+}
+function coreColor(c) {
+  // 我方核心=租户色；敌方核心=珊瑚红（官方 hostile 语义）
+  return c.controlled ? (TENANT_COLORS[c.tenant] ?? '#4591c5') : '#c66370';
 }
 function drawCoreSprite(c, s) {
   const p = project(c.x, c.y);
   const size = s * 0.72;
-  const color = TENANT_COLORS[c.tenant] ?? '#999';
-  ctx.shadowColor = color; ctx.shadowBlur = 12;
+  const color = coreColor(c);
+  ctx.save();
+  if (c.controlled) {
+    ctx.shadowColor = color; ctx.shadowBlur = 12;
+  } else {
+    ctx.globalAlpha = 0.85;
+    ctx.shadowColor = color; ctx.shadowBlur = 6;
+  }
   if (images[SPRITE.core]) sprite(images[SPRITE.core], p.sx, p.sy, size);
   else {
     ctx.fillStyle = color;
     ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(3, size * 0.3), 0, Math.PI * 2); ctx.fill();
   }
-  ctx.shadowBlur = 0;
-  ring(p.sx, p.sy, size * 0.62, color, 2);
+  ctx.restore();
+  ring(p.sx, p.sy, size * 0.62, color, c.controlled ? 2 : 1.6, c.controlled ? [] : [3, 3]);
+  // 敌方核心加"×"标识
+  if (!c.controlled) {
+    ctx.strokeStyle = 'rgba(198,99,112,.85)';
+    ctx.lineWidth = 2;
+    const d = Math.max(4, size * 0.2);
+    ctx.beginPath();
+    ctx.moveTo(p.sx - d, p.sy - d); ctx.lineTo(p.sx + d, p.sy + d);
+    ctx.moveTo(p.sx + d, p.sy - d); ctx.lineTo(p.sx - d, p.sy + d);
+    ctx.stroke();
+  }
   if (typeof c.hp === 'number') {
     const bw = Math.max(14, size * 1.1), bh = 3;
     const bx = p.sx - bw / 2, by = p.sy + size * 0.62 + 4;
