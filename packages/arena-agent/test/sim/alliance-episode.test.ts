@@ -38,6 +38,7 @@ import {
   FixedAllianceDirector,
   ShadowPolicyAllianceDirector,
 } from "../../src/sim/alliance/director.ts";
+import { evaluateAllianceShadowPromotion } from "../../src/sim/alliance/promotion.ts";
 import type {
   AllianceEpisodeConfig,
   AllianceEpisodeResult,
@@ -336,6 +337,42 @@ test("ShadowPolicy t2-like NE+SW: trace 产生 RETREAT recommendation，但 worl
   assert.equal(alliance.episode.metrics.illegalPlans, baseline.metrics.illegalPlans);
   assert.ok(alliance.trace.every((entry) => entry.evaluations.every((e) => e.planSource === "baseline-shadow")));
 });
+test("promotion evidence packet: t2-like + deterministic + fault fail-open => SHADOW_READY", () => {
+  const episode = baseEpisodeConfig({
+    scenario: multiPressureScenario(),
+    tenants: tenants(["p1", "p2", "eNE", "eSW"]),
+    ticks: 12,
+    seed: 177,
+  });
+  const baseline = runEpisode(episode);
+  const make = (directorFaults = undefined as AllianceEpisodeConfig["directorFaults"]) => runAllianceEpisode(allianceConfig({
+    episode,
+    allianceTenants: ["p1", "p2"],
+    director: new ShadowPolicyAllianceDirector(),
+    directorPeriodTicks: 1,
+    directorFaults,
+  }));
+  const candidate = make();
+  const replay = make();
+  const wrongTenant = make([{ atTick: 1, fault: "WRONG_TENANT" }]);
+  const throwing = make([{ atTick: 1, fault: "THROW" }]);
+  const evaluation = evaluateAllianceShadowPromotion({
+    baseline,
+    candidate,
+    deterministicReplayMatch: JSON.stringify(deterministicProjection(candidate)) === JSON.stringify(deterministicProjection(replay)),
+    requiredMissionKinds: ["RETREAT"],
+    requireRetreatRecommendation: true,
+    faultEvidence: [
+      { name: "wrong-tenant", baseline, candidate: wrongTenant },
+      { name: "throw", baseline, candidate: throwing },
+    ],
+  });
+  assert.equal(evaluation.decision, "SHADOW_READY");
+  assert.equal(evaluation.maxAuthorizedStage, "SHADOW_READY");
+  assert.ok(evaluation.gates.every((gate) => gate.pass));
+  assert.equal(candidate.episode.finalWorldHash, baseline.finalWorldHash);
+});
+
 test("period=1: 每 tick replan（directorRan 全 true，snapshotRevision 单调递增）", () => {
   const director = new FixedAllianceDirector({ roles: new Map([["p1", "TREASURY"]]) });
   const result = runAllianceEpisode(allianceConfig({ director, directorPeriodTicks: 1 }));
