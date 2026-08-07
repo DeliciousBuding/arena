@@ -612,12 +612,21 @@ function drawTenantRegions(s: any) {
     const span = Math.max(30, Math.max(maxX - minX, maxY - minY));
     const p = project(cx, cy);
     const radius = Math.max(60, span * s * 0.62);
+    // 疆域色晕（2026-08-08 弱化）：用户反馈"诡异绿色球/绿色区域"——原 alpha .10 的
+    // 径向色晕在缩放后像一团实色球。降为 .045/.02 极淡打底 + 虚线疆域环（结构化
+    // "领地边界"，不再是一团实心色球）；租户色只作身份语义，不装饰性铺满。
     const grad = ctx.createRadialGradient(p.sx, p.sy, 0, p.sx, p.sy, radius);
-    grad.addColorStop(0, hexA(color, 0.10));
-    grad.addColorStop(0.55, hexA(color, 0.045));
+    grad.addColorStop(0, hexA(color, 0.045));
+    grad.addColorStop(0.55, hexA(color, 0.02));
     grad.addColorStop(1, hexA(color, 0));
     ctx.fillStyle = grad;
     ctx.beginPath(); ctx.arc(p.sx, p.sy, radius, 0, Math.PI * 2); ctx.fill();
+    // 疆域边界环：虚线细环（alpha .16，随缩放 1.2-2px），一眼圈出领地但不抢内容层
+    ctx.strokeStyle = hexA(color, 0.16);
+    ctx.lineWidth = Math.min(2, Math.max(1.2, s * 0.07));
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.arc(p.sx, p.sy, radius, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
     // 疆域标签：贴在核心/最密点上方
     const core = cells.find((c) => c.type === 'core');
     const lx = core ? core.x : cx, ly = core ? core.y : cy;
