@@ -24,7 +24,7 @@ const state = {
   streams: {},          // tenant -> rows
   events: {},           // tenant -> events
   view: { cx: 0, cy: 0, scale: 8, ready: false },
-  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true },
+  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true, survey: true },
   tenantsOn: { t1: true, t2: true, t3: true, t4: true },
   soloTenant: null,     // null=全局联盟；'t1'..'t4'=单租户
   tab: 'all',           // all | t1 | t2 | t3 | t4 | events
@@ -36,6 +36,7 @@ const state = {
   drag: null,
   hover: null,
   tactical: {
+    surveys: {},      // tenant -> { obstacleCells, resourceCells, ... }（累积测绘）
     worlds: {},       // tenant -> { state, tick }
     selected: null,   // { tenant, obj }
     mode: null,       // null | MOVE | SHOOT | SWEEP
@@ -211,6 +212,7 @@ function draw() {
   ctx.clearRect(0, 0, w, h);
   drawGrid(w, h);
   const s = state.view.scale;
+  tactSurveyLayer(s);
   const drawCells = visibleCells();
   const buckets = { obstacle: [], resource: [], unit: [], core: [] };
   for (const c of drawCells) if (buckets[c.type]) buckets[c.type].push(c);
@@ -513,10 +515,19 @@ function toggleSolo(tenant) {
   els.viewGlobal.classList.toggle('active', global);
 }
 async function tactShowTenant(tenant) {
-  const world = await tactLoadWorld(tenant);
+  const [world, expl] = await Promise.all([tactLoadWorld(tenant), tactLoadExploration(tenant)]);
   if (!world) return;
   tactRenderAssets(tenant);
   tactRenderHud(tenant);
+  draw();
+}
+async function tactLoadExploration(tenant) {
+  if (T().surveys[tenant]) return T().surveys[tenant];
+  try {
+    const e = await getJSON(`/api/exploration?tenant=${tenant}`);
+    if (e.survey) { T().surveys[tenant] = e.survey; return e.survey; }
+    return null;
+  } catch { return null; }
 }
 
 /* ---------- 决策流 ---------- */
@@ -1168,12 +1179,49 @@ function tactRenderHud(tenant) {
   const st = world.state;
   const cap = tactCoreCapacity(st.population ?? 0);
   els.fleetHud.hidden = false;
+  const survey = T().surveys[tenant];
+  const surveyRow = survey ? `<div class="hud-row hud-survey">
+    <span class="hud-label">测绘</span>
+    <span class="hud-val">${survey.obstacleCells.length} 障碍</span>
+    <span class="hud-val" style="color:var(--green-resource)">${survey.resourceCells.length} 资源</span>
+    <span class="hud-val">${survey.coreCells.length} 核心</span>
+    <span class="hud-val dim">${survey.caseCount} case · tick ${survey.tickMax}</span>
+  </div>` : '';
   els.fleetHud.innerHTML = `<div class="hud-row">
     <span class="hud-label">${tenant.toUpperCase()} · HUD</span>
     <span class="hud-val"><img src="${UNIT_ICONS.resource}" alt="" /> ${st.resources ?? 0} <i>/ ${cap}</i></span>
     <span class="hud-val"><img src="${UNIT_ICONS.population}" alt="" /> ${st.population ?? 0}</span>
     <span class="hud-val mono">tick ${st.tick ?? '—'}</span>
-  </div>`;
+  </div>${surveyRow}`;
+}
+/** 测绘层：聚焦租户时，把该 run 全部 case 累积的已知地形（障碍/资源）以半透明显示，
+    当前 case 可见的物体由上层 cells 全亮覆盖 —— 即"探索过的范围"的记忆测绘。 */
+function tactSurveyLayer(s) {
+  if (!state.soloTenant || !state.layers.survey) return;
+  const survey = T().surveys[state.soloTenant];
+  if (!survey) return;
+  const cell = Math.max(2, s);
+  if (survey.obstacleCells.length) {
+    ctx.fillStyle = 'rgba(96,106,116,.30)';
+    ctx.beginPath();
+    for (const c of survey.obstacleCells) {
+      const p = project(c.x, c.y);
+      ctx.rect(p.sx - cell / 2, p.sy - cell / 2, cell, cell);
+    }
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(139,183,212,.08)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  if (survey.resourceCells.length) {
+    ctx.fillStyle = 'rgba(118,184,137,.42)';
+    ctx.beginPath();
+    for (const c of survey.resourceCells) {
+      const p = project(c.x, c.y);
+      ctx.arc(p.sx, p.sy, Math.max(2, s * 0.28), 0, Math.PI * 2);
+    }
+    ctx.fill();
+  }
 }
 function tactDrawLayer(s) {
   const tac = T();

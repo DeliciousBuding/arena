@@ -25,6 +25,10 @@ npm start          # 或 node server.mjs
 
 - **全局联盟大地图**：合并 t1–t4 最新 calibration case（`before.state` 投影），官方素材渲染
   （core/worker/vanguard/ranger/crystal/asteroid/beacon），租户配色、图层开关、平移/缩放/自适应、悬浮详情。
+- **探索测绘（fog 记忆）**：聚焦租户时，`/api/exploration` 累积同一 run 全部 calibration case
+  （同一世界连续 tick 采样）的 obstacle/resource 位置 → 完整地形测绘（半透明"已测绘"层），
+  当前 case 可见物体全亮覆盖。例：t1 从"44 障碍/0 资源"→"384 障碍/8 资源/745 单位轨迹"。
+  HUD 显示测绘统计（障碍/资源/核心/case 数/tick）；"测绘"图层可开关。
 - **租户卡片**：在线状态（supervisor 探测 / outcome.jsonl 新鲜度）、资源、增量、工人数、最大/均值距离、可见资源、事件数、60 tick 均值。
 - **实时决策流**：`runtime.jsonl` 尾部决策（tick / deadlineOutcome / agent/selection 延迟 / submitResult / 中止请求），统一或按租户 tab；事件 tab 聚合 outcome events。
 - **战术交互层（官方 Arena Hero 前端移植 · 只读演练）**：
