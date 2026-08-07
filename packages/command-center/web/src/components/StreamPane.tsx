@@ -72,7 +72,7 @@ function savePrefs(p: Prefs) {
 
 const shortId = (id: string | null | undefined): string => (id ? String(id).slice(0, 8) : "");
 
-export function StreamPane() {
+export function StreamPane({ embedded = false }: { embedded?: boolean }) {
   const engine = useEngine();
   const [payload, setPayload] = useState<StreamsPayload | null>(null);
   const [prefs, setPrefsState] = useState<Prefs>(loadPrefs);
@@ -112,6 +112,8 @@ export function StreamPane() {
 
   const setPrefs = (patch: Partial<Prefs>) => setPrefsState((p) => ({ ...p, ...patch }));
   const toggle = () => { const next = !prefs.collapsed; setPrefs({ collapsed: next }); setNewDot(false); requestAnimationFrame(() => getEngine()?.resize()); };
+  // 嵌入右栏时恒展开（折叠行为由右栏整体折叠接管）
+  const collapsed = embedded ? false : prefs.collapsed;
   const onScroll = () => {
     const el = bodyRef.current;
     if (!el) return;
@@ -122,39 +124,49 @@ export function StreamPane() {
   const jumpTop = () => { const el = bodyRef.current; if (el) el.scrollTop = 0; };
 
   return (
-    <section id="streamPane" style={{ height: prefs.collapsed ? "38px" : `${prefs.height}px` }}>
-      <div id="streamGrip" className="stream-grip" title="拖拽调整决策流高度"
-        onPointerDown={(ev) => {
-          ev.preventDefault();
-          const startY = ev.clientY;
-          const startH = prefs.height;
-          const move = (e2: PointerEvent) => {
-            const h = Math.max(140, Math.min(460, startH + (startY - e2.clientY)));
-            setPrefs({ height: h });
-            getEngine()?.resize();
-          };
-          const up = () => {
-            window.removeEventListener("pointermove", move);
-            window.removeEventListener("pointerup", up);
-          };
-          window.addEventListener("pointermove", move);
-          window.addEventListener("pointerup", up);
-        }} />
+    <section id="streamPane" className={embedded ? "rp-stream embedded" : ""} style={embedded ? undefined : { height: prefs.collapsed ? "38px" : `${prefs.height}px` }}>
+      {!embedded && (
+        <div id="streamGrip" className="stream-grip" title="拖拽调整决策流高度"
+          onPointerDown={(ev) => {
+            ev.preventDefault();
+            const startY = ev.clientY;
+            const startH = prefs.height;
+            const move = (e2: PointerEvent) => {
+              const h = Math.max(140, Math.min(460, startH + (startY - e2.clientY)));
+              setPrefs({ height: h });
+              getEngine()?.resize();
+            };
+            const up = () => {
+              window.removeEventListener("pointermove", move);
+              window.removeEventListener("pointerup", up);
+            };
+            window.addEventListener("pointermove", move);
+            window.addEventListener("pointerup", up);
+          }} />
+      )}
       <div className="stream-head">
-        <button id="streamToggle" type="button" className="stream-toggle" aria-expanded={!prefs.collapsed} onClick={toggle}>
-          <span className={`st-dot${newDot ? " has-new" : ""}`} />
-          <span className="st-title">决策流 · LIVE{prefs.quiet ? " · 只看决策" : ""}</span>
-          <span id="streamCount" className="mono st-count">{prefs.quiet ? `${shown.length} 条实际决策` : `${rows.length} 条 · ${rows.length - quietCount} 实际决策`}</span>
-          <span className="st-chev">{prefs.collapsed ? "▸" : "▾"}</span>
-        </button>
-        {!prefs.collapsed && (
+        {embedded ? (
+          <span id="streamToggle" className="stream-toggle static" aria-expanded="true">
+            <span className={`st-dot${newDot ? " has-new" : ""}`} />
+            <span className="st-title">决策流 · LIVE{prefs.quiet ? " · 只看决策" : ""}</span>
+            <span id="streamCount" className="mono st-count">{prefs.quiet ? `${shown.length} 条实际决策` : `${rows.length} 条 · ${rows.length - quietCount} 实际决策`}</span>
+          </span>
+        ) : (
+          <button id="streamToggle" type="button" className="stream-toggle" aria-expanded={!prefs.collapsed} onClick={toggle}>
+            <span className={`st-dot${newDot ? " has-new" : ""}`} />
+            <span className="st-title">决策流 · LIVE{prefs.quiet ? " · 只看决策" : ""}</span>
+            <span id="streamCount" className="mono st-count">{prefs.quiet ? `${shown.length} 条实际决策` : `${rows.length} 条 · ${rows.length - quietCount} 实际决策`}</span>
+            <span className="st-chev">{prefs.collapsed ? "▸" : "▾"}</span>
+          </button>
+        )}
+        {!collapsed && (
           <button id="streamFilter" className={`stream-filter${prefs.quiet ? " on" : ""}`} type="button"
             title={prefs.quiet ? "显示全部（含无需决策）" : "只显示实际决策（隐藏无需决策行）"}
             onClick={() => { setPrefs({ quiet: !prefs.quiet }); }}>
             只看决策
           </button>
         )}
-        {prefs.collapsed && liveRow && (
+        {!embedded && prefs.collapsed && liveRow && (
           <span id="streamLive" className="st-live">
             <span className="sl-t" style={{ color: TENANT_COLORS[liveRow.tenant] ?? "#999" }}>{liveRow.tenant.toUpperCase()}</span>
             <span className="sl-tick">#{fmt(liveRow.tick)}</span>

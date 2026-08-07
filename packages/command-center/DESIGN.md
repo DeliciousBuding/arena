@@ -106,6 +106,15 @@
   等级）；榜单 top3 保持 warn 色 rank。威胁 tab 默认前 30 行 + 榜外我方账号自动置顶
   （`ir-pin-sep` 分隔标注），`展开全部` 显示全量；行内 tier 标签保持精英/攻坚/常规三档胶囊。
   顶栏「威胁情报」按钮带实时 `btn-count` 徽标（/api/intel 目击唯一账号数，3s 轮询）。
+- **敌情记忆层（2026-08-08）**：出视野的敌方核心/战斗单位以半透明标记常驻地图——
+  敌核 = 敌红菱形（s≥8 显示 username），敌单位 = 淡红圆点；透明度按 lastSeen 新鲜度衰减
+  （≤300 tick 实色 → 2000 tick 极淡，>2000 敌单位不再绘制、敌核保留底线）。hover 显示
+  最后目击 tick/N tick 前/威胁/距我方核心（`showMemoryTooltip`）；数据源 /api/intel
+  （tenants[].enemyCores + enemyUnitMemory，30s 缓存）；独立图层「敌情记忆」+ 图例项。
+- **测绘记忆 hover（2026-08-08）**：聚焦租户时测绘层（矿/障碍）可悬停查看生命周期——
+  矿：状态（活跃/待确认/采过/已确认空）、见过次数（seenCount）、首次/最后看到 tick；
+  障碍：最后看到 tick。命中索引由 tactSurveyLayer 构建（surveyHits），与可见格/敌情记忆
+  三级优先级（可见 > 敌情记忆 > 测绘记忆）。HUD 生命行含累计阵亡数（unit_lifecycle）。
 - **决策流头部结构**：`#streamToggle`（圆点+标题+计数+chevron）与 `#streamFilter`（只看决策胶囊按钮）
   是**同级兄弟**，禁止按钮嵌套按钮（非法 HTML 会导致点击拦截/冒泡异常）；折叠时隐藏过滤按钮、显示 live 胶囊。
 - **只看决策过滤**：`#streamFilter` 激活（`.on`）后隐藏 `deadlineOutcome === 'not_applicable'` 的
