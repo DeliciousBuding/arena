@@ -3,8 +3,8 @@
 /* Arena 指挥面板前端引擎 — 由 React（command-center/web）挂载到地图宿主容器。
  * 由 public/app.js 移植：chrome（顶栏/侧栏/决策流/对话框）剥离到 React 组件，
  * 地图/战术/回放/覆盖层保持原生 Canvas + DOM。入口 createMapEngine(host)。 */
-import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos } from './utils.js';
-import { getJSON } from './api.js';
+import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos } from './utils.ts';
+import { getJSON } from './api.ts';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
 const TENANT_COLORS = { t1: '#69b3d8', t2: '#57bd84', t3: '#a892d6', t4: '#dd626d' };
