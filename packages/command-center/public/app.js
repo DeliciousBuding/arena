@@ -1546,7 +1546,9 @@ function bindEvents() {
     pokeHint();
     e.preventDefault();
     const rect = els.canvas.getBoundingClientRect();
-    const d = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY; // lines→px（部分触控板/浏览器）
+    // 触控板捏合缩放（ctrlKey+wheel）：delta 很小，×4 灵敏度补偿（触控板两指滚动不按 ctrl，走常规路径）
+    const d0 = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY; // lines→px（部分触控板/浏览器）
+    const d = e.ctrlKey ? d0 * 4 : d0;
     const factor = Math.exp(-d * 0.0012);
     zoomTo(e.clientX - rect.left, e.clientY - rect.top, factor);
   }, { passive: false });
