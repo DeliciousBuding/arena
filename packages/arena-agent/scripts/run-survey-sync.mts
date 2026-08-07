@@ -49,9 +49,11 @@ console.log(done);
 try {
   const logDir = join(dataRoot, "runtime", "survey");
   mkdirSync(logDir, { recursive: true });
-  const stamp = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const now = new Date();
+  const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
   appendFileSync(join(logDir, "sync.log"), [`[${stamp}] ${lines.join(" | ")}`, done, ""].join("\n"));
 } catch {
   // 日志写失败不影响同步结果
 }
+
 
