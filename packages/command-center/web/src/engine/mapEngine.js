@@ -3176,6 +3176,7 @@ function tactShowFeature(cell, px, py) {
   } else if (kind === '资源') {
     rows.push(`<div class="fp-row"><span>类型</span><b>矿物</b></div>`);
     if (cell && !cell.fresh) rows.push(`<div class="fp-row"><span>记忆</span><b style="color:var(--amber)">已探索 · 非当前</b></div>`);
+    rows.push(`<div class="fp-row"><span>生命周期</span><b class="fp-lc">查询中…</b></div>`);
   } else {
     rows.push(`<div class="fp-row"><span>阻挡</span><b>无法通行</b></div>`);
   }
@@ -3189,6 +3190,24 @@ function tactShowFeature(cell, px, py) {
   el.hidden = false;
   el.querySelector('[data-fp-close]')?.addEventListener('click', () => { el.hidden = true; });
   makeDraggable(el, '.fp-head', 'featurePanel');
+  // 矿生命周期摘要（2026-08-08，测绘库 resource_events）：采集/失败次数 + 最近 tick
+  if (kind === '资源' && tenant) {
+    const lcCell = `${pos[0]},${pos[1]}`;
+    fetch(`/api/survey/mine?tenant=${encodeURIComponent(tenant)}&cell=${encodeURIComponent(lcCell)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        const elLc = el.querySelector('.fp-lc');
+        if (!elLc) return;
+        const tl = d.timeline ?? [];
+        const ok = tl.filter((e) => e.eventType === 'HARVEST_SUCCEEDED').length;
+        const fail = tl.filter((e) => e.eventType === 'HARVEST_FAILED').length;
+        const last = tl.length ? tl[tl.length - 1].tick : null;
+        elLc.textContent = last != null ? `采 ${ok} · 败 ${fail} · 最近 t${last}` : '未开采';
+        elLc.title = tl.map((e) => `t${e.tick} ${e.eventType}${e.reason ? ' ' + e.reason : ''}${e.amount != null ? ' +' + e.amount : ''}`).join('\n');
+        elLc.style.color = ok > 0 ? 'var(--green-resource)' : 'var(--amber)';
+      })
+      .catch(() => { const elLc = el.querySelector('.fp-lc'); if (elLc) elLc.textContent = '—'; });
+  }
 }async function handleCanvasClick(px, py) {
   const tac = T();
   const cell = nearestCell(px, py);
