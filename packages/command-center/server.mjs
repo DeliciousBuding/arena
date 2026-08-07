@@ -190,6 +190,97 @@ function loadBeaconTrail(tenant) {
   beaconTrailCache.set(tenant, { latestRun, latestFile, trail });
   return trail;
 }
+/** 敌方核心历史轨迹（跨 run 增量缓存，2026-08-08）：与信标轨迹同机制，按
+ *  username 收集敌 CORE 位置序列（controlled=false）——面板画虚线展示谁在
+ *  迁移/逼近（如 jerkman 核心带信标东移）。 */
+const coreTrailCache = new Map(); // tenant -> { latestRun, lastFile, byUser, list }
+const CORE_TRAIL_RUNS = 6;
+const CORE_TRAIL_CASE_LIMIT = 300;
+const CORE_TRAIL_MAX_POINTS = 48;
+
+function corePointsFromRun(tenant, runDir, maxCases) {
+  const files = listCases(tenant, runDir).slice(-maxCases);
+  const byUser = new Map(); // username -> { lastKey, pts }
+  for (const file of files) {
+    const path = join(calibrationDir(tenant), runDir, "cases", file);
+    let raw;
+    try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+    const objs = raw?.before?.state?.objects;
+    if (!Array.isArray(objs)) continue;
+    const tick = parseTick(file);
+    for (const obj of objs) {
+      if (obj?.kind !== "CORE" || obj.controlled !== false || !obj.owner_username || !obj.position) continue;
+      const x = obj.position[0], y = obj.position[1];
+      const key = x + "," + y;
+      let rec = byUser.get(obj.owner_username);
+      if (!rec) { rec = { lastKey: null, pts: [] }; byUser.set(obj.owner_username, rec); }
+      if (key === rec.lastKey) continue; // 连续同格去重
+      rec.lastKey = key;
+      rec.pts.push({ x, y, tick });
+      if (rec.pts.length > CORE_TRAIL_MAX_POINTS) rec.pts.shift();
+    }
+  }
+  return byUser;
+}
+
+function loadCoreTrails(tenant) {
+  const runs = runsByMaxTick(tenant).slice(0, CORE_TRAIL_RUNS);
+  if (!runs.length) return [];
+  const latestRun = runs[0].run;
+  const latestFiles = listCases(tenant, latestRun);
+  const latestFile = latestFiles.length ? latestFiles[latestFiles.length - 1] : null;
+  const cached = coreTrailCache.get(tenant);
+  if (cached && cached.latestRun === latestRun && cached.lastFile === latestFile) return cached.list;
+  let byUser = null;
+  if (cached && cached.latestRun === latestRun && cached.lastFile) {
+    const from = latestFiles.indexOf(cached.lastFile);
+    if (from >= 0) {
+      byUser = new Map(cached.byUser);
+      for (let i = from + 1; i < latestFiles.length; i++) {
+        const path = join(calibrationDir(tenant), latestRun, "cases", latestFiles[i]);
+        let raw;
+        try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+        const objs = raw?.before?.state?.objects;
+        if (!Array.isArray(objs)) continue;
+        const tick = parseTick(latestFiles[i]);
+        for (const obj of objs) {
+          if (obj?.kind !== "CORE" || obj.controlled !== false || !obj.owner_username || !obj.position) continue;
+          const x = obj.position[0], y = obj.position[1], key = x + "," + y;
+          let rec = byUser.get(obj.owner_username);
+          if (!rec) { rec = { lastKey: null, pts: [] }; byUser.set(obj.owner_username, rec); }
+          if (key === rec.lastKey) continue;
+          rec.lastKey = key;
+          rec.pts.push({ x, y, tick });
+          if (rec.pts.length > CORE_TRAIL_MAX_POINTS) rec.pts.shift();
+        }
+      }
+    }
+  }
+  if (!byUser) {
+    byUser = new Map();
+    for (const r of runs) {
+      for (const [u, rec] of corePointsFromRun(tenant, r.run, CORE_TRAIL_CASE_LIMIT)) {
+        const target = byUser.get(u);
+        if (!target) { byUser.set(u, rec); continue; }
+        const merged = [...target.pts, ...rec.pts].sort((a, b) => a.tick - b.tick);
+        const pts = [];
+        let lastKey = null;
+        for (const p of merged) {
+          const key = p.x + "," + p.y;
+          if (key === lastKey) continue;
+          lastKey = key;
+          pts.push(p);
+          if (pts.length > CORE_TRAIL_MAX_POINTS) pts.shift();
+        }
+        byUser.set(u, { lastKey: pts.length ? pts[pts.length - 1].x + "," + pts[pts.length - 1].y : null, pts });
+      }
+    }
+  }
+  const list = [...byUser.entries()].map(([username, rec]) => ({ username, trail: rec.pts }));
+  coreTrailCache.set(tenant, { latestRun, lastFile: latestFile, byUser, list });
+  return list;
+}
+
 function loadMergedMap() {
   const cells = new Map();
   const perTenant = [];
@@ -270,6 +361,16 @@ function loadMergedMap() {
     ? { minX: 0, maxX: 0, minY: 0, maxY: 0 }
     : { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
   const beacons = perTenant.map((t) => t.beacon ? { tenant: t.tenant, ...t.beacon } : null).filter(Boolean);
+  // 敌方核心轨迹（跨租户按 username 去重，保留最长轨迹——同一敌核被多租户目击）
+  const coreTrailByUser = new Map();
+  for (const t of perTenant) {
+    for (const ct of loadCoreTrails(t.tenant)) {
+      const cur = coreTrailByUser.get(ct.username);
+      if (!cur || ct.trail.length > cur.trail.length) coreTrailByUser.set(ct.username, { ...ct, tenant: t.tenant });
+    }
+  }
+  const coreTrails = [...coreTrailByUser.values()];
+  return { generatedAt: new Date().toISOString(), tenants: perTenant, bounds, cellCount: list.length, cells: list, beacons, coreTrails };
   return { generatedAt: new Date().toISOString(), tenants: perTenant, bounds, cellCount: list.length, cells: list, beacons };
 }
 
@@ -1105,5 +1206,6 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`Arena 指挥面板：http://127.0.0.1:${PORT}`);
   console.log(`数据根（只读）：${DATA_ROOT}`);
 });
+
 
 
