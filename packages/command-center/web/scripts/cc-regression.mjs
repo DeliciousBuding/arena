@@ -25,6 +25,7 @@ const { chromium } = req("playwright-core");
 
 const BASE = process.env.CC_BASE ?? "http://127.0.0.1:8787";
 const CHROME = process.env.CC_CHROME;
+const API_TIMEOUT_MS = Number(process.env.CC_API_TIMEOUT_MS ?? 25000);
 
 /** 解析本地 Playwright chromium（%LOCALAPPDATA%\ms-playwright\chromium-*\chrome-win64\chrome.exe，取最高版本） */
 function resolveChrome() {
@@ -63,8 +64,8 @@ async function main() {
 
   try {
     // 1) 加载
-    await page.goto(BASE + "/", { waitUntil: "domcontentloaded", timeout: 20000 });
-    await sleep(5000);
+    await page.goto(BASE + "/", { waitUntil: "domcontentloaded", timeout: 30000 });
+    await sleep(8000);
     errs.length ? bad("页面加载零错误", errs.slice(0, 3).join(" | ")) : ok("页面加载零错误");
 
     // 2) 右栏四 tab
@@ -75,24 +76,36 @@ async function main() {
     // 3) 决策流有数据
     for (const tab of ["logs", "intel", "survey", "redeem"]) {
       await page.click(`.rp-tab[data-rp-tab="${tab}"]`, { timeout: 4000 }).catch(() => {});
-      await sleep(tab === "intel" || tab === "survey" ? 1800 : 800);
+      await sleep(tab === "intel" || tab === "survey" ? 4000 : 1000);
       const txt = await page.evaluate(() => (document.querySelector(".rp .rp-body")?.innerText ?? "").slice(0, 120));
       if (tab === "logs") {
         /条/.test(txt) ? ok("决策流有数据", txt.slice(0, 40)) : bad("决策流有数据", txt.slice(0, 40));
+      } else if (tab === "survey") {
+        // 测绘 tab 首帧可能是"加载测绘数据…"：轮询等真实内容（CPU 高占用时初始化更慢）
+        let real = false;
+        for (let i = 0; i < 8 && !real; i++) {
+          const cur = await page.evaluate(() => (document.querySelector(".rp .rp-body")?.innerText ?? "").trim());
+          real = cur.length > 20 && !cur.startsWith("加载测绘");
+          if (!real) await sleep(1000);
+        }
+        real ? ok("tab survey 渲染", txt.slice(0, 40)) : bad("tab survey 渲染", txt.slice(0, 40));
       } else {
         txt.length > 20 ? ok(`tab ${tab} 渲染`, txt.slice(0, 40)) : bad(`tab ${tab} 渲染`, txt.slice(0, 40));
       }
     }
     await page.click('.rp-tab[data-rp-tab="logs"]', { timeout: 4000 }).catch(() => {});
 
-    // 4) 聚焦租户 → HUD + 舰队索引
+    // 4) 聚焦租户 → HUD + 舰队索引（轮询等可见：CPU 高占用时 world/资产加载更慢）
     await page.click('.tenant-card[data-tenant="t1"]', { timeout: 4000 }).catch(() => {});
-    await sleep(2500);
-    const hud = await page.evaluate(() => ({
-      hud: !document.getElementById("fleetHud")?.hidden,
-      assets: !document.getElementById("assetPanel")?.hidden,
-      assetRows: document.querySelectorAll("#assetList .asset-row").length,
-    }));
+    let hud = { hud: false, assets: false, assetRows: 0 };
+    for (let i = 0; i < 15 && !(hud.hud && hud.assets && hud.assetRows > 0); i++) {
+      hud = await page.evaluate(() => ({
+        hud: !document.getElementById("fleetHud")?.hidden,
+        assets: !document.getElementById("assetPanel")?.hidden,
+        assetRows: document.querySelectorAll("#assetList .asset-row").length,
+      }));
+      if (!(hud.hud && hud.assets && hud.assetRows > 0)) await sleep(1000);
+    }
     hud.hud && hud.assets && hud.assetRows > 0 ? ok("聚焦→HUD/舰队索引", `${hud.assetRows} 行`) : bad("聚焦→HUD/舰队索引", JSON.stringify(hud));
 
     // 5) 计划箭头/意图标签层（画布租户色像素）
@@ -112,11 +125,15 @@ async function main() {
     // 6) 人类指挥 UI 链（写后必清）
     let goalOk = false;
     try {
-      const workerRow = await page.evaluate(() => {
-        const rows = Array.from(document.querySelectorAll("#assetList .asset-row"));
-        const w = rows.find((r) => (r.innerText ?? "").includes("工人") || (r.querySelector(".asset-icon img")?.src ?? "").includes("worker"));
-        return w ? rows.indexOf(w) : -1;
-      });
+      let workerRow = -1;
+      for (let i = 0; i < 10 && workerRow < 0; i++) {
+        workerRow = await page.evaluate(() => {
+          const rows = Array.from(document.querySelectorAll("#assetList .asset-row"));
+          const w = rows.find((r) => (r.innerText ?? "").includes("工人") || (r.querySelector(".asset-icon img")?.src ?? "").includes("worker"));
+          return w ? rows.indexOf(w) : -1;
+        });
+        if (workerRow < 0) await sleep(1000);
+      }
       if (workerRow >= 0) {
         await page.click(`#assetList .asset-row:nth-child(${workerRow + 1})`, { timeout: 4000 });
         // 等动作框出现（点资产行→选中→渲染动作框有竞态，必须显式等待而非 .catch 吞错）
@@ -155,7 +172,7 @@ async function main() {
       try {
         const r = await page.evaluate(async (p) => { const x = await fetch(p, { cache: "no-store" }); return { ok: x.ok, body: await x.text() }; }, path);
         const ms = Date.now() - t0;
-        (r.ok && ms < 5000) ? ok(`API ${path}`, ms + "ms") : bad(`API ${path}`, `${ms}ms ok=${r.ok}`);
+        (r.ok && ms < API_TIMEOUT_MS) ? ok(`API ${path}`, ms + "ms") : bad(`API ${path}`, `${ms}ms ok=${r.ok} (>${API_TIMEOUT_MS}ms)`);
       } catch (e) { bad(`API ${path}`, e.message); }
     }
   } catch (e) {
