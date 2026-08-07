@@ -69,7 +69,10 @@ mapEngine.ts 对应函数。
    当前 server `loadEvents` 未映射该字段；世界 ACTIVE 时无 respawn 场景，
    优先级低。
 3. 信标轨迹图层独立开关（当前 `layers.beacon` 同时管精灵+轨迹，可拆）。
-4. 全流程 Playwright 回归脚本入库（当前验证脚本在 `USER_HOME\tmp\cc-*.cjs`）。
+4. ~~全流程 Playwright 回归脚本入库~~ ✅ 已入库（2026-08-08）：`web/scripts/cc-regression.mjs`
+   （`npm run test:regression`），覆盖加载零错误/四 tab/决策流数据/聚焦 HUD/计划层渲染/
+   人类指挥 UI 链（写后清除）/API 健康，12/12 通过；`playwright-core` 入 web devDependencies；
+   替换 `USER_HOME\tmp\cc-*.cjs` 55 个散件。
 
 ## 5. 2026-08-08 续：官方子集审计 + 侧栏 HUD 可见性修复
 
