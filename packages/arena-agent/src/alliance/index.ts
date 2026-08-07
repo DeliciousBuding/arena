@@ -103,3 +103,5 @@ export {
 } from "./threat-summary.ts";
 
 export * from "./director-policy.ts";
+
+export * from "./shadow-frame.ts";
