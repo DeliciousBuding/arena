@@ -561,6 +561,44 @@ function loadSurveyDb(tenant) {
   }
 }
 
+/** 生命周期摘要（2026-08-08，单位/矿物标注 + 消费记账）：从测绘库读
+ *  unit_lifecycle / core_spends / resource_events 聚合。库缺失 = null。 */
+function loadLifecycleDb(tenant) {
+  const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(file)) return null;
+  let db;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+  } catch {
+    return null;
+  }
+  try {
+    const units = db.prepare(
+      "SELECT current_state AS state, unit_type AS type, COUNT(*) AS count FROM unit_lifecycle GROUP BY state, unit_type",
+    ).all();
+    const spends = db.prepare(
+      "SELECT kind, COUNT(*) AS count, SUM(amount) AS total FROM core_spends GROUP BY kind ORDER BY total DESC",
+    ).all();
+    const harvests = db.prepare(
+      "SELECT COUNT(*) AS count, MAX(tick) AS last_tick FROM resource_events WHERE event_type = 'HARVEST_SUCCEEDED'",
+    ).get();
+    const fails = db.prepare(
+      "SELECT COUNT(*) AS count FROM resource_events WHERE event_type = 'HARVEST_FAILED'",
+    ).get();
+    return {
+      units,
+      spends,
+      harvestCount: Number(harvests?.count ?? 0),
+      lastHarvestTick: harvests?.last_tick === null ? null : Number(harvests?.last_tick ?? 0),
+      harvestFailCount: Number(fails?.count ?? 0),
+    };
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
 /** 测绘累积缓存：每个租户同一 run 的全部 calibration case 合并出的已知地形（探索过的范围）。 */
 const surveyCache = new Map(); // tenant -> { runId, survey }
 
@@ -1015,6 +1053,60 @@ function loadLeaderboardIntel() {
   }
 }
 
+/** 我方 4 租户的官方账号名：从各租户最新 calibration 的受控 CORE（controlled=true）
+ *  owner_username 提取（账号不变，60s 缓存足够）。排行榜按 username 标注"我们"。 */
+let oursCache = { at: 0, data: null };
+function loadOurUsernames() {
+  const now = Date.now();
+  if (oursCache.data !== null && now - oursCache.at < 60_000) return oursCache.data;
+  const ours = [];
+  for (const tenant of TENANTS) {
+    const runDir = latestRunDir(tenant);
+    if (runDir === null) continue;
+    const caseFiles = listCases(tenant, runDir).slice(-24);
+    let username = null;
+    let bestTick = -1;
+    for (const file of caseFiles) {
+      const tick = parseTick(file);
+      let raw;
+      try { raw = JSON.parse(readFileSync(join(calibrationDir(tenant), runDir, "cases", file), "utf8")); } catch { continue; }
+      for (const state of [raw?.before?.state, raw?.after?.state]) {
+        if (!state?.objects) continue;
+        for (const obj of state.objects) {
+          if (obj?.kind === "CORE" && obj.controlled === true && typeof obj.owner_username === "string" && obj.owner_username && tick >= bestTick) {
+            bestTick = tick;
+            username = obj.owner_username;
+          }
+        }
+      }
+    }
+    if (username) ours.push({ tenant, username });
+  }
+  oursCache = { at: now, data: ours };
+  return ours;
+}
+
+/** 遭遇玩家索引：username -> 目击详情（由 /api/intel 的联盟敌人测绘构建，30s 缓存），
+ *  供排行榜标注"遇到过"的玩家（哪几个租户目击过、最后目击 tick、距离、快攻威胁）。 */
+function buildEncounteredIndex() {
+  const alliance = loadAllianceIntel();
+  const index = new Map(); // username -> [{ tenant, lastSeenTick, distanceToFriendlyCore, raidRisk }]
+  for (const enemy of alliance?.enemies ?? []) {
+    if (!enemy?.username) continue;
+    const list = index.get(enemy.username) ?? [];
+    if (!list.some((e) => e.tenant === enemy.tenant)) {
+      list.push({
+        tenant: enemy.tenant,
+        lastSeenTick: enemy.lastSeenTick ?? null,
+        distanceToFriendlyCore: enemy.distanceToFriendlyCore ?? null,
+        raidRisk: enemy.raidRisk ?? null,
+      });
+    }
+    index.set(enemy.username, list);
+  }
+  return index;
+}
+
 // ---------- 人类最高控制权：指挥指令存储（数据层，tenant 主循环提交前合并） ----------
 const WEB_DIR = join(HERE, "web", "dist"); // React 构建产物（vite build --base=/app/）
 const humanCommandsDir = () => join(DATA_ROOT, "runtime", "human-commands");
@@ -1190,6 +1282,7 @@ const server = createServer(async (req, res) => {
         tenant,
         generatedAt: new Date().toISOString(),
         survey,
+        lifecycle: loadLifecycleDb(tenant),
         current: world.state ? { caseFile: world.caseFile, tick: world.tick, objects: world.state.objects, resources: world.state.resources, population: world.state.population, champion_beacon: world.state.champion_beacon } : null,
       });
     }
@@ -1209,6 +1302,7 @@ const server = createServer(async (req, res) => {
           coreHunts: s.coreCells,
           caseCount: s.caseCount,
           tickMax: s.tickMax,
+          lifecycle: loadLifecycleDb(t),
         };
       }
       return sendJson(res, out);
@@ -1221,7 +1315,20 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/leaderboard") {
       const intel = loadLeaderboardIntel();
       if (!intel) return sendJson(res, { generatedAt: new Date().toISOString(), error: "排行榜快照缺失（运行 docs/progress/leaderboard-intel.py 拉取）" }, 404);
-      return sendJson(res, intel);
+      const ours = loadOurUsernames();
+      const encountered = buildEncounteredIndex();
+      const profiles = (intel.profiles ?? []).map((p) => ({
+        ...p,
+        ours: ours.find((o) => o.username === p.username)?.tenant ?? null,
+        encountered: encountered.get(p.username) ?? null,
+      }));
+      return sendJson(res, {
+        ...intel,
+        profiles,
+        ours,
+        encounteredCount: encountered.size,
+        encountered: Object.fromEntries(encountered),
+      });
     }
     if (pathname === "/api/intel") {
       return sendJson(res, loadAllianceIntel());
@@ -1392,6 +1499,12 @@ server.on("error", (err) => {
   console.error("指挥面板服务器错误", err);
   process.exitCode = 1;
 });
+
+
+
+
+
+
 
 
 
