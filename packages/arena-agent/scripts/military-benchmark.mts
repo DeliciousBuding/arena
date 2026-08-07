@@ -17,6 +17,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { runEpisode, type EpisodeConfig } from "../src/sim/harness/episode.ts";
+import type { SafetyPlannerConfig } from "../src/strategies/safety-planner.ts";
 import type { MacroPolicy } from "../src/runtime/macro-policy.ts";
 
 const MANIFEST_PATH = "src/sim/contracts/rules-v0.14.json";
@@ -78,7 +79,12 @@ function extractKpi(result: ReturnType<typeof runEpisode>, playerId: string, tar
   };
 }
 
-function runVariant(scenarioPath: string, policy: MacroPolicy, seed: number): MilitaryKpi {
+function runVariant(
+  scenarioPath: string,
+  policy: MacroPolicy,
+  seed: number,
+  plannerConfig?: Partial<SafetyPlannerConfig>,
+): MilitaryKpi {
   const scenario = JSON.parse(readFileSync(scenarioPath, "utf-8"));
   const config: EpisodeConfig = {
     scenario: { ...scenario, seed },
@@ -86,7 +92,7 @@ function runVariant(scenarioPath: string, policy: MacroPolicy, seed: number): Mi
     seed,
     ticks: TICKS,
     tenants: [
-      { id: "p1", planner: "deterministic", policy },
+      { id: "p1", planner: "deterministic", policy, plannerConfig },
       { id: "p2", planner: "deterministic" },
     ],
   };
@@ -114,11 +120,16 @@ async function main(): Promise<void> {
     const path = join(SCENARIO_DIR, file);
     console.log("## " + file.replace(".json", ""));
     const rows: Array<{ arm: string; kpis: MilitaryKpi[] }> = [];
-    for (const [arm, policy] of [["defensive", DEFENSIVE_POLICY], ["aggressive", AGGRESSIVE_POLICY]] as const) {
+    for (const [arm, policy, pc] of [
+      ["defensive", DEFENSIVE_POLICY, undefined],
+      ["aggressive", AGGRESSIVE_POLICY, undefined],
+      // prey：aggressive + vanguardPreyWorker（清剿可见挂机/落单敌 WORKER，2026-08-08）
+      ["prey", AGGRESSIVE_POLICY, { aggression: "aggressive", vanguardPreyWorker: true }],
+    ] as const) {
       const kpis: MilitaryKpi[] = [];
       for (const seed of SEEDS) {
         try {
-          kpis.push(runVariant(path, policy, seed));
+          kpis.push(runVariant(path, policy, seed, pc));
         } catch (error) {
           console.log("  [" + arm + "] seed " + seed + " failed: " + String(error).slice(0, 120));
         }
