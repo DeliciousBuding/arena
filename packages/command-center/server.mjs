@@ -617,6 +617,7 @@ function loadAllianceIntel() {
     const seenCores = new Map(); // owner -> { position, tick }
     let enemyUnits = 0;
     let ourCore = null; // 我方（controlled）Core 位置——快攻威胁距离基准
+    let ourCoreTick = -1; // ourCore 对应的目击 tick（防旧 run 覆盖新位置）
     const combatNearCore = new Map(); // 我方核心 18 格警戒圈内的敌军战斗单位 id -> 最近目击 tick
     let latestTick = 0; // 本租户扫描窗口内的最高 tick（新鲜度基准）
     for (const rd of runDirs) {
@@ -630,7 +631,13 @@ function loadAllianceIntel() {
         if (tick > latestTick) latestTick = tick;
         for (const obj of state.objects) {
           if (obj.kind === "CORE" && obj.controlled) {
-            ourCore = obj.position;
+            // 只接受更新鲜的核心位置——runDirs 按最新优先迭代但旧 run 会
+            // 覆盖 ourCore，核心迁移后（如 t4 (98,84)→(434,-149)）距离/威胁
+            // 会用旧位置计算（bug，2026-08-07 实测面板显示旧核心）。
+            if (ourCoreTick < tick) {
+              ourCore = obj.position;
+              ourCoreTick = tick;
+            }
           } else if (obj.kind === "CORE" && !obj.controlled && obj.owner_username) {
             const prev = seenCores.get(obj.owner_username);
             if (prev === undefined || tick > prev.tick) seenCores.set(obj.owner_username, { position: obj.position, tick });
@@ -757,6 +764,20 @@ function writeHumanStore(tenant, store) {
   writeFileSync(join(dir, `${tenant}.json`), JSON.stringify(out, null, 2));
   return out;
 }
+/** 从 outcome.jsonl 尾部读取最近一条 humanOverride 遥测（applied/rejected/satisfied）。 */
+function latestHumanOverride(tenant) {
+  const file = join(telemetryDir(tenant), "outcome.jsonl");
+  if (!existsSync(file)) return null;
+  const rows = readJsonlTail(file, 12);
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (r && r.humanOverride && (r.humanOverride.active || (r.humanOverride.rejected ?? []).length > 0 || (r.humanOverride.satisfied ?? []).length > 0)) {
+      return { tick: r.tick ?? null, ...r.humanOverride };
+    }
+  }
+  return null;
+}
+
 const VALID_ACTION_TYPES = new Set([
   "WAIT", "MOVE", "HARVEST", "DEPOSIT", "SWEEP", "SHOOT", "PICKUP_BEACON", "DROP_BEACON",
   "SELF_DESTRUCT", "HEAL", "REPAIR_SHIELD", "SPAWN", "START_MOVE", "CANCEL_MOVE",
@@ -839,7 +860,8 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/commands" && req.method === "GET") {
       const tenant = url.searchParams.get("tenant") ?? "";
       if (!validTenant(tenant)) return sendJson(res, { error: "非法租户" }, 400);
-      return sendJson(res, readHumanStore(tenant));
+      const store = readHumanStore(tenant);
+      return sendJson(res, { ...store, telemetry: latestHumanOverride(tenant) });
     }
     if (pathname === "/api/command" && req.method === "POST") {
       const b = await parseBody(req);
