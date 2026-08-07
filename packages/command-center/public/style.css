@@ -173,6 +173,11 @@ body::after {
   box-shadow: 0 0 8px rgba(87,189,132,.5);
   transition: transform .5s var(--ease);
 }
+.tick-label-flash { animation: tickFlash .7s var(--ease); }
+@keyframes tickFlash {
+  0% { color: #fff; text-shadow: 0 0 10px rgba(255,255,255,.35); }
+  100% { color: inherit; text-shadow: none; }
+}
 .tick-meter.warn .tick-bar i { background: linear-gradient(90deg, rgba(211,173,85,.4), rgba(211,173,85,.95)); box-shadow: 0 0 8px rgba(211,173,85,.5); }
 .badge.wait { color: var(--warn); border-color: rgba(211,173,85,.4); background: rgba(211,173,85,.08); }
 
@@ -345,7 +350,9 @@ body::after {
   color: var(--text-faint); background: rgba(4,4,4,.66); padding: 6px 12px; border-radius: 999px;
   border: 1px solid var(--border); pointer-events: none; backdrop-filter: blur(8px);
   white-space: nowrap;
+  transition: opacity .7s var(--ease), transform .7s var(--ease);
 }
+#mapHint.map-hint-fade { opacity: 0; transform: translateX(-50%) translateY(6px); }
 #mapTooltip {
   position: absolute; z-index: 4; pointer-events: none;
   background: rgba(10, 10, 10, .94); border: 1px solid var(--border-strong);
