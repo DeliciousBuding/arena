@@ -330,6 +330,30 @@ function loadMergedMap() {
         }
       }
     }
+    // —— 动态层实时化（2026-08-08）：单位/核心改用最新 case 的 after.state ——
+    // before.state 是上一 tick 起点，after.state 才是当前实时位置（recorder 在 tick 完成后写 case）；
+    // 以 after 为准重建动态层 → 已摧毁/失联的单位核心不再残留（修复"已摧毁还显示""落后 1 tick"）。
+    let lastCaseRaw = null;
+    if (caseFiles.length > 0) {
+      const lastPath = join(calibrationDir(tenant), runDir, "cases", caseFiles[caseFiles.length - 1]);
+      try { lastCaseRaw = JSON.parse(readFileSync(lastPath, "utf8")); } catch { lastCaseRaw = null; }
+      const afterTick = Number.isFinite(lastCaseRaw?.after?.tick) ? lastCaseRaw.after.tick : latestTick;
+      if (afterTick > latestTick) latestTick = afterTick;
+      const after = lastCaseRaw?.after?.state;
+      if (after?.objects) {
+        unitById.clear(); coreById.clear();
+        for (const obj of after.objects) {
+          if (obj.kind === "UNIT" && obj.id) {
+            const [x, y] = obj.position ?? [0, 0];
+            unitById.set(obj.id, { x, y, type: "unit", tick: latestTick, hp: obj.hp, unitType: obj.unit_type ?? "WORKER", cargo: obj.cargo ?? 0, controlled: obj.controlled, id: obj.id });
+          } else if (obj.kind === "CORE") {
+            const [x, y] = obj.position ?? [0, 0];
+            const id = obj.id ?? `core@${x},${y}`;
+            coreById.set(id, { x, y, type: "core", tick: latestTick, hp: obj.hp, shield: obj.shield, controlled: obj.controlled, owner: obj.owner_username ?? null, id: obj.id ?? null });
+          }
+        }
+      }
+    }
     // 组装：地形在下，动态在上（同格冲突按优先级 obstacle < resource < unit < core）
     const byCell = new Map();
     const put = (c, prio) => {
@@ -346,9 +370,7 @@ function loadMergedMap() {
     let beacon = null;
     if (caseFiles.length > 0) {
       const lastPath = join(calibrationDir(tenant), runDir, "cases", caseFiles[caseFiles.length - 1]);
-      try {
-        const lastRaw = JSON.parse(readFileSync(lastPath, "utf8"));
-        const cb = lastRaw?.before?.state?.champion_beacon;
+      try {        const cb = lastCaseRaw?.after?.state?.champion_beacon ?? lastCaseRaw?.before?.state?.champion_beacon;
         if (cb?.position) beacon = { x: cb.position[0], y: cb.position[1], status: cb.status ?? "GROUND", carrier_id: cb.carrier_id ?? null, trail: loadBeaconTrail(tenant) };
       } catch { /* 忽略 beacon 读取失败 */ }
     }
@@ -587,8 +609,8 @@ function loadWorld(tenant) {
     generatedAt: new Date().toISOString(),
     runId: runDir,
     caseFile: file,
-    tick: raw?.before?.tick ?? null,
-    state: raw?.before?.state ?? null,
+    tick: raw?.after?.tick ?? raw?.before?.tick ?? null,
+    state: raw?.after?.state ?? raw?.before?.state ?? null,
   };
 }
 
