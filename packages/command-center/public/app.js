@@ -1446,6 +1446,7 @@ function bindEvents() {
     state.streamCollapsed = !state.streamCollapsed;
     els.streamPane.classList.toggle('collapsed', state.streamCollapsed);
     els.streamToggle.setAttribute('aria-expanded', String(!state.streamCollapsed));
+    trackCanvasResize(); // 高度过渡期间逐帧同步画布位图（防拉伸）
     if (!state.streamCollapsed) {
       const dot = els.streamToggle.querySelector('.st-dot');
       if (dot) dot.classList.remove('has-new');
@@ -1468,14 +1469,32 @@ function bindEvents() {
   });
   els.shopCookie.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveShopCookie(); } });
   // 窗口
-  window.addEventListener('resize', () => { resizeCanvas(); draw(); });
-  // 容器尺寸变化（折叠决策流/侧栏宽度变化等）：rAF 合帧重设画布，防 CSS 拉伸
+  // 容器尺寸变化（折叠决策流/侧栏宽度变化等）：同步重设位图——
+  // 之前 rAF 延迟一帧，折叠/展开的 550ms 过渡里每一帧都会出现"旧位图被 CSS 拉伸"的鬼影。
+  // 同步 + 仅尺寸真变才重建（canvas.width 赋值会清空画布，no-op 必须跳过）。
+  let lastCssW = 0, lastCssH = 0;
+  const syncResizeCanvas = () => {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = els.canvas.getBoundingClientRect();
+    const w = Math.round(rect.width * dpr), h = Math.round(rect.height * dpr);
+    if (w === lastCssW && h === lastCssH) return;
+    lastCssW = w; lastCssH = h;
+    resizeCanvas();
+    draw();
+  };
+  // 折叠/展开决策流等 CSS 尺寸过渡：RO 可能合帧（低帧率/低功耗会少触发），
+  // 过渡期间额外每帧同步位图 → 任何时刻位图都等于 CSS 盒子，杜绝"旧位图被拉伸"
+  const trackCanvasResize = (ms = 700) => {
+    const t0 = performance.now();
+    const loop = (ts) => {
+      syncResizeCanvas();
+      if (ts - t0 < ms) requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  };
+  window.addEventListener('resize', syncResizeCanvas);
   if (typeof ResizeObserver !== 'undefined') {
-    let resizeRaf = 0;
-    new ResizeObserver(() => {
-      cancelAnimationFrame(resizeRaf);
-      resizeRaf = requestAnimationFrame(() => { resizeCanvas(); draw(); });
-    }).observe(els.canvas);
+    new ResizeObserver(syncResizeCanvas).observe(els.canvas);
   }
 }
 
@@ -2069,24 +2088,39 @@ function tactSurveyLayer(s) {
   };
   if (survey.obstacleCells.length) {
     ctx.save();
-    for (const c of survey.obstacleCells) {
+    const cap = Math.min(survey.obstacleCells.length, 1200);
+    for (let i = 0; i < cap; i++) {
+      const c = survey.obstacleCells[i];
       const p = project(c.x, c.y);
       ctx.globalAlpha = ageAlpha(c.tick);
-      ctx.fillStyle = 'rgba(96,106,116,.32)';
+      ctx.fillStyle = 'rgba(96,106,116,.28)';
       ctx.fillRect(p.sx - cell / 2, p.sy - cell / 2, cell, cell);
     }
     ctx.restore();
   }
   if (survey.resourceCells.length) {
     ctx.save();
-    for (const c of survey.resourceCells) {
+    // 资源记忆用菱形晶体标记（比圆点更有"资源"语义，避免绿色圆球堆叠成怪团）；
+    // 低缩放只画描边小点，高缩放才是可辨认晶体
+    const cap = Math.min(survey.resourceCells.length, 1200);
+    for (let i = 0; i < cap; i++) {
+      const c = survey.resourceCells[i];
       const p = project(c.x, c.y);
-      ctx.globalAlpha = ageAlpha(c.tick) * 0.85;
-      ctx.fillStyle = 'rgba(118,184,137,.45)';
-      const r = Math.max(2, s * 0.26);
+      ctx.globalAlpha = ageAlpha(c.tick) * 0.8;
+      const r = Math.max(2, s * 0.17);
+      ctx.fillStyle = 'rgba(118,184,137,.30)';
       ctx.beginPath();
-      ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
+      ctx.moveTo(p.sx, p.sy - r);
+      ctx.lineTo(p.sx + r * 0.72, p.sy);
+      ctx.lineTo(p.sx, p.sy + r);
+      ctx.lineTo(p.sx - r * 0.72, p.sy);
+      ctx.closePath();
       ctx.fill();
+      if (r >= 3) {
+        ctx.strokeStyle = 'rgba(150,210,170,.38)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }
