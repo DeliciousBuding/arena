@@ -156,6 +156,20 @@ body::after {
 .badge.ok { padding-left: 20px; }
 @keyframes dotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
 .badge.err { color: var(--danger); border-color: rgba(221,98,109,.4); background: rgba(221,98,109,.1); }
+/* ---------- 世界 tick 周期读条（官方 CommandCountdown 的全局版） ---------- */
+.tick-meter { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; }
+.tick-bar {
+  position: relative; width: 96px; height: 4px; border-radius: 999px;
+  background: rgba(255,255,255,.08); border: 1px solid var(--border-strong); overflow: hidden;
+}
+.tick-bar i {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 100%;
+  border-radius: 999px; transform-origin: left center; transform: scaleX(0);
+  background: linear-gradient(90deg, rgba(87,189,132,.35), rgba(87,189,132,.95));
+  box-shadow: 0 0 8px rgba(87,189,132,.5);
+  transition: transform .5s var(--ease);
+}
+.tick-meter.warn .tick-bar i { background: linear-gradient(90deg, rgba(211,173,85,.4), rgba(211,173,85,.95)); box-shadow: 0 0 8px rgba(211,173,85,.5); }
 .badge.wait { color: var(--warn); border-color: rgba(211,173,85,.4); background: rgba(211,173,85,.08); }
 
 /* ---------- 按钮：黑白体系 ---------- */
