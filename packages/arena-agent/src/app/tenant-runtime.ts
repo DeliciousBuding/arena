@@ -22,6 +22,7 @@ import { performance } from "node:perf_hooks";
 
 import { loadRuntimeConfig, resolveCircuitBreaker, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
 import { loadPersistentEnemyIntel } from "./enemy-intel.ts";
+import type { CoreHuntTarget } from "../domain/world.ts";
 import { loadThreatProfiles, threatProfilesEqual } from "./official-intel.ts";
 import { resolveArenaDataRoot, resolveTenantBaseDir } from "./data-root.ts";
 import { SingleWriterLock } from "./single-writer-lock.ts";
@@ -31,7 +32,7 @@ import { LeaseRegistry } from "../runtime/lease-registry.ts";
 import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
 import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
-import { knownResources, openSurveyDb } from "../intel/survey-db.ts";
+import { knownCoreHunts, knownObstacles, knownResources, openSurveyDb } from "../intel/survey-db.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
@@ -498,9 +499,12 @@ export async function runTenant(
     // 持久敌情测绘（2026-08-07）：启用 militaryHunt 变体时，从本租户历史
     // calibration cases 提取最后已知敌 Core 位置注入 planner——重启后军事仍
     // 记得敌方基地（解决"重启→记忆清零→军队空转"）。只读、有界、失败静默。
+    // 跨 run 测绘种子（2026-08-08 统一捕获链路）：敌核记忆优先从测绘库读
+    // （跨 run 全量，比 calibration 扫描更全），缺失/损坏回退 calibration 扫描。
+    const surveyCoreHunts = loadSurveyCoreHuntSeed(dataRoot, config.tenantId);
     const initialCoreHuntTargets =
-      decisionMode === "deterministic" && variantConfig.militaryHunt === true
-        ? loadPersistentEnemyIntel(dirs.calibrationDir)
+      decisionMode === "deterministic" && (variantConfig.militaryHunt === true || surveyCoreHunts.length > 0)
+        ? (surveyCoreHunts.length > 0 ? surveyCoreHunts : loadPersistentEnemyIntel(dirs.calibrationDir))
         : [];
     // 官方排行榜威胁画像（2026-08-07，威胁自适应）：从 data/leaderboard/ 快照
     // 加载（纯只读，缺失/降级 = 空 Map 零回归）；供攻坚"留强"决策消费——
@@ -513,10 +517,11 @@ export async function runTenant(
         ? { ...DEFAULT_SAFETY_CONFIG, ...variantConfig }
         : { ...AGGRESSIVE_SAFETY_CONFIG, ...variantConfig };
     const surveyResourceCells = loadSurveyResourceSeed(dataRoot, config.tenantId);
+    const surveyObstacleCells = loadSurveyObstacleSeed(dataRoot, config.tenantId);
     const planner: DeterministicPlanner | SafetyPlanner =
       decisionMode === "deterministic"
         ? Object.keys(variantConfig).length === 0
-          ? new DeterministicPlanner(undefined, undefined, undefined, undefined, undefined, undefined, [], new Map(), surveyResourceCells)
+          ? new DeterministicPlanner(undefined, undefined, undefined, undefined, undefined, undefined, [], new Map(), surveyResourceCells, surveyObstacleCells)
           : new DeterministicPlanner(
               new WorkerTaskPlanner(),
               new SafetyPlanner(baseSafetyConfig),
@@ -527,10 +532,13 @@ export async function runTenant(
               initialCoreHuntTargets,
               threatProfiles,
               surveyResourceCells,
+              surveyObstacleCells,
             )
         : new SafetyPlanner(baseSafetyConfig, undefined, threatProfiles);
-    if (planner instanceof SafetyPlanner && surveyResourceCells.length > 0) {
-      planner.world.seedResourceMemory(surveyResourceCells, 0);
+    if (planner instanceof SafetyPlanner) {
+      if (surveyResourceCells.length > 0) planner.world.seedResourceMemory(surveyResourceCells, 0);
+      if (surveyObstacleCells.length > 0) planner.world.seedObstacleMemory(surveyObstacleCells);
+      if (surveyCoreHunts.length > 0) planner.world.seedCoreHuntTargets(surveyCoreHunts);
     }
 
     // 配置热加载（2026-08-08）：重读 config 文件 → schema/变体校验 → 原子替换
@@ -1040,6 +1048,46 @@ function loadSurveyResourceSeed(dataRoot: string, tenantId: string, maxAgeTicks 
     return rows
       .filter((row) => row.lastSeenTick >= cutoff)
       .map((row) => [row.x, row.y] as const);
+  } catch {
+    return [];
+  }
+}
+/** 跨 run 测绘种子（2026-08-08，统一捕获链路）：从测绘库读最近确认的敌核心
+ *  （core_hunts，last_seen 距今 ≤ maxAgeTicks）注入 World 敌情狩猎记忆——
+ *  重启后军事仍记得敌方基地（比 calibration 扫描更全：跨 run 累积，不受
+ *  最新 run 采样窗口限制）。库缺失/损坏 = 空数组零回归。 */
+function loadSurveyCoreHuntSeed(dataRoot: string, tenantId: string, maxAgeTicks = 20_000): readonly CoreHuntTarget[] {
+  try {
+    const db = openSurveyDb(dataRoot, tenantId, false);
+    const rows = knownCoreHunts(db);
+    db.close();
+    if (rows.length === 0) return [];
+    let maxTick = 0;
+    for (const row of rows) if (row.lastSeenTick > maxTick) maxTick = row.lastSeenTick;
+    const cutoff = maxTick - maxAgeTicks;
+    return rows
+      .filter((row) => row.lastSeenTick >= cutoff)
+      .map((row) => ({
+        position: [row.x, row.y] as const,
+        lastSeenTick: row.lastSeenTick,
+        source: row.source,
+        owner: row.owner ?? null,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/** 跨 run 测绘种子（2026-08-08，统一捕获链路）：从测绘库读全部已知障碍
+ *  （obstacles，静态地形跨 run 稳定，不做新鲜度过滤）注入 World 障碍记忆——
+ *  重启后导航/寻路直接准确。库缺失/损坏 = 空数组零回归。 */
+function loadSurveyObstacleSeed(dataRoot: string, tenantId: string): readonly Position[] {
+  try {
+    const db = openSurveyDb(dataRoot, tenantId, false);
+    const rows = knownObstacles(db);
+    db.close();
+    if (rows.length === 0) return [];
+    return rows.map((row) => [row.x, row.y] as const);
   } catch {
     return [];
   }
