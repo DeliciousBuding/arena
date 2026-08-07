@@ -385,8 +385,18 @@ export class SafetyPlanner {
   }
 
   /** 注入官方排行榜威胁画像（2026-08-07，deterministic-planner 装配用）：
-   *  覆盖式设置——构造后由装配点传入；空 Map 清空画像（零回归）。 */
+   *  追加式设置——构造后由装配点传入（旧画像保留，供启动装配）。 */
   seedThreatProfiles(profiles: ReadonlyMap<string, ThreatProfile>): void {
+    for (const [username, profile] of profiles) {
+      this.threatProfiles.set(username, profile);
+    }
+  }
+
+  /** 热刷新官方排行榜威胁画像（2026-08-08）：**替换式**——清空旧画像再填新，
+   *  掉榜用户（如伤害排名滑出）立即移除，杜绝陈旧威胁情报残留。供
+   *  tenant-runtime 定时重读 leaderboard 快照后调用；空 Map = 清空（零回归）。 */
+  replaceThreatProfiles(profiles: ReadonlyMap<string, ThreatProfile>): void {
+    this.threatProfiles.clear();
     for (const [username, profile] of profiles) {
       this.threatProfiles.set(username, profile);
     }

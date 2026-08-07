@@ -73,3 +73,27 @@ export function loadThreatProfiles(dataRoot: string): ReadonlyMap<string, Threat
   return snapshot === null ? new Map() : buildThreatProfiles(snapshot);
 }
 
+/** 威胁画像内容级比较（2026-08-08，热刷新节流用）：size 与每项五元组
+ *  （damageScore/damageRank/coreScore/coreRank/tier）全等才视为无变化——
+ *  快照每 15 分钟拉取、四线每 5 分钟检查，无变化不触发替换（零抖动）。 */
+export function threatProfilesEqual(
+  a: ReadonlyMap<string, ThreatProfile>,
+  b: ReadonlyMap<string, ThreatProfile>,
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [username, pa] of a) {
+    const pb = b.get(username);
+    if (pb === undefined) return false;
+    if (
+      pa.damageScore !== pb.damageScore ||
+      pa.damageRank !== pb.damageRank ||
+      pa.coreScore !== pb.coreScore ||
+      pa.coreRank !== pb.coreRank ||
+      pa.tier !== pb.tier
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
