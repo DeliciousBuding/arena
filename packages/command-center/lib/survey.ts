@@ -35,7 +35,7 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
   }
   try {
     const resources = db.prepare(
-      "SELECT x, y, last_seen_tick AS tick, state, seen_count AS seenCount FROM resources ORDER BY last_seen_tick DESC",
+      "SELECT x, y, last_seen_tick AS tick, first_seen_tick AS firstSeenTick, state, seen_count AS seenCount FROM resources ORDER BY last_seen_tick DESC",
     ).all() as Array<Record<string, unknown>>;
     const obstacles = db.prepare(
       "SELECT x, y, last_seen_tick AS tick FROM obstacles ORDER BY last_seen_tick DESC",
@@ -60,7 +60,8 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
 }
 
 /** 生命周期摘要：从测绘库读 unit_lifecycle / core_spends / resource_events
- *  聚合（单位/矿物标注 + 消费记账）。库缺失 = null。 */
+ *  聚合（单位/矿物标注 + 消费记账），并带最近阵亡明细（面板舰队索引展示）。
+ *  库缺失 = null。 */
 export function loadLifecycleDb(tenant: string): Record<string, unknown> | null {
   const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
   if (!existsSync(file)) return null;
@@ -83,12 +84,16 @@ export function loadLifecycleDb(tenant: string): Record<string, unknown> | null 
     const fails = db.prepare(
       "SELECT COUNT(*) AS count FROM resource_events WHERE event_type = 'HARVEST_FAILED'",
     ).get() as { count: number };
+    const recentDeaths = db.prepare(
+      "SELECT unit_type AS type, birth_tick AS birthTick, death_tick AS deathTick, death_pos AS deathPos, death_reason AS deathReason FROM unit_lifecycle WHERE death_tick IS NOT NULL ORDER BY death_tick DESC LIMIT 8",
+    ).all() as Array<Record<string, unknown>>;
     return {
       units,
       spends,
       harvestCount: Number(harvests?.count ?? 0),
       lastHarvestTick: harvests?.last_tick === null ? null : Number(harvests?.last_tick ?? 0),
       harvestFailCount: Number(fails?.count ?? 0),
+      recentDeaths,
     };
   } catch {
     return null;

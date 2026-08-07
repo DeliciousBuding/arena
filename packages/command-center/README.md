@@ -17,35 +17,34 @@
   `npx tsx scripts/validate-config.mts` 验证，再经 supervisor `POST /shutdown` 优雅重启。
 - t1/t2 已于 2026-08-07 10:00 UTC 启用（t1 现状：5V+4R+12W、资源 41→爆兵；vanguard_pressure 前压中）。
 
-## 设计体系（2026-08-07 Achromatic 极简重构）
-
-- **基调**：黑白灰 achromatic（Vercel/Geist 理念）——近黑 `#030303` 背景、低透明度白边框
-  （`rgba(255,255,255,.06-.15)`）、阴影代替实体边框、单一白色强调（主按钮白底黑字）。
-- **圆角**：收敛为 3 档 `--radius-sm/md/lg`（6/10/14px），取代原 `--gold-*` 四档。
-- **语义色**：`success/warn/danger` 仅用于数据与状态（连接徽章、决策结果、delta 正负）；
-  租户色 t1-t4 保留为地图/卡片身份标识（降饱和 muted 版）。
-- **微动效**：租户卡数值变化 200ms 闪烁（`prevMetrics` 对比打 `.flash`）、
-  决策流/事件新行 slide-in（`rowKeys` diff 打 `.st-new`）、按钮按压缩放、
-  面板入场 `panelIn` 非线性动画；`prefers-reduced-motion` 全量降级。
-- **对齐**：JS `TENANT_COLORS` 与 CSS `--t1..--t4` 同步 muted 版本，跨地图/卡片一致。
-
 ## 设计体系
 
 - 完整视觉规范见 **DESIGN.md**（SSOT：achromatic 黑白灰、本地 Geist 字体、
   阴影代边框、单一白色强调、3 档圆角、字重体系、动效规格、红线）。
-- 租户卡无左侧色条：租户身份 = 名字前 8px 圆角小色块（`.tenant-name::before`）。
+- 基调：黑白灰 achromatic（Vercel/Geist 理念）——近黑 `#030303` 背景、低透明度白边框
+  （`rgba(255,255,255,.06-.15)`）、阴影代替实体边框、单一白色强调（主按钮白底黑字）。
+- 圆角收敛 3 档 `--radius-sm/md/lg`（6/10/14px）；语义色 `success/warn/danger` 仅用于
+  数据与状态；租户色 t1-t4 保留为地图/卡片身份标识（降饱和 muted 版）。
+- 微动效：租户卡数值闪烁、决策流/事件新行 slide-in、按钮按压缩放、右栏面板入场
+  `rpFadeUp`、侧栏折叠 width 过渡；`prefers-reduced-motion` 全量降级。
+- 对齐：JS `TENANT_COLORS` 与 CSS `--t1..--t4` 同步 muted 版本，跨地图/卡片一致。
 
 ## 已知修复
 
 - `latestRunDir` 按 run 内最高 case tick 选 run（UUID 字典序 ≠ 时间序——旧 bug 导致
   面板恒显示旧 run 的 stale tick，即"界面卡住显示旧数据"根因）。
-## 启动
+## 启动（随用随起，无计划任务/管理员）
 
 ```bash
 cd arena-ts/packages/command-center
-npm start          # 或 node server.mjs
+npm start                           # 前台：node server.ts（终端可见日志）
+node scripts/start-cc.mjs           # 前台：日志同时落 logs/cc-server.log
+node scripts/start-cc.mjs --hidden  # 后台：无终端窗口，日志落 logs/cc-server.log
+node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
 # 打开 http://127.0.0.1:8787
 ```
+
+访问：http://127.0.0.1:8787/ （legacy 面板） · http://127.0.0.1:8787/app/ （React 前端构建产物）
 
 环境变量：
 
@@ -69,6 +68,10 @@ npm start          # 或 node server.mjs
   事件特效 + 销毁碎片迸溅。
 - **租户卡片**：在线状态（supervisor 探测 / outcome.jsonl 新鲜度）、资源、增量、工人数、最大/均值距离、可见资源、事件数、60 tick 均值。
 - **实时决策流**：`runtime.jsonl` 尾部决策（tick / deadlineOutcome / agent/selection 延迟 / submitResult / 中止请求），统一或按租户 tab；事件 tab 聚合 outcome events。
+- **三栏布局 + 右栏面板（2026-08-08）**：左栏（租户/图层）+ 地图 + 右栏三 tab（决策流 / 威胁情报 / 兑换码），
+  左右栏可折叠为 40px 窄条（VSCode 侧边栏模式，折叠状态持久化）。威胁情报 = 官方排行榜（威胁/信标/核心三 tab、
+  我方/遭遇高亮、榜外遭遇补全）；兑换码 = 官方商店面板（Cookie 连接、库存徽章、兑换历史）。
+- **敌情记忆层**：出视野的敌方核心/战斗单位半透明常驻（新鲜度衰减），hover 显示 lastSeen；图例/图层可开关。
 - **战术交互层（官方 Arena Hero 前端移植 · 只读演练）**：
   - 舰队索引（AssetList）：聚焦租户的受控单位列表，点击选中；
   - 单位/核心详情面板（坐标/HP/护盾/载货/拥有者/状态）；
@@ -89,6 +92,7 @@ npm start          # 或 node server.mjs
     核心 @拥有者标签 + 盾条/血条（携带冠军信标盾上限 10）；
   - Esc 取消选择/模式。
 - **官方商店兑换码**：代理 `https://linuxdoshop.arenahero.io`（公开 `/api/v1/products` 动态价格/库存；`me`/`orders` 需登录 Cookie）。
+  - 商品卡片显示**库存徽章**（`available_stock`）：`库存 N`（绿）/ `仅剩 ≤5`（琥珀警告）/ `缺货`（红 + 卡片灰化 + 按钮禁用），并标注限购数（`purchase_limit`）；面板可手动刷新，兑换后自动刷新库存与账户资源。
   - Cookie 在浏览器 localStorage 保存，请求时经 `X-Shop-Cookie` 头内存转发，**不落盘服务器、不进日志**。
   - CSRF：从 Cookie 内 `arena_shop_csrf` 自动提取并设置 `X-CSRF-Token`。
   - 兑换会真实扣减官方 Core 资源，谨慎操作。
@@ -112,10 +116,14 @@ npm start          # 或 node server.mjs
 
 ```
 command-center/
-├── server.mjs            # Node 内置 http 服务 + API
+├── server.ts             # Hono 服务入口（Node 24 type stripping 直接运行，无构建）
+├── lib/                  # 模块化 API（fs-jsonl/streams/map/survey/trails/intel/
+│                         #   leaderboard/store/shop/supervisor，全 TS）
+├── scripts/start-cc.mjs  # 前台/后台/停止启动器（--hidden/--stop）
 ├── package.json
-├── public/               # 零依赖前端（index.html / app.js / style.css / assets）
+├── public/               # legacy 前端（index.html / app.js / style.css / assets）
 │   └── assets/           # 官方 Arena Hero 美术素材（自 reference/arena-hero-web 拷贝）
+├── web/                  # React + Vite + TS 前端（构建到 dist，/app/* 托管）
 └── docs/command-center-preview.png
 ```
 
@@ -129,30 +137,26 @@ command-center/
 
 本包**不加入** arena-ts 根 workspaces，`npm run check` / `npm test` / `npm run schema:check` 不受影响。
 
-## 启动（随用随起，无计划任务/管理员）
-
-- npm start                 前台：node server.mjs（终端可见日志）
-- node scripts/start-cc.mjs 前台：日志同时落 logs/cc-server.log
-- node scripts/start-cc.mjs --hidden 后台：无终端窗口，日志落 logs/cc-server.log
-- node scripts/start-cc.mjs --stop   停止上次 --hidden 实例
-
-访问：http://127.0.0.1:8787/ （legacy 面板） · http://127.0.0.1:8787/app/ （React 前端构建产物）
-
-## React + Vite + Bun/Node 工具链（web/）
+## React + Vite + Bun/Node 工具链（web/，全 TS）
 
 - cd web 之后 bun install
 - bun run dev        vite dev :5173，/api 代理到 8787
 - bun run build      vite build --base=/app/ 到 web/dist（server 以 /app/* 托管）
-- bun run typecheck  tsc --noEmit
+- bun run typecheck  tsc --noEmit（strict，全量 TS：无 .js 源码）
 
-架构：React chrome（顶栏/侧栏/决策流/对话框） + src/engine/mapEngine.js（由 public/app.js 移植的画布引擎，
-React 挂载到 main#layout，引擎管理地图/战术/回放/覆盖层）。视觉单一源 = public/style.css（React 直接 import，不复制）。
+架构：**三栏布局（AppShell）**——左栏（租户卡/图例/图层/视图）+ 地图 + 右栏（VSCode tab 容器：
+决策流 / 威胁情报 / 兑换码）。左右栏均可折叠为 40px 窄条（`SidePanel` 通用组件，折叠后地图自动
+resize）。所有弹窗/对话框已移入右栏面板（`right/IntelPanel`、`right/RedeemPanel`、`right/RedeemCard`），
+不再模态遮挡地图。布局状态经 `lib/shell.tsx`（ShellContext：折叠/tab，localStorage 持久化）。
+画布引擎 `src/engine/mapEngine.ts`（全 TS：`ArenaState` 接口 + legacy JSON 宽松标注；由 public/app.js
+移植，React 挂载到 main#layout，引擎管理地图/战术/回放/覆盖层）。视觉单一源 = public/style.css
+（React 直接 import，不复制）。
 
 ## 人类最高控制权（真实指挥，Manual 优先于 Agent 优先于 Safety）
 
 - 前端（/app）：战术动作框按钮 = 真实命令（非演练）。点工人-点移动-点矿 = 下达采矿任务（到达自动采集、
   满仓自动回仓、目标采空自动交还 agent）；点空地 = 移动任务；SHOOT/SWEEP/SPAWN/采集/回仓等 = 一键动作直提。
-- 后端：server.mjs 提供 /api/command（一键动作）、/api/command/goal（持续意图）、/api/commands（读取）、
+- 后端：server.ts 提供 /api/command（一键动作）、/api/command/goal（持续意图）、/api/commands（读取）、
   /api/command DELETE（按单位清除）、/api/command/clear（清空租户）、/api/command/mode（开关人类接管）。
   指令写入 data/runtime/human-commands/<tenant>.json（数据层，仅本机）。
 - 控制链：tenant 主循环提交前由 packages/arena-agent/src/runtime/human-override.ts 合并人类指令/意图

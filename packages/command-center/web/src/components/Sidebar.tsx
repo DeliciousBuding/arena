@@ -138,13 +138,14 @@ function Legend() {
       <li><span className="sw obstacle" />障碍</li>
       <li><span className="sw beacon" />冠军信标</li>
       <li><span className="sw memory" />已探索记忆（非当前 tick 淡显）</li>
+      <li><span className="sw enemy-mem" />敌情记忆（出视野半透明 · 悬停看最后目击）</li>
     </ul>
   );
 }
 
 const LAYERS: Array<[string, string]> = [
   ["obstacle", "障碍"], ["resource", "资源"], ["unit", "单位"], ["core", "核心"], ["beacon", "信标"],
-  ["survey", "测绘"], ["patrol", "巡逻环"], ["plan", "计划箭头"], ["trail", "移动轨迹"], ["beaconEdge", "信标指示"], ["coreTrail", "敌核轨迹"],
+  ["survey", "测绘"], ["patrol", "巡逻环"], ["plan", "计划箭头"], ["trail", "移动轨迹"], ["beaconEdge", "信标指示"], ["coreTrail", "敌核轨迹"], ["enemyMemory", "敌情记忆"],
 ];
 
 function LayerToggles() {
