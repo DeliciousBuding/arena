@@ -1,7 +1,7 @@
 /** Offline calibration runner and discrepancy classifier (S8a). */
 
 import type { PlayerState, WorldObject } from "@arena/arena-hero-ts";
-import { cellKey, type Position } from "../../domain/model.ts";
+import { cellKey, type Plan, type Position } from "../../domain/model.ts";
 import { loadRulesManifest, manifestHash } from "../contracts/rules-manifest.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { UnknownEffect } from "../engine/phase.ts";
@@ -18,6 +18,13 @@ import {
 } from "./schema.ts";
 
 export type CalibrationStatus = "MATCH" | "MISMATCH" | "INCONCLUSIVE";
+
+/**
+ * 校准重放中对手计划执行者使用的固定 playerId。真实 tenantId 不会带
+ * "__opponent__" 前缀，因此不会与 case.tenantId 冲突。
+ */
+const OPPONENT_PLAYER_ID = "__opponent__";
+
 export type CalibrationDifferenceClass =
   | "STATE"
   | "ENTITY"
@@ -318,6 +325,9 @@ function prepareWorld(calibrationCase: CalibrationCaseV1): SimWorld {
     calibrationCase.before.state,
     calibrationCase.tenantId,
     calibrationCase.rulesVersion,
+    calibrationCase.opponentPlan === undefined
+      ? {}
+      : { opponentPlayerId: OPPONENT_PLAYER_ID },
   );
   const controlledIds = controlledEntityIds(calibrationCase.before.state);
   const replayBeacon =
@@ -351,15 +361,20 @@ export function runCalibrationCase(rawCase: unknown, rulesPath: string): Calibra
   }
 
   const beforeWorld = prepareWorld(calibrationCase);
+  const plans = new Map<string, Plan>([[calibrationCase.tenantId, calibrationCase.plan]]);
+  if (calibrationCase.opponentPlan !== undefined) {
+    plans.set(OPPONENT_PLAYER_ID, calibrationCase.opponentPlan);
+  }
   const result = settleTick(
     beforeWorld,
-    new Map([[calibrationCase.tenantId, calibrationCase.plan]]),
+    plans,
     { rules, rng: null },
   );
 
   const opponentUnknown =
     calibrationCase.metadata.opponentPlans === "absent" ||
-    hasUncontrolledObjects(calibrationCase.before.state);
+    (calibrationCase.opponentPlan === undefined &&
+      hasUncontrolledObjects(calibrationCase.before.state));
   const beaconUnknown = calibrationCase.before.state.champion_beacon.status === null;
   const refillUnknown = result.unknownEffects.some((effect) => effect.kind === "refill");
   const ruleAssumptionUnknown = result.unknownEffects.some(

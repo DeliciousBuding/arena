@@ -11,6 +11,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { runEpisode } from "../src/sim/harness/episode.ts";
 import { projectPlayerState } from "../src/sim/visibility/visibility.ts";
+import { privateEventsForPlayer } from "../src/sim/visibility/private-events.ts";
 import { loadRulesManifest } from "../src/sim/contracts/rules-manifest.ts";
 import { readGitSha } from "../src/app/run-manifest.ts";
 import { sha256Canonical } from "../src/domain/integrity.ts";
@@ -51,12 +52,19 @@ const result = runEpisode({
     { id: "p1", planner: "safety", policy: { posture: "aggressive", workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: "core" } },
     { id: "p2", planner: "safety", policy: { posture: "aggressive", workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: "core" } },
   ],
-  onTickRecorded: ({ tick, before, after, plans }) => {
+  onTickRecorded: ({ tick, before, after, plans, events }) => {
     for (const tenantId of ["p1", "p2"] as const) {
       const fileName = `${String(tick).padStart(10, "0")}-${tenantId}.json`;
       const beforeState = projectPlayerState(before, tenantId, rules);
-      const afterState = projectPlayerState(after, tenantId, rules);
+      const afterState = projectPlayerState(
+        after,
+        tenantId,
+        rules,
+        privateEventsForPlayer(before, after, tenantId, events),
+      );
       const plan = plans[tenantId];
+      const opponentTenantId = tenantId === "p1" ? "p2" : "p1";
+      const opponentPlan = plans[opponentTenantId];
       const caseObj: CalibrationCaseV1 = {
         schema: "sim-calibration-case-v1",
         caseId: `synthetic:${tenantId}:${tick}`,
@@ -72,6 +80,7 @@ const result = runEpisode({
         },
         before: { tick, state: beforeState },
         plan,
+        opponentPlan,
         after: { tick: tick + 1, state: afterState },
       };
       // parse 规范化后写入/哈希（builder 的 integrity 校验用 parse 后形态）
