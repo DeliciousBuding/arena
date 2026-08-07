@@ -27,6 +27,10 @@ export interface EnemyUnit {
 export interface ResourceCellInfo {
   readonly position: Position;
   readonly kind?: string;
+  /** false = World 记忆候选而非本 Tick 可见；缺省按 true 兼容旧 fixture。 */
+  readonly visible?: boolean;
+  readonly lastSeenTick?: number;
+  readonly seeded?: boolean;
 }
 
 export interface BeaconInfo {
@@ -109,7 +113,7 @@ export function extractPlanningSnapshot(state: TickState): PlanningSnapshot {
   const enemyCells = new Set(state.visibleEnemies.map((enemy) => cellKey(enemy.position)));
   const resourceCells = new Map<string, ResourceCellInfo>();
   for (const key of state.resourceCells) {
-    resourceCells.set(key, { position: parseCellKey(key) });
+    resourceCells.set(key, { position: parseCellKey(key), visible: true, lastSeenTick: state.tick, seeded: false });
   }
   return {
     tick: state.tick,

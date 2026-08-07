@@ -14,7 +14,7 @@
  */
 
 import type { EpisodeConfig, EpisodeResult } from "../harness/episode.ts";
-import type { AllianceDirective, Mission, MissionKind } from "../../alliance/control-types.ts";
+import type { AllianceDirective, Mission, MissionKind, TaskForce } from "../../alliance/control-types.ts";
 import type { RetreatCorridorAssessment } from "../../alliance/director-policy.ts";
 import type { AllianceSnapshot } from "../../alliance/types.ts";
 
@@ -61,6 +61,7 @@ export interface AllianceEpisodeConfig {
 export interface AllianceDirectorDecision {
   readonly directives: readonly AllianceDirective[];
   readonly missions?: readonly Mission[];
+  readonly taskForces?: readonly TaskForce[];
   readonly retreatAssessments?: readonly RetreatCorridorAssessment[];
 }
 
@@ -134,6 +135,9 @@ export interface AllianceTraceEntry {
   readonly directiveCount: number;
   readonly missionCount: number;
   readonly missionKinds: readonly MissionKind[];
+  /** Director 本次重规划生成的跨租户 TaskForce 数与涉及租户数；纯 shadow metadata。 */
+  readonly taskForceCount: number;
+  readonly taskForceTenantCount: number;
   readonly retreatRecommendationCount: number;
   readonly directorError: string | null;
   readonly evaluations: readonly DirectiveEvaluationTrace[];

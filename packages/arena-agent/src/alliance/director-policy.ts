@@ -10,6 +10,7 @@ import type {
   AllianceRole,
   Mission,
   MissionKind,
+  TaskForce,
 } from "./control-types.ts";
 import { allocateAllianceTaskMarket, type AllianceMarketTask } from "./task-market.ts";
 import {
@@ -38,6 +39,11 @@ export interface ShadowDirectorPolicyConfig {
   readonly raidMinConfidence: number;
   readonly raidMaxDistance: number;
   readonly raidMaxAgeTicks: number;
+  /** guarded Core 联合攻坚：目标周围该半径内的近期战斗单位算守军。 */
+  readonly jointRaidGuardRadius: number;
+  readonly jointRaidGuardThreshold: number;
+  readonly jointRaidSlots: number;
+  readonly jointRaidMinMilitaryPerTenant: number;
   readonly threatSummary: Partial<ThreatSummaryConfig>;
 }
 
@@ -54,6 +60,10 @@ export const DEFAULT_SHADOW_DIRECTOR_POLICY: ShadowDirectorPolicyConfig = Object
   raidMinConfidence: 0.65,
   raidMaxDistance: 64,
   raidMaxAgeTicks: 24,
+  jointRaidGuardRadius: 8,
+  jointRaidGuardThreshold: 2,
+  jointRaidSlots: 2,
+  jointRaidMinMilitaryPerTenant: 5,
   // Enemy Core is strategic context, not equivalent to combat units already at the door.
   threatSummary: { coreWeight: 1, unitWeight: 1, highScoreThreshold: 0.55 },
 });
@@ -74,6 +84,8 @@ export interface ShadowPolicyDecision {
   readonly missions: readonly Mission[];
   readonly directives: readonly AllianceDirective[];
   readonly roles: ReadonlyMap<string, AllianceRole>;
+  /** 仅当所有联合参与者都有真实 activeFleetId 时生成；仍是 shadow control contract。 */
+  readonly taskForces: readonly TaskForce[];
   readonly retreatAssessments: readonly RetreatCorridorAssessment[];
 }
 
@@ -103,6 +115,12 @@ function resolveConfig(input: Partial<ShadowDirectorPolicyConfig>): ShadowDirect
     raidMinConfidence: finiteNonNegative(input.raidMinConfidence, DEFAULT_SHADOW_DIRECTOR_POLICY.raidMinConfidence),
     raidMaxDistance: positiveInt(input.raidMaxDistance, DEFAULT_SHADOW_DIRECTOR_POLICY.raidMaxDistance),
     raidMaxAgeTicks: positiveInt(input.raidMaxAgeTicks, DEFAULT_SHADOW_DIRECTOR_POLICY.raidMaxAgeTicks),
+    jointRaidGuardRadius: positiveInt(input.jointRaidGuardRadius, DEFAULT_SHADOW_DIRECTOR_POLICY.jointRaidGuardRadius),
+    jointRaidGuardThreshold: positiveInt(input.jointRaidGuardThreshold, DEFAULT_SHADOW_DIRECTOR_POLICY.jointRaidGuardThreshold),
+    jointRaidSlots: positiveInt(input.jointRaidSlots, DEFAULT_SHADOW_DIRECTOR_POLICY.jointRaidSlots),
+    jointRaidMinMilitaryPerTenant: positiveInt(
+      input.jointRaidMinMilitaryPerTenant, DEFAULT_SHADOW_DIRECTOR_POLICY.jointRaidMinMilitaryPerTenant,
+    ),
     threatSummary: { ...DEFAULT_SHADOW_DIRECTOR_POLICY.threatSummary, ...(input.threatSummary ?? {}) },
   };
 }
@@ -195,6 +213,22 @@ function recentRaidTarget(
     .sort((a, b) => manhattan(member.core!.position, a.position) - manhattan(member.core!.position, b.position)
       || b.confidence - a.confidence
       || stableCompare(a.key, b.key))[0] ?? null;
+}
+
+function guardedCoreCombatCount(
+  snapshot: AllianceSnapshot,
+  target: EntitySighting,
+  config: ShadowDirectorPolicyConfig,
+): number {
+  const now = snapshot.tickWindow[1];
+  const ids = new Set<string>();
+  for (const sighting of snapshot.sightings) {
+    if (sighting.kind !== "UNIT" || (sighting.unitType !== "VANGUARD" && sighting.unitType !== "RANGER")) continue;
+    if (sighting.confidence < 0.5 || now - sighting.lastSeenTick > config.raidMaxAgeTicks) continue;
+    if (manhattan(target.position, sighting.position) > config.jointRaidGuardRadius) continue;
+    ids.add(sighting.entityId ?? sighting.key);
+  }
+  return ids.size;
 }
 
 function missionId(revision: number, tenantId: string, kind: MissionKind): string {
@@ -303,10 +337,15 @@ export function decideAllianceShadowPolicy(
       .slice()
       .sort((a, b) => b.confidence - a.confidence || b.lastSeenTick - a.lastSeenTick || stableCompare(a.key, b.key));
     for (const target of coreTargets) {
+      const guardCount = guardedCoreCombatCount(snapshot, target, config);
+      const joint = guardCount >= config.jointRaidGuardThreshold;
       marketTasks.push({
         id: `raid-${snapshot.revision}-${target.key}`, kind: "RAID",
-        priority: 70 + Math.round(target.confidence * 8), target: target.position, targetEntityKey: target.key,
-        minMilitary: config.minRaidMilitary, maxDistance: config.raidMaxDistance,
+        priority: 70 + Math.round(target.confidence * 8) + (joint ? 2 : 0),
+        target: target.position, targetEntityKey: target.key,
+        minMilitary: joint ? config.jointRaidMinMilitaryPerTenant : config.minRaidMilitary,
+        maxDistance: config.raidMaxDistance,
+        slotCount: joint ? config.jointRaidSlots : 1,
       });
     }
   }
@@ -319,6 +358,40 @@ export function decideAllianceShadowPolicy(
       target: task.target, targetEntityKey: task.targetEntityKey, defendTenant: task.defendTenant,
       scope: `alliance-market:utility=${assignment.bid.utility}:distance=${assignment.bid.distance}`,
     }));
+  }
+
+  // Multi-slot RAID → existing TaskForce contract. Never fabricate fleet ids: every selected
+  // tenant must report at least one activeFleetId, otherwise only per-tenant ASSIST missions remain.
+  const taskForces: TaskForce[] = [];
+  const raidGroups = new Map<string, typeof market.assignments>();
+  for (const assignment of market.assignments) {
+    if (assignment.task.kind !== "RAID") continue;
+    const group = assignment.task.baseTaskId ?? assignment.task.id;
+    raidGroups.set(group, [...(raidGroups.get(group) ?? []), assignment]);
+  }
+  for (const [groupId, assignments] of raidGroups) {
+    if (assignments.length < 2) continue;
+    const ranked = [...assignments].sort((a, b) =>
+      b.bid.utility - a.bid.utility || stableCompare(a.tenantId, b.tenantId));
+    const refs = ranked.flatMap((assignment) => {
+      const member = snapshot.members.get(assignment.tenantId);
+      // 联合攻坚只引用真实 strike fleet；home-defense 永不被 TaskForce 借走。
+      const fleetId = member?.activeFleetIds
+        .filter((id) => id.includes(":strike:"))
+        .slice().sort(stableCompare)[0];
+      return fleetId === undefined ? [] : [{ fleetId, tenantId: assignment.tenantId }];
+    });
+    if (refs.length !== assignments.length) continue;
+    const commanderTenant = ranked[0]!.tenantId;
+    const commanderMission = missionsByTenant.get(commanderTenant);
+    if (commanderMission === undefined) continue;
+    taskForces.push({
+      id: `shadow-tf-${snapshot.revision}-${groupId}`,
+      missionId: commanderMission.id,
+      fleetRefs: refs,
+      commanderTenant,
+      synchronization: "RALLY_BEFORE_ENGAGE",
+    });
   }
 
   // Phase C — local fallback for market-unassigned members.
@@ -368,6 +441,7 @@ export function decideAllianceShadowPolicy(
     missions,
     directives,
     roles,
+    taskForces: taskForces.sort((a, b) => stableCompare(a.id, b.id)),
     retreatAssessments: retreatAssessments.sort((a, b) => stableCompare(a.tenantId, b.tenantId)),
   };
 }

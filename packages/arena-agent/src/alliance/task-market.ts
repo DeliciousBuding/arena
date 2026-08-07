@@ -21,6 +21,11 @@ export interface AllianceMarketTask {
   readonly defendTenant?: string;
   readonly minMilitary: number;
   readonly maxDistance?: number;
+  /** 同一战略任务允许多少个不同 tenant 同时中标；默认 1。 */
+  readonly slotCount?: number;
+  /** 展开后的 slot 元数据；调用方通常无需设置。 */
+  readonly baseTaskId?: string;
+  readonly slotIndex?: number;
 }
 
 export interface AllianceTaskBid {
@@ -89,6 +94,24 @@ export function allianceTaskBid(
   };
 }
 
+/** 把战略任务展开成可独立竞价的 tenant slots。Hungarian 仍保持“每 tenant 最多
+ * 一个任务、每 slot 最多一个 tenant”；同一 baseTask 多 slot 即形成联合任务候选。 */
+export function expandAllianceMarketTaskSlots(tasks: readonly AllianceMarketTask[]): readonly AllianceMarketTask[] {
+  return tasks.flatMap((task) => {
+    const slots = Number.isSafeInteger(task.slotCount) && (task.slotCount as number) > 0
+      ? Math.min(8, task.slotCount as number)
+      : 1;
+    if (slots === 1) return [{ ...task, slotCount: 1, baseTaskId: task.baseTaskId ?? task.id, slotIndex: 0 }];
+    return Array.from({ length: slots }, (_, slotIndex) => ({
+      ...task,
+      id: `${task.id}#slot-${slotIndex + 1}`,
+      slotCount: 1,
+      baseTaskId: task.baseTaskId ?? task.id,
+      slotIndex,
+    }));
+  });
+}
+
 /** Global one-to-one clearing. Unassigned tenants land on dummy columns and keep local policy. */
 export function allocateAllianceTaskMarket(
   membersInput: readonly AllianceMemberState[],
@@ -97,7 +120,8 @@ export function allocateAllianceTaskMarket(
   treasuryTenant: string,
 ): AllianceTaskMarketResult {
   const members = [...membersInput].sort((a, b) => stableCompare(a.tenantId, b.tenantId));
-  const tasks = [...tasksInput].sort((a, b) => b.priority - a.priority || stableCompare(a.id, b.id));
+  const tasks = [...expandAllianceMarketTaskSlots(tasksInput)]
+    .sort((a, b) => b.priority - a.priority || stableCompare(a.id, b.id));
   const bids = members.flatMap((member) => tasks.map((task) => allianceTaskBid(member, task, summaries.get(member.tenantId), treasuryTenant)));
   if (members.length === 0 || tasks.length === 0) return { assignments: [], bids };
 

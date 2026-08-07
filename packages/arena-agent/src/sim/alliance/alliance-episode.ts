@@ -1,3 +1,4 @@
+import { activeFleetIds } from "../../alliance/local-fleet.ts";
 /**
  * Alliance Episode — 联盟模拟器顶层入口（Phase 2）。
  *
@@ -153,7 +154,7 @@ export function buildMemberReport(
       vanguards: vanguards.length,
       rangers: rangers.length,
       carriedResources,
-      activeFleetIds: [], // v1: no fleets
+      activeFleetIds: activeFleetIds([...vanguards, ...rangers], tenantId),
       localThreat: currentSightings.size,
       localHarvestRate: 0, // v1: not computed
       status,
@@ -420,6 +421,8 @@ export function runAllianceEpisode(config: AllianceEpisodeConfig): AllianceEpiso
       let directiveCount = 0;
       let missionCount = 0;
       let missionKinds: import("../../alliance/control-types.ts").MissionKind[] = [];
+      let taskForceCount = 0;
+      let taskForceTenantCount = 0;
       let retreatRecommendationCount = 0;
       let directorError: string | null = null;
 
@@ -446,6 +449,8 @@ export function runAllianceEpisode(config: AllianceEpisodeConfig): AllianceEpiso
             const result = config.director.decide(snapshot, () => directorRng.next());
             missionCount = result.missions?.length ?? 0;
             missionKinds = [...new Set((result.missions ?? []).map((m) => m.kind))].sort(compareCodeUnit);
+            taskForceCount = result.taskForces?.length ?? 0;
+            taskForceTenantCount = new Set((result.taskForces ?? []).flatMap((tf) => tf.fleetRefs.map((ref) => ref.tenantId))).size;
             retreatRecommendationCount = result.retreatAssessments?.length ?? 0;
             for (const d of result.directives) {
               // WRONG_TENANT：以原 tenantId 为 key 存 shift 后的 directive——
@@ -472,6 +477,8 @@ export function runAllianceEpisode(config: AllianceEpisodeConfig): AllianceEpiso
         directiveCount,
         missionCount,
         missionKinds,
+        taskForceCount,
+        taskForceTenantCount,
         retreatRecommendationCount,
         directorError,
         evaluations: [],

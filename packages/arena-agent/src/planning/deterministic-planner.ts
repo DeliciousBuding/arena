@@ -296,6 +296,12 @@ function compareWorstMoveFirst(a: MoveCandidate, b: MoveCandidate): number {
   return b.priority - a.priority || b.unitId.localeCompare(a.unitId);
 }
 
+/** Safety 决策拥有对经济 overlay 的否决权：这些 intent 是生存/撤离动作，
+ * WorkerTaskPlanner 不得用采矿任务覆盖。 */
+function isSafetyVetoIntent(intent: string | undefined): boolean {
+  return intent === "heal" || intent === "worker_heal_return" || intent?.startsWith("worker_evade_") === true;
+}
+
 const WORKER_RECOVERY_FLOOR = 2;
 /** 冷启动 worker 扩编目标（2026-08-07，t3/t4 生产实证）：worker 数未达该值
  *  时产 worker 豁免 spawnReserve——资源刚够成本就扩编（t4 实证：2W res 5 <
@@ -543,6 +549,9 @@ export class DeterministicPlanner implements PlanProvider {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
     this.patrolPlanner = patrolPlanner;
+    // deterministic 模式只有 WorkerTaskPlanner 拥有资源任务分配权。patrol fallback
+    // 只负责探索/安全机动，禁止自己从 World memory 再抢矿绕过全局唯一匹配。
+    this.patrolPlanner.updateConfig({ ...this.patrolPlanner.config, harvestMemoryMine: false });
     this.vanguardRatio = vanguardRatio;
     this.accumulateThreshold = accumulateThreshold;
     this.spawnReserve = spawnReserve;
@@ -581,7 +590,7 @@ export class DeterministicPlanner implements PlanProvider {
     },
   ): void {
     this.fallbackPlanner.updateConfig(safetyConfig);
-    this.patrolPlanner.updateConfig(safetyConfig);
+    this.patrolPlanner.updateConfig({ ...safetyConfig, harvestMemoryMine: false });
     this.vanguardRatio = deterministicConfig.vanguardRatio;
     this.accumulateThreshold = deterministicConfig.accumulateThreshold ?? 0;
     this.spawnReserve = deterministicConfig.spawnReserve ?? WORKER_SPAWN_RESERVE;
@@ -598,11 +607,41 @@ export class DeterministicPlanner implements PlanProvider {
       policy: input.policy,
     });
     const rawSnapshot = extractPlanningSnapshot(input.state);
+    const resourceCells = new Map(rawSnapshot.resourceCells);
+    // harvest-memory-mine-v1 在 deterministic 模式下只负责“允许消费 World 记忆”；
+    // 实际 worker→资源分配统一交给 WorkerTaskPlanner/Hungarian，不再由 Safety
+    // 自己做第二套最近矿分配。
+    if (this.fallbackPlanner.config.harvestMemoryMine === true) {
+      for (const candidate of this.fallbackPlanner.world.resourceCandidates()) {
+        const key = cellKey(candidate.cell);
+        if (resourceCells.has(key)) continue; // 本 Tick 可见事实优先于 memory 元数据
+        resourceCells.set(key, {
+          position: candidate.cell, visible: false, lastSeenTick: candidate.lastSeenTick, seeded: candidate.seeded,
+        });
+      }
+    }
+    const maxResourceDistanceFromCore = this.fallbackPlanner.resourceAssignmentMaxDistanceFromCore(input.state);
+    if (Number.isFinite(maxResourceDistanceFromCore) && rawSnapshot.corePosition !== null) {
+      for (const [key, resource] of resourceCells) {
+        if (manhattan(resource.position, rawSnapshot.corePosition) > maxResourceDistanceFromCore) {
+          resourceCells.delete(key);
+        }
+      }
+    }
     const snapshot: PlanningSnapshot = {
       ...rawSnapshot,
+      resourceCells,
       obstacleCells: this.fallbackPlanner.world.obstacles(rawSnapshot.obstacleCells),
     };
-    const { assignments } = this.planner.plan(snapshot, this.previousAssignments);
+    const safetyVetoIds = new Set(
+      snapshot.units
+        .filter((unit) => unit.unitType === "WORKER" && isSafetyVetoIntent(fallback.intents?.[unit.id]))
+        .map((unit) => unit.id),
+    );
+    const economicSnapshot: PlanningSnapshot = safetyVetoIds.size === 0
+      ? snapshot
+      : { ...snapshot, units: snapshot.units.filter((unit) => !safetyVetoIds.has(unit.id)) };
+    const { assignments } = this.planner.plan(economicSnapshot, this.previousAssignments);
     this.previousAssignments = assignments;
 
     const unitActions: Record<string, UnitAction> = { ...fallback.unitActions };
@@ -757,7 +796,8 @@ export class DeterministicPlanner implements PlanProvider {
         }
         if (unit.position[0] === target[0] && unit.position[1] === target[1]) {
           const targetKey = task.targetCellKey ?? cellKey(target);
-          return snapshot.resourceCells.has(targetKey) ? { type: "HARVEST" } : { type: "WAIT" };
+          const resource = snapshot.resourceCells.get(targetKey);
+          return resource !== undefined && resource.visible !== false ? { type: "HARVEST" } : { type: "WAIT" };
         }
         const direction = stepTowardAvoiding(
           unit.position,
