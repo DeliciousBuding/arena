@@ -128,6 +128,31 @@ test("beaconGrab 开启：返回途中邻接敌 → SWEEP 反击优先", () => {
   assert.deepEqual(plan.unitActions["v0"], { type: "SWEEP", direction: "LEFT" }, "邻接敌 SWEEP 优先于持标返回");
 });
 
+test("beaconGrab 开启：信标在已知敌核心旁（敌方基地）→ 不单独 fetch（防单骑送死）", () => {
+  const planner = new SafetyPlanner(GRAB_CONFIG);
+  // tick1：信标 [10,0] 旁可见敌 CORE [10,0]（jerkman 场景）→ 记入 coreHuntMemory
+  const seen = makeState(1, {
+    vanguards: [[12, 0]],
+    beacon: { position: [10, 0], status: "GROUND", carrierId: null },
+    enemies: [{ id: "ec", kind: "CORE", position: [10, 0], hp: 5, unitType: "VANGUARD" }],
+  });
+  planner.decide({ state: seen });
+  // tick2：敌 CORE 不可见（消失），但记忆仍在信标旁 → 不 fetch（等军事攻坚）
+  const after = makeState(2, { vanguards: [[12, 0]], beacon: { position: [10, 0], status: "GROUND", carrierId: null } });
+  const plan = planner.decide({ state: after });
+  assert.notEqual(plan.intents["v0"], "vanguard_beacon_fetch", "信标旁有已知敌基地 → 不单独深入");
+});
+
+test("beaconGrab 开启：敌核心被摧毁后信标自然可拾取（主循环 PICKUP 接管）", () => {
+  const planner = new SafetyPlanner(GRAB_CONFIG);
+  // v0 站在信标格（敌基地已被军事清除，无敌方核心记忆）→ 主循环自动 PICKUP_BEACON
+  const plan = planner.decide({
+    state: makeState(1, { vanguards: [[10, 0]], beacon: { position: [10, 0], status: "GROUND", carrierId: null } }),
+  });
+  assert.deepEqual(plan.unitActions["v0"], { type: "PICKUP_BEACON" }, "站在信标格由主循环 PICKUP 接管");
+  assert.equal(plan.intents["v0"], "beacon", "主循环 beacon 拾取意图");
+});
+
 test("beaconGrab 开启：Core 被敌围攻（reinforce-home）→ 回援优先于抢信标", () => {
   const planner = new SafetyPlanner({ ...GRAB_CONFIG, remoteReinforce: true });
   // v0 [12,0] 是最近信标单位，但敌 Vanguard [9,0] 进 Core 防区（≤12）→

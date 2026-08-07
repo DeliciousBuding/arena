@@ -118,6 +118,11 @@ const REINFORCE_HOME_RING = 4;
 /** 信标夺取默认最大距离（Chebyshev，以我方 Core 为圆心）：官方信标坐标全员
  *  公开，超出视为远征——信标所在区域可能被敌方埋伏（远距公敌），不值得送死。 */
 const BEACON_GRAB_DEFAULT_MAX_DIST = 80;
+/** 信标争夺半径：信标距已知敌核心（coreHuntMemory）≤ 该值 = 敌方基地/战区，
+ *  不单独 fetch（单骑深入送死——t2 生产实证：信标即 jerkman 核心所在地，
+ *  小队 1V+3R+1W 埋伏，信标 Vanguard 被击杀）。由 militaryHunt 攻坚处理，
+ *  敌核心被摧毁后我方单位在格上经主循环自动拾取。 */
+const BEACON_CONTEST_RADIUS = 10;
 /** B6 有界攻坚（竞品 bounded mission distance）：记忆敌 Core 距我方 Core 上限。
  *  40→64（2026-08-07 对齐官方 guide ASSAULT_HOME_CORE_DISTANCE=64，Chebyshev）：
  *  旧 40 把"65 格外的近敌基地"误判为远征送死——t2 生产实证：敌方 jerkman 核心
@@ -292,6 +297,14 @@ export class SafetyPlanner {
     const beacon = state.beacon;
     if (beacon.status === "CARRIED") {
       return beacon.carrierId === unit.id ? "return" : null;
+    }
+    // 信标在已知敌核心附近（敌方基地/战区）→ 不单独 fetch：单骑深入送死
+    // （t2 生产实证：信标即 jerkman 核心所在地，小队埋伏）。由 militaryHunt
+    // 攻坚处理；敌核心被摧毁后我方单位在格上经主循环 PICKUP_BEACON 自动拾取。
+    if (this.world.coreHuntTargets().some(
+      (target) => chebyshev(target.position, beacon.position) <= BEACON_CONTEST_RADIUS,
+    )) {
+      return null;
     }
     if (state.core === null) return null;
     if (chebyshev(beacon.position, state.core.position) > (this.config.beaconGrabMaxDist ?? BEACON_GRAB_DEFAULT_MAX_DIST)) {
