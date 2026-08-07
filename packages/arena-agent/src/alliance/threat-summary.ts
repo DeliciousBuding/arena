@@ -7,6 +7,7 @@
  */
 
 import type { AllianceMemberReport } from "./control-types.ts";
+import type { AllianceSnapshot, EntitySighting } from "./types.ts";
 import type { FusedEntitySighting, SharedIntelView } from "./shared-intel.ts";
 
 export type ThreatDirection = "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
@@ -93,14 +94,21 @@ function manhattan(
   return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
 }
 
+interface DirectionalSighting {
+  readonly key: string;
+  readonly kind: "CORE" | "UNIT" | "RESOURCE";
+  readonly position: readonly [number, number];
+  readonly confidence: number;
+}
+
 function contribution(
-  sighting: FusedEntitySighting,
+  sighting: DirectionalSighting,
   distance: number,
   config: ThreatSummaryConfig,
 ): number {
   if (distance > config.maxDistance) return 0;
   const weight = sighting.kind === "CORE" ? config.coreWeight : config.unitWeight;
-  const score = weight * sighting.decayedConfidence / (1 + distance / config.distanceScale);
+  const score = weight * sighting.confidence / (1 + distance / config.distanceScale);
   return Number.isFinite(score) ? Math.max(0, score) : 0;
 }
 
@@ -119,7 +127,7 @@ function nonAdjacentHighPressure(high: readonly ThreatDirection[]): boolean {
 
 function buildTenantThreat(
   report: AllianceMemberReport,
-  sightings: readonly FusedEntitySighting[],
+  sightings: readonly DirectionalSighting[],
   config: ThreatSummaryConfig,
 ): TenantThreatSummary {
   if (report.core === null) {
@@ -191,6 +199,30 @@ export function buildAllianceThreatSummaries(
 ): readonly TenantThreatSummary[] {
   const config = resolveThreatSummaryConfig(configInput);
   const reports = [...intel.memberReports].sort((a, b) => stableCompare(a.tenantId, b.tenantId));
-  return reports.map((report) => buildTenantThreat(report, intel.recentFused, config));
+  const sightings: DirectionalSighting[] = intel.recentFused.map((s: FusedEntitySighting) => ({
+    key: s.key,
+    kind: s.kind,
+    position: s.position,
+    confidence: s.decayedConfidence,
+  }));
+  return reports.map((report) => buildTenantThreat(report, sightings, config));
 }
 
+
+/** Canonical AllianceSnapshot → tenant-relative directional summary (Director/面板共用)。 */
+export function buildAllianceThreatSummariesFromSnapshot(
+  snapshot: AllianceSnapshot,
+  configInput: Partial<ThreatSummaryConfig> = {},
+): readonly TenantThreatSummary[] {
+  const config = resolveThreatSummaryConfig(configInput);
+  const reports = [...snapshot.members.values()].sort((a, b) => stableCompare(a.tenantId, b.tenantId));
+  const sightings: DirectionalSighting[] = snapshot.sightings
+    .filter((s: EntitySighting) => s.kind === "CORE" || s.kind === "UNIT")
+    .map((s) => ({
+      key: s.key,
+      kind: s.kind,
+      position: s.position,
+      confidence: Number.isFinite(s.confidence) ? Math.max(0, Math.min(1, s.confidence)) : 0,
+    }));
+  return reports.map((report) => buildTenantThreat(report, sightings, config));
+}

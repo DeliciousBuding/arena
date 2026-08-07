@@ -108,3 +108,33 @@ test("buildAllianceSnapshot：leaderboard 先验叠加 coreRaid", () => {
   });
   assert.ok((snap.threat.cells.get("0,0")?.coreRaid ?? 0) >= 1);
 });
+
+test("buildAllianceSnapshot：陈旧敌情时 tickWindow 末端保持 nowTick（directive TTL 不倒退）", () => {
+  const roster = registerAlliedEntities(EMPTY_ROSTER, {
+    tenantId: "t2",
+    ownerUsername: "buding",
+    entityIds: ["ally-core"],
+    tick: 80,
+    nowMs: 80_000,
+  });
+  const snapshot = buildAllianceSnapshot({
+    revision: 7,
+    members: [],
+    observations: [{
+      tenantId: "t2",
+      tick: 52,
+      kind: "UNIT",
+      entityId: "enemy-v",
+      ownerUsername: "enemy",
+      unitType: "VANGUARD",
+      controlled: false,
+      position: [5, 0],
+      evidence: "HISTORY",
+    }],
+    roster,
+    nowTick: 80,
+    generatedAtMs: 80_000,
+  });
+  assert.deepEqual(snapshot.tickWindow, [52, 80]);
+  assert.equal(snapshot.threat.generatedAtMs, 80_000);
+});

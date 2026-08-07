@@ -11,6 +11,7 @@
 
 import type { AllianceRole, AllianceDirective } from "../../alliance/control-types.ts";
 import type { AllianceSnapshot } from "../../alliance/types.ts";
+import { decideAllianceShadowPolicy, type ShadowDirectorPolicyConfig } from "../../alliance/director-policy.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { AllianceDirector } from "./types.ts";
 
@@ -84,3 +85,19 @@ export class FixedAllianceDirector implements AllianceDirector {
 }
 
 
+
+// ── ShadowPolicyAllianceDirector ───────────────────────────────
+
+/** Real Director v1 policy adapter for simulator/shadow evaluation only. */
+export class ShadowPolicyAllianceDirector implements AllianceDirector {
+  readonly kind = "shadow-policy-v1";
+  private readonly config: Partial<ShadowDirectorPolicyConfig>;
+
+  constructor(config: Partial<ShadowDirectorPolicyConfig> = {}) {
+    this.config = { ...config };
+  }
+
+  decide(snapshot: AllianceSnapshot, _rng: () => number) {
+    return decideAllianceShadowPolicy(snapshot, this.config);
+  }
+}

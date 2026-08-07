@@ -26,8 +26,8 @@ import { loadRulesManifest } from "../contracts/rules-manifest.ts";
 import { visibleCellSet } from "../visibility/visibility.ts";
 import { cellKey } from "../../domain/model.ts";
 import { evaluateDirective } from "../../alliance/directive.ts";
-import { computeForceCounts } from "../../alliance/counts.ts";
-import { projectThreatField } from "../../alliance/threat-field.ts";
+import { buildAllianceSnapshotFromSightings } from "../../alliance/snapshot.ts";
+import { mergeKey as canonicalSightingKey } from "../../alliance/sightings.ts";
 import { computeConfidence } from "../../alliance/member-report.ts";
 import type { AllianceSnapshot, EntitySighting } from "../../alliance/types.ts";
 import type { AllianceDirective, AllianceMemberReport, MemberStatus } from "../../alliance/control-types.ts";
@@ -70,6 +70,7 @@ export function buildMemberReport(
   world: SimWorld,
   tenantId: string,
   rules: RulesManifest,
+  alliedTenantIds: ReadonlySet<string> = new Set(),
 ): MemberReportResult {
   const player = world.players.get(tenantId);
   if (player === undefined) {
@@ -101,12 +102,13 @@ export function buildMemberReport(
   const visible = visibleCellSet(world, tenantId, rules);
   const currentSightings = new Map<string, EntitySighting>();
   for (const [enemyId, enemy] of world.players) {
-    if (enemyId === tenantId) continue;
+    if (enemyId === tenantId || alliedTenantIds.has(enemyId)) continue;
     if (enemy.core !== null && visible.has(cellKey(enemy.core.position))) {
-      const key = `core:${enemy.core.id}`;
+      const key = canonicalSightingKey({ kind: "CORE", entityId: enemy.core.id, ownerUsername: enemy.username, sourceTenant: tenantId, tick: world.tick, position: enemy.core.position });
       currentSightings.set(key, {
         key,
         kind: "CORE",
+        entityId: enemy.core.id,
         ownerUsername: enemy.username,
         position: enemy.core.position,
         sourceTenant: tenantId,
@@ -119,11 +121,12 @@ export function buildMemberReport(
     }
     for (const unit of enemy.units) {
       if (visible.has(cellKey(unit.position))) {
-        const key = `unit:${unit.id}`;
+        const key = canonicalSightingKey({ kind: "UNIT", entityId: unit.id, ownerUsername: enemy.username, sourceTenant: tenantId, tick: world.tick, position: unit.position });
         currentSightings.set(key, {
           key,
           kind: "UNIT",
           unitType: unit.unitType,
+          entityId: unit.id,
           ownerUsername: enemy.username,
           position: unit.position,
           sourceTenant: tenantId,
@@ -238,17 +241,15 @@ export function buildSnapshot(
     for (const u of p.units) allyEntityIds.add(u.id);
   }
 
-  return {
+  return buildAllianceSnapshotFromSightings({
     revision,
-    tickWindow: [tick, tick],
-    generatedAtMs: tick * 1000, // tick 派生，非 wall-clock
-    members,
+    members: [...members.values()],
     sightings,
     allyEntityIds,
-    threat: projectThreatField(sightings, tick, { generatedAtMs: tick * 1000 }),
-    counts: computeForceCounts(sightings, tick),
+    nowTick: tick,
+    generatedAtMs: tick * 1000, // tick 派生，非 wall-clock
     treasuryTenant,
-  };
+  });
 }
 
 // ── Config validation / hash ───────────────────────────────────
@@ -357,6 +358,7 @@ function countAllyTargetShots(
 export function runAllianceEpisode(config: AllianceEpisodeConfig): AllianceEpisodeResult {
   const rules = loadRulesManifest(config.episode.rulesPath);
   const treasuryTenant = validateAllianceConfig(config);
+  const allianceTenantSet = new Set(config.allianceTenants);
 
   // 跨 tick 状态
   const perTenantSightings = new Map<string, ReadonlyMap<string, EntitySighting>>();
@@ -401,7 +403,7 @@ export function runAllianceEpisode(config: AllianceEpisodeConfig): AllianceEpiso
       // 1. member reports + per-tenant sighting carry-forward
       const reports: AllianceMemberReport[] = [];
       for (const tid of config.allianceTenants) {
-        const { report, currentSightings } = buildMemberReport(world, tid, rules);
+        const { report, currentSightings } = buildMemberReport(world, tid, rules, allianceTenantSet);
         reports.push(report);
         perTenantSightings.set(
           tid,
@@ -416,6 +418,9 @@ export function runAllianceEpisode(config: AllianceEpisodeConfig): AllianceEpiso
 
       let directorRan = false;
       let directiveCount = 0;
+      let missionCount = 0;
+      let missionKinds: import("../../alliance/control-types.ts").MissionKind[] = [];
+      let retreatRecommendationCount = 0;
       let directorError: string | null = null;
 
       if (shouldReplan) {
@@ -439,6 +444,9 @@ export function runAllianceEpisode(config: AllianceEpisodeConfig): AllianceEpiso
           directorRan = true;
           try {
             const result = config.director.decide(snapshot, () => directorRng.next());
+            missionCount = result.missions?.length ?? 0;
+            missionKinds = [...new Set((result.missions ?? []).map((m) => m.kind))].sort(compareCodeUnit);
+            retreatRecommendationCount = result.retreatAssessments?.length ?? 0;
             for (const d of result.directives) {
               // WRONG_TENANT：以原 tenantId 为 key 存 shift 后的 directive——
               // 消费时 directive.tenantId ≠ tenantId → invalid reject（fail-open）。
@@ -462,6 +470,9 @@ export function runAllianceEpisode(config: AllianceEpisodeConfig): AllianceEpiso
         snapshotRevision: lastSnapshot?.revision ?? null,
         directorRan,
         directiveCount,
+        missionCount,
+        missionKinds,
+        retreatRecommendationCount,
         directorError,
         evaluations: [],
       };
@@ -568,5 +579,9 @@ export function runAllianceEpisode(config: AllianceEpisodeConfig): AllianceEpiso
 }
 
 export type { PlanSource } from "./types.ts";
+
+
+
+
 
 

@@ -99,4 +99,7 @@ export {
   resolveThreatSummaryConfig,
   threatDirection,
   buildAllianceThreatSummaries,
+  buildAllianceThreatSummariesFromSnapshot,
 } from "./threat-summary.ts";
+
+export * from "./director-policy.ts";

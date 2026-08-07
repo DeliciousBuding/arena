@@ -36,6 +36,7 @@ import {
 import {
   NoopAllianceDirector,
   FixedAllianceDirector,
+  ShadowPolicyAllianceDirector,
 } from "../../src/sim/alliance/director.ts";
 import type {
   AllianceEpisodeConfig,
@@ -144,6 +145,42 @@ function noFireScenario(): unknown {
   };
 }
 
+/** t2 类多方向压力：p1 核心 [0,0]，NE/SW 两支敌 Vanguard 同时进入视野；p2 是远端盟友。 */
+function multiPressureScenario(): unknown {
+  return {
+    rulesVersion: "v0.14",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1", username: "p1", resources: 12,
+        core: { id: "11111111-1111-1111-1111-111111111111", position: [0, 0], hp: 3, shield: 2, state: "NORMAL" },
+        units: [
+          { id: "22222222-2222-2222-2222-222222222201", owner: "p1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+          { id: "22222222-2222-2222-2222-222222222202", owner: "p1", position: [0, 1], hp: 3, unitType: "VANGUARD", cargo: 0 },
+          { id: "22222222-2222-2222-2222-222222222203", owner: "p1", position: [-1, 0], hp: 3, unitType: "VANGUARD", cargo: 0 },
+        ],
+      },
+      {
+        id: "p2", username: "p2", resources: 20,
+        core: { id: "44444444-4444-4444-4444-444444444444", position: [30, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: "55555555-5555-5555-5555-555555555501", owner: "p2", position: [31, 0], hp: 2, unitType: "WORKER", cargo: 0 }],
+      },
+      {
+        id: "eNE", username: "enemy-ne", resources: 12,
+        core: { id: "66666666-6666-6666-6666-666666666661", position: [20, 20], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: "77777777-7777-7777-7777-777777777771", owner: "eNE", position: [2, 2], hp: 3, unitType: "VANGUARD", cargo: 0 }],
+      },
+      {
+        id: "eSW", username: "enemy-sw", resources: 12,
+        core: { id: "66666666-6666-6666-6666-666666666662", position: [-20, -20], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: "77777777-7777-7777-7777-777777777772", owner: "eSW", position: [-2, -2], hp: 3, unitType: "VANGUARD", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [[2, 0], [32, 0]] },
+    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+  };
+}
 function tenants(ids: readonly string[]): EpisodeTenant[] {
   return ids.map((id) => ({ id, planner: "deterministic" as const }));
 }
@@ -178,6 +215,12 @@ function deterministicProjection(result: AllianceEpisodeResult): unknown {
 
 const RULES = loadRulesManifest(MANIFEST_PATH);
 
+test("alliedTenantIds source filter: 盟友不进入 currentSightings/localThreat", () => {
+  const world = worldFromScenario(twoTenantScenario());
+  const result = buildMemberReport(world, "p1", RULES, new Set(["p1", "p2"]));
+  assert.equal(result.currentSightings.size, 0);
+  assert.equal(result.report.localThreat, 0);
+});
 // ═══════════════════════════════════════════════════════════════
 // Simultaneous planning
 // ═══════════════════════════════════════════════════════════════
@@ -253,6 +296,46 @@ test("Fixed directive: accepted 为 shadow（baseline-shadow），不接管动�
   }
 });
 
+test("ShadowPolicy director: mission/retreat metadata 可观测，但世界仍与 baseline 等价", () => {
+  const director = new ShadowPolicyAllianceDirector();
+  const baseline = runEpisode(baseEpisodeConfig());
+  const alliance = runAllianceEpisode(allianceConfig({ director, directorPeriodTicks: 1 }));
+
+  assert.equal(alliance.episode.finalWorldHash, baseline.finalWorldHash);
+  assert.equal(alliance.episode.metrics.illegalPlans, baseline.metrics.illegalPlans);
+  assert.equal(alliance.kpi.directiveAccepted, 40 * 2);
+  assert.equal(alliance.kpi.baselineFallbackCount, 0);
+  for (const entry of alliance.trace) {
+    assert.equal(entry.directiveCount, 2);
+    assert.equal(entry.missionCount, 2);
+    assert.deepEqual(entry.missionKinds, ["ASSEMBLE"]);
+    assert.equal(entry.retreatRecommendationCount, 0);
+    assert.ok(entry.evaluations.every((e) => e.planSource === "baseline-shadow"));
+  }
+});
+test("ShadowPolicy t2-like NE+SW: trace 产生 RETREAT recommendation，但 world 仍 baseline 等价", () => {
+  const episode = baseEpisodeConfig({
+    scenario: multiPressureScenario(),
+    tenants: tenants(["p1", "p2", "eNE", "eSW"]),
+    ticks: 12,
+    seed: 77,
+  });
+  const baseline = runEpisode(episode);
+  const alliance = runAllianceEpisode(allianceConfig({
+    episode,
+    allianceTenants: ["p1", "p2"],
+    director: new ShadowPolicyAllianceDirector(),
+    directorPeriodTicks: 1,
+  }));
+  assert.equal(alliance.episode.finalWorldHash, baseline.finalWorldHash);
+  const first = alliance.trace[0];
+  assert.ok(first !== undefined);
+  assert.ok(first.missionKinds.includes("RETREAT"), `missions=${first.missionKinds.join(",")}`);
+  assert.ok(first.retreatRecommendationCount >= 1);
+  assert.ok(first.evaluations.every((e) => e.planSource === "baseline-shadow"));
+  assert.equal(alliance.episode.metrics.illegalPlans, baseline.metrics.illegalPlans);
+  assert.ok(alliance.trace.every((entry) => entry.evaluations.every((e) => e.planSource === "baseline-shadow")));
+});
 test("period=1: 每 tick replan（directorRan 全 true，snapshotRevision 单调递增）", () => {
   const director = new FixedAllianceDirector({ roles: new Map([["p1", "TREASURY"]]) });
   const result = runAllianceEpisode(allianceConfig({ director, directorPeriodTicks: 1 }));
@@ -397,7 +480,7 @@ test("sighting: per-tenant 历史不串——e1 只被 p1 目击，p2 视野为�
 
   // p1 视野内有 e1 core（曼哈顿 1 ≤ core vision 5）
   const p1Sightings = [...p1.currentSightings.values()];
-  assert.ok(p1Sightings.some((s) => s.key === "core:66666666-6666-6666-6666-666666666666"));
+  assert.ok(p1Sightings.some((s) => s.key === "CORE:66666666-6666-6666-6666-666666666666"));
   assert.equal(p1.report.localThreat, p1Sightings.length, "localThreat = 本 tenant 可见目击数");
 
   // p2 视野内无 e1（曼哈顿 9 > 5）
@@ -412,7 +495,7 @@ test("sighting: carry-forward 不丢历史——不可见后仍保留（confiden
   // tick 1 目击 → tick 2 无新目击（carry-forward）
   const merged1 = mergeSightings(new Map(), p1tick1.currentSightings, 1);
   const merged2 = mergeSightings(merged1, new Map(), 2);
-  const e1 = [...merged2.values()].find((s) => s.key === "core:66666666-6666-6666-6666-666666666666");
+  const e1 = [...merged2.values()].find((s) => s.key === "CORE:66666666-6666-6666-6666-666666666666");
   assert.ok(e1, "history must be carried forward");
   assert.equal(e1!.currentlyVisible, false);
   assert.equal(e1!.firstSeenTick, 1, "firstSeen preserved");
@@ -443,7 +526,7 @@ test("sighting: snapshot 跨 tenant union 稳定去重（同 key 取最新 lastS
     5,
   );
 
-  const e1 = snapshot.sightings.find((s) => s.key === "core:66666666-6666-6666-6666-666666666666");
+  const e1 = snapshot.sightings.find((s) => s.key === "CORE:66666666-6666-6666-6666-666666666666");
   assert.ok(e1, "e1 sighting must be in snapshot");
   assert.equal(e1!.lastSeenTick, 5);
   assert.equal(e1!.sourceTenant, "p1");
@@ -547,3 +630,8 @@ test("config 验证: 重复/越界/非法 period fail fast", () => {
   assert.throws(() => runAllianceEpisode(allianceConfig({ directorPeriodTicks: 0 })), /positive integer/);
   assert.throws(() => runAllianceEpisode(allianceConfig({ directorPeriodTicks: -3 })), /positive integer/);
 });
+
+
+
+
+

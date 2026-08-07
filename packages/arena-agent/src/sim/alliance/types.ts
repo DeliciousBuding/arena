@@ -14,7 +14,8 @@
  */
 
 import type { EpisodeConfig, EpisodeResult } from "../harness/episode.ts";
-import type { AllianceDirective } from "../../alliance/control-types.ts";
+import type { AllianceDirective, Mission, MissionKind } from "../../alliance/control-types.ts";
+import type { RetreatCorridorAssessment } from "../../alliance/director-policy.ts";
 import type { AllianceSnapshot } from "../../alliance/types.ts";
 
 // ── Director 故障注入 ──────────────────────────────────────────
@@ -57,6 +58,12 @@ export interface AllianceEpisodeConfig {
 
 // ── AllianceDirector 接口 ──────────────────────────────────────
 
+export interface AllianceDirectorDecision {
+  readonly directives: readonly AllianceDirective[];
+  readonly missions?: readonly Mission[];
+  readonly retreatAssessments?: readonly RetreatCorridorAssessment[];
+}
+
 export interface AllianceDirector {
   /** 稳定标识（参与 replay footprint）。 */
   readonly kind: string;
@@ -64,7 +71,7 @@ export interface AllianceDirector {
   decide(
     snapshot: AllianceSnapshot,
     rng: () => number,
-  ): { readonly directives: readonly AllianceDirective[] };
+  ): AllianceDirectorDecision;
 }
 
 // ── Plan 来源 ──────────────────────────────────────────────────
@@ -125,6 +132,9 @@ export interface AllianceTraceEntry {
   readonly snapshotRevision: number | null;
   readonly directorRan: boolean;
   readonly directiveCount: number;
+  readonly missionCount: number;
+  readonly missionKinds: readonly MissionKind[];
+  readonly retreatRecommendationCount: number;
   readonly directorError: string | null;
   readonly evaluations: readonly DirectiveEvaluationTrace[];
 }
@@ -142,5 +152,6 @@ export interface AllianceEpisodeResult {
     readonly configHash: string;
   };
 }
+
 
 
