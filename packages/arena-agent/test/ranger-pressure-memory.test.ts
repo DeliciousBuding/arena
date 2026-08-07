@@ -84,6 +84,37 @@ test("aggressive Ranger 记忆敌核心超 64 格 → 不前压（防远征）",
   assert.deepEqual(plan.unitActions["r1"], { type: "MOVE", direction: "LEFT" }, "超 64 格回家不远征");
 });
 
+test("aggressive Ranger 兵力低于 attackForce → 不前压（守家重建防送死）", () => {
+  const planner = new SafetyPlanner({ ...AGGRESSIVE, attackForce: 4 });
+  // 仅 1 Ranger（military 1 < 4）→ 前压被 gate 拦截 → 回家守位（LEFT）
+  planner.decide({ state: makeState(1, [10, 0], [enemyCore([40, 0])]), policy: AGGRESSIVE_POLICY });
+  const plan = planner.decide({ state: makeState(2, [10, 0], []), policy: AGGRESSIVE_POLICY });
+  assert.deepEqual(plan.unitActions["r1"], { type: "MOVE", direction: "LEFT" }, "兵力不足守家");
+});
+
+test("aggressive Ranger 兵力达标（≥attackForce）→ 前压", () => {
+  const planner = new SafetyPlanner({ ...AGGRESSIVE, attackForce: 4 });
+  // 4 Ranger（military 4 ≥ 4）→ 前压 RIGHT
+  const rangers = [
+    { id: "r0", position: [10, 0] as Position, hp: 2, unitType: "RANGER" as const, cargo: 0 },
+    { id: "r1", position: [10, 1] as Position, hp: 2, unitType: "RANGER" as const, cargo: 0 },
+    { id: "r2", position: [10, -1] as Position, hp: 2, unitType: "RANGER" as const, cargo: 0 },
+    { id: "r3", position: [10, 2] as Position, hp: 2, unitType: "RANGER" as const, cargo: 0 },
+  ];
+  const state1: TickState = {
+    tick: 1, status: "ACTIVE", resources: 10, resourceCapacity: 10, resourceSpace: 10, population: 4,
+    core: { id: "c1", position: [0, 0], hp: 5, shield: 5, state: "NORMAL", ownerUsername: "p1" },
+    units: rangers, workers: [], vanguards: [], rangers,
+    visibleEnemies: [enemyCore([40, 0])], resourceCells: new Set(), obstacleCells: new Set(),
+    beacon: { position: [100, 100], status: "GROUND", carrierId: null }, events: [],
+  };
+  planner.decide({ state: state1, policy: AGGRESSIVE_POLICY });
+  const state2: TickState = { ...state1, tick: 2, visibleEnemies: [] };
+  const plan = planner.decide({ state: state2, policy: AGGRESSIVE_POLICY });
+  assert.equal(plan.intents["r1"], "ranger_move", "兵力达标前压");
+  assert.deepEqual(plan.unitActions["r1"], { type: "MOVE", direction: "RIGHT" });
+});
+
 test("defensive Ranger 记忆敌核心 → 不前压（守家锚点）", () => {
   const planner = new SafetyPlanner(DEFENSIVE);
   planner.decide({ state: makeState(1, [10, 0], [enemyCore([40, 0])]), policy: DEFENSIVE_POLICY });
