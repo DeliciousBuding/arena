@@ -89,6 +89,13 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "frontier-priority-v1": Object.freeze({ frontierPriority: true }),
     /**
+     * 前锋重装（2026-08-08，vanguard-heavy-v1）：只影响 deterministic 侧
+     * 产兵配比（vanguardRatio 0.75，见 DETERMINISTIC_VARIANT_CONFIG），
+     * safety 侧无开关——空覆盖注册以满足 resolveVariantsConfig 的
+     * 全量 safety 校验（缺注册 = 生产重启 fail-fast）。
+     */
+    "vanguard-heavy-v1": Object.freeze({}),
+    /**
      * 核心迁移中交仓待命（2026-08-07，core-moving-hold-v1）：Core MOVING 时
      * （START_MOVE 迁移中，引擎拒 DEPOSIT——CORE_MOVING/CORE_NOT_PRESENT），
      * cargo worker 原地持货等核心稳定，不追着移动核心空跑（生产实测 t2/t3
