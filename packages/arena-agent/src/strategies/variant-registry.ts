@@ -110,6 +110,12 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 的去挖——"矿发现了没标注/没分配去挖"的算法端闭环。默认 false 零回归。
      */
     "harvest-memory-mine-v1": Object.freeze({ harvestMemoryMine: true }),
+    /**
+     * 清剿可见敌方 WORKER（2026-08-08，用户"挂机/落单单位赶紧打掉"）：
+     * aggressive Vanguard 对 12 格内可见敌 WORKER 优先追击（白赚：断经济 +
+     * 无反击），避开敌核心守军 8 格；只最近 1 个去（防扎堆）。默认 false 零回归。
+     */
+    "vanguard-prey-worker-v1": Object.freeze({ vanguardPreyWorker: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),
