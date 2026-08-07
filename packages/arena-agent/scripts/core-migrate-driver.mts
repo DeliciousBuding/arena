@@ -16,9 +16,10 @@
  * 停止/清理：删 data/runtime/human-commands/<tenant>.json 里的 command，或等脚本自然结束。
  */
 import { writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createNavState, notePosition, planDirection, chebyshev, type Dir, type Pos } from "../src/app/core-migrate-nav.ts";
+import { createNavState, notePosition, planDirection, chebyshev, mergeObstacleSets, type Dir, type Pos } from "../src/app/core-migrate-nav.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = process.env.ARENA_DATA_ROOT ?? "D:/Code/Projects/arena/data";
@@ -96,9 +97,27 @@ function readLatestCore(tenant: string): CalibCase | null {
         for (const p of o.positions ?? []) obstacles.add(p.join(","));
       }
     }
-    return { tick: j.after.tick, core: { id: core.id, position: [core.position[0], core.position[1]], state: core.state ?? "NORMAL" }, obstacles };
+    // 合并 survey 全局测绘障碍（2026-08-08 修复）：calibration 视野障碍只有十几个且
+    // 不稳定（t4 x=400 峡谷实证——(399,-155) 实为可走格却被视野障碍困住），
+    // survey 库是全量累积测绘，路径规划更准。
+    return mergeObstacleSets(loadSurveyObstacles(args.tenant), obstacles);
   } catch {
     return null;
+  }
+}
+
+/** 读 survey 全局测绘障碍表（<data-root>/runtime/survey/<tenant>.db，只读）。 */
+function loadSurveyObstacles(tenant: string): ReadonlySet<string> {
+  const dbPath = join(args.dataRoot, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(dbPath)) return new Set();
+  try {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    const rows = db.prepare("SELECT x, y FROM obstacles").all() as { x: number; y: number }[];
+    db.close();
+    return new Set(rows.map((r) => `${r.x},${r.y}`));
+  } catch (e) {
+    log(`survey 障碍读取失败: ${e instanceof Error ? e.message : String(e)}`);
+    return new Set();
   }
 }
 
