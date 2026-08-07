@@ -525,6 +525,57 @@ export class SafetyPlanner {
     if (designee === undefined || designee.u.id !== unit.id) return null;
     return "fetch";
   }
+  /** 信标护送（beacon-escort，2026-08-08 军事负责人信标预案，A/B 证据
+   *  beacon-escort-ab.mts）：beaconGrab 开启时，除取标设计者外**最近**的
+   *  Vanguard 担任护送者，贴身影护设计者/载者（保持 ≤2 格，防止单骑深入
+   *  敌游荡区被射爆——A/B：载者阵亡掉标 2/3→0、取标干净 3/3、军事阵亡持平
+   *  （36 vs 35）；护送只护"取"不护"回"（载者持标盾 buff 抗揍，回程跟入
+   *  敌射程反多送目标——escort-return 已否决）。
+   *  设计者本人不护送（其 fetch/return 由 beaconMission 处理）；多护送者
+   *  防全军涌向信标（与 fetch 单设计者同构）。beaconGrab 关闭 = 零回归。 */
+  private beaconEscortMission(
+    state: TickState,
+    unit: UnitSnapshot,
+  ): { readonly kind: "escort-fetch"; readonly designeePos: Position } | null {
+    if (this.config.beaconGrab !== true) return null;
+    if ((this.config as { beaconEscort?: boolean }).beaconEscort === false) return null;
+    const beacon = state.beacon;
+    const unitById = new Map([...state.vanguards, ...state.rangers].map((u) => [u.id, u]));
+    let designeeId: string | null = null;
+    if (beacon.status === "CARRIED") {
+      // 已持标：不护送回程——载者持标盾 buff（5→10）抗揍，护送者跟入敌射程
+      // 反而多送一个目标（A/B 实证：escort-return 让军事存活 6.7→2.0）。
+      // 拾取完成后护送自动解散，各回本位（守家/巡逻）。
+      return null;
+    } else {
+      // GROUND：与 beaconMission 同闸门（防追移动标/敌核心战区/远征）
+      if (this.world.beaconMoving(BEACON_MOVE_WINDOW_TICKS)) return null;
+      if (this.world.coreHuntTargets().some(
+        (target) => chebyshev(target.position, beacon.position) <= BEACON_CONTEST_RADIUS,
+      )) return null;
+      if (state.core === null) return null;
+      if (chebyshev(beacon.position, state.core.position) > (this.config.beaconGrabMaxDist ?? BEACON_GRAB_DEFAULT_MAX_DIST)) return null;
+      const vanguardPool = [...state.vanguards]
+        .map((u) => ({ u, d: chebyshev(u.position, beacon.position) }))
+        .sort((a, b) => a.d - b.d || a.u.id.localeCompare(b.u.id));
+      const rangerPool = [...state.rangers]
+        .map((u) => ({ u, d: chebyshev(u.position, beacon.position) }))
+        .sort((a, b) => a.d - b.d || a.u.id.localeCompare(b.u.id));
+      const designee = vanguardPool[0] ?? rangerPool[0];
+      if (designee === undefined) return null;
+      if (designee.u.id === unit.id) return null;
+      designeeId = designee.u.id;
+    }
+    const designeePos = unitById.get(designeeId)?.position;
+    if (designeePos === undefined) return null;
+    // 护送者 = 距设计者最近的另一 Vanguard（抗揍近战；Ranger 纸脆不护送，
+    // A/B squad2v1r 中间值：Ranger 上前的护载收益被其高阵亡抵消）。
+    const escorts = [...state.vanguards]
+      .filter((u) => u.id !== designeeId)
+      .sort((a, b) => chebyshev(a.position, designeePos) - chebyshev(b.position, designeePos) || a.id.localeCompare(b.id));
+    if (escorts.length === 0 || escorts[0].id !== unit.id) return null;
+    return { kind: "escort-fetch", designeePos };
+  }
 
   decide(input: SafetyPlannerInput): Plan {
     const { state } = input;
@@ -1069,6 +1120,19 @@ export class SafetyPlanner {
         set(unit, { type: "WAIT" }, "vanguard_beacon_hold");
         return;
       }
+      const direction = stepToward(unit.position, target, militaryObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, intent);
+      return;
+    }
+
+    // 信标护送（beacon-escort，2026-08-08）：护送者贴身影护设计者/载者（≤2
+    // 格）。优先级高于攻坚/打野——护标即护全局 buff（盾 10 + 采集 2×）。
+    const escortTask = this.beaconEscortMission(state, unit);
+    if (escortTask !== null) {
+      const target = escortTask.designeePos;
+      const intent = "vanguard_beacon_escort";
+      const d = chebyshev(unit.position, target);
+      if (d <= 2) { set(unit, { type: "WAIT" }, intent); return; }
       const direction = stepToward(unit.position, target, militaryObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, intent);
       return;
