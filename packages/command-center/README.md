@@ -38,12 +38,17 @@ npm start          # 或 node server.mjs
 
 ## 能力
 
-- **全局联盟大地图**：合并 t1–t4 最新 calibration case（`before.state` 投影），官方素材渲染
+- **全局联盟大地图**：合并 t1–t4 同一 run 的 calibration case（`before.state` 投影），官方素材渲染
   （core/worker/vanguard/ranger/crystal/asteroid/beacon），租户配色、图层开关、平移/缩放/自适应、悬浮详情。
+  测绘语义：障碍/资源静态累积（带 lastSeen 新鲜度，被采完的资源淡出）、单位/核心按 id 保留最新
+  tick 快照（消除旧版"单位云团/核心幽灵"——之前 3 个 case 每 tick 位置堆成 cell 导致单位成片、
+  核心像有两个）。每租户疆域色晕 + 核心标签，一眼区分 4 租户领地。
 - **探索测绘（fog 记忆）**：聚焦租户时，`/api/exploration` 累积同一 run 全部 calibration case
-  （同一世界连续 tick 采样）的 obstacle/resource 位置 → 完整地形测绘（半透明"已测绘"层），
-  当前 case 可见物体全亮覆盖。例：t1 从"44 障碍/0 资源"→"384 障碍/8 资源/745 单位轨迹"。
-  HUD 显示测绘统计（障碍/资源/核心/case 数/tick）；"测绘"图层可开关。
+  （同一世界连续 tick 采样）的 obstacle/resource 位置 → 完整地形测绘（半透明"已测绘"层，按距最新
+  tick 的步数淡出），当前 case 可见物体全亮覆盖。HUD 显示测绘统计；"测绘"图层可开关。
+- **单位在动可视化**：live 视图画最近 5 tick 移动轨迹（fading trail）；回放引擎自动播放连续 tick
+  快照（单位插值移动 + 15s tick 读条 + 事件浮字）；SHOT/SWEEP/HARVEST/DEPOSIT/CORE_DESTROYED 等
+  事件特效 + 销毁碎片迸溅。
 - **租户卡片**：在线状态（supervisor 探测 / outcome.jsonl 新鲜度）、资源、增量、工人数、最大/均值距离、可见资源、事件数、60 tick 均值。
 - **实时决策流**：`runtime.jsonl` 尾部决策（tick / deadlineOutcome / agent/selection 延迟 / submitResult / 中止请求），统一或按租户 tab；事件 tab 聚合 outcome events。
 - **战术交互层（官方 Arena Hero 前端移植 · 只读演练）**：
@@ -58,6 +63,12 @@ npm start          # 或 node server.mjs
   - 视野圈（官方 visibility 半径：核心 5 / 工人 3 / 先锋 4 / 游侠 5）；
   - 信标方向指示器（BeaconDirectionIndicator）：屏幕边缘金色箭头 + 点击居中；
   - 租户 HUD（GameStats）：资源/容量/人口/tick；
+  - 命令窗口倒计时（CommandCountdown）：最近观测计划 tick 起 15s 读条，≤5s 变红；
+  - 资源活动面板（ResourceActivity）：左下角悬浮最近采集/交付/治疗/信标事件；
+  - 重生覆盖层（RespawnOverlay）：world status=RESPAWNING 时全屏提示；
+  - 悬浮信息框（MapFeatureInfo）：图标头 + 指向箭头 + 记忆态标注；
+  - 单位/核心官方细节：WORKER 载货条、受伤 HP 条、同格堆叠 ×2 徽章、选中波纹、
+    核心 @拥有者标签 + 盾条/血条（携带冠军信标盾上限 10）；
   - Esc 取消选择/模式。
 - **官方商店兑换码**：代理 `https://linuxdoshop.arenahero.io`（公开 `/api/v1/products` 动态价格/库存；`me`/`orders` 需登录 Cookie）。
   - Cookie 在浏览器 localStorage 保存，请求时经 `X-Shop-Cookie` 头内存转发，**不落盘服务器、不进日志**。
@@ -69,9 +80,9 @@ npm start          # 或 node server.mjs
 | 端点 | 说明 |
 |---|---|
 | `GET /api/overview` | 4 租户 outcome 最新快照 + 60 tick 均值 |
-| `GET /api/map` | 合并最近 3 个 calibration case × 4 租户 → 全局 cells/bounds/beacons |
+| `GET /api/map` | 同一 run 校准 case 合并 → 全局 cells（含 fresh 新鲜度）/bounds/beacons |
 | `GET /api/stream?tenant=&n=` | runtime.jsonl 尾部（决策流） |
-| `GET /api/events?tenant=&n=` | outcome.jsonl 尾部事件聚合 |
+| `GET /api/events?tenant=&n=` | calibration case 结构化事件聚合（`before.state.events`；旧版读 outcome.jsonl 字符串导致事件页恒空） |
 | `GET /api/tenants` | supervisor 探测 + 4 租户在线状态 |
 | `GET /api/shop` | 官方商店商品（动态价格/库存，20s 缓存） |
 | `GET /api/shop/me` | 官方账户 + Core 资源（需 `X-Shop-Cookie`） |
