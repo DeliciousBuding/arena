@@ -2633,7 +2633,8 @@ function renderLegend() {
     <li><span class="sw unit"></span>单位</li>
     <li><span class="sw resource"></span>资源</li>
     <li><span class="sw obstacle"></span>障碍</li>
-    <li><span class="sw beacon"></span>冠军信标</li>`;
+    <li><span class="sw beacon"></span>冠军信标</li>
+    <li><span class="sw memory"></span>已探索记忆（非当前 tick 淡显）</li>`;
 }
 boot().catch((err) => {
   console.error('boot failed', err);

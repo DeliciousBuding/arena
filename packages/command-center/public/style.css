@@ -302,6 +302,7 @@ body::after {
 .legend .sw.resource { background: radial-gradient(circle at 50% 40%, #d9ffe6 0%, #76b889 55%, #3d6b4f 100%); }
 .legend .sw.obstacle { background: repeating-linear-gradient(45deg, #3a4046 0 3px, #23272c 3px 6px); }
 .legend .sw.beacon { background: radial-gradient(circle at 50% 40%, #fff2c0 0%, #e0b94f 55%, #8a6a1e 100%); }
+.legend .sw.memory { background: rgba(150,162,174,.22); box-shadow: inset 0 0 0 1px rgba(255,255,255,.2); }
 .toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
 .toggles label {
   display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-dim); cursor: pointer;
