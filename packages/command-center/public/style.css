@@ -289,8 +289,9 @@ body::after {
 .tenant-card .row3 {
   margin-top: 9px; padding-top: 7px; border-top: 1px dashed var(--border-faint);
   font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
-  display: flex; gap: 10px; flex-wrap: wrap;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px;
 }
+.tenant-card .row3 span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tenant-card .row3 b { color: var(--text-dim); font-weight: 600; }
 
 /* ---------- 图例 / 开关 ---------- */
@@ -650,6 +651,18 @@ body::after {
 .hud-survey .hud-val { font-size: 11px; color: var(--text-dim); }
 
 /* ---------- 决策流折叠 ---------- */
+/* 拖拽调高把手：决策流高度 140-460px 可拖，持久化；折叠时隐藏 */
+.stream-grip {
+  position: absolute; top: -5px; left: 0; right: 0; height: 10px; z-index: 6;
+  cursor: ns-resize; display: flex; align-items: center; justify-content: center;
+  touch-action: none;
+}
+.stream-grip::after {
+  content: ""; width: 46px; height: 3px; border-radius: 2px;
+  background: rgba(255,255,255,.13); transition: background .2s ease, transform .2s var(--ease);
+}
+.stream-grip:hover::after { background: rgba(255,255,255,.35); transform: scaleY(1.5); }
+#streamPane.collapsed .stream-grip { display: none; }
 .stream-head { display: flex; align-items: center; gap: 10px; padding-right: 14px; }
 .stream-toggle {
   display: flex; align-items: center; gap: 10px;
