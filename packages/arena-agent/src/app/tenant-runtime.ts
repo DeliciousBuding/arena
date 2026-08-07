@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { loadRuntimeConfig, resolveCircuitBreaker, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
+import { loadPersistentEnemyIntel } from "./enemy-intel.ts";
 import { resolveArenaDataRoot, resolveTenantBaseDir } from "./data-root.ts";
 import { SingleWriterLock } from "./single-writer-lock.ts";
 import { newProcessRunId, readGitSha, writeRunManifest, type RunManifest } from "./run-manifest.ts";
@@ -473,6 +474,13 @@ export async function runTenant(
     // （vanguardRatio/accumulateThreshold/spawnReserve）——"变体启用=配置声明"
     // 在 deterministic 模式同样成立（如 strike-core-v1 爆兵打水晶）。
     const deterministicVariantConfig = resolveDeterministicVariantsConfig(config.variants);
+    // 持久敌情测绘（2026-08-07）：启用 militaryHunt 变体时，从本租户历史
+    // calibration cases 提取最后已知敌 Core 位置注入 planner——重启后军事仍
+    // 记得敌方基地（解决"重启→记忆清零→军队空转"）。只读、有界、失败静默。
+    const initialCoreHuntTargets =
+      decisionMode === "deterministic" && variantConfig.militaryHunt === true
+        ? loadPersistentEnemyIntel(dirs.calibrationDir)
+        : [];
     const planner =
       decisionMode === "deterministic"
         ? Object.keys(variantConfig).length === 0
@@ -484,6 +492,7 @@ export async function runTenant(
               deterministicVariantConfig.vanguardRatio,
               deterministicVariantConfig.accumulateThreshold ?? 0,
               deterministicVariantConfig.spawnReserve,
+              initialCoreHuntTargets,
             )
         : new SafetyPlanner({ ...AGGRESSIVE_SAFETY_CONFIG, ...variantConfig });
     const coordinator = new DecisionCoordinator({

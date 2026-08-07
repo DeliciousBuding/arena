@@ -47,6 +47,10 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
       militarySearchDense: true,
       militaryRingHoldTicks: 20,
       enemyCoreMemoryTicks: 1200,
+      // 敌情狩猎（2026-08-07，持久敌情测绘）：无可见敌人/资源时优先回访最后
+      // 已知敌基地（CORE 目击 sticky + Worker 轨迹推断）并清扫，替代 home 盲搜
+      // ——t1 生产实证：敌 Core 迁移后军队在旧位置空转、环搜几何近失永不接敌。
+      militaryHunt: true,
     }),
   });
 

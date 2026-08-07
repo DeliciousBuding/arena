@@ -26,7 +26,7 @@ import {
 import { UNIT_MAX_HP } from "../domain/plan-validator.ts";
 import { countEnemiesNearCore } from "../domain/plan-validator.ts";
 import { PhaseMachine, type PhaseConfig } from "../domain/phase-machine.ts";
-import { World } from "../domain/world.ts";
+import { type CoreHuntTarget, World } from "../domain/world.ts";
 import {
   assessThreat,
   coreDamagedThisTick,
@@ -243,6 +243,14 @@ export interface SafetyPlannerConfig {
    */
   readonly militaryRingHoldTicks?: number;
   /**
+   * 敌情狩猎（2026-08-07，持久敌情测绘）：aggressive 军事在无可见敌人/资源时，
+   * 优先回访"最后已知敌基地"（World.coreHuntTargets：CORE 目击 sticky + Worker
+   * 轨迹推断锚点）并清扫，而不是从自家 Core 盲目环搜——t1 生产实证：敌 Core
+   * 迁移后军队在旧位置空转，16 方位环搜射线距迁移后 Core 仍 ~6 格 > 视野 4，
+   * 几何近失永不接敌。默认 false = 历史行为（home 环搜，零回归）。
+   */
+  readonly militaryHunt?: boolean;
+  /**
    * worker 空闲回血（2026-08-07，B13 候选，竞品 heal priority 对照）：
    * 空 worker（无 cargo、无资源任务、未撤离）HP 未满且 Core 资源足够
    * 补满时回 Core 补血——在 Core 上由主循环 HEAL 分支结算（1 HP=1 资源，
@@ -317,6 +325,11 @@ const DETACHED_RETURN_TICKS = 8;
 const BOUNDED_RAID_DISTANCE = 40;
 /** 军事打野沿环扫描时间预算：同一八分点目标 >N tick 未到达强制换向（防障碍点卡死）。 */
 const SCAVENGE_HOLD_TICKS = 24;
+/** 敌情狩猎清扫半径（Chebyshev）：进入该范围视为"到达基地"，开始扇形清扫。 */
+const HUNT_SWEEP_RADIUS = 4;
+/** 敌情狩猎清扫时长：单位在基地清扫圈内停留该 tick 数仍未发现敌 Core → 记
+ *  清扫并旋转到下一目标（竞品 "整个区域被视野覆盖且未发现 Core 才删除"）。 */
+const HUNT_SWEEP_TICKS = 8;
 /** B10 worker 遭遇撤离（竞品 Scout And Observer Response）：撤离触发半径。 */
 const SCOUT_EVADE_RADIUS = 3;
 /** 到 Core 3 格内后的冷却 tick（竞品 three-Tick cooldown）。 */
@@ -403,6 +416,11 @@ export class SafetyPlanner {
    *  → 军事永不出视野接敌。改沿环扫描（到达八分点后 direction+1 扫圆周，
    *  扫满 8 点进下一环）+ 时间预算（同一目标 >SCAVENGE_HOLD_TICKS 未到达强制换向）。 */
   private scavengeSweep = new Map<string, { ring: number; reached: number; lastReach: number }>();
+  /** 敌情狩猎清扫状态（2026-08-07）：huntArriveAt = 单位进入某基地清扫圈的起始
+   *  tick（unitId → {key, tick}）；huntSweptAt = 基地已清扫 tick（key → tick，
+   *  目标 lastSeenTick > sweptAt 视为"清扫后重新发现"，恢复狩猎）。 */
+  private readonly huntArriveAt = new Map<string, { key: string; tick: number }>();
+  private readonly huntSweptAt = new Map<string, number>();
   /** B10 worker 遭遇撤离状态（unitId → 返回截止/冷却截止 tick）。 */
   private scoutEvadeState = new Map<string, { returnUntil: number; cooldownUntil: number }>();
   /** B8 守卫轮换 one-at-a-time：回修流程中的守卫（unitId → 名额占用截止 tick）。 */
@@ -421,6 +439,22 @@ export class SafetyPlanner {
     this.config = config;
     this.world = world;
     this.phase = new PhaseMachine(config.phase);
+  }
+
+  /** 启动播种（持久敌情测绘，2026-08-07）：从历史 calibration cases 提取的最后
+   *  已知敌 Core 位置注入 World——重启后军事仍记得敌方基地（解决"重启→记忆
+   *  清零→军队空转"）。返回实际播种数。 */
+  seedCoreHuntTargets(targets: readonly CoreHuntTarget[]): number {
+    return this.world.seedCoreHuntTargets(targets);
+  }
+
+  /** 敌情狩猎扫掠点：远距离（>清扫圈）直接朝基地中心；近距离按单位序号绕基地
+   *  圆周展开（DENSE_DELTAS × 2，16 方位）——小队扇形覆盖清扫，防所有单位挤
+   *  同格/同向（竞品彻查时"优先选择新增覆盖最多、相互视野重叠最少的目标"）。 */
+  private huntSweepPoint(target: Position, index: number, reach: number): Position {
+    if (reach > HUNT_SWEEP_RADIUS) return target;
+    const [dx, dy] = DENSE_DELTAS[(index * 3 + 7) % DENSE_DELTAS.length]!;
+    return [target[0] + dx * 2, target[1] + dy * 2];
   }
 
   decide(input: SafetyPlannerInput): Plan {
@@ -879,6 +913,34 @@ export class SafetyPlanner {
       // Core 格被 Worker 回仓占用时永远到不了 → 打野永不触发、Vanguard 枯竭后
       // 空转守家。无敌人时 target 恒为 Core 位置，该到位限制无意义。
       if (enemies.length === 0 && state.resourceCells.size === 0 && state.core !== null) {
+        // 敌情狩猎（militaryHunt，2026-08-07 持久敌情测绘）：优先回访最后已知
+        // 敌基地（CORE 目击 sticky + Worker 轨迹推断锚点），而不是从自家 Core
+        // 盲目环搜。清扫语义：进入清扫圈停留 HUNT_SWEEP_TICKS 仍未发现敌 Core
+        // → 记清扫旋转下一目标；目标被重新目击（lastSeenTick 更新）→ 恢复狩猎。
+        if (this.config.militaryHunt === true) {
+          const hunt = this.world.coreHuntTargets();
+          const target = hunt.find((t) => {
+            const sweptAt = this.huntSweptAt.get(cellKey(t.position));
+            return sweptAt === undefined || t.lastSeenTick > sweptAt;
+          });
+          if (target !== undefined) {
+            const key = cellKey(target.position);
+            const reach = chebyshev(unit.position, target.position);
+            if (reach <= HUNT_SWEEP_RADIUS) {
+              const arrival = this.huntArriveAt.get(unit.id);
+              if (arrival === undefined || arrival.key !== key) {
+                this.huntArriveAt.set(unit.id, { key, tick: state.tick });
+              } else if (state.tick - arrival.tick >= HUNT_SWEEP_TICKS) {
+                this.huntSweptAt.set(key, state.tick);
+                this.huntArriveAt.delete(unit.id);
+              }
+            }
+            const point = this.huntSweepPoint(target.position, index, reach);
+            const direction = stepToward(unit.position, point, militaryObstacles);
+            if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_hunt");
+            return;
+          }
+        }
         const dense = this.config.militarySearchDense === true;
         const directionCount = dense ? 16 : EXPLORE_DIRECTION_COUNT;
         const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % directionCount);
