@@ -21,6 +21,12 @@
 - 外部参考（第二名，经常更新，涉及策略追赶先拉）：`../reference/arena-hero-agent`——同步 `git -C ../reference/arena-hero-agent pull`；差距清单与版本差异见共享 MASTER.md「外部参考仓库」章节
 - 官方参考源（规则更新追踪）：`../reference/arena-hero-doc`——同步 `git -C ../reference/arena-hero-doc pull && git -C ../reference/arena-hero-doc log --oneline -3`；官方版本事实与对照见共享 MASTER.md「外部参考仓库」首段
 
+## 并行 Agent / Git 工作树纪律
+
+- 并行修改 `arena-ts` 的 Agent 必须各自使用独立 `git worktree` + 独立分支；主工作树用于集成与生产，不作为多个 Agent 的共享编辑区。
+- 每个 Agent 只 stage 自己任务的路径；提交前必须用 `git diff --cached --name-only` 复核范围。并行开发期间禁止 `git add -A` / `git add .` 吞入其他 Agent 的改动。
+- 发现目标路径已 dirty、已 staged 或由其他活跃 worktree 占用时，保持只读或切换到新的独立 worktree；不得 reset、stash、checkout、restore 或格式化他人的 WIP。
+- 合回 `main` 前先完成分支自验，并确认主线没有同路径冲突；遇到冲突按当前 `main` 语义重放改动，不机械覆盖较新的实现。
 ## 标准命令
 
 ```bash
