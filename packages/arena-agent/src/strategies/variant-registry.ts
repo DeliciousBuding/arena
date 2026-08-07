@@ -81,6 +81,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "worker-dense-scan-v1": Object.freeze({ workerDenseScan: true }),
     /**
+     * frontier 老化优先巡（2026-08-07，frontier+dense 组合候选，resource-scarcity-ab
+     * 复核）：worker 回 home 换方位时按 chunk 观察老化选方向——观察最老的分区先巡。
+     * 与 worker-dense-scan-v1 组合最稳（任何场景不劣于 baseline，生产形态 +20%）：
+     * dense 单开稀疏 +20% 但对角远矿 -14%（worker 摊薄），frontier 补老分区后中和。
+     * 默认 false = 固定 +3/+6 方位步进（零回归）。
+     */
+    "frontier-priority-v1": Object.freeze({ frontierPriority: true }),
+    /**
      * 核心迁移中交仓待命（2026-08-07，core-moving-hold-v1）：Core MOVING 时
      * （START_MOVE 迁移中，引擎拒 DEPOSIT——CORE_MOVING/CORE_NOT_PRESENT），
      * cargo worker 原地持货等核心稳定，不追着移动核心空跑（生产实测 t2/t3
@@ -190,4 +198,3 @@ export function resolveDeterministicVariantsConfig(
   if (ids === undefined || ids.length === 0) return {};
   return Object.assign({}, ...ids.map((id) => resolveDeterministicVariantConfig(id)));
 }
-
