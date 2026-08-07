@@ -101,8 +101,9 @@
   12.5px/1.7 行高；分区（Cookie/商品/历史）间距 16-20px。
 - **决策流头部结构**：`#streamToggle`（圆点+标题+计数+chevron）与 `#streamFilter`（只看决策胶囊按钮）
   是**同级兄弟**，禁止按钮嵌套按钮（非法 HTML 会导致点击拦截/冒泡异常）；折叠时隐藏过滤按钮、显示 live 胶囊。
-- **只看决策过滤**：`#streamFilter` 激活（`.on`）后隐藏 `not_applicable + accepted` 的无需决策行，
-  计数栏改为显示实际决策数。
+- **只看决策过滤**：`#streamFilter` 激活（`.on`）后隐藏 `deadlineOutcome === 'not_applicable'` 的
+  无需决策行（submitResult 有 accepted/not_submitted 等变体，统一按 outcome 判定），计数栏改为显示
+  实际决策数；折叠态胶囊同步只显示最新实际决策，过滤后无行时胶囊隐藏（提前 return 分支也复位）。
 - **键盘导航**：方向键平移 / `+` `-` 缩放（以视口中心）/ `F` 适应视口 / `G` 返回全局联盟 /
   `Esc` 取消战术选择与关闭对话框；提示栏底部同步快捷键。
 - **回放战斗可视化（官方移植）**：`shotCurve`/`drawResolvedShot` 弹道弧（命中=白/琥珀、未中=灰）+
