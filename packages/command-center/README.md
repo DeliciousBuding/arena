@@ -1,10 +1,14 @@
 # Arena 本地指挥面板（Command Center）
 
-只读观测工具：4 租户全局联盟测绘地图 + 资源/人口展示 + 实时决策流 + 官方商店兑换码。
-纯 Node 内置能力 + 原生前端（无第三方依赖），浏览器访问 `http://127.0.0.1:8787`。
+4 租户全局联盟指挥工作台：大地图测绘 + 资源/人口展示 + 实时决策流 + 官方商店兑换码
++ **人类最高控制权**（默认 agent 全自动，偶尔人工下指令覆盖）。技术栈：Hono（Node 24
+type stripping）+ React 19 + Vite 8 + TS（Bun/Node 工具链），浏览器访问 `http://127.0.0.1:8787`。
 
-> **只读保证**：不写 `data/runtime/`、不连接 Arena、不启动任何 writer。仅读取
-> `ARENA_DATA_ROOT` 下的 calibration/telemetry JSONL，以及 supervisor Debug API（127.0.0.1:8120，仅 t1/t2）。
+> **只读边界**：不写 `data/runtime/`、不连接 Arena、不启动任何 writer。唯一写通道是
+> **人类指挥**：`/api/command*` → `data/runtime/human-commands/<tenant>.json`（人类指令最高
+> 优先，由 tenant 主循环提交前合并，见 `lib/store.ts` + `arena-agent/src/runtime/human-override.ts`）。
+> 数据源：`ARENA_DATA_ROOT` 下 calibration/telemetry JSONL + 测绘库 `runtime/survey/<tenant>.db`
+> + supervisor Debug API（127.0.0.1:8120，4 租户）。
 
 ## 生产策略变体（2026-08-07）
 
@@ -72,13 +76,14 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
   左右栏可折叠为 40px 窄条（VSCode 侧边栏模式，折叠状态持久化）。威胁情报 = 官方排行榜（威胁/信标/核心三 tab、
   我方/遭遇高亮、榜外遭遇补全）；兑换码 = 官方商店面板（Cookie 连接、库存徽章、兑换历史）。
 - **敌情记忆层**：出视野的敌方核心/战斗单位半透明常驻（新鲜度衰减），hover 显示 lastSeen；图例/图层可开关。
-- **战术交互层（官方 Arena Hero 前端移植 · 只读演练）**：
+- **战术交互层（官方 Arena Hero 前端移植 · 人类真实指挥）**：
   - 舰队索引（AssetList）：聚焦租户的受控单位列表，点击选中；
   - 单位/核心详情面板（坐标/HP/护盾/载货/拥有者/状态）；
   - 动作面板（UnitActionDialog）：按单位类型给出动作集与可用性
     （WORKER: MOVE/HARVEST/DEPOSIT/HEAL；VANGUARD: MOVE/SWEEP；RANGER: MOVE/SHOOT；
-    CORE: HEAL/REPAIR_SHIELD/START_MOVE/CANCEL_MOVE + SPAWN 区），全部标注"只读演练，不提交"；
-  - MOVE 模式：可达格高亮 + BFS 寻路虚线路线（obstacle/实体绕行）；
+    CORE: HEAL/REPAIR_SHIELD/START_MOVE/CANCEL_MOVE + SPAWN 区），动作按钮 title=「提交（人类指挥）」；
+  - MOVE 模式：可达格高亮 + BFS 寻路虚线路线（obstacle/实体绕行）；点矿 = 提交采矿任务
+    （到达自动采、满仓自动回仓，`submitGoal` mine），点空地 = 移动任务（goto）；
   - SHOOT 模式（RANGER）：8 方向射程 3（障碍遮挡）+ 可攻击目标高亮；
   - SWEEP 模式（VANGUARD）：4 邻域清扫格；
   - 视野圈（官方 visibility 半径：核心 5 / 工人 3 / 先锋 4 / 游侠 5）；
@@ -104,7 +109,12 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
 | `GET /api/overview` | 4 租户 outcome 最新快照 + 60 tick 均值 |
 | `GET /api/map` | 同一 run 校准 case 合并 → 全局 cells（含 fresh 新鲜度）/bounds/beacons |
 | `GET /api/stream?tenant=&n=` | runtime.jsonl 尾部（决策流） |
-| `GET /api/events?tenant=&n=` | calibration case 结构化事件聚合（`before.state.events`；旧版读 outcome.jsonl 字符串导致事件页恒空） |
+| `GET /api/events?tenant=&n=` | calibration case 结构化事件聚合（`after.state.events`，2026-08-08 修复） |
+| `GET /api/survey?tenant=all&states=` | 跨 run 测绘库：矿/障碍/敌核/探索分区 chunks + 生命周期 + 消费趋势（30s 内存缓存） |
+| `GET /api/exploration?tenant=` | 单租户测绘 + 生命周期 + 当前帧（fog 记忆层数据源） |
+| `GET /api/intel` | 联盟威胁情报（敌核/敌单位记忆、遭遇索引，30s 缓存） |
+| `GET /api/commands?tenant=` | 人类指令存储 + 遥测（applied/rejected/satisfied + stuck 卡死跳出） |
+| `POST /api/command` · `POST /api/command/goal` · `DELETE /api/command` · `POST /api/command/clear` · `POST /api/command/mode` | 人类指挥写通道（最高优先，真实提交） |
 | `GET /api/tenants` | supervisor 探测 + 4 租户在线状态 |
 | `GET /api/shop` | 官方商店商品（动态价格/库存，20s 缓存） |
 | `GET /api/shop/me` | 官方账户 + Core 资源（需 `X-Shop-Cookie`） |
@@ -121,7 +131,7 @@ command-center/
 │                         #   leaderboard/store/shop/supervisor，全 TS）
 ├── scripts/start-cc.mjs  # 前台/后台/停止启动器（--hidden/--stop）
 ├── package.json
-├── public/               # legacy 前端（index.html / app.js / style.css / assets）
+├── public/               # 静态资源 + 官方美术素材 + style.css（单一视觉源；legacy app.js 已退役）
 │   └── assets/           # 官方 Arena Hero 美术素材（自 reference/arena-hero-web 拷贝）
 ├── web/                  # React + Vite + TS 前端（构建到 dist，/app/* 托管）
 └── docs/command-center-preview.png
