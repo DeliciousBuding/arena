@@ -286,6 +286,13 @@ export interface SafetyPlannerConfig {
    * 默认 false = 历史行为（静态门槛，零回归）。
    */
   readonly assaultOvermatch?: boolean;
+  /**
+   * 威胁方向侦察（2026-08-07，t2 生产实证）：worker 巡逻方位向已知敌核心
+   * 方向加权——前 4 个 worker 覆盖威胁扇区 ±1（保证威胁来路始终有 ≥3
+   * worker 侦察，小股部队摸过来能更早目击触发预警）。默认 false = 历史
+   * 均匀方位（零回归）。
+   */
+  readonly threatSectorScout?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

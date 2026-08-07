@@ -89,6 +89,23 @@ function exploreTargetDense(
   const [mx, my] = DENSE_DELTAS[norm]!;
   return [home[0] + mx * radius, home[1] + my * radius];
 }
+/** 威胁方向加权巡逻方位（threat-sector-scout-v1，2026-08-07，纯函数可测）：
+ * 前 4 个 worker 覆盖威胁扇区及两侧（index0=威胁方向, +1, -1, +2），其余保持
+ * 均匀分布——保证威胁来路（如 t2 NE=jerkman）始终有 ≥3 worker 侦察，小股
+ * 进攻更早目击触发预警。threatSector=null 返回历史均匀方位（零回归）。 */
+export function threatWeightedDirection(
+  index: number,
+  threatSector: number | null,
+): number {
+  const spread = (index * 3 + 7) % EXPLORE_DIRECTION_COUNT;
+  if (threatSector === null) return spread;
+  if (index < 4) {
+    const offset = index === 0 ? 0 : index === 1 ? 1 : index === 2 ? -1 : 2;
+    return (threatSector + offset + EXPLORE_DIRECTION_COUNT) % EXPLORE_DIRECTION_COUNT;
+  }
+  return spread;
+}
+
 /** 威胁召回触发距离（12 = ALERT 级威胁的确认接触半径，与 threat.ts 一致）。 */
 const THREAT_RECALL_DISTANCE = 12;
 /** 召回时 worker 的守家巡逻半径。 */
@@ -198,6 +215,7 @@ export class SafetyPlanner {
    *  持续爆兵直到资源不足以产兵才回积累期（防止"产 1 兵掉回阈值下"振荡）。 */
   private surgeActive = false;
   /** 军事打野环停留起始 tick（2026-08-07）：单位进入某 patrolRing 的时间点，
+
    *  用于 militaryRingHoldTicks 时间预算强制升环（破"精确到达才升环"卡死）。 */
   private readonly unitRingSince = new Map<string, number>();
   /** Core 迁移方向（coreEvade）：START_MOVE 发起时记录；次 tick 仍 MOVING
@@ -544,6 +562,16 @@ export class SafetyPlanner {
     return { tick: state.tick, unitActions: actions, coreAction, intents };
   }
 
+  /** worker 巡逻方位（threat-sector-scout-v1）：变体开启且有威胁方向时向威胁
+   *  扇区加权（threatWeightedDirection），否则历史均匀方位（零回归）。 */
+  private workerPatrolDirection(index: number, home: Position | null): number {
+    const sector =
+      this.config.threatSectorScout === true && home !== null
+        ? this.world.threatSectorFrom(home)
+        : null;
+    return threatWeightedDirection(index, sector);
+  }
+
   private decideWorker(
     state: TickState,
     unit: UnitSnapshot,
@@ -551,8 +579,8 @@ export class SafetyPlanner {
     obstacles: ReadonlySet<string>,
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
   ): void {
-    const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % EXPLORE_DIRECTION_COUNT);
     const home = state.core?.position ?? null;
+    const memory = this.world.unitMemory(unit.id, this.workerPatrolDirection(index, home));
     const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
     // 威胁召回（threatRecall，v0.3 实验）：12 格内可见敌（确认接触）时 worker
     // 巡逻/探索半径缩到守家圈（RECALL_PATROL_RADIUS），不放远探/远采。
