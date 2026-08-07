@@ -307,7 +307,9 @@ function drawResources(cells, s) {
   ctx.beginPath();
   for (const c of cells) {
     const p = project(c.x, c.y);
-    ctx.arc(p.sx, p.sy, Math.max(1.6, s * 0.32), 0, Math.PI * 2);
+    const r = Math.max(1.6, s * 0.32);
+    ctx.moveTo(p.sx + r, p.sy); // 断连，避免批量 arc 连线
+    ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
   }
   ctx.fill();
 }
@@ -1252,7 +1254,9 @@ function tactSurveyLayer(s) {
     ctx.beginPath();
     for (const c of survey.resourceCells) {
       const p = project(c.x, c.y);
-      ctx.arc(p.sx, p.sy, Math.max(2, s * 0.28), 0, Math.PI * 2);
+      const r = Math.max(2, s * 0.28);
+      ctx.moveTo(p.sx + r, p.sy); // 断连：批量 arc 同 path 会互相连线成多边形
+      ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
     }
     ctx.fill();
   }
