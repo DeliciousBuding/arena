@@ -395,6 +395,16 @@ body::after {
   box-shadow: 0 8px 22px rgba(0,0,0,.3); user-select: none;
 }
 #mapControls .ctl-label.pop { animation: ctlPop .3s var(--ease); }
+/* 单租户聚焦徽章：租户色胶囊，标识当前正在看谁的战术视图 */
+.solo-badge {
+  align-self: flex-end; font-size: 10px; font-weight: 700; letter-spacing: .14em;
+  padding: 3px 10px; border-radius: 999px; color: var(--tc, #fff);
+  background: color-mix(in srgb, var(--tc, #69b3d8) 14%, rgba(12,12,12,.9));
+  border: 1px solid color-mix(in srgb, var(--tc, #69b3d8) 45%, var(--border-strong));
+  box-shadow: 0 0 14px color-mix(in srgb, var(--tc, #69b3d8) 22%, transparent);
+  animation: soloBadgeIn .3s var(--ease);
+}
+@keyframes soloBadgeIn { from { opacity: 0; transform: translateY(4px) scale(.96); } to { opacity: 1; transform: none; } }
 #mapControls .ctl {
   width: 42px; height: 42px; border-radius: var(--radius-md);
   background: rgba(12,12,12,.85); border: 1px solid var(--border-strong);
