@@ -2037,6 +2037,26 @@ const TACT_ACTION_CN = {
   START_MOVE: '开始移动', CANCEL_MOVE: '取消移动',
 };
 const TACT_STEPS = [{ d: 'UP', dx: 0, dy: -1 }, { d: 'RIGHT', dx: 1, dy: 0 }, { d: 'DOWN', dx: 0, dy: 1 }, { d: 'LEFT', dx: -1, dy: 0 }];
+
+/** 决策意图 → 短中文标签（2026-08-08，人类观察）：/api/plan 的 intents 值
+ *  （vanguard_hunt/go_harvest_mem/capacity_wait:ranger_move/DEPOSIT/WAIT…）映射为
+ *  单位头顶小标签——一眼看懂 agent 这 tick 在干嘛；WAIT/无事可做不画（防噪）。 */
+const INTENT_LABEL_CN = {
+  vanguard_hunt: '猎敌', ranger_hunt: '猎敌', go_harvest_mem: '采忆', go_harvest: '采矿',
+  return_deposit: '回仓', escort_core: '护核', protect_core: '守核', pickup_beacon: '取信标',
+  drop_beacon: '放信标', sweep: '清扫', patrol: '巡逻', scout: '侦察',
+};
+function intentLabelCn(intent) {
+  if (!intent) return null;
+  const base = String(intent).split(':')[0];
+  if (INTENT_LABEL_CN[base]) return INTENT_LABEL_CN[base];
+  if (intent === 'DEPOSIT') return '交付';
+  if (intent === 'WAIT' || intent === 'NOTHING_TO_DO' || intent === 'IDLE') return null;
+  if (base === 'capacity_wait') return '等容';
+  if (base === 'move_failed' || base.startsWith('move_failed')) return '绕行';
+  if (String(intent).includes('_move') || intent === 'MOVE') return '移动';
+  return String(intent).slice(0, 6);
+}
 /* 回放引擎：同一 run 连续 tick 快照 → 单位/核心移动动画 + 15s tick 读条 */
 const TICK_MS = 15000;
 const replay = { data: null, frame: 0, playing: false, speed: 1, loadedFor: null, tickStart: 0, progress: 0 };
@@ -3108,6 +3128,31 @@ function tactPlanLayer(s: any) {
         dash(from, to, 'rgba(198,99,112,.9)', 0.9, 1.5);
         ring(to.sx, to.sy, Math.max(4, s * 0.32), 'rgba(198,99,112,.9)', 1.6);
         drew = true;
+      }
+    }
+    // 决策意图标签：有意图的受控单位头顶画短中文标签（zoom 过低跳过防噪）
+    if (s >= 5 && plan.intents) {
+      for (const [id, intent] of Object.entries(plan.intents)) {
+        const o = byId.get(id);
+        if (!o || o.controlled !== true || !o.position) continue;
+        const label = intentLabelCn(intent);
+        if (!label) continue;
+        const p = project(o.position[0], o.position[1]);
+        if (p.sx < -40 || p.sx > W() + 40 || p.sy < -40 || p.sy > H() + 40) continue;
+        ctx.save();
+        const fs = Math.max(9, Math.round(s * 0.5));
+        ctx.font = `600 ${fs}px ${CANVAS_FONT}`;
+        const tw = ctx.measureText(label).width;
+        const bx = p.sx - tw / 2 - 4, by = p.sy - s * 0.62 - fs - 8;
+        ctx.fillStyle = 'rgba(6,6,6,.72)';
+        ctx.beginPath();
+        if (typeof ctx.roundRect === 'function') ctx.roundRect(bx, by, tw + 8, fs + 5, 4);
+        else ctx.rect(bx, by, tw + 8, fs + 5);
+        ctx.fill();
+        ctx.fillStyle = color; ctx.globalAlpha = 0.95;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(label, p.sx, by + (fs + 5) / 2 + 0.5);
+        ctx.restore();
       }
     }
     const coreAction = plan.coreAction ?? plan.core_action;
