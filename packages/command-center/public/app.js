@@ -636,6 +636,14 @@ function extendScreen(a, b, minLen) {
   const k = minLen / len;
   return { sx: a.sx + dx * k, sy: a.sy + dy * k };
 }
+/** 是否有单位正在 poll 间插值移动（提升 idle 重绘帧率 → 插值/虚线流更丝滑）。 */
+function anyUnitsMoving() {
+  const now = performance.now();
+  for (const m of state.unitPrev.values()) {
+    if (Math.hypot(m.x - m.px, m.y - m.py) >= 0.4 && now - m.ts < POLL_MS * 2) return true;
+  }
+  return false;
+}
 function drawMovementDashes(cells, s) {
   if (!cells.length || s < 1.2) return;
   const now = performance.now();
@@ -657,8 +665,9 @@ function drawMovementDashes(cells, s) {
     ctx.save();
     ctx.strokeStyle = color; ctx.globalAlpha = 0.5;
     ctx.setLineDash([4, 4]);
+    ctx.lineDashOffset = -((now / 70) % 8); // 虚线流动：向移动方向滚动（流水感，动态=正在移动）
     ctx.beginPath(); ctx.moveTo(to.sx, to.sy); ctx.lineTo(tip.sx, tip.sy); ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.setLineDash([]); ctx.lineDashOffset = 0;
     const ang = Math.atan2(tip.sy - to.sy, tip.sx - to.sx);
     const sz = Math.max(3, Math.min(10, s * 0.26));
     ctx.fillStyle = color; ctx.globalAlpha = 0.9;
@@ -1461,7 +1470,7 @@ async function boot() {
       draw();
     } else if (animating || zooming) {
       draw();
-    } else if (ts - lastAnim > 120 && ((state.cells.length && state.layers.unit) || (state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
+    } else if (ts - lastAnim > (anyUnitsMoving() ? 50 : 120) && ((state.cells.length && (state.layers.unit || state.layers.trail)) || (state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
       lastAnim = ts;
       draw();
     }
