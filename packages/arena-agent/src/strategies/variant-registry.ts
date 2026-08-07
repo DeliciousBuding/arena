@@ -23,6 +23,13 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 一个管 worker 收缩守家圈，一个管远端军事回援。
      */
     "reinforce-home-v1": Object.freeze({ remoteReinforce: true }),
+    /**
+     * 信标夺取（2026-08-07，官方 Champion Beacon 机制对齐）：近距离
+     * （Chebyshev ≤80）信标由最近 Vanguard 拾取并带回守家——持标核心盾
+     * 上限 5→10 + worker 采集 1→2（双倍经济）。远距放弃（信标坐标公开，
+     * 可能被敌方埋伏）。与 threat-recall/reinforce-home 同属防御经济层。
+     */
+    "beacon-grab-v1": Object.freeze({ beaconGrab: true, beaconGrabMaxDist: 80 }),
     "move-failed-avoidance-v1": Object.freeze({ moveFailedAvoidance: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),

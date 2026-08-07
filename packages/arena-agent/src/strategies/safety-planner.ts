@@ -115,6 +115,9 @@ const REINFORCE_HOLD_TICKS = 8;
  *  距 Core ≤4 视为守家队（Vanguard 3 格外层屏 / Ranger 2 格内层屏），回援
  *  只针对圈外远端军事——圈内单位走既有防御逻辑（不打断正在进行的防守）。 */
 const REINFORCE_HOME_RING = 4;
+/** 信标夺取默认最大距离（Chebyshev，以我方 Core 为圆心）：官方信标坐标全员
+ *  公开，超出视为远征——信标所在区域可能被敌方埋伏（远距公敌），不值得送死。 */
+const BEACON_GRAB_DEFAULT_MAX_DIST = 80;
 /** B6 有界攻坚（竞品 bounded mission distance）：记忆敌 Core 距我方 Core 上限。 */
 const BOUNDED_RAID_DISTANCE = 40;
 /** 军事打野沿环扫描时间预算：同一八分点目标 >N tick 未到达强制换向（防障碍点卡死）。 */
@@ -270,6 +273,37 @@ export class SafetyPlanner {
     );
     if (homeThreat) this.reinforceUntil.set(unit.id, state.tick + REINFORCE_HOLD_TICKS);
     return (this.reinforceUntil.get(unit.id) ?? 0) >= state.tick;
+  }
+
+  /** 信标夺取（beaconGrab 候选，官方 Champion Beacon 机制对齐）：返回本单位的
+   *  信标任务——"fetch" = 前往拾取（仅最近 Vanguard/Ranger 获得，防全军涌向
+   *  信标）；"return" = 已持标，回 Core 守位（持标 buff 属于本租户，载者不能
+   *  带着信标满图跑）。信标 CARRIED 且不是我们 → 不争夺（敌标不打）。信标距
+   *  Core 超 beaconGrabMaxDist → 远征放弃。 */
+  private beaconMission(
+    state: TickState,
+    unit: UnitSnapshot,
+  ): "fetch" | "return" | null {
+    if (this.config.beaconGrab !== true) return null;
+    const beacon = state.beacon;
+    if (beacon.status === "CARRIED") {
+      return beacon.carrierId === unit.id ? "return" : null;
+    }
+    if (state.core === null) return null;
+    if (chebyshev(beacon.position, state.core.position) > (this.config.beaconGrabMaxDist ?? BEACON_GRAB_DEFAULT_MAX_DIST)) {
+      return null;
+    }
+    // 指定最近 Vanguard（抗揍、护标），无 Vanguard 才用 Ranger——按距离升序
+    // + id tie-break 确定性。非指定单位不抢（防多单位同时涌向信标）。
+    const vanguardPool = [...state.vanguards]
+      .map((u) => ({ u, d: chebyshev(u.position, beacon.position) }))
+      .sort((a, b) => a.d - b.d || a.u.id.localeCompare(b.u.id));
+    const rangerPool = [...state.rangers]
+      .map((u) => ({ u, d: chebyshev(u.position, beacon.position) }))
+      .sort((a, b) => a.d - b.d || a.u.id.localeCompare(b.u.id));
+    const designee = vanguardPool[0] ?? rangerPool[0];
+    if (designee === undefined || designee.u.id !== unit.id) return null;
+    return "fetch";
   }
 
   decide(input: SafetyPlannerInput): Plan {
@@ -677,6 +711,27 @@ export class SafetyPlanner {
       return;
     }
 
+    // 信标夺取（beaconGrab 候选，官方 Champion Beacon 机制对齐）：信标近距离
+    // （≤ beaconGrabMaxDist）时最近 Vanguard 前往拾取——拾取后信标跟随移动，
+    // 载者回 Core 守位（见 return 分支）。优先级高于攻坚/打野：持标 buff
+    // （盾 10 + 采集 2×）是全局经济/防御收益。返回期间邻接敌仍 SWEEP 反击。
+    const beaconTask = this.beaconMission(state, unit);
+    if (beaconTask !== null) {
+      const target = beaconTask === "return"
+        ? (approachTarget ?? state.core!.position)
+        : state.beacon.position;
+      const intent = beaconTask === "return" ? "vanguard_beacon_return" : "vanguard_beacon_fetch";
+      if (beaconTask === "return" && state.core !== null && manhattan(unit.position, state.core.position) <= REINFORCE_HOME_RING) {
+        // 已持标且到家（守家圈内）：持标待命——不带着信标满图跑（避免信标
+        // 被拖进敌方射程/丢失）。邻接敌仍由上方 SWEEP 反击。
+        set(unit, { type: "WAIT" }, "vanguard_beacon_hold");
+        return;
+      }
+      const direction = stepToward(unit.position, target, militaryObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, intent);
+      return;
+    }
+
     if (this.effectiveAggression === "aggressive") {
       // 爆兵蓄势 gate（2026-08-06 用户导向"以爆兵为目的打对面水晶"）：军事
       // 规模未达 attackForce 时守家蓄势（兵力成型再前压，避免零星送死）；
@@ -1036,6 +1091,23 @@ export class SafetyPlanner {
     if (this.shouldReinforce(state, unit, enemies)) {
       const direction = stepToward(unit.position, approachTarget ?? state.core!.position, militaryObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_reinforce");
+      return;
+    }
+
+    // 信标夺取（beaconGrab 候选）：无 Vanguard 时才由 Ranger 担任载者（最近者）。
+    // 拾取后回 Core 守位持标。射程内射击分支在上方已优先（不放弃火力）。
+    const beaconTask = this.beaconMission(state, unit);
+    if (beaconTask !== null) {
+      const target = beaconTask === "return"
+        ? (approachTarget ?? state.core!.position)
+        : state.beacon.position;
+      const intent = beaconTask === "return" ? "ranger_beacon_return" : "ranger_beacon_fetch";
+      if (beaconTask === "return" && state.core !== null && manhattan(unit.position, state.core.position) <= REINFORCE_HOME_RING) {
+        set(unit, { type: "WAIT" }, "ranger_beacon_hold");
+        return;
+      }
+      const direction = stepToward(unit.position, target, militaryObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, intent);
       return;
     }
 
