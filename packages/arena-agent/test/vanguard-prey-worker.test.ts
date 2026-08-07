@@ -13,7 +13,26 @@ import type { Position, TickState } from "../src/domain/model.ts";
 
 const CORE: Position = [0, 0];
 
-function makeState(opts: { enemies?: TickState["visibleEnemies"]; coreHunt?: { position: Position }[]; tick?: number } = {}): TickState {
+function makeState(opts: {
+  enemies?: TickState["visibleEnemies"];
+  coreHunt?: { position: Position }[];
+  tick?: number;
+  units?: TickState["units"];
+  vanguards?: TickState["vanguards"];
+  rangers?: TickState["rangers"];
+  workers?: TickState["workers"];
+} = {}): TickState {
+  const units = opts.units ?? [
+    { id: "v1", position: [0, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
+    { id: "v2", position: [0, 2], hp: 4, unitType: "VANGUARD", cargo: 0 },
+    { id: "w1", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+  ];
+  const vanguards = opts.vanguards ?? [
+    { id: "v1", position: [0, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
+    { id: "v2", position: [0, 2], hp: 4, unitType: "VANGUARD", cargo: 0 },
+  ];
+  const rangers = opts.rangers ?? [];
+  const workers = opts.workers ?? [{ id: "w1", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 0 }];
   return {
     tick: opts.tick ?? 100,
     status: "ACTIVE",
@@ -22,17 +41,10 @@ function makeState(opts: { enemies?: TickState["visibleEnemies"]; coreHunt?: { p
     resourceSpace: 30,
     population: 3,
     core: { id: "c1", position: CORE, hp: 5, shield: 5, state: "NORMAL", ownerUsername: "p1" },
-    units: [
-      { id: "v1", position: [0, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
-      { id: "v2", position: [0, 2], hp: 4, unitType: "VANGUARD", cargo: 0 },
-      { id: "w1", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 0 },
-    ],
-    workers: [{ id: "w1", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 0 }],
-    vanguards: [
-      { id: "v1", position: [0, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
-      { id: "v2", position: [0, 2], hp: 4, unitType: "VANGUARD", cargo: 0 },
-    ],
-    rangers: [],
+    units,
+    workers,
+    vanguards,
+    rangers,
     visibleEnemies: opts.enemies ?? [],
     resourceCells: new Set(),
     obstacleCells: new Set(),
@@ -131,4 +143,30 @@ test("vanguardPreyWorker：无敌核目标时回访确认静止的挂机 WORKER�
   assert.ok(preyIntents.length >= 1, "expected stationary prey intent, got: " + JSON.stringify(plan.intents));
   const [unitId] = preyIntents[0];
   assert.equal(unitId, "v1"); // 最近的 Vanguard 去
+});
+
+test("Ranger 射程环展开：拥挤格内 Ranger 向相邻空位移动保持火力散开", () => {
+  const world = new World();
+  world.seedCoreHuntTargets([{ position: [10, 0], lastSeenTick: 100, source: "CORE" }]);
+  const planner = new SafetyPlanner({
+    ...PREY_CONFIG,
+  }, world);
+  // 两只 Ranger 同站 [8,0]（距敌核记忆 [10,0] = 2 ≤ 3 射程环），拥挤 → 展开
+  const state = makeState({
+    tick: 101,
+    enemies: [],
+    units: [
+      { id: "r1", position: [8, 0], hp: 2, unitType: "RANGER", cargo: 0 },
+      { id: "r2", position: [8, 0], hp: 2, unitType: "RANGER", cargo: 0 },
+    ],
+    vanguards: [],
+    rangers: [
+      { id: "r1", position: [8, 0], hp: 2, unitType: "RANGER", cargo: 0 },
+      { id: "r2", position: [8, 0], hp: 2, unitType: "RANGER", cargo: 0 },
+    ],
+    workers: [],
+  });
+  const plan = planner.decide({ state });
+  const spread = Object.entries(plan.intents).filter(([, i]) => i === "ranger_spread");
+  assert.ok(spread.length >= 1, "拥挤 Ranger 应展开，got: " + JSON.stringify(plan.intents));
 });
