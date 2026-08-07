@@ -35,6 +35,7 @@ const state = {
   hover: null,
   streamCollapsed: false,
   viewAnim: null,
+  zoom: { active: false, tx: 0, ty: 0, ts: 1, lastTs: 0 }, // 滚轮缩放阻尼目标视图
   cc: { tick: null, anchor: 0 }, // 命令窗口：最近观测到的计划 tick + 观测时刻（15s 倒计时）
   terrainSig: 0,               // 障碍/资源测绘签名：仅地形变化时重建底图缓存
   tactical: {
@@ -280,6 +281,25 @@ function fitSolo(tenant) {
 /** 视口补间动画：easeOutCubic 非线性过渡（聚焦/全局切换、双击适应） */
 function animateView(to, duration = 680) {
   state.viewAnim = { from: { cx: state.view.cx, cy: state.view.cy, scale: state.view.scale }, to, t0: performance.now(), duration };
+  state.zoom.active = false; // fit/双击接管：取消缩放阻尼
+}
+/** 滚轮缩放阻尼（惯性，2026-08-07）：每帧按 dt 指数趋近目标视图——帧率无关、
+ *  连续跟手（参考地图工具最佳实践：target + exponential smoothing，事件驱动目标，
+ *  动画帧驱动趋近）。快速滚轮/触控板捏合不再逐格重启动画，停止后自然惯性收敛。 */
+function stepZoom(ts) {
+  const z = state.zoom;
+  const dt = Math.min(120, Math.max(1, ts - z.lastTs));
+  z.lastTs = ts;
+  const k = 1 - Math.exp(-dt / 110); // ~110ms 时间常数
+  const v = state.view;
+  v.cx += (z.tx - v.cx) * k;
+  v.cy += (z.ty - v.cy) * k;
+  v.scale += (z.ts - v.scale) * k;
+  const settled = Math.abs(z.ts - v.scale) < 0.001 && Math.hypot(z.tx - v.cx, z.ty - v.cy) < 0.02;
+  if (settled) {
+    v.cx = z.tx; v.cy = z.ty; v.scale = z.ts;
+    z.active = false;
+  }
 }
 function applyViewAnim(ts) {
   const a = state.viewAnim;
@@ -343,7 +363,7 @@ function draw() {
   const bs = bucketScale(s);
   if (staticNeedsRebuild(bs)) renderStaticCache(bs);
   blitStatic();
-  LQ = !!state.viewAnim; // 动画期间仅动态层降级：关 shadowBlur / 高成本细节
+  LQ = !!state.viewAnim || state.zoom.active; // 动画/缩放阻尼期间仅动态层降级：关 shadowBlur / 高成本细节
   const replayActive = replay.data && replay.loadedFor === state.soloTenant;
   tactPatrolLayer(s);
   tactPlanLayer(s);
@@ -1271,6 +1291,7 @@ function bindEvents() {
   els.canvas.addEventListener('pointerdown', (e) => {
     els.canvas.setPointerCapture(e.pointerId);
     state.viewAnim = null;
+    state.zoom.active = false; // 拖拽接管
     state.drag = { x: e.clientX, y: e.clientY, cx: state.view.cx, cy: state.view.cy };
   });
   // 点击判定：抬起时位移 < 6px 视为点击（选中/战术目标），否则为拖拽
@@ -1322,19 +1343,25 @@ function bindEvents() {
   els.canvas.addEventListener('pointercancel', endDrag);
   els.canvas.addEventListener('pointerleave', () => { els.tooltip.hidden = true; });
 /** 向光标平滑缩放（官方 wheelZoomCell + ZOOM_SETTLE 语义）：easeOutCubic 短补间，丝滑不跳变。 */
+  /** 光标锚定缩放（阻尼目标版）：连续滚轮在 target 上累积，逐帧由 stepZoom 平滑趋近。 */
   function zoomTo(sx, sy, factor) {
     const rect = els.canvas.getBoundingClientRect();
-    const ns = Math.min(64, Math.max(0.05, state.view.scale * factor));
-    const wx = state.view.cx + (sx - rect.width / 2) / state.view.scale;
-    const wy = state.view.cy + (sy - rect.height / 2) / state.view.scale;
-    const tx = wx - (sx - rect.width / 2) / ns;
-    const ty = wy - (sy - rect.height / 2) / ns;
-    animateView({ cx: tx, cy: ty, scale: ns }, 150);
+    const base = state.zoom.active ? { cx: state.zoom.tx, cy: state.zoom.ty, scale: state.zoom.ts } : { cx: state.view.cx, cy: state.view.cy, scale: state.view.scale };
+    const ns = Math.min(64, Math.max(0.05, base.scale * factor));
+    const wx = base.cx + (sx - rect.width / 2) / base.scale;
+    const wy = base.cy + (sy - rect.height / 2) / base.scale;
+    state.zoom.tx = wx - (sx - rect.width / 2) / ns;
+    state.zoom.ty = wy - (sy - rect.height / 2) / ns;
+    state.zoom.ts = ns;
+    state.zoom.active = true;
+    state.zoom.lastTs = performance.now();
+    state.viewAnim = null; // 阻尼接管
   }
   els.canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
     const rect = els.canvas.getBoundingClientRect();
-    const factor = Math.exp(-e.deltaY * 0.0012);
+    const d = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY; // lines→px（部分触控板/浏览器）
+    const factor = Math.exp(-d * 0.0012);
     zoomTo(e.clientX - rect.left, e.clientY - rect.top, factor);
   }, { passive: false });
   els.canvas.addEventListener('dblclick', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
@@ -1420,6 +1447,8 @@ async function boot() {
     // 视图动画与回放可并行：回放自动播放不再饿死 fitSolo/zoom 动画（修复聚焦时视图冻结在半路）
     const animating = !!state.viewAnim;
     if (animating) applyViewAnim(ts);
+    const zooming = state.zoom.active;
+    if (zooming) stepZoom(ts);
     if (replay.data && replay.playing) {
       const elapsed = ts - replay.tickStart;
       replay.progress = Math.min(1, elapsed / (TICK_MS / replay.speed));
@@ -1430,7 +1459,7 @@ async function boot() {
       }
       updateReplayUI();
       draw();
-    } else if (animating) {
+    } else if (animating || zooming) {
       draw();
     } else if (ts - lastAnim > 120 && ((state.cells.length && state.layers.unit) || (state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
       lastAnim = ts;
