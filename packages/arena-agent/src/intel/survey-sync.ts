@@ -215,6 +215,11 @@ export function syncTenantSurvey(
     let maxTick = meta?.lastTick ?? -1;
     let casesInRun = meta?.casesSynced ?? 0;
     let runStarted = false;
+    // 每 run 一个事务（2026-08-08 性能优化）：全量回填 2w+ case 逐条
+    // autocommit 极慢（每次 INSERT 独立 fsync，t2/t3/t4 全量 ~20 分钟）；
+    // SAVEPOINT 嵌套安全——外部已开事务（如测试传入 db）也兼容。
+    db.exec("SAVEPOINT survey_sync_run");
+    try {
     for (const file of files) {
       const tick = Number(file.replace(/^0+/, "").replace(/\.json$/, ""));
       if (!Number.isFinite(tick)) continue;
@@ -253,8 +258,17 @@ export function syncTenantSurvey(
     }
     if (runStarted) {
       markSyncMeta(db, runDir, tenant, maxTick, casesInRun);
+      db.exec("RELEASE survey_sync_run");
       summary.runs += 1;
       summary.cases += casesInRun;
+    } else {
+      db.exec("ROLLBACK TO survey_sync_run");
+      db.exec("RELEASE survey_sync_run");
+    }
+    } catch (err) {
+      db.exec("ROLLBACK TO survey_sync_run");
+      db.exec("RELEASE survey_sync_run");
+      throw err;
     }
   }
   if (options.db === undefined) db.close();
