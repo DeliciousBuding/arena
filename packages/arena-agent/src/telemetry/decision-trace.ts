@@ -103,6 +103,8 @@ export interface OutcomeTraceRecord {
   readonly coreResourcesBefore: number;
   readonly coreResourcesAfter: number;
   readonly coreResourceDelta: number;
+  /** 本 Tick 受控核心状态（2026-08-08）：迁移窗口 = 合法 0 卸货，供经济停摆检测区分。 */
+  readonly coreState?: "NORMAL" | "MOVING" | null;
   /** 本 Tick 决策快照中的经济前置信号。 */
   readonly visibleResourceCellCount?: number;
   readonly workerCount?: number;

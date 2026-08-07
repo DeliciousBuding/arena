@@ -730,6 +730,7 @@ export async function runTenant(
           coreResourcesBefore: holder.prev.resources,
           coreResourcesAfter: outcome.state.resources,
           coreResourceDelta: outcome.state.resources - holder.prev.resources,
+          coreState: outcome.state.core?.state ?? null,
           visibleResourceCellCount: outcome.state.resourceCells.size,
           workerCount: outcome.state.workers.length,
           workersWithCargo: outcome.state.workers.filter((worker) => worker.cargo > 0).length,
