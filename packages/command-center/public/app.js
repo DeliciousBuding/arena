@@ -1747,7 +1747,7 @@ async function boot() {
       draw();
     } else if (animating || zooming) {
       draw();
-    } else if (ts - lastAnim > (anyUnitsMoving() ? 50 : 120) && ((state.cells.length && (state.layers.unit || state.layers.trail)) || (state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
+    } else if (ts - lastAnim > ((anyUnitsMoving() || state.tactical.moveRoute || state.tactical.routePreview) ? 50 : 120) && ((state.cells.length && (state.layers.unit || state.layers.trail)) || (state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
       lastAnim = ts;
       draw();
     }
@@ -2273,7 +2273,9 @@ function updateReplayUI() {
   const overall = (replay.frame + replay.progress) / d.ticks.length;
   els.rbFill.style.width = `${Math.round(overall * 100)}%`;
   const remain = Math.max(0, (TICK_MS / replay.speed - (performance.now() - replay.tickStart)) / 1000);
-  els.rbCountdown.textContent = `${replay.playing ? remain.toFixed(1) : '—'}s`;
+  const atEnd = replay.frame >= d.ticks.length - 1 && !replay.playing;
+  els.replayBar.classList.toggle('at-end', atEnd);
+  els.rbCountdown.textContent = atEnd ? '已到最新' : `${replay.playing ? remain.toFixed(1) : '—'}s`;
   els.rbPlay.textContent = replay.playing ? '⏸' : '▶';
   els.rbSpeed.textContent = `×${replay.speed}`;
 }
@@ -2315,6 +2317,21 @@ function tactDrawRoute(path, opts = {}) {
   ctx.globalAlpha = alpha;
   ctx.fillStyle = opts.faint ? 'rgba(118,184,137,.8)' : '#8fd6a3';
   const d = Math.max(4, s * 0.36);
+  // 行进脉冲：命令沿路线从起点流向终点的光点（~1.8s 循环），让演练路线"活"起来
+  if (!opts.faint) {
+    const now = performance.now();
+    const t = (now / 1800) % 1;
+    const total = path.length - 1;
+    const fi = Math.min(total - 0.0001, t * total);
+    const i0 = Math.floor(fi), frac = fi - i0;
+    const A = project(path[i0][0], path[i0][1]);
+    const B = project(path[i0 + 1][0], path[i0 + 1][1]);
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = '#eafff1';
+    ctx.shadowColor = '#76b889'; ctx.shadowBlur = 9;
+    ctx.beginPath(); ctx.arc(A.sx + (B.sx - A.sx) * frac, A.sy + (B.sy - A.sy) * frac, Math.max(2.2, s * 0.1), 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+  }
   ctx.beginPath();
   ctx.moveTo(end.sx, end.sy - d); ctx.lineTo(end.sx + d, end.sy);
   ctx.lineTo(end.sx, end.sy + d); ctx.lineTo(end.sx - d, end.sy);
