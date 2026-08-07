@@ -1042,10 +1042,9 @@ async function tactLoadExploration(tenant) {
 
 /* ---------- 决策流 ---------- */
 /** 决策流条数更新：折叠时新行到达 → 圆点琥珀提醒（展开后清除）。 */
-function setStreamCount(text) {
-  const prev = els.streamCount.textContent;
+function setStreamCount(text, hasNew = false) {
   els.streamCount.textContent = text;
-  if (state.streamCollapsed && prev !== text) {
+  if (state.streamCollapsed && hasNew) {
     const dot = els.streamToggle.querySelector('.st-dot');
     if (dot) dot.classList.add('has-new');
   }
@@ -1064,10 +1063,10 @@ function renderStream() {
     for (const t of TENANTS) for (const ev of state.events[t] ?? []) all.push({ tenant: t, ...ev });
     all.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
     if (!all.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无事件数据</div>'; setStreamCount('0 条'); return; }
-    setStreamCount(`${all.length} 条`);
     state.rowKeys = state.rowKeys || {};
     const eprev = state.rowKeys.events || new Set();
     const ecur = new Set();
+    let eNew = 0;
     const ehtml = all.slice(0, 120).map((e) => {
       const color = TENANT_COLORS[e.tenant] ?? '#999';
       const evColor = e.kind.startsWith('SHOT') || e.kind.includes('DESTROYED') || e.kind.includes('FAILED') ? '#dd626d'
@@ -1075,6 +1074,7 @@ function renderStream() {
       const detail = [e.actor ? `actor ${shortId(e.actor)}` : '', e.target ? `target ${shortId(e.target)}` : '', e.amount != null ? `×${e.amount}` : ''].filter(Boolean).join(' ');
       const key = `${e.tenant}:${e.tick}:${e.kind}:${e.actor ?? ''}:${e.target ?? ''}:${e.amount ?? ''}`;
       ecur.add(key);
+      if (!eprev.has(key)) eNew++;
       return `<div class="stream-line${eprev.has(key) ? '' : ' st-new'}" style="--tc:${color}">
         <span class="st-tenant">${e.tenant.toUpperCase()}</span>
         <span class="st-tick">${fmt(e.tick)}</span>
@@ -1084,6 +1084,7 @@ function renderStream() {
     }).join('');
     state.rowKeys.events = ecur;
     els.streamBody.innerHTML = ehtml;
+    setStreamCount(`${all.length} 条`, eNew > 0);
     return;
   }
   const rows = [];
@@ -1092,10 +1093,10 @@ function renderStream() {
   }
   rows.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
   if (!rows.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无决策数据</div>'; return; }
-  setStreamCount(`${rows.length} 条`);
   state.rowKeys = state.rowKeys || {};
   const rprev = state.rowKeys[state.tab] || new Set();
   const rcur = new Set();
+  let rNew = 0;
   const rhtml = rows.slice(0, 120).map((r) => {
     const color = TENANT_COLORS[r.tenant] ?? '#999';
     const outcome = String(r.deadlineOutcome ?? '');
@@ -1111,6 +1112,7 @@ function renderStream() {
     const detail = [lat.join(' · '), extra.join(' · ')].filter(Boolean).join(' · ');
     const key = `${r.tenant}:${r.tick}:${outcome}:${submit}:${r.agentLatencyMs ?? ''}:${r.selectionLatencyMs ?? ''}`;
     rcur.add(key);
+    if (!rprev.has(key)) rNew++;
     return `<div class="stream-line${rprev.has(key) ? '' : ' st-new'}" style="--tc:${color}">
       <span class="st-tenant">${r.tenant.toUpperCase()}</span>
       <span class="st-tick">${fmt(r.tick)}</span>
@@ -1121,6 +1123,7 @@ function renderStream() {
   }).join('');
   state.rowKeys[state.tab] = rcur;
   els.streamBody.innerHTML = rhtml;
+  setStreamCount(`${rows.length} 条`, rNew > 0);
 }
 
 /* ---------- 顶部状态 ---------- */
