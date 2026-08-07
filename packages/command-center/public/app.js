@@ -1,17 +1,11 @@
 /* Arena 指挥面板前端 — 零依赖原生 JS + Canvas（官方素材渲染） */
+import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos } from './js/utils.js';
+import { getJSON } from './js/api.js';
+
 const TENANTS = ['t1', 't2', 't3', 't4'];
 const TENANT_COLORS = { t1: '#69b3d8', t2: '#57bd84', t3: '#a892d6', t4: '#dd626d' };
 const TENANT_LABEL = { t1: '租户 1', t2: '租户 2', t3: '租户 3', t4: '租户 4' };
 const POLL_MS = 3000;
-const SPRITE = {
-  core: '/assets/game/units/core.png',
-  worker: '/assets/game/units/worker.png',
-  vanguard: '/assets/game/units/vanguard.png',
-  ranger: '/assets/game/units/ranger.png',
-  crystal: ['/assets/game/resources/crystal-1.png', '/assets/game/resources/crystal-2.png'],
-  obstacle: ['/assets/game/obstacles/asteroid-large-1.png', '/assets/game/obstacles/asteroid-large-2.png'],
-  beacon: '/assets/game/beacon.png',
-};
 const UNIT_ICONS = { resource: '/assets/ui/icons/resource.png', population: '/assets/ui/icons/population.png' };
 const DECISION_KIND_CN = {
   accepted: '接受', rejected: '拒绝', timeout: '超时', missed: '错过', aborted: '中止',
@@ -155,24 +149,6 @@ function blitStatic() {
   ctx.restore();
 }
 
-function hash2(a, b, salt) {
-  let h = (Math.imul(a + salt * 7919, 73856093) ^ Math.imul(b + salt * 104729, 19349663)) >>> 0;
-  h = Math.imul(h ^ (h >>> 15), 2246822519);
-  return (h ^ (h >>> 13)) >>> 0;
-}
-function fmt(n, digits = 0) {
-  if (n === null || n === undefined || !Number.isFinite(n)) return '—';
-  if (Math.abs(n) >= 1000) return n.toLocaleString('en-US', { maximumFractionDigits: digits });
-  return n.toFixed(digits);
-}
-function shortId(id) { return id ? String(id).slice(0, 8) : '—'; }
-function ageText(ms) {
-  if (!Number.isFinite(ms)) return '—';
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.round(s / 60)}m`;
-  return `${(s / 3600).toFixed(1)}h`;
-}
 const timeFmt = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 
 /* ---------- 素材加载 ---------- */
@@ -197,15 +173,6 @@ async function loadSprites() {
 }
 
 /* ---------- 数据拉取 ---------- */
-async function getJSON(url, timeout = 8000) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeout);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } finally { clearTimeout(timer); }
-}
 
 async function poll() {
   try {
@@ -448,11 +415,6 @@ function drawTenantRegions(s) {
   }
   ctx.restore();
 }
-function hexA(hex, a) {
-  const n = parseInt(hex.slice(1), 16);
-  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-  return `rgba(${r},${g},${b},${a})`;
-}
 function drawGrid(w, h) {
   ctx.strokeStyle = 'rgba(104,117,167,.08)';
   ctx.lineWidth = 1;
@@ -477,8 +439,6 @@ function sprite(img, sx, sy, size) {
   ctx.drawImage(img, sx - dw / 2, sy - dh / 2, dw, dh);
 }
 /* ---------- 官方风格绘制助手（对照 arena-hero-web WorldCanvas/unitArt 等） ---------- */
-const EASE_OUT_CUBIC = (t) => 1 - Math.pow(1 - t, 3);
-const EASE_OUT_QUART = (t) => 1 - Math.pow(1 - t, 4);
 /** 新鲜度 -> 透明度：fresh=1 全亮；stale 按距最新 tick 步数淡出（探测记忆效果） */
 function cellAlpha(c, floor = 0.45) {
   if (!c || c.fresh) return 1;
@@ -510,7 +470,6 @@ function drawMeterBar(s, x, y, cell, value, maximum, color, labelColor, displayL
   ctx.strokeRect(barX + .5, y - barHeight / 2 + .5, barWidth - 1, barHeight - 1);
   ctx.restore();
 }
-function maxUnitHp(type) { return type === 'VANGUARD' ? 4 : 2; }
 function drawUnitHealth(s, x, y, cell, hp, maxHp) {
   if (maxHp <= 0 || hp >= maxHp) return;
   drawMeterBar(s, x, y, cell, hp, maxHp, hp > 1 ? '#76b889' : '#c66370', '#e4e4e7', `${hp}/${maxHp}`);
@@ -632,11 +591,6 @@ function drawResources(cells, s) {
   }
   ctx.fill();
   ctx.restore();
-}
-function unitSpritePath(type) {
-  if (type === 'VANGUARD') return SPRITE.vanguard;
-  if (type === 'RANGER') return SPRITE.ranger;
-  return SPRITE.worker;
 }
 function ring(x, y, r, color, width = 1.5, dash = []) {
   ctx.strokeStyle = color; ctx.lineWidth = width;
@@ -1181,9 +1135,6 @@ function markRefresh(ok) {
 /* ---------- 官方商店 / 兑换码 ---------- */
 const SHOP_COOKIE_KEY = 'arena-cc.shop-cookie';
 function shopCookieValue() { return (localStorage.getItem(SHOP_COOKIE_KEY) ?? '').trim(); }
-function escapeHtml(str) {
-  return String(str ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
 async function shopRequest(path, options = {}) {
   const headers = new Headers(options.headers ?? {});
   const cookie = shopCookieValue();
@@ -1495,8 +1446,6 @@ const TACT_STEPS = [{ d: 'UP', dx: 0, dy: -1 }, { d: 'RIGHT', dx: 1, dy: 0 }, { 
 const TICK_MS = 15000;
 const replay = { data: null, frame: 0, playing: false, speed: 1, loadedFor: null, tickStart: 0, progress: 0 };
 const TACT_RANGER_RAYS = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]];
-const pKey = (p) => `${p[0]},${p[1]}`;
-const samePos = (a, b) => a && b && a[0] === b[0] && a[1] === b[1];
 const T = () => state.tactical;
 function tactCoreCapacity(pop) { return Math.max(10, Math.max(0, pop) * 5); }
 function tactUnitCost(unitType, pop) {
