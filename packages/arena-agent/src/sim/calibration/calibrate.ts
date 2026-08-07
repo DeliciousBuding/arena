@@ -62,6 +62,8 @@ interface ComparisonContext {
   readonly harvestSourceUnknown: boolean;
   readonly beforeObstacles: ReadonlySet<string>;
   readonly beforeResources: ReadonlySet<string>;
+  /** before 快照中可见的敌方实体 id（unit/core）——fog-entry 判定用。 */
+  readonly beforeEntityIds: ReadonlySet<string>;
 }
 
 function canonicalize(value: unknown): unknown {
@@ -235,6 +237,17 @@ function classifyDifference(
       (isUncontrolledEntity(expected) || isUncontrolledEntity(actual))) {
     return "EXPECTED_UNKNOWN";
   }
+  // 敌方实体 fog entry（2026-08-07）：实体在 before 快照中不可见、after 中
+  // 出现——重放世界（由 before 投影构造）根本没有该实体，其 before 位置/
+  // 动作不可知——fog-of-war 信息边界，诚实标注 EXPECTED_UNKNOWN（含敌方
+  // 本 tick 产兵：敌方 SPAWN 事件不进我方私有事件，id 无法归一化）。
+  if (path.startsWith("$.entities.") &&
+      (isUncontrolledEntity(expected) || isUncontrolledEntity(actual))) {
+    const entityId = path.slice("$.entities.".length);
+    if (!context.beforeEntityIds.has(entityId)) {
+      return "EXPECTED_UNKNOWN";
+    }
+  }
   // v0.14（2026-08-06 上游 rules v0.14）起服务器不再下发 population_tier /
   // upkeep_next_tick；case 中为 null 即“服务器未提供”，该维度无法用本地
   // 预测值验证，按 EXPECTED_UNKNOWN 处理而非伪造推导值参与判定。
@@ -325,9 +338,19 @@ function prepareWorld(calibrationCase: CalibrationCaseV1): SimWorld {
     calibrationCase.before.state,
     calibrationCase.tenantId,
     calibrationCase.rulesVersion,
-    calibrationCase.opponentPlan === undefined
-      ? {}
-      : { opponentPlayerId: OPPONENT_PLAYER_ID },
+    calibrationCase.opponentPlan !== undefined
+      ? { opponentPlayerId: OPPONENT_PLAYER_ID }
+      : calibrationCase.opponents !== undefined && calibrationCase.opponents.length > 0
+        ? {
+            opponents: calibrationCase.opponents.map((opponent) => ({
+              id: opponent.tenantId,
+              unitIds: new Set(opponent.unitIds),
+              ...(opponent.coreId === undefined || opponent.coreId === null
+                ? {}
+                : { coreId: opponent.coreId }),
+            })),
+          }
+        : {},
   );
   const controlledIds = controlledEntityIds(calibrationCase.before.state);
   const replayBeacon =
@@ -365,6 +388,9 @@ export function runCalibrationCase(rawCase: unknown, rulesPath: string): Calibra
   if (calibrationCase.opponentPlan !== undefined) {
     plans.set(OPPONENT_PLAYER_ID, calibrationCase.opponentPlan);
   }
+  for (const opponent of calibrationCase.opponents ?? []) {
+    plans.set(opponent.tenantId, opponent.plan);
+  }
   const result = settleTick(
     beforeWorld,
     plans,
@@ -374,6 +400,7 @@ export function runCalibrationCase(rawCase: unknown, rulesPath: string): Calibra
   const opponentUnknown =
     calibrationCase.metadata.opponentPlans === "absent" ||
     (calibrationCase.opponentPlan === undefined &&
+      (calibrationCase.opponents === undefined || calibrationCase.opponents.length === 0) &&
       hasUncontrolledObjects(calibrationCase.before.state));
   const beaconUnknown = calibrationCase.before.state.champion_beacon.status === null;
   const refillUnknown = result.unknownEffects.some((effect) => effect.kind === "refill");
@@ -477,6 +504,16 @@ export function runCalibrationCase(rawCase: unknown, rulesPath: string): Calibra
         harvestSourceUnknown,
         beforeObstacles,
         beforeResources,
+        beforeEntityIds: new Set(
+          calibrationCase.before.state.objects
+            .filter(
+              (object): object is WorldObject & { id: string } =>
+                (object.kind === "CORE" || object.kind === "UNIT") &&
+                object.controlled === false &&
+                typeof object.id === "string",
+            )
+            .map((object) => object.id),
+        ),
       },
       "$",
       differences,

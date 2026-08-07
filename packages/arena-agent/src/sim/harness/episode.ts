@@ -75,6 +75,19 @@ export interface EpisodeConfig {
   readonly validatePlans?: boolean;
   /** 测试/实验注入；默认复用线上 DeterministicPlanner/SafetyPlanner。 */
   readonly plannerFactory?: (tenant: EpisodeTenant) => PlanProvider;
+  /**
+   * 手操覆盖注入（2026-08-07）：模拟服务器侧 Manual > Agent 合并——人类
+   * 玩家在同一租户槽位手操时，其 MANUAL 命令按单位覆盖本机 AGENT 计划，
+   * 本机 planner 看不到覆盖结果，只能从下一 tick 的权威状态自动对齐。
+   * 返回的计划直接送入 settlement（即"合并后的真实执行计划"）；返回
+   * null/undefined = 不覆盖（与服务器纯 AGENT 提交等价）。
+   */
+  readonly manualOverrideProvider?: (
+    tenantId: string,
+    tick: number,
+    state: TickState,
+    proposed: Plan,
+  ) => Plan | null | undefined;
   /** Optional read-only performance observer; never participates in simulation semantics. */
   readonly onTickSettled?: (measurement: EpisodeTickMeasurement) => void;
   /** Synthetic calibration 记录钩子（2026-08-07）：每 tick 结算后回调
@@ -259,9 +272,11 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
         }
       }
 
-      settlementPlans.set(tenant.id, finalPlan);
-      plans[tenant.id] = finalPlan;
-      planHashes[tenant.id] = hashPlan(finalPlan);
+      const settledPlan =
+        config.manualOverrideProvider?.(tenant.id, before.tick, state, finalPlan) ?? finalPlan;
+      settlementPlans.set(tenant.id, settledPlan);
+      plans[tenant.id] = settledPlan;
+      planHashes[tenant.id] = hashPlan(settledPlan);
       validations[tenant.id] = summary;
     }
 
