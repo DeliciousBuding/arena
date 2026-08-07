@@ -608,9 +608,22 @@ export class SafetyPlanner {
       if (maxPatrolRadius < patrolRadius) patrolRadius = maxPatrolRadius;
       let patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
       const patrolPointBlocked = obstacles.has(cellKey(patrolPoint));
-      if (chebyshev(unit.position, home) > patrolRadius) {
-        memory.patrolReturning = true;
-        target = home;
+      // 到达/越过当前环半径（含精确到点与绕路越界）：连续外扩到下一环——
+      // 修复 2026-08-07 t4 生产实证：worker 绕路错过精确环点（chebyshev 30
+      // vs 环半径 24）就被"越界→回家"截断，永远到不了 36 格资源带（res 冻
+      // 在 2、全程 0 采集）。到达环带即视为"该环已完成本方向覆盖"，同方位
+      // 直接延伸（8→16→24→32→40）；最外环才回家换方位。返回途中（被资源
+      // 拉回等）不重新外扩——保持回家。
+      if (!memory.patrolReturning && chebyshev(unit.position, home) >= patrolRadius) {
+        if (memory.patrolRing < EXPLORE_RING_COUNT - 1) {
+          memory.patrolRing += 1;
+          patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
+          patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+          target = patrolPoint;
+        } else {
+          memory.patrolReturning = true;
+          target = home;
+        }
       } else if (samePosition(unit.position, home)) {
         if (memory.patrolStarted) {
           // 方位步进 1→3（2026-08-06 生产实证）：t1 资源枯竭时 40 格矿在正东，
