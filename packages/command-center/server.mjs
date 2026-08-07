@@ -248,11 +248,30 @@ function loadReplay(tenant) {
       }
     }
   }
+  // 每 tick 事件帧（compact：战斗/资源活动可视化用；position 存在才保留）。
+  const eventFrames = [];
+  for (const file of caseFiles) {
+    const tick = parseTick(file);
+    const path = join(calibrationDir(tenant), runDir, "cases", file);
+    let raw;
+    try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+    const events = (raw?.before?.state?.events ?? [])
+      .filter((ev) => ev && ev.event_type && ev.position)
+      .map((ev) => ({
+        t: ev.event_type,
+        p: ev.position,
+        a: ev.actor_id ? String(ev.actor_id).slice(0, 8) : null,
+        g: ev.target_id ? String(ev.target_id).slice(0, 8) : null,
+        v: ev.values ?? null,
+      }));
+    if (events.length) eventFrames.push({ tick, events });
+  }
   const replay = {
     tenant, runId: runDir,
     ticks,
     units: [...units.entries()].map(([id, u]) => ({ id, ...u })),
     cores: [...cores.entries()].map(([id, c]) => ({ id, ...c })),
+    eventFrames,
   };
   replayCache.set(tenant, { runId: runDir, replay });
   return replay;
@@ -315,6 +334,22 @@ function loadSurvey(tenant) {
 }
 
 /** 完整世界快照：最新 calibration case 的 before.state（供前端交互计算：寻路/攻击范围/动作可用性）。 */
+/** 最新 case 的决策计划（unitActions/coreAction/intents），供待执行命令面板 + 计划箭头。 */
+function loadPlan(tenant) {
+  const runDir = latestRunDir(tenant);
+  if (runDir === null) return { tenant, generatedAt: new Date().toISOString(), plan: null, tick: null };
+  const caseFiles = listCases(tenant, runDir);
+  if (!caseFiles.length) return { tenant, generatedAt: new Date().toISOString(), plan: null, tick: null };
+  const file = caseFiles[caseFiles.length - 1];
+  const path = join(calibrationDir(tenant), runDir, "cases", file);
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    const plan = raw?.plan ?? null;
+    return { tenant, generatedAt: new Date().toISOString(), plan, tick: parseTick(file) };
+  } catch (error) {
+    return { tenant, generatedAt: new Date().toISOString(), plan: null, tick: null, error: String(error?.message ?? error) };
+  }
+}
 function loadWorld(tenant) {
   const runDir = latestRunDir(tenant);
   if (runDir === null) return { tenant, generatedAt: new Date().toISOString(), state: null, caseFile: null };
@@ -484,6 +519,10 @@ const server = createServer(async (req, res) => {
       const replay = loadReplay(tenant);
       if (!replay) return sendJson(res, { tenant, generatedAt: new Date().toISOString(), replay: null });
       return sendJson(res, { generatedAt: new Date().toISOString(), replay });
+    }
+    if (pathname === "/api/plan") {
+      const tenant = url.searchParams.get("tenant") ?? "t1";
+      return sendJson(res, loadPlan(tenant));
     }
     if (pathname === "/api/exploration") {
       const tenant = url.searchParams.get("tenant") ?? "t1";

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Arena 本地看护（用户授权自主维护，2026-08-06；t3/t4 移交 Rust 线
+# Arena 本地看护（用户授权自主维护，2026-08-06；t3/t4 已从 Rust 线收回 TS 线
 # 2026-08-07）：每分钟检查本地 supervisor /ready；异常则确认旧进程死透 →
-# 清理死锁 → 重启 live supervisor（t1/t2；t3/t4 由 arena-rs 看护，
-# 本脚本不得拉起，防双 writer）。日志追加到 ~/arena-watchdog.log。
+# 清理死锁 → 重启 live supervisor（t1-t4 全 TS 线；
+# Rust 看护已退役 2026-08-07）。日志追加到 ~/arena-watchdog.log。
 set -u
 
 LOG="$HOME/arena-watchdog.log"
@@ -23,7 +23,7 @@ if [ "$READY" = '"ready":true' ]; then
   # 未更新即视为 stall，走下方恢复路径（SDK 侧 idle 超时是主修复，此处兜底）。
   STALL_MAX_AGE_S=600
   STALL_TENANT=""
-  for TENANT in t1 t2; do
+  for TENANT in t1 t2 t3 t4; do
     OUTCOME="$RUNTIME_ROOT/$TENANT/telemetry/outcome.jsonl"
     LOCK=$(ls "$RUNTIME_ROOT/$TENANT/locks/"*.lock 2>/dev/null | head -1)
     # 启动宽限：本轮 run 尚未产出首个 outcome 时（lock 新于 outcome），
@@ -78,10 +78,10 @@ if [ -n "$STRAY" ]; then
 fi
 
 # 3) 清理死锁（进程已确认死透；只清 t1/t2——t3/t4 锁归 Rust 线）
-rm -f "$RUNTIME_ROOT/t1/locks/"*.lock "$RUNTIME_ROOT/t2/locks/"*.lock
+rm -f "$RUNTIME_ROOT/t1/locks/"*.lock "$RUNTIME_ROOT/t2/locks/"*.lock "$RUNTIME_ROOT/t3/locks/"*.lock "$RUNTIME_ROOT/t4/locks/"*.lock
 
 # 4) 重启 live supervisor（脱离当前会话，日志追加；--record-calibration 旁路
 #    只记录 raw Runtime-Golden dataset；后续校准严格离线执行）
 cd "$REPO" || exit 1
-nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs=t1,t2 --mode=deterministic --live --record-calibration --port=8120 >> "$LOG" 2>&1 &
+nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --port=8120 >> "$LOG" 2>&1 &
 echo "$(now) supervisor restarted (pid $!)" >> "$LOG"
