@@ -24,7 +24,8 @@
     "sim:calibrate-dataset": "tsx src/cli/run-sim.ts calibrate-dataset",
     "sim:dataset": "tsx src/cli/run-sim.ts dataset",
     "arena:supervisor": "tsx src/cli/run-supervisor.ts",
-    "sim:variant-window": "tsx scripts/variant-window.mts"
+    "sim:variant-window": "tsx scripts/variant-window.mts",
+    "survey:sync": "tsx scripts/run-survey-sync.mts"
   },
   "dependencies": {
     "@arena/arena-hero-ts": "*",
