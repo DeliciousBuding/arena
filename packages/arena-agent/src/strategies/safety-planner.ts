@@ -640,6 +640,10 @@ export class SafetyPlanner {
         event.position !== undefined
       ) {
         this.world.forgetCoreHuntAt(event.position);
+        // 同步清理 enemyMemory（pressure_memory/ranger_memory_shot 读它）——
+        // 死核残留让 Ranger 对死核格空放枪（该格常站着己方 Vanguard，观感像
+        // 打友军）、Vanguard 全吸到死核格 capacity_wait（t1 69640 拆核实证）。
+        this.world.forgetEnemyCoreAt(event.position, event.targetId);
       }
     }
     this.effectivePolicy = input.policy ?? null;
@@ -1698,7 +1702,13 @@ export class SafetyPlanner {
           hint.prevPosition !== undefined &&
           samePosition(hint.prevPosition, hint.position),
       );
-      if (coreMemory !== undefined && canShoot(unit.position, coreMemory.position, obstacles)) {
+      if (
+        coreMemory !== undefined &&
+        canShoot(unit.position, coreMemory.position, obstacles) &&
+        // 不打被自己单位占位的格（t1 69640 拆核后实证：死核格上站着己方
+        // Vanguard，空放枪观感像打友军 + 浪费 DPS）——占位说明该格当前无敌人。
+        !state.units.some((u) => samePosition(u.position, coreMemory.position))
+      ) {
         set(
           unit,
           { type: "SHOOT", targetId: null, expectedCell: coreMemory.position },

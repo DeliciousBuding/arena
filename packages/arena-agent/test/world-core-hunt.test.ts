@@ -144,3 +144,26 @@ test("挂机 WORKER 狩猎：连续同位置目击 → 静止目标；移动/单
   assert.equal(world.stationaryWorkerTargets(5).length, 0, "TTL=5 已过期（age 9 > 5）");
   assert.equal(world.stationaryWorkerTargets(12).length, 1, "TTL=12 仍有效（age 9 ≤ 12）");
 });
+
+test("旧核验证：DESTRUCTION_PARTICIPATION 同步清理 enemyMemory CORE 条目（死核残留 bug 回归）", () => {
+  const world = new World();
+  world.observe(makeState(100, {
+    visibleEnemies: [{ id: "e-core", kind: "CORE", position: [-50, -30], hp: 5 }],
+  }));
+  assert.equal(world.enemyHints(60).filter((h) => h.kind === "CORE").length, 1, "CORE 记忆存在");
+  // 摧毁事件：位置 + id 都匹配 → 清除
+  const removed = world.forgetEnemyCoreAt([-50, -30], "e-core");
+  assert.equal(removed, true);
+  assert.equal(world.enemyHints(60).filter((h) => h.kind === "CORE").length, 0, "死核记忆已清");
+  // 仅位置匹配（无 id）也能清；非 CORE（如 WORKER）条目不受影响
+  world.observe(makeState(101, {
+    visibleEnemies: [
+      { id: "e-core2", kind: "CORE", position: [-70, -10], hp: 5 },
+      { id: "e-w", kind: "UNIT", position: [-70, -10], hp: 2, unitType: "WORKER" },
+    ],
+  }));
+  assert.equal(world.forgetEnemyCoreAt([-70, -10]), true, "位置匹配清除 CORE");
+  const hints = world.enemyHints(60);
+  assert.equal(hints.filter((h) => h.kind === "CORE").length, 0, "CORE 全清");
+  assert.equal(hints.filter((h) => h.kind === "UNIT").length, 1, "WORKER 记忆保留");
+});
