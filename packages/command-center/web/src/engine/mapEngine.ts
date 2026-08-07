@@ -100,7 +100,7 @@ const state: ArenaState = {
   streams: {},          // tenant -> rows
   events: {},           // tenant -> events
   view: { cx: 0, cy: 0, scale: 8, ready: false },
-  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true, survey: true, patrol: true, plan: true, trail: true, beaconEdge: true, coreTrail: true, enemyMemory: true },
+  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true, beaconTrail: true, survey: true, patrol: true, plan: true, trail: true, beaconEdge: true, coreTrail: true, enemyMemory: true },
   tenantsOn: { t1: true, t2: true, t3: true, t4: true },
   soloTenant: null,     // null=全局联盟；'t1'..'t4'=单租户
   tab: 'all',           // all | t1 | t2 | t3 | t4 | events
@@ -1202,7 +1202,7 @@ function drawBeaconAt(s: any, b: any) {
     if (state.soloTenant && state.layers.beaconEdge !== false) drawEdgeBeacon(b, p);
     return;
   }
-  if (state.layers.beacon !== false) drawBeaconTrail(s, b);
+  if (state.layers.beaconTrail !== false) drawBeaconTrail(s, b);
   const size = Math.max(14, s * (b.status === 'CARRIED' ? 0.58 : 0.98));
   if (state.soloTenant && state.layers.beacon) {
     const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 420);
