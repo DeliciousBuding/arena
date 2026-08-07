@@ -2118,12 +2118,19 @@ function tactRenderHud(tenant) {
   const st = world.state;
   const cap = tactCoreCapacity(st.population ?? 0);
   els.fleetHud.hidden = false;
-  const survey = T().surveys[tenant];
+  const survey = T().surveys[tenant] ?? { resourceCells: [], obstacleCells: [], coreCells: [], caseCount: 0, tickMax: 0, fromDb: false };
+  const resCount = (survey.resourceCells ?? []).length;
+  const activeMines = (survey.resourceCells ?? []).filter((r) => r.state === "visible" || r.state === undefined).length;
+  const minedOut = (survey.resourceCells ?? []).filter((r) => r.state === "harvested" || r.state === "empty").length;
+  const staleMines = resCount - activeMines - minedOut;
   const surveyRow = survey ? `<div class="hud-row hud-survey">
-    <span class="hud-label">测绘</span>
+    <span class="hud-label">测绘${survey.fromDb ? '·库' : ''}</span>
     <span class="hud-val">${survey.obstacleCells.length} 障碍</span>
-    <span class="hud-val" style="color:var(--green-resource)">${survey.resourceCells.length} 资源</span>
-    <span class="hud-val">${survey.coreCells.length} 核心</span>
+    <span class="hud-val" style="color:var(--green-resource)">${resCount} 矿</span>
+    <span class="hud-val" style="color:#7ee0a0" title="活跃（最近确认存在）">${activeMines}●</span>
+    <span class="hud-val" style="color:#5a7a64" title="待确认（见过但未确认）">${staleMines}◐</span>
+    <span class="hud-val" style="color:#6b7280" title="采空/已确认空">${minedOut}○</span>
+    <span class="hud-val">${survey.coreCells.length} 敌核</span>
     <span class="hud-val dim">${survey.caseCount} case · tick ${survey.tickMax}</span>
   </div>` : '';
   const cmdStatus = commandStatusText(tenant);
@@ -2364,14 +2371,40 @@ function tactSurveyLayer(s) {
   if (survey.resourceCells.length) {
     ctx.save();
     // 资源记忆用菱形晶体标记（比圆点更有"资源"语义，避免绿色圆球堆叠成怪团）；
-    // 低缩放只画描边小点，高缩放才是可辨认晶体
+    // 低缩放只画描边小点，高缩放才是可辨认晶体。
+    // 状态着色（2026-08-08 survey-db）：visible=活跃亮绿 / stale=暗绿待确认 /
+    // harvested=空心灰（采过）/ empty=暗方块（确认空）；无 state（旧 calibration
+    // 扫描数据）= 兼容旧样式。
     const cap = Math.min(survey.resourceCells.length, 1200);
     for (let i = 0; i < cap; i++) {
       const c = survey.resourceCells[i];
       const p = project(c.x, c.y);
-      ctx.globalAlpha = ageAlpha(c.tick) * 0.8;
+      const st = c.state ?? "visible";
       const r = Math.max(2, s * 0.17);
-      ctx.fillStyle = 'rgba(118,184,137,.30)';
+      ctx.globalAlpha = ageAlpha(c.tick) * (st === "visible" ? 0.95 : 0.55);
+      if (st === "empty") {
+        // 已确认空：暗色小方块 + X 语义（不误导成矿）
+        ctx.fillStyle = 'rgba(80,86,92,.55)';
+        const half = Math.max(1.5, s * 0.09);
+        ctx.fillRect(p.sx - half, p.sy - half, half * 2, half * 2);
+        continue;
+      }
+      if (st === "harvested") {
+        // 采过：空心菱形（轮廓弱，表示已采空/记忆负态）
+        ctx.strokeStyle = 'rgba(140,150,160,.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(p.sx, p.sy - r);
+        ctx.lineTo(p.sx + r * 0.72, p.sy);
+        ctx.lineTo(p.sx, p.sy + r);
+        ctx.lineTo(p.sx - r * 0.72, p.sy);
+        ctx.closePath();
+        ctx.stroke();
+        continue;
+      }
+      ctx.fillStyle = st === "visible"
+        ? 'rgba(126,224,160,.85)'
+        : 'rgba(118,184,137,.30)';
       ctx.beginPath();
       ctx.moveTo(p.sx, p.sy - r);
       ctx.lineTo(p.sx + r * 0.72, p.sy);
@@ -2380,7 +2413,7 @@ function tactSurveyLayer(s) {
       ctx.closePath();
       ctx.fill();
       if (r >= 3) {
-        ctx.strokeStyle = 'rgba(150,210,170,.38)';
+        ctx.strokeStyle = st === "visible" ? 'rgba(170,240,200,.55)' : 'rgba(150,210,170,.38)';
         ctx.lineWidth = 1;
         ctx.stroke();
       }

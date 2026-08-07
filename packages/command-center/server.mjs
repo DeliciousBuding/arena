@@ -12,8 +12,9 @@
  */
 
 import { createServer } from "node:http";
-import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -518,6 +519,46 @@ function loadReplay(tenant) {
   };
   replayCache.set(tenant, { runId: runDir, replay });
   return replay;
+}
+
+/** 测绘库（survey-db，2026-08-08 跨 run 完整测绘）：优先于 calibration 扫描——
+ *  calibration case 只覆盖"最新 run 已同步 tick"，测绘库累积全部历史 run 的
+ *  资源/障碍/敌核心（node:sqlite 只读）。返回形状与 loadSurvey 兼容（前端
+ *  tactSurveyLayer 直接消费），资源格额外带 state/seenCount 供状态着色。
+ *  库缺失/空 = null（调用方回退 loadSurvey）。 */
+function loadSurveyDb(tenant) {
+  const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(file)) return null;
+  let db;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+  } catch {
+    return null;
+  }
+  try {
+    const resources = db.prepare(
+      "SELECT x, y, last_seen_tick AS tick, state, seen_count AS seenCount FROM resources ORDER BY last_seen_tick DESC",
+    ).all();
+    const obstacles = db.prepare(
+      "SELECT x, y, last_seen_tick AS tick FROM obstacles ORDER BY last_seen_tick DESC",
+    ).all();
+    const cores = db.prepare(
+      "SELECT x, y, last_seen_tick AS tick, owner, source FROM core_hunts ORDER BY last_seen_tick DESC",
+    ).all();
+    const meta = db.prepare("SELECT MAX(last_tick) AS m, SUM(cases_synced) AS c FROM sync_meta").get();
+    return {
+      obstacleCells: obstacles,
+      resourceCells: resources,
+      coreCells: cores,
+      caseCount: Number(meta?.c ?? 0),
+      tickMax: Number(meta?.m ?? 0),
+      fromDb: true,
+    };
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
 }
 
 /** 测绘累积缓存：每个租户同一 run 的全部 calibration case 合并出的已知地形（探索过的范围）。 */
@@ -1070,7 +1111,7 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === "/api/exploration") {
       const tenant = url.searchParams.get("tenant") ?? "t1";
-      const survey = loadSurvey(tenant);
+      const survey = loadSurveyDb(tenant) ?? loadSurvey(tenant); // 测绘库优先（跨 run），缺失回退 calibration
       if (!survey) return sendJson(res, { tenant, generatedAt: new Date().toISOString(), survey: null });
       const world = loadWorld(tenant);
       return sendJson(res, {
@@ -1079,6 +1120,26 @@ const server = createServer(async (req, res) => {
         survey,
         current: world.state ? { caseFile: world.caseFile, tick: world.tick, objects: world.state.objects, resources: world.state.resources, population: world.state.population, champion_beacon: world.state.champion_beacon } : null,
       });
+    }
+    if (pathname === "/api/survey") {
+      // 跨 run 测绘库原始数据（2026-08-08，调试/前端图层）：每租户矿（含状态/
+      // seenCount）、障碍、敌核心。?tenant=t1|all；?states=visible,stale 过滤。
+      const tenant = url.searchParams.get("tenant") ?? "all";
+      const states = (url.searchParams.get("states") ?? "visible,stale").split(",").map((s) => s.trim()).filter(Boolean);
+      const tenants = tenant === "all" ? TENANTS : [tenant];
+      const out = { generatedAt: new Date().toISOString(), tenants: {} };
+      for (const t of tenants) {
+        const s = loadSurveyDb(t);
+        if (!s) { out.tenants[t] = { error: "survey db missing" }; continue; }
+        out.tenants[t] = {
+          resources: s.resourceCells.filter((r) => states.includes(r.state)),
+          obstacles: s.obstacleCells,
+          coreHunts: s.coreCells,
+          caseCount: s.caseCount,
+          tickMax: s.tickMax,
+        };
+      }
+      return sendJson(res, out);
     }
     if (pathname === "/api/events") {
       const tenant = url.searchParams.get("tenant") ?? "t1";
