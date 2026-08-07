@@ -139,7 +139,7 @@ body::after {
   color: var(--text); line-height: 1.15;
 }
 .brand-text .subtitle {
-  font-family: var(--font-mono); font-size: 9px; letter-spacing: .2em;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .18em;
   color: var(--text-faint); margin-top: 3px; text-transform: uppercase;
 }
 .top-status { display: flex; align-items: center; gap: 12px; }
@@ -220,7 +220,7 @@ body::after {
 }
 .panel:hover { border-color: var(--border-strong); }
 .panel-title {
-  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .2em;
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .16em;
   color: var(--text-faint); text-transform: uppercase; margin-bottom: 10px; font-weight: var(--weight-medium);
 }
 
@@ -265,7 +265,7 @@ body::after {
   background: var(--tc, #69b3d8);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--tc, #69b3d8) 30%, transparent);
 }
-.tenant-card .tenant-tag { margin-left: auto; font-family: var(--font-mono); font-size: 9px; letter-spacing: .1em; color: var(--text-faint); }
+.tenant-card .tenant-tag { margin-left: auto; font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; color: var(--text-faint); }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .dot.live { background: var(--success); box-shadow: 0 0 8px rgba(87,189,132,.8); animation: dotPulse 2.2s ease-in-out infinite; }
 .dot.fresh { background: var(--warn); box-shadow: 0 0 8px rgba(211,173,85,.5); }
@@ -274,7 +274,7 @@ body::after {
 .tenant-card .metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 10px; margin-top: 7px; }
 .tenant-card .metric { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .tenant-card .metric img { width: 14px; height: 14px; object-fit: contain; opacity: .85; flex: none; }
-.tenant-card .metric .k { font-size: 10px; color: var(--text-faint); margin-left: 2px; }
+.tenant-card .metric .k { font-size: 10.5px; color: var(--text-faint); margin-left: 2px; }
 .tenant-card .metric .v {
   font-family: var(--font-mono); font-size: 12.5px; font-weight: 650; color: var(--text);
   border-radius: 4px; transition: color .3s ease;
@@ -288,7 +288,7 @@ body::after {
 .tenant-card .metric .v.delta-neg { color: var(--danger); }
 .tenant-card .row3 {
   margin-top: 9px; padding-top: 7px; border-top: 1px dashed var(--border-faint);
-  font-family: var(--font-mono); font-size: 10px; color: var(--text-faint);
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
   display: flex; gap: 10px; flex-wrap: wrap;
 }
 .tenant-card .row3 b { color: var(--text-dim); font-weight: 600; }
@@ -340,7 +340,7 @@ body::after {
 #map:active { cursor: grabbing; }
 #mapHint {
   position: absolute; left: 50%; bottom: 14px; z-index: 3; transform: translateX(-50%);
-  font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em;
   color: var(--text-faint); background: rgba(4,4,4,.66); padding: 6px 12px; border-radius: 999px;
   border: 1px solid var(--border); pointer-events: none; backdrop-filter: blur(8px);
   white-space: nowrap;
@@ -581,7 +581,7 @@ body::after {
 .act-icon img { width: 30px; height: 30px; object-fit: contain; }
 .act-id { flex: 1; min-width: 0; }
 .act-id b { display: block; font-size: 13px; color: var(--text); }
-.act-id .mono { display: block; font-size: 10px; color: var(--text-dim); margin-top: 1px; }
+.act-id .mono { display: block; font-size: 10.5px; color: var(--text-dim); margin-top: 1px; }
 .act-close { flex: none; width: 30px; height: 30px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--text-dim); cursor: pointer; font-size: 14px; }
 .act-close:hover { background: rgba(255,255,255,.06); color: #fff; }
 .act-mode-badge {
@@ -658,10 +658,10 @@ body::after {
 .st-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px rgba(87,189,132,.8); animation: dotPulse 2.2s ease-in-out infinite; flex: none; }
 .st-dot.has-new { background: var(--warn); box-shadow: 0 0 9px rgba(211,173,85,.85); }
 .st-title { font-size: 11px; font-weight: var(--weight-semibold); letter-spacing: .14em; color: var(--text-dim); text-transform: uppercase; font-family: var(--font-mono); }
-.st-count { margin-left: auto; font-size: 10px; color: var(--text-faint); }
+.st-count { margin-left: auto; font-size: 10.5px; color: var(--text-faint); }
 .stream-filter {
   flex: none; appearance: none; cursor: pointer;
-  font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em;
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .05em;
   color: var(--text-faint); background: transparent;
   border: 1px solid var(--border-faint); border-radius: 999px;
   padding: 3px 10px; transition: all .22s var(--ease);
@@ -716,7 +716,7 @@ body::after {
   padding: 8px 14px;
   animation: dialogIn .3s var(--ease);
 }
-.rb-label { font-size: 9px; letter-spacing: .18em; color: var(--text-faint); }
+.rb-label { font-size: 10px; letter-spacing: .16em; color: var(--text-faint); }
 .rb-tick { font-size: 13px; font-weight: 700; color: var(--text); }
 .rb-sep { font-size: 11px; }
 .rb-track {
