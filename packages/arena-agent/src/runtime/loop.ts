@@ -27,6 +27,7 @@ import { DecisionCoordinator } from "./decision-coordinator.ts";
 import { hashTickState } from "./state-hash.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../strategies/safety-planner.ts";
 import type { DecisionModeName, SubmissionModeName } from "./decision-types.ts";
+import { applyHumanOverrides, type HumanCommandSource, type HumanOverrideResult } from "./human-override.ts";
 
 // ---------- Plan（domain）→ CommandPlan（SDK wire） ----------
 
@@ -85,6 +86,8 @@ export interface TickOutcome {
   readonly receipt?: Accepted;
   /** coordinator 路径的完整 DecisionResult（遥测三流素材；旧 bridge 无）。 */
   readonly decision?: import("./decision-types.ts").DecisionResult;
+  /** 人类最高控制权：提交前的人类指令合并结果（applied/rejected 供指挥面板回显）。 */
+  readonly humanOverride?: HumanOverrideResult | null;
 }
 
 export interface TenantLoopOptions {
@@ -111,6 +114,8 @@ export interface TenantLoopOptions {
   readonly maxLiveSubmissions?: number;
   /** 最后一次 submit 后额外观察的 Turn 数，默认 1（收齐最终结算事件）。 */
   readonly outcomeDrainTurns?: number;
+  /** 人类最高控制权：提交前从 <storeDir>/<tenantId>.json 读取并合并人类指令。 */
+  readonly humanCommands?: HumanCommandSource;
 }
 
 export async function runTenantLoop(options: TenantLoopOptions): Promise<void> {
@@ -156,7 +161,7 @@ export async function runTenantLoop(options: TenantLoopOptions): Promise<void> {
 export async function handleTurn(
   turn: Turn,
   planner: SafetyPlanner,
-  options: Pick<TenantLoopOptions, "decide" | "submissionMode" | "onTick" | "coordinator">,
+  options: Pick<TenantLoopOptions, "decide" | "submissionMode" | "onTick" | "coordinator" | "humanCommands">,
   deadlineMs: number,
 ): Promise<TickOutcome> {
   const state = reduceTurn(turn as unknown as TurnLike);
@@ -183,21 +188,30 @@ export async function handleTurn(
       };
     }
     try {
-      const wirePlan = planToCommandPlan(result.execution.plan);
+      // 人类最高控制权：提交前合并人类指令（Manual > Agent > Safety）。
+      let plan = result.execution.plan;
+      let humanOverride: HumanOverrideResult | null = null;
+      if (options.humanCommands) {
+        humanOverride = applyHumanOverrides(state, plan, options.humanCommands);
+        plan = humanOverride.plan;
+      }
+      const humanSource = humanOverride !== null && humanOverride.active ? "human" as const : source;
+      const wirePlan = planToCommandPlan(plan);
       turn.replace(wirePlan);
       const accepted = await turn.submit();
       return {
         tick: result.tick,
-        source,
+        source: humanSource,
         originalSource: source,
         repairCount: result.repairCount,
-        plan: result.execution.plan,
+        plan,
         accepted: accepted.accepted,
         submitAttempted: true,
         state,
         rawState: turn.state,
         receipt: accepted,
         decision: result,
+        humanOverride,
       };
     } catch (exc) {
       return {

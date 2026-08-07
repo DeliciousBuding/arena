@@ -758,6 +758,8 @@ export async function runTenant(
       maxLiveSubmissions: options.maxLiveTicks,
       outcomeDrainTurns: options.outcomeDrainTurns,
       onTick,
+      // 人类最高控制权：提交前从 data/runtime/human-commands/<tenant>.json 合并人类指令。
+      humanCommands: { tenantId: config.tenantId, storeDir: join(baseDir, "human-commands") },
     });
     await Promise.race([loopPromise, stopped]);
     // requestStop 可能先于 async generator 完成；必须等待 loop 真正退出，避免 close writer 后迟到写入。
