@@ -22,7 +22,8 @@ import { performance } from "node:perf_hooks";
 
 import { loadRuntimeConfig, resolveCircuitBreaker, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
 import { loadPersistentEnemyIntel } from "./enemy-intel.ts";
-import { loadThreatProfiles } from "./official-intel.ts";
+import type { CoreHuntTarget } from "../domain/world.ts";
+import { loadThreatProfiles, threatProfilesEqual } from "./official-intel.ts";
 import { resolveArenaDataRoot, resolveTenantBaseDir } from "./data-root.ts";
 import { SingleWriterLock } from "./single-writer-lock.ts";
 import { newProcessRunId, readGitSha, writeRunManifest, type RunManifest } from "./run-manifest.ts";
@@ -31,7 +32,7 @@ import { LeaseRegistry } from "../runtime/lease-registry.ts";
 import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
 import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
-import { knownResources, openSurveyDb } from "../intel/survey-db.ts";
+import { knownCoreHunts, knownObstacles, knownResources, openSurveyDb } from "../intel/survey-db.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
@@ -57,6 +58,7 @@ import {
 import { planHashOf } from "../telemetry/decision-trace.ts";
 import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
 import { sha256Canonical } from "../domain/integrity.ts";
+import { AllianceShadowWriter } from "../alliance/shadow.ts";
 import {
   RuntimeGoldenRecorder,
   type RuntimeGoldenRecorderResult,
@@ -68,6 +70,11 @@ export const RULES_VERSION = "v0.14";
  *  生产实测 t1 capacity_wait:DEPOSIT 死锁 60+ ticks 才被人工发现，16 ticks（≈2 个
  *  MacroPolicy 周期）是"足够确认异常、又不会频繁误报"的折中。 */
 export const STALL_WARNING_TICKS = 16;
+
+/** 威胁画像热刷新间隔（2026-08-08）：leaderboard 快照由外部计划任务每 15 分钟
+ *  拉取（ArenaLeaderboardIntel → docs/progress/leaderboard-intel.py），四线每 5
+ *  分钟重读一次（间隔 < 快照间隔，保证拉取后 5 分钟内生效；内容不变零抖动）。 */
+const THREAT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 /** 威胁评估诊断字段（v0.3-lite，2026-08-06）：从 outcome state 计算 tick 级威胁
  *  （可见敌/受击基础版；enemyHints 记忆增强——moving/pursuit——待 planner 侧
@@ -170,6 +177,10 @@ export interface TenantRunOptions {
   readonly startupSyncTurns?: number;
   /** S8b：默认关闭；仅旁路记录 accepted full-plan + 相邻 raw states。 */
   readonly recordCalibration?: boolean;
+  /** Alliance shadow（Phase 1 收尾）：默认关闭；每 interval tick 从 live state
+   *  构建联盟快照写 telemetry/alliance-shadow.jsonl（只读影子，零决策影响）。 */
+  readonly recordAllianceShadow?: boolean;
+  readonly allianceShadowIntervalTicks?: number;
   /** 测试注入；生产由 recordCalibration 创建。 */
   readonly calibrationRecorder?: RuntimeGoldenRecorder;
 }
@@ -285,6 +296,15 @@ export async function runTenant(
     cleanupStack.push(() => decisionWriter.close());
     const outcomeWriter = new JsonlWriter(join(dirs.telemetryDir, "outcome.jsonl"));
     cleanupStack.push(() => outcomeWriter.close());
+    // Alliance shadow（默认关）：每 interval tick 输出联盟快照帧（spec Phase 1）。
+    const allianceShadowWriter = options.recordAllianceShadow === true
+      ? new AllianceShadowWriter({
+          tenantId: config.tenantId,
+          processRunId,
+          path: join(dirs.telemetryDir, "alliance-shadow.jsonl"),
+          intervalTicks: options.allianceShadowIntervalTicks,
+        })
+      : null;
 
     // S8b recorder 默认关闭。初始化失败也只写独立告警，绝不阻断 live loop。
     const recorderWarningPath = join(dirs.telemetryDir, "calibration-recorder.jsonl");
@@ -479,9 +499,12 @@ export async function runTenant(
     // 持久敌情测绘（2026-08-07）：启用 militaryHunt 变体时，从本租户历史
     // calibration cases 提取最后已知敌 Core 位置注入 planner——重启后军事仍
     // 记得敌方基地（解决"重启→记忆清零→军队空转"）。只读、有界、失败静默。
+    // 跨 run 测绘种子（2026-08-08 统一捕获链路）：敌核记忆优先从测绘库读
+    // （跨 run 全量，比 calibration 扫描更全），缺失/损坏回退 calibration 扫描。
+    const surveyCoreHunts = loadSurveyCoreHuntSeed(dataRoot, config.tenantId);
     const initialCoreHuntTargets =
-      decisionMode === "deterministic" && variantConfig.militaryHunt === true
-        ? loadPersistentEnemyIntel(dirs.calibrationDir)
+      decisionMode === "deterministic" && (variantConfig.militaryHunt === true || surveyCoreHunts.length > 0)
+        ? (surveyCoreHunts.length > 0 ? surveyCoreHunts : loadPersistentEnemyIntel(dirs.calibrationDir))
         : [];
     // 官方排行榜威胁画像（2026-08-07，威胁自适应）：从 data/leaderboard/ 快照
     // 加载（纯只读，缺失/降级 = 空 Map 零回归）；供攻坚"留强"决策消费——
@@ -494,10 +517,11 @@ export async function runTenant(
         ? { ...DEFAULT_SAFETY_CONFIG, ...variantConfig }
         : { ...AGGRESSIVE_SAFETY_CONFIG, ...variantConfig };
     const surveyResourceCells = loadSurveyResourceSeed(dataRoot, config.tenantId);
+    const surveyObstacleCells = loadSurveyObstacleSeed(dataRoot, config.tenantId);
     const planner: DeterministicPlanner | SafetyPlanner =
       decisionMode === "deterministic"
         ? Object.keys(variantConfig).length === 0
-          ? new DeterministicPlanner(undefined, undefined, undefined, undefined, undefined, undefined, [], new Map(), surveyResourceCells)
+          ? new DeterministicPlanner(undefined, undefined, undefined, undefined, undefined, undefined, [], new Map(), surveyResourceCells, surveyObstacleCells)
           : new DeterministicPlanner(
               new WorkerTaskPlanner(),
               new SafetyPlanner(baseSafetyConfig),
@@ -508,10 +532,13 @@ export async function runTenant(
               initialCoreHuntTargets,
               threatProfiles,
               surveyResourceCells,
+              surveyObstacleCells,
             )
         : new SafetyPlanner(baseSafetyConfig, undefined, threatProfiles);
-    if (planner instanceof SafetyPlanner && surveyResourceCells.length > 0) {
-      planner.world.seedResourceMemory(surveyResourceCells, 0);
+    if (planner instanceof SafetyPlanner) {
+      if (surveyResourceCells.length > 0) planner.world.seedResourceMemory(surveyResourceCells, 0);
+      if (surveyObstacleCells.length > 0) planner.world.seedObstacleMemory(surveyObstacleCells);
+      if (surveyCoreHunts.length > 0) planner.world.seedCoreHuntTargets(surveyCoreHunts);
     }
 
     // 配置热加载（2026-08-08）：重读 config 文件 → schema/变体校验 → 原子替换
@@ -557,6 +584,44 @@ export async function runTenant(
         return { applied: false, error: message };
       }
     };
+
+    // 威胁画像热刷新（2026-08-08）：leaderboard 快照由外部计划任务每 15 分钟
+    // 拉取（ArenaLeaderboardIntel → docs/progress/leaderboard-intel.py），四线每 5
+    // 分钟重读一次快照，内容变化才替换（掉榜用户立即移除，零抖动；纯只读 +
+    // 降级：快照缺失/解析失败返回空 Map → 威胁自适应关闭，与"无情报"历史一致，
+    // 下次快照恢复自动回来）。
+    let lastThreatProfiles = threatProfiles;
+    const refreshThreatProfiles = (): void => {
+      try {
+        const next = loadThreatProfiles(dataRoot);
+        if (threatProfilesEqual(lastThreatProfiles, next)) return;
+        lastThreatProfiles = next;
+        planner.replaceThreatProfiles(next);
+        appendJsonlLine(
+          join(dirs.telemetryDir, "runtime.jsonl"),
+          JSON.stringify(sanitizeValue({
+            processRunId,
+            tenantId: config.tenantId,
+            telemetryType: "threat_profiles_refreshed",
+            profiles: next.size,
+          })),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        appendJsonlLine(
+          join(dirs.telemetryDir, "runtime.jsonl"),
+          JSON.stringify(sanitizeValue({
+            processRunId,
+            tenantId: config.tenantId,
+            telemetryType: "threat_profiles_refresh_failed",
+            message,
+          })),
+        );
+      }
+    };
+    const threatRefreshTimer = setInterval(refreshThreatProfiles, THREAT_REFRESH_INTERVAL_MS);
+    refreshThreatProfiles(); // 启动立即检查一次（避免首次快照缺失导致长空窗）
+    cleanupStack.push(() => clearInterval(threatRefreshTimer));
 
     // 触发源 1：文件监听（父目录 + 400ms debounce，兼容编辑器原子替换/重命名）。
     let configWatch: ReturnType<typeof watch> | null = null;
@@ -636,6 +701,8 @@ export async function runTenant(
     let liveSubmitCount = 0;
 
     const onTick = (outcome: TickOutcome): void => {
+      // Alliance shadow（默认关）：只读快照，IO 失败不阻塞。
+      allianceShadowWriter?.onState(outcome.state);
       const decision = outcome.decision;
       const intentCounts = decision === undefined
         ? {}
@@ -981,6 +1048,46 @@ function loadSurveyResourceSeed(dataRoot: string, tenantId: string, maxAgeTicks 
     return rows
       .filter((row) => row.lastSeenTick >= cutoff)
       .map((row) => [row.x, row.y] as const);
+  } catch {
+    return [];
+  }
+}
+/** 跨 run 测绘种子（2026-08-08，统一捕获链路）：从测绘库读最近确认的敌核心
+ *  （core_hunts，last_seen 距今 ≤ maxAgeTicks）注入 World 敌情狩猎记忆——
+ *  重启后军事仍记得敌方基地（比 calibration 扫描更全：跨 run 累积，不受
+ *  最新 run 采样窗口限制）。库缺失/损坏 = 空数组零回归。 */
+function loadSurveyCoreHuntSeed(dataRoot: string, tenantId: string, maxAgeTicks = 20_000): readonly CoreHuntTarget[] {
+  try {
+    const db = openSurveyDb(dataRoot, tenantId, false);
+    const rows = knownCoreHunts(db);
+    db.close();
+    if (rows.length === 0) return [];
+    let maxTick = 0;
+    for (const row of rows) if (row.lastSeenTick > maxTick) maxTick = row.lastSeenTick;
+    const cutoff = maxTick - maxAgeTicks;
+    return rows
+      .filter((row) => row.lastSeenTick >= cutoff)
+      .map((row) => ({
+        position: [row.x, row.y] as const,
+        lastSeenTick: row.lastSeenTick,
+        source: row.source,
+        owner: row.owner ?? null,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/** 跨 run 测绘种子（2026-08-08，统一捕获链路）：从测绘库读全部已知障碍
+ *  （obstacles，静态地形跨 run 稳定，不做新鲜度过滤）注入 World 障碍记忆——
+ *  重启后导航/寻路直接准确。库缺失/损坏 = 空数组零回归。 */
+function loadSurveyObstacleSeed(dataRoot: string, tenantId: string): readonly Position[] {
+  try {
+    const db = openSurveyDb(dataRoot, tenantId, false);
+    const rows = knownObstacles(db);
+    db.close();
+    if (rows.length === 0) return [];
+    return rows.map((row) => [row.x, row.y] as const);
   } catch {
     return [];
   }

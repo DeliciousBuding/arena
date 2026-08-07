@@ -520,6 +520,10 @@ export class DeterministicPlanner implements PlanProvider {
      *  SafetyPlanner 的 World——重启后 worker 不再从零探索（"矿发现了没
      *  分配去挖"的持久化端）。缺省空 = 零回归。 */
     initialResourceCells: readonly Position[] = [],
+    /** 跨 run 测绘种子（2026-08-08，survey-db 联动）：静态障碍注入内部两个
+     *  SafetyPlanner 的 World——重启后导航/寻路直接准确，无需重新探索。
+     *  缺省空 = 零回归。 */
+    initialObstacleCells: readonly Position[] = [],
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
@@ -536,8 +540,19 @@ export class DeterministicPlanner implements PlanProvider {
       fallbackPlanner.world.seedResourceMemory(initialResourceCells, 0);
       patrolPlanner.world.seedResourceMemory(initialResourceCells, 0);
     }
+    if (initialObstacleCells.length > 0) {
+      fallbackPlanner.world.seedObstacleMemory(initialObstacleCells);
+      patrolPlanner.world.seedObstacleMemory(initialObstacleCells);
+    }
     fallbackPlanner.seedThreatProfiles(threatProfiles);
     patrolPlanner.seedThreatProfiles(threatProfiles);
+  }
+
+  /** 热刷新官方排行榜威胁画像（2026-08-08）：替换式透传内部两个 SafetyPlanner——
+   *  掉榜用户立即移除，威胁自适应始终消费最新快照（tenant-runtime 定时重读）。 */
+  replaceThreatProfiles(profiles: ReadonlyMap<string, ThreatProfile>): void {
+    this.fallbackPlanner.replaceThreatProfiles(profiles);
+    this.patrolPlanner.replaceThreatProfiles(profiles);
   }
 
   /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，

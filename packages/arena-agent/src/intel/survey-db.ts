@@ -143,6 +143,9 @@ CREATE TABLE IF NOT EXISTS core_spends (
   unit_type TEXT,
   unit_id TEXT
 );
+-- 幂等键：SQLite UNIQUE 对 NULL 无效（repair 的 unit_id 可能 NULL），用 COALESCE
+-- 表达式唯一索引保证 force 重跑不重复记账（与 resource_events/unit_lifecycle 对齐）。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_core_spends_dedup ON core_spends(kind, tick, amount, COALESCE(unit_type, ''), COALESCE(unit_id, ''));
 CREATE INDEX IF NOT EXISTS idx_core_spends_kind ON core_spends(kind, tick);`;
 
 /** 打开（或创建）某租户的测绘库。write=true 时确保目录存在。 */
@@ -412,7 +415,7 @@ export function recordCoreSpend(
   unitId: string | null,
 ): void {
   db.prepare(`
-    INSERT INTO core_spends (kind, tick, amount, unit_type, unit_id)
+    INSERT OR IGNORE INTO core_spends (kind, tick, amount, unit_type, unit_id)
     VALUES (?, ?, ?, ?, ?)
   `).run(kind, tick, amount, unitType, unitId);
 }

@@ -160,3 +160,28 @@ test("威胁自适应：默认关闭 → 高威胁画像也不触发（零回归
     `变体关闭时 6 ≥ 6 应前压，实际 intents=${JSON.stringify(intents)}`,
   );
 });
+
+test("热刷新：replaceThreatProfiles 掉榜后立即移除（ELITE → 空 → 门槛回落 base）", () => {
+  const planner = new SafetyPlanner(adaptiveConfig(), undefined, new Map([["jerkman", JERKMAN_PROFILE]]));
+  seedJerkman(planner);
+  planner.decide({ state: makeState(1, [enemyCore([49, 0], "jerkman")], 6), policy: PRESSURE_POLICY });
+  const elitePlan = planner.decide({ state: makeState(2, [], 6), policy: PRESSURE_POLICY });
+  const eliteIntents = Object.entries(elitePlan.intents ?? {})
+    .filter(([id]) => id.startsWith("v"))
+    .map(([, intent]) => intent);
+  assert.ok(
+    eliteIntents.every((intent) => intent === "vanguard_hold"),
+    `热刷新前 ELITE 6 < 门槛 10 应全员守家，实际 intents=${JSON.stringify(eliteIntents)}`,
+  );
+
+  // 快照更新：jerkman 掉出伤害榜（replaceThreatProfiles 替换式清空）
+  planner.replaceThreatProfiles(new Map());
+  const afterPlan = planner.decide({ state: makeState(3, [], 6), policy: PRESSURE_POLICY });
+  const afterIntents = Object.entries(afterPlan.intents ?? {})
+    .filter(([id]) => id.startsWith("v"))
+    .map(([, intent]) => intent);
+  assert.ok(
+    afterIntents.some((intent) => intent !== "vanguard_hold"),
+    `热刷新移除画像后 6 ≥ 门槛 6 应前压（掉榜不残留），实际 intents=${JSON.stringify(afterIntents)}`,
+  );
+});

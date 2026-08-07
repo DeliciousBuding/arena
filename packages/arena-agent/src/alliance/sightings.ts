@@ -233,6 +233,26 @@ export function mergeSightings(
   return [...byKey.values()];
 }
 
+/**
+ * 跨 tick 目击更新（shadow/live 累积用）：
+ * 1) 用本次观测 merge（同 key 更新 lastSeen/position）；
+ * 2) 本 tick 观测中未出现的 previously-visible 条目标记为不可见（confidence 衰减）；
+ * 3) 返回新数组（不可变）。
+ */
+export function updateSightingsTick(
+  existing: readonly EntitySighting[],
+  observations: readonly Parameters<typeof normalizeSighting>[0][],
+  nowTick: number,
+): EntitySighting[] {
+  const merged = mergeSightings(existing, observations, nowTick);
+  const visibleKeys = new Set(observations.map((o) => mergeKey({ ...o, tick: o.tick })));
+  return merged.map((s) =>
+    s.currentlyVisible && !visibleKeys.has(s.key)
+      ? { ...s, currentlyVisible: false, confidence: currentConfidence({ ...s, currentlyVisible: false }, nowTick) }
+      : s,
+  );
+}
+
 /** 把陈旧目击标记为非可见（跨 tick 衰减用：调用方每个 tick 把 not-currently-seen 的
  *  currentlyVisible 置 false；此函数返回拷贝，不原地修改）。 */
 export function markNotVisible(sightings: readonly EntitySighting[], nowTick: number): EntitySighting[] {
