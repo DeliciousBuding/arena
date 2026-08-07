@@ -89,3 +89,19 @@ test("vanguardPreyWorker：默认关闭零回归（无 prey 意图）", () => {
   const preyIntents = Object.entries(plan.intents).filter(([, i]) => i === "vanguard_prey_worker");
   assert.equal(preyIntents.length, 0);
 });
+test("vanguardPreyWorker：多个敌 WORKER 选最近的可猎（旧版 find-first 漏猎回归）", () => {
+  const planner = new SafetyPlanner(PREY_CONFIG);
+  // 列表第一个 WORKER 在 (40,40) 很远；第二个在 (8,0) 距 v1=9 可猎。
+  // 旧版 enemies.find 取第一个 → 永远不追（BUG）；新版选最近 → v1 追击。
+  const state = makeState({
+    enemies: [
+      { id: "e-far", kind: "UNIT", position: [40, 40], hp: 2, unitType: "WORKER" },
+      { id: "e-near", kind: "UNIT", position: [8, 0], hp: 2, unitType: "WORKER" },
+    ],
+  });
+  const plan = planner.decide({ state });
+  const preyIntents = Object.entries(plan.intents).filter(([, i]) => i === "vanguard_prey_worker");
+  assert.ok(preyIntents.length >= 1, "expected prey intent for near worker, got: " + JSON.stringify(plan.intents));
+  const [unitId] = preyIntents[0];
+  assert.equal(unitId, "v1");
+});
