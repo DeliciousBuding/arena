@@ -156,3 +156,37 @@ mapEngine.ts 对应函数。
   web build）与 `npm run test:regression` 转发；README 增「开发与测试流程」节，
   与 CI `command-center` job 等价。
 
+
+
+## 9. 2026-08-08 续：联盟态势 tab（/api/alliance/snapshot + /api/deeds/journal）
+
+**背景**：用户要求"4 租户资源展示 + 总体大地图 + 实时决策"。`/api/alliance/snapshot`
+（并行 agent 已提交）此前前端未消费——本 tab 将其全量接入，成为右栏第 5 个面板。
+
+### 9.1 实现（commit 待填，2026-08-08）
+- 新组件 `web/src/components/right/SituationPanel.tsx`：15s 轮询 `Promise.all`
+  拉 `/api/alliance/snapshot` + `/api/deeds/journal`，右上 ↻ 手动刷新。
+- **全局条**：当前 tick / 联盟金库（treasuryTenant 色点）/ 可见交战 / 近期遭遇 /
+  历史目击 / 估算兵力（counts）。
+- **事迹叙事卡**：journal headline（★星级 + 标题 + 详情）+ 联盟 narrative；有坐标时
+  点击跳转大地图定位（engine.jumpTo + toast）。
+- **4 租户态势卡**：资源（含载货）/ 人口 / 兵力构成（工/锋/射）/ 核心 HP·护盾 mini-bar /
+  核心坐标 / 状态徽章；每卡内嵌 **8 方向威胁扇区**（threatSummaries 的
+  N/NE/E/SE/S/SW/W/NW）：背景白 alpha ∝ score、敌核数字号随距离缩放（视觉权重=距离倒数）、
+  <32 格 warn / <18 格 danger 描边。
+- **敌情目击清单**：sightings 按 lastSeenTick 倒序前 24 条：类型徽章（敌核/单位）/
+  归属玩家/目击租户色点/可见·记忆徽章/坐标/距今 tick；**点击整行跳转地图定位**。
+- 无左侧竖色条；租户色仅小色点/身份语义——对齐 DESIGN.md。
+
+### 9.2 配套清理
+- `public/style.css`：新增 `.sit-*` 全套（面板/卡片/扇区/目击行）+
+  `.rp-head/.eyebrow/.rp-sub` 通用头部类（修参谋建议面板此前未样式化的头部）。
+- **移除 `.adv-item.adv-*` 左侧 2px 竖色条**（用户明确"卡片不要左侧竖着的彩色条"，
+  DESIGN.md 红线"禁止左侧竖条"）——严重度改由 `.adv-sev` 胶囊表达，hover 提升不变。
+
+### 9.3 验证证据（Playwright 冒烟，本地 8787，headless chromium）
+- 联盟态势 tab：4 张租户卡 / 32 个威胁扇区格 / 24 条目击行 / 5 全局 chips / 1 事迹卡，
+  全部真实数据（如 t1 资源 116 人口 24 工11锋7射6；T1 NW 扇区 9 敌核 最近 21 格）。
+- 参谋建议 tab 切换正常（6 条建议，左竖条已移除）。
+- 零 console/pageerror；`npm run check:all`（server tsc + web typecheck + vite build）全绿；
+  dist 已构建，服务 /app/ 直接托管新包（index-Bcv1IvGf.js）。
