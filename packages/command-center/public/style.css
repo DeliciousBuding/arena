@@ -637,6 +637,20 @@ body::after {
 .st-dot.has-new { background: var(--warn); box-shadow: 0 0 9px rgba(211,173,85,.85); }
 .st-title { font-size: 11px; font-weight: var(--weight-semibold); letter-spacing: .14em; color: var(--text-dim); text-transform: uppercase; font-family: var(--font-mono); }
 .st-count { margin-left: auto; font-size: 10px; color: var(--text-faint); }
+/* 折叠态实时决策胶囊：收起日志仍能一眼看到最新一条决策（不挡地图） */
+.st-live {
+  display: inline-flex; align-items: baseline; gap: 7px;
+  margin-left: 12px; min-width: 0; max-width: min(44vw, 560px);
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);
+  background: rgba(255,255,255,.045); border: 1px solid var(--border-faint);
+  padding: 3px 10px; border-radius: 999px;
+  overflow: hidden; white-space: nowrap;
+}
+.st-live[hidden] { display: none; }
+.st-live .sl-t { font-weight: 700; flex: none; }
+.st-live .sl-tick { color: var(--text-faint); flex: none; }
+.st-live .sl-text { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#streamPane:not(.collapsed) .st-live { display: none !important; }
 .st-chev { color: var(--text-faint); font-size: 12px; transition: transform .45s cubic-bezier(.34, 1.56, .64, 1); }
 #streamPane.collapsed .st-chev { transform: rotate(-90deg); }
 #streamPane.collapsed { height: 38px; }
