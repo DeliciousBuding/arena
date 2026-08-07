@@ -27,7 +27,12 @@ import { UNIT_MAX_HP } from "../domain/plan-validator.ts";
 import { countEnemiesNearCore } from "../domain/plan-validator.ts";
 import { PhaseMachine, type PhaseConfig } from "../domain/phase-machine.ts";
 import { World } from "../domain/world.ts";
-import { assessThreat, coreDamagedThisTick, type ThreatAssessment } from "../domain/threat.ts";
+import {
+  assessThreat,
+  coreDamagedThisTick,
+  projectedDamageOnCore,
+  type ThreatAssessment,
+} from "../domain/threat.ts";
 import { aggressionOf, type MacroPolicy } from "../runtime/macro-policy.ts";
 
 export type AggressionLevel = "defensive" | "aggressive";
@@ -123,6 +128,13 @@ export interface SafetyPlannerConfig {
    * 默认 false = 历史 2 tick 行为（零回归）。
    */
   readonly coreEvadePersist?: boolean;
+  /**
+   * 迁移取消（B9 候选，竞品 _moving_core_should_cancel 对照）：MOVING 中
+   * 目的地为硬块（障碍/资源/敌占）或投影伤害劣于当前格时发 CANCEL_MOVE
+   * （Core 回 NORMAL）——避免走完 4 tick 失败或继续走进敌阵。默认 false =
+   * 历史行为（MOVING 直接 return，零回归）。
+   */
+  readonly coreMigrationCancel?: boolean;
   /**
    * MOVE_FAILED 反馈规避（v0.3，实验）：单位连续 N 次移动被结算拒绝
    * （MOVE_CONTESTED/CELL_UNIT_LIMIT 等）时，不再盲目重试同格——改走垂直
@@ -229,6 +241,8 @@ const THREAT_RECALL_DISTANCE = 12;
 const RECALL_PATROL_RADIUS = 4;
 /** Core 迁移 TTR 预撤离阈值（竞品 time-to-range ≤16 tick）。 */
 const TTR_PRE_EVADE_TICKS = 16;
+/** B9 迁移取消冷却（coreMigrationCancel）：取消后 N tick 内不重触发 START_MOVE。 */
+const CORE_MIGRATION_CANCEL_COOLDOWN = 10;
 /** 守卫轮换治疗（B8 候选）：HP ≤ 该值即回 Core 补血（掉血过半）。 */
 const HEAL_ROTATION_HP: Record<UnitType, number> = { WORKER: 1, VANGUARD: 2, RANGER: 1 };
 /** 守卫"战斗中不回修"的反击范围（敌进入守卫反击射程 = 战斗压力，带伤值守）。 */
@@ -304,6 +318,10 @@ export class SafetyPlanner {
   /** Core 迁移方向（coreEvade）：START_MOVE 发起时记录；次 tick 仍 MOVING
    *  同向 = 已提交（本地等效 move_progress≥2，竞品 CANCEL 语义用）。 */
   private coreMoveDirection: Direction | null = null;
+  /** B9 迁移取消冷却（coreMigrationCancel）：取消后 N tick 内不重触发
+   *  START_MOVE——防"退路危险 → 取消 → 立即重触发 → 再取消"的每 tick
+   *  振荡（实验实证：core-evade-danger 场景 START/CANCEL 各 200 次）。 */
+  private coreMigrationCancelUntilTick = 0;
   /** PRE_EVADE 持续截止 tick（竞品 preemptive_evade_until_tick = tick + 2）：
    *  触发迁移后即使敌人消失，2 tick 内仍保持迁移意图（防止"敌人闪失 →
    *  立刻取消"抖动）。 */
@@ -1097,6 +1115,27 @@ export class SafetyPlanner {
     // 生产/heal（竞品语义：MOVING 直接 return）；迁移方向由 START_MOVE 发起
     // 时记录，次 tick 仍 MOVING = 已提交（本地等效 move_progress≥2）。
     if (core.state === "MOVING") {
+      // B9 迁移取消候选（coreMigrationCancel，竞品 _moving_core_should_cancel
+      // 对照）：目的地为硬块（障碍/资源/敌占）或投影伤害劣于当前格时发
+      // CANCEL_MOVE（Core 回 NORMAL）——避免走完 4 tick 后失败或继续走进
+      // 敌阵。TickState 的 CoreSnapshot 不带 destination——用迁移方向推断
+      // 下一格（近似竞品"目的地"判定；迁移路径上任何一步危险即止损）。
+      // 例行 cargo/heal/repair 不取消（竞品同语义）。
+      if (this.config.coreMigrationCancel === true && this.coreMoveDirection !== null) {
+        const nextCell = move(core.position, this.coreMoveDirection);
+        const nextKey = cellKey(nextCell);
+        const hardBlocked =
+          state.obstacleCells.has(nextKey) ||
+          state.resourceCells.has(nextKey) ||
+          state.visibleEnemies.some((enemy) => samePosition(enemy.position, nextCell));
+        const currentDamage = projectedDamageOnCore(core.position, state.visibleEnemies, state.obstacleCells);
+        const nextDamage = projectedDamageOnCore(nextCell, state.visibleEnemies, state.obstacleCells);
+        if (hardBlocked || nextDamage > currentDamage) {
+          this.coreMigrationCancelUntilTick = state.tick + CORE_MIGRATION_CANCEL_COOLDOWN;
+          intents.core = hardBlocked ? "migration_cancel_blocked" : "migration_cancel_danger";
+          return { type: "CANCEL_MOVE" };
+        }
+      }
       return null;
     }
     if (this.config.coreEvade === true) {
@@ -1150,7 +1189,8 @@ export class SafetyPlanner {
           .enemyHints(6)
           .some((hint) => hint.coreDistance !== undefined && hint.coreDistance <= THREAT_RECALL_DISTANCE);
       const preemptivePersist = approachMemoryActive || this.preemptiveEvadeUntilTick >= state.tick;
-      if (closing || confirmedPursuit || ttrTrigger || preemptivePersist) {
+      const cancelCooldownActive = this.coreMigrationCancelUntilTick >= state.tick;
+      if ((closing || confirmedPursuit || ttrTrigger || preemptivePersist) && !cancelCooldownActive) {
         const direction = retreatDirection(
           core.position,
           state.visibleEnemies,
