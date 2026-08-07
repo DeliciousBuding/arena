@@ -1278,3 +1278,21 @@ body::after {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* 测绘面板（2026-08-08，右栏 tab）：租户卡 + 生命周期 + 消费占比 */
+.sv { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; overflow-y: auto; height: 100%; }
+.sv-toolbar { display: flex; justify-content: flex-end; }
+.sv-gen { font-size: 10px; color: var(--text-dim); opacity: .7; }
+.sv-card { background: rgba(255,255,255,.025); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.sv-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: rgba(255,255,255,.02); }
+.sv-chip { width: 8px; height: 8px; border-radius: 2px; flex: none; box-shadow: 0 0 0 1px rgba(255,255,255,.06); }
+.sv-head b { font-size: 13px; letter-spacing: .04em; }
+.sv-sub { font-size: 11px; color: var(--text-dim); }
+.sv-body { display: flex; flex-direction: column; gap: 5px; padding: 8px 10px 10px; }
+.sv-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; }
+.sv-row span { color: var(--text-dim); }
+.sv-row b { font-variant-numeric: tabular-nums; }
+.sv-row.dim { font-size: 11px; color: var(--text-dim); opacity: .75; }
+.sv-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: rgba(255,255,255,.04); margin-top: 2px; }
+.sv-bar-seg { display: block; height: 100%; min-width: 2px; }
+.sv-empty { color: var(--text-dim); font-size: 12px; padding: 12px; text-align: center; }
