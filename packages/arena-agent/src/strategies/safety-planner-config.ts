@@ -293,6 +293,21 @@ export interface SafetyPlannerConfig {
    * 均匀方位（零回归）。
    */
   readonly threatSectorScout?: boolean;
+  /**
+   * 快攻防御（2026-08-07，raid-defense-v1）：威胁不能只看排行榜伤害——任何
+   * 玩家都可能派小股部队来偷家（用户裁决"别人可以只派一些人来打"）。启用后：
+   *  - 邻近敌核心（Chebyshev ≤ raidCoreRadius，默认 24）→ 恒留 ≥2 Vanguard
+   *    守家（即使攻坚目标不是高威胁玩家），防小股偷家/换家；
+   *  - 实测敌军战斗单位（可见或 12 tick 记忆内）进入 raidWatchRadius
+   *    （Manhattan 18）→ 远端军事回援 + worker 召回半径从 12 放宽到 18
+   *    （更早拦截小股，不等敌人贴脸）。
+   * 默认 false = 历史行为（仅 12 格确认接触 + 高威胁对手才留强，零回归）。
+   */
+  readonly raidDefense?: boolean;
+  /** 快攻警戒半径（Manhattan，默认 18）：实测敌军战斗单位进入该范围 → 回援/召回。 */
+  readonly raidWatchRadius?: number;
+  /** 敌核心守家半径（Chebyshev，默认 24）：邻近敌核心存在 → 恒留守家兵力。 */
+  readonly raidCoreRadius?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
