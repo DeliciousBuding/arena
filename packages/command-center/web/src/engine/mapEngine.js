@@ -38,13 +38,14 @@ const state = {
   streams: {},          // tenant -> rows
   events: {},           // tenant -> events
   view: { cx: 0, cy: 0, scale: 8, ready: false },
-  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true, survey: true, patrol: true, plan: true, trail: true, beaconEdge: true },
+  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true, survey: true, patrol: true, plan: true, trail: true, beaconEdge: true, coreTrail: true },
   tenantsOn: { t1: true, t2: true, t3: true, t4: true },
   soloTenant: null,     // null=全局联盟；'t1'..'t4'=单租户
   tab: 'all',           // all | t1 | t2 | t3 | t4 | events
   cellIndex: new Map(),
   cells: [],
   beacons: [],
+  coreTrails: [],
   bounds: null,
   lastRefresh: 0,
   /** 单位上一次轮询位置（smooth 插值：poll 之间单位按 POLL_MS 渐变移动）。 */
@@ -267,6 +268,7 @@ async function poll() {
     state.map = map;
     state.cells = map.cells ?? [];
     state.beacons = map.beacons ?? [];
+    state.coreTrails = map.coreTrails ?? [];
     state.bounds = map.bounds ?? null;
     state.cellIndex = new Map();
     for (const c of state.cells) state.cellIndex.set(`${c.x},${c.y}`, c);
@@ -476,6 +478,7 @@ function draw() {
   if (!replayActive && state.layers.trail) drawMovementDashes(buckets.unit, s);
   if (!replayActive) drawUnits(buckets.unit, s);
   if (!replayActive) drawCores(buckets.core, s);
+  if (!replayActive && state.layers.coreTrail !== false) drawEnemyCoreTrails(s);
   if (!replayActive) drawLiveTrails(s);
   drawBeacons(s);
   if (state.hover && !state.drag) drawHoverCell(state.hover, s);
@@ -1125,7 +1128,70 @@ function drawBeaconTrail(s, b) {
   ctx.closePath();
   ctx.fill();
   ctx.restore();
-}function drawEdgeBeacon(b, p) {
+}
+
+/** 敌方核心历史轨迹（2026-08-08）：与信标轨迹同机制——虚线 + 旧→新渐变 +
+ *  头部方向箭头 + 用户名标签。面板直接看到谁在迁移/逼近（如 jerkman 核心带
+ *  信标东移）；数据源 /api/map coreTrails（服务端跨 run 增量提取）。 */
+function drawEnemyCoreTrails(s) {
+  const trails = state.coreTrails;
+  if (!Array.isArray(trails) || trails.length === 0) return;
+  const w = W(), h = H();
+  for (const t of trails) {
+    const trail = Array.isArray(t.trail) ? t.trail : null;
+    if (!trail || trail.length < 2) continue;
+    const color = '#c66370'; // 敌红（与 enemy/contested 同色系）
+    const pts = [];
+    for (const pt of trail) {
+      const q = project(pt.x, pt.y);
+      if (q.sx < -400 || q.sx > w + 400 || q.sy < -400 || q.sy > h + 400) continue; // 离屏极远不画
+      pts.push(q);
+    }
+    if (pts.length < 2) continue;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    const dashPhase = (Date.now() / 110) % 12; // 虚线缓流（比信标慢，低调）
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], z = pts[i];
+      const tt = i / pts.length;
+      ctx.globalAlpha = 0.08 + 0.35 * tt;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(1, 1.2 + 0.6 * tt);
+      ctx.setLineDash([5, 6]);
+      ctx.lineDashOffset = -dashPhase;
+      ctx.beginPath();
+      ctx.moveTo(a.sx, a.sy);
+      ctx.lineTo(z.sx, z.sy);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    // 头部箭头
+    const last = pts[pts.length - 1], prev = pts[pts.length - 2];
+    const dx = last.sx - prev.sx, dy = last.sy - prev.sy;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    const al = Math.min(13, Math.max(5, s * 0.5));
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(last.sx + ux * al, last.sy + uy * al);
+    ctx.lineTo(last.sx - uy * al * 0.45, last.sy + ux * al * 0.45);
+    ctx.lineTo(last.sx + uy * al * 0.45, last.sy - ux * al * 0.45);
+    ctx.closePath();
+    ctx.fill();
+    // 用户名标签（缩放到够大才显示）
+    if (s >= 9 && t.username) {
+      ctx.globalAlpha = 0.85;
+      ctx.font = `600 ${Math.max(10, Math.round(s * 0.8))}px Inter, system-ui, sans-serif`;
+      ctx.fillStyle = '#f0b0b6';
+      ctx.textAlign = 'center';
+      ctx.fillText(t.username, last.sx, last.sy - al - 3);
+    }
+    ctx.restore();
+  }
+}
+function drawEdgeBeacon(b, p) {
   const w = W(), h = H();
   const cx = w / 2, cy = h / 2;
   const dx = p.sx - cx, dy = p.sy - cy;
@@ -3011,4 +3077,6 @@ export function createMapEngine(host) {
   });
   return api;
 }
+
+
 
