@@ -8,7 +8,7 @@ const DECISION_KIND_CN: Record<string, string> = {
   not_applicable: "无需决策", in_progress: "进行中", unknown: "未知",
 };
 const EVENT_KIND_CN: Record<string, string> = {
-  UNIT_MOVE_FAILED: "移动失败", CORE_MOVE_FAILED: "核心移动失败",
+  UNIT_MOVE_SUCCEEDED: "移动", UNIT_MOVE_FAILED: "移动失败", CORE_MOVE_SUCCEEDED: "核心移动", CORE_MOVE_FAILED: "核心移动失败",
   SPAWN_SUCCEEDED: "生产成功", SPAWN_FAILED: "生产失败",
   HARVEST_SUCCEEDED: "采集成功", HARVEST_FAILED: "采集失败",
   DEPOSIT_SUCCEEDED: "交付成功", DEPOSIT_FAILED: "交付失败",

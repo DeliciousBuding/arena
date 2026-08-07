@@ -134,7 +134,7 @@ export function loadReplay(tenant: string): ReplayPayload | null {
     const path = join(calibrationDir(tenant), runDir, "cases", file);
     let raw: { before?: { state?: { objects?: Array<Record<string, unknown>>; events?: Array<Record<string, unknown>> } } } | null = null;
     try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
-    const st = raw?.before?.state;
+    const st = raw?.after?.state ?? raw?.before?.state;
     const byId = new Map<string, Record<string, unknown>>();
     for (const o of st?.objects ?? []) if (o.id) byId.set(o.id as string, o);
     const events = (st?.events ?? [])
@@ -203,10 +203,10 @@ export function loadWorld(tenant: string): Record<string, unknown> {
   };
 }
 
-/** 指挥操作事件流：从最新 run 的 calibration case 结构化事件（before.state.events）聚合，
- *  按 tick 倒序。outcome.jsonl 的 events 是纯字符串（旧实现读它导致事件页永远为空）。 */
+/** 指挥操作事件流：从最新 run 的 calibration case 结构化事件（after.state.events，tick 完成后）聚合，
+ *  按 tick 倒序。before.state.events 是 tick 起点（通常为空），2026-08-08 修复为 after 优先。 */
 const EVENT_KINDS = new Set([
-  "UNIT_MOVE_FAILED", "CORE_MOVE_FAILED",
+  "UNIT_MOVE_SUCCEEDED", "UNIT_MOVE_FAILED", "CORE_MOVE_SUCCEEDED", "CORE_MOVE_FAILED",
   "SPAWN_SUCCEEDED", "SPAWN_FAILED",
   "HARVEST_SUCCEEDED", "HARVEST_FAILED",
   "DEPOSIT_SUCCEEDED", "DEPOSIT_FAILED",
@@ -230,7 +230,8 @@ export function loadEvents(tenant: string, n: number): { tenant: string; generat
     const path = join(calibrationDir(tenant), runDir, "cases", file);
     let raw: { before?: { state?: { events?: Array<Record<string, unknown>> } } } | null = null;
     try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
-    const evs = raw?.before?.state?.events;
+    // 事件在 tick 完成后的 after.state（before 是 tick 起点，events 恒空——2026-08-08 修复）
+    const evs = raw?.after?.state?.events ?? raw?.before?.state?.events;
     if (!Array.isArray(evs)) continue;
     for (const ev of evs) {
       if (!ev || typeof ev !== "object") continue;
