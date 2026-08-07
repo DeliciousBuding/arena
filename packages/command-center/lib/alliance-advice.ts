@@ -8,6 +8,7 @@
  * （共享测绘冲突）+ loadLeaderboardIntel + loadAllianceIntel（raidRisk）。
  */
 import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
+import { loadEnemyHeat } from "./enemy-heat.ts";
 import { loadAllianceSurvey } from "./alliance-survey.ts";
 import { loadLeaderboardIntel } from "./leaderboard.ts";
 import { TtlCache } from "./cache.ts";
@@ -95,6 +96,33 @@ export function loadAllianceAdvice(): AllianceAdvicePayload {
         detail: `${near.length} 个敌核 ≤${NO_COMBAT_CORE_RADIUS} 格（${near.map((s) => s.ownerUsername ?? s.entityId ?? "?").join("/")}）`,
         action: "守家优先：产 Vanguard 或远端军事回援；worker 召回半径扩大",
         weight: -near.length,
+        at: new Date().toISOString(),
+      });
+    }
+  }
+
+  // 2.5) 敌情高浓度区接近核心（units_seen 热区，跨 run 敌情记忆）
+  const heat = loadEnemyHeat("all");
+  const HEAT_COMBAT_THRESHOLD = 50;
+  const HEAT_NEAR_CHUNKS = 3;
+  for (const m of Object.values(snap.members)) {
+    if (!m.core) continue;
+    const cxb = Math.floor(m.core.position[0] / 16);
+    const cyb = Math.floor(m.core.position[1] / 16);
+    const near = heat.buckets.filter(
+      (b) => b.combatCount >= HEAT_COMBAT_THRESHOLD
+        && Math.max(Math.abs(b.bx - cxb), Math.abs(b.by - cyb)) <= HEAT_NEAR_CHUNKS,
+    );
+    if (near.length > 0) {
+      const top = near.sort((a, b) => b.combatCount - a.combatCount)[0];
+      out.push({
+        severity: "HIGH",
+        category: "THREAT",
+        tenant: m.tenantId,
+        title: `${m.tenantId} 核心附近敌情高浓度区`,
+        detail: `(chunk ${top.bx},${top.by}) 累计 ${top.combatCount} 条敌战斗目击（最近 ${heat.currentTick - top.lastTick} tick 前）`,
+        action: "该区域敌方活动密集——守家 + 侦察，避免 worker 裸采经过",
+        weight: -top.combatCount,
         at: new Date().toISOString(),
       });
     }
