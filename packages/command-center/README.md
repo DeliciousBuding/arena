@@ -92,9 +92,11 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
   事件特效 + 销毁碎片迸溅。
 - **租户卡片**：在线状态（supervisor 探测 / outcome.jsonl 新鲜度）、资源、增量、工人数、最大/均值距离、可见资源、事件数、60 tick 均值。
 - **实时决策流**：`runtime.jsonl` 尾部决策（tick / deadlineOutcome / agent/selection 延迟 / submitResult / 中止请求），统一或按租户 tab；事件 tab 聚合 outcome events。
-- **三栏布局 + 右栏面板（2026-08-08）**：左栏（租户/图层）+ 地图 + 右栏三 tab（决策流 / 威胁情报 / 兑换码），
-  左右栏可折叠为 40px 窄条（VSCode 侧边栏模式，折叠状态持久化）。威胁情报 = 官方排行榜（威胁/信标/核心三 tab、
-  我方/遭遇高亮、榜外遭遇补全）；兑换码 = 官方商店面板（Cookie 连接、库存徽章、兑换历史）。
+- **三栏布局 + 右栏面板（2026-08-08）**：左栏（租户/图层）+ 地图 + 右栏六 tab（决策流 / 威胁情报 /
+  参谋建议 / 测绘 / 联盟态势 / 兑换码），左右栏可折叠为 40px 窄条（VSCode 侧边栏模式，折叠状态持久化）。
+  威胁情报 = 官方排行榜（威胁/信标/核心三 tab、我方/遭遇高亮、榜外遭遇补全）；参谋建议 = 该做什么清单
+  （危急/高/中/提示胶囊 + 建议动作）；联盟态势 = 4 租户实时资源/兵力/核心 + 8 方向威胁扇区 + 敌情目击
+  （点击目击跳转大地图定位）；兑换码 = 官方商店面板（Cookie 连接、库存徽章、兑换历史）。
 - **测绘生命周期（2026-08-08）**：矿/障碍悬停查看生命周期（状态/seenCount/首次/最后看到 tick，源
   survey-db）；HUD 生命行含累计阵亡数（unit_lifecycle）；`/api/survey` 提供每租户矿/障碍/敌核/探索分区 + 消费趋势。
 - **敌情记忆层**：出视野的敌方核心/战斗单位半透明常驻（新鲜度衰减），hover 显示 lastSeen；图例/图层可开关。
@@ -178,8 +180,9 @@ command-center/
 - bun run typecheck  tsc --noEmit（strict，全量 TS：无 .js 源码）
 
 架构：**三栏布局（AppShell）**——左栏（租户卡/图例/图层/视图）+ 地图 + 右栏（VSCode tab 容器：
-决策流 / 威胁情报 / 兑换码）。左右栏均可折叠为 40px 窄条（`SidePanel` 通用组件，折叠后地图自动
-resize）。所有弹窗/对话框已移入右栏面板（`right/IntelPanel`、`right/RedeemPanel`、`right/RedeemCard`），
+决策流 / 威胁情报 / 参谋建议 / 测绘 / 联盟态势 / 兑换码）。左右栏均可折叠为 40px 窄条（`SidePanel`
+通用组件，折叠后地图自动 resize）。所有弹窗/对话框已移入右栏面板（`right/IntelPanel`、
+`right/RedeemPanel`、`right/AdvicePanel`、`right/SurveyPanel`、`right/SituationPanel`、`right/RedeemCard`），
 不再模态遮挡地图。布局状态经 `lib/shell.tsx`（ShellContext：折叠/tab，localStorage 持久化）。
 画布引擎 `src/engine/mapEngine.ts`（全 TS：`ArenaState` 接口 + legacy JSON 宽松标注；由 public/app.js
 移植，React 挂载到 main#layout，引擎管理地图/战术/回放/覆盖层）。视觉单一源 = public/style.css
