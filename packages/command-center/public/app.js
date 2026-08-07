@@ -34,7 +34,7 @@ const state = {
   /** 世界 tick 周期估计（官方 ~15s/tick）：由 overview tick/mtime 差分推算。 */
   tickMeter: { period: 15000, lastMtime: 0, lastTick: 0, lastPollMtime: 0, lastPollTick: 0 },
   drag: null,
-  hover: null,
+  hover: null, hoverKey: '',
   streamCollapsed: false,
   streamLive: null, // 折叠态胶囊：最新一条决策摘要
   viewAnim: null,
@@ -382,6 +382,7 @@ function draw() {
   if (!replayActive) drawCores(buckets.core, s);
   if (!replayActive) drawLiveTrails(s);
   drawBeacons(s);
+  if (state.hover && !state.drag) drawHoverCell(state.hover, s);
   tactDrawLayer(s);
   if (replayActive) replayDrawLayer(s);
   const ztxt = `×${state.view.scale.toFixed(1)}`;
@@ -704,6 +705,19 @@ function drawMovementDashes(cells, s) {
     ctx.beginPath(); ctx.arc(to.sx, to.sy, Math.max(1.2, cell * 0.04), 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
+  ctx.restore();
+}
+/** 悬停格高亮（地图响应感）：白 4.5% 底 + 22% 描边圆角格，不挡内容。 */
+function drawHoverCell(c, s) {
+  const p = project(c.x, c.y);
+  const inset = Math.max(1.5, s * 0.06);
+  const x = p.sx - s / 2 + inset, y = p.sy - s / 2 + inset;
+  const w = s - inset * 2, h = s - inset * 2;
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,.045)';
+  ctx.strokeStyle = 'rgba(255,255,255,.22)';
+  ctx.lineWidth = Math.max(1, s * 0.03);
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, Math.min(6, s * 0.12)); ctx.fill(); ctx.stroke();
   ctx.restore();
 }
 /** 单位：高缩放素材+色环；低缩放紧凑租户色圆点（不放大图标遮挡地图）。
@@ -1396,7 +1410,11 @@ function bindEvents() {
     if (hoverTimer !== null) return;
     hoverTimer = setTimeout(() => {
       hoverTimer = null;
-      showTooltip(px, py, nearestCell(px, py));
+      const cell = nearestCell(px, py);
+      state.hover = cell;
+      const hk = cell ? cell.tenant + ':' + cell.type + ':' + cell.x + ',' + cell.y : '';
+      if (hk !== state.hoverKey) { state.hoverKey = hk; draw(); } // 悬停格变化才重绘（低开销）
+      showTooltip(px, py, cell);
       // MOVE 模式：悬停任意格实时预览远距离路线（含雾区绕行 + ETA）
       const tac = T();
       if (tac.mode === 'MOVE' && tac.selected && tac.worlds[tac.selected.tenant]) {
@@ -1416,7 +1434,10 @@ function bindEvents() {
   const endDrag = (e) => { if (state.drag) { state.drag = null; } };
   els.canvas.addEventListener('pointerup', endDrag);
   els.canvas.addEventListener('pointercancel', endDrag);
-  els.canvas.addEventListener('pointerleave', () => { els.tooltip.hidden = true; });
+  els.canvas.addEventListener('pointerleave', () => {
+    els.tooltip.hidden = true;
+    if (state.hover) { state.hover = null; state.hoverKey = ''; draw(); }
+  });
 /** 向光标平滑缩放（官方 wheelZoomCell + ZOOM_SETTLE 语义）：easeOutCubic 短补间，丝滑不跳变。 */
   /** 光标锚定缩放（阻尼目标版）：连续滚轮在 target 上累积，逐帧由 stepZoom 平滑趋近。 */
   function zoomTo(sx, sy, factor) {
