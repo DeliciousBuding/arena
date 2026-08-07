@@ -92,7 +92,7 @@ function hasEscapeDirection(
  *  Vanguard 仅邻格（Chebyshev 1，SWEEP）；Ranger 八方向直线 ≤3 且中间格
  *  无障碍（SHOOT，lineBlocked）。C5 用"当前格投影伤害 >0"作为 BREAKOUT
  *  前提（旧判定用 12 格内——打不到的远处包围被高估为 BREAKOUT）。 */
-function projectedDamageOnCore(
+export function projectedDamageOnCore(
   core: Position,
   enemies: readonly VisibleEntity[],
   obstacles: ReadonlySet<string>,
