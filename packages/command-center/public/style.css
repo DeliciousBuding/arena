@@ -524,6 +524,9 @@ body::after {
 .dialog-history li .h-status { margin-left: auto; }
 
 /* ---------- 无障碍：减少动态 ---------- */
+/* [hidden] 语义全局兜底：display:flex 等声明不得覆盖 hidden 属性（曾致回放条/最新按钮实时模式常显） */
+[hidden] { display: none !important; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
