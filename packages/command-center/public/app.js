@@ -86,7 +86,7 @@ const els = {
   redeemResult: $('#redeemResult'), redeemHistory: $('#redeemHistory'), streamGrip: $('#streamGrip'),
   shopCookie: $('#shopCookie'), cookieSave: $('#cookieSave'), cookieTest: $('#cookieTest'),
   shopAccount: $('#shopAccount'), shopList: $('#shopList'),
-  zoomLevel: $('#zoomLevel'), mapGlobal: $('#mapGlobal'), viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'), streamLive: $('#streamLive'), streamFilter: $('#streamFilter'),
+  zoomLevel: $('#zoomLevel'), mapGlobal: $('#mapGlobal'), soloBadge: $('#soloBadge'), viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'), streamLive: $('#streamLive'), streamFilter: $('#streamFilter'),
   actionDialog: $('#actionDialog'), inspectPanel: $('#inspectPanel'),
   beaconIndicator: $('#beaconIndicator'), pendingPanel: $('#pendingPanel'),
   replayBar: $('#replayBar'), rbTick: $('#rbTick'), rbMaxTick: $('#rbMaxTick'),
@@ -1127,6 +1127,7 @@ function toggleSolo(tenant) {
   const global = state.soloTenant === null;
   els.viewGlobal.classList.toggle('active', global);
   els.mapGlobal.hidden = global;
+  syncSoloBadge();
 }
 /** 重生覆盖层（官方 RespawnOverlay 移植）：世界 status=RESPAWNING 时全屏提示。 */
 function tactRenderRespawn(tenant) {
@@ -1150,6 +1151,8 @@ async function tactShowTenant(tenant) {
   tactRenderPending();
   tactRefreshActivity(tenant);
   tactRenderRespawn(tenant);
+  // 租户切换过渡：内容更新后让单租户面板丝滑重现（不依赖首次插入动画）
+  popPanel(els.fleetHud); popPanel(els.assetPanel); popPanel(els.pendingPanel); popPanel(els.activityPanel);
   invalidateStatic();
   draw();
 }
@@ -1943,6 +1946,21 @@ function tactClear() {
   if (els.mapGlobal) els.mapGlobal.hidden = !state.soloTenant;
   draw();
 }
+/** 重新触发面板入场动画（租户切换时内容已变，让面板丝滑重现）。 */
+function popPanel(el) {
+  if (!el || el.hidden) return;
+  el.style.animation = 'none';
+  void el.offsetWidth;
+  el.style.animation = '';
+}
+/** 单租户聚焦徽章：显示当前聚焦租户（T1·聚焦），全局时隐藏。 */
+function syncSoloBadge() {
+  const t = state.soloTenant;
+  if (!t) { els.soloBadge.hidden = true; return; }
+  els.soloBadge.hidden = false;
+  els.soloBadge.style.setProperty('--tc', TENANT_COLORS[t] ?? '#69b3d8');
+  els.soloBadge.textContent = t.toUpperCase() + ' · 聚焦';
+}
 /** 退出单租户回全局联盟：清空战术层/回放 + 视图适应 + UI 同步（viewGlobal / mapGlobal / G 键共用）。 */
 function exitSolo() {
   state.soloTenant = null;
@@ -1952,6 +1970,7 @@ function exitSolo() {
   renderTenantCards();
   els.viewGlobal.classList.add('active');
   els.mapGlobal.hidden = true;
+  syncSoloBadge();
 }
 function tactActionTypes(obj) {
   const world = T().worlds[T().selected.tenant];
