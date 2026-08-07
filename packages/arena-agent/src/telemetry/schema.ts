@@ -24,6 +24,11 @@ const DecisionSourceSchema = Type.Union([
   Type.Literal("safety"),
   Type.Literal("emergency"),
   Type.Literal("repaired-agent"),
+  // human-command-v1（5394371）给 DecisionSource 类型加了 "human"，但漏同步
+  // 运行时 schema——人类指令激活时 source="human" 触发 trace 校验崩溃
+  // （生产 t1 实测 2026-08-07：invalid trace record decision(/decisionSource
+  // must be equal to constant)，tenant exitCode=1）。
+  Type.Literal("human"),
 ]);
 
 const SubmitResultSchema = Type.Union([
