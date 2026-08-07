@@ -1061,13 +1061,16 @@ function drawUnits(cells: any, s: any) {
     ctx.restore();
   }
 }
-/** 实时移动轨迹：live 视图（非回放）用该租户 replay 的 trail 画最近 5 个 tick 的位置轨迹，
- *  让"单位在动"肉眼可见（回放引擎插值动画之外，live 也有运动感）。 */
-const TRAIL_POINTS = 5;
+/** 实时移动轨迹（动线持久化 2026-08-08）：live 视图用该租户 replay 的 trail 画
+ *  最近 12 个 tick 的连续移动折线——旧段低透明持久、近 3 点提亮 + 端点头/尾点，
+ *  单位"从哪走到哪"的动线一眼可见（回放插值动画之外，live 也有持久动线感）。 */
+const TRAIL_POINTS = 12;
+const TRAIL_NEAR = 3;
 function drawLiveTrails(s: any) {
   if (!state.layers.trail || !state.soloTenant || !replay.data || replay.data.loadedFor !== state.soloTenant) return;
   if (s < 3) return; // 全局/极低缩放不画轨迹，避免噪声
   const color = TENANT_COLORS[state.soloTenant] ?? '#4591c5';
+  const lw = Math.max(1, s * 0.09);
   for (const u of replay.data.units) {
     const trail = u.trail;
     if (!trail || trail.length < 2) continue;
@@ -1076,21 +1079,28 @@ function drawLiveTrails(s: any) {
     // 与当前 live 位置一致才画（避免回放旧 run 轨迹错位）
     const liveCell = state.cellIndex.get(`${last.x},${last.y}`);
     if (liveCell && liveCell.tenant !== state.soloTenant) continue;
+    const scr = pts.map((t) => project(t.x, t.y));
     ctx.save();
-    ctx.lineWidth = Math.max(1, s * 0.08);
-    for (let i = 0; i < pts.length; i++) {
-      const p = project(pts[i].x, pts[i].y);
-      const f = (i + 1) / pts.length;
-      ctx.globalAlpha = 0.12 + 0.3 * f;
-      ctx.fillStyle = color;
-      ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(1.4, s * 0.16 * f), 0, Math.PI * 2); ctx.fill();
-      if (i > 0) {
-        const q = project(pts[i - 1].x, pts[i - 1].y);
-        ctx.strokeStyle = color;
-        ctx.globalAlpha = 0.08 + 0.2 * f;
-        ctx.beginPath(); ctx.moveTo(q.sx, q.sy); ctx.lineTo(p.sx, p.sy); ctx.stroke();
-      }
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    // ① 整条动线：连续折线 + 均匀低透明（持久底）
+    ctx.strokeStyle = color; ctx.globalAlpha = 0.16; ctx.lineWidth = lw;
+    ctx.beginPath();
+    for (let i = 0; i < scr.length; i++) { if (i === 0) ctx.moveTo(scr[i].sx, scr[i].sy); else ctx.lineTo(scr[i].sx, scr[i].sy); }
+    ctx.stroke();
+    // ② 近段提亮（最近 3 点）：动线"活"的部分
+    const near = scr.slice(-TRAIL_NEAR);
+    if (near.length > 1) {
+      ctx.strokeStyle = color; ctx.globalAlpha = 0.5; ctx.lineWidth = lw * 1.15;
+      ctx.beginPath();
+      for (let i = 0; i < near.length; i++) { if (i === 0) ctx.moveTo(near[i].sx, near[i].sy); else ctx.lineTo(near[i].sx, near[i].sy); }
+      ctx.stroke();
     }
+    // ③ 端点标记：起点小点 + 当前头点（空心环）
+    const first = scr[0], head = scr[scr.length - 1];
+    ctx.fillStyle = color; ctx.globalAlpha = 0.35;
+    ctx.beginPath(); ctx.arc(first.sx, first.sy, Math.max(1.2, s * 0.12), 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.85; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(head.sx, head.sy, Math.max(1.8, s * 0.18), 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
   }
 }
