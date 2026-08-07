@@ -30,6 +30,12 @@ export interface CalibrationCaseV1 {
   readonly before: CalibrationObservation;
   /** Full executed domain plan is mandatory; old state-only fixtures are rejected. */
   readonly plan: Plan;
+  /**
+   * Opponent plan, present only when metadata.opponentPlans is "complete"
+   * (synthetic match cases). Calibration replays it so visible opponent
+   * units move instead of standing still, shrinking replay-vs-original drift.
+   */
+  readonly opponentPlan?: Plan;
   readonly after: CalibrationObservation;
 }
 
@@ -391,17 +397,27 @@ export function parseCalibrationCase(rawValue: unknown): CalibrationCaseV1 {
   const raw = record(rawValue, "root");
   exactKeys(
     raw,
-    ["schema", "caseId", "tenantId", "rulesVersion", "seed", "metadata", "before", "plan", "after"],
+    [
+      "schema", "caseId", "tenantId", "rulesVersion", "seed", "metadata", "before",
+      "plan", "opponentPlan", "after",
+    ],
     "root",
+    ["opponentPlan"],
   );
   if (raw.schema !== CALIBRATION_CASE_SCHEMA) {
     throw new CalibrationCaseError(`unsupported schema ${String(raw.schema)}`);
   }
   const before = parseObservation(raw.before, "before");
   const plan = parsePlan(raw.plan);
+  const opponentPlan = raw.opponentPlan === undefined ? undefined : parsePlan(raw.opponentPlan);
   const after = parseObservation(raw.after, "after");
   if (plan.tick !== before.tick) {
     throw new CalibrationCaseError(`plan.tick ${plan.tick} does not match before.tick ${before.tick}`);
+  }
+  if (opponentPlan !== undefined && opponentPlan.tick !== before.tick) {
+    throw new CalibrationCaseError(
+      `opponentPlan.tick ${opponentPlan.tick} does not match before.tick ${before.tick}`,
+    );
   }
   if (after.tick !== before.tick + 1) {
     throw new CalibrationCaseError(`after.tick ${after.tick} must equal before.tick + 1`);
@@ -415,6 +431,7 @@ export function parseCalibrationCase(rawValue: unknown): CalibrationCaseV1 {
     metadata: parseMetadata(raw.metadata),
     before,
     plan,
+    ...(opponentPlan === undefined ? {} : { opponentPlan }),
     after,
   };
 }

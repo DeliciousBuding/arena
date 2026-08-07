@@ -367,11 +367,19 @@ interface RawPlayerState {
  * 只载入 controlled 对象（己方视图）；uncontrolled（敌人）在 MVP 无对手阶段
  * 忽略并在 provenance 标注。返回 { world, droppedEnemies }。
  */
-export function worldFromRawState(raw: RawPlayerState, playerId: string, rulesVersion: string): SimWorld {
+export function worldFromRawState(
+  raw: RawPlayerState,
+  playerId: string,
+  rulesVersion: string,
+  options: { readonly opponentPlayerId?: string } = {},
+): SimWorld {
   const obstacles = new Set<string>();
   const resourceCells = new Map<string, { readonly cell: Position }>();
   const units: SimUnit[] = [];
   let core: SimCore | null = null;
+  const opponentUnits: SimUnit[] = [];
+  let opponentCore: SimCore | null = null;
+  let opponentUsername: string | null = null;
   let droppedEnemies = 0;
 
   for (const obj of raw.objects) {
@@ -412,6 +420,28 @@ export function worldFromRawState(raw: RawPlayerState, playerId: string, rulesVe
                 ? null
                 : asPosition(obj.destination, "core.destination"),
           };
+        } else if (options.opponentPlayerId !== undefined) {
+          opponentUsername = obj.owner_username ?? null;
+          opponentCore = {
+            id: obj.id!,
+            position: obj.position!,
+            hp: Number(obj.hp),
+            shield: Number(obj.shield),
+            state: obj.state === "MOVING" ? "MOVING" : "NORMAL",
+            moveDirection: (obj.move_direction as Direction | null) ?? null,
+            moveProgress:
+              obj.move_progress === null || obj.move_progress === undefined
+                ? null
+                : Number(obj.move_progress),
+            moveRequiredTicks:
+              obj.move_required_ticks === null || obj.move_required_ticks === undefined
+                ? null
+                : Number(obj.move_required_ticks),
+            destination:
+              obj.destination === null || obj.destination === undefined
+                ? null
+                : asPosition(obj.destination, "core.destination"),
+          };
         } else {
           droppedEnemies += 1;
         }
@@ -428,6 +458,15 @@ export function worldFromRawState(raw: RawPlayerState, playerId: string, rulesVe
             hp: Number(obj.hp),
             unitType: (obj.unit_type as UnitType) ?? "WORKER",
             cargo: Number(obj.cargo ?? 0),
+          });
+        } else if (options.opponentPlayerId !== undefined) {
+          opponentUnits.push({
+            id: obj.id!,
+            owner: options.opponentPlayerId,
+            position: obj.position!,
+            hp: Number(obj.hp),
+            unitType: (obj.unit_type as UnitType) ?? "WORKER",
+            cargo: 0,
           });
         } else {
           droppedEnemies += 1;
@@ -456,7 +495,23 @@ export function worldFromRawState(raw: RawPlayerState, playerId: string, rulesVe
     tick: 1,
     resolvedTickCount: 0,
     rulesVersion,
-    players: new Map([[playerId, player]]),
+    players: new Map([
+      [playerId, player],
+      ...(options.opponentPlayerId === undefined
+        ? []
+        : [[
+            options.opponentPlayerId,
+            {
+              id: options.opponentPlayerId,
+              username: opponentUsername ?? "opponent",
+              status: "ACTIVE" as const,
+              respawnAtTick: null,
+              resources: 0,
+              core: opponentCore,
+              units: opponentUnits,
+            } satisfies SimPlayer,
+          ] as const]),
+    ]),
     terrain: { obstacles, resources: resourceCells, piles: new Map() },
     beacon:
       raw.champion_beacon === null || raw.champion_beacon === undefined
