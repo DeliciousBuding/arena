@@ -101,7 +101,11 @@ function parseUnitAction(value: Record<string, unknown>): ParseResult<UnitAction
       if (expectedCell === null) {
         return { kind: "warn", detail: "SHOOT without expected_cell" };
       }
-      const targetId = typeof value.target_id === "string" ? value.target_id : null;
+      // 2026-08-08 修复：服务端回显 cell-fire 的 target_id 可能是空串 ""（空格射击），
+      // 空串与 null 语义等价；统一归一为 null，避免校准 schema 丢弃 case。
+      const rawTargetId = value.target_id;
+      const targetId =
+        typeof rawTargetId === "string" && rawTargetId.length > 0 ? rawTargetId : null;
       return { kind: "ok", action: { type: "SHOOT", targetId, expectedCell } };
     }
     case "PICKUP_BEACON":
@@ -164,3 +168,4 @@ function parseUnitType(value: unknown): UnitType | null {
   }
   return null;
 }
+

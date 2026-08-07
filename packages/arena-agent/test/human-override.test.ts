@@ -10,6 +10,7 @@ import { test } from "node:test";
 
 import type { Plan, TickState, UnitAction } from "../src/domain/model.ts";
 import {
+  actionFromWire,
   applyHumanOverrides,
   type HumanCommandSource,
 } from "../src/runtime/human-override.ts";
@@ -185,4 +186,22 @@ test("一键动作优先于同单位意图", () => {
     const r = applyHumanOverrides(state, basePlan(), src);
     assert.deepEqual(actionOf(r, WORKER), { type: "WAIT" }); // 动作压过意图
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test("actionFromWire: SHOOT 空串 targetId 归一为 null（cell-fire 空格射击）", () => {
+  // 指挥面板空格射击指令可能带 targetId:""——空串与 null 语义等价（空格射击），
+  // 必须归一为 null，否则 calibration schema（nullableIdentifier 拒绝空串）
+  // 丢弃整条 case（生产 t1 实测 194 次 targetId must be a non-empty string）。
+  const action = actionFromWire({ type: "SHOOT", targetId: "", expectedCell: [3, 3] });
+  assert.deepEqual(action, { type: "SHOOT", targetId: null, expectedCell: [3, 3] });
+});
+
+test("actionFromWire: SHOOT null/缺省 targetId 保持 null", () => {
+  assert.deepEqual(actionFromWire({ type: "SHOOT", targetId: null, expectedCell: [3, 3] }), {
+    type: "SHOOT", targetId: null, expectedCell: [3, 3],
+  });
+  assert.deepEqual(actionFromWire({ type: "SHOOT", expectedCell: [3, 3] }), {
+    type: "SHOOT", targetId: null, expectedCell: [3, 3],
+  });
 });

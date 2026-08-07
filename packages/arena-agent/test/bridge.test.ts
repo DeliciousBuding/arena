@@ -121,3 +121,22 @@ test("official plan: unknown unit dropped and unknown action warned (fail-open)"
   assert.equal(plan.coreAction, null);
   assert.equal(warnings.length, 3); // ghost + TELEPORT + START_MOVE
 });
+
+test("official plan: SHOOT 空串 target_id 归一为 null（cell-fire 空格射击）", () => {
+  // 服务端回显 cell-fire 的 target_id 可能是空串 ""——空串与 null 语义等价
+  // （空格射击），必须归一为 null，否则 calibration schema 丢弃 case。
+  const { plan, warnings } = planFromOfficialJson(
+    {
+      tick: 1,
+      unit_actions: {
+        [canonicalUuid("w1")]: { type: "SHOOT", target_id: "", expected_cell: [3, 3] },
+        [canonicalUuid("w2")]: { type: "SHOOT", target_id: null, expected_cell: [4, 4] },
+      },
+      core_action: null,
+    },
+    ["w1", "w2"],
+  );
+  assert.equal(warnings.length, 0);
+  assert.deepEqual(plan.unitActions["w1"], { type: "SHOOT", targetId: null, expectedCell: [3, 3] });
+  assert.deepEqual(plan.unitActions["w2"], { type: "SHOOT", targetId: null, expectedCell: [4, 4] });
+});
