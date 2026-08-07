@@ -1,10 +1,9 @@
 # Arena
 
-Arena 是两条实现层独立的赛马线之一（TS 线；另一条为 `arena-rs` Rust 线）：
-本仓是 Arena Hero 的 TS 安全自主运行时、确定性策略和 Digital Twin。
+本仓是 Arena Hero 当前**唯一生产实现线**：TS 安全自主运行时、确定性策略和 Digital Twin。
+`arena-rs` Rust 赛马线已于 2026-08-07 退役为只读参考，不再承担 live、采集或 watchdog。
 目标不是堆一层平台，而是在单写者、硬截止、部分可观测和不可信 Provider 条件下稳定运行。
-真实数据采集分工：**t1/t2 归本线（TS）**；**t3/t4 移交 Rust 线**（用户
-2026-08-07 裁决，移交完成前仍由本线运行）。
+真实数据采集统一由本线负责：**t1/t2/t3/t4 全部由 arena-ts 单写**。
 
 > 正式运行链只有 `arena-hero-ts → arena-agent → SDK submit`。Pi 只能提交候选，永远不持有游戏提交权；Python 实时 runtime 已退役。
 
