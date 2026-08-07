@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS units_seen (
   unit_type TEXT NOT NULL,
   controlled INTEGER NOT NULL,
   tick INTEGER NOT NULL,
+  x INTEGER,
+  y INTEGER,
   PRIMARY KEY (cell, tick)
 );
 CREATE TABLE IF NOT EXISTS sync_meta (
@@ -185,7 +187,28 @@ export function openSurveyDb(dataRoot: string, tenant: string, write = false): D
   const db = new DatabaseSync(join(dir, `${tenant}.db`));
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
+  if (write) migrateUnitsSeenXY(db); // 数据架构审计 A2：旧库补 x/y 列 + 回填
   return db;
+}
+
+/** 旧库迁移（2026-08-08，数据架构审计 A2）：units_seen 补 x/y INTEGER 列并
+ *  从 cell 回填（热区查询不再依赖 substr/instr 解析字符串）。
+ *  幂等：列存在则跳过 ALTER；回填 WHERE x IS NULL 只跑一次。
+ *  仅 write 打开时执行（面板只读连接不触发 DDL）。 */
+function migrateUnitsSeenXY(db: DatabaseSync): void {
+  try {
+    const cols = db.prepare("PRAGMA table_info(units_seen)").all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("x")) db.exec("ALTER TABLE units_seen ADD COLUMN x INTEGER;");
+    if (!names.has("y")) db.exec("ALTER TABLE units_seen ADD COLUMN y INTEGER;");
+    db.exec(
+      "UPDATE units_seen SET x = CAST(substr(cell, 1, instr(cell, ',') - 1) AS INTEGER), " +
+      "y = CAST(substr(cell, instr(cell, ',') + 1) AS INTEGER) WHERE x IS NULL;"
+    );
+    db.exec("CREATE INDEX IF NOT EXISTS idx_units_seen_xy_type ON units_seen(controlled, x, y, unit_type);");
+  } catch {
+    // 并发 write 开打碰撞时容错；下次 sync 重试即可
+  }
 }
 
 /** upsert 一组可见矿（服务端投影：资源存在）。返回受影响行数。 */
@@ -258,10 +281,10 @@ export function upsertUnitSeen(
 ): void {
   const key = `${cell.x},${cell.y}`;
   db.prepare(`
-    INSERT INTO units_seen (cell, unit_type, controlled, tick)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO units_seen (cell, unit_type, controlled, tick, x, y)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(cell, tick) DO NOTHING
-  `).run(key, unitType, controlled ? 1 : 0, tick);
+  `).run(key, unitType, controlled ? 1 : 0, tick, cell.x, cell.y);
 }
 
 /** 稀有事迹写入（幂等：UNIQUE(tenant,tick,event_type,actor_id,target_id)
