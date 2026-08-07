@@ -403,7 +403,7 @@ function draw() {
   tactDrawLayer(s);
   if (replayActive) replayDrawLayer(s);
   const ztxt = `×${state.view.scale.toFixed(1)}`;
-  if (els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽平移 · 滚轮缩放 · 双击适应 · ${ztxt}`; }
+  if (els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽/方向键平移 · 滚轮缩放 · 双击适应 · G 全局 · ${ztxt}`; }
   if (els.zoomLevel && els.zoomLevel.textContent !== ztxt) els.zoomLevel.textContent = ztxt;
   if (!state.cells.length) {
     ctx.fillStyle = '#56626c'; ctx.font = '600 12px ' + CANVAS_FONT;
@@ -1399,6 +1399,21 @@ function renderRedeemHistory() {
     : '<li style="color:#56626c">暂无本地记录</li>';
 }
 
+/** 光标锚定缩放（阻尼目标版）：连续滚轮/键盘/按钮在 target 上累积，逐帧由 stepZoom 平滑趋近。 */
+function zoomTo(sx, sy, factor) {
+  const rect = els.canvas.getBoundingClientRect();
+  const base = state.zoom.active ? { cx: state.zoom.tx, cy: state.zoom.ty, scale: state.zoom.ts } : { cx: state.view.cx, cy: state.view.cy, scale: state.view.scale };
+  const ns = Math.min(64, Math.max(0.05, base.scale * factor));
+  const wx = base.cx + (sx - rect.width / 2) / base.scale;
+  const wy = base.cy + (sy - rect.height / 2) / base.scale;
+  state.zoom.tx = wx - (sx - rect.width / 2) / ns;
+  state.zoom.ty = wy - (sy - rect.height / 2) / ns;
+  state.zoom.ts = ns;
+  state.zoom.active = true;
+  state.zoom.lastTs = performance.now();
+  state.viewAnim = null; // 阻尼接管
+}
+
 /* ---------- 事件绑定 ---------- */
 function bindEvents() {
   // 地图交互
@@ -1463,21 +1478,6 @@ function bindEvents() {
     els.tooltip.hidden = true;
     if (state.hover) { state.hover = null; state.hoverKey = ''; draw(); }
   });
-/** 向光标平滑缩放（官方 wheelZoomCell + ZOOM_SETTLE 语义）：easeOutCubic 短补间，丝滑不跳变。 */
-  /** 光标锚定缩放（阻尼目标版）：连续滚轮在 target 上累积，逐帧由 stepZoom 平滑趋近。 */
-  function zoomTo(sx, sy, factor) {
-    const rect = els.canvas.getBoundingClientRect();
-    const base = state.zoom.active ? { cx: state.zoom.tx, cy: state.zoom.ty, scale: state.zoom.ts } : { cx: state.view.cx, cy: state.view.cy, scale: state.view.scale };
-    const ns = Math.min(64, Math.max(0.05, base.scale * factor));
-    const wx = base.cx + (sx - rect.width / 2) / base.scale;
-    const wy = base.cy + (sy - rect.height / 2) / base.scale;
-    state.zoom.tx = wx - (sx - rect.width / 2) / ns;
-    state.zoom.ty = wy - (sy - rect.height / 2) / ns;
-    state.zoom.ts = ns;
-    state.zoom.active = true;
-    state.zoom.lastTs = performance.now();
-    state.viewAnim = null; // 阻尼接管
-  }
   els.canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
     const rect = els.canvas.getBoundingClientRect();
@@ -1626,11 +1626,32 @@ async function boot() {
     requestAnimationFrame(animLoop);
   };
   requestAnimationFrame(animLoop);
-  // 战术层：Esc 取消；信标方向指示器定时刷新
+  // 键盘导航：方向键平移 / +/- 缩放 / F 适应视口 / G 返回全局 / Esc 取消
   window.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    if (state.tactical.mode || state.tactical.selected) tactClear();
-    else if (els.redeemDialog.open) els.redeemDialog.close();
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (els.redeemDialog.open) { if (e.key === 'Escape') els.redeemDialog.close(); return; }
+    const panStep = () => Math.max(1, W() / 2 / state.view.scale * 0.25);
+    const pan = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+    if (pan) {
+      e.preventDefault();
+      const st = panStep();
+      state.view.cx += pan[0] * st; state.view.cy += pan[1] * st;
+      state.viewAnim = null; // 手动平移接管
+      draw();
+      return;
+    }
+    if (e.key === '+' || e.key === '=') { const r = els.canvas.getBoundingClientRect(); zoomTo(r.width / 2, r.height / 2, 1.5); return; }
+    if (e.key === '-' || e.key === '_') { const r = els.canvas.getBoundingClientRect(); zoomTo(r.width / 2, r.height / 2, 1 / 1.5); return; }
+    if (e.key === 'f' || e.key === 'F') { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); return; }
+    if (e.key === 'g' || e.key === 'G') {
+      state.soloTenant = null; invalidateStatic(); fitView(); tactClear(); renderTenantCards();
+      els.viewGlobal.classList.add('active'); if (els.mapGlobal) els.mapGlobal.hidden = true;
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (state.tactical.mode || state.tactical.selected) tactClear();
+    }
   });
   updateBeaconIndicator();
   setInterval(updateBeaconIndicator, 500);
