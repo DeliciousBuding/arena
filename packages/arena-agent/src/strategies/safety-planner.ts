@@ -117,6 +117,11 @@ const HARVEST_MEMORY_MAX_DIST = 40;
  *  否则 10 worker 抢 1 格集体 capacity_wait 死锁（与 deterministic-planner 的
  *  CELL_ENTITY_CAPACITY=2 同口径）。 */
 const HARVEST_MEM_CELL_CAPACITY = 2;
+/** 巡逻出发错峰（2026-08-08，t2 生产实证）：核心区 worker 群同步出发 → 出口容量
+ *  互堵永久卡死（12 worker 挤核心 5 格 36+ tick 位置不动，capacity_reroute 无
+ *  空格可绕）。判定半径（Chebyshev 离 home）与拥挤阈值（manhattan ≤2 内 worker）。 */
+const PATROL_DEPARTURE_RADIUS = 3;
+const PATROL_DEPARTURE_CROWD = 5;
 /** 记忆矿卡死回退阈值（2026-08-08，t3 生产实证）：go_harvest_mem 连续 N tick
  *  未推进（容量争抢/路径被堵，非 patrol intent 无法 capacity_reroute）→ 清空
  *  目标回退巡逻，防永久 WAIT 死锁。 */
@@ -175,6 +180,13 @@ const THREAT_ADAPTIVE_RESERVE_GUARDS = 2;
  *  在 [-38,0]（Chebyshev 49，持信标、主动来犯）被判 bounded_return 全体回家、
  *  军事永不还击。guide 语义：≤64 格由最近完整小队直接远征。 */
 const BOUNDED_RAID_DISTANCE = 64;
+/** 清剿可见敌方 WORKER 的追击半径（2026-08-08，用户"挂机/落单单位赶紧打掉"）：
+ *  可见敌 WORKER 在该半径内且远离敌核心守军时，最近 Vanguard 追击清剿（白赚）。
+ *  12 = 适中（不跨图远征，避免补给线风险）。 */
+const PREY_WORKER_RADIUS = 12;
+/** 清剿目标与敌核心记忆的最小距离（Chebyshev）：敌核心 8 格内 = 有守军风险，
+ *  不追（避免冲进敌核心射程送死）。 */
+const PREY_CORE_SAFE = 8;
 /** 军事打野沿环扫描时间预算：同一八分点目标 >N tick 未到达强制换向（防障碍点卡死）。 */
 const SCAVENGE_HOLD_TICKS = 24;
 /** 敌情狩猎清扫半径（Chebyshev）：进入该范围视为"到达基地"，开始扇形清扫。 */
@@ -1107,6 +1119,32 @@ export class SafetyPlanner {
     }
 
     if (target !== null && !samePosition(target, unit.position)) {
+      // 巡逻出发错峰（2026-08-08，t2 生产实证）：离 home ≤3 格且 2 格内 worker
+      // ≥5（核心区拥挤）且存在比自己更靠外的邻居 → 原地 WAIT 错峰，让外圈先
+      // 疏散（至少最靠外的 worker 无更外邻居 → 正常出发，不会全 WAIT）。防
+      // "重启后 12 worker 同步出发 → 出口容量互堵 → 永久卡死"。
+      if (
+        home !== null &&
+        target !== home &&
+        chebyshev(unit.position, home) <= PATROL_DEPARTURE_RADIUS
+      ) {
+        const crowded = state.workers.filter(
+          (w) => w.id !== unit.id && manhattan(w.position, unit.position) <= 2,
+        ).length;
+        if (crowded >= PATROL_DEPARTURE_CROWD) {
+          const myDist = manhattan(unit.position, home);
+          const hasOuter = state.workers.some(
+            (w) =>
+              w.id !== unit.id &&
+              manhattan(w.position, unit.position) <= 2 &&
+              manhattan(w.position, home) > myDist,
+          );
+          if (hasOuter) {
+            set(unit, { type: "WAIT" }, "worker_hold_crowded");
+            return;
+          }
+        }
+      }
       const direction = stepToward(unit.position, target, movementObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "patrol");
     }
@@ -1208,6 +1246,32 @@ export class SafetyPlanner {
     }
 
     if (this.effectiveAggression === "aggressive") {
+      // 清剿可见敌方 WORKER（vanguardPreyWorker，2026-08-08，用户"挂机/落单
+      // 单位赶紧打掉"）：可见敌 WORKER（断经济 + 无反击，白赚）在
+      // PREY_WORKER_RADIUS 内且不在敌核心记忆 PREY_CORE_SAFE 格内（避开守军）
+      // → 最近 Vanguard 优先追击清剿，高于蓄势/打野。其余 Vanguard 照常
+      // （防扎堆：只让距离最近的 1 个去）。邻接敌已被上方 SWEEP 分支处理。
+      if (this.config.vanguardPreyWorker === true) {
+        const prey = enemies.find(
+          (enemy) => enemy.kind === "UNIT" && enemy.unitType === "WORKER",
+        );
+        if (prey !== undefined && state.core !== null && manhattan(unit.position, prey.position) <= PREY_WORKER_RADIUS) {
+          // 只认 CORE 来源目标（WORKER_INFER 是从该 WORKER 本身推断的基地候选，
+          // 位置≈WORKER，会误判"在敌核心旁"导致永不追击——2026-08-08 实测）。
+          const nearEnemyCore = this.world.coreHuntTargets().some(
+            (target) => target.source === "CORE" && chebyshev(target.position, prey.position) <= PREY_CORE_SAFE,
+          );
+          if (!nearEnemyCore) {
+            const nearest = [...state.vanguards]
+              .sort((a, b) => manhattan(a.position, prey.position) - manhattan(b.position, prey.position))[0];
+            if (nearest !== undefined && nearest.id === unit.id) {
+              const direction = stepToward(unit.position, prey.position, militaryObstacles);
+              if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_prey_worker");
+              return;
+            }
+          }
+        }
+      }
       // 爆兵蓄势 gate（2026-08-06 用户导向"以爆兵为目的打对面水晶"）：军事
       // 规模未达 attackForce 时守家蓄势（兵力成型再前压，避免零星送死）；
       // 达标后前压攻坚。默认 attackForce=0 = 关闭（历史行为）。
