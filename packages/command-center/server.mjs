@@ -539,6 +539,59 @@ function sendJson(res, value, status = 200) {
  * 排行榜威胁画像（伤害 top10=ELITE_AGGRESSOR 猛攻蛆 / top30=AGGRESSOR）。
  * 4 租户是官方平台账号（区域隔离但共享排行榜）——情报可全局共享：谁在打
  * 我们、谁强、在哪。纯只读。 */
+/** 快攻威胁评估（raid-risk，镜像 arena-agent/src/domain/raid-risk.ts 常量与级联）：
+ * 用户裁决"别人可以只派一些人来打"——威胁不能只看排行榜伤害：
+ *  - 实测敌军战斗单位（Vanguard/Ranger）进入我方核心 18 格警戒圈：≥3 = CRITICAL、
+ *    ≥1 = HIGH（小股快攻已到门口）；
+ *  - 敌核心 ≤24 格 = HIGH、≤32 = MEDIUM（STANDARD 低伤害也成立——随时可派人）；
+ *  - 排行榜 tier 只做先验加成（高伤害对手中程/远程升级），不作防御门槛；
+ *  - 陈旧目击降一级（记忆老化威胁不确定，但不掉 NONE）。 */
+const RAID_UNIT_WATCH_RADIUS = 18;
+const RAID_CORE_RADIUS = 24;
+const RAID_PARTY_SIZE = 3;
+const RAID_SIGHTING_FRESH_TICKS = 12;
+/** 面板"近期快攻活动"窗口（tick）：我方核心警戒圈内目击到敌军战斗单位距今
+ *  不超过该窗口才算"活动中的快攻"（防 30-run 扫描把上千 tick 前的旧目击
+ *  误报为 CRITICAL——t4 实证：659-1372 tick 前的单位被误报 4 个 CRITICAL）。 */
+const RAID_ACTIVITY_WINDOW = 300;
+function assessRaidRisk({ enemyCoreDistance, combatUnitsNear, tier, freshSighting }) {
+  let tierRisk;
+  let reason;
+  if (combatUnitsNear >= RAID_PARTY_SIZE) {
+    tierRisk = "CRITICAL";
+    reason = `raid_party: ${combatUnitsNear} enemy combat units within ${RAID_UNIT_WATCH_RADIUS} of our core`;
+  } else if (combatUnitsNear >= 1) {
+    tierRisk = "HIGH";
+    reason = `raid_scout: ${combatUnitsNear} enemy combat unit(s) within ${RAID_UNIT_WATCH_RADIUS} of our core`;
+  } else if (enemyCoreDistance <= 8) {
+    tierRisk = "CRITICAL";
+    reason = `core_adjacent: enemy core ${enemyCoreDistance} cells away`;
+  } else if (enemyCoreDistance <= RAID_CORE_RADIUS) {
+    tierRisk = "HIGH";
+    reason = `core_close: enemy core ${enemyCoreDistance} cells away (within ${RAID_CORE_RADIUS})`;
+  } else if (enemyCoreDistance <= 32) {
+    tierRisk = "MEDIUM";
+    reason = `core_medium: enemy core ${enemyCoreDistance} cells away`;
+  } else if (tier !== "STANDARD" && enemyCoreDistance <= 48) {
+    tierRisk = "MEDIUM";
+    reason = `aggressor_medium: ${tier} core ${enemyCoreDistance} cells away`;
+  } else if (enemyCoreDistance <= 64) {
+    tierRisk = "LOW";
+    reason = `core_far: enemy core ${enemyCoreDistance} cells away`;
+  } else if (tier !== "STANDARD" && enemyCoreDistance <= 96) {
+    tierRisk = "LOW";
+    reason = `aggressor_far: ${tier} core ${enemyCoreDistance} cells away`;
+  } else {
+    return { tier: "NONE", reason: "out_of_range" };
+  }
+  if (!freshSighting && tierRisk !== "LOW") {
+    const downgraded = tierRisk === "CRITICAL" ? "HIGH" : tierRisk === "HIGH" ? "MEDIUM" : "LOW";
+    return { tier: downgraded, reason: `${reason} (stale sighting)` };
+  }
+  return { tier: tierRisk, reason };
+}
+const manhattan = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
+const chebyshev = (a, b) => Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
 /** 联盟情报缓存（30s，与排行榜缓存一致——面板轮询不重复扫描 calibration）。 */
 let intelCache = { at: 0, data: null };
 function loadAllianceIntel() {
@@ -563,6 +616,9 @@ function loadAllianceIntel() {
       .slice(0, RUN_SCAN);
     const seenCores = new Map(); // owner -> { position, tick }
     let enemyUnits = 0;
+    let ourCore = null; // 我方（controlled）Core 位置——快攻威胁距离基准
+    const combatNearCore = new Map(); // 我方核心 18 格警戒圈内的敌军战斗单位 id -> 最近目击 tick
+    let latestTick = 0; // 本租户扫描窗口内的最高 tick（新鲜度基准）
     for (const rd of runDirs) {
       const caseFiles = listCases(tenant, rd).slice(-INTEL_CASE_LIMIT);
       for (const file of caseFiles) {
@@ -571,27 +627,65 @@ function loadAllianceIntel() {
         try { raw = JSON.parse(readFileSync(join(calibrationDir(tenant), rd, "cases", file), "utf8")); } catch { continue; }
         const state = raw?.before?.state;
         if (!state?.objects) continue;
+        if (tick > latestTick) latestTick = tick;
         for (const obj of state.objects) {
-          if (obj.kind === "CORE" && !obj.controlled && obj.owner_username) {
+          if (obj.kind === "CORE" && obj.controlled) {
+            ourCore = obj.position;
+          } else if (obj.kind === "CORE" && !obj.controlled && obj.owner_username) {
             const prev = seenCores.get(obj.owner_username);
             if (prev === undefined || tick > prev.tick) seenCores.set(obj.owner_username, { position: obj.position, tick });
           } else if (obj.kind === "UNIT" && !obj.controlled && obj.unit_type !== "WORKER") {
             enemyUnits += 1;
+            if (ourCore !== null && manhattan(obj.position, ourCore) <= RAID_UNIT_WATCH_RADIUS) {
+              const prev = combatNearCore.get(obj.id);
+              if (prev === undefined || tick > prev) combatNearCore.set(obj.id, tick);
+            }
           }
         }
       }
     }
+    // 近期快攻活动：警戒圈内目击距今 ≤ RAID_ACTIVITY_WINDOW 才算"活动中的快攻"
+    // （t4 实证：旧目击 659+ tick 会被误报 CRITICAL——仅核心距离决定风险）。
+    const recentCombat = [...combatNearCore.entries()]
+      .filter(([, t]) => latestTick - t <= RAID_ACTIVITY_WINDOW)
+      .map(([id, t]) => ({ id, age: latestTick - t }));
+    const recentCount = recentCombat.length;
+    const maxRecentAge = recentCount > 0 ? Math.max(...recentCombat.map((c) => c.age)) : null;
     const enemyCores = [...seenCores.entries()].map(([username, info]) => {
       const profile = lb?.profiles?.find((p) => p.username === username);
+      // 快攻威胁（raid-risk）：距离 = 敌核心到我们 Core 的 Chebyshev；实测接近
+      // 单位 = 我方 18 格警戒圈内**近期**（≤300 tick）目击到的敌军战斗单位；
+      // 敌核心目击 >2000 tick（CORE_HUNT_STICKY_TICKS 同口径）视为陈旧降级。
+      const distance = ourCore === null ? null : chebyshev(info.position, ourCore);
+      const raid = distance === null
+        ? { tier: "UNKNOWN", reason: "no_friendly_core" }
+        : assessRaidRisk({
+            enemyCoreDistance: distance,
+            combatUnitsNear: recentCount,
+            tier: profile?.tier ?? "STANDARD",
+            freshSighting: latestTick - info.tick <= 2000,
+          });
       return {
         username,
         position: info.position,
         lastSeenTick: info.tick,
         tier: profile?.tier ?? "STANDARD",
         damageRank: profile?.rank ?? null,
+        distanceToFriendlyCore: distance,
+        raidRisk: raid.tier,
+        raidReason: raid.reason,
+        raidActivityAge: maxRecentAge,
       };
     }).sort((a, b) => (b.lastSeenTick - a.lastSeenTick) || a.username.localeCompare(b.username));
-    intel.tenants.push({ tenant, runId: runDir, enemyCores, enemyUnits });
+    intel.tenants.push({
+      tenant,
+      runId: runDir,
+      enemyCores,
+      enemyUnits,
+      ourCore,
+      combatUnitsNearCore: recentCount,
+      raidActivityAge: maxRecentAge,
+    });
     intel.enemies.push(...enemyCores.map((e) => ({ ...e, tenant })));
     intel.totalEnemyCores += enemyCores.length;
   }

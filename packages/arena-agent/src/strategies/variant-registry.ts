@@ -55,6 +55,16 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 目击 → 触发 ALERT/召回/迁移。无 CORE 目击 = 均匀分布零回归。
      */
     "threat-sector-scout-v1": Object.freeze({ threatSectorScout: true }),
+    /**
+     * 快攻防御（2026-08-07，raid-defense-v1）：威胁不能只看排行榜伤害——任何
+     * 玩家都可能派小股部队来偷家（用户裁决"别人可以只派一些人来打"）。启用后：
+     *  - 邻近敌核心（Chebyshev ≤24，coreHuntTargets CORE sticky）→ 恒留 ≥2
+     *    Vanguard 守家（即使攻坚目标不是高威胁玩家，防小股偷家/换家）；
+     *  - 实测敌军战斗单位（可见或 12 tick 记忆内）进入 18 格警戒圈 → 远端军事
+     *    回援 + worker 召回半径从 12 放宽到 18（更早拦截，不等贴脸）。
+     * 默认 false = 历史行为（仅 12 格确认接触 + 高威胁对手才留强，零回归）。
+     */
+    "raid-defense-v1": Object.freeze({ raidDefense: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),

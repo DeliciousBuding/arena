@@ -33,6 +33,7 @@ import {
   projectedDamageOnCore,
   type ThreatAssessment,
 } from "../domain/threat.ts";
+import { RAID_CORE_RADIUS, RAID_SIGHTING_FRESH_TICKS, RAID_UNIT_WATCH_RADIUS } from "../domain/raid-risk.ts";
 import { aggressionOf, type MacroPolicy } from "../runtime/macro-policy.ts";
 import {
   DEFAULT_SAFETY_CONFIG,
@@ -329,7 +330,13 @@ export class SafetyPlanner {
 
   /** 威胁自适应生效时的守家 Vanguard 预留数：高威胁对手至少留 2 个（叠加
    *  strikeGroupReserve=1 之上）；关闭/非高威胁 = 基础预留（0 或 1）。 */
-  private adaptiveReserveGuards(): number {
+  private adaptiveReserveGuards(state: TickState): number {
+    // 快攻防御（raid-defense-v1，2026-08-07）：邻近敌核心恒留强守家——即使攻坚
+    // 目标不是排行榜高威胁玩家，对方也可能派小股来偷家（用户裁决"别人可以只
+    // 派一些人来打"）。优先级高于威胁自适应（不依赖攻坚目标身份）。
+    if (this.config.raidDefense === true && this.nearbyEnemyCore(state)) {
+      return Math.max(THREAT_ADAPTIVE_RESERVE_GUARDS, this.config.strikeGroupReserve === true ? 1 : 0);
+    }
     if (this.config.threatAdaptiveDefense !== true) {
       return this.config.strikeGroupReserve === true ? 1 : 0;
     }
@@ -377,14 +384,56 @@ export class SafetyPlanner {
   ): boolean {
     if (this.config.remoteReinforce !== true || state.core === null) return false;
     if (manhattan(unit.position, state.core.position) <= REINFORCE_HOME_RING) return false;
-    const homeThreat = enemies.some(
-      (enemy) =>
-        enemy.kind === "UNIT" &&
-        enemy.unitType !== "WORKER" &&
-        manhattan(enemy.position, state.core!.position) <= THREAT_RECALL_DISTANCE,
-    );
+    // 快攻防御（raid-defense-v1，2026-08-07）：警戒半径从 12（确认接触）放宽到
+    // 18——实测敌军战斗单位（可见或 12 tick 记忆内）更早进入防区即回援，不等
+    // 小股部队贴脸才动（用户裁决"别人可以只派一些人来打"）。
+    const watchRadius =
+      this.config.raidDefense === true
+        ? (this.config.raidWatchRadius ?? RAID_UNIT_WATCH_RADIUS)
+        : THREAT_RECALL_DISTANCE;
+    const homeThreat =
+      enemies.some(
+        (enemy) =>
+          enemy.kind === "UNIT" &&
+          enemy.unitType !== "WORKER" &&
+          manhattan(enemy.position, state.core!.position) <= watchRadius,
+      ) ||
+      (this.config.raidDefense === true && this.raidUnitDistance(state) <= watchRadius);
     if (homeThreat) this.reinforceUntil.set(unit.id, state.tick + REINFORCE_HOLD_TICKS);
     return (this.reinforceUntil.get(unit.id) ?? 0) >= state.tick;
+  }
+
+  /** 快攻单位压力（raid-defense-v1，2026-08-07）：敌方战斗单位（Vanguard/Ranger）
+   *  距我方 Core 的最近 Manhattan 距离——可见敌优先，其次 12 tick 记忆内目击
+   *  （侦察视野外的接近单位由 worker 巡逻记忆补全）。无 → Infinity。 */
+  private raidUnitDistance(state: TickState): number {
+    const core = state.core?.position ?? null;
+    if (core === null) return Number.POSITIVE_INFINITY;
+    let min = Number.POSITIVE_INFINITY;
+    for (const enemy of state.visibleEnemies) {
+      if (enemy.kind === "UNIT" && enemy.unitType !== "WORKER") {
+        min = Math.min(min, manhattan(enemy.position, core));
+      }
+    }
+    for (const hint of this.world.enemyHints(RAID_SIGHTING_FRESH_TICKS)) {
+      if (hint.kind === "UNIT" && hint.unitType !== undefined && hint.unitType !== "WORKER") {
+        min = Math.min(min, manhattan(hint.position, core));
+      }
+    }
+    return min;
+  }
+
+  /** 邻近敌核心（raid-defense-v1，2026-08-07）：coreHuntTargets 中 CORE 目击
+   *  （sticky 记忆）距我方 Core ≤ raidCoreRadius → 站立威胁——即使该玩家从不
+   *  进攻，也可能随时派小股来偷家/骚扰（用户裁决"别人可以只派一些人来打"）。
+   *  无 CORE 目击/超半径 → false（零回归）。 */
+  private nearbyEnemyCore(state: TickState): boolean {
+    const core = state.core?.position ?? null;
+    if (core === null) return false;
+    const radius = this.config.raidCoreRadius ?? RAID_CORE_RADIUS;
+    return this.world.coreHuntTargets().some(
+      (target) => target.source === "CORE" && chebyshev(target.position, core) <= radius,
+    );
   }
 
   /** 信标夺取（beaconGrab 候选，官方 Champion Beacon 机制对齐）：返回本单位的
@@ -588,9 +637,14 @@ export class SafetyPlanner {
     // 时同样缩家——被包围时外出即送死，等包围解除再恢复。
     const recallActive =
       this.config.threatRecall === true &&
-      state.visibleEnemies.some(
+      (state.visibleEnemies.some(
         (enemy) => home !== null && manhattan(enemy.position, home) <= THREAT_RECALL_DISTANCE,
-      );
+      ) ||
+        // 快攻防御（raid-defense-v1，2026-08-07）：警戒半径放宽到 18——小股
+        // 部队更早进入防区即召回 worker 缩家圈（不等贴脸）。
+        (this.config.raidDefense === true &&
+          home !== null &&
+          this.raidUnitDistance(state) <= (this.config.raidWatchRadius ?? RAID_UNIT_WATCH_RADIUS)));
     const breakoutActive =
       this.config.threatBreakout === true && this.currentThreat?.level === "BREAKOUT";
     const maxPatrolRadius =
@@ -896,7 +950,7 @@ export class SafetyPlanner {
       // 攻坚时按 id 排序保留 N 个 Vanguard 守家（官方拆家留守卫
       // VANGUARD_CORE_GUARDS=1 防换家/反打；威胁自适应叠加到 2——高伤害对手
       // 趁远征偷家/反打的概率更高），其余全压拆家——家不空防。
-      const reserveGuards = this.adaptiveReserveGuards();
+      const reserveGuards = this.adaptiveReserveGuards(state);
       const sortedVanguards = [...state.vanguards].map((v) => v.id).sort();
       const reserveGuard =
         reserveGuards > 0 &&
