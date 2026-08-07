@@ -82,3 +82,33 @@ export type {
   DirectiveValidationIssue,
   DirectiveValidationResult,
 } from "./directive.ts";
+
+// Shared intelligence fusion
+export type {
+  SharedIntelConfig,
+  IntelFreshness,
+  FusedEntitySighting,
+  SharedIntelCounts,
+  SharedIntelView,
+  AggregateAllianceIntelInput,
+} from "./shared-intel.ts";
+export {
+  DEFAULT_SHARED_INTEL_CONFIG,
+  resolveSharedIntelConfig,
+  fuseEntitySightings,
+  aggregateAllianceIntel,
+} from "./shared-intel.ts";
+
+// Sparse threat summaries
+export type {
+  ThreatDirection,
+  ThreatFieldConfig,
+  ThreatSector,
+  TenantThreatSummary,
+} from "./threat-field.ts";
+export {
+  DEFAULT_THREAT_FIELD_CONFIG,
+  resolveThreatFieldConfig,
+  threatDirection,
+  buildAllianceThreatSummaries,
+} from "./threat-field.ts";
