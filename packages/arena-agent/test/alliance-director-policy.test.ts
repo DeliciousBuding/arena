@@ -155,3 +155,28 @@ test("shadow policy: 所有 directive missionRefs 均存在，且输出不含 ac
   const text = JSON.stringify({ missions: decision.missions, directives: decision.directives });
   assert.doesNotMatch(text, /START_MOVE|unitActions|coreAction|CandidateSink|submit/i);
 });
+
+
+test("shadow policy market: RAID 由更近的合格租户承接，而不是简单选兵力最大者", () => {
+  const s = snapshot([
+    member("t1", { corePosition: [0, 0], military: 8, resources: 30 }),
+    member("t2", { corePosition: [20, 0], military: 6, resources: 10 }),
+  ], [sighting("CORE:enemy", "CORE", [50, 0])]);
+  const d = decideAllianceShadowPolicy(s);
+  assert.equal(d.missions.find((m) => m.kind === "RAID")?.id.includes("t2"), true);
+  assert.equal(d.roles.get("t2"), "RAIDER");
+  assert.equal(d.roles.get("t1"), "SCOUT");
+});
+
+test("shadow policy market: 某租户受压时，空闲盟友竞价 ESCORT 回援", () => {
+  const s = snapshot([
+    member("t1", { corePosition: [0, 0], military: 3 }),
+    member("t2", { corePosition: [30, 0], military: 4 }),
+  ], [sighting("UNIT:e", "UNIT", [3, 0])]);
+  const d = decideAllianceShadowPolicy(s);
+  assert.equal(d.missions.find((m) => m.id.includes("t1"))?.kind, "INTERCEPT");
+  const assist = d.missions.find((m) => m.id.includes("t2"));
+  assert.equal(assist?.kind, "ESCORT");
+  assert.equal(assist?.defendTenant, "t1");
+  assert.match(assist?.scope ?? "", /alliance-market/);
+});

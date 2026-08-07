@@ -131,6 +131,7 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "bounded-raid-v1": Object.freeze({ boundedRaid: true }),
     "scout-evade-v1": Object.freeze({ scoutEvade: true }),
     "ranger-memory-shot-v1": Object.freeze({ rangerMemoryShot: true }),
+    "coordinated-fire-v1": Object.freeze({ coordinatedFire: true }),
     /**
      * 攻坚候选（2026-08-07 用户导向"爆兵打对面水晶"，安全侧 = 军事单位行为）：
      * - aggression=aggressive：Vanguard 记忆推进敌 Core / Ranger 断敌经济；
