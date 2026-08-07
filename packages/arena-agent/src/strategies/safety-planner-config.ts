@@ -350,6 +350,14 @@ export interface SafetyPlannerConfig {
   /** 记忆矿开采距离上限（Manhattan，默认 40 = 探索最外环）：防止追 70+ 格
    *  远矿（t4 实证 worker 跨 30-78 格追空记忆）——超出上限交给巡逻发现。 */
   readonly harvestMemoryMaxDist?: number;
+  /**
+   * 清剿可见敌方 WORKER（2026-08-08，用户"挂机/落单单位赶紧打掉"）：
+   * aggressive Vanguard 在可见敌方 WORKER（断经济 + 无反击，白赚）距
+   * PREY_WORKER_RADIUS 内且该 worker 不在敌核心记忆 8 格内（避免撞守军）时，
+   * 最近 Vanguard 优先追击清剿（高于蓄势/打野）。默认 false = 历史行为
+   * （只邻接 SWEEP 反击，零回归）。
+   */
+  readonly vanguardPreyWorker?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
