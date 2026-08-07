@@ -36,6 +36,7 @@ const state = {
   drag: null,
   hover: null,
   streamCollapsed: false,
+  streamLive: null, // 折叠态胶囊：最新一条决策摘要
   viewAnim: null,
   zoom: { active: false, tx: 0, ty: 0, ts: 1, lastTs: 0 }, // 滚轮缩放阻尼目标视图
   cc: { tick: null, anchor: 0 }, // 命令窗口：最近观测到的计划 tick + 观测时刻（15s 倒计时）
@@ -67,7 +68,7 @@ const els = {
   redeemResult: $('#redeemResult'), redeemHistory: $('#redeemHistory'),
   shopCookie: $('#shopCookie'), cookieSave: $('#cookieSave'), cookieTest: $('#cookieTest'),
   shopAccount: $('#shopAccount'), shopList: $('#shopList'),
-  viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'),
+  viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'), streamLive: $('#streamLive'),
   actionDialog: $('#actionDialog'), inspectPanel: $('#inspectPanel'),
   beaconIndicator: $('#beaconIndicator'), pendingPanel: $('#pendingPanel'),
   replayBar: $('#replayBar'), rbTick: $('#rbTick'), rbMaxTick: $('#rbMaxTick'),
@@ -1115,6 +1116,16 @@ function setStreamCount(text, hasNew = false) {
     if (dot) dot.classList.add('has-new');
   }
 }
+/** 折叠态实时胶囊：显示最新一条决策（收起日志时仍可监控）。CSS 负责"仅折叠时可见"。 */
+function updateStreamLive() {
+  const el = els.streamLive, live = state.streamLive;
+  if (!el) return;
+  if (!live) { el.hidden = true; return; }
+  el.hidden = false;
+  const color = TENANT_COLORS[live.tenant] ?? '#999';
+  el.innerHTML = `<span class="sl-t" style="color:${color}">${live.tenant.toUpperCase()}</span>` +
+    `<span class="sl-tick">#${fmt(live.tick)}</span><span class="sl-text">${escapeHtml(live.text)}</span>`;
+}
 function renderStream() {
   const tabs = [{ id: 'all', label: '统一决策' }];
   TENANTS.forEach((t) => tabs.push({ id: t, label: t.toUpperCase() }));
@@ -1152,6 +1163,12 @@ function renderStream() {
     els.streamBody.innerHTML = ehtml;
     setStreamCount(`${all.length} 条`, eNew > 0);
     streamScrollFollow(eNew > 0);
+    if (all.length) {
+      const e0 = all[0];
+      const detail = [e0.actor ? 'actor ' + shortId(e0.actor) : '', e0.target ? 'target ' + shortId(e0.target) : '', e0.amount != null ? '×' + e0.amount : ''].filter(Boolean).join(' ');
+      state.streamLive = { tenant: e0.tenant, tick: e0.tick, text: (e0.kind + (detail ? ' · ' + detail : '')).trim() };
+    } else state.streamLive = null;
+    updateStreamLive();
     return;
   }
   const rows = [];
@@ -1192,6 +1209,14 @@ function renderStream() {
   els.streamBody.innerHTML = rhtml;
   setStreamCount(`${rows.length} 条`, rNew > 0);
   streamScrollFollow(rNew > 0);
+  // 折叠胶囊：最新一条决策
+  if (rows.length) {
+    const r0 = rows[0];
+    const out = String(r0.deadlineOutcome ?? '').replace(/_/g, ' ') || 'decision';
+    const lat = [r0.agentLatencyMs != null ? 'agent ' + fmt(r0.agentLatencyMs) + 'ms' : '', r0.selectionLatencyMs != null ? 'select ' + fmt(r0.selectionLatencyMs) + 'ms' : ''].filter(Boolean).join(' · ');
+    state.streamLive = { tenant: r0.tenant, tick: r0.tick, text: (out + (lat ? ' · ' + lat : '')).trim() };
+  } else state.streamLive = null;
+  updateStreamLive();
 }
 
 /* ---------- 顶部状态 ---------- */
@@ -1447,6 +1472,7 @@ function bindEvents() {
     els.streamPane.classList.toggle('collapsed', state.streamCollapsed);
     els.streamToggle.setAttribute('aria-expanded', String(!state.streamCollapsed));
     trackCanvasResize(); // 高度过渡期间逐帧同步画布位图（防拉伸）
+    updateStreamLive();  // 折叠时显示/展开时隐藏最新决策胶囊
     if (!state.streamCollapsed) {
       const dot = els.streamToggle.querySelector('.st-dot');
       if (dot) dot.classList.remove('has-new');
