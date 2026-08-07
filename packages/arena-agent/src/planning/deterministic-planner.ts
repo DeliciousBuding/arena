@@ -516,6 +516,10 @@ export class DeterministicPlanner implements PlanProvider {
      *  SafetyPlanner——攻坚目标所有者是高伤害玩家时"留强"（提高成型门槛 +
      *  增加守家预留）。缺省空 Map = 无威胁情报（零回归）。 */
     threatProfiles: ReadonlyMap<string, ThreatProfile> = new Map(),
+    /** 跨 run 测绘种子（2026-08-08，survey-db 联动）：已知矿注入内部两个
+     *  SafetyPlanner 的 World——重启后 worker 不再从零探索（"矿发现了没
+     *  分配去挖"的持久化端）。缺省空 = 零回归。 */
+    initialResourceCells: readonly Position[] = [],
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
@@ -527,6 +531,10 @@ export class DeterministicPlanner implements PlanProvider {
     if (initialCoreHuntTargets.length > 0) {
       fallbackPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
       patrolPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
+    }
+    if (initialResourceCells.length > 0) {
+      fallbackPlanner.world.seedResourceMemory(initialResourceCells, 0);
+      patrolPlanner.world.seedResourceMemory(initialResourceCells, 0);
     }
     fallbackPlanner.seedThreatProfiles(threatProfiles);
     patrolPlanner.seedThreatProfiles(threatProfiles);
@@ -720,3 +728,4 @@ export class DeterministicPlanner implements PlanProvider {
     }
   }
 }
+

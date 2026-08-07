@@ -55,6 +55,10 @@ export interface ResourceMemory {
   state: ResourceState;
   readonly firstSeenTick: number;
   lastSeenTick: number;
+  /** 跨 run 测绘种子（survey-db seed）：stale 时不受 hints 新鲜度窗口限制，
+   *  直到被真实观察/采集/确认耗尽自然刷新——否则 seed lastSeenTick=0 会被
+   *  maxAge 窗口滤掉（tick 68000 - 0 > 32），seed 永不提示。 */
+  seeded?: boolean;
 }
 
 export interface EnemyMemory {
@@ -362,7 +366,7 @@ export class World {
     // 资源记忆过期：stale/harvested 超过 TTL（≈4 个 refill 周期）删除——
     // 若 refill 会重新可见（重新入记忆），未恢复说明已被采空/不再生成。
     for (const [cell, memory] of this.resourceMemory) {
-      if (memory.state !== "visible" && state.tick - memory.lastSeenTick > RESOURCE_MEMORY_TTL_TICKS) {
+      if (memory.state !== "visible" && memory.seeded !== true && state.tick - memory.lastSeenTick > RESOURCE_MEMORY_TTL_TICKS) {
         this.resourceMemory.delete(cell);
         this.failedCells.delete(cell);
       }
@@ -419,6 +423,27 @@ export class World {
     return result;
   }
 
+  /** 跨 run 测绘种子（2026-08-08，survey-db 联动）：把已知矿注入资源记忆——
+   *  worker 重启后不再从零探索（"矿发现了没标注/没分配去挖"的持久化端）。
+   *  state=stale、lastSeenTick=nowTick（纳入 hints 窗口）；后续真实可见/采集
+   *  自然刷新状态。返回实际注入格数（已记忆的跳过）。 */
+  seedResourceMemory(cells: readonly Position[], nowTick: number): number {
+    let n = 0;
+    for (const cell of cells) {
+      const key = cellKey(cell);
+      if (this.resourceMemory.has(key)) continue;
+      this.resourceMemory.set(key, {
+        cell,
+        state: "stale",
+        firstSeenTick: nowTick,
+        lastSeenTick: nowTick,
+        seeded: true,
+      });
+      n += 1;
+    }
+    return n;
+  }
+
   resourceHints(options: { maxAge?: number; failedCooldown?: number } = {}): readonly Position[] {
     // maxAge 8→32、failedCooldown 4→32（2026-08-06 生产实证配对）：
     // - 记忆窗口 32 tick：巡逻环升级需要数十 tick（8 worker 分头巡逻一圈），
@@ -434,7 +459,7 @@ export class World {
       const failedAt = this.failedCells.get(cellKey(memory.cell)) ?? Number.NEGATIVE_INFINITY;
       if (this.tick - failedAt < failedCooldown) continue;
       if (memory.state === "visible") visible.push(memory);
-      else if (memory.state === "stale" && this.tick - memory.lastSeenTick <= maxAge) recent.push(memory);
+      else if (memory.state === "stale" && (memory.seeded === true || this.tick - memory.lastSeenTick <= maxAge)) recent.push(memory);
     }
     const compare = (a: ResourceMemory, b: ResourceMemory) =>
       b.lastSeenTick - a.lastSeenTick || a.cell[0] - b.cell[0] || a.cell[1] - b.cell[1];
@@ -661,6 +686,9 @@ export class World {
     };
   }
 }
+
+
+
 
 
 
