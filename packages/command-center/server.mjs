@@ -45,7 +45,7 @@ function readJsonlTail(filePath, maxLines) {
   return rows;
 }
 
-/** 最新 calibration run 目录名（按名称排序，runId 是递增 UUID/时间戳）。 */
+/** 最近一个有 calibration cases 的 run 目录名（从最新往前找，跳过空 run）。 */
 function latestRunDir(tenant) {
   const base = calibrationDir(tenant);
   if (!existsSync(base)) return null;
@@ -53,7 +53,11 @@ function latestRunDir(tenant) {
     .filter((d) => d.isDirectory())
     .map((d) => d.name)
     .sort();
-  return runs.length === 0 ? null : runs[runs.length - 1];
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const casesDir = join(base, runs[i], "cases");
+    if (existsSync(casesDir) && readdirSync(casesDir).some((f) => f.endsWith(".json"))) return runs[i];
+  }
+  return null;
 }
 
 function listCases(tenant, runDir) {
