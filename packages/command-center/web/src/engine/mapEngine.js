@@ -17,7 +17,7 @@ const DECISION_KIND_CN = {
 };
 /** 事件 kind → 中文（事件标签页阅读性） */
 const EVENT_KIND_CN = {
-  UNIT_MOVE_FAILED: '移动失败', CORE_MOVE_FAILED: '核心移动失败',
+  UNIT_MOVE_SUCCEEDED: '移动', UNIT_MOVE_FAILED: '移动失败', CORE_MOVE_SUCCEEDED: '核心移动', CORE_MOVE_FAILED: '核心移动失败',
   SPAWN_SUCCEEDED: '生产成功', SPAWN_FAILED: '生产失败',
   HARVEST_SUCCEEDED: '采集成功', HARVEST_FAILED: '采集失败',
   DEPOSIT_SUCCEEDED: '交付成功', DEPOSIT_FAILED: '交付失败',
@@ -2842,6 +2842,7 @@ function tactPlanLayer(s) {
 
 /** 资源活动面板（官方 ResourceActivity 移植）：最近资源/战斗/信标事件，左下角悬浮，不挡交互。 */
 const ACTIVITY_KIND_META = {
+  UNIT_MOVE_SUCCEEDED: { icon: "➔", color: "var(--cyan-signal, #5fd4e8)", label: (e) => `单位移动 → [` + (Array.isArray(e.position) ? e.position.join(",") : "?") + `]` },
   HARVEST_SUCCEEDED: { icon: '⛏', color: 'var(--green-resource)', label: (e) => `采集 +${e.amount ?? ''}` },
   DEPOSIT_SUCCEEDED: { icon: '◆', color: 'var(--cyan-signal)', label: (e) => `交付 +${e.amount ?? ''} 资源` },
   DEPOSIT_FAILED: { icon: '⚠', color: 'var(--amber)', label: (e) => `交付失败${e.reason ? ' · ' + e.reason : ''}` },
