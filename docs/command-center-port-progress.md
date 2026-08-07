@@ -65,10 +65,10 @@ mapEngine.ts 对应函数。
 
 1. ~~兑换码 cookie 接入~~ ✅ 已实现（2026-08-08）：右栏兑换码面板（Cookie 输入/保存、
    库存徽章/限购、兑换下单 + 本地历史），替换原 stub `/api/redeem` 通道。
-2. RespawnOverlay 增强"摧毁者"信息：官方读 `events[].values.destroyed_by`，
-   当前 server `loadEvents` 未映射该字段；世界 ACTIVE 时无 respawn 场景，
-   优先级低。
-3. 信标轨迹图层独立开关（当前 `layers.beacon` 同时管精灵+轨迹，可拆）。
+2. ~~RespawnOverlay 增强"摧毁者"信息~~ ✅ 已映射（server `loadEvents` 输出
+   `destroyedBy: values.destroyed_by`，前端 `tactRenderRespawn` 读取显示）。
+3. ~~信标轨迹图层独立开关~~ ✅ 已拆（2026-08-08）：`layers.beaconTrail` 独立控制
+   轨迹虚线，与 `beacon`（精灵）分离，侧栏图层可单独关。
 4. ~~全流程 Playwright 回归脚本入库~~ ✅ 已入库（2026-08-08）：`web/scripts/cc-regression.mjs`
    （`npm run test:regression`），覆盖加载零错误/四 tab/决策流数据/聚焦 HUD/计划层渲染/
    人类指挥 UI 链（写后清除）/API 健康，12/12 通过；`playwright-core` 入 web devDependencies；
