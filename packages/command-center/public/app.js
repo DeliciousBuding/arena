@@ -59,7 +59,7 @@ const $ = (sel) => document.querySelector(sel);
 const els = {
   canvas: $('#map'), clock: $('#clock'), dataRoot: $('#dataRoot'), badge: $('#refreshBadge'),
   tenantCards: $('#tenantCards'), legendList: $('#legendList'), tenantToggles: $('#tenantToggles'),
-  streamTabs: $('#streamTabs'), streamBody: $('#streamBody'),
+  streamTabs: $('#streamTabs'), streamBody: $('#streamBody'), streamJump: $('#streamJump'),
   tooltip: $('#mapTooltip'), hint: $('#mapHint'),
   redeemBtn: $('#redeemBtn'), redeemDialog: $('#redeemDialog'), redeemClose: $('#redeemClose'),
   redeemResult: $('#redeemResult'), redeemHistory: $('#redeemHistory'),
@@ -1070,6 +1070,18 @@ async function tactLoadExploration(tenant) {
 }
 
 /* ---------- 决策流 ---------- */
+/** 决策流智能吸底（2026-08-07）：停在底部时新行自动跟随滚动；上翻历史时不抢滚动，
+ *  改显"↓ 最新"悬浮按钮，点击回到底部（配合折叠琥珀提醒，不打扰阅读）。 */
+function streamScrollFollow(hasNew) {
+  const body = els.streamBody;
+  const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 28;
+  if (nearBottom) {
+    body.scrollTop = body.scrollHeight;
+    if (els.streamJump) els.streamJump.hidden = true;
+  } else if (hasNew && els.streamJump) {
+    els.streamJump.hidden = false;
+  }
+}
 /** 决策流条数更新：折叠时新行到达 → 圆点琥珀提醒（展开后清除）。 */
 function setStreamCount(text, hasNew = false) {
   els.streamCount.textContent = text;
@@ -1085,7 +1097,7 @@ function renderStream() {
   els.streamTabs.innerHTML = tabs.map((t) =>
     `<button data-tab="${t.id}" class="${state.tab === t.id ? 'active' : ''}" role="tab">${t.label}</button>`).join('');
   els.streamTabs.querySelectorAll('button').forEach((b) =>
-    b.addEventListener('click', () => { state.tab = b.dataset.tab; pollStreams(); }));
+    b.addEventListener('click', () => { state.tab = b.dataset.tab; els.streamBody.scrollTop = els.streamBody.scrollHeight; pollStreams(); }));
 
   if (state.tab === 'events') {
     const all = [];
@@ -1114,6 +1126,7 @@ function renderStream() {
     state.rowKeys.events = ecur;
     els.streamBody.innerHTML = ehtml;
     setStreamCount(`${all.length} 条`, eNew > 0);
+    streamScrollFollow(eNew > 0);
     return;
   }
   const rows = [];
@@ -1153,6 +1166,7 @@ function renderStream() {
   state.rowKeys[state.tab] = rcur;
   els.streamBody.innerHTML = rhtml;
   setStreamCount(`${rows.length} 条`, rNew > 0);
+  streamScrollFollow(rNew > 0);
 }
 
 /* ---------- 顶部状态 ---------- */
@@ -1412,6 +1426,14 @@ function bindEvents() {
       if (dot) dot.classList.remove('has-new');
     }
   });
+  // "最新"悬浮按钮：点击回到底部；手动滚到底部自动隐藏
+  if (els.streamJump) {
+    els.streamJump.addEventListener('click', () => { els.streamBody.scrollTop = els.streamBody.scrollHeight; els.streamJump.hidden = true; });
+    els.streamBody.addEventListener('scroll', () => {
+      const nearBottom = els.streamBody.scrollHeight - els.streamBody.scrollTop - els.streamBody.clientHeight < 28;
+      if (nearBottom && !els.streamJump.hidden) els.streamJump.hidden = true;
+    });
+  }
   // 官方商店 / 兑换码
   els.redeemBtn.addEventListener('click', openRedeem);
   els.redeemClose.addEventListener('click', () => els.redeemDialog.close());
