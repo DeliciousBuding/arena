@@ -52,6 +52,7 @@ const state = {
   drag: null,
   hover: null, hoverKey: '',
   streamCollapsed: false,
+  streamFilterQuiet: false, // 「只看决策」：隐藏无需决策行
   streamLive: null, // 折叠态胶囊：最新一条决策摘要
   viewAnim: null,
   zoom: { active: false, tx: 0, ty: 0, ts: 1, lastTs: 0 }, // 滚轮缩放阻尼目标视图
@@ -84,7 +85,7 @@ const els = {
   redeemResult: $('#redeemResult'), redeemHistory: $('#redeemHistory'),
   shopCookie: $('#shopCookie'), cookieSave: $('#cookieSave'), cookieTest: $('#cookieTest'),
   shopAccount: $('#shopAccount'), shopList: $('#shopList'),
-  zoomLevel: $('#zoomLevel'), mapGlobal: $('#mapGlobal'), viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'), streamLive: $('#streamLive'),
+  zoomLevel: $('#zoomLevel'), mapGlobal: $('#mapGlobal'), viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'), streamLive: $('#streamLive'), streamFilter: $('#streamFilter'),
   actionDialog: $('#actionDialog'), inspectPanel: $('#inspectPanel'),
   beaconIndicator: $('#beaconIndicator'), pendingPanel: $('#pendingPanel'),
   replayBar: $('#replayBar'), rbTick: $('#rbTick'), rbMaxTick: $('#rbMaxTick'),
@@ -1208,6 +1209,10 @@ function renderStream() {
     for (const r of state.streams[t] ?? []) rows.push({ tenant: t, ...r });
   }
   rows.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
+  if (state.streamFilterQuiet) {
+    const kept = rows.filter((r) => !(String(r.deadlineOutcome ?? '') === 'not_applicable' && String(r.submitResult ?? '') === 'accepted'));
+    if (kept.length || rows.length) rows.length = 0, rows.push(...kept); // 只显示实际决策
+  }
   if (!rows.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无决策数据</div>'; return; }
   state.rowKeys = state.rowKeys || {};
   const rprev = state.rowKeys[state.tab] || new Set();
@@ -1511,6 +1516,15 @@ function bindEvents() {
   els.rbNext.addEventListener('click', () => replayStepFrame(1));
   els.rbSpeed.addEventListener('click', replayCycleSpeed);
   // 决策流折叠
+  if (els.streamFilter) {
+    els.streamFilter.addEventListener('click', () => {
+      state.streamFilterQuiet = !state.streamFilterQuiet;
+      els.streamFilter.classList.toggle('on', state.streamFilterQuiet);
+      els.streamFilter.title = state.streamFilterQuiet ? '显示全部（含无需决策）' : '只显示实际决策（隐藏无需决策行）';
+      els.streamBody.scrollTop = 0;
+      pollStreams();
+    });
+  }
   els.streamToggle.addEventListener('click', () => {
     state.streamCollapsed = !state.streamCollapsed;
     els.streamPane.classList.toggle('collapsed', state.streamCollapsed);
