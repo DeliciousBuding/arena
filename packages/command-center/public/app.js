@@ -472,23 +472,23 @@ function drawResources(cells, s) {
     for (const c of cells) {
       const p = project(c.x, c.y);
       ctx.save();
-      ctx.globalAlpha = cellAlpha(c, 0.35);
-      ctx.shadowColor = 'rgba(118,184,137,.6)';
-      ctx.shadowBlur = 8;
+      ctx.globalAlpha = cellAlpha(c, 0.55);
+      ctx.shadowColor = 'rgba(87,189,132,.35)';
+      ctx.shadowBlur = 3;
       const path = SPRITE.crystal[hash2(c.x, c.y, 13) % SPRITE.crystal.length];
       if (images[path]) sprite(images[path], p.sx, p.sy, Math.max(7, s * 0.92));
-      else { ctx.fillStyle = '#76b889'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.3), 0, Math.PI * 2); ctx.fill(); }
+      else { ctx.fillStyle = '#57bd84'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.3), 0, Math.PI * 2); ctx.fill(); }
       ctx.restore();
     }
     return;
   }
   ctx.save();
-  ctx.fillStyle = 'rgba(118,184,137,.85)';
+  ctx.fillStyle = 'rgba(87,189,132,.7)';
   ctx.beginPath();
   for (const c of cells) {
     const p = project(c.x, c.y);
-    ctx.globalAlpha = cellAlpha(c, 0.3);
-    const r = Math.max(1.6, s * 0.32);
+    ctx.globalAlpha = cellAlpha(c, 0.5);
+    const r = Math.max(1.6, s * 0.3);
     ctx.moveTo(p.sx + r, p.sy); // 断连，避免批量 arc 连线
     ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
   }
