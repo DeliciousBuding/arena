@@ -49,6 +49,7 @@ const state = {
     plan: null,       // { tick, plan } 最新决策计划（待执行命令 + 计划箭头）
     routePreview: null, // { path } MOVE 悬停预览路线
     eventFx: [],      // 回放/事件特效 [{ x, y, kind, text, born }]
+    debris: [],       // 销毁碎片 [{ x, y, vx, vy, color, born, life }]
     fxSeq: 0,
   },
 };
@@ -234,6 +235,7 @@ function draw() {
   ctx.clearRect(0, 0, w, h);
   drawGrid(w, h);
   const s = state.view.scale;
+  if (!state.soloTenant) drawTenantRegions(s);
   tactSurveyLayer(s);
   tactPatrolLayer(s);
   tactPlanLayer(s);
@@ -260,6 +262,57 @@ function draw() {
     ctx.textAlign = 'center';
     ctx.fillText('等待测绘数据…', w / 2, h / 2);
   }
+}
+/** 全局联盟地图：每租户疆域色晕 + 核心标签（大联盟地图"完全设计"：一眼区分 4 租户领地）。 */
+function drawTenantRegions(s) {
+  const groups = {};
+  for (const c of state.cells) {
+    if (state.tenantsOn[c.tenant] === false) continue;
+    (groups[c.tenant] = groups[c.tenant] || []).push(c);
+  }
+  ctx.save();
+  for (const t of TENANTS) {
+    const cells = groups[t];
+    if (!cells || !cells.length) continue;
+    const color = TENANT_COLORS[t];
+    const xs = cells.map((c) => c.x), ys = cells.map((c) => c.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    const span = Math.max(30, Math.max(maxX - minX, maxY - minY));
+    const p = project(cx, cy);
+    const radius = Math.max(60, span * s * 0.62);
+    const grad = ctx.createRadialGradient(p.sx, p.sy, 0, p.sx, p.sy, radius);
+    grad.addColorStop(0, hexA(color, 0.10));
+    grad.addColorStop(0.55, hexA(color, 0.045));
+    grad.addColorStop(1, hexA(color, 0));
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(p.sx, p.sy, radius, 0, Math.PI * 2); ctx.fill();
+    // 疆域标签：贴在核心/最密点上方
+    const core = cells.find((c) => c.type === 'core');
+    const lx = core ? core.x : cx, ly = core ? core.y : cy;
+    const lp = project(lx, ly);
+    if (s >= 2.5) {
+      const label = `${t.toUpperCase()} · ${TENANT_LABEL[t]}`;
+      ctx.font = '600 ' + Math.max(9, Math.min(13, s * 0.34)) + 'px ui-monospace, Consolas, monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const tw = ctx.measureText(label).width;
+      const pad = 6, hh = 13;
+      const bx = lp.sx, by = lp.sy - Math.max(22, s * 0.9);
+      ctx.fillStyle = 'rgba(5,6,8,.78)';
+      ctx.beginPath(); ctx.roundRect(bx - tw / 2 - pad, by - hh / 2, tw + pad * 2, hh, 5); ctx.fill();
+      ctx.strokeStyle = hexA(color, 0.5); ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 6;
+      ctx.fillText(label, bx, by + 0.5);
+      ctx.shadowBlur = 0;
+    }
+  }
+  ctx.restore();
+}
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return `rgba(${r},${g},${b},${a})`;
 }
 function drawGrid(w, h) {
   ctx.strokeStyle = 'rgba(104,117,167,.08)';
@@ -2018,8 +2071,18 @@ function tactSpawnEventFx(frameTick) {
     if (!spec) continue;
     const amount = ev.v ? (ev.v.amount !== undefined ? ev.v.amount : ev.v.damage !== undefined ? ev.v.damage : ev.v.hp !== undefined ? ev.v.hp : '') : '';
     tac.eventFx.push({ x: ev.p[0], y: ev.p[1], kind: ev.t, text: spec.text + (amount !== '' ? amount : ''), color: spec.color, size: spec.size, born: performance.now(), seq: ++tac.fxSeq });
+    // 销毁碎片：单位/核心被摧毁时迸溅
+    if (ev.t === 'UNIT_DESTROYED' || ev.t === 'CORE_DESTROYED') {
+      const n = ev.t === 'CORE_DESTROYED' ? 14 : 8;
+      const color = ev.t === 'CORE_DESTROYED' ? '#ff5560' : '#d8b64e';
+      for (let i = 0; i < n; i++) {
+        const ang = Math.random() * Math.PI * 2, sp = 0.6 + Math.random() * 1.7;
+        tac.debris.push({ x: ev.p[0], y: ev.p[1], vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp - 0.4, color, born: performance.now(), life: 900 + Math.random() * 600 });
+      }
+    }
   }
   if (tac.eventFx.length > 80) tac.eventFx.splice(0, tac.eventFx.length - 80);
+  if (tac.debris.length > 240) tac.debris.splice(0, tac.debris.length - 240);
 }
 function tactDrawEventFx(s) {
   const tac = T();
@@ -2049,6 +2112,27 @@ function tactDrawEventFx(s) {
     }
   }
   tac.eventFx = alive;
+  // 销毁碎片（外抛 + 重力 + 淡出）
+  if (tac.debris.length) {
+    const now2 = performance.now();
+    const aliveD = [];
+    for (const d of tac.debris) {
+      const age = now2 - d.born;
+      if (age > d.life) continue;
+      aliveD.push(d);
+      const t = age / d.life;
+      const x = d.x + d.vx * t * 6, y = d.y + d.vy * t * 6 + 2.2 * t * t;
+      const p = project(x, y);
+      const sz = Math.max(1.5, s * 0.16 * (1 - t));
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - t) * 0.9;
+      ctx.fillStyle = d.color;
+      ctx.shadowColor = d.color; ctx.shadowBlur = 6;
+      ctx.fillRect(p.sx - sz / 2, p.sy - sz / 2, sz, sz);
+      ctx.restore();
+    }
+    tac.debris = aliveD;
+  }
 }
 
 async function handleCanvasClick(px, py) {
