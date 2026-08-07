@@ -15,6 +15,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
   Object.freeze({
     "clear-path-v1": Object.freeze({ clearPath: true }),
     "threat-recall-v1": Object.freeze({ threatRecall: true }),
+    /**
+     * 远端军事回援（2026-08-07，竞品 "敌方战斗单位已经进入 Core 防区时，
+     * 所有非守家单位跳过集结等待并立即回援" 对照）：可见敌方战斗单位进入
+     * Core 防区（12）→ 远端 Vanguard/Ranger 立即回 Core 守位（优先于攻坚/
+     * 打野/环搜），守家圈内单位走既有防御逻辑。与 threat-recall-v1 配套：
+     * 一个管 worker 收缩守家圈，一个管远端军事回援。
+     */
+    "reinforce-home-v1": Object.freeze({ remoteReinforce: true }),
     "move-failed-avoidance-v1": Object.freeze({ moveFailedAvoidance: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
