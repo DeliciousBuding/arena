@@ -795,28 +795,33 @@ body::after {
 
 /* ---------- 重生覆盖层（官方 RespawnOverlay 移植） ---------- */
 .respawn-overlay {
-  position: absolute; inset: 0; z-index: 40;
-  display: grid; place-items: center;
-  background: rgba(0,0,0,.84); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
-  animation: dialogIn .45s var(--ease);
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  z-index: 40; pointer-events: none;
+  animation: roDrop .45s var(--ease);
 }
-/* hidden 属性必须压过 display:grid，否则一开页面就常显"核心被摧毁"覆盖层 */
+/* hidden 属性必须压过任何 display，否则一开页面就常显"核心被摧毁"覆盖层 */
 .respawn-overlay[hidden] { display: none !important; }
-.respawn-overlay::before {
-  content: ""; position: absolute; inset: 0; pointer-events: none;
-  background: radial-gradient(circle at center, rgba(221,98,109,.07), transparent 42%);
+@keyframes roDrop { from { opacity: 0; transform: translate(-50%, -12px) scale(.97); } to { opacity: 1; transform: translate(-50%, 0); } }
+.ro-card {
+  display: flex; align-items: center; gap: 12px;
+  max-width: min(34rem, calc(100vw - 32px)); text-align: left;
+  padding: 10px 16px;
+  background: rgba(14,8,10,.92);
+  border: 1px solid rgba(221,98,109,.35);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
 }
-.ro-card { position: relative; max-width: 30rem; text-align: center; padding: 0 1.5rem; }
 .ro-icon {
-  width: 64px; height: 64px; margin: 0 auto 1.5rem;
+  width: 32px; height: 32px; flex: none;
   display: grid; place-items: center;
-  border-radius: var(--radius-lg); font-size: 30px; color: var(--danger);
-  border: 1px solid rgba(221,98,109,.3); background: rgba(221,98,109,.05);
-  box-shadow: 0 0 36px rgba(221,98,109,.1);
+  border-radius: 9px; font-size: 16px; color: var(--danger);
+  border: 1px solid rgba(221,98,109,.3); background: rgba(221,98,109,.06);
+  box-shadow: 0 0 22px rgba(221,98,109,.12);
   animation: roPulse 2.4s ease-in-out infinite;
 }
-@keyframes roPulse { 0%, 100% { transform: scale(1); opacity: .9; } 50% { transform: scale(1.06); opacity: 1; } }
-.ro-title { font-family: var(--font-display); font-size: 26px; font-weight: 650; letter-spacing: .01em; color: #fff; }
-.ro-sub { margin-top: 1.4rem; color: var(--text-dim); font-size: 13px; }
-.ro-rule { margin: 1.6rem auto 0; width: 8rem; height: 1px; background: linear-gradient(90deg, transparent, rgba(255,255,255,.2), transparent); }
-.ro-hint { margin: 1.2rem auto 0; max-width: 24rem; font-size: 12px; line-height: 1.6; color: var(--text-faint); }
+@keyframes roPulse { 0%, 100% { transform: scale(1); opacity: .9; } 50% { transform: scale(1.07); opacity: 1; } }
+.ro-body { min-width: 0; }
+.ro-title { font-family: var(--font-display); font-size: 14px; font-weight: 700; letter-spacing: .01em; color: #fff; }
+.ro-sub { margin-top: 2px; color: var(--text-dim); font-size: 11px; }
+.ro-rule, .ro-hint { display: none; }
