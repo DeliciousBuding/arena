@@ -10,8 +10,23 @@ REPO="/d/Code/Projects/arena/arena-ts/.worktrees/production-runtime"
 DATA_ROOT="/d/Code/Projects/arena/data"
 RUNTIME_ROOT="$DATA_ROOT/runtime"
 READY_URL="http://127.0.0.1:8120/ready"
+MAINTENANCE_LEASE="$RUNTIME_ROOT/maintenance.lease"
 
 now() { date '+%Y-%m-%d %H:%M:%S'; }
+
+# 维护租约（2026-08-08）：Scheduled Task 永远保持 Enabled。维护者只写一个
+# 有明确过期时间的 lease，watchdog 在 lease 有效时暂不拉起生产；即使维护者
+# 崩溃/终端断开，lease 过期后下一轮自动恢复，避免“任务被 Disabled 后永久停服”。
+if [ -f "$MAINTENANCE_LEASE" ]; then
+  LEASE_EXPIRES=$(sed -n '1p' "$MAINTENANCE_LEASE" | tr -d '\r')
+  LEASE_REASON=$(sed -n '3p' "$MAINTENANCE_LEASE" | tr -d '\r')
+  NOW_EPOCH=$(date +%s)
+  if [[ "$LEASE_EXPIRES" =~ ^[0-9]+$ ]] && [ "$NOW_EPOCH" -lt "$LEASE_EXPIRES" ]; then
+    exit 0
+  fi
+  echo "$(now) maintenance lease expired/invalid (${LEASE_REASON:-unknown}) -> auto-resume" >> "$LOG"
+  rm -f "$MAINTENANCE_LEASE"
+fi
 
 # 健康则无事。注意：grep 必须取第一个 "ready" 字段（JSON 顶层），
 # 否则 tenants 数组内其他租户的 "ready":true 会让子串匹配误判健康

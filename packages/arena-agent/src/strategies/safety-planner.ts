@@ -746,9 +746,26 @@ export class SafetyPlanner {
         .map((unit, index) => [unit.id, index]),
     );
 
+    // 本 Tick 预计伤害账本（coordinated-fire-v1）：只用于友军目标去重，不改变
+    // Arena action 语义。单位按 id 确定性决策，所以同一输入必得同一转火结果。
+    const projectedFriendlyDamage = new Map<string, number>();
+    const reserveDamage = (enemyId: string, amount = 1): void => {
+      projectedFriendlyDamage.set(enemyId, (projectedFriendlyDamage.get(enemyId) ?? 0) + amount);
+    };
     const set = (unit: UnitSnapshot, action: UnitAction, intent: string): void => {
       actions[unit.id] = action;
       intents[unit.id] = intent;
+      if (this.config.coordinatedFire !== true) return;
+      if (action.type === "SHOOT" && action.targetId !== null) {
+        reserveDamage(action.targetId);
+        return;
+      }
+      if (action.type === "SWEEP") {
+        const targetCell = move(unit.position, action.direction);
+        for (const enemy of enemies) {
+          if (samePosition(enemy.position, targetCell)) reserveDamage(enemy.id);
+        }
+      }
     };
 
     for (const unit of [...state.units].sort((a, b) => a.id.localeCompare(b.id))) {
@@ -775,7 +792,9 @@ export class SafetyPlanner {
       } else if (unit.unitType === "VANGUARD") {
         this.decideVanguard(state, unit, vanguardIndex.get(unit.id) ?? 0, obstacles, enemies, set);
       } else {
-        this.decideRanger(state, unit, rangerIndex.get(unit.id) ?? 0, obstacles, enemies, set);
+        this.decideRanger(
+          state, unit, rangerIndex.get(unit.id) ?? 0, obstacles, enemies, projectedFriendlyDamage, set,
+        );
       }
     }
 
@@ -1642,6 +1661,7 @@ export class SafetyPlanner {
     index: number,
     obstacles: ReadonlySet<string>,
     enemies: readonly VisibleEntity[],
+    projectedFriendlyDamage: ReadonlyMap<string, number>,
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
   ): void {
     const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
@@ -1680,9 +1700,15 @@ export class SafetyPlanner {
     // from sweeping us outranks a Worker three cells away), then same value
     // ranks by type (workers first = economy damage), then raw id (determinism).
     const inRange = enemies.filter((enemy) => canShoot(unit.position, enemy.position, obstacles));
+    // 协同火力：后决策 Ranger 不再给“本 Tick 已被预计打死”的 Unit 继续补枪。
+    // Core 的 shield 未出现在 VisibleEntity，不能仅用 hp 判断致死，因此 Core 始终
+    // 保留为合法火力目标。若所有在射程 Unit 都已覆盖，转入下方预测射击/机动。
+    const fireable = this.config.coordinatedFire === true
+      ? inRange.filter((enemy) => enemy.kind === "CORE" || (projectedFriendlyDamage.get(enemy.id) ?? 0) < enemy.hp)
+      : inRange;
     const target = this.effectiveAggression === "aggressive"
-      ? inRange.sort(aggressiveShotPriority)[0]
-      : inRange.sort((a, b) => defensiveShotPriority(unit.position, a, b))[0];
+      ? fireable.sort(aggressiveShotPriority)[0]
+      : fireable.sort((a, b) => defensiveShotPriority(unit.position, a, b))[0];
     if (target !== undefined) {
       set(unit, { type: "SHOOT", targetId: target.id, expectedCell: target.position }, "shoot");
       return;
@@ -1691,7 +1717,10 @@ export class SafetyPlanner {
     // Upstream v0.12 cell fire: fire at the predicted next cell of the nearest
     // visible enemy that is out of range. A unit in range 4-5 can be hit next
     // tick if it keeps advancing toward us along the same line.
-    const nearest = nearestEnemy(enemies, unit.position);
+    const predictionPool = this.config.coordinatedFire === true
+      ? enemies.filter((enemy) => enemy.kind === "CORE" || (projectedFriendlyDamage.get(enemy.id) ?? 0) < enemy.hp)
+      : enemies;
+    const nearest = nearestEnemy(predictionPool, unit.position);
     if (nearest !== null) {
       const predicted = predictedEnemyCell(unit.position, nearest.position);
       if (
