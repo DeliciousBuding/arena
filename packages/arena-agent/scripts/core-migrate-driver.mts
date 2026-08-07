@@ -18,6 +18,7 @@
 import { writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createNavState, notePosition, planDirection, chebyshev, type Dir, type Pos } from "../src/app/core-migrate-nav.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = process.env.ARENA_DATA_ROOT ?? "D:/Code/Projects/arena/data";
@@ -47,11 +48,6 @@ function parseArgs(argv: readonly string[]): Args {
     dataRoot: get("data-root") ?? DATA_ROOT,
   };
 }
-
-const BEACON: readonly [number, number] = [-11, -1];
-const DIRECTIONS = ["UP", "DOWN", "LEFT", "RIGHT"] as const;
-type Dir = (typeof DIRECTIONS)[number];
-const DELTA: Readonly<Record<Dir, [number, number]>> = { UP: [0, -1], DOWN: [0, 1], LEFT: [-1, 0], RIGHT: [1, 0] };
 
 interface CalibCase {
   readonly tick: number;
@@ -140,44 +136,10 @@ function clearCommand(tenant: string): void {
   writeFileSync(path, JSON.stringify({ version: existing.version ?? 1, mode: existing.mode ?? "override", commands: [], goals: [], updatedAt: now }, null, 2), "utf-8");
 }
 
-function chebyshev(a: [number, number], b: [number, number]): number {
-  return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
-}
-
-/** 信标安全圈规避：太近 → 返回远离信标的主方向；安全则 null。 */
-function beaconAvoid(core: [number, number], safe: number): Dir | null {
-  const dx = core[0] - BEACON[0];
-  const dy = core[1] - BEACON[1];
-  if (Math.abs(dx) > safe && Math.abs(dy) > safe) return null;
-  if (Math.abs(dx) >= Math.abs(dy)) return dx < 0 ? "RIGHT" : "LEFT";
-  return dy < 0 ? "DOWN" : "UP";
-}
-
-/** 候选方向排序：先避信标（若在圈内），再按 Chebyshev 距离减少量从大到小。 */
-function scoreDirections(core: [number, number], target: [number, number], obstacles: ReadonlySet<string>, beaconSafe: number): Dir[] {
-  const base = chebyshev(core, target);
-  const avoid = beaconAvoid(core, beaconSafe);
-  return DIRECTIONS
-    .filter((d) => {
-      const next: [number, number] = [core[0] + DELTA[d][0], core[1] + DELTA[d][1]];
-      return !obstacles.has(next.join(","));
-    })
-    .map((d) => {
-      const next: [number, number] = [core[0] + DELTA[d][0], core[1] + DELTA[d][1]];
-      const gain = base - chebyshev(next, target);
-      const antiBeacon = avoid === d ? 1_000_000 : 0;
-      return { d, gain: gain + antiBeacon };
-    })
-    .sort((a, b) => b.gain - a.gain)
-    .map((x) => x.d);
-}
-
 const args = parseArgs(process.argv.slice(2));
 const log = (msg: string): void => console.log(`${new Date().toISOString()} [migrate-${args.tenant}] ${msg}`);
 
-let lastPos: [number, number] | null = null;
-let lastDir: Dir | null = null;
-let stuckStreak = 0;
+const nav = createNavState();
 const recentlyFailed = new Set<string>(); // "dir:x,y" 短时回避
 
 log(`start tenant=${args.tenant} target=(${args.targetX},${args.targetY}) interval=${args.intervalMs}ms maxSteps=${args.maxSteps} beaconSafe=${args.beaconSafe}`);
@@ -189,8 +151,8 @@ for (let step = 0; step < args.maxSteps; step += 1) {
     await new Promise((r) => setTimeout(r, args.intervalMs));
     continue;
   }
-  const core: [number, number] = live.core.position;
-  const target: [number, number] = [args.targetX, args.targetY];
+  const core: Pos = live.core.position;
+  const target: Pos = [args.targetX, args.targetY];
   log(`step=${step} tick=${live.tick} core=(${core.join(",")}) state=${live.core.state} dist=(${args.targetX - core[0]},${args.targetY - core[1]})`);
 
   if (chebyshev(core, target) <= 1) {
@@ -205,31 +167,25 @@ for (let step = 0; step < args.maxSteps; step += 1) {
   }
 
   // 停滞检测：位置与上次相同且上次方向已尝试过 → 强制换方向
-  if (lastPos !== null && lastPos[0] === core[0] && lastPos[1] === core[1]) {
-    stuckStreak += 1;
-    if (stuckStreak >= 2 && lastDir !== null) {
-      recentlyFailed.add(`${lastDir}:${core.join(",")}`);
-      log(`停滞 ${stuckStreak} 轮，记录 ${lastDir}@(${core.join(",")}) 失败，换方向`);
-    }
-  } else {
-    stuckStreak = 0;
+  if (notePosition(nav, core, 2) && nav.lastDir !== null) {
+    recentlyFailed.add(`${nav.lastDir}:${core.join(",")}`);
+    log(`停滞 ${nav.stuckStreak} 轮，记录 ${nav.lastDir}@(${core.join(",")}) 失败，换方向`);
+    nav.detourDir = null; // 换向时重置绕障记忆
+  } else if (nav.stuckStreak === 0) {
     recentlyFailed.clear();
   }
 
-  const candidates = scoreDirections(core, target, live.obstacles, args.beaconSafe)
-    .filter((d) => !recentlyFailed.has(`${d}:${core.join(",")}`));
+  const plan = planDirection(core, target, live.obstacles, args.beaconSafe, nav, recentlyFailed);
 
-  if (candidates.length === 0) {
+  if (plan.dir === null) {
     log("无可行方向（障碍全堵），等待地形/单位变化");
     await new Promise((r) => setTimeout(r, args.intervalMs));
     continue;
   }
 
-  const dir = candidates[0];
-  writeMoveCommand(args.tenant, live.core.id, dir);
-  log(`发出 START_MOVE ${dir}（候选: ${candidates.join(" > ")}）`);
-  lastDir = dir;
-  lastPos = [core[0], core[1]];
+  writeMoveCommand(args.tenant, live.core.id, plan.dir);
+  log(`发出 START_MOVE ${plan.dir}（候选: ${plan.candidates.join(" > ")}${plan.detour ? " [绕障]" : ""}）`);
+  nav.lastDir = plan.dir;
   await new Promise((r) => setTimeout(r, args.intervalMs));
 }
 log(`driver 结束（maxSteps=${args.maxSteps}）`);
