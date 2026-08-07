@@ -1207,9 +1207,24 @@ export class SafetyPlanner {
       // 淘汰 → MOVE_FAILED 循环）。
       return;
     }
-    const moveTarget = enemies.length > 0
-      ? guardAxesPost ?? nearestEnemy(enemies, unit.position)?.position ?? null
-      : this.effectivePolicy?.focusRegion ?? home;
+    // 攻坚动量（2026-08-07 t2 jerkman 实证）：aggressive Ranger 无可见敌人时，
+    // 若已知敌核心在 64 格有界范围内 → 前压到射程（配合 rangerMemoryShot 对
+    // 记忆格射击）——避免"打完遭遇战敌消失 → Ranger 全体回家 → 攻坚脱节"（敌
+    // 核心得到喘息重建、我方前两次 Vanguard 战果被浪费）。有界距离防远征
+    // （与 Vanguard boundedRaid 同口径）。
+    let moveTarget: Position | null;
+    if (enemies.length > 0) {
+      moveTarget = guardAxesPost ?? nearestEnemy(enemies, unit.position)?.position ?? null;
+    } else if (this.effectiveAggression === "aggressive" && state.core !== null) {
+      const enemyCoreMemory = this.world.coreHuntTargets().find(
+        (target) =>
+          target.source === "CORE" &&
+          chebyshev(state.core!.position, target.position) <= BOUNDED_RAID_DISTANCE,
+      );
+      moveTarget = enemyCoreMemory?.position ?? this.effectivePolicy?.focusRegion ?? home;
+    } else {
+      moveTarget = this.effectivePolicy?.focusRegion ?? home;
+    }
     if (moveTarget !== null && !samePosition(unit.position, moveTarget)) {
       // 激进：保持 1-3 射程站定，不冲脸（近身会让 Ranger 失去射程优势且易被
       // SWEEP）。已在射程内但没有合法射击目标（被障碍挡住）时原地待机。
