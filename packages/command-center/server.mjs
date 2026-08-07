@@ -203,6 +203,49 @@ function loadStream(tenant, n) {
   return { tenant, generatedAt: new Date().toISOString(), rows };
 }
 
+/** 回放缓存：同一 run 全部 case 的紧凑单位/核心轨迹（每 tick 位置），供前端回放动画。 */
+const replayCache = new Map(); // tenant -> { runId, replay }
+
+function loadReplay(tenant) {
+  const runDir = latestRunDir(tenant);
+  if (!runDir) return null;
+  const cached = replayCache.get(tenant);
+  if (cached && cached.runId === runDir) return cached.replay;
+  const caseFiles = listCases(tenant, runDir);
+  if (!caseFiles.length) return null;
+  const units = new Map(), cores = new Map();
+  const ticks = [];
+  for (const file of caseFiles) {
+    const tick = parseTick(file);
+    ticks.push(tick);
+    const path = join(calibrationDir(tenant), runDir, "cases", file);
+    let raw;
+    try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+    const state = raw?.before?.state;
+    if (!state?.objects) continue;
+    for (const obj of state.objects) {
+      const pos = obj.position;
+      if (obj.kind === "UNIT" && obj.id && pos) {
+        let u = units.get(obj.id);
+        if (!u) { u = { type: obj.unit_type ?? "WORKER", controlled: obj.controlled, trail: [] }; units.set(obj.id, u); }
+        u.trail.push({ t: tick, x: pos[0], y: pos[1], hp: obj.hp ?? 0, cargo: obj.cargo ?? 0 });
+      } else if (obj.kind === "CORE" && obj.id && pos) {
+        let c = cores.get(obj.id);
+        if (!c) { c = { controlled: obj.controlled, owner: obj.owner_username ?? null, trail: [] }; cores.set(obj.id, c); }
+        c.trail.push({ t: tick, x: pos[0], y: pos[1], hp: obj.hp ?? 0, shield: obj.shield ?? 0 });
+      }
+    }
+  }
+  const replay = {
+    tenant, runId: runDir,
+    ticks,
+    units: [...units.entries()].map(([id, u]) => ({ id, ...u })),
+    cores: [...cores.entries()].map(([id, c]) => ({ id, ...c })),
+  };
+  replayCache.set(tenant, { runId: runDir, replay });
+  return replay;
+}
+
 /** 测绘累积缓存：每个租户同一 run 的全部 calibration case 合并出的已知地形（探索过的范围）。 */
 const surveyCache = new Map(); // tenant -> { runId, survey }
 
@@ -423,6 +466,12 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/world") {
       const tenant = url.searchParams.get("tenant") ?? "t1";
       return sendJson(res, loadWorld(tenant));
+    }
+    if (pathname === "/api/replay") {
+      const tenant = url.searchParams.get("tenant") ?? "t1";
+      const replay = loadReplay(tenant);
+      if (!replay) return sendJson(res, { tenant, generatedAt: new Date().toISOString(), replay: null });
+      return sendJson(res, { generatedAt: new Date().toISOString(), replay });
     }
     if (pathname === "/api/exploration") {
       const tenant = url.searchParams.get("tenant") ?? "t1";
