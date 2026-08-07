@@ -83,6 +83,7 @@ const els = {
   streamTabs: $('#streamTabs'), streamBody: $('#streamBody'), streamJump: $('#streamJump'),
   tooltip: $('#mapTooltip'), hint: $('#mapHint'),
   redeemBtn: $('#redeemBtn'), redeemDialog: $('#redeemDialog'), redeemClose: $('#redeemClose'),
+  intelBtn: $('#intelBtn'), intelDialog: $('#intelDialog'), intelClose: $('#intelClose'), intelTabs: $('#intelTabs'), intelBody: $('#intelBody'), intelMeta: $('#intelMeta'),
   redeemResult: $('#redeemResult'), redeemHistory: $('#redeemHistory'), streamGrip: $('#streamGrip'),
   shopCookie: $('#shopCookie'), cookieSave: $('#cookieSave'), cookieTest: $('#cookieTest'),
   shopAccount: $('#shopAccount'), shopList: $('#shopList'),
@@ -1401,6 +1402,58 @@ function markRefresh(ok) {
   els.badge.textContent = ok ? '实时' : '离线';
 }
 
+/* ---------- 威胁情报（官方排行榜快照：谁在打我们） ---------- */
+const TIER_META = {
+  ELITE_AGGRESSOR: { cls: 'elite', label: '精英攻坚' },
+  AGGRESSOR: { cls: 'agg', label: '攻坚' },
+  STANDARD: { cls: 'std', label: '常规' },
+};
+const intel = { data: null, tab: 'threat' };
+async function openIntel() {
+  els.intelDialog.showModal();
+  els.intelBody.innerHTML = '<div class="stream-empty">加载威胁情报…</div>';
+  els.intelMeta.textContent = '';
+  try {
+    const data = await shopRequest('/api/leaderboard');
+    intel.data = data;
+    renderIntel();
+  } catch (err) {
+    els.intelBody.innerHTML = `<div class="stream-empty">威胁情报加载失败：${escapeHtml(err.message)}</div>`;
+  }
+}
+function renderIntel() {
+  const d = intel.data;
+  if (!d) return;
+  els.intelTabs.innerHTML = [
+    ['threat', `威胁排行 ${d.profiles?.length ?? 0}`],
+    ['beacon', `信标持有 ${d.beacon_ticks_held?.length ?? 0}`],
+    ['core', `核心摧毁 ${d.core_destruction_participations?.length ?? 0}`],
+  ].map(([id, label]) => `<button data-intel-tab="${id}" class="${intel.tab === id ? 'active' : ''}" type="button">${label}</button>`).join('');
+  els.intelTabs.querySelectorAll('button').forEach((b) =>
+    b.addEventListener('click', () => { intel.tab = b.dataset.intelTab; renderIntel(); }));
+  const row = (rank, name, score, tagHtml = '') => `<div class="intel-row${rank <= 3 ? ' ir-top' : ''}"><span class="ir-rank">#${rank}</span><span class="ir-name">${escapeHtml(name)}</span>${tagHtml}<span class="ir-score">${fmt(score)}</span></div>`;
+  if (intel.tab === 'beacon') {
+    els.intelBody.innerHTML = (d.beacon_ticks_held ?? []).map((x) => row(x.rank, x.username, x.score)).join('')
+      || '<div class="stream-empty">暂无信标持有数据</div>';
+    els.intelMeta.textContent = `信标累计持有 tick · 快照 ${d.snapshot ?? ''} · ${new Date(d.generatedAt).toLocaleString('zh-CN', { hour12: false })}`;
+    return;
+  }
+  if (intel.tab === 'core') {
+    els.intelBody.innerHTML = (d.core_destruction_participations ?? []).map((x) => row(x.rank, x.username, x.score)).join('')
+      || '<div class="stream-empty">暂无核心摧毁数据</div>';
+    els.intelMeta.textContent = `核心摧毁参与次数 · 快照 ${d.snapshot ?? ''} · ${new Date(d.generatedAt).toLocaleString('zh-CN', { hour12: false })}`;
+    return;
+  }
+  // threat: profiles 按 damage 排序的威胁画像
+  const profiles = (d.profiles ?? []).slice(0, 30);
+  els.intelBody.innerHTML = profiles.map((x) => {
+    const t = TIER_META[x.tier] ?? { cls: 'std', label: x.tier ?? '未知' };
+    const tag = `<span class="ir-tag ${t.cls}">${t.label}</span>`;
+    return row(x.rank, x.username, x.damage, tag);
+  }).join('') || '<div class="stream-empty">暂无威胁画像数据</div>';
+  els.intelMeta.textContent = `按造成伤害排名的玩家威胁画像（红色=精英攻坚，琥珀=攻坚）· 快照 ${d.snapshot ?? ''} · ${new Date(d.generatedAt).toLocaleString('zh-CN', { hour12: false })}`;
+}
+
 /* ---------- 官方商店 / 兑换码 ---------- */
 const SHOP_COOKIE_KEY = 'arena-cc.shop-cookie';
 function shopCookieValue() { return (localStorage.getItem(SHOP_COOKIE_KEY) ?? '').trim(); }
@@ -1699,6 +1752,9 @@ function bindEvents() {
   // 官方商店 / 兑换码
   els.redeemBtn.addEventListener('click', openRedeem);
   els.redeemClose.addEventListener('click', () => els.redeemDialog.close());
+  els.intelBtn.addEventListener('click', openIntel);
+  els.intelClose.addEventListener('click', () => els.intelDialog.close());
+  els.intelDialog.addEventListener('click', (e) => { if (e.target === els.intelDialog) els.intelDialog.close(); });
   els.cookieSave.addEventListener('click', saveShopCookie);
   els.cookieTest.addEventListener('click', async () => {
     const v = els.shopCookie.value.trim();
@@ -1789,7 +1845,10 @@ async function boot() {
   window.addEventListener('keydown', (e) => {
     const tag = (e.target && e.target.tagName) || '';
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    if (els.redeemDialog.open) { if (e.key === 'Escape') els.redeemDialog.close(); return; }
+    if (els.redeemDialog.open || els.intelDialog.open) {
+      if (e.key === 'Escape') { els.redeemDialog.close(); els.intelDialog.close(); }
+      return;
+    }
     const panStep = () => Math.max(1, W() / 2 / state.view.scale * 0.25);
     const pan = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
     if (pan) {

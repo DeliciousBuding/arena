@@ -578,6 +578,34 @@ body::after {
   .top-status { gap: 8px; }
 }
 
+/* ---------- 威胁情报对话框 ---------- */
+.intel-dialog { width: min(680px, 94vw); }
+.intel-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.intel-tabs button {
+  appearance: none; background: transparent; border: 1px solid var(--border-strong);
+  color: var(--text-dim); font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em;
+  padding: 6px 12px; border-radius: 999px; cursor: pointer; transition: all .2s var(--ease);
+}
+.intel-tabs button:hover { color: var(--text); border-color: rgba(255,255,255,.3); }
+.intel-tabs button.active { color: #fff; background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.35); }
+.intel-body { max-height: 52vh; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
+.intel-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 7px 10px; border-radius: var(--radius-sm);
+  border-bottom: 1px dashed var(--border-faint);
+  font-family: var(--font-mono); font-size: 12px; transition: background .2s ease;
+}
+.intel-row:hover { background: rgba(255,255,255,.04); }
+.intel-row .ir-rank { width: 30px; flex: none; color: var(--text-faint); font-size: 11px; }
+.intel-row .ir-name { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.intel-row .ir-score { color: var(--text-dim); flex: none; }
+.intel-row .ir-tag { flex: none; font-size: 10px; letter-spacing: .06em; padding: 2px 8px; border-radius: 999px; border: 1px solid; font-weight: 700; }
+.ir-tag.elite { color: var(--danger); border-color: rgba(221,98,109,.5); background: rgba(221,98,109,.1); }
+.ir-tag.agg { color: var(--warn); border-color: rgba(211,173,85,.45); background: rgba(211,173,85,.08); }
+.ir-tag.std { color: var(--text-dim); border-color: var(--border-strong); background: rgba(255,255,255,.04); }
+.intel-row.ir-top { background: linear-gradient(90deg, rgba(255,255,255,.05), transparent); }
+.intel-row.ir-top .ir-rank { color: var(--warn); font-weight: 700; }
+
 /* ---------- 无障碍：减少动态 ---------- */
 /* [hidden] 语义全局兜底：display:flex 等声明不得覆盖 hidden 属性（曾致回放条/最新按钮实时模式常显） */
 [hidden] { display: none !important; }
