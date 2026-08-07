@@ -135,6 +135,18 @@ export interface SafetyPlannerConfig {
    */
   readonly remoteReinforce?: boolean;
   /**
+   * 信标夺取（2026-08-07，Champion Beacon 机制对齐）：官方规则信标
+   * 坐标全员公开、持有者核心盾上限 5→10、worker 采集 1→2（双倍经济）。
+   * 开启后：信标 GROUND 且距我方 Core ≤ beaconGrabMaxDist 时，指定最近
+   * Vanguard（无则 Ranger）前往拾取并带回守家（信标跟随移动）；拾取后
+   * 载者回 Core 守位持标（盾+采集双 buff 属于本租户）。近距离才抢——
+   * 默认 80 格上限防远征送死（信标坐标公开，远距可被敌方埋伏）。默认
+   * false = 历史行为（只有恰好路过才自动拾取，零回归）。
+   */
+  readonly beaconGrab?: boolean;
+  /** 信标夺取最大距离（Chebyshev，以我方 Core 为圆心）：超出视为远征，不抢。 */
+  readonly beaconGrabMaxDist?: number;
+  /**
    * 防御轴分桶守卫轮转（v0.3，实验，B4 竞品 defense distribution 对照）：
    * 可见战斗敌按相对 Core 的主接近方向分 4 轴桶（N/E/S/W），威胁轴按
    * 最近敌距离升序排序；第 i 个防守者取排序后第 (i % 轴数) 轴的外层守位
