@@ -2,8 +2,9 @@ import { useShell, RIGHT_TABS } from "../../lib/shell";
 import { StreamPane } from "../StreamPane";
 import { IntelPanel } from "./IntelPanel";
 import { RedeemPanel } from "./RedeemPanel";
+import { SurveyPanel } from "./SurveyPanel";
 
-/** 右栏：VSCode 风格 tab 容器（决策流 / 威胁情报 / 兑换码）。
+/** 右栏：VSCode 风格 tab 容器（决策流 / 威胁情报 / 测绘 / 兑换码）。
  *  激活面板随 tab 切换；切回时重挂载 → 数据自动刷新。 */
 export function RightPanel() {
   const { rightTab, setRightTab } = useShell();
@@ -28,6 +29,7 @@ export function RightPanel() {
       <div className="rp-body">
         {rightTab === "logs" ? <StreamPane embedded />
           : rightTab === "intel" ? <IntelPanel />
+          : rightTab === "survey" ? <SurveyPanel />
           : <RedeemPanel />}
       </div>
     </div>
