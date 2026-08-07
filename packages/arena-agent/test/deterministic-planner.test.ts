@@ -125,6 +125,52 @@ test("分层扩圈：半径按 8→16→24→32→40 循环，Worker 完成一�
   assert.equal(memory.patrolDirection, 2, "方位 +3 步进：(7+3)%8=2");
 });
 
+test("绕路越界（chebyshev>=环半径但不在环点）→ 连续外扩而非折返（2026-08-07 t4 修复）", () => {
+  const planner = new SafetyPlanner();
+  // beacon [100,100]（东南基）+ 初始方向 7 → 方位 0（正东），首圈环点 [8,0]。
+  // w1 在 [12,0]：chebyshev 12 >= 环半径 8（绕路越过精确环点，未停在 [8,0]）
+  // → 旧逻辑"越界→回家"（t4 生产实证：30 格折返、够不到 36 格资源带）；
+  // 新逻辑"到达环带即外扩"→ ring 0→1，目标 [16,0]，继续向外。
+  const state = makeState(100, [core(0, 0), unit("w1", 12, 0)]);
+  const plan = planner.decide({ state });
+  const memory = planner.world.unitMemory("w1");
+  assert.equal(memory.patrolRing, 1, "越过环半径即外扩下一环，不折返");
+  assert.equal(memory.patrolReturning, false, "外扩中不是返回态");
+  assert.equal(plan.unitActions["w1"]?.type, "MOVE");
+  assert.notEqual(
+    plan.unitActions["w1"]?.type === "MOVE" ? plan.unitActions["w1"].direction : null,
+    "LEFT",
+    "不朝 Core 回退",
+  );
+});
+
+test("最外环（40）到达后回家换方位：返回态不重新外扩", () => {
+  const planner = new SafetyPlanner();
+  // 连续外扩：8→16→24→32（每次把 w1 放到当前环半径位置，推进到最外环 ring 4）
+  let prev = makeState(100, [core(0, 0), unit("w1", 8, 0)]);
+  planner.decide({ state: prev });
+  for (const radius of [16, 24, 32]) {
+    const at = makeState(prev.tick + 1, [core(0, 0), unit("w1", radius, 0)]);
+    planner.decide({ state: at });
+    prev = at;
+  }
+  let mem = planner.world.unitMemory("w1");
+  assert.equal(mem.patrolRing, 4, "32 到达 → ring 4（最外环，半径 40）");
+  assert.equal(mem.patrolReturning, false, "尚未到达最外环半径，仍是外扩态");
+  // 最外环半径（40）到达 → 回家换方位
+  const atMax = makeState(prev.tick + 1, [core(0, 0), unit("w1", 40, 0)]);
+  planner.decide({ state: atMax });
+  mem = planner.world.unitMemory("w1");
+  assert.equal(mem.patrolRing, 4);
+  assert.equal(mem.patrolReturning, true, "最外环到达 → 回家换方位");
+  // 返回途中 chebyshev 仍 >= 环半径 → 保持返回（不重新外扩）
+  const returning = makeState(prev.tick + 2, [core(0, 0), unit("w1", 41, 0)]);
+  const rplan = planner.decide({ state: returning });
+  mem = planner.world.unitMemory("w1");
+  assert.equal(mem.patrolReturning, true, "返回途中越界不重新外扩");
+  assert.equal(rplan.unitActions["w1"]?.type, "MOVE");
+});
+
 test("巡逻目标是障碍：到达相邻格即外扩下一环，不在障碍旁振荡", () => {
   const planner = new SafetyPlanner();
   // 首圈环点 [8,0] 被障碍占据，w1 在 [7,0]（障碍邻格）
