@@ -658,6 +658,15 @@ body::after {
 .st-dot.has-new { background: var(--warn); box-shadow: 0 0 9px rgba(211,173,85,.85); }
 .st-title { font-size: 11px; font-weight: var(--weight-semibold); letter-spacing: .14em; color: var(--text-dim); text-transform: uppercase; font-family: var(--font-mono); }
 .st-count { margin-left: auto; font-size: 10px; color: var(--text-faint); }
+.stream-filter {
+  flex: none; appearance: none; cursor: pointer;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em;
+  color: var(--text-faint); background: transparent;
+  border: 1px solid var(--border-faint); border-radius: 999px;
+  padding: 3px 10px; transition: all .22s var(--ease);
+}
+.stream-filter:hover { color: var(--text-dim); border-color: var(--border-strong); }
+.stream-filter.on { color: #fff; border-color: rgba(255,255,255,.35); background: rgba(255,255,255,.08); }
 /* 折叠态实时决策胶囊：收起日志仍能一眼看到最新一条决策（不挡地图） */
 .st-live {
   display: inline-flex; align-items: baseline; gap: 7px;
