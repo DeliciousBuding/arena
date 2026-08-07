@@ -75,10 +75,11 @@ export function observationsToSightings(
 /** 构建不可变 AllianceSnapshot（spec §5.4）。 */
 export function buildAllianceSnapshot(input: BuildSnapshotInput): AllianceSnapshot {
   const defaultEvidence = input.defaultEvidence ?? "CALIBRATION";
+  const generatedAtMs = input.generatedAtMs ?? Date.now();
   const sightings = observationsToSightings(input.observations, input.nowTick, defaultEvidence);
   const rawCombatCount = input.observations.filter((o) => !o.controlled && o.kind === "UNIT" && (o.unitType === "VANGUARD" || o.unitType === "RANGER")).length;
   const counts: AllianceForceCounts = computeForceCounts(sightings, input.nowTick, { historicalSightingCount: rawCombatCount });
-  let threat = projectThreatField(sightings, input.nowTick);
+  let threat = projectThreatField(sightings, input.nowTick, { generatedAtMs });
   if (input.leaderboardAggression !== undefined && input.leaderboardAggression.size > 0) {
     threat = adjustWithLeaderboardPrior(threat, sightings, input.leaderboardAggression);
   }
@@ -89,7 +90,7 @@ export function buildAllianceSnapshot(input: BuildSnapshotInput): AllianceSnapsh
     tickWindow: sightings.length > 0
       ? [Math.min(...sightings.map((s) => s.firstSeenTick)), Math.max(...sightings.map((s) => s.lastSeenTick))]
       : [input.nowTick, input.nowTick],
-    generatedAtMs: input.generatedAtMs ?? Date.now(),
+    generatedAtMs,
     members,
     sightings,
     allyEntityIds: new Set(input.roster.allyEntityIds),
@@ -98,3 +99,4 @@ export function buildAllianceSnapshot(input: BuildSnapshotInput): AllianceSnapsh
     treasuryTenant: "",
   };
 }
+

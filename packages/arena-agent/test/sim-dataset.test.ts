@@ -8,12 +8,12 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { resolveArenaDataRoot } from "../src/app/data-root.ts";
 import { sha256Canonical } from "../src/domain/integrity.ts";
 import { buildDataset } from "../src/sim/dataset/builder.ts";
 import { validateMlSample } from "../src/sim/dataset/validate-sample.ts";
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const BUNDLED_SHARED_SCHEMA_DIR = join(PKG_ROOT, "test", "fixtures", "shared-data", "schema");
 const RULES = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.14.json");
 const RULES_V011 = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
@@ -186,7 +186,7 @@ function createSchemaValidator() {
     validate: (value: string) =>
       !/[\u0000-\u0020\u007f]/u.test(value) && !/%(?![0-9a-fA-F]{2})/u.test(value),
   });
-  const schemaDir = join(resolveArenaDataRoot(resolve(PKG_ROOT, "..", "..")), "schema");
+  const schemaDir = BUNDLED_SHARED_SCHEMA_DIR;
   const ids = [
     "sim-calibration-case-v1",
     "ml-sample-v1",
