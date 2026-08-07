@@ -62,8 +62,21 @@ export function readJsonlTail(filePath: string, maxLines: number): Record<string
 
 /** 最近一个有 calibration cases 的 run 目录名：按 run 内最高 case tick 选
  *  （UUID 字典序 ≠ 时间序——旧 bug：新 run 80d2d3d6 排在旧 run fffa09fa 前，
- *  面板恒显示旧 run 的 stale tick，即"界面卡住显示旧数据"根因）。 */
+ *  面板恒显示旧 run 的 stale tick，即"界面卡住显示旧数据"根因）。
+ *  1.5s TTL 记忆化（2026-08-08 结构性优化）：run 身份只在 agent 重启/新 run 时变，
+ *  每次调用全量扫描所有 run 的 case 目录名（map cache 签名 ~100ms/次 × 多端点）
+ *  是纯浪费；1.5s 内新 run 的探测延迟对 3s+ poll 无感，语义不变。 */
+const latestRunCache = new Map<string, { at: number; dir: string | null }>();
+const LATEST_RUN_TTL_MS = 1500;
 export function latestRunDir(tenant: string): string | null {
+  const now = Date.now();
+  const hit = latestRunCache.get(tenant);
+  if (hit && now - hit.at < LATEST_RUN_TTL_MS) return hit.dir;
+  const dir = latestRunDirInner(tenant);
+  latestRunCache.set(tenant, { at: now, dir });
+  return dir;
+}
+function latestRunDirInner(tenant: string): string | null {
   const base = calibrationDir(tenant);
   if (!existsSync(base)) return null;
   const runs = readdirSync(base, { withFileTypes: true })

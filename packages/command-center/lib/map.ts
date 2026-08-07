@@ -39,7 +39,7 @@ export interface MergedMap {
 interface TerrainEntry { x: number; y: number; type: "obstacle" | "resource"; tick: number }
 interface DynamicEntry { x: number; y: number; type: "unit" | "core"; tick: number; hp?: number; shield?: number; controlled?: boolean; owner?: string | null; id?: string | null; unitType?: string; cargo?: number }
 
-export function loadMergedMap(): MergedMap {
+function loadMergedMapInner(): MergedMap {
   const cells = new Map<string, MapCell>();
   const perTenant: MergedMap["tenants"] = [];
   for (const tenant of TENANTS) {
@@ -156,4 +156,25 @@ export function loadMergedMap(): MergedMap {
   }
   const coreTrails = [...coreTrailByUser.values()];
   return { generatedAt: new Date().toISOString(), tenants: perTenant, bounds, cellCount: list.length, cells: list, beacons, coreTrails };
+}
+
+/** 合并地图缓存（2026-08-08 结构性优化）：/api/map 每 3s poll 一次，原每次重扫
+ *  4 租户 × 最近 24 个 case（~96 次文件读+全量 JSON 解析）。case 文件原子写入，
+ *  以 (runId, caseCount, 最新 case 名) 为签名——tick 未前进时直接命中缓存，
+ *  15s tick vs 3s poll 下命中率 ~80%，/api/map 从毫秒级 I/O 降到近零。 */
+const mergedCache: { sig: string; payload: MergedMap | null } = { sig: "", payload: null };
+export function loadMergedMap(): MergedMap {
+  const parts: string[] = [];
+  for (const tenant of TENANTS) {
+    const runDir = latestRunDir(tenant);
+    if (runDir === null) { parts.push(`${tenant}:none`); continue; }
+    const files = listCases(tenant, runDir);
+    parts.push(`${tenant}:${runDir}:${files.length}:${files[files.length - 1] ?? ""}`);
+  }
+  const sig = parts.join("|");
+  if (mergedCache.sig === sig && mergedCache.payload) return mergedCache.payload;
+  const payload = loadMergedMapInner();
+  mergedCache.sig = sig;
+  mergedCache.payload = payload;
+  return payload;
 }
