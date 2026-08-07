@@ -596,6 +596,20 @@ export class World {
     return n;
   }
 
+
+  /** 启动播种（2026-08-08，测绘库跨 run 障碍）：把测绘库累积的静态障碍注入
+   *  obstacleMemory——障碍是静态地形，重启后导航/路径规划直接准确，无需
+   *  重新探索（解决"重启→障碍记忆清零→寻路盲撞"）。返回实际注入格数。 */
+  seedObstacleMemory(cells: readonly Position[]): number {
+    let n = 0;
+    for (const cell of cells) {
+      const key = cellKey(cell);
+      if (this.obstacleMemory.has(key)) continue;
+      this.obstacleMemory.add(key);
+      n += 1;
+    }
+    return n;
+  }
   resourceHints(options: { maxAge?: number; failedCooldown?: number } = {}): readonly Position[] {
     // maxAge 8→32、failedCooldown 4→32（2026-08-06 生产实证配对）：
     // - 记忆窗口 32 tick：巡逻环升级需要数十 tick（8 worker 分头巡逻一圈），

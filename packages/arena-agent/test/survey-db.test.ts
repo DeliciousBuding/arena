@@ -237,3 +237,10 @@ test("survey-sync: parseCaseLifecycle 提取出生/死亡/采集/消费", () => 
   assert.equal(lc.spends.find((s) => s.kind === "spawn")!.amount, 5);
 });
 
+test("World: seedObstacleMemory 注入障碍记忆（重启后导航直接准确）", () => {
+  const world = new World();
+  const n = world.seedObstacleMemory([[1, 1], [2, 2], [1, 1]]);
+  assert.equal(n, 2, "重复注入去重：只计 1 次");
+  const snap = world.snapshot();
+  assert.ok(snap.obstacles.includes("1,1") && snap.obstacles.includes("2,2"), "障碍已入记忆");
+});
