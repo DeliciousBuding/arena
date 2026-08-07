@@ -43,7 +43,8 @@ app.get("/api/tenants", async (c) => {
     const s = sup?.tenants?.find((x) => x.tenantId === t) ?? null;
     return { tenant: t, live: s ? s.ready === true && s.alive === true : false, supervisor: s };
   });
-  return c.json({ generatedAt: new Date().toISOString(), tenants });
+  // 租户区分色（2026-08-08）：前端左栏四租户卡片/地图/树目录共用，无需硬编码。
+  return c.json({ generatedAt: new Date().toISOString(), tenants, colors: TENANT_COLORS });
 });
 app.get("/api/overview", async (c) => {
   const sup = await supervisorState();
@@ -84,7 +85,7 @@ app.get("/api/survey", (c) => {
   const tenant = c.req.query("tenant") ?? "all";
   const states = (c.req.query("states") ?? "visible,stale").split(",").map((s) => s.trim()).filter(Boolean);
   const tenants = tenant === "all" ? [...TENANTS] : [tenant];
-  const out: Record<string, unknown> = { generatedAt: new Date().toISOString(), tenants: {} };
+  const out: Record<string, unknown> = { generatedAt: new Date().toISOString(), tenants: {}, colors: TENANT_COLORS };
   for (const t of tenants) {
     const cached = loadTenantSurveyCached(t);
     const s = cached.survey;
