@@ -51,8 +51,13 @@ test("variant registry: strike-core-v1 resolves safety + deterministic parts", (
     vanguardRatio: 0.5,
     accumulateThreshold: 30,
   });
-  // 未知 id fail-fast（deterministic 侧同样）
-  assert.throws(() => resolveDeterministicVariantConfig("no-such-variant"), /unknown deterministic variant/);
+  // 无 deterministic 部分的变体 = 零覆盖（id 合法性由安全侧 fail-fast 负责）
+  assert.deepEqual(resolveDeterministicVariantConfig("no-such-variant"), {});
+  assert.deepEqual(resolveDeterministicVariantConfig("move-failed-avoidance-v1"), {});
+  assert.deepEqual(resolveDeterministicVariantsConfig(["move-failed-avoidance-v1", "strike-core-v1"]), {
+    vanguardRatio: 0.5,
+    accumulateThreshold: 30,
+  });
   assert.deepEqual(resolveDeterministicVariantsConfig(undefined), {});
   assert.deepEqual(resolveDeterministicVariantsConfig([]), {});
 });
