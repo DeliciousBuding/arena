@@ -1070,13 +1070,14 @@ async function tactLoadExploration(tenant) {
 }
 
 /* ---------- 决策流 ---------- */
-/** 决策流智能吸底（2026-08-07）：停在底部时新行自动跟随滚动；上翻历史时不抢滚动，
- *  改显"↓ 最新"悬浮按钮，点击回到底部（配合折叠琥珀提醒，不打扰阅读）。 */
+/** 决策流智能跟随（2026-08-07）：流按 tick 倒序 = 最新在最上。
+ *  停在顶部（看最新）时新行到达保持顶部；下翻历史时不抢滚动，
+ *  改显"↑ 最新"悬浮按钮，点击回到顶部（配合折叠琥珀提醒，不打扰阅读）。 */
 function streamScrollFollow(hasNew) {
   const body = els.streamBody;
-  const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 28;
-  if (nearBottom) {
-    body.scrollTop = body.scrollHeight;
+  const nearTop = body.scrollTop < 28;
+  if (nearTop) {
+    body.scrollTop = 0;
     if (els.streamJump) els.streamJump.hidden = true;
   } else if (hasNew && els.streamJump) {
     els.streamJump.hidden = false;
@@ -1097,7 +1098,7 @@ function renderStream() {
   els.streamTabs.innerHTML = tabs.map((t) =>
     `<button data-tab="${t.id}" class="${state.tab === t.id ? 'active' : ''}" role="tab">${t.label}</button>`).join('');
   els.streamTabs.querySelectorAll('button').forEach((b) =>
-    b.addEventListener('click', () => { state.tab = b.dataset.tab; els.streamBody.scrollTop = els.streamBody.scrollHeight; pollStreams(); }));
+    b.addEventListener('click', () => { state.tab = b.dataset.tab; els.streamBody.scrollTop = 0; pollStreams(); }));
 
   if (state.tab === 'events') {
     const all = [];
@@ -1426,12 +1427,11 @@ function bindEvents() {
       if (dot) dot.classList.remove('has-new');
     }
   });
-  // "最新"悬浮按钮：点击回到底部；手动滚到底部自动隐藏
+  // "最新"悬浮按钮：点击回到顶部（最新）；手动回到顶部自动隐藏
   if (els.streamJump) {
-    els.streamJump.addEventListener('click', () => { els.streamBody.scrollTop = els.streamBody.scrollHeight; els.streamJump.hidden = true; });
+    els.streamJump.addEventListener('click', () => { els.streamBody.scrollTop = 0; els.streamJump.hidden = true; });
     els.streamBody.addEventListener('scroll', () => {
-      const nearBottom = els.streamBody.scrollHeight - els.streamBody.scrollTop - els.streamBody.clientHeight < 28;
-      if (nearBottom && !els.streamJump.hidden) els.streamJump.hidden = true;
+      if (els.streamBody.scrollTop < 28 && !els.streamJump.hidden) els.streamJump.hidden = true;
     });
   }
   // 官方商店 / 兑换码
