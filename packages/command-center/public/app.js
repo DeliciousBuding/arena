@@ -142,6 +142,21 @@ function syncLayerToggles() {
 
 let ctx = els.canvas.getContext('2d');
 const images = {};
+/* 地图提示自动淡出：交互时重现，闲置 4.5s 后淡出（画布更干净） */
+let hintTimer = null;
+function pokeHint() {
+  if (!els.hint) return;
+  els.hint.classList.remove('map-hint-fade');
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => els.hint.classList.add('map-hint-fade'), 4500);
+}
+/* tick 数字闪亮：tick 前进时短暂白闪（"世界在走"的呼吸感） */
+let lastTickLabelTick = -1;
+function flashTickLabel() {
+  els.tickLabel.classList.remove('tick-label-flash');
+  void els.tickLabel.offsetWidth; // 重启动画
+  els.tickLabel.classList.add('tick-label-flash');
+}
 
 /* ---------- 静态地形缓存（缩放性能核心） ----------
  * 慢层（租户疆域 / 测绘 / 障碍 / 资源）按"缩放桶"离屏预渲染；
@@ -1310,6 +1325,7 @@ function tickClock() {
     const elapsed = Math.max(0, Date.now() - m.lastMtime);
     const frac = Math.min(1, elapsed / m.period);
     els.tickFill.style.transform = `scaleX(${frac.toFixed(3)})`;
+    if (m.lastTick !== lastTickLabelTick) { lastTickLabelTick = m.lastTick; flashTickLabel(); }
     els.tickLabel.textContent = `tick ${fmt(m.lastTick)} · ${Math.round(m.period / 1000)}s`;
     const meter = els.tickLabel.closest('.tick-meter');
     if (meter) meter.classList.toggle('warn', frac > 0.82);
@@ -1520,14 +1536,16 @@ function bindEvents() {
     els.tooltip.hidden = true;
     if (state.hover) { state.hover = null; state.hoverKey = ''; draw(); }
   });
+  els.canvas.addEventListener('pointerdown', () => pokeHint());
   els.canvas.addEventListener('wheel', (e) => {
+    pokeHint();
     e.preventDefault();
     const rect = els.canvas.getBoundingClientRect();
     const d = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY; // lines→px（部分触控板/浏览器）
     const factor = Math.exp(-d * 0.0012);
     zoomTo(e.clientX - rect.left, e.clientY - rect.top, factor);
   }, { passive: false });
-  els.canvas.addEventListener('dblclick', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
+  els.canvas.addEventListener('dblclick', () => { pokeHint(); state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
   $('#zoomIn').addEventListener('click', () => { const r = els.canvas.getBoundingClientRect(); zoomTo(r.width / 2, r.height / 2, 1.5); });
   $('#zoomOut').addEventListener('click', () => { const r = els.canvas.getBoundingClientRect(); zoomTo(r.width / 2, r.height / 2, 1 / 1.5); });
   $('#fitBtn').addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
@@ -1653,6 +1671,7 @@ async function boot() {
   applyPrefs();
   syncLayerToggles();
   bindEvents();
+  pokeHint();
   resizeCanvas();
   tickClock();
   setInterval(tickClock, 1000);
@@ -1702,6 +1721,7 @@ async function boot() {
     const panStep = () => Math.max(1, W() / 2 / state.view.scale * 0.25);
     const pan = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
     if (pan) {
+      pokeHint();
       e.preventDefault();
       const st = panStep();
       state.view.cx += pan[0] * st; state.view.cy += pan[1] * st;
