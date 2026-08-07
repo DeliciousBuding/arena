@@ -5,4 +5,5 @@
 ' (v2 bat semantics, drill-verified 2026-08-06).
 Dim shell
 Set shell = CreateObject("WScript.Shell")
-shell.Run "powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command ""Start-Process -WindowStyle Hidden -FilePath 'C:\Program Files\Git\bin\bash.exe' -ArgumentList '-lc','/d/Code/Projects/arena/arena-ts/scripts/arena-watchdog.sh'""", 0, False
+shell.Run "powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command ""Start-Process -WindowStyle Hidden -FilePath 'C:\Program Files\Git\bin\bash.exe' -ArgumentList '-lc','/d/Code/Projects/arena/arena-ts/.worktrees/production-runtime/scripts/arena-watchdog.sh'""", 0, False
+

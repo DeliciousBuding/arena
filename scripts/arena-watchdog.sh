@@ -6,7 +6,7 @@
 set -u
 
 LOG="$HOME/arena-watchdog.log"
-REPO="/d/Code/Projects/arena/arena-ts"
+REPO="/d/Code/Projects/arena/arena-ts/.worktrees/production-runtime"
 DATA_ROOT="/d/Code/Projects/arena/data"
 RUNTIME_ROOT="$DATA_ROOT/runtime"
 READY_URL="http://127.0.0.1:8120/ready"
@@ -112,5 +112,6 @@ echo "$(now) supervisor restarted (pid $!, alliance-shadow interval=3)" >> "$LOG
 # calibration case → 测绘库（幂等；供下次启动 seed + 面板 /api/survey）。
 # 只读 calibration + 写 survey 库，与 supervisor 无 writer 冲突。
 (cd "$REPO" && npm run survey:sync --silent -- --tenants=t1,t2,t3,t4 --latest-only) >> "$LOG" 2>&1 || true
+
 
 
