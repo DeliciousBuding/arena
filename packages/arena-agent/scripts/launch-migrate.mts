@@ -12,6 +12,8 @@ const get = (key: string): string | undefined => {
 const tenant = get("tenant") ?? "t3";
 const targetX = get("target-x") ?? "-537";
 const targetY = get("target-y") ?? "165";
+// max-steps 默认 2000（~100 格距离 + 绕障 2-3 倍路径足够；固定 500 步会让
+// t4 这类远距离迁移在半路退出清命令）。可用 --max-steps= 覆盖。
 const root = "ARENA_REPO_ROOT/arena-ts";
 const logPath = `ARENA_REPO_ROOT/data/runtime/${tenant}/core-migrate-v2.log`;
 const errPath = `${logPath}.err`;
@@ -22,7 +24,7 @@ const child = spawn(
   [
     "--import", "tsx", "packages/arena-agent/scripts/core-migrate-driver.mts",
     `--tenant=${tenant}`, `--target-x=${targetX}`, `--target-y=${targetY}`,
-    "--interval-ms=15000", "--max-steps=500", "--beacon-safe=60",
+    "--interval-ms=15000", "--max-steps=2000", "--beacon-safe=60",
   ],
   { cwd: root, detached: true, stdio: ["ignore", log, err], windowsHide: true },
 );
