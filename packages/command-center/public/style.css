@@ -543,6 +543,20 @@ body::after {
 .dialog-history li .h-time { color: var(--text-faint); }
 .dialog-history li .h-status { margin-left: auto; }
 
+/* ---------- 响应式（窄屏降级：隐藏次要信息，保持顶栏单行不换行） ---------- */
+@media (max-width: 1320px) {
+  #dataRoot { display: none; }
+}
+@media (max-width: 1120px) {
+  #clock { display: none; }
+  .tick-meter { gap: 6px; }
+  .tick-bar { width: 64px; }
+}
+@media (max-width: 900px) {
+  .brand-text .subtitle { letter-spacing: .08em; font-size: 9px; }
+  .top-status { gap: 8px; }
+}
+
 /* ---------- 无障碍：减少动态 ---------- */
 /* [hidden] 语义全局兜底：display:flex 等声明不得覆盖 hidden 属性（曾致回放条/最新按钮实时模式常显） */
 [hidden] { display: none !important; }
