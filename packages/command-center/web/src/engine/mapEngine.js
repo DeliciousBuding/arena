@@ -308,7 +308,7 @@ async function poll() {
     emit('overview', state.overview);
     draw();
     if (state.soloTenant) tactRefreshLive(state.soloTenant);
-    else loadGlobalPlans();
+    else { loadGlobalPlans(); refreshAllCommands(); }
   } catch (err) {
     emit('refresh', false);
     console.warn('poll failed', err);
@@ -468,6 +468,10 @@ if (typeof window !== 'undefined') {
     unitDrawPos,
     movementWindowMs,
     captureUnitPrev,
+    tactSelect,
+    tactClear,
+    tactChooseAction,
+    get tac() { return T(); },
   };
 }
 /* ---------- 渲染 ---------- */
@@ -483,6 +487,7 @@ function draw() {
   if (staticNeedsRebuild(bs)) renderStaticCache(bs);
   blitStatic();
   LQ = animating;
+  if (!LQ) drawGridLabels(w, h); // 坐标刻度（动态层：动画期间跳过）
   const replayActive = replay.data && replay.loadedFor === state.soloTenant;
   tactPatrolLayer(s);
   tactPlanLayer(s);
@@ -504,7 +509,7 @@ function draw() {
   tactDrawLayer(s);
   if (replayActive) replayDrawLayer(s);
   const ztxt = `×${state.view.scale.toFixed(1)}`;
-  if (els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽/方向键平移 · 滚轮缩放 · 双击适应 · G 全局 · ${ztxt}`; }
+  if (!state.tactical.mode && els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽/方向键平移 · 滚轮缩放 · 双击适应 · G 全局 · ${ztxt}`; }
   if (els.zoomLevel && els.zoomLevel.textContent !== ztxt) {
     els.zoomLevel.textContent = ztxt;
     els.zoomLevel.classList.remove('pop');
@@ -615,23 +620,66 @@ function drawVignette(w, h) {
   ensureAtmosphere(w, h);
   ctx.drawImage(bgVignette.canvas, 0, 0, w, h);
 }
+/** 背景坐标系网格（2026-08-08 升级）：细格 + 粗格 + 坐标轴（x=0/y=0）。
+ *  并入静态缓存（平移/缩放重建一次），坐标数字由 drawGridLabels 动态画。 */
+function gridStepFor(s, targetPx) {
+  let step = 4;
+  while (step * s < targetPx && step < 2048) step *= 2;
+  return step;
+}
 function drawGrid(w, h) {
-  ctx.strokeStyle = 'rgba(104,117,167,.08)';
+  const s = state.view.scale;
+  const minor = gridStepFor(s, 22);
+  const major = minor * 4;
+  const x0 = state.view.cx - w / 2 / s, x1 = state.view.cx + w / 2 / s;
+  const y0 = state.view.cy - h / 2 / s, y1 = state.view.cy + h / 2 / s;
   ctx.lineWidth = 1;
-  const step = 32 / state.view.scale;
-  if (step < 4) return;
-  const startX = Math.floor((state.view.cx - w / 2 / state.view.scale) / step) * step;
-  const startY = Math.floor((state.view.cy - h / 2 / state.view.scale) / step) * step;
+  ctx.strokeStyle = 'rgba(148,163,200,.06)';
   ctx.beginPath();
-  for (let x = startX; x <= state.view.cx + w / 2 / state.view.scale; x += step) {
-    const p = project(x, state.view.cy - h / 2 / state.view.scale);
-    ctx.moveTo(p.sx, 0); ctx.lineTo(p.sx, h);
-  }
-  for (let y = startY; y <= state.view.cy + h / 2 / state.view.scale; y += step) {
-    const p = project(state.view.cx - w / 2 / state.view.scale, y);
-    ctx.moveTo(0, p.sy); ctx.lineTo(w, p.sy);
-  }
+  for (let x = Math.floor(x0 / minor) * minor; x <= x1; x += minor) { const p = project(x, y0); ctx.moveTo(p.sx, 0); ctx.lineTo(p.sx, h); }
+  for (let y = Math.floor(y0 / minor) * minor; y <= y1; y += minor) { const p = project(x0, y); ctx.moveTo(0, p.sy); ctx.lineTo(w, p.sy); }
   ctx.stroke();
+  ctx.strokeStyle = 'rgba(180,192,224,.13)';
+  ctx.beginPath();
+  for (let x = Math.floor(x0 / major) * major; x <= x1; x += major) { const p = project(x, y0); ctx.moveTo(p.sx, 0); ctx.lineTo(p.sx, h); }
+  for (let y = Math.floor(y0 / major) * major; y <= y1; y += major) { const p = project(x0, y); ctx.moveTo(0, p.sy); ctx.lineTo(w, p.sy); }
+  ctx.stroke();
+  if (x0 <= 0 && 0 <= x1) {
+    ctx.strokeStyle = 'rgba(222,230,255,.30)';
+    const p = project(0, y0);
+    ctx.beginPath(); ctx.moveTo(p.sx, 0); ctx.lineTo(p.sx, h); ctx.stroke();
+  }
+  if (y0 <= 0 && 0 <= y1) {
+    ctx.strokeStyle = 'rgba(222,230,255,.30)';
+    const p = project(x0, 0);
+    ctx.beginPath(); ctx.moveTo(0, p.sy); ctx.lineTo(w, p.sy); ctx.stroke();
+  }
+}
+/** 坐标刻度标签（动态层）：顶边 X 世界坐标 + 左边 Y 世界坐标。动画降级期间跳过。 */
+function drawGridLabels(w, h) {
+  if (LQ) return;
+  const s = state.view.scale;
+  const major = gridStepFor(s, 22) * 4;
+  if (major * s < 52) return;
+  const x0 = state.view.cx - w / 2 / s, x1 = state.view.cx + w / 2 / s;
+  const y0 = state.view.cy - h / 2 / s, y1 = state.view.cy + h / 2 / s;
+  ctx.save();
+  ctx.font = `500 ${Math.max(10, Math.min(13, s * 0.3))}px ${CANVAS_FONT}`;
+  ctx.fillStyle = 'rgba(196,206,235,.5)';
+  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = 'left';
+  for (let x = Math.floor(x0 / major) * major; x <= x1; x += major) {
+    const p = project(x, y0);
+    if (p.sx < 12 || p.sx > w - 12) continue;
+    ctx.fillText(String(x), p.sx + 4, 13);
+  }
+  ctx.textAlign = 'right';
+  for (let y = Math.floor(y0 / major) * major; y <= y1; y += major) {
+    const p = project(x0, y);
+    if (p.sy < 14 || p.sy > h - 12) continue;
+    ctx.fillText(String(y), 6, p.sy - 5);
+  }
+  ctx.restore();
 }
 function sprite(img, sx, sy, size) {
   if (!img) return;
@@ -1882,6 +1930,7 @@ async function tactSelect(tenant, obj) {
   const tac = T();
   tac.selected = { tenant, obj };
   tac.mode = null; tac.moveRoute = null; tac.routePreview = null; tac.attackTarget = null;
+  panelDrag = {}; // 新选中：卡片回到默认锚点
   startSelectionRipple(obj.id);
   tactRenderActionDialog();
   tactRenderInspect();
@@ -1898,6 +1947,7 @@ function tactClear() {
   els.replayBar.hidden = true;
   els.activityPanel.hidden = true; els.commandCountdown.hidden = true;
   els.respawnOverlay.hidden = true;
+  if (els.hint) els.hint.dataset.zoom = ''; // 触发 draw() 恢复默认提示
   if (els.mapGlobal) els.mapGlobal.hidden = !state.soloTenant;
   draw();
 }
@@ -2011,14 +2061,19 @@ function tactRenderActionDialog() {
   els.actionDialog.hidden = false;
   els.actionDialog.style.left = '0px'; els.actionDialog.style.top = '0px';
   const dw = els.actionDialog.offsetWidth, dh = els.actionDialog.offsetHeight;
-  let left = p.sx + 18, top = p.sy - dh / 2;
-  if (left + dw > rect.width - 8) left = p.sx - dw - 18;
-  if (top < 8) top = 8;
-  if (top + dh > rect.height - 8) top = rect.height - dh - 8;
+  const saved = panelDrag.actionDialog;
+  let left = saved ? saved.left : p.sx + 18;
+  let top = saved ? saved.top : p.sy - dh / 2;
+  if (!saved) {
+    if (left + dw > rect.width - 8) left = p.sx - dw - 18;
+    if (top < 8) top = 8;
+    if (top + dh > rect.height - 8) top = rect.height - dh - 8;
+  }
   els.actionDialog.style.left = `${left}px`;
   els.actionDialog.style.top = `${top}px`;
   els.actionDialog.querySelector('[data-close]')?.addEventListener('click', tactClear);
   els.actionDialog.querySelectorAll('[data-action]').forEach((b) => b.addEventListener('click', () => tactChooseAction(b.dataset.action)));
+  makeDraggable(els.actionDialog, '.act-head', 'actionDialog');
   els.actionDialog.querySelectorAll('[data-blocked]').forEach((b) => b.addEventListener('click', () => {
     toast(b.dataset.reason || '当前不可用', 'warn');
     b.classList.add('shake');
@@ -2035,14 +2090,14 @@ function tactChooseAction(type) {
   const obj = sel.obj;
   const av = tactAvailability(world, obj);
   if (av.actions[type] !== true) return;
-  if (type === 'MOVE' || type === 'START_MOVE') { tac.mode = 'MOVE'; tac.routePreview = null; tactRenderActionDialog(); draw(); return; }
+  if (type === 'MOVE' || type === 'START_MOVE') { tac.mode = 'MOVE'; tac.routePreview = null; enterTargetingMode('🎯 选择目标：点矿=采矿任务 · 点空地=移动任务 · Esc 取消'); draw(); return; }
   if (type === 'SHOOT') {
     if (obj.unit_type !== 'RANGER') { toast('近战单位无法远程攻击：先锋可清扫相邻格，游侠才能射击', 'warn'); return; }
     const inRange = tactRangerRange(world, obj).some((t) => tactObjectAt(world, t[0], t[1])?.controlled === false);
     if (!inRange) { toast('射程内无敌方目标', 'warn'); return; }
-    tac.mode = 'SHOOT'; tactRenderActionDialog(); draw(); return;
+    tac.mode = 'SHOOT'; enterTargetingMode('🎯 点击敌方单位锁定并提交攻击 · Esc 取消'); draw(); return;
   }
-  if (type === 'SWEEP') { tac.mode = 'SWEEP'; tactRenderActionDialog(); draw(); return; }
+  if (type === 'SWEEP') { tac.mode = 'SWEEP'; enterTargetingMode('点击单位相邻格选择清扫方向并提交 · Esc 取消'); draw(); return; }
   // 一键动作：直接提交真实命令（人类最高控制权）
   if (type === 'SELF_DESTRUCT') {
     if (!window.confirm(`确认让 ${obj.kind === 'CORE' ? '核心' : '单位'} 自毁？此命令将提交到 Arena`)) return;
@@ -2056,6 +2111,45 @@ function tactChooseAction(type) {
   if (unitId) submitCommand(sel.tenant, unitId, action, TACT_ACTION_CN[type] ?? type);
   tactRenderActionDialog();
 }
+/** 面板拖拽位置（拖动后持久到本次选中；新选中重置回默认锚点）。 */
+let panelDrag = {};
+/** 卡片拖拽（2026-08-08）：按住头部可挪开卡片，不再挡地图选点。 */
+function makeDraggable(el, handleSel, key) {
+  if (!el || !el.querySelector) return;
+  const handle = el.querySelector(handleSel) || el;
+  handle.style.cursor = 'grab';
+  handle.style.touchAction = 'none';
+  let start = null;
+  const onDown = (e) => {
+    if (e.target.closest && e.target.closest('button, a, input, select, [data-action], [data-close], [data-spawn]')) return;
+    start = { x: e.clientX, y: e.clientY, l: el.offsetLeft, t: el.offsetTop, moved: false };
+    if (el.setPointerCapture) { try { el.setPointerCapture(e.pointerId); } catch { /* 忽略 */ } }
+    e.preventDefault();
+  };
+  const onMove = (e) => {
+    if (!start) return;
+    const dx = e.clientX - start.x, dy = e.clientY - start.y;
+    if (!start.moved && Math.hypot(dx, dy) < 4) return;
+    start.moved = true;
+    const left = Math.max(0, start.l + dx), top = Math.max(0, start.t + dy);
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+    if (el.id === 'inspectPanel') el.style.right = 'auto';
+    if (key) panelDrag[key] = { left, top };
+  };
+  const onUp = () => { start = null; };
+  // 事件挂 window：setPointerCapture 会把后续事件重定向到 el，handle 上收不到 → 拖拽失效（实测）
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
+  handle.addEventListener('pointerdown', onDown);
+}
+/** 进入地图选点模式：收起动作卡（不挡地图），提示条引导点击。 */
+function enterTargetingMode(tip) {
+  els.actionDialog.hidden = true;
+  if (els.hint) { els.hint.textContent = tip; els.hint.classList.remove('map-hint-fade'); }
+}
+
 function tactSpawn(unitType) {
   const tac = T(), sel = tac.selected;
   if (!sel || sel.obj.kind !== 'CORE') return;
@@ -2089,6 +2183,9 @@ function tactRenderInspect() {
   else { const goal = tac.moveGoals[obj.id]; if (goal) rows.push(['本地路线', `→ [${goal[0]}, ${goal[1]}]`]); }
   els.inspectPanel.hidden = false;
   els.inspectPanel.innerHTML = `<h3 class="panel-title">单位详情 · DETAILS</h3>${rows.map(([k, v]) => `<div class="ins-row"><span>${k}</span><b>${v}</b></div>`).join('')}`;
+  const svd = panelDrag.inspectPanel;
+  if (svd) { els.inspectPanel.style.left = `${svd.left}px`; els.inspectPanel.style.top = `${svd.top}px`; els.inspectPanel.style.right = 'auto'; }
+  makeDraggable(els.inspectPanel, '.panel-title', 'inspectPanel');
 }
 function tactRenderAssets(tenant) {
   const world = T().worlds[tenant];
@@ -2280,6 +2377,12 @@ function tactDrawRoute(path, opts = {}) {
   if (!path || path.length < 2) return;
   const alpha = opts.faint ? 0.4 : 1;
   const s = state.view.scale;
+  // 动线配色：默认 agent 规划绿；人类指令 mine=琥珀 / goto=青（一眼区分谁在指挥）
+  const C = opts.human === 'mine'
+    ? { line: '#d8b64e', lineA: 'rgba(216,182,78,.9)', flag: '#e6c96a', pulse: '#fff3d6', glow: '#d8b64e', eta: '#e6c96a' }
+    : opts.human === 'goto'
+      ? { line: '#5fc8e8', lineA: 'rgba(95,200,232,.9)', flag: '#8fdcf5', pulse: '#e8f9ff', glow: '#5fc8e8', eta: '#8fdcf5' }
+      : { line: '#76b889', lineA: 'rgba(118,184,137,.9)', flag: '#8fd6a3', pulse: '#eafff1', glow: '#76b889', eta: '#8fd6a3' };
   ctx.save();
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   const seg = (i, color, width, dash) => {
@@ -2301,13 +2404,13 @@ function tactDrawRoute(path, opts = {}) {
     ctx.closePath(); ctx.fill();
   };
   // 首步实线（当前 tick 将执行）
-  seg(0, opts.faint ? 'rgba(118,184,137,.8)' : '#76b889', opts.faint ? 1.6 : 2.6, []);
+  seg(0, opts.faint ? C.lineA : C.line, opts.faint ? 1.6 : 2.6, []);
   // 未来步虚线
-  for (let i = 1; i < path.length - 1; i++) seg(i, 'rgba(118,184,137,.9)', 2, [5, 4]);
+  for (let i = 1; i < path.length - 1; i++) seg(i, C.lineA, 2, [5, 4]);
   // 目标旗（菱形）
   const end = project(path[path.length - 1][0], path[path.length - 1][1]);
   ctx.globalAlpha = alpha;
-  ctx.fillStyle = opts.faint ? 'rgba(118,184,137,.8)' : '#8fd6a3';
+  ctx.fillStyle = opts.faint ? C.lineA : C.flag;
   const d = Math.max(4, s * 0.36);
   // 行进脉冲：命令沿路线从起点流向终点的光点（~1.8s 循环），让演练路线"活"起来
   if (!opts.faint) {
@@ -2319,8 +2422,8 @@ function tactDrawRoute(path, opts = {}) {
     const A = project(path[i0][0], path[i0][1]);
     const B = project(path[i0 + 1][0], path[i0 + 1][1]);
     ctx.globalAlpha = 0.95;
-    ctx.fillStyle = '#eafff1';
-    ctx.shadowColor = '#76b889'; ctx.shadowBlur = 9;
+    ctx.fillStyle = C.pulse;
+    ctx.shadowColor = C.glow; ctx.shadowBlur = 9;
     ctx.beginPath(); ctx.arc(A.sx + (B.sx - A.sx) * frac, A.sy + (B.sy - A.sy) * frac, Math.max(2.2, s * 0.1), 0, Math.PI * 2); ctx.fill();
     ctx.shadowBlur = 0;
   }
@@ -2337,7 +2440,7 @@ function tactDrawRoute(path, opts = {}) {
     const bx = end.sx - tw / 2 - 4, by = end.sy - d - 22;
     ctx.fillStyle = 'rgba(10,14,18,.88)';
     ctx.beginPath(); ctx.roundRect(bx, by, tw + 8, 17, 4); ctx.fill();
-    ctx.fillStyle = '#8fd6a3'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = C.eta; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(label, bx + tw / 2 + 4, by + 9);
     ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
   }
@@ -2525,6 +2628,66 @@ function tactPatrolLayer(s) {
 /** 计划箭头（官方 plannedMoveArrows/plannedSweepMarkers/plannedShotMarkers 移植）：
  *  从最新决策计划绘制每个受控单位的 MOVE/SWEEP/SHOOT 标记 + Core START_MOVE 方向——
  *  让"单位在动/在打"无需点选即可在地图上可见。 */
+/** 全局联盟视图的伪世界（合并测绘 cells → 障碍/单位/核心），供 tactFindPath 算人类目标路径。 */
+function mergedWorldFor(tenant) {
+  const objects = [];
+  for (const c of state.cells) {
+    if (c.tenant !== tenant) continue;
+    if (c.type === 'obstacle') objects.push({ kind: 'OBSTACLE', position: [c.x, c.y] });
+    else if (c.type === 'unit') objects.push({ kind: 'UNIT', position: [c.x, c.y], controlled: c.controlled, id: c.id });
+    else if (c.type === 'core') objects.push({ kind: 'CORE', position: [c.x, c.y], controlled: c.controlled, id: c.id });
+  }
+  return { state: { objects } };
+}
+/** 全局模式：4 租户人类指令/遥测刷新（动线 + 待执行面板数据源）。 */
+async function refreshAllCommands() {
+  for (const t of TENANTS) await tactRefreshCommands(t);
+}
+/** 人类指令目标动线（2026-08-08）：待执行 goal（mine/goto）从单位当前位置到目标的
+ *  完整寻路路径，跨 tick 持续可见（缓存 key = tick+起点+目标，每 tick/移动重算一次）。
+ *  全局联盟视图 + 聚焦视图都画；goal 被服务端对账清理（satisfied/unknown）后自然消失。 */
+function drawHumanGoalPaths(s) {
+  const tac = T();
+  if (!state.layers.plan) return;
+  const solo = state.soloTenant;
+  const scopes = solo ? [solo] : TENANTS;
+  for (const tenant of scopes) {
+    const store = tac.commandsByTenant ? tac.commandsByTenant[tenant] : (solo === tenant ? tac.commands : null);
+    const goals = store && Array.isArray(store.goals) ? store.goals : [];
+    if (!goals.length) continue;
+    const world = tac.worlds[tenant] || mergedWorldFor(tenant);
+    if (!world || !world.state || !Array.isArray(world.state.objects)) continue;
+    for (const g of goals) {
+      const cell = state.cells.find((c) => c.tenant === tenant && c.type === 'unit' && c.id === g.unitId);
+      if (!cell) continue; // 单位不存在（已销毁/失联，服务端会清 goal）
+      const key = `${state.tickMeter.lastTick}:${cell.x},${cell.y}:${g.target[0]},${g.target[1]}`;
+      const ck = tenant + ':' + g.id;
+      let rec = tac.goalPaths ? tac.goalPaths[ck] : null;
+      if (!rec || rec.key !== key) {
+        const path = tactFindPath(world, [cell.x, cell.y], g.target, tenant);
+        if (!path || path.length < 2) { if (tac.goalPaths) delete tac.goalPaths[ck]; continue; }
+        rec = { key, path, kind: g.kind };
+        tac.goalPaths = tac.goalPaths || {};
+        tac.goalPaths[ck] = rec;
+      }
+      tactDrawRoute(rec.path, { human: rec.kind, eta: rec.path.length - 1 });
+      // 目标标签（采矿/移动）
+      const end = rec.path[rec.path.length - 1];
+      const p = project(end[0], end[1]);
+      const label = rec.kind === 'mine' ? '采矿' : '移动';
+      const color = rec.kind === 'mine' ? '#d8b64e' : '#5fc8e8';
+      ctx.save();
+      ctx.font = '600 11px ' + CANVAS_FONT;
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(10,14,18,.88)';
+      ctx.beginPath(); ctx.roundRect(p.sx - tw / 2 - 4, p.sy - s * 0.55 - 20, tw + 8, 17, 4); ctx.fill();
+      ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, p.sx, p.sy - s * 0.55 - 11);
+      ctx.restore();
+    }
+  }
+}
+
 function tactPlanLayer(s) {
   if (!state.layers.plan) return;
   const tac = T();
@@ -2623,6 +2786,7 @@ function tactPlanLayer(s) {
       }
     }
   }
+  drawHumanGoalPaths(s);
   if (!drew) return;
 }
 
@@ -3091,13 +3255,26 @@ async function tactRefreshCommands(tenant) {
   const tac = T();
   try {
     const r = await getJSON(`/api/commands?tenant=${tenant}`);
-    const prev = tac.commands;
-    tac.commands = r;
-    const tele = r && r.telemetry ? r.telemetry : null;
-    if (tele) consumeCommandTelemetry(tenant, tele, prev && prev.telemetry ? prev.telemetry : null);
+    tac.commandsByTenant = tac.commandsByTenant || {};
+    // 卡死跳出回报：目标长期无推进被服务端自动取消时 toast 说明（防"指令莫名消失"）
+    const stuck = r && Array.isArray(r.stuck) && r.stuck.length ? r.stuck : [];
+    if (stuck.length) {
+      const seenKey = tenant + ':' + stuck.map((x) => x.unitId).join(',');
+      if (tac.stuckSeen !== seenKey) {
+        tac.stuckSeen = seenKey;
+        stuck.forEach((x) => toast(`指令自动取消（卡死跳出）：${shortId(x.unitId)} · ${x.reason}`, 'warn'));
+      }
+    }
+    const prev = tac.commandsByTenant[tenant];
+    tac.commandsByTenant[tenant] = r;
+    if (state.soloTenant === tenant) {
+      tac.commands = r;
+      const tele = r && r.telemetry ? r.telemetry : null;
+      if (tele) consumeCommandTelemetry(tenant, tele, prev && prev.telemetry ? prev.telemetry : null);
+      tactRenderActionDialog();
+      tactRenderHud(tenant);
+    }
   } catch { /* 忽略 */ }
-  tactRenderActionDialog();
-  tactRenderHud(tenant);
 }
 /** 消费人类指令遥测：出现新拒绝/新完成时 toast 提示（按签名去重，防重复弹）。 */
 function consumeCommandTelemetry(tenant, tele, prevTele) {
@@ -3189,6 +3366,8 @@ export function createMapEngine(host) {
   });
   return api;
 }
+
+
 
 
 

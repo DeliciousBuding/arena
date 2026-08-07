@@ -1040,7 +1040,10 @@ function writeHumanStore(tenant, store) {
   const dir = humanCommandsDir();
   mkdirSync(dir, { recursive: true });
   const out = { version: 1, mode: store.mode, commands: store.commands, goals: store.goals, updatedAt: new Date().toISOString() };
-  writeFileSync(join(dir, `${tenant}.json`), JSON.stringify(out, null, 2));
+  const file = join(dir, `${tenant}.json`);
+  const tmp = join(dir, `${tenant}.json.tmp`);
+  writeFileSync(tmp, JSON.stringify(out, null, 2));
+  renameSync(tmp, file); // 原子替换：中途崩溃不会留半截坏 JSON（readHumanStore 已有 try/catch 兜底）
   return out;
 }
 /** 从 outcome.jsonl 读取最新一条 humanOverride 遥测（applied/rejected/satisfied）。
@@ -1054,6 +1057,75 @@ function latestHumanOverride(tenant) {
   const h = last.humanOverride;
   if (!h.active && (h.applied ?? []).length === 0 && (h.rejected ?? []).length === 0 && (h.satisfied ?? []).length === 0) return null;
   return { tick: last.tick ?? null, ...h };
+}
+
+/** 卡死跳出（2026-08-08）：活跃 goal 若单位连续 STUCK_TICKS tick 只 WAIT（路径被堵/目标不可达），
+ *  自动取消并回报——防止"人类指令死锁"永远挂着。WAIT = 无推进；MOVE/HARVEST/DEPOSIT 都算在动。 */
+const STUCK_TICKS = 8;
+const stuckRing = new Map(); // tenant -> [{ unitId, kind, target, reason, at }]
+function cancelStuckGoals(tenant, store, h) {
+  const applied = new Set(h.applied ?? []);
+  const activeGoals = store.goals.filter((g) => applied.has(g.unitId));
+  if (activeGoals.length === 0) return { store, stuck: [] };
+  const runDir = latestRunDir(tenant);
+  if (runDir === null) return { store, stuck: [] };
+  const cases = listCases(tenant, runDir);
+  if (cases.length < STUCK_TICKS) return { store, stuck: [] };
+  const stuck = [];
+  for (const g of activeGoals) {
+    let waitCount = 0;
+    for (let i = 0; i < STUCK_TICKS; i++) {
+      const f2 = cases[cases.length - 1 - i];
+      const p2 = join(calibrationDir(tenant), runDir, "cases", f2);
+      try {
+        const raw = JSON.parse(readFileSync(p2, "utf8"));
+        const act = raw?.plan?.unitActions?.[g.unitId];
+        if (!act) continue;
+        if (act.type === "WAIT") waitCount++;
+        else if (act.type === "MOVE" || act.type === "HARVEST" || act.type === "DEPOSIT") { waitCount = 0; break; }
+      } catch { /* 跳过坏文件 */ }
+    }
+    if (waitCount >= STUCK_TICKS - 1) {
+      const reason = `连续 ${waitCount} tick 无推进（路径被堵/目标不可达），已自动取消`;
+      stuck.push({ unitId: g.unitId, kind: g.kind, target: g.target, reason, at: new Date().toISOString() });
+      store.goals = store.goals.filter((x) => x.id !== g.id);
+      console.log(`[human-goal] ${tenant} 卡死跳出 ${g.unitId} ${g.kind} [${g.target[0]}, ${g.target[1]}] → ${reason}`);
+    }
+  }
+  return { store, stuck };
+}
+
+/** 人类指令闭环自愈（2026-08-08）：agent 只消费 store 不写回——satisfied 的 goal、
+ *  applied 的一键 command、unknown_unit（单位已销毁）的指令会永久残留（实测 t4 陈旧 goal
+ *  挂了 8 小时）。本函数在 /api/commands 读取时按最新遥测行对账清理（server 是 store 唯一写者）。
+ *  语义：satisfied → goal 完成交还 agent；applied → 一键动作已生效（单 tick 覆盖）；
+ *       rejected(unknown_unit) → 单位已不存在，指令作废。
+ *  时序守卫：仅清理 createdAt ≤ 遥测 updatedAt 的指令（避免误删刚下发、尚未执行的同单位新指令）。 */
+function reconcileHumanStore(tenant) {
+  const store = readHumanStore(tenant);
+  if (store.commands.length === 0 && store.goals.length === 0) return store;
+  const h = latestHumanOverride(tenant);
+  if (!h) return store;
+  const processedAt = h.updatedAt ?? null; // agent 处理 store 时回显的 updatedAt
+  const within = (createdAt) => processedAt === null || (typeof createdAt === "string" && createdAt <= processedAt);
+  const satisfied = new Set(h.satisfied ?? []);
+  const applied = new Set(h.applied ?? []);
+  const unknown = new Set((h.rejected ?? []).filter((r) => r && r.reason === "unknown_unit").map((r) => r.unitId));
+  if (satisfied.size === 0 && applied.size === 0 && unknown.size === 0) return store;
+  const g0 = store.goals.length, c0 = store.commands.length;
+  if (satisfied.size) store.goals = store.goals.filter((g) => !(satisfied.has(g.unitId) && within(g.createdAt)));
+  if (applied.size) store.commands = store.commands.filter((c) => !(applied.has(c.unitId) && within(c.createdAt)));
+  if (unknown.size) {
+    store.goals = store.goals.filter((g) => !(unknown.has(g.unitId) && within(g.createdAt)));
+    store.commands = store.commands.filter((c) => !(unknown.has(c.unitId) && within(c.createdAt)));
+  }
+  const { store: s2, stuck } = cancelStuckGoals(tenant, store, h);
+  if (s2.goals.length !== g0 || s2.commands.length !== c0) writeHumanStore(tenant, s2);
+  if (stuck.length) {
+    const ring = stuckRing.get(tenant) ?? [];
+    stuckRing.set(tenant, [...ring, ...stuck].slice(-6));
+  }
+  return s2;
 }
 
 const VALID_ACTION_TYPES = new Set([
@@ -1158,8 +1230,8 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/commands" && req.method === "GET") {
       const tenant = url.searchParams.get("tenant") ?? "";
       if (!validTenant(tenant)) return sendJson(res, { error: "非法租户" }, 400);
-      const store = readHumanStore(tenant);
-      return sendJson(res, { ...store, telemetry: latestHumanOverride(tenant) });
+      const store = reconcileHumanStore(tenant);
+      return sendJson(res, { ...store, telemetry: latestHumanOverride(tenant), stuck: stuckRing.get(tenant) ?? [] });
     }
     if (pathname === "/api/command" && req.method === "POST") {
       const b = await parseBody(req);
@@ -1309,6 +1381,22 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`Arena 指挥面板：http://127.0.0.1:${PORT}`);
   console.log(`数据根（只读）：${DATA_ROOT}`);
 });
+
+server.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(`端口 ${PORT} 已被占用——可能已有指挥面板实例在运行（陈旧 pid 文件除外）。`);
+    console.error(`停止旧实例：node scripts/start-cc.mjs --stop；若 pid 文件陈旧，先删 logs/cc-server.pid 再启动。`);
+    process.exitCode = 1;
+    return;
+  }
+  console.error("指挥面板服务器错误", err);
+  process.exitCode = 1;
+});
+
+
+
+
+
 
 
 
