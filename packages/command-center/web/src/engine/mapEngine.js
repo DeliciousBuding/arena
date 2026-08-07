@@ -1,6 +1,8 @@
-/* Arena 指挥面板前端 — 零依赖原生 JS + Canvas（官方素材渲染） */
-import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos } from './js/utils.js';
-import { getJSON } from './js/api.js';
+/* Arena 指挥面板前端引擎 — 由 React（command-center/web）挂载到地图宿主容器。
+ * 由 public/app.js 移植：chrome（顶栏/侧栏/决策流/对话框）剥离到 React 组件，
+ * 地图/战术/回放/覆盖层保持原生 Canvas + DOM。入口 createMapEngine(host)。 */
+import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos } from './utils.js';
+import { getJSON } from './api.js';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
 const TENANT_COLORS = { t1: '#69b3d8', t2: '#57bd84', t3: '#a892d6', t4: '#dd626d' };
@@ -76,8 +78,11 @@ const state = {
   },
 };
 
-const $ = (sel) => document.querySelector(sel);
-const els = {
+let ROOT = document.body; // 挂载时替换为地图宿主容器（createMapEngine(host)）
+const $ = (sel) => ROOT.querySelector(sel);
+let els = {};
+function buildEls() {
+  return {
   canvas: $('#map'), clock: $('#clock'), dataRoot: $('#dataRoot'), badge: $('#refreshBadge'),
   tenantCards: $('#tenantCards'), legendList: $('#legendList'), tenantToggles: $('#tenantToggles'),
   streamTabs: $('#streamTabs'), streamBody: $('#streamBody'), streamJump: $('#streamJump'),
@@ -98,7 +103,8 @@ const els = {
   commandCountdown: $('#commandCountdown'), ccTime: $('#ccTime'), ccFill: $('#ccFill'),
   tickLabel: $('#tickLabel'), tickFill: $('#tickFill'),
   respawnOverlay: $('#respawnOverlay'), roTick: $('#roTick'),
-};
+  };
+}
 
 
 
@@ -122,26 +128,16 @@ function savePrefs() {
 /** 启动时恢复持久化偏好：折叠/只看决策/标签页/图层开关。 */
 function applyPrefs() {
   const p = loadPrefs();
-  if (typeof p.streamCollapsed === 'boolean') state.streamCollapsed = p.streamCollapsed;
-  if (typeof p.streamHeight === 'number' && p.streamHeight >= 140 && p.streamHeight <= 460) state.streamHeight = p.streamHeight;
-  if (typeof p.streamFilterQuiet === 'boolean') state.streamFilterQuiet = p.streamFilterQuiet;
-  if (PREFS_TABS.includes(p.tab)) state.tab = p.tab;
   if (p.layers && typeof p.layers === 'object') {
     for (const k of Object.keys(state.layers)) if (typeof p.layers[k] === 'boolean') state.layers[k] = p.layers[k];
   }
-  // 同步 DOM 表达（折叠类 / aria / 只看决策按钮态 / 高度）
-  els.streamPane.classList.toggle('collapsed', state.streamCollapsed);
-  els.streamPane.style.height = state.streamCollapsed ? '38px' : state.streamHeight + 'px';
-  els.streamToggle.setAttribute('aria-expanded', String(!state.streamCollapsed));
-  els.streamFilter.classList.toggle('on', state.streamFilterQuiet);
-  els.streamFilter.title = state.streamFilterQuiet ? '显示全部（含无需决策）' : '只显示实际决策（隐藏无需决策行）';
 }
 /** 图层复选框与 state.layers 同步（恢复持久化后调用一次）。 */
 function syncLayerToggles() {
   document.querySelectorAll('#layerToggles input').forEach((el) => { el.checked = !!state.layers[el.dataset.layer]; });
 }
 
-let ctx = els.canvas.getContext('2d');
+let ctx = null; // createMapEngine 时初始化
 const images = {};
 /* 地图提示自动淡出：交互时重现，闲置 4.5s 后淡出（画布更干净） */
 let hintTimer = null;
@@ -153,11 +149,6 @@ function pokeHint() {
 }
 /* tick 数字闪亮：tick 前进时短暂白闪（"世界在走"的呼吸感） */
 let lastTickLabelTick = -1;
-function flashTickLabel() {
-  els.tickLabel.classList.remove('tick-label-flash');
-  void els.tickLabel.offsetWidth; // 重启动画
-  els.tickLabel.classList.add('tick-label-flash');
-}
 
 /* ---------- 静态地形缓存（缩放性能核心） ----------
  * 慢层（租户疆域 / 测绘 / 障碍 / 资源）按"缩放桶"离屏预渲染；
@@ -273,7 +264,7 @@ async function poll() {
     }
     sig = (sig ^ (n * 2654435761)) >>> 0;
     if (sig !== state.terrainSig) { state.terrainSig = sig; invalidateStatic(); }
-    if (overview?.dataRoot) els.dataRoot.textContent = overview.dataRoot;
+    if (overview?.dataRoot) emit('dataRoot', overview.dataRoot);
     // 单位平滑插值：记录上一轮位置，poll 之间 draw 时按 POLL_MS 渐变移动
     captureUnitPrev();
     // 世界 tick 周期估计（~15s）：采样 (tick, mtime) 序列，取窗口跨度斜率——
@@ -297,14 +288,12 @@ async function poll() {
       m.lastMtime = mt; m.lastTick = tick;
     }
     if (!state.view.ready && state.bounds && state.cells.length) fitView();
-    renderTenantCards();
-    renderTenantToggles();
+    emit('overview', state.overview);
     draw();
     if (state.soloTenant) tactRefreshLive(state.soloTenant);
     else loadGlobalPlans();
   } catch (err) {
-    els.badge.className = 'badge err';
-    els.badge.textContent = '数据离线';
+    emit('refresh', false);
     console.warn('poll failed', err);
   }
 }
@@ -325,7 +314,7 @@ async function pollStreams() {
       evResults.forEach((r, i) => { if (r.status === 'fulfilled') state.events[TENANTS[i]] = r.value.events ?? []; });
     }
   }
-  renderStream();
+  emit('streams', { tab: state.tab, streams: state.streams, events: state.events });
 }
 
 /* ---------- 地图投影 / 交互 ---------- */
@@ -1109,52 +1098,6 @@ function statusOf(t) {
   if (s.fileFresh) return { cls: 'fresh', label: '数据新鲜' };
   return { cls: 'stale', label: '离线' };
 }
-function renderTenantCards() {
-  if (!state.overview) return;
-  state.prevMetrics = state.prevMetrics || {};
-  const nextMetrics = {};
-  const html = state.overview.tenants.map((t) => {
-    const color = TENANT_COLORS[t.tenant] ?? '#999';
-    const st = statusOf(t.tenant);
-    const L = t.latest ?? {};
-    const prev = state.prevMetrics[t.tenant] || {};
-    const flash = (k, v) => (prev[k] !== undefined && prev[k] !== v ? ' flash' : '');
-    const delta = typeof L.resourceDelta === 'number' ? L.resourceDelta : null;
-    const deltaCls = delta === null ? '' : delta > 0 ? 'delta-pos' : delta < 0 ? 'delta-neg' : '';
-    const deltaTxt = delta === null ? '—' : (delta > 0 ? '+' : '') + fmt(delta);
-    const solo = state.soloTenant === t.tenant;
-    nextMetrics[t.tenant] = { resources: L.resources, workers: L.workers, events: L.events, tick: L.tick };
-    return `<div class="tenant-card${solo ? ' solo' : ''}" data-tenant="${t.tenant}" style="--tc:${color}" role="button" tabindex="0" title="${solo ? '点击返回全局联盟' : '点击聚焦 ' + t.tenant.toUpperCase()}">
-      ${solo ? '<div class="tc-exit" data-exit role="button" tabindex="0" title="返回全局联盟（Esc / G 也可）">✕ 返回全局</div>' : ''}
-      <div class="row1">
-        <span class="dot ${st.cls}" title="${st.label}"></span>
-        <span class="tenant-name">${t.tenant.toUpperCase()}</span>
-        <span class="tenant-tag">${TENANT_LABEL[t.tenant] ?? ''}</span>
-      </div>
-      <div class="metrics">
-        <div class="metric"><img src="${UNIT_ICONS.resource}" alt="" /><span class="v${flash('resources', L.resources)}">${fmt(L.resources)}</span><span class="k">资源</span></div>
-        <div class="metric"><span class="v ${deltaCls}">${deltaTxt}</span><span class="k">增量</span></div>
-        <div class="metric"><img src="${UNIT_ICONS.population}" alt="" /><span class="v${flash('workers', L.workers)}">${fmt(L.workers)}</span><span class="k">工人</span></div>
-        <div class="metric"><span class="v${flash('events', L.events)}">${fmt(L.events)}</span><span class="k">事件</span></div>
-      </div>
-      <div class="row3">
-        <span>tick <b>${fmt(L.tick)}</b></span>
-        <span>最大距离 <b>${fmt(L.workerMaxDistance)}</b></span>
-        <span>均值 <b>${fmt(L.workerMeanDistance)}</b></span>
-        <span>可见资源 <b>${fmt(L.visibleResources)}</b></span>
-        <span>60tick均值 <b>${fmt(t.window?.avgResources)}</b></span>
-      </div>
-    </div>`;
-  }).join('');
-  els.tenantCards.innerHTML = html;
-  state.prevMetrics = nextMetrics;
-  // 点击事件用容器委托（见 bindEvents），避免 poll 重建 DOM 时丢失/重复绑定
-}
-function renderTenantToggles() {
-  els.tenantToggles.innerHTML = TENANTS.map((t) =>
-    `<label><input type="checkbox" data-tenant="${t}" ${state.tenantsOn[t] ? 'checked' : ''} /><span style="color:${TENANT_COLORS[t]}">${t.toUpperCase()}</span></label>`
-  ).join('');
-}
 function toggleSolo(tenant) {
   state.soloTenant = state.soloTenant === tenant ? null : tenant;
   invalidateStatic();
@@ -1166,9 +1109,9 @@ function toggleSolo(tenant) {
     fitView();
     tactClear();
   }
-  renderTenantCards();
+  emit('solo', state.soloTenant);
+  emit('overview', state.overview);
   const global = state.soloTenant === null;
-  els.viewGlobal.classList.toggle('active', global);
   els.mapGlobal.hidden = global;
   syncSoloBadge();
 }
@@ -1194,6 +1137,7 @@ async function tactShowTenant(tenant) {
   tactRenderPending();
   tactRefreshActivity(tenant);
   tactRenderRespawn(tenant);
+  tactRefreshCommands(tenant);
   // 租户切换过渡：内容更新后让单租户面板丝滑重现（不依赖首次插入动画）
   popPanel(els.fleetHud); popPanel(els.assetPanel); popPanel(els.pendingPanel); popPanel(els.activityPanel);
   invalidateStatic();
@@ -1235,351 +1179,17 @@ async function tactLoadExploration(tenant) {
   } catch { return null; }
 }
 
-/* ---------- 决策流 ---------- */
-/** 决策流智能跟随（2026-08-07）：流按 tick 倒序 = 最新在最上。
- *  停在顶部（看最新）时新行到达保持顶部；下翻历史时不抢滚动，
- *  改显"↑ 最新"悬浮按钮，点击回到顶部（配合折叠琥珀提醒，不打扰阅读）。 */
-function streamScrollFollow(hasNew) {
-  const body = els.streamBody;
-  const nearTop = body.scrollTop < 28;
-  if (nearTop) {
-    body.scrollTop = 0;
-    if (els.streamJump) els.streamJump.hidden = true;
-  } else if (hasNew && els.streamJump) {
-    els.streamJump.hidden = false;
-  }
-}
-/** 决策流条数更新：折叠时新行到达 → 圆点琥珀提醒（展开后清除）。 */
-function setStreamCount(text, hasNew = false) {
-  els.streamCount.textContent = text;
-  if (state.streamCollapsed && hasNew) {
-    const dot = els.streamToggle.querySelector('.st-dot');
-    if (dot) dot.classList.add('has-new');
-  }
-}
-/** 折叠态实时胶囊：显示最新一条决策（收起日志时仍可监控）。CSS 负责"仅折叠时可见"。 */
-function updateStreamLive() {
-  const el = els.streamLive, live = state.streamLive;
-  if (!el) return;
-  if (!live) { el.hidden = true; return; }
-  el.hidden = false;
-  const color = TENANT_COLORS[live.tenant] ?? '#999';
-  el.innerHTML = `<span class="sl-t" style="color:${color}">${live.tenant.toUpperCase()}</span>` +
-    `<span class="sl-tick">#${fmt(live.tick)}</span><span class="sl-text">${escapeHtml(live.text)}</span>`;
-}
-function renderStream() {
-  const tabs = [{ id: 'all', label: '统一决策' }];
-  TENANTS.forEach((t) => tabs.push({ id: t, label: t.toUpperCase() }));
-  tabs.push({ id: 'events', label: '事件' });
-  // 标签页计数徽标（只看决策过滤时按实际决策计数；events 按事件数）
-  const quietRow = (r) => String(r.deadlineOutcome ?? '') === 'not_applicable';
-  const tabCount = (id) => {
-    if (id === 'events') { let n = 0; for (const t of TENANTS) n += (state.events[t] ?? []).length; return n; }
-    const rows = id === 'all' ? TENANTS.flatMap((t) => (state.streams[t] ?? []).map((r) => ({ tenant: t, ...r }))) : (state.streams[id] ?? []);
-    const kept = state.streamFilterQuiet ? rows.filter((r) => !quietRow(r)) : rows;
-    return kept.length;
-  };
-  els.streamTabs.innerHTML = tabs.map((t) => {
-    const n = tabCount(t.id);
-    return `<button data-tab="${t.id}" class="${state.tab === t.id ? 'active' : ''}" role="tab">${t.label}${n > 0 ? `<span class="tab-badge">${Math.min(n, 999)}</span>` : ''}</button>`;
-  }).join('');
-  els.streamTabs.querySelectorAll('button').forEach((b) =>
-    b.addEventListener('click', () => { state.tab = b.dataset.tab; els.streamBody.scrollTop = 0; savePrefs(); pollStreams(); }));
-
-  if (state.tab === 'events') {
-    const all = [];
-    for (const t of TENANTS) for (const ev of state.events[t] ?? []) all.push({ tenant: t, ...ev });
-    all.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
-    if (!all.length) {
-      els.streamBody.innerHTML = '<div class="stream-empty">暂无事件数据</div>';
-      setStreamCount('0 条');
-      state.streamLive = null; updateStreamLive(); // 无事件 → 折叠胶囊同步隐藏
-      return;
-    }
-    state.rowKeys = state.rowKeys || {};
-    const eprev = state.rowKeys.events || new Set();
-    const ecur = new Set();
-    let eNew = 0;
-    const ehtml = all.slice(0, 120).map((e) => {
-      const color = TENANT_COLORS[e.tenant] ?? '#999';
-      const evColor = e.kind.startsWith('SHOT') || e.kind.includes('DESTROYED') || e.kind.includes('FAILED') ? '#dd626d'
-        : e.kind.includes('SUCCEEDED') || e.kind === 'SPAWN' || e.kind === 'PICKUP_BEACON' || e.kind === 'HEAL' ? '#57bd84' : '#d3ad55';
-      const detail = [e.actor ? `actor ${shortId(e.actor)}` : '', e.target ? `target ${shortId(e.target)}` : '', e.amount != null ? `×${e.amount}` : ''].filter(Boolean).join(' ');
-      const key = `${e.tenant}:${e.tick}:${e.kind}:${e.actor ?? ''}:${e.target ?? ''}:${e.amount ?? ''}`;
-      ecur.add(key);
-      if (!eprev.has(key)) eNew++;
-      return `<div class="stream-line${eprev.has(key) ? '' : ' st-new'}" style="--tc:${color}">
-        <span class="st-tenant">${e.tenant.toUpperCase()}</span>
-        <span class="st-tick">${fmt(e.tick)}</span>
-        <span class="st-kind" style="color:${evColor}">${EVENT_KIND_CN[e.kind] ?? e.kind}</span>
-        <span class="st-detail">${detail}</span>
-      </div>`;
-    }).join('');
-    state.rowKeys.events = ecur;
-    els.streamBody.innerHTML = ehtml;
-    setStreamCount(`${all.length} 条`, eNew > 0);
-    streamScrollFollow(eNew > 0);
-    if (all.length) {
-      const e0 = all[0];
-      const detail = [e0.actor ? 'actor ' + shortId(e0.actor) : '', e0.target ? 'target ' + shortId(e0.target) : '', e0.amount != null ? '×' + e0.amount : ''].filter(Boolean).join(' ');
-      state.streamLive = { tenant: e0.tenant, tick: e0.tick, text: ((EVENT_KIND_CN[e0.kind] ?? e0.kind) + (detail ? ' · ' + detail : '')).trim() };
-    } else state.streamLive = null;
-    updateStreamLive();
-    return;
-  }
-  const rows = [];
-  for (const t of (state.tab === 'all' ? TENANTS : [state.tab])) {
-    for (const r of state.streams[t] ?? []) rows.push({ tenant: t, ...r });
-  }
-  rows.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
-  if (state.streamFilterQuiet) {
-    // 「无需决策」= deadlineOutcome not_applicable（submitResult 有 accepted/not_submitted 等变体，统一按 outcome 判定）
-    const kept = rows.filter((r) => String(r.deadlineOutcome ?? '') !== 'not_applicable');
-    if (kept.length || rows.length) rows.length = 0, rows.push(...kept); // 只显示实际决策
-  }
-  if (!rows.length) {
-    els.streamBody.innerHTML = '<div class="stream-empty">暂无决策数据</div>';
-    state.streamLive = null; updateStreamLive(); // 过滤后无行 → 折叠胶囊同步隐藏
-    return;
-  }
-  state.rowKeys = state.rowKeys || {};
-  const rprev = state.rowKeys[state.tab] || new Set();
-  const rcur = new Set();
-  let rNew = 0;
-  let quietCount = 0;
-  const rhtml = rows.slice(0, 120).map((r) => {
-    const color = TENANT_COLORS[r.tenant] ?? '#999';
-    const outcome = String(r.deadlineOutcome ?? '');
-    const submit = String(r.submitResult ?? '');
-    const quiet = outcome === 'not_applicable';
-    if (quiet) quietCount++;
-    const outCls = submit === 'accepted' ? 'accepted' : submit === 'rejected' ? 'rejected' : (outcome.includes('timeout') || outcome.includes('missed')) ? 'timeout' : '';
-    const kindCn = DECISION_KIND_CN[outcome] ?? '决策';
-    const badge = submit !== '' ? (DECISION_KIND_CN[submit] ?? submit) : outcome !== '' ? (DECISION_KIND_CN[outcome] ?? outcome) : '—';
-    const lat = [];
-    if (r.agentLatencyMs != null) lat.push(`agent ${fmt(r.agentLatencyMs)}ms`);
-    if (r.selectionLatencyMs != null) lat.push(`select ${fmt(r.selectionLatencyMs)}ms`);
-    const extra = [];
-    if (r.abortRequested) extra.push('中止请求');
-    if (r.rotationGeneration != null) extra.push(`rot ${r.rotationGeneration}`);
-    const detail = [lat.join(' · '), extra.join(' · ')].filter(Boolean).join(' · ');
-    const key = `${r.tenant}:${r.tick}:${outcome}:${submit}:${r.agentLatencyMs ?? ''}:${r.selectionLatencyMs ?? ''}`;
-    rcur.add(key);
-    if (!rprev.has(key)) rNew++;
-    return `<div class="stream-line${rprev.has(key) ? '' : ' st-new'}${quiet ? ' st-quiet' : ''}" style="--tc:${color}">
-      <span class="st-tenant">${r.tenant.toUpperCase()}</span>
-      <span class="st-tick">${fmt(r.tick)}</span>
-      <span class="st-kind" style="color:${color}">${kindCn}</span>
-      <span class="st-detail">${detail}</span>
-      <span class="st-badge ${outCls}">${badge}</span>
-    </div>`;
-  }).join('');
-  state.rowKeys[state.tab] = rcur;
-  els.streamBody.innerHTML = rhtml;
-  setStreamCount(`${Math.min(rows.length, 120)} 条 · ${Math.min(rows.length, 120) - quietCount} 实际决策`, rNew > 0);
-  streamScrollFollow(rNew > 0);
-  // 折叠胶囊：最新一条决策
-  if (rows.length) {
-    const r0 = rows[0];
-    const out = DECISION_KIND_CN[String(r0.deadlineOutcome ?? '')] ?? '决策';
-    const lat = [r0.agentLatencyMs != null ? 'agent ' + fmt(r0.agentLatencyMs) + 'ms' : '', r0.selectionLatencyMs != null ? 'select ' + fmt(r0.selectionLatencyMs) + 'ms' : ''].filter(Boolean).join(' · ');
-    state.streamLive = { tenant: r0.tenant, tick: r0.tick, text: (out + (lat ? ' · ' + lat : '')).trim() };
-  } else state.streamLive = null;
-  updateStreamLive();
-}
-
+/* ---------- 决策流（React 组件渲染） ---------- */
 /* ---------- 顶部状态 ---------- */
 function tickClock() {
-  els.clock.textContent = timeFmt.format(new Date());
   const m = state.tickMeter;
-  if (m.lastMtime > 0 && m.period > 0) {
-    const elapsed = Math.max(0, Date.now() - m.lastMtime);
-    const frac = Math.min(1, elapsed / m.period);
-    els.tickFill.style.transform = `scaleX(${frac.toFixed(3)})`;
-    if (m.lastTick !== lastTickLabelTick) { lastTickLabelTick = m.lastTick; flashTickLabel(); }
-    els.tickLabel.textContent = `tick ${fmt(m.lastTick)} · ${Math.round(m.period / 1000)}s`;
-    const meter = els.tickLabel.closest('.tick-meter');
-    if (meter) meter.classList.toggle('warn', frac > 0.82);
-  }
+  const has = m.lastMtime > 0 && m.period > 0;
+  const elapsed = has ? Math.max(0, Date.now() - m.lastMtime) : 0;
+  const frac = has ? Math.min(1, elapsed / m.period) : 0;
+  emit('tick', { clock: timeFmt.format(new Date()), tick: m.lastTick, period: m.period, frac });
 }
 function markRefresh(ok) {
-  els.badge.className = ok ? 'badge ok' : 'badge err';
-  els.badge.textContent = ok ? '实时' : '离线';
-}
-
-/* ---------- 威胁情报（官方排行榜快照：谁在打我们） ---------- */
-const TIER_META = {
-  ELITE_AGGRESSOR: { cls: 'elite', label: '精英攻坚' },
-  AGGRESSOR: { cls: 'agg', label: '攻坚' },
-  STANDARD: { cls: 'std', label: '常规' },
-};
-const intel = { data: null, tab: 'threat' };
-async function openIntel() {
-  els.intelDialog.showModal();
-  els.intelBody.innerHTML = '<div class="stream-empty">加载威胁情报…</div>';
-  els.intelMeta.textContent = '';
-  try {
-    const data = await shopRequest('/api/leaderboard');
-    intel.data = data;
-    renderIntel();
-  } catch (err) {
-    els.intelBody.innerHTML = `<div class="stream-empty">威胁情报加载失败：${escapeHtml(err.message)}</div>`;
-  }
-}
-function renderIntel() {
-  const d = intel.data;
-  if (!d) return;
-  els.intelTabs.innerHTML = [
-    ['threat', `威胁排行 ${d.profiles?.length ?? 0}`],
-    ['beacon', `信标持有 ${d.beacon_ticks_held?.length ?? 0}`],
-    ['core', `核心摧毁 ${d.core_destruction_participations?.length ?? 0}`],
-  ].map(([id, label]) => `<button data-intel-tab="${id}" class="${intel.tab === id ? 'active' : ''}" type="button">${label}</button>`).join('');
-  els.intelTabs.querySelectorAll('button').forEach((b) =>
-    b.addEventListener('click', () => { intel.tab = b.dataset.intelTab; renderIntel(); }));
-  const row = (rank, name, score, tagHtml = '') => `<div class="intel-row${rank <= 3 ? ' ir-top' : ''}"><span class="ir-rank">#${rank}</span><span class="ir-name">${escapeHtml(name)}</span>${tagHtml}<span class="ir-score">${fmt(score)}</span></div>`;
-  if (intel.tab === 'beacon') {
-    els.intelBody.innerHTML = (d.beacon_ticks_held ?? []).map((x) => row(x.rank, x.username, x.score)).join('')
-      || '<div class="stream-empty">暂无信标持有数据</div>';
-    els.intelMeta.textContent = `信标累计持有 tick · 快照 ${d.snapshot ?? ''} · ${new Date(d.generatedAt).toLocaleString('zh-CN', { hour12: false })}`;
-    return;
-  }
-  if (intel.tab === 'core') {
-    els.intelBody.innerHTML = (d.core_destruction_participations ?? []).map((x) => row(x.rank, x.username, x.score)).join('')
-      || '<div class="stream-empty">暂无核心摧毁数据</div>';
-    els.intelMeta.textContent = `核心摧毁参与次数 · 快照 ${d.snapshot ?? ''} · ${new Date(d.generatedAt).toLocaleString('zh-CN', { hour12: false })}`;
-    return;
-  }
-  // threat: profiles 按 damage 排序的威胁画像
-  const profiles = (d.profiles ?? []).slice(0, 30);
-  els.intelBody.innerHTML = profiles.map((x) => {
-    const t = TIER_META[x.tier] ?? { cls: 'std', label: x.tier ?? '未知' };
-    const tag = `<span class="ir-tag ${t.cls}">${t.label}</span>`;
-    return row(x.rank, x.username, x.damage, tag);
-  }).join('') || '<div class="stream-empty">暂无威胁画像数据</div>';
-  els.intelMeta.textContent = `按造成伤害排名的玩家威胁画像（红色=精英攻坚，琥珀=攻坚）· 快照 ${d.snapshot ?? ''} · ${new Date(d.generatedAt).toLocaleString('zh-CN', { hour12: false })}`;
-}
-
-/* ---------- 官方商店 / 兑换码 ---------- */
-const SHOP_COOKIE_KEY = 'arena-cc.shop-cookie';
-function shopCookieValue() { return (localStorage.getItem(SHOP_COOKIE_KEY) ?? '').trim(); }
-async function shopRequest(path, options = {}) {
-  const headers = new Headers(options.headers ?? {});
-  const cookie = shopCookieValue();
-  if (cookie) headers.set('X-Shop-Cookie', cookie);
-  const res = await fetch(path, { ...options, headers, cache: 'no-store' });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(data.error ?? data.message ?? `HTTP ${res.status}`);
-    err.status = res.status;
-    throw err;
-  }
-  return data;
-}
-async function openRedeem() {
-  els.redeemDialog.showModal();
-  els.shopCookie.value = shopCookieValue();
-  showRedeemResult('', '');
-  els.redeemResult.hidden = true;
-  renderRedeemHistory();
-  await refreshShop();
-  if (shopCookieValue()) await refreshAccount();
-}
-async function refreshShop() {
-  els.shopList.innerHTML = '<div class="stream-empty">加载官方商品…</div>';
-  try {
-    const data = await shopRequest('/api/shop');
-    renderShopItems(data.products ?? []);
-  } catch (err) {
-    els.shopList.innerHTML = `<div class="stream-empty">加载官方商品失败：${escapeHtml(err.message)}
-      <button type="button" class="btn ghost" id="shopRetry" style="margin-top:8px">重试</button></div>`;
-    els.shopList.querySelector('#shopRetry')?.addEventListener('click', refreshShop);
-  }
-}
-function renderShopItems(products) {
-  if (!products.length) { els.shopList.innerHTML = '<div class="stream-empty">官方商店暂无商品</div>'; return; }
-  els.shopList.innerHTML = products.map((p) => {
-    const out = p.available_stock <= 0;
-    const desc = (p.description ?? '').trim();
-    return `<div class="shop-item">
-      <div class="si-main">
-        <div class="si-name">${escapeHtml(p.name ?? '未命名商品')}</div>
-        ${desc ? `<div class="si-desc">${escapeHtml(desc)}</div>` : ''}
-        <div class="si-meta">
-          <span class="cost">${p.resource_cost} Core</span>
-          <span class="${out ? 'stock-out' : ''}">${out ? '已售罄' : `剩余 ${p.available_stock}`}</span>
-          ${p.purchase_limit > 0 ? `<span>每人限购 ${p.purchase_limit} 件</span>` : ''}
-        </div>
-      </div>
-      <button type="button" class="btn primary si-btn" data-product="${escapeHtml(p.id)}" data-name="${escapeHtml(p.name ?? '')}" data-cost="${p.resource_cost}" ${out ? 'disabled' : ''}>兑换</button>
-    </div>`;
-  }).join('');
-  els.shopList.querySelectorAll('button[data-product]').forEach((b) => {
-    b.addEventListener('click', () => redeemProduct(b.dataset.product, b.dataset.name, Number(b.dataset.cost)));
-  });
-}
-async function refreshAccount() {
-  if (!shopCookieValue()) { els.shopAccount.hidden = true; return; }
-  try {
-    const me = await shopRequest('/api/shop/me');
-    els.shopAccount.hidden = false;
-    els.shopAccount.innerHTML = `
-      <span class="acc-name">@${escapeHtml(me.username ?? '?')}</span>
-      <span class="acc-res"><img src="${UNIT_ICONS.resource}" alt="" width="16" height="16" /><strong>${fmt(me.resources)}</strong><small>&nbsp;/ ${fmt(me.resource_capacity)} Core 资源</small></span>`;
-    await renderOrders();
-  } catch (err) {
-    els.shopAccount.hidden = false;
-    els.shopAccount.innerHTML = `<span class="acc-err">连接失败：${escapeHtml(err.message)}（Cookie 可能已失效）</span>`;
-  }
-}
-async function renderOrders() {
-  try {
-    const data = await shopRequest('/api/shop/orders');
-    const orders = data.orders ?? [];
-    els.redeemHistory.innerHTML = orders.length
-      ? orders.slice(0, 12).map((o) => `<li><span class="h-time">${escapeHtml(o.product_name ?? '')}</span><span>${escapeHtml(o.status ?? '')}</span><span class="h-status">${new Date(o.created_at).toLocaleString('zh-CN', { hour12: false })}</span></li>`).join('')
-      : '<li style="color:#56626c">暂无兑换订单</li>';
-  } catch (err) {
-    els.redeemHistory.innerHTML = `<li style="color:#c66370">订单加载失败：${escapeHtml(err.message)}</li>`;
-  }
-}
-async function redeemProduct(id, name, cost) {
-  if (!shopCookieValue()) { showRedeemResult('err', '请先粘贴并保存官方商店 Cookie'); return; }
-  if (!window.confirm(`确认使用 ${cost} 个 Core 资源兑换「${name}」？\n\n库存与资源同时满足时才扣款。`)) return;
-  showRedeemResult('pending', '正在提交兑换…');
-  try {
-    const data = await shopRequest('/api/shop/order', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ product_id: id }),
-    });
-    const status = data.status ?? 'PENDING';
-    if (status === 'COMPLETED') {
-      showRedeemResult('ok', `兑换成功！订单状态：${status}`);
-    } else {
-      showRedeemResult('pending', `订单已提交（${status}），正在确认扣款，可在账户页查看进度。`);
-    }
-    await refreshAccount();
-  } catch (err) {
-    showRedeemResult('err', `兑换失败：${escapeHtml(err.message)}`);
-  }
-}
-function showRedeemResult(cls, msg) {
-  els.redeemResult.className = `redeem-result ${cls}`;
-  els.redeemResult.textContent = msg;
-  els.redeemResult.hidden = false;
-}
-function saveShopCookie() {
-  const v = els.shopCookie.value.trim();
-  if (!v) { showRedeemResult('err', 'Cookie 不能为空'); return; }
-  localStorage.setItem(SHOP_COOKIE_KEY, v);
-  showRedeemResult('pending', 'Cookie 已保存（仅本机浏览器）。正在连接官方商店…');
-  refreshAccount();
-}
-function renderRedeemHistory() {
-  const list = JSON.parse(localStorage.getItem('arena-cc.redeem-history') ?? '[]');
-  els.redeemHistory.innerHTML = list.length
-    ? list.map((h) => `<li><span class="h-time">${new Date(h.at).toLocaleTimeString('zh-CN', { hour12: false })}</span><span>${escapeHtml(h.code)}</span><span class="h-status">${escapeHtml(h.status)}</span></li>`).join('')
-    : '<li style="color:#56626c">暂无本地记录</li>';
+  emit('refresh', ok);
 }
 
 /** 光标锚定缩放（阻尼目标版）：连续滚轮/键盘/按钮在 target 上累积，逐帧由 stepZoom 平滑趋近。 */
@@ -1676,100 +1286,13 @@ function bindEvents() {
   $('#zoomIn').addEventListener('click', () => { const r = els.canvas.getBoundingClientRect(); zoomTo(r.width / 2, r.height / 2, 1.5); });
   $('#zoomOut').addEventListener('click', () => { const r = els.canvas.getBoundingClientRect(); zoomTo(r.width / 2, r.height / 2, 1 / 1.5); });
   $('#fitBtn').addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
-  // 图层
-  document.querySelectorAll('#layerToggles input').forEach((el) => {
-    el.addEventListener('change', () => { state.layers[el.dataset.layer] = el.checked; invalidateStatic(); draw(); savePrefs(); });
-  });
-  // 租户开关
-  els.tenantToggles.addEventListener('change', (e) => {
-    if (e.target.matches('input[data-tenant]')) {
-      state.tenantsOn[e.target.dataset.tenant] = e.target.checked;
-      invalidateStatic();
-      draw();
-    }
-  });
-  // 租户卡片点击（事件委托）：点「✕ 返回全局」退出聚焦；点同租户取消聚焦回全局；点不同租户聚焦
-  els.tenantCards.addEventListener('click', (e) => {
-    const card = e.target.closest('.tenant-card');
-    if (!card) return;
-    if (e.target.closest('.tc-exit')) { exitSolo(); return; }
-    toggleSolo(card.dataset.tenant);
-  });
-  els.tenantCards.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    const card = e.target.closest('.tenant-card');
-    if (!card) return;
-    e.preventDefault();
-    if (e.target.closest('.tc-exit')) { exitSolo(); return; }
-    toggleSolo(card.dataset.tenant);
-  });
-  // 视图切换
-  els.viewGlobal.addEventListener('click', exitSolo);
+  // 视图切换（mapGlobal 在地图控件内；viewGlobal/viewFit 在 React 侧栏，走 api）
   els.mapGlobal.addEventListener('click', exitSolo);
-  els.viewFit.addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
   // 回放控制
   els.rbPlay.addEventListener('click', replayToggle);
   els.rbPrev.addEventListener('click', () => replayStepFrame(-1));
   els.rbNext.addEventListener('click', () => replayStepFrame(1));
   els.rbSpeed.addEventListener('click', replayCycleSpeed);
-  // 决策流折叠
-  if (els.streamFilter) {
-    els.streamFilter.addEventListener('click', () => {
-      state.streamFilterQuiet = !state.streamFilterQuiet;
-      els.streamFilter.classList.toggle('on', state.streamFilterQuiet);
-      els.streamFilter.title = state.streamFilterQuiet ? '显示全部（含无需决策）' : '只显示实际决策（隐藏无需决策行）';
-      els.streamBody.scrollTop = 0;
-      savePrefs();
-      pollStreams();
-    });
-  }
-  els.streamToggle.addEventListener('click', () => {
-    state.streamCollapsed = !state.streamCollapsed;
-    els.streamPane.classList.toggle('collapsed', state.streamCollapsed);
-    els.streamPane.style.height = state.streamCollapsed ? '38px' : state.streamHeight + 'px';
-    els.streamToggle.setAttribute('aria-expanded', String(!state.streamCollapsed));
-    trackCanvasResize(); // 高度过渡期间逐帧同步画布位图（防拉伸）
-    updateStreamLive();  // 折叠时显示/展开时隐藏最新决策胶囊
-    if (!state.streamCollapsed) {
-      const dot = els.streamToggle.querySelector('.st-dot');
-      if (dot) dot.classList.remove('has-new');
-    }
-    savePrefs();
-  });
-  // 决策流高度拖拽（140-460px，松手持久化）
-  if (els.streamGrip) {
-    els.streamGrip.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      const startY = e.clientY;
-      const startH = state.streamCollapsed ? state.streamHeight : els.streamPane.getBoundingClientRect().height;
-      const move = (ev) => {
-        const h = Math.max(140, Math.min(460, startH + (startY - ev.clientY)));
-        state.streamHeight = h;
-        els.streamPane.style.height = h + 'px';
-        trackCanvasResize(); // 高度变化逐帧同步画布位图（防拉伸）
-      };
-      const up = () => {
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', up);
-        savePrefs();
-      };
-      window.addEventListener('pointermove', move);
-      window.addEventListener('pointerup', up);
-    });
-  }
-  // "最新"悬浮按钮：点击回到顶部（最新）；手动回到顶部自动隐藏
-  if (els.streamJump) {
-    els.streamJump.addEventListener('click', () => { els.streamBody.scrollTop = 0; els.streamJump.hidden = true; });
-    els.streamBody.addEventListener('scroll', () => {
-      if (els.streamBody.scrollTop < 28 && !els.streamJump.hidden) els.streamJump.hidden = true;
-    });
-  }
-  // 官方商店 / 兑换码
-  els.redeemBtn.addEventListener('click', openRedeem);
-  els.redeemClose.addEventListener('click', () => els.redeemDialog.close());
-  els.intelBtn.addEventListener('click', openIntel);
-  els.intelClose.addEventListener('click', () => els.intelDialog.close());
-  els.intelDialog.addEventListener('click', (e) => { if (e.target === els.intelDialog) els.intelDialog.close(); });
   // 聚焦徽章可点击：返回全局联盟（悬停 title 提示）
   if (els.soloBadge) {
     els.soloBadge.addEventListener('click', () => { if (state.soloTenant) exitSolo(); });
@@ -1797,15 +1320,6 @@ function bindEvents() {
       toast(`已跳转到信标 [${b.x}, ${b.y}]`);
     }
   });
-  els.cookieSave.addEventListener('click', saveShopCookie);
-  els.cookieTest.addEventListener('click', async () => {
-    const v = els.shopCookie.value.trim();
-    if (!v) { showRedeemResult('err', '请先粘贴官方商店 Cookie 再连接'); return; }
-    localStorage.setItem(SHOP_COOKIE_KEY, v);
-    showRedeemResult('pending', '正在连接官方商店…');
-    await refreshAccount();
-  });
-  els.shopCookie.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveShopCookie(); } });
   // 窗口
   // 容器尺寸变化（折叠决策流/侧栏宽度变化等）：同步重设位图——
   // 之前 rAF 延迟一帧，折叠/展开的 550ms 过渡里每一帧都会出现"旧位图被 CSS 拉伸"的鬼影。
@@ -1839,21 +1353,18 @@ function bindEvents() {
 /* ---------- 启动 ---------- */
 async function boot() {
   applyPrefs();
-  syncLayerToggles();
   bindEvents();
   pokeHint();
   resizeCanvas();
   tickClock();
   setInterval(tickClock, 1000);
-  renderLegend();
-  renderTenantToggles();
   await loadSprites();
   await poll();
-  markRefresh(true);
+  emit('refresh', true);
   pollStreams();
   setInterval(async () => {
     await poll();
-    markRefresh(true);
+    emit('refresh', true);
   }, POLL_MS);
   setInterval(() => { pollStreams(); }, POLL_MS);
   let lastAnim = 0;
@@ -1887,10 +1398,6 @@ async function boot() {
   window.addEventListener('keydown', (e) => {
     const tag = (e.target && e.target.tagName) || '';
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    if (els.redeemDialog.open || els.intelDialog.open) {
-      if (e.key === 'Escape') { els.redeemDialog.close(); els.intelDialog.close(); }
-      return;
-    }
     const panStep = () => Math.max(1, W() / 2 / state.view.scale * 0.25);
     const pan = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
     if (pan) {
@@ -2168,8 +1675,8 @@ function exitSolo() {
   tactClear();
   invalidateStatic();
   fitView();
-  renderTenantCards();
-  els.viewGlobal.classList.add('active');
+  emit('solo', state.soloTenant);
+  emit('overview', state.overview);
   els.mapGlobal.hidden = true;
   syncSoloBadge();
 }
@@ -2201,11 +1708,14 @@ function tactRenderActionDialog() {
   const pop = world.state.population ?? 0;
   const costHtml = isCore ? `<div class="act-spawn-row"><span class="act-spawn-label">生产单位 · 资源 ${world.state.resources ?? 0} / ${tactCoreCapacity(pop)}</span><div class="act-spawn-grid">${['WORKER','VANGUARD','RANGER'].map((u) => {
     const cost = tactUnitCost(u, pop);
-    return `<button class="act-spawn" data-spawn="${u}" title="演练：生产 ${TACT_UNIT_CN[u]}（${cost} 资源）"><img src="${unitSpritePath(u)}" alt="" /><span>${TACT_UNIT_CN[u]}</span><b>${cost}</b></button>`;
+    return `<button class="act-spawn" data-spawn="${u}" title="提交：生产 ${TACT_UNIT_CN[u]}（${cost} 资源，人类指挥）"><img src="${unitSpritePath(u)}" alt="" /><span>${TACT_UNIT_CN[u]}</span><b>${cost}</b></button>`;
   }).join('')}</div></div>` : '';
-  const goal = tac.moveGoals[obj.id];
-  const goalRow = goal ? `<div class="act-goal"><span>演练路线 → [${goal[0]}, ${goal[1]}]</span><button data-cancel-goal>清除</button></div>` : '';
-  const modeBadge = tac.mode ? `<div class="act-mode-badge">${tac.mode === 'MOVE' ? '点击地图选择移动目标…' : tac.mode === 'SHOOT' ? '点击敌方单位选择攻击目标…' : '点击相邻格选择清扫方向…'}</div>` : '';
+  const sgoal = commandGoalOf(sel.tenant, obj.id);
+  const goalRow = sgoal
+    ? `<div class="act-goal"><span>${sgoal.kind === 'mine' ? '采矿任务' : '移动任务'} → [${sgoal.target[0]}, ${sgoal.target[1]}] · 人类指挥</span><button data-cancel-goal>清除指令</button></div>`
+    : (tac.moveGoals[obj.id] ? `<div class="act-goal"><span>本地路线 → [${tac.moveGoals[obj.id][0]}, ${tac.moveGoals[obj.id][1]}]</span></div>` : '');
+  const cmdStatus = commandStatusText(sel.tenant);
+  const modeBadge = tac.mode ? `<div class="act-mode-badge">${tac.mode === 'MOVE' ? '点矿=自动采矿任务 · 点空地=移动任务' : tac.mode === 'SHOOT' ? '点击敌方单位 → 锁定并提交攻击' : '点击单位相邻格选择清扫方向并提交'}</div>` : '';
   els.actionDialog.innerHTML = `
     <div class="act-head">
       <span class="act-icon"><img src="${artPath}" alt="" /></span>
@@ -2223,11 +1733,12 @@ function tactRenderActionDialog() {
       const reason = av.reasons?.[t2];
       if (!available && !reason) return `<button class="act-btn ${danger ? 'danger' : ''}" data-action="${t2}" disabled title="当前不可用">${TACT_ACTION_CN[t2] ?? t2}</button>`;
       if (!available) return `<button class="act-btn blocked" data-blocked="${t2}" data-reason="${escapeHtml(reason)}" title="${escapeHtml(reason)}">${TACT_ACTION_CN[t2] ?? t2}</button>`;
-      return `<button class="act-btn ${danger ? 'danger' : ''}" data-action="${t2}" title="演练：${TACT_ACTION_CN[t2]}">${TACT_ACTION_CN[t2] ?? t2}</button>`;
+      return `<button class="act-btn ${danger ? 'danger' : ''}" data-action="${t2}" title="提交：${TACT_ACTION_CN[t2]}（人类指挥）">${TACT_ACTION_CN[t2] ?? t2}</button>`;
     }).join('')}</div>
     ${costHtml}
     ${goalRow}
-    <div class="act-note">${isCore ? '核心 · 只读演练（生产/移动为预览）' : obj.unit_type === 'RANGER' ? '游侠 · 远程射击（射程内点敌方目标）' : obj.unit_type === 'VANGUARD' ? '先锋 · 近战单位：清扫相邻格，无法远程攻击' : '工人 · 采集/回仓（预览）'} · 不提交到 Arena</div>
+    ${cmdStatus ? `<div class="act-mode-badge cmd-status">${cmdStatus}</div>` : ''}
+    <div class="act-note">${isCore ? '核心 · 生产/移动为真实命令' : obj.unit_type === 'RANGER' ? '游侠 · 远程射击：点敌方目标提交攻击' : obj.unit_type === 'VANGUARD' ? '先锋 · 近战：点相邻格提交清扫' : '工人 · 点矿=自动采矿（到达挖、满仓回）'} · 人类指挥最高优先</div>
   `;
   const p = project(obj.position[0], obj.position[1]);
   const rect = els.canvas.getBoundingClientRect();
@@ -2248,7 +1759,7 @@ function tactRenderActionDialog() {
     setTimeout(() => b.classList.remove('shake'), 400);
   }));
   els.actionDialog.querySelectorAll('[data-spawn]').forEach((b) => b.addEventListener('click', () => tactSpawn(b.dataset.spawn)));
-  els.actionDialog.querySelector('[data-cancel-goal]')?.addEventListener('click', () => { delete tac.moveGoals[obj.id]; tac.moveRoute = null; tac.routePreview = null; tactRenderActionDialog(); draw(); });
+  els.actionDialog.querySelector('[data-cancel-goal]')?.addEventListener('click', () => { delete tac.moveGoals[obj.id]; tac.moveRoute = null; tac.routePreview = null; clearUnitCommands(sel.tenant, obj.id); tactRenderActionDialog(); draw(); });
 }
 function tactChooseAction(type) {
   const tac = T(), sel = tac.selected;
@@ -2266,18 +1777,31 @@ function tactChooseAction(type) {
     tac.mode = 'SHOOT'; tactRenderActionDialog(); draw(); return;
   }
   if (type === 'SWEEP') { tac.mode = 'SWEEP'; tactRenderActionDialog(); draw(); return; }
+  // 一键动作：直接提交真实命令（人类最高控制权）
   if (type === 'SELF_DESTRUCT') {
-    if (!window.confirm(`演练：确认 ${obj.kind === 'CORE' ? '核心' : '单位'} 自毁？`)) return;
+    if (!window.confirm(`确认让 ${obj.kind === 'CORE' ? '核心' : '单位'} 自毁？此命令将提交到 Arena`)) return;
   }
   tac.mode = null;
+  const isCore = obj.kind === 'CORE';
+  const coreId = world.state?.objects?.find((o) => o.kind === 'CORE' && o.controlled === true)?.id ?? null;
+  const unitId = isCore ? coreId : obj.id;
+  const action = { type };
+  if (type === 'MOVE' || type === 'START_MOVE') action.direction = 'UP'; // 不应到达这里
+  if (unitId) submitCommand(sel.tenant, unitId, action, TACT_ACTION_CN[type] ?? type);
   tactRenderActionDialog();
 }
 function tactSpawn(unitType) {
   const tac = T(), sel = tac.selected;
   if (!sel || sel.obj.kind !== 'CORE') return;
   const world = tac.worlds[sel.tenant];
+  if (!world) return;
   const cost = tactUnitCost(unitType, world?.state.population ?? 0);
-  if (window.confirm(`演练：核心生产 ${TACT_UNIT_CN[unitType]}（${cost} 资源）？`)) { tac.mode = null; tactRenderActionDialog(); }
+  if (!window.confirm(`确认核心生产 ${TACT_UNIT_CN[unitType]}（${cost} 资源）？此命令将提交到 Arena`)) return;
+  const coreId = world.state?.objects?.find((o) => o.kind === 'CORE' && o.controlled === true)?.id ?? null;
+  if (!coreId) { toast('找不到己方核心', 'warn'); return; }
+  tac.mode = null;
+  submitCommand(sel.tenant, coreId, { type: 'SPAWN', unitType }, `生产 ${TACT_UNIT_CN[unitType]}`);
+  tactRenderActionDialog();
 }
 function tactRenderInspect() {
   const tac = T(), sel = tac.selected;
@@ -2294,8 +1818,9 @@ function tactRenderInspect() {
   if (obj.cargo != null) rows.push(['载货', obj.cargo]);
   if (obj.owner_username) rows.push(['拥有者', obj.owner_username]);
   if (obj.state === 'MOVING') rows.push(['状态', `移动中 → [${obj.destination?.[0] ?? '?'}, ${obj.destination?.[1] ?? '?'}]`]);
-  const goal = tac.moveGoals[obj.id];
-  if (goal) rows.push(['演练路线', `→ [${goal[0]}, ${goal[1]}]`]);
+  const sgoal = commandGoalOf(sel.tenant, obj.id);
+  if (sgoal) rows.push(['指挥任务', `${sgoal.kind === 'mine' ? '采矿' : '移动'} → [${sgoal.target[0]}, ${sgoal.target[1]}] · 人类`]);
+  else { const goal = tac.moveGoals[obj.id]; if (goal) rows.push(['本地路线', `→ [${goal[0]}, ${goal[1]}]`]); }
   els.inspectPanel.hidden = false;
   els.inspectPanel.innerHTML = `<h3 class="panel-title">单位详情 · DETAILS</h3>${rows.map(([k, v]) => `<div class="ins-row"><span>${k}</span><b>${v}</b></div>`).join('')}`;
 }
@@ -2335,12 +1860,13 @@ function tactRenderHud(tenant) {
     <span class="hud-val">${survey.coreCells.length} 核心</span>
     <span class="hud-val dim">${survey.caseCount} case · tick ${survey.tickMax}</span>
   </div>` : '';
+  const cmdStatus = commandStatusText(tenant);
   els.fleetHud.innerHTML = `<div class="hud-row">
     <span class="hud-label">${tenant.toUpperCase()} · HUD</span>
     <span class="hud-val"><img src="${UNIT_ICONS.resource}" alt="" /> ${st.resources ?? 0} <i>/ ${cap}</i></span>
     <span class="hud-val"><img src="${UNIT_ICONS.population}" alt="" /> ${st.population ?? 0}</span>
     <span class="hud-val mono">tick ${world.tick ?? st.tick ?? '—'}</span>
-  </div>${surveyRow}`;
+  </div>${surveyRow}${cmdStatus ? `<div class="hud-row hud-survey"><span class="hud-label">指挥</span><span class="hud-val" style="color:var(--warn)">人类已接管 · 命令优先于 agent</span></div>` : ''}`;
 }
 /* ============ 回放引擎（连续 tick 快照 → 单位移动动画 + 15s 读条） ============ */
 async function replayLoad(tenant) {
@@ -3087,6 +2613,13 @@ async function handleCanvasClick(px, py) {
         tac.moveRoute = { path };
         tac.routePreview = null;
         tac.mode = null;
+        // 意图式指挥：点矿 = 下达「采矿任务」（到达自动挖、满仓回仓）；点空地 = 移动任务
+        const key = wx + ',' + wy;
+        const cell = state.cellIndex.get(key);
+        const isResource = (cell && cell.type === 'resource') ||
+          (world.state?.objects ?? []).some((o) => o.kind === 'RESOURCE' && (o.positions ?? []).some((p) => p[0] === wx && p[1] === wy));
+        const kind = isResource ? 'mine' : 'goto';
+        submitGoal(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy], kind === 'mine' ? `采矿 → [${wx}, ${wy}]` : `移动 → [${wx}, ${wy}]`);
         tactRenderActionDialog(); tactRenderInspect(); draw();
       }
     }
@@ -3100,7 +2633,9 @@ async function handleCanvasClick(px, py) {
         tac.attackTarget = { obj: target };
         tac.mode = null;
         tactRenderActionDialog(); tactRenderInspect(); draw();
-        toast(`已锁定攻击目标 [${target.position[0]}, ${target.position[1]}]（演练预览）`, 'info');
+        submitCommand(tac.selected.tenant, tac.selected.obj.id,
+          { type: 'SHOOT', targetId: target.id ?? null, expectedCell: [target.position[0], target.position[1]] },
+          `攻击 [${target.position[0]}, ${target.position[1]}]`);
       } else if (target) {
         toast('只能攻击敌方单位/核心（已探索记忆中的目标已不存在）', 'warn');
       } else {
@@ -3110,8 +2645,18 @@ async function handleCanvasClick(px, py) {
     return;
   }
   if (tac.mode === 'SWEEP' && tac.selected && cell) {
+    const obj = tac.selected.obj;
+    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+    const dx = wx - obj.position[0], dy = wy - obj.position[1];
+    const direction = dx === 1 && dy === 0 ? 'RIGHT' : dx === -1 && dy === 0 ? 'LEFT' : dy === 1 && dx === 0 ? 'DOWN' : dy === -1 && dx === 0 ? 'UP' : null;
     tac.mode = null;
-    tactRenderActionDialog(); draw();
+    if (direction) {
+      submitCommand(tac.selected.tenant, tac.selected.obj.id, { type: 'SWEEP', direction }, `清扫 ${direction}`);
+    } else {
+      toast('请点击单位相邻格选择清扫方向', 'warn');
+    }
+    tactRenderActionDialog(); tactRenderInspect(); draw();
     return;
   }
   if (cell && (cell.type === 'unit' || cell.type === 'core')) {
@@ -3158,17 +2703,121 @@ function updateBeaconIndicator() {
   }
 }
 
-function renderLegend() {
-  els.legendList.innerHTML = `
-    <li><span class="sw core"></span>核心</li>
-    <li><span class="sw unit"></span>单位</li>
-    <li><span class="sw resource"></span>资源</li>
-    <li><span class="sw obstacle"></span>障碍</li>
-    <li><span class="sw beacon"></span>冠军信标</li>
-    <li><span class="sw memory"></span>已探索记忆（非当前 tick 淡显）</li>`;
+/* ---------- 人类最高控制权：真实指挥提交（Manual > Agent > Safety） ---------- */
+/** 一键动作/意图提交到指挥面板后端（server.mjs → data/runtime/human-commands/<tenant>.json），
+ *  tenant 主循环提交前合并（human-override.ts），人类指令最高优先。 */
+async function ccPost(path, body) {
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error ?? data.message ?? `HTTP ${res.status}`);
+    return data;
+  } catch (err) {
+    toast(`提交失败：${err.message}`, 'err');
+    return null;
+  }
 }
-boot().catch((err) => {
-  console.error('boot failed', err);
-  els.badge.className = 'badge err';
-  els.badge.textContent = '启动失败';
-});
+async function ccDelete(path, body) {
+  try {
+    const res = await fetch(path, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error ?? data.message ?? `HTTP ${res.status}`);
+    return data;
+  } catch (err) {
+    toast(`操作失败：${err.message}`, 'err');
+    return null;
+  }
+}
+/** 一键动作（单 tick 覆盖）：如 SHOOT / HARVEST / DEPOSIT / HEAL / SPAWN / SWEEP。 */
+async function submitCommand(tenant, unitId, action, note) {
+  const data = await ccPost('/api/command', { tenant, unitId, action, note });
+  if (data) {
+    toast(`已提交命令：${note ?? JSON.stringify(action)}（人类指挥）`, 'ok');
+    tactRefreshCommands(tenant);
+  }
+  return data;
+}
+/** 持续意图（任务）：mine = 去目标采矿（到达自动挖、满仓回仓）；goto = 移动到目标点。 */
+async function submitGoal(tenant, unitId, kind, target, note) {
+  const data = await ccPost('/api/command/goal', { tenant, unitId, kind, target, note });
+  if (data) {
+    toast(kind === 'mine' ? `已下达采矿任务 → [${target[0]}, ${target[1]}]（到达后自动采集，满仓自动回仓）` : `已下达移动任务 → [${target[0]}, ${target[1]}]`, 'ok');
+    tactRefreshCommands(tenant);
+  }
+  return data;
+}
+async function clearUnitCommands(tenant, unitId) {
+  const data = await ccDelete('/api/command', { tenant, unitId, scope: 'all' });
+  if (data) { toast('已取消该单位的指挥指令（交还 agent）', 'info'); tactRefreshCommands(tenant); }
+  return data;
+}
+async function clearTenantCommands(tenant) {
+  const data = await ccPost('/api/command/clear', { tenant });
+  if (data) { toast('已清空该租户全部人类指令', 'info'); tactRefreshCommands(tenant); }
+  return data;
+}
+async function tactRefreshCommands(tenant) {
+  const tac = T();
+  try {
+    const r = await getJSON(`/api/commands?tenant=${tenant}`);
+    tac.commands = r;
+  } catch { /* 忽略 */ }
+  tactRenderActionDialog();
+  tactRenderHud(tenant);
+}
+/** 人类指令状态快照：{ mode, actions:[], goals:[], updatedAt }。 */
+function commandStatusText(tenant) {
+  const c = T().commands;
+  if (!c || c.mode !== 'override') return null;
+  const n = (c.actions?.length ?? 0) + (c.goals?.length ?? 0);
+  if (n === 0) return null;
+  return `人类指挥已接管 · ${n} 条指令`;
+}
+function commandGoalOf(tenant, unitId) {
+  const c = T().commands;
+  if (!c) return null;
+  return (c.goals ?? []).find((g) => g.unitId === unitId) ?? null;
+}
+function commandActionOf(tenant, unitId) {
+  const c = T().commands;
+  if (!c) return null;
+  return (c.actions ?? []).find((a) => a.unitId === unitId) ?? null;
+}
+
+/* ---------- React 挂载桥 ---------- */
+const _subs = new Set();
+function emit(topic, payload) {
+  for (const cb of _subs) { try { cb(topic, payload); } catch (e) { console.error('emit', topic, e); } }
+}
+export function createMapEngine(host) {
+  ROOT = host;
+  els = buildEls();
+  ctx = els.canvas.getContext('2d');
+  const api = {
+    toggleSolo: (t) => toggleSolo(t),
+    exitSolo: () => exitSolo(),
+    fitView: () => fitView(),
+    fitSolo: (t) => fitSolo(t),
+    setLayer: (name, on) => { state.layers[name] = on; invalidateStatic(); draw(); savePrefs(); emit('layers', { ...state.layers }); },
+    setTenantOn: (t, on) => { state.tenantsOn[t] = on; invalidateStatic(); draw(); },
+    setTab: (tab) => { state.tab = tab; savePrefs(); pollStreams(); },
+    jumpTo: (x, y) => { state.view.cx = x; state.view.cy = y; state.viewAnim = null; state.zoom.active = false; draw(); },
+    resize: () => { resizeCanvas(); draw(); },
+    getState: () => ({ soloTenant: state.soloTenant, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length }),
+    subscribe: (cb) => { _subs.add(cb); return () => _subs.delete(cb); },
+    toast: (msg, tone) => toast(msg, tone),
+  };
+  boot().catch((err) => {
+    console.error('map engine boot failed', err);
+    emit('refresh', false);
+  });
+  return api;
+}
