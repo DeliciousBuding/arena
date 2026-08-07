@@ -48,6 +48,13 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 与 threat-adaptive-defense-v1 叠加：排行榜画像给先验，实测守军给实时。
      */
     "assault-overmatch-v1": Object.freeze({ assaultOvermatch: true }),
+    /**
+     * 威胁方向侦察（2026-08-07，t2 生产实证）：worker 巡逻方位向已知敌核心
+     * 方向（coreHuntTargets 首个 CORE）加权——前 4 worker 覆盖威胁扇区 ±1，
+     * 保证威胁来路（如 t2 NE=jerkman）始终有 ≥3 worker 侦察，小股进攻更早
+     * 目击 → 触发 ALERT/召回/迁移。无 CORE 目击 = 均匀分布零回归。
+     */
+    "threat-sector-scout-v1": Object.freeze({ threatSectorScout: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),

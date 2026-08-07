@@ -452,6 +452,21 @@ export class World {
       });
   }
 
+  /** 威胁方向扇区（threat-sector-scout-v1，2026-08-07）：首个 CORE 目击
+   *  敌核心相对 home 的 8 方位索引（0=E,1=SE,2=S,3=SW,4=W,5=NW,6=N,7=NE，
+   *  与 nav EXPLORE_DELTAS 同语义）——供 worker 巡逻方位向威胁方向加权
+   *  （补侦察盲区：t2 生产实证 NE=jerkman 来路只有 1/12 worker，小股部队
+   *  摸过来看不见）。无 CORE 目标返回 null（不加权）。 */
+  threatSectorFrom(home: Position): number | null {
+    const target = this.coreHuntTargets().find((t) => t.source === "CORE");
+    if (target === undefined) return null;
+    const dx = target.position[0] - home[0];
+    const dy = target.position[1] - home[1];
+    if (dx === 0 && dy === 0) return 0;
+    const angle = Math.atan2(dy, dx);
+    return (Math.round(angle / (Math.PI / 4)) + 8) % 8;
+  }
+
   /** 启动播种（持久敌情测绘，2026-08-07）：从本租户历史 calibration cases
    *  提取的"最后已知敌 Core 位置"注入——重启后军事仍记得敌方基地（解决
    *  "重启→记忆清零→军队空转"）。更新鲜的目击不覆盖。返回实际播种数。 */
