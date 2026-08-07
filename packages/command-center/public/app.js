@@ -61,6 +61,9 @@ const els = {
   viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'),
   actionDialog: $('#actionDialog'), inspectPanel: $('#inspectPanel'),
   beaconIndicator: $('#beaconIndicator'), pendingPanel: $('#pendingPanel'),
+  replayBar: $('#replayBar'), rbTick: $('#rbTick'), rbMaxTick: $('#rbMaxTick'),
+  rbFill: $('#rbFill'), rbCountdown: $('#rbCountdown'),
+  rbPlay: $('#rbPlay'), rbPrev: $('#rbPrev'), rbNext: $('#rbNext'), rbSpeed: $('#rbSpeed'),
   fleetHud: $('#fleetHud'), assetPanel: $('#assetPanel'), assetList: $('#assetList'),
 };
 
@@ -225,13 +228,18 @@ function draw() {
   tactSurveyLayer(s);
   const drawCells = visibleCells();
   const buckets = { obstacle: [], resource: [], unit: [], core: [] };
-  for (const c of drawCells) if (buckets[c.type]) buckets[c.type].push(c);
+  const replayActive = replay.data && replay.loadedFor === state.soloTenant;
+  for (const c of drawCells) {
+    if (replayActive && (c.type === 'unit' || c.type === 'core')) continue; // 回放接管单位/核心
+    if (buckets[c.type]) buckets[c.type].push(c);
+  }
   drawObstacles(buckets.obstacle, s);
   drawResources(buckets.resource, s);
-  drawUnits(buckets.unit, s);
-  drawCores(buckets.core, s);
+  if (!replayActive) drawUnits(buckets.unit, s);
+  if (!replayActive) drawCores(buckets.core, s);
   drawBeacons(s);
   tactDrawLayer(s);
+  if (replayActive) replayDrawLayer(s);
   const ztxt = `×${state.view.scale.toFixed(1)}`;
   if (els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽平移 · 滚轮缩放 · 双击适应 · ${ztxt}`; }
   if (!state.cells.length) {
@@ -558,7 +566,7 @@ function toggleSolo(tenant) {
   els.viewGlobal.classList.toggle('active', global);
 }
 async function tactShowTenant(tenant) {
-  const [world, expl] = await Promise.all([tactLoadWorld(tenant), tactLoadExploration(tenant)]);
+  const [world, expl, rp] = await Promise.all([tactLoadWorld(tenant), tactLoadExploration(tenant), replayLoad(tenant)]);
   if (!world) return;
   tactRenderAssets(tenant);
   tactRenderHud(tenant);
@@ -856,6 +864,11 @@ function bindEvents() {
   // 视图切换
   els.viewGlobal.addEventListener('click', () => { state.soloTenant = null; fitView(); renderTenantCards(); els.viewGlobal.classList.add('active'); });
   els.viewFit.addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
+  // 回放控制
+  els.rbPlay.addEventListener('click', replayToggle);
+  els.rbPrev.addEventListener('click', () => replayStepFrame(-1));
+  els.rbNext.addEventListener('click', () => replayStepFrame(1));
+  els.rbSpeed.addEventListener('click', replayCycleSpeed);
   // 决策流折叠
   els.streamToggle.addEventListener('click', () => {
     state.streamCollapsed = !state.streamCollapsed;
@@ -894,7 +907,17 @@ async function boot() {
   setInterval(() => { pollStreams(); }, POLL_MS);
   let lastAnim = 0;
   const animLoop = (ts) => {
-    if (state.viewAnim) {
+    if (replay.data && replay.playing) {
+      const elapsed = ts - replay.tickStart;
+      replay.progress = Math.min(1, elapsed / (TICK_MS / replay.speed));
+      if (elapsed >= TICK_MS / replay.speed) {
+        replay.frame++;
+        if (replay.frame >= replay.data.ticks.length) { replay.playing = false; replay.frame = replay.data.ticks.length - 1; }
+        replay.tickStart = ts; replay.progress = 0;
+      }
+      updateReplayUI();
+      draw();
+    } else if (state.viewAnim) {
       applyViewAnim(ts);
       draw();
     } else if (ts - lastAnim > 300 && ((state.beacons.length && state.layers.beacon) || state.tactical.selected || state.tactical.mode)) {
@@ -923,6 +946,9 @@ const TACT_ACTION_CN = {
   START_MOVE: '开始移动', CANCEL_MOVE: '取消移动',
 };
 const TACT_STEPS = [{ d: 'UP', dx: 0, dy: -1 }, { d: 'RIGHT', dx: 1, dy: 0 }, { d: 'DOWN', dx: 0, dy: 1 }, { d: 'LEFT', dx: -1, dy: 0 }];
+/* 回放引擎：同一 run 连续 tick 快照 → 单位/核心移动动画 + 15s tick 读条 */
+const TICK_MS = 15000;
+const replay = { data: null, frame: 0, playing: false, speed: 1, loadedFor: null, tickStart: 0, progress: 0 };
 const TACT_RANGER_RAYS = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]];
 const pKey = (p) => `${p[0]},${p[1]}`;
 const samePos = (a, b) => a && b && a[0] === b[0] && a[1] === b[1];
@@ -1092,6 +1118,7 @@ function tactClear() {
   tac.selected = null; tac.mode = null; tac.moveRoute = null; tac.attackTarget = null;
   els.actionDialog.hidden = true; els.inspectPanel.hidden = true;
   els.assetPanel.hidden = true; els.fleetHud.hidden = true;
+  els.replayBar.hidden = true;
   draw();
 }
 function tactActionTypes(obj) {
@@ -1250,6 +1277,124 @@ function tactRenderHud(tenant) {
     <span class="hud-val mono">tick ${st.tick ?? '—'}</span>
   </div>${surveyRow}`;
 }
+/* ============ 回放引擎（连续 tick 快照 → 单位移动动画 + 15s 读条） ============ */
+async function replayLoad(tenant) {
+  try {
+    const r = await getJSON(`/api/replay?tenant=${tenant}`);
+    if (!r.replay || !r.replay.ticks.length) return null;
+    replay.data = r.replay;
+    replay.frame = 0;
+    replay.playing = true;
+    replay.speed = 1;
+    replay.loadedFor = tenant;
+    replay.tickStart = performance.now();
+    replay.progress = 0;
+    els.replayBar.hidden = false;
+    updateReplayUI();
+    return replay.data;
+  } catch { return null; }
+}
+function replayStepFrame(delta) {
+  if (!replay.data) return;
+  replay.frame = Math.max(0, Math.min(replay.data.ticks.length - 1, replay.frame + delta));
+  replay.progress = 0;
+  replay.tickStart = performance.now();
+  updateReplayUI();
+  draw();
+}
+function replayToggle() {
+  if (!replay.data) return;
+  if (replay.playing) { replay.playing = false; }
+  else {
+    if (replay.frame >= replay.data.ticks.length - 1) replay.frame = 0;
+    replay.playing = true;
+    replay.tickStart = performance.now();
+    replay.progress = 0;
+  }
+  updateReplayUI();
+}
+function replayCycleSpeed() {
+  replay.speed = replay.speed >= 4 ? 1 : replay.speed * 2;
+  replay.tickStart = performance.now(); replay.progress = 0;
+  updateReplayUI();
+}
+/** 插值：frame-1 → frame 之间按 progress(0-1) 平滑移动 */
+function replayInterp(obj, frame, progress) {
+  if (!obj.trail || !obj.trail.length) return null;
+  const b = obj.trail[Math.min(frame, obj.trail.length - 1)];
+  const a = obj.trail[Math.max(0, frame - 1)];
+  if (!b) return null;
+  const x = a ? a.x + (b.x - a.x) * progress : b.x;
+  const y = a ? a.y + (b.y - a.y) * progress : b.y;
+  return { x, y, hp: b.hp, shield: b.shield, cargo: b.cargo, t: b.t };
+}
+function replayDrawLayer(s) {
+  const f = replay.frame;
+  const prog = replay.playing ? replay.progress : 1;
+  // 核心（含敌我区分）
+  for (const c of replay.data.cores) {
+    const p = replayInterp(c, f, prog);
+    if (!p) continue;
+    const color = c.controlled ? (TENANT_COLORS[state.soloTenant] ?? '#4591c5') : '#c66370';
+    const size = Math.max(8, s * 0.72);
+    const pr = project(p.x, p.y);
+    if (c.controlled) { ctx.shadowColor = color; ctx.shadowBlur = 10; }
+    if (images[SPRITE.core]) sprite(images[SPRITE.core], pr.sx, pr.sy, size);
+    else { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(3, size * 0.3), 0, Math.PI * 2); ctx.fill(); }
+    ctx.shadowBlur = 0;
+    ring(pr.sx, pr.sy, size * 0.62, color, c.controlled ? 2 : 1.6, c.controlled ? [] : [3, 3]);
+    if (!c.controlled) {
+      ctx.strokeStyle = 'rgba(198,99,112,.85)'; ctx.lineWidth = 2;
+      const d = Math.max(4, size * 0.2);
+      ctx.beginPath();
+      ctx.moveTo(pr.sx - d, pr.sy - d); ctx.lineTo(pr.sx + d, pr.sy + d);
+      ctx.moveTo(pr.sx + d, pr.sy - d); ctx.lineTo(pr.sx - d, pr.sy + d);
+      ctx.stroke();
+    }
+    if (typeof p.hp === 'number') {
+      const bw = Math.max(14, size * 1.1), bh = 3;
+      const bx = pr.sx - bw / 2, by = pr.sy + size * 0.62 + 4;
+      ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = p.hp > 3 ? '#76b889' : p.hp > 1 ? '#d8b64e' : '#c66370';
+      ctx.fillRect(bx, by, bw * Math.max(0, Math.min(1, p.hp / 5)), bh);
+    }
+  }
+  // 单位
+  for (const u of replay.data.units) {
+    const p = replayInterp(u, f, prog);
+    if (!p) continue;
+    const color = u.controlled ? (TENANT_COLORS[state.soloTenant] ?? '#4591c5') : '#c66370';
+    const size = Math.max(6, s * (u.type === 'RANGER' ? 0.68 : 0.62));
+    const pr = project(p.x, p.y);
+    if (s >= 6) {
+      ring(pr.sx, pr.sy, size * 0.72, u.controlled ? color : 'rgba(198,99,112,.55)', u.controlled ? 1.6 : 1.1, u.controlled ? [] : [3, 3]);
+      const path = unitSpritePath(u.type);
+      if (images[path]) sprite(images[path], pr.sx, pr.sy, size);
+      else { ctx.fillStyle = u.controlled ? color : '#c66370'; ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(2, size * 0.25), 0, Math.PI * 2); ctx.fill(); }
+    } else {
+      ctx.fillStyle = u.controlled ? color : 'rgba(198,99,112,.7)';
+      ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(1.8, s * 0.42), 0, Math.PI * 2); ctx.fill();
+    }
+    // 载货小点
+    if ((p.cargo ?? 0) > 0 && s >= 8) {
+      ctx.fillStyle = '#76b889';
+      ctx.beginPath(); ctx.arc(pr.sx, pr.sy - size * 0.62, Math.max(1.6, s * 0.14), 0, Math.PI * 2); ctx.fill();
+    }
+  }
+}
+function updateReplayUI() {
+  const d = replay.data;
+  if (!d) return;
+  els.rbTick.textContent = d.ticks[replay.frame] ?? '—';
+  els.rbMaxTick.textContent = d.ticks[d.ticks.length - 1];
+  const overall = (replay.frame + replay.progress) / d.ticks.length;
+  els.rbFill.style.width = `${Math.round(overall * 100)}%`;
+  const remain = Math.max(0, (TICK_MS / replay.speed - (performance.now() - replay.tickStart)) / 1000);
+  els.rbCountdown.textContent = `${replay.playing ? remain.toFixed(1) : '—'}s`;
+  els.rbPlay.textContent = replay.playing ? '⏸' : '▶';
+  els.rbSpeed.textContent = `×${replay.speed}`;
+}
+
 /** 测绘层：聚焦租户时，把该 run 全部 case 累积的已知地形（障碍/资源）以半透明显示，
     当前 case 可见的物体由上层 cells 全亮覆盖 —— 即"探索过的范围"的记忆测绘。 */
 function tactSurveyLayer(s) {

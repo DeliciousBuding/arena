@@ -557,3 +557,42 @@ body::after {
 #streamPane.collapsed .st-chev { transform: rotate(-90deg); }
 #streamPane.collapsed { height: auto; }
 #streamPane.collapsed .tabs, #streamPane.collapsed #streamBody { display: none; }
+
+/* ---------- 回放条（15s tick 读条 + 控制） ---------- */
+.replay-bar {
+  position: absolute; left: 50%; top: 12px; z-index: 6;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px;
+  width: min(560px, calc(100% - 24px));
+  padding: 8px 14px;
+  animation: dialogIn .3s var(--ease);
+}
+.rb-label { font-size: 9px; letter-spacing: .18em; color: #7d8b98; }
+.rb-tick { font-size: 13px; font-weight: 700; color: #eef3f6; }
+.rb-sep { font-size: 11px; }
+.rb-track {
+  flex: 1; height: 5px; border-radius: 4px;
+  background: rgba(255,255,255,.08); overflow: hidden; position: relative;
+}
+.rb-track::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.06), transparent);
+  background-size: 20px 100%; animation: trackShimmer 2.4s linear infinite;
+}
+@keyframes trackShimmer { from { transform: translateX(-20px); } to { transform: translateX(100%); } }
+#rbFill {
+  height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg, var(--cyan-signal), var(--blue-soft));
+  box-shadow: 0 0 8px rgba(69,145,197,.5);
+  transition: width .2s linear;
+}
+.rb-count { font-size: 11px; color: var(--blue-soft); width: 46px; text-align: right; }
+.rb-controls { display: flex; gap: 4px; }
+.rb-btn {
+  width: 28px; height: 28px; border-radius: var(--gold-sm);
+  border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04);
+  color: #c4cdd4; font-size: 11px; cursor: pointer; font-family: var(--font-mono);
+  transition: all .2s var(--ease);
+}
+.rb-btn:hover { border-color: rgba(69,145,197,.5); background: rgba(31,37,91,.4); color: #fff; }
+.rb-btn:active { transform: scale(.92); }

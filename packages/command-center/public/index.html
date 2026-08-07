@@ -64,6 +64,20 @@
       <div id="mapHint">拖拽平移 · 滚轮缩放 · 点击单位/核心进入战术视图 · Esc 取消</div>
       <div id="mapTooltip" hidden></div>
       <div id="beaconIndicator" hidden></div>
+      <div id="replayBar" class="panel replay-bar" hidden>
+        <span class="rb-label mono">TICK</span>
+        <span id="rbTick" class="rb-tick mono">—</span>
+        <span class="rb-sep mono dim">/</span>
+        <span id="rbMaxTick" class="mono dim">—</span>
+        <div class="rb-track"><div id="rbFill"></div></div>
+        <span id="rbCountdown" class="rb-count mono">15.0s</span>
+        <div class="rb-controls">
+          <button id="rbPlay" class="rb-btn" title="播放/暂停">▶</button>
+          <button id="rbPrev" class="rb-btn" title="上一 tick">◀</button>
+          <button id="rbNext" class="rb-btn" title="下一 tick">▶│</button>
+          <button id="rbSpeed" class="rb-btn" title="回放速度">×1</button>
+        </div>
+      </div>
       <div id="actionDialog" class="action-dialog" hidden></div>
       <div id="inspectPanel" class="panel inspect-panel" hidden></div>
       <div id="pendingPanel" class="panel pending-panel" hidden></div>
