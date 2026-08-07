@@ -40,6 +40,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * data/leaderboard/ 快照，运行时只读本地文件不联网。
      */
     "threat-adaptive-defense-v1": Object.freeze({ threatAdaptiveDefense: true }),
+    /**
+     * 严格占优攻坚（2026-08-07，guide v3.0 overmatch 对照）：按目标敌 Core
+     * 实测守军（World.enemyCoreForces，Vanguard+Ranger 按 ID 去重）动态抬高
+     * 攻坚成型门槛 = max(基础/威胁自适应, 守军估计+1)——存活兵力严格大于守军
+     * 估计才压上；守军增援门槛同步抬高、兵力不足自动蓄势（vanguard_hold）。
+     * 与 threat-adaptive-defense-v1 叠加：排行榜画像给先验，实测守军给实时。
+     */
+    "assault-overmatch-v1": Object.freeze({ assaultOvermatch: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),

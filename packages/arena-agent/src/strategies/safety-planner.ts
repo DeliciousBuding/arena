@@ -276,15 +276,37 @@ export class SafetyPlanner {
     return profile.tier === "STANDARD" ? null : profile.tier;
   }
 
-  /** 威胁自适应生效时的前压成型门槛：基础 attackForce + 高威胁加成（防御
-   *  变体关闭/无画像/目标非高威胁 = 返回基础值，零回归）。 */
+  /** 目标敌 Core 实测守军估计（assault-overmatch-v1）：World.enemyCoreForces
+   *  中与当前攻坚目标同格记录的战斗单位数（Vanguard+Ranger 按 ID 去重）。
+   *  变体关闭/无目标/无记录 = 0（不抬高门槛）。 */
+  private enemyEstimateForTarget(): number {
+    if (this.config.assaultOvermatch !== true) return 0;
+    const target = this.currentHuntTarget();
+    if (target === null) return 0;
+    const force = this.world.enemyCoreForces().find(
+      (f) => f.position[0] === target.position[0] && f.position[1] === target.position[1],
+    );
+    if (force === undefined) return 0;
+    return force.vanguards.size + force.rangers.size;
+  }
+
+  /** 威胁自适应生效时的前压成型门槛：基础 attackForce + 高威胁加成；再叠加
+   *  overmatch 严格占优（门槛 = max(前述, 守军估计+1)）。防御变体关闭/无
+   *  画像/无守军记录 = 返回基础值，零回归。 */
   private adaptiveAttackForce(): number {
     const base = this.config.attackForce ?? 0;
-    if (this.config.threatAdaptiveDefense !== true || base <= 0) return base;
-    const tier = this.threatTierOf(this.currentHuntTarget());
-    if (tier === "ELITE_AGGRESSOR") return base + THREAT_ELITE_ATTACK_FORCE_BONUS;
-    if (tier === "AGGRESSOR") return base + THREAT_AGGRESSOR_ATTACK_FORCE_BONUS;
-    return base;
+    if (base <= 0) return base;
+    let force = base;
+    if (this.config.threatAdaptiveDefense === true) {
+      const tier = this.threatTierOf(this.currentHuntTarget());
+      if (tier === "ELITE_AGGRESSOR") force += THREAT_ELITE_ATTACK_FORCE_BONUS;
+      else if (tier === "AGGRESSOR") force += THREAT_AGGRESSOR_ATTACK_FORCE_BONUS;
+    }
+    if (this.config.assaultOvermatch === true) {
+      const estimate = this.enemyEstimateForTarget();
+      force = Math.max(force, estimate + 1);
+    }
+    return force;
   }
 
   /** 威胁自适应生效时的守家 Vanguard 预留数：高威胁对手至少留 2 个（叠加
