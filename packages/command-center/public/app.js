@@ -1214,6 +1214,14 @@ function bindEvents() {
   els.shopCookie.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveShopCookie(); } });
   // 窗口
   window.addEventListener('resize', () => { resizeCanvas(); draw(); });
+  // 容器尺寸变化（折叠决策流/侧栏宽度变化等）：rAF 合帧重设画布，防 CSS 拉伸
+  if (typeof ResizeObserver !== 'undefined') {
+    let resizeRaf = 0;
+    new ResizeObserver(() => {
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(() => { resizeCanvas(); draw(); });
+    }).observe(els.canvas);
+  }
 }
 
 /* ---------- 启动 ---------- */
