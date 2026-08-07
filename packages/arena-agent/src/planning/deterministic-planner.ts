@@ -608,6 +608,20 @@ export class DeterministicPlanner implements PlanProvider {
     const unitActions: Record<string, UnitAction> = { ...fallback.unitActions };
     const intents: Record<string, string> = { ...(fallback.intents ?? {}) };
     for (const assignment of assignments) {
+      // WorkerTaskPlanner 是 deterministic 模式下资源任务的最终 SSOT；必须把实际
+      // 分配同步回 Safety fallback 的跨 tick UnitMemory。否则 Safety 先写入的“最近矿”
+      // 会在下一 tick 资源离开视野后复活，覆盖本 tick 已执行的全局唯一分配，导致
+      // 多 worker 再次扎堆同一记忆矿（生产 capacity_wait:go_harvest_mem 主因）。
+      const fallbackMemory = this.fallbackPlanner.world.unitMemory(assignment.unitId);
+      if (assignment.task.type === "GO_RESOURCE" && assignment.task.target !== undefined) {
+        fallbackMemory.workerMode = "go_harvest";
+        fallbackMemory.harvestTarget = assignment.task.target;
+      } else if (assignment.task.type === "WAIT" && snapshot.resourceCells.size > 0) {
+        // 有可见矿但该 worker 未被全局匹配器分配：清除 Safety 的虚假最近矿记忆，
+        // 让它按 patrolFallback 继续探索，而不是下一 tick 偷跑去已被别人占用的矿。
+        fallbackMemory.workerMode = "patrol";
+        fallbackMemory.harvestTarget = null;
+      }
       if (assignment.task.type === "WAIT") {
         // 无可见资源时保留完整 Safety 的资源记忆；有可见资源但数量少于 Worker 时，
         // 使用看不到资源格的 patrol baseline，保证继续探索且不会重新扎堆。

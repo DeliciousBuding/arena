@@ -11,6 +11,7 @@ import type {
   Mission,
   MissionKind,
 } from "./control-types.ts";
+import { allocateAllianceTaskMarket, type AllianceMarketTask } from "./task-market.ts";
 import {
   buildAllianceThreatSummariesFromSnapshot,
   type TenantThreatSummary,
@@ -235,30 +236,29 @@ export function decideAllianceShadowPolicy(
   const missionsByTenant = new Map<string, Mission>();
   const retreatAssessments: RetreatCorridorAssessment[] = [];
 
+  // Phase A — mandatory local survival missions. Flexible members are intentionally left
+  // unassigned so Phase B can clear global tasks across the whole alliance instead of
+  // running four independent single-agent policies side by side.
   for (const member of members) {
     const summary = summaryByTenant.get(member.tenantId)!;
     const duration = config.directiveDurationTicks;
     if (member.core === null || member.status === "RESPAWNING") {
       missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "ASSEMBLE", 80, duration, {
-        defendTenant: member.tenantId,
-        scope: "rebuild-before-external-task",
+        defendTenant: member.tenantId, scope: "rebuild-before-external-task",
       }));
       continue;
     }
-
     const durability = member.core.hp + member.core.shield;
     if (summary.multiDirectionPressure
       && (summary.totalScore >= config.retreatTotalScoreThreshold || durability <= config.retreatDurabilityThreshold)) {
       const assessment = assessRetreatCorridor(member, summary, config.retreatDistance);
       retreatAssessments.push(assessment);
       missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "RETREAT", 100, duration, {
-        target: assessment.waypoint ?? undefined,
-        defendTenant: member.tenantId,
+        target: assessment.waypoint ?? undefined, defendTenant: member.tenantId,
         scope: `threat-only-corridor:${assessment.recommendedDirection ?? "none"}`,
       }));
       continue;
     }
-
     const nearest = nearestVisibleCombat(snapshot, member);
     if (nearest !== null && manhattan(member.core.position, nearest.position) <= config.interceptDistance) {
       const kind: MissionKind = military(member) >= config.minInterceptMilitary ? "INTERCEPT" : "DEFEND";
@@ -270,50 +270,71 @@ export function decideAllianceShadowPolicy(
       }));
       continue;
     }
-
     if (summary.highDirections.length > 0) {
       missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "DEFEND", 85, duration, {
-        target: member.core.position,
-        defendTenant: member.tenantId,
+        target: member.core.position, defendTenant: member.tenantId,
         scope: `directional-pressure:${summary.highDirections.join("+")}`,
       }));
-      continue;
     }
+  }
 
-    if (military(member) < config.assembleMilitaryBelow) {
-      missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "ASSEMBLE", 60, duration, {
-        target: member.core.position,
-        defendTenant: member.tenantId,
-        scope: "military-below-shadow-floor",
-      }));
-      continue;
+  // Phase B — global task market. Under pressure, free tenants bid to reinforce threatened
+  // allies. In calm periods they bid on fresh enemy-Core raids. Central clearing is the
+  // Supervisor equivalent of a CBBA auction: utility contains force, travel, local threat,
+  // resources and a treasury-preservation penalty; Hungarian clearing removes greedy traps.
+  const flexibleMembers = members.filter((member) => !missionsByTenant.has(member.tenantId));
+  const marketTasks: AllianceMarketTask[] = [];
+  const urgentMissions = [...missionsByTenant.entries()]
+    .filter(([, mission]) => mission.kind === "DEFEND" || mission.kind === "INTERCEPT")
+    .sort((a, b) => b[1].priority - a[1].priority || stableCompare(a[0], b[0]));
+  if (urgentMissions.length > 0) {
+    for (const [tenantId, mission] of urgentMissions) {
+      const defended = snapshot.members.get(tenantId);
+      if (defended?.core === null || defended?.core === undefined) continue;
+      marketTasks.push({
+        id: `assist-${snapshot.revision}-${tenantId}`, kind: "ESCORT", priority: Math.max(72, mission.priority - 8),
+        target: defended.core.position, defendTenant: tenantId, minMilitary: 2, maxDistance: config.raidMaxDistance,
+      });
     }
+  } else {
+    const now = snapshot.tickWindow[1];
+    const coreTargets = snapshot.sightings
+      .filter((s) => s.kind === "CORE" && s.confidence >= config.raidMinConfidence && now - s.lastSeenTick <= config.raidMaxAgeTicks)
+      .slice()
+      .sort((a, b) => b.confidence - a.confidence || b.lastSeenTick - a.lastSeenTick || stableCompare(a.key, b.key));
+    for (const target of coreTargets) {
+      marketTasks.push({
+        id: `raid-${snapshot.revision}-${target.key}`, kind: "RAID",
+        priority: 70 + Math.round(target.confidence * 8), target: target.position, targetEntityKey: target.key,
+        minMilitary: config.minRaidMilitary, maxDistance: config.raidMaxDistance,
+      });
+    }
+  }
 
-    const scout = assessRetreatCorridor(member, summary, config.scoutDistance);
-    missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "SCOUT", 40, duration, {
-      target: scout.waypoint ?? member.core.position,
-      scope: `low-risk-sector:${scout.recommendedDirection ?? "none"}`,
+  const market = allocateAllianceTaskMarket(flexibleMembers, marketTasks, summaryByTenant, treasuryTenant);
+  for (const assignment of market.assignments) {
+    const member = snapshot.members.get(assignment.tenantId)!;
+    const task = assignment.task;
+    missionsByTenant.set(member.tenantId, makeMission(snapshot, member, task.kind, task.priority, config.directiveDurationTicks, {
+      target: task.target, targetEntityKey: task.targetEntityKey, defendTenant: task.defendTenant,
+      scope: `alliance-market:utility=${assignment.bid.utility}:distance=${assignment.bid.distance}`,
     }));
   }
 
-  // RAID is considered only when no member is in an urgent defensive mission.
-  const hasUrgent = [...missionsByTenant.values()].some((m) => m.kind === "RETREAT" || m.kind === "DEFEND" || m.kind === "INTERCEPT");
-  if (!hasUrgent) {
-    const raidCandidates = members
-      .filter((m) => m.core !== null && m.status === "READY" && military(m) >= config.minRaidMilitary)
-      .sort((a, b) => military(b) - military(a)
-        || (a.tenantId === treasuryTenant ? 1 : 0) - (b.tenantId === treasuryTenant ? 1 : 0)
-        || stableCompare(a.tenantId, b.tenantId));
-    for (const member of raidCandidates) {
-      const target = recentRaidTarget(snapshot, member, config);
-      if (target === null) continue;
-      missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "RAID", 70, config.directiveDurationTicks, {
-        target: target.position,
-        targetEntityKey: target.key,
-        scope: "recent-high-confidence-enemy-core",
+  // Phase C — local fallback for market-unassigned members.
+  for (const member of flexibleMembers) {
+    if (missionsByTenant.has(member.tenantId)) continue;
+    if (military(member) < config.assembleMilitaryBelow) {
+      missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "ASSEMBLE", 60, config.directiveDurationTicks, {
+        target: member.core?.position, defendTenant: member.tenantId, scope: "military-below-shadow-floor",
       }));
-      break;
+      continue;
     }
+    const summary = summaryByTenant.get(member.tenantId)!;
+    const scout = assessRetreatCorridor(member, summary, config.scoutDistance);
+    missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "SCOUT", 40, config.directiveDurationTicks, {
+      target: scout.waypoint ?? member.core?.position, scope: `low-risk-sector:${scout.recommendedDirection ?? "none"}`,
+    }));
   }
 
   const missions = [...missionsByTenant.values()].sort((a, b) => stableCompare(a.id, b.id));
@@ -325,7 +346,7 @@ export function decideAllianceShadowPolicy(
       ? "RAIDER"
       : mission.kind === "SCOUT"
         ? "SCOUT"
-        : (mission.kind === "DEFEND" || mission.kind === "INTERCEPT" || mission.kind === "RETREAT")
+        : (mission.kind === "DEFEND" || mission.kind === "INTERCEPT" || mission.kind === "RETREAT" || mission.kind === "ESCORT")
           ? "DEFENDER"
           : member.tenantId === treasuryTenant ? "TREASURY" : "DEFENDER";
     roles.set(member.tenantId, role);
