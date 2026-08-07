@@ -85,7 +85,14 @@ function parseTick(fileName) {
 
 const cellKey = (x, y) => `${x},${y}`;
 
-/** 合并 4 租户最新 calibration case → 全局联盟测绘地图（只读）。 */
+/** 合并 4 租户最新 calibration case → 全局联盟测绘地图（只读）。
+ *
+ * 测绘语义（对照官方 exploration/visibility）：
+ *  - 障碍/资源 = 静态地形：同一 run 全部 case 去重累积（资源带 lastSeen 新鲜度，被采完的会淡出）；
+ *  - 单位/核心 = 动态层：按 object id 保留最新 tick 快照（消除"单位云团/核心幽灵"——旧 bug 把 3 个
+ *    case 的每个 tick 位置都堆成 cell，导致单位成片、核心像有两个）。
+ */
+const SURVEY_CASE_LIMIT = 24; // 每个租户累积测绘最多取最近 N 个 case（覆盖与新鲜度平衡）
 function loadMergedMap() {
   const cells = new Map();
   const perTenant = [];
@@ -95,8 +102,11 @@ function loadMergedMap() {
       perTenant.push({ tenant, runId: null, caseCount: 0, latestTick: null });
       continue;
     }
-    const caseFiles = listCases(tenant, runDir).slice(-MAP_CASES_PER_TENANT);
+    const caseFiles = listCases(tenant, runDir).slice(-SURVEY_CASE_LIMIT);
     let latestTick = 0;
+    const terrain = new Map(); // key -> { type, tick }（obstacle/resource 累积）
+    const coreById = new Map(); // id -> 最新快照
+    const unitById = new Map(); // id -> 最新快照
     for (const file of caseFiles) {
       const tick = parseTick(file);
       if (tick > latestTick) latestTick = tick;
@@ -109,36 +119,41 @@ function loadMergedMap() {
         if (obj.kind === "OBSTACLE") {
           for (const [x, y] of obj.positions ?? []) {
             const key = cellKey(x, y);
-            const cur = cells.get(key);
-            if (!cur || cur.type !== "obstacle") {
-              cells.set(key, { x, y, type: "obstacle", tenant, tick });
-            }
+            const cur = terrain.get(key);
+            if (!cur || cur.type !== "obstacle") terrain.set(key, { x, y, type: "obstacle", tick });
           }
         } else if (obj.kind === "RESOURCE") {
           for (const [x, y] of obj.positions ?? []) {
             const key = cellKey(x, y);
-            const cur = cells.get(key);
-            if (!cur || (cur.type !== "obstacle" && cur.type !== "resource")) {
-              cells.set(key, { x, y, type: "resource", tenant, tick });
-            }
+            const cur = terrain.get(key);
+            if (!cur || cur.type !== "obstacle") terrain.set(key, { x, y, type: "resource", tick });
           }
         } else if (obj.kind === "CORE") {
           const [x, y] = obj.position ?? [0, 0];
-          const key = cellKey(x, y);
-          const cur = cells.get(key);
-          if (!cur || cur.type === "unit") {
-            cells.set(key, { x, y, type: "core", tenant, tick, hp: obj.hp, shield: obj.shield, controlled: obj.controlled, owner: obj.owner_username ?? null, id: obj.id ?? null });
-          }
+          const id = obj.id ?? `core@${x},${y}`;
+          const cur = coreById.get(id);
+          if (!cur || tick >= cur.tick) coreById.set(id, { x, y, type: "core", tick, hp: obj.hp, shield: obj.shield, controlled: obj.controlled, owner: obj.owner_username ?? null, id: obj.id ?? null });
         } else if (obj.kind === "UNIT") {
           const [x, y] = obj.position ?? [0, 0];
-          const key = cellKey(x, y);
-          const cur = cells.get(key);
-          if (!cur || cur.type === "unit") {
-            cells.set(key, { x, y, type: "unit", tenant, tick, hp: obj.hp, unitType: obj.unit_type ?? "WORKER", cargo: obj.cargo ?? 0, controlled: obj.controlled, id: obj.id ?? null });
-          }
+          const id = obj.id;
+          if (!id) continue;
+          const cur = unitById.get(id);
+          if (!cur || tick >= cur.tick) unitById.set(id, { x, y, type: "unit", tick, hp: obj.hp, unitType: obj.unit_type ?? "WORKER", cargo: obj.cargo ?? 0, controlled: obj.controlled, id });
         }
       }
     }
+    // 组装：地形在下，动态在上（同格冲突按优先级 obstacle < resource < unit < core）
+    const byCell = new Map();
+    const put = (c, prio) => {
+      const key = cellKey(c.x, c.y);
+      const cur = byCell.get(key);
+      if (cur && cur.prio > prio) return;
+      byCell.set(key, { ...c, tenant, fresh: c.tick === latestTick, prio });
+    };
+    for (const c of terrain.values()) put(c, c.type === "obstacle" ? 1 : 2);
+    for (const c of unitById.values()) put(c, 3);
+    for (const c of coreById.values()) put(c, 4);
+    for (const { prio, ...c } of byCell.values()) cells.set(cellKey(c.x, c.y), c);
     // 最新 case 的冠军信标（用于全局测绘 beacon 图层）
     let beacon = null;
     if (caseFiles.length > 0) {
@@ -371,27 +386,50 @@ function loadWorld(tenant) {
   };
 }
 
-/** 指挥操作事件流：从 outcome.jsonl 尾部聚合 events（SPAWN/DEPOSIT/HARVEST/SHOT 等），按 tick 倒序。 */
-const EVENT_KINDS = new Set(["SPAWN", "DEPOSIT_SUCCEEDED", "DEPOSIT_FAILED", "HARVEST", "SHOT_HIT", "SHOT_MISSED", "SWEEP", "PICKUP_BEACON", "DROP_BEACON", "SELF_DESTRUCT", "HEAL", "CORE_DESTROYED", "UNIT_DESTROYED", "RESPAWN", "REPAIR_SHIELD", "WAIT"]);
+/** 指挥操作事件流：从最新 run 的 calibration case 结构化事件（before.state.events）聚合，
+ *  按 tick 倒序。outcome.jsonl 的 events 是纯字符串（旧实现读它导致事件页永远为空）。 */
+const EVENT_KINDS = new Set([
+  "UNIT_MOVE_FAILED", "CORE_MOVE_FAILED",
+  "SPAWN_SUCCEEDED", "SPAWN_FAILED",
+  "HARVEST_SUCCEEDED", "HARVEST_FAILED",
+  "DEPOSIT_SUCCEEDED", "DEPOSIT_FAILED",
+  "SHOT_HIT", "SHOT_MISSED", "SHOT_BLOCKED",
+  "SWEEP_RESOLVED", "SWEEP_FAILED",
+  "PICKUP_BEACON_SUCCEEDED", "PICKUP_BEACON_FAILED",
+  "DROP_BEACON_SUCCEEDED", "DROP_BEACON_FAILED",
+  "SELF_DESTRUCT", "HEAL_SUCCEEDED", "HEAL_FAILED", "REPAIR_SHIELD_SUCCEEDED",
+  "UNIT_DESTROYED", "CORE_DESTROYED", "CORE_DAMAGED", "RESPAWN",
+  "CORE_RESOURCES_CAPTURED", "CORE_RESOURCE_OVERFLOW_DESTROYED", "WORKER_CARGO_DROPPED",
+  "UNIT_HEAL_SUCCEEDED", "UNIT_HEAL_FAILED", "CORE_HEAL_SUCCEEDED", "CORE_HEAL_FAILED",
+  "WAIT", "NOTHING_TO_DO",
+]);
 function loadEvents(tenant, n) {
-  const file = join(telemetryDir(tenant), "outcome.jsonl");
-  const rows = readJsonlTail(file, 30);
+  const runDir = latestRunDir(tenant);
+  if (runDir === null) return { tenant, generatedAt: new Date().toISOString(), events: [] };
+  const caseFiles = listCases(tenant, runDir).slice(-20);
   const events = [];
-  for (const row of rows) {
-    if (!Array.isArray(row.events)) continue;
-    for (const ev of row.events) {
+  for (const file of caseFiles) {
+    const fileTick = parseTick(file);
+    const path = join(calibrationDir(tenant), runDir, "cases", file);
+    let raw;
+    try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+    const evs = raw?.before?.state?.events;
+    if (!Array.isArray(evs)) continue;
+    for (const ev of evs) {
       if (!ev || typeof ev !== "object") continue;
-      const kind = String(ev.event_type ?? ev.reason_code ?? "").toUpperCase();
-      if (!EVENT_KINDS.has(kind) && !kind.startsWith("SHOT")) continue;
+      const kind = String(ev.event_type ?? "").toUpperCase();
+      if (!EVENT_KINDS.has(kind)) continue;
       events.push({
-        tick: ev.tick ?? row.tick ?? null,
+        tick: ev.tick ?? fileTick ?? null,
         kind,
         reason: ev.reason_code ?? null,
         actor: ev.actor_id ?? null,
         target: ev.target_id ?? null,
         position: ev.position ?? null,
-        amount: ev.values?.amount ?? null,
+        amount: ev.values?.amount ?? ev.values?.damage ?? null,
+        hp: ev.values?.hp ?? null,
         source: ev.values?.source ?? null,
+        capacity: ev.values?.capacity ?? null,
       });
     }
   }

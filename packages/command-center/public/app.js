@@ -37,6 +37,7 @@ const state = {
   hover: null,
   streamCollapsed: false,
   viewAnim: null,
+  cc: { tick: null, anchor: 0 }, // 命令窗口：最近观测到的计划 tick + 观测时刻（15s 倒计时）
   tactical: {
     surveys: {},      // tenant -> { obstacleCells, resourceCells, ... }（累积测绘）
     worlds: {},       // tenant -> { state, tick }
@@ -69,6 +70,8 @@ const els = {
   rbFill: $('#rbFill'), rbCountdown: $('#rbCountdown'),
   rbPlay: $('#rbPlay'), rbPrev: $('#rbPrev'), rbNext: $('#rbNext'), rbSpeed: $('#rbSpeed'),
   fleetHud: $('#fleetHud'), assetPanel: $('#assetPanel'), assetList: $('#assetList'),
+  activityPanel: $('#resourceActivity'), activityList: $('#activityList'),
+  commandCountdown: $('#commandCountdown'), ccTime: $('#ccTime'), ccFill: $('#ccFill'),
 };
 
 const ctx = els.canvas.getContext('2d');
@@ -245,6 +248,7 @@ function draw() {
   drawResources(buckets.resource, s);
   if (!replayActive) drawUnits(buckets.unit, s);
   if (!replayActive) drawCores(buckets.core, s);
+  if (!replayActive) drawLiveTrails(s);
   drawBeacons(s);
   tactDrawLayer(s);
   if (replayActive) replayDrawLayer(s);
@@ -279,55 +283,163 @@ function sprite(img, sx, sy, size) {
   const dw = size, dh = size * (img.height / Math.max(1, img.width));
   ctx.drawImage(img, sx - dw / 2, sy - dh / 2, dw, dh);
 }
-/** 石头：低缩放批量实心格（一次 path，性能好、看得清）；高缩放用官方 asteroid 素材 */
+/* ---------- 官方风格绘制助手（对照 arena-hero-web WorldCanvas/unitArt 等） ---------- */
+const EASE_OUT_CUBIC = (t) => 1 - Math.pow(1 - t, 3);
+const EASE_OUT_QUART = (t) => 1 - Math.pow(1 - t, 4);
+/** 新鲜度 -> 透明度：fresh=1 全亮；stale 按距最新 tick 步数淡出（探测记忆效果） */
+function cellAlpha(c, floor = 0.45) {
+  if (!c || c.fresh) return 1;
+  if (!state.soloTenant) return floor + 0.18; // 全局地图记忆层略亮
+  return floor;
+}
+function drawMeterBar(s, x, y, cell, value, maximum, color, labelColor, displayLabel) {
+  const gap = Math.max(1.5, cell * 0.04), maxWidth = cell * 0.9, barHeight = Math.max(2, cell * 0.06);
+  const ratio = maximum > 0 ? Math.max(0, Math.min(1, value / maximum)) : 0;
+  let fontSize = Math.max(6, cell * 0.15);
+  ctx.save();
+  ctx.font = '600 ' + fontSize + 'px ui-monospace, Consolas, monospace';
+  ctx.textBaseline = 'middle';
+  let labelWidth = ctx.measureText(displayLabel).width;
+  const preferredBarWidth = cell * 0.35;
+  if (labelWidth + gap + preferredBarWidth > maxWidth) {
+    fontSize = Math.max(cell * 0.1, fontSize * (maxWidth - gap - preferredBarWidth) / labelWidth);
+    ctx.font = '600 ' + fontSize + 'px ui-monospace, Consolas, monospace';
+    labelWidth = ctx.measureText(displayLabel).width;
+  }
+  const barWidth = Math.max(cell * 0.2, Math.min(preferredBarWidth, maxWidth - labelWidth - gap));
+  const startX = x - (labelWidth + gap + barWidth) / 2, barX = startX + labelWidth + gap;
+  ctx.fillStyle = labelColor; ctx.shadowColor = '#000'; ctx.shadowBlur = 2;
+  ctx.fillText(displayLabel, startX, y);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(20,22,26,.9)'; ctx.fillRect(barX, y - barHeight / 2, barWidth, barHeight);
+  ctx.fillStyle = color; ctx.fillRect(barX, y - barHeight / 2, barWidth * ratio, barHeight);
+  ctx.strokeStyle = 'rgba(255,255,255,.16)'; ctx.lineWidth = 1;
+  ctx.strokeRect(barX + .5, y - barHeight / 2 + .5, barWidth - 1, barHeight - 1);
+  ctx.restore();
+}
+function maxUnitHp(type) { return type === 'VANGUARD' ? 4 : 2; }
+function drawUnitHealth(s, x, y, cell, hp, maxHp) {
+  if (maxHp <= 0 || hp >= maxHp) return;
+  drawMeterBar(s, x, y, cell, hp, maxHp, hp > 1 ? '#76b889' : '#c66370', '#e4e4e7', `${hp}/${maxHp}`);
+}
+function drawWorkerCargo(s, x, y, cell, cargo) {
+  if (!cargo) return;
+  drawMeterBar(s, x, y, cell, cargo, 2, '#76b889', '#b2d2ba', `×${cargo}`);
+}
+function drawCoreOwnerLabel(s, x, y, cell, username, controlled) {
+  const label = '@' + (username || '?');
+  let fontSize = Math.max(6, Math.min(9, cell * 0.17));
+  const maxWidth = cell * 0.95;
+  ctx.save();
+  ctx.font = '600 ' + fontSize + 'px ui-monospace, Consolas, monospace';
+  const measured = ctx.measureText(label).width;
+  if (measured > maxWidth) { fontSize = Math.max(5.5, fontSize * maxWidth / measured); ctx.font = '600 ' + fontSize + 'px ui-monospace, Consolas, monospace'; }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  ctx.lineWidth = Math.max(1.6, fontSize * 0.28); ctx.strokeStyle = 'rgba(0,0,0,.9)';
+  ctx.strokeText(label, x, y);
+  ctx.fillStyle = controlled ? '#a8c8dd' : '#e9a0aa';
+  ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 2; ctx.shadowOffsetY = 1;
+  ctx.fillText(label, x, y);
+  ctx.restore();
+}
+function drawStackBadge(s, x, y, cell, count, color) {
+  const fontSize = Math.max(6, cell * 0.13), label = '×' + count, padding = Math.max(1, cell * 0.045);
+  const height = fontSize + padding * 2;
+  ctx.save();
+  ctx.font = '600 ' + fontSize + 'px ui-monospace, Consolas, monospace';
+  const width = ctx.measureText(label).width + padding * 2;
+  ctx.fillStyle = 'rgba(0,0,0,.92)'; ctx.strokeStyle = color; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect(x - width / 2, y - height / 2, width, height, height / 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fafafa'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label, x, y + 0.25);
+  ctx.restore();
+}
+/** 选中波纹（官方 SELECTION_RIPPLE 900ms，双波非线性扩散） */
+const SELECTION_RIPPLE_MS = 900;
+const selectionRipples = new Map(); // objId -> born
+function startSelectionRipple(id) { if (id) selectionRipples.set(id, performance.now()); }
+function drawSelectionRipple(s, x, y, cell, size, id) {
+  const born = selectionRipples.get(id);
+  if (born === undefined) return;
+  const progress = (performance.now() - born) / SELECTION_RIPPLE_MS;
+  if (progress >= 1) { selectionRipples.delete(id); return; }
+  const gold = '#f6c453';
+  ctx.save(); ctx.strokeStyle = gold; ctx.shadowColor = gold;
+  ctx.lineWidth = Math.max(1, cell * 0.025);
+  for (let wave = 0; wave < 2; wave++) {
+    const delay = wave * 0.18;
+    if (progress < delay) continue;
+    const wp = Math.min(1, (progress - delay) / (1 - delay));
+    const eased = 1 - Math.pow(1 - wp, 3);
+    ctx.globalAlpha = (1 - wp) * (0.62 - wave * 0.14);
+    ctx.shadowBlur = cell * (0.06 + eased * 0.06);
+    ctx.beginPath();
+    ctx.arc(x, y, size * (1.04 + eased * 0.35), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+/** 石头：低缩放批量实心格（一次 path，性能好、看得清）；高缩放用官方 asteroid 素材。
+ *  探测记忆：非最新 tick 的障碍格按新鲜度淡出（交替地形留痕但不喧宾夺主）。 */
 function drawObstacles(cells, s) {
   if (!cells.length) return;
   if (s >= 8) {
     for (const c of cells) {
       const p = project(c.x, c.y);
+      ctx.save();
+      ctx.globalAlpha = cellAlpha(c, 0.5);
       const path = SPRITE.obstacle[hash2(c.x, c.y, 7) % SPRITE.obstacle.length];
       if (images[path]) sprite(images[path], p.sx, p.sy, s * 0.86);
       else { ctx.fillStyle = '#4a525a'; roundRect(p.sx - s / 2, p.sy - s / 2, s, s, 3); }
+      ctx.restore();
     }
     return;
   }
   const cell = Math.max(2, s);
+  ctx.save();
   ctx.fillStyle = '#454c54';
   ctx.beginPath();
   for (const c of cells) {
     const p = project(c.x, c.y);
+    ctx.globalAlpha = cellAlpha(c, 0.42);
     ctx.rect(p.sx - cell / 2, p.sy - cell / 2, cell, cell);
   }
   ctx.fill();
+  ctx.restore();
   ctx.strokeStyle = 'rgba(139,183,212,.12)';
   ctx.lineWidth = 1;
   ctx.stroke();
 }
-/** 矿物：始终可见；高缩放 crystal 素材 + 绿色发光，低缩放亮点 */
+/** 矿物：始终可见；高缩放 crystal 素材 + 绿色发光，低缩放亮点。
+ *  探测记忆：被采完（非最新 tick 出现）的资源淡出，避免"绿色区域"堆积。 */
 function drawResources(cells, s) {
   if (!cells.length) return;
   if (s >= 6) {
-    ctx.save();
-    ctx.shadowColor = 'rgba(118,184,137,.6)';
-    ctx.shadowBlur = 8;
     for (const c of cells) {
       const p = project(c.x, c.y);
+      ctx.save();
+      ctx.globalAlpha = cellAlpha(c, 0.35);
+      ctx.shadowColor = 'rgba(118,184,137,.6)';
+      ctx.shadowBlur = 8;
       const path = SPRITE.crystal[hash2(c.x, c.y, 13) % SPRITE.crystal.length];
       if (images[path]) sprite(images[path], p.sx, p.sy, Math.max(7, s * 0.92));
       else { ctx.fillStyle = '#76b889'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.3), 0, Math.PI * 2); ctx.fill(); }
+      ctx.restore();
     }
-    ctx.restore();
     return;
   }
+  ctx.save();
   ctx.fillStyle = 'rgba(118,184,137,.85)';
   ctx.beginPath();
   for (const c of cells) {
     const p = project(c.x, c.y);
+    ctx.globalAlpha = cellAlpha(c, 0.3);
     const r = Math.max(1.6, s * 0.32);
     ctx.moveTo(p.sx + r, p.sy); // 断连，避免批量 arc 连线
     ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
   }
   ctx.fill();
+  ctx.restore();
 }
 function unitSpritePath(type) {
   if (type === 'VANGUARD') return SPRITE.vanguard;
@@ -340,14 +452,23 @@ function ring(x, y, r, color, width = 1.5, dash = []) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
   ctx.setLineDash([]);
 }
-/** 单位：高缩放素材+色环；低缩放紧凑租户色圆点（不放大图标遮挡地图） */
+/** 单位：高缩放素材+色环；低缩放紧凑租户色圆点（不放大图标遮挡地图）。
+ *  官方细节：WORKER 载货条（绿）、受伤单位 HP 条、同格堆叠 ×2 徽章、选中波纹。 */
 function drawUnits(cells, s) {
   if (!cells.length) return;
   if (s >= 6) {
+    const byCell = new Map();
+    for (const c of cells) {
+      const k = c.x + ',' + c.y;
+      const arr = byCell.get(k) || [];
+      arr.push(c); byCell.set(k, arr);
+    }
     for (const c of cells) {
       const p = project(c.x, c.y);
       const size = s * (c.unitType === 'RANGER' ? 0.68 : 0.62);
       const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#c66370';
+      ctx.save();
+      ctx.globalAlpha = cellAlpha(c, 0.55);
       ring(p.sx, p.sy, size * 0.72, c.controlled ? color : 'rgba(198,99,112,.55)', c.controlled ? 1.8 : 1.2, c.controlled ? [] : [3, 3]);
       const path = unitSpritePath(c.unitType);
       if (images[path]) sprite(images[path], p.sx, p.sy, size);
@@ -355,18 +476,64 @@ function drawUnits(cells, s) {
         ctx.fillStyle = c.controlled ? color : '#7c858d';
         ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2, size * 0.25), 0, Math.PI * 2); ctx.fill();
       }
+      ctx.restore();
+      if (state.soloTenant && T().selected && T().selected.obj && T().selected.obj.id === c.id) {
+        drawSelectionRipple(s, p.sx, p.sy, s, size, c.id);
+      }
+      if (c.unitType === 'WORKER' && s >= 8) drawWorkerCargo(s, p.sx, p.sy, s, c.cargo ?? 0);
+      if (typeof c.hp === 'number' && s >= 10) drawUnitHealth(s, p.sx, p.sy + size * 0.5, s, c.hp, maxUnitHp(c.unitType));
+      const stack = byCell.get(c.x + ',' + c.y) || [];
+      if (stack.length > 1) drawStackBadge(s, p.sx, p.sy - size * 0.7, s, stack.length, color);
     }
     return;
   }
   for (const c of cells) {
     const p = project(c.x, c.y);
     const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#c66370';
+    ctx.save();
+    ctx.globalAlpha = cellAlpha(c, 0.55);
     ctx.fillStyle = c.controlled ? color : 'rgba(198,99,112,.7)';
     ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(1.8, s * 0.42), 0, Math.PI * 2); ctx.fill();
     if (c.controlled) { ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 1; ctx.stroke(); }
+    ctx.restore();
   }
 }
-/** 核心：高缩放素材+光环+HP条；低缩放租户色大点+白描边 */
+/** 实时移动轨迹：live 视图（非回放）用该租户 replay 的 trail 画最近 5 个 tick 的位置轨迹，
+ *  让"单位在动"肉眼可见（回放引擎插值动画之外，live 也有运动感）。 */
+const TRAIL_POINTS = 5;
+function drawLiveTrails(s) {
+  if (!state.soloTenant || !replay.data || replay.data.loadedFor !== state.soloTenant) return;
+  if (s < 3) return; // 全局/极低缩放不画轨迹，避免噪声
+  const color = TENANT_COLORS[state.soloTenant] ?? '#4591c5';
+  for (const u of replay.data.units) {
+    const trail = u.trail;
+    if (!trail || trail.length < 2) continue;
+    const pts = trail.slice(-TRAIL_POINTS);
+    const last = pts[pts.length - 1];
+    // 与当前 live 位置一致才画（避免回放旧 run 轨迹错位）
+    const liveCell = state.cellIndex.get(`${last.x},${last.y}`);
+    if (liveCell && liveCell.tenant !== state.soloTenant) continue;
+    ctx.save();
+    ctx.lineWidth = Math.max(1, s * 0.08);
+    for (let i = 0; i < pts.length; i++) {
+      const p = project(pts[i].x, pts[i].y);
+      const f = (i + 1) / pts.length;
+      ctx.globalAlpha = 0.12 + 0.3 * f;
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(1.4, s * 0.16 * f), 0, Math.PI * 2); ctx.fill();
+      if (i > 0) {
+        const q = project(pts[i - 1].x, pts[i - 1].y);
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = 0.08 + 0.2 * f;
+        ctx.beginPath(); ctx.moveTo(q.sx, q.sy); ctx.lineTo(p.sx, p.sy); ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+}
+
+/** 核心：高缩放素材+光环+拥有者标签+盾条/血条；低缩放租户色大点+白描边。
+ *  官方细节：drawCoreOwnerLabel / drawCoreShieldBar / drawHealthBar / 选中波纹。 */
 function drawCores(cells, s) {
   if (!cells.length) return;
   if (s >= 6) {
@@ -376,9 +543,15 @@ function drawCores(cells, s) {
   for (const c of cells) {
     const p = project(c.x, c.y);
     const color = coreColor(c);
+    ctx.save();
+    ctx.globalAlpha = cellAlpha(c, 0.8);
     ctx.fillStyle = color;
     ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(3, s * 0.6), 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = c.controlled ? 'rgba(255,255,255,.55)' : 'rgba(0,0,0,.6)'; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.restore();
+    if (state.soloTenant && T().selected && T().selected.obj && T().selected.obj.id === c.id) {
+      drawSelectionRipple(s, p.sx, p.sy, s, s * 0.72, c.id);
+    }
   }
 }
 function coreColor(c) {
@@ -390,10 +563,11 @@ function drawCoreSprite(c, s) {
   const size = s * 0.72;
   const color = coreColor(c);
   ctx.save();
+  ctx.globalAlpha = cellAlpha(c, 0.85);
   if (c.controlled) {
     ctx.shadowColor = color; ctx.shadowBlur = 12;
   } else {
-    ctx.globalAlpha = 0.85;
+    ctx.globalAlpha *= 0.85;
     ctx.shadowColor = color; ctx.shadowBlur = 6;
   }
   if (images[SPRITE.core]) sprite(images[SPRITE.core], p.sx, p.sy, size);
@@ -402,7 +576,10 @@ function drawCoreSprite(c, s) {
     ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(3, size * 0.3), 0, Math.PI * 2); ctx.fill();
   }
   ctx.restore();
+  ctx.save();
+  ctx.globalAlpha = cellAlpha(c, 0.9);
   ring(p.sx, p.sy, size * 0.62, color, c.controlled ? 2 : 1.6, c.controlled ? [] : [3, 3]);
+  ctx.restore();
   // 敌方核心加"×"标识
   if (!c.controlled) {
     ctx.strokeStyle = 'rgba(198,99,112,.85)';
@@ -413,13 +590,19 @@ function drawCoreSprite(c, s) {
     ctx.moveTo(p.sx + d, p.sy - d); ctx.lineTo(p.sx - d, p.sy + d);
     ctx.stroke();
   }
-  if (typeof c.hp === 'number') {
-    const bw = Math.max(14, size * 1.1), bh = 3;
-    const bx = p.sx - bw / 2, by = p.sy + size * 0.62 + 4;
-    ctx.fillStyle = 'rgba(255,255,255,.12)';
-    ctx.fillRect(bx, by, bw, bh);
-    ctx.fillStyle = c.hp > 3 ? '#76b889' : c.hp > 1 ? '#d8b64e' : '#c66370';
-    ctx.fillRect(bx, by, bw * Math.max(0, Math.min(1, c.hp / 5)), bh);
+  if (state.soloTenant && T().selected && T().selected.obj && T().selected.obj.id === c.id) {
+    drawSelectionRipple(s, p.sx, p.sy, s, size, c.id);
+  }
+  // 拥有者标签（官方 @username）
+  if (s >= 10 && c.owner) drawCoreOwnerLabel(s, p.sx, p.sy - size * 0.86, s, c.owner, c.controlled);
+  // 盾条 + 血条（官方 drawMeterBar；携带冠军信标时盾上限 10）
+  const shieldMax = 10;
+  if (typeof c.shield === 'number' && s >= 8) {
+    drawMeterBar(s, p.sx, p.sy + size * 0.56, s, c.shield, shieldMax, '#8f91c7', '#c7c8e7', `${c.shield} SHD`);
+  }
+  if (typeof c.hp === 'number' && s >= 8) {
+    const color2 = c.hp > 3 ? '#76b889' : c.hp > 1 ? '#d8b64e' : '#c66370';
+    drawMeterBar(s, p.sx, p.sy + size * 0.72, s, c.hp, 5, color2, '#d4d4d8', `${c.hp}/${5}`);
   }
 }
 /** 信标：视野内脉冲；视野外屏幕边缘方向指示（不撑爆自适应） */
@@ -482,16 +665,20 @@ function nearestCell(px, py) {
   }
   return bestD <= Math.max(18, state.view.scale) ? best : null;
 }
+/** 悬浮信息框（官方 MapFeatureInfo 移植）：图标头 + 坐标 + 动态行 + 指向箭头定位。 */
 function showTooltip(px, py, cell) {
   if (!cell) { els.tooltip.hidden = true; return; }
   const color = TENANT_COLORS[cell.tenant] ?? '#999';
-  const lines = [];
+  const iconFor = (t) => t === 'core' ? SPRITE.core
+    : t === 'unit' ? (cell.unitType === 'VANGUARD' ? SPRITE.vanguard : cell.unitType === 'RANGER' ? SPRITE.ranger : SPRITE.worker)
+    : t === 'resource' ? SPRITE.crystal[0] : t === 'beacon' ? SPRITE.beacon : null;
   const head = cell.type === 'obstacle' ? '障碍' : cell.type === 'resource' ? '资源' : cell.type === 'core' ? '核心' : '单位';
+  const lines = [];
   lines.push(`<div class="tt-title" style="color:${color}">${head} · ${cell.tenant.toUpperCase()}</div>`);
   lines.push(`<div class="tt-row"><span>坐标</span><b>${cell.x}, ${cell.y}</b></div>`);
   lines.push(`<div class="tt-row"><span>tick</span><b>${fmt(cell.tick)}</b></div>`);
   if (cell.type === 'unit') {
-    lines.push(`<div class="tt-row"><span>类型</span><b>${cell.unitType ?? '—'}</b></div>`);
+    lines.push(`<div class="tt-row"><span>类型</span><b>${TACT_UNIT_CN[cell.unitType] ?? cell.unitType ?? '—'}</b></div>`);
     lines.push(`<div class="tt-row"><span>HP</span><b>${fmt(cell.hp)}</b></div>`);
     if (cell.cargo > 0) lines.push(`<div class="tt-row"><span>载货</span><b>${fmt(cell.cargo)}</b></div>`);
     lines.push(`<div class="tt-row"><span>归属</span><b>${cell.controlled ? '我方' : '敌方'}</b></div>`);
@@ -501,16 +688,21 @@ function showTooltip(px, py, cell) {
     lines.push(`<div class="tt-row"><span>控制</span><b>${cell.controlled ? '我方' : '敌方'}</b></div>`);
     if (cell.owner) lines.push(`<div class="tt-row"><span>拥有者</span><b>${cell.owner}</b></div>`);
   }
+  if (!cell.fresh) lines.push(`<div class="tt-row"><span>记忆</span><b style="color:var(--amber)">已探索 · 非当前 tick</b></div>`);
   if (cell.id) lines.push(`<div class="tt-row"><span>ID</span><b>${shortId(cell.id)}</b></div>`);
-  els.tooltip.innerHTML = lines.join('');
+  const icon = iconFor(cell.type);
+  els.tooltip.innerHTML = `<span class="tt-arrow" aria-hidden="true"></span>
+    <div class="tt-head">${icon ? `<img class="tt-icon" src="${icon}" alt="" draggable="false" />` : ''}<div class="tt-head-text">${lines.slice(0, 2).join('')}</div></div>
+    ${lines.slice(2).join('')}`;
   els.tooltip.hidden = false;
   const tw = els.tooltip.offsetWidth, th = els.tooltip.offsetHeight;
   const rect = els.canvas.getBoundingClientRect();
-  let left = px + 14, top = py + 14;
-  if (left + tw > rect.width - 8) left = px - tw - 14;
-  if (top + th > rect.height - 8) top = py - th - 14;
+  let left = px + 16, top = py + 16, side = 'left';
+  if (left + tw > rect.width - 8) { left = px - tw - 16; side = 'right'; }
+  if (top + th > rect.height - 8) top = py - th - 16;
   els.tooltip.style.left = `${left}px`;
   els.tooltip.style.top = `${top}px`;
+  els.tooltip.dataset.side = side;
 }
 
 /* ---------- 租户卡片 ---------- */
@@ -579,9 +771,11 @@ async function tactShowTenant(tenant) {
   ]);
   if (!world) return;
   T().plan = plan;
+  if (plan && Number.isFinite(plan.tick)) setCommandWindowTick(plan.tick);
   tactRenderAssets(tenant);
   tactRenderHud(tenant);
   tactRenderPending();
+  tactRefreshActivity(tenant);
   draw();
 }
 /** 战术层实时刷新（2026-08-07）：聚焦单租户时每轮 poll 重取世界+计划，
@@ -593,7 +787,8 @@ async function tactRefreshLive(tenant) {
       getJSON('/api/plan?tenant=' + tenant),
     ]);
     if (world) T().worlds[tenant] = world;
-    if (plan && plan.plan) T().plan = { tick: plan.tick, plan: plan.plan };
+    if (plan && plan.plan) { T().plan = { tick: plan.tick, plan: plan.plan }; if (Number.isFinite(plan.tick)) setCommandWindowTick(plan.tick); }
+    tactRefreshActivity(tenant);
     const sel = T().selected;
     if (sel && sel.tenant === tenant && world) {
       const byId = world.state.objects.find((x) => x.id === sel.obj.id);
@@ -867,35 +1062,26 @@ function bindEvents() {
   els.canvas.addEventListener('pointerup', endDrag);
   els.canvas.addEventListener('pointercancel', endDrag);
   els.canvas.addEventListener('pointerleave', () => { els.tooltip.hidden = true; });
+/** 向光标平滑缩放（官方 wheelZoomCell + ZOOM_SETTLE 语义）：easeOutCubic 短补间，丝滑不跳变。 */
+  function zoomTo(sx, sy, factor) {
+    const rect = els.canvas.getBoundingClientRect();
+    const ns = Math.min(64, Math.max(0.05, state.view.scale * factor));
+    const wx = state.view.cx + (sx - rect.width / 2) / state.view.scale;
+    const wy = state.view.cy + (sy - rect.height / 2) / state.view.scale;
+    const tx = wx - (sx - rect.width / 2) / ns;
+    const ty = wy - (sy - rect.height / 2) / ns;
+    animateView({ cx: tx, cy: ty, scale: ns }, 130);
+  }
   els.canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
-    state.viewAnim = null;
     const rect = els.canvas.getBoundingClientRect();
-    const px = e.clientX - rect.left, py = e.clientY - rect.top;
     const factor = Math.exp(-e.deltaY * 0.0012);
-    const ns = Math.min(64, Math.max(0.05, state.view.scale * factor));
-    const wx = state.view.cx + (px - rect.width / 2) / state.view.scale;
-    const wy = state.view.cy + (py - rect.height / 2) / state.view.scale;
-    state.view.scale = ns;
-    state.view.cx = wx - (px - rect.width / 2) / ns;
-    state.view.cy = wy - (py - rect.height / 2) / ns;
-    draw();
+    zoomTo(e.clientX - rect.left, e.clientY - rect.top, factor);
   }, { passive: false });
   els.canvas.addEventListener('dblclick', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
-  $('#zoomIn').addEventListener('click', () => zoomAt(1.5));
-  $('#zoomOut').addEventListener('click', () => zoomAt(1 / 1.5));
+  $('#zoomIn').addEventListener('click', () => { const r = els.canvas.getBoundingClientRect(); zoomTo(r.width / 2, r.height / 2, 1.5); });
+  $('#zoomOut').addEventListener('click', () => { const r = els.canvas.getBoundingClientRect(); zoomTo(r.width / 2, r.height / 2, 1 / 1.5); });
   $('#fitBtn').addEventListener('click', () => { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); });
-  function zoomAt(factor) {
-    const rect = els.canvas.getBoundingClientRect();
-    const px = rect.width / 2, py = rect.height / 2;
-    const ns = Math.min(64, Math.max(0.05, state.view.scale * factor));
-    const wx = state.view.cx + (px - rect.width / 2) / state.view.scale;
-    const wy = state.view.cy + (py - rect.height / 2) / state.view.scale;
-    state.view.scale = ns;
-    state.view.cx = wx - (px - rect.width / 2) / ns;
-    state.view.cy = wy - (py - rect.height / 2) / ns;
-    draw();
-  }
   // 图层
   document.querySelectorAll('#layerToggles input').forEach((el) => {
     el.addEventListener('change', () => { state.layers[el.dataset.layer] = el.checked; draw(); });
@@ -958,6 +1144,7 @@ async function boot() {
   setInterval(() => { pollStreams(); }, POLL_MS);
   let lastAnim = 0;
   const animLoop = (ts) => {
+    updateCommandCountdown();
     if (replay.data && replay.playing) {
       const elapsed = ts - replay.tickStart;
       replay.progress = Math.min(1, elapsed / (TICK_MS / replay.speed));
@@ -1175,6 +1362,7 @@ function tactClear() {
   els.actionDialog.hidden = true; els.inspectPanel.hidden = true;
   els.assetPanel.hidden = true; els.fleetHud.hidden = true;
   els.replayBar.hidden = true;
+  els.activityPanel.hidden = true; els.commandCountdown.hidden = true;
   draw();
 }
 function tactActionTypes(obj) {
@@ -1686,6 +1874,62 @@ function tactPlanLayer(s) {
   ctx.restore();
 }
 
+/** 资源活动面板（官方 ResourceActivity 移植）：最近资源/战斗/信标事件，左下角悬浮，不挡交互。 */
+const ACTIVITY_KIND_META = {
+  HARVEST_SUCCEEDED: { icon: '⛏', color: 'var(--green-resource)', label: (e) => `采集 +${e.amount ?? ''}` },
+  DEPOSIT_SUCCEEDED: { icon: '◆', color: 'var(--cyan-signal)', label: (e) => `交付 +${e.amount ?? ''} 资源` },
+  DEPOSIT_FAILED: { icon: '⚠', color: 'var(--amber)', label: (e) => `交付失败${e.reason ? ' · ' + e.reason : ''}` },
+  UNIT_HEAL_SUCCEEDED: { icon: '✚', color: 'var(--green-resource)', label: (e) => `治疗 +${e.amount ?? ''} HP` },
+  CORE_HEAL_SUCCEEDED: { icon: '✚', color: 'var(--green-resource)', label: (e) => `核心治疗 +${e.amount ?? ''} HP` },
+  UNIT_HEAL_FAILED: { icon: '⚠', color: 'var(--amber)', label: () => '治疗失败' },
+  CORE_HEAL_FAILED: { icon: '⚠', color: 'var(--amber)', label: () => '核心治疗失败' },
+  CORE_RESOURCES_CAPTURED: { icon: '◈', color: 'var(--green-resource)', label: (e) => `敌方资源被夺取 ${e.amount ?? ''}` },
+  WORKER_CARGO_DROPPED: { icon: '▤', color: 'var(--violet)', label: (e) => `掉落载货 ${e.amount ?? ''}` },
+  CORE_RESOURCE_OVERFLOW_DESTROYED: { icon: '✕', color: 'var(--coral)', label: (e) => `溢出资源销毁 ${e.amount ?? ''}` },
+  SHOT_HIT: { icon: '➶', color: 'var(--coral)', label: (e) => `射击命中${e.amount ? ' · ' + e.amount : ''}` },
+  SWEEP_RESOLVED: { icon: '⚔', color: 'var(--amber)', label: () => '清扫解除' },
+  SPAWN_SUCCEEDED: { icon: '✦', color: 'var(--cyan-signal)', label: () => '生产单位' },
+  SPAWN_FAILED: { icon: '⚠', color: 'var(--amber)', label: (e) => `生产失败${e.reason ? ' · ' + e.reason : ''}` },
+  PICKUP_BEACON_SUCCEEDED: { icon: '◎', color: '#d9a62e', label: () => '拾取冠军信标' },
+  DROP_BEACON_SUCCEEDED: { icon: '◎', color: '#d9a62e', label: () => '放置冠军信标' },
+  UNIT_DESTROYED: { icon: '✕', color: 'var(--coral)', label: () => '单位被摧毁' },
+  CORE_DESTROYED: { icon: '☠', color: 'var(--coral)', label: () => '核心被摧毁!' },
+  CORE_DAMAGED: { icon: '⚔', color: 'var(--coral)', label: (e) => `核心受损 ${e.amount ?? ''}` },
+  RESPAWN: { icon: '↻', color: 'var(--cyan-signal)', label: () => '重生' },
+};
+const ACTIVITY_KINDS = Object.keys(ACTIVITY_KIND_META);
+async function tactRefreshActivity(tenant) {
+  if (!state.soloTenant) { els.activityPanel.hidden = true; return; }
+  try {
+    const r = await getJSON(`/api/events?tenant=${tenant}&n=60`);
+    const rows = (r.events ?? []).filter((e) => ACTIVITY_KINDS.includes(e.kind)).slice(0, 6);
+    if (!rows.length) { els.activityPanel.hidden = true; return; }
+    els.activityPanel.hidden = false;
+    els.activityList.innerHTML = rows.map((e) => {
+      const m = ACTIVITY_KIND_META[e.kind];
+      const label = typeof m.label === 'function' ? m.label(e) : '';
+      const pos = e.position ? `[${e.position[0]}, ${e.position[1]}]` : '';
+      return `<li class="act-row"><span class="act-ic" style="color:${m.color}">${m.icon}</span><span class="act-txt">${escapeHtml(label)}</span><span class="mono act-pos">${pos}</span></li>`;
+    }).join('');
+  } catch { /* 忽略，下次刷新重试 */ }
+}
+/** 命令窗口倒计时（官方 CommandCountdown 移植）：最近观测计划 tick 起 15s，≤5s 变红。 */
+function setCommandWindowTick(tick) {
+  if (!Number.isFinite(tick)) return;
+  if (state.cc.tick !== tick) { state.cc.tick = tick; state.cc.anchor = performance.now(); }
+}
+function updateCommandCountdown() {
+  const el = els.commandCountdown;
+  if (!state.soloTenant || state.cc.tick === null) { el.hidden = true; return; }
+  const remaining = Math.max(0, 15000 - (performance.now() - state.cc.anchor));
+  const progress = remaining / 15000;
+  const urgent = remaining <= 5000;
+  el.hidden = false;
+  els.ccTime.textContent = `${(remaining / 1000).toFixed(1)}s`;
+  els.ccFill.style.transform = `scaleX(${progress.toFixed(3)})`;
+  el.classList.toggle('urgent', urgent);
+}
+
 /** 待执行命令面板（官方 PendingCommands 移植）：最新计划的核心/单位动作列表，
  *  显示 actor（类型·id）、动作中文名、方向/目标格，可折叠。 */
 function tactRenderPending() {
@@ -1718,10 +1962,10 @@ function tactRenderPending() {
   }
   if (!rows.length) { els.pendingPanel.hidden = true; return; }
   const collapsed = tac.pendingCollapsed === true;
-  const body = rows.map((r) => '<li class="pp-row"><span class="pp-actor">' + escapeHtml(r.actor) + '</span><span class="pp-act">' + escapeHtml(r.act) + '</span></li>').join('');
+  const body = rows.map((r) => '<li class="pp-row"><span class="pp-actor">' + escapeHtml(r.actor) + '</span><span class="pp-src src-agent">AGENT</span><span class="pp-act">' + escapeHtml(r.act) + '</span></li>').join('');
   els.pendingPanel.innerHTML = '<button type="button" class="pp-toggle" data-pp-toggle aria-expanded="' + (collapsed ? 'false' : 'true') + '">' +
     '<span class="pp-dot"></span><span class="pp-title">待执行命令 · tick ' + tac.plan.tick + '</span>' +
-    '<span class="pp-count mono">' + rows.length + '</span><span class="pp-chev">' + (collapsed ? '▸' : '▾') + '</span></button>' +
+    '<span class="pp-count mono" title="有效指令数">' + rows.length + '</span><span class="pp-chev">' + (collapsed ? '▸' : '▾') + '</span></button>' +
     '<div class="pp-body"' + (collapsed ? ' hidden' : '') + '><ul class="pp-list">' + body + '</ul></div>';
   els.pendingPanel.hidden = false;
   els.pendingPanel.querySelector('[data-pp-toggle]')?.addEventListener('click', () => {
