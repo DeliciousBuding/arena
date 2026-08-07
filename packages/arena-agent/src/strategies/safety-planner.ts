@@ -113,10 +113,10 @@ const THREAT_RECALL_DISTANCE = 12;
 const RECALL_PATROL_RADIUS = 4;
 /** 记忆矿开采距离上限（Manhattan，默认 40 = 探索最外环）：防追 70+ 格远矿。 */
 const HARVEST_MEMORY_MAX_DIST = 40;
-/** 记忆矿格容量（2026-08-08，t3 生产实证）：同一记忆矿格最多分配 2 worker——
- *  否则 10 worker 抢 1 格集体 capacity_wait 死锁（与 deterministic-planner 的
- *  CELL_ENTITY_CAPACITY=2 同口径）。 */
-const HARVEST_MEM_CELL_CAPACITY = 2;
+/** 记忆矿采集槽（2026-08-08 生产吞吐修复）：自然资源节点每 tick 只允许一个
+ *  HARVEST winner；格子实体容量=2 只是移动容量，不代表采集吞吐=2。记忆矿因此
+ *  必须一矿一 Worker，避免第二个 Worker 长期 capacity_wait/到点后必败。 */
+const HARVEST_MEM_TARGET_SLOTS = 1;
 /** 巡逻出发错峰（2026-08-08，t2 生产实证）：核心区 worker 群同步出发 → 出口容量
  *  互堵永久卡死（12 worker 挤核心 5 格 36+ tick 位置不动，capacity_reroute 无
  *  空格可绕）。判定半径（Chebyshev 离 home）与拥挤阈值（manhattan ≤2 内 worker）。 */
@@ -304,7 +304,7 @@ export class SafetyPlanner {
   private harvestMemStuck = new Map<string, number>();
   /** 上 tick worker 位置（记忆矿卡死检测：位置未变 = 未推进）。 */
   private lastWorkerPos = new Map<string, Position>();
-  /** 本 tick 记忆矿分配计数（cellKey -> worker 数；容量感知防 10 抢 1）。 */
+  /** 本 tick 记忆矿采集槽占用（cellKey -> worker 数；自然节点吞吐=1）。 */
   private allocatedMines = new Map<string, number>();
   /** 本 tick 威胁评估（threatBreakout 用）：decide 入口计算一次供 worker 消费。 */
   private currentThreat: ThreatAssessment | null = null;
@@ -978,6 +978,21 @@ export class SafetyPlanner {
       memory.harvestTarget !== null &&
       hints.some((hint) => samePosition(hint, memory.harvestTarget!))
     ) {
+      // deterministic 上一 tick 可能执行了全局唯一资源分配，而 Safety fallback
+      // 自己曾把多个 worker 记到同一个“最近可见矿”。进入记忆态时必须重新抢占
+      // 真正的采集槽；后处理到的 worker 释放旧 target，回到下方重新分流/巡逻。
+      if (this.config.harvestMemoryMine === true) {
+        const targetKey = cellKey(memory.harvestTarget);
+        const claims = this.allocatedMines.get(targetKey) ?? 0;
+        if (claims >= HARVEST_MEM_TARGET_SLOTS) {
+          memory.workerMode = "patrol";
+          memory.harvestTarget = null;
+          this.harvestMemStuck.delete(unit.id);
+        } else {
+          this.allocatedMines.set(targetKey, claims + 1);
+        }
+      }
+      if (memory.harvestTarget !== null) {
       // 记忆矿卡死回退（2026-08-08，t3 生产实证 10 worker 集体 capacity_wait：
       // 记忆矿目标格容量饱和/路径被堵时，go_harvest_mem 非 patrol 意图无法
       // capacity_reroute → 永久 WAIT 死锁，经济冻结、无法产兵）。连续未推进
@@ -1008,6 +1023,7 @@ export class SafetyPlanner {
         goMem();
         return;
       }
+      }
     }
 
     // 记忆矿主动开采（harvest-memory-mine-v1，2026-08-08，survey-db 联动）：
@@ -1020,9 +1036,8 @@ export class SafetyPlanner {
       let bestDist = Number.POSITIVE_INFINITY;
       for (const hint of hints) {
         const d = manhattan(unit.position, hint);
-        // 容量感知（2026-08-08，t3 生产实证）：同一记忆矿格最多 HARVEST_MEM_CELL_CAPACITY
-        // 个 worker——否则 10 worker 抢 1 格集体 capacity_wait 死锁（矿格容量 2）。
-        if ((this.allocatedMines.get(cellKey(hint)) ?? 0) >= HARVEST_MEM_CELL_CAPACITY) continue;
+        // 采集吞吐感知：自然节点每 tick 只有 1 个 winner，与格子实体容量无关。
+        if ((this.allocatedMines.get(cellKey(hint)) ?? 0) >= HARVEST_MEM_TARGET_SLOTS) continue;
         if (d <= maxDist && (home === null || manhattan(hint, home) <= maxPatrolRadius) && d < bestDist) {
           best = hint;
           bestDist = d;
