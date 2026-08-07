@@ -30,7 +30,9 @@ async function portBusy(port) {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 600);
-    const res = await fetch(`http://127.0.0.1:${port}/api/overview`, { signal: ctrl.signal });
+    // /api/overview 依赖 8120 supervisor 探测（慢时可 2-3s）——改用纯文件读的
+    // /api/stream 探活（2026-08-08），避免自检/双开检查被 supervisor 拖慢。
+    const res = await fetch(`http://127.0.0.1:${port}/api/stream?tenant=t1&n=1`, { signal: ctrl.signal });
     clearTimeout(t);
     return res.ok;
   } catch { return false; }
@@ -64,16 +66,21 @@ if (hidden) {
   });
   child.unref();
   try { writeFileSync(PID, String(child.pid)); } catch { /* 忽略 */ }
-  // 启动自检：800ms 后确认子进程存活且端口响应；失败则清 pid 并提示（避免陈旧 pid）
+  // 启动自检：轮询 ≤3s（首个 /api/overview 依赖 8120 supervisor 探测，
+  // 冷启动预热期可能 >800ms 才响应——2026-08-08 放宽为轮询，消除误报）。
   setTimeout(async () => {
     let alive = true;
     try { process.kill(child.pid, 0); } catch { alive = false; }
-    const ok = alive && (await portBusy(PORT));
+    let ok = false;
+    for (let i = 0; i < 10 && alive; i += 1) {
+      if (await portBusy(PORT)) { ok = true; break; }
+      await new Promise((r) => setTimeout(r, 300));
+    }
     if (!ok) {
       console.error(`⚠ 启动自检失败：进程${alive ? '存活但端口未响应' : '已退出'}——见日志 ${LOG}；已清除 pid 文件。`);
       try { rmSync(PID); } catch { /* 忽略 */ }
     }
-  }, 800);
+  }, 300);
   console.log(`指挥面板后台启动（无终端窗口）pid=${child.pid}`);
   console.log(`  访问：http://127.0.0.1:${PORT}`);
   console.log(`  日志：${LOG}`);

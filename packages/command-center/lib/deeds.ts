@@ -31,11 +31,14 @@ export interface Deed {
   target: string | null;
 }
 
-const RUN_SCAN = 12; // 稀有事件回扫 run 数（intel.ts 同口径）
-const CASE_LIMIT = 24; // 每 run 最近 case 数
+const RUN_SCAN = 6; // 稀有事件回扫 run 数（近期叙事即可，历史深度靠 survey-db 里程碑）
+const CASE_LIMIT = 12; // 每 run 最近 case 数（控制后台刷新事件循环阻塞）
 const REGULAR_CAP = 20; // 每租户常规（★1）事迹上限
 const MOVE_CAP = 2; // 核心移动（★1 高频噪声）额外上限
 const DEEDS_TTL_MS = 45_000;
+const SCAN_BUDGET_MS = 25; // 分批扫描时间预算（每 25ms 让出事件循环，高负载下稳定推进）
+
+const yieldEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 const deedsCache = new TtlCache<Deed[]>(DEEDS_TTL_MS);
 
@@ -143,13 +146,24 @@ function recentRuns(tenant: string, n: number): string[] {
     .map((x) => x.name);
 }
 
-/** 从 calibration 事件扫描聚合事迹（★3-4 稀有 + ★2 产兵/交付/阵亡 + ★1 常规）。 */
-function collectEventDeeds(tenant: string): Deed[] {
+/** 从 calibration 事件扫描聚合事迹（★3-4 稀有 + ★2 产兵/交付/阵亡 + ★1 常规）。
+ *  分批异步扫描：每累计 SCAN_BUDGET_MS 让出事件循环，后台刷新不阻塞请求。 */
+async function collectEventDeeds(tenant: string): Promise<Deed[]> {
   const out: Deed[] = [];
   // 资源峰值：跨扫描窗口收集 after.state.resources 采样，升序找 1000 档跨越 tick
   const resSamples: Array<{ tick: number; res: number }> = [];
+  // 时间预算让出：每累计 SCAN_BUDGET_MS 让一次事件循环（setImmediate）。
+  // 高负载+持续轮询下若按文件数让出，回调会被新请求饿死导致扫描永远做不完；
+  // 按时间预算保证每批稳定推进（2026-08-08 实测 8s 超时根因）。
+  let batchStart = Date.now();
   for (const run of recentRuns(tenant, RUN_SCAN)) {
-    for (const file of listCases(tenant, run).slice(-CASE_LIMIT)) {
+    const files = listCases(tenant, run).slice(-CASE_LIMIT);
+    for (let i = 0; i < files.length; i += 1) {
+      if (Date.now() - batchStart >= SCAN_BUDGET_MS) {
+        await yieldEventLoop();
+        batchStart = Date.now();
+      }
+      const file = files[i];
       const fileTick = parseTick(file);
       let raw: RawCase | null = null;
       try {
@@ -248,17 +262,26 @@ function collectMilestoneDeeds(tenant: string): Deed[] {
   return out;
 }
 
-/** 事迹聚合入口：tenant=all 合并四租户；按 tick 倒序；内存缓存 45s。 */
-export function loadDeeds(tenant: string, limit: number): Deed[] {
+/** 事迹聚合入口：tenant=all 合并四租户；按 tick 倒序；内存缓存 45s。
+ *  异步：缓存命中立即返回；未命中分批扫描（让出事件循环）。 */
+export async function loadDeeds(tenant: string, limit: number): Promise<Deed[]> {
   const key = tenant === "all" ? "all" : tenant;
   const hit = deedsCache.get(key);
   if (hit !== undefined) return hit.slice(0, Math.max(1, limit));
+  if (tenant === "all") {
+    // 从四租户各自缓存合并（各租户先各自加载/命中缓存），避免 all 二次全扫
+    const parts: Deed[][] = [];
+    for (const t of TENANTS) parts.push(await loadDeeds(t, 500));
+    const merged = parts.flat().sort((a, b) => (b.tick - a.tick) || (b.star - a.star));
+    deedsCache.set("all", merged);
+    return merged.slice(0, Math.max(1, limit));
+  }
   const out: Deed[] = [];
-  const tenants = tenant === "all" ? [...TENANTS] : [tenant];
+  const tenants = [tenant];
   for (const t of tenants) {
     let regular = 0;
     let moves = 0;
-    for (const d of collectEventDeeds(t)) {
+    for (const d of await collectEventDeeds(t)) {
       if (d.star === 1) {
         if (d.kind === "CORE_MOVE_SUCCEEDED") {
           if (moves >= MOVE_CAP) continue;
@@ -278,15 +301,15 @@ export function loadDeeds(tenant: string, limit: number): Deed[] {
 }
 
 /** 后台预热/刷新全部租户 + all（启动后调用，不阻塞请求）。 */
-export function refreshDeedsCache(): void {
-  for (const t of TENANTS) loadDeeds(t, 200);
-  loadDeeds("all", 200);
+export async function refreshDeedsCache(): Promise<void> {
+  await Promise.all(TENANTS.map((t) => loadDeeds(t, 200)));
+  await loadDeeds("all", 200);
 }
 
 /** 启动后台刷新循环（返回 timer 供测试清理）。 */
 export function startDeedsCacheLoop(intervalMs = 45_000): NodeJS.Timeout {
-  refreshDeedsCache();
-  return setInterval(refreshDeedsCache, intervalMs);
+  setTimeout(() => { void refreshDeedsCache(); }, 0); // 启动即后台预热，不阻塞首次 listen
+  return setInterval(() => { void refreshDeedsCache(); }, intervalMs);
 }
 
 /** 供调试：最近一个有 case 的 run 名（与面板口径一致）。 */

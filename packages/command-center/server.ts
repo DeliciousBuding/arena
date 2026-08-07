@@ -124,7 +124,7 @@ app.get("/api/survey/mine", (c) => {
   return c.json({ tenant, mine, cell, timeline: loadResourceTimeline(tenant, cell) });
 });
 
-app.get("/api/deeds", (c) => {
+app.get("/api/deeds", async (c) => {
   // 事迹/日记（2026-08-08）：跨租户叙事级事迹，?tenant=all|t1..t4&limit=60。
   // 数据源分层：★3-4 稀有事件扫描 + ★2 里程碑（survey-db）+ ★1 常规（限流）。
   // 45s 内存缓存 + 后台预热，前端轮询不实时扫库。
@@ -134,7 +134,7 @@ app.get("/api/deeds", (c) => {
   if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
     return c.json({ error: "非法租户" }, 400);
   }
-  const deeds = loadDeeds(tenant, limit);
+  const deeds = await loadDeeds(tenant, limit);
   return c.json({ generatedAt: new Date().toISOString(), tenant, limit, deeds });
 });
 app.get("/api/alliance/survey", (c) => {
@@ -349,13 +349,17 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   // 等前端打开才加载）：测绘 30s / 事迹 45s / 联盟情报 30s / 共享测绘 30s。
   startSurveyCacheLoop(30_000);
   startDeedsCacheLoop(45_000);
-  const warmAlliance = (): void => {
+  // 联盟情报（intel）冷扫描 2.7s 同步阻塞事件循环——只在启动预热一次
+  // （setTimeout 0，不阻塞首次 listen），不进周期循环；过期后按请求惰性
+  // 刷新（内部 30s 缓存，原有行为）。周期循环只做轻量刷新。
+  setTimeout(() => { try { loadAllianceIntel(); } catch { /* 忽略 */ } }, 0);
+  const warmLight = (): void => {
     try {
-      loadAllianceIntel(); // 内部 30s 缓存（排行榜 + 遭遇索引）
-      refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存
+      refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
+      void supervisorState(); // 8120 健康状态 5s 缓存（/api/overview、/api/tenants 首开即快）
     } catch { /* 数据缺失/临时 IO 失败不阻塞启动 */ }
   };
-  warmAlliance();
-  setInterval(warmAlliance, 30_000);
+  warmLight();
+  setInterval(warmLight, 30_000);
   console.log("后台预热：测绘 30s / 事迹 45s / 联盟情报 + 共享测绘 30s 已启动");
 });
