@@ -138,3 +138,107 @@ test("vanguard_home 同样最高优先（与 ranger_home 对称）", () => {
   const result = resolveMoveCapacity(state, actions, intents, new Set());
   assert.deepEqual(result.unitActions[RANGER], { type: "MOVE", direction: "UP" }, "vanguard_home 不被淘汰");
 });
+
+
+test("go_harvest_mem 容量被拒 → capacity_reroute 绕行（非死 WAIT）", () => {
+  // t2 生产实证：5 worker 持续 capacity_wait:go_harvest_mem——记忆矿目标格满
+  // 时旧逻辑只能 WAIT 死等（位置不动 → stuck 回退 → 重新选同一矿再卡）；
+  // 修复：go_harvest_mem 也纳入可绕行意图 → 绕到相邻格继续接近目标。
+  const W1 = "22222222-2222-2222-2222-222222222210";
+  const W2 = "22222222-2222-2222-2222-222222222211";
+  const W3 = "22222222-2222-2222-2222-222222222212";
+  const state: TickState = {
+    tick: 1,
+    status: "ACTIVE",
+    resources: 10,
+    resourceCapacity: 50,
+    resourceSpace: 40,
+    population: 3,
+    core: { id: "c1", position: [0, 0] as Position, hp: 5, shield: 5, state: "NORMAL", ownerUsername: "p1" },
+    units: [
+      { id: W1, position: [1, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+      { id: W2, position: [2, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+      { id: W3, position: [2, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+    ],
+    workers: [
+      { id: W1, position: [1, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+      { id: W2, position: [2, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+      { id: W3, position: [2, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+    ],
+    vanguards: [],
+    rangers: [],
+    visibleEnemies: [],
+    resourceCells: new Set(),
+    obstacleCells: new Set(),
+    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+    events: [],
+  };
+  // w1 想去 [2,0]（记忆矿方向），但 [2,0] 已有 2 单位（满容量 2）
+  const actions: Record<string, UnitAction> = {
+    [W1]: { type: "MOVE", direction: "RIGHT" }, // [1,0] → [2,0] 超容量
+    [W2]: { type: "WAIT" },
+    [W3]: { type: "WAIT" },
+  };
+  const intents: Record<string, string> = {
+    [W1]: "go_harvest_mem",
+    [W2]: "go_harvest_mem",
+    [W3]: "go_harvest_mem",
+  };
+  const result = resolveMoveCapacity(state, actions, intents, new Set());
+  const w1Action = result.unitActions[W1];
+  assert.ok(w1Action !== undefined, "w1 应有动作");
+  assert.equal(w1Action.type, "MOVE", `w1 应绕行继续推进而非死等，实际=${JSON.stringify(w1Action)}`);
+  assert.ok(
+    (result.intents?.[W1] ?? "").startsWith("capacity_reroute:"),
+    `w1 意图应为 capacity_reroute:go_harvest_mem，实际=${result.intents?.[W1]}`,
+  );
+});
+
+test("go_harvest（可见矿）容量被拒 → capacity_reroute 绕行", () => {
+  const W1 = "22222222-2222-2222-2222-222222222220";
+  const W2 = "22222222-2222-2222-2222-222222222221";
+  const W3 = "22222222-2222-2222-2222-222222222222";
+  const state: TickState = {
+    tick: 1,
+    status: "ACTIVE",
+    resources: 10,
+    resourceCapacity: 50,
+    resourceSpace: 40,
+    population: 3,
+    core: { id: "c1", position: [0, 0] as Position, hp: 5, shield: 5, state: "NORMAL", ownerUsername: "p1" },
+    units: [
+      { id: W1, position: [1, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+      { id: W2, position: [2, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+      { id: W3, position: [2, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+    ],
+    workers: [
+      { id: W1, position: [1, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+      { id: W2, position: [2, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+      { id: W3, position: [2, 0] as Position, hp: 2, unitType: "WORKER", cargo: 0 },
+    ],
+    vanguards: [],
+    rangers: [],
+    visibleEnemies: [],
+    resourceCells: new Set(),
+    obstacleCells: new Set(),
+    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+    events: [],
+  };
+  const actions: Record<string, UnitAction> = {
+    [W1]: { type: "MOVE", direction: "RIGHT" },
+    [W2]: { type: "WAIT" },
+    [W3]: { type: "WAIT" },
+  };
+  const intents: Record<string, string> = {
+    [W1]: "go_harvest",
+    [W2]: "go_harvest",
+    [W3]: "go_harvest",
+  };
+  const result = resolveMoveCapacity(state, actions, intents, new Set());
+  assert.equal(result.unitActions[W1]?.type, "MOVE", "go_harvest 也应绕行");
+  assert.ok(
+    (result.intents?.[W1] ?? "").startsWith("capacity_reroute:"),
+    `实际=${result.intents?.[W1]}`,
+  );
+});
+
