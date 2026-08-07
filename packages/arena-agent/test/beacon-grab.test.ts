@@ -206,3 +206,10 @@ test("beaconGrab 开启：信标彻底静止（窗口内单一位置）→ 正�
   const plan = planner.decide({ state: makeState(4, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
   assert.equal(plan.intents["v0"], "vanguard_beacon_fetch", "窗口内单一位置 = 真掉落，可拾取");
 });
+
+test("beaconGrab 开启：信标 24 格外（默认安全半径外）→ 不 fetch（ref 远征取消）", () => {
+  const planner = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, aggression: "aggressive" as const, beaconGrab: true });
+  // 默认 beaconGrabMaxDist=24：信标 [30,0] 距 Core 30 >24 → 不单骑远征
+  const plan = planner.decide({ state: makeState(1, { vanguards: [[12, 0]], beacon: { position: [30, 0], status: "GROUND", carrierId: null } }) });
+  assert.notEqual(plan.intents["v0"], "vanguard_beacon_fetch", "24 格外 = 远征取消，不取");
+});
