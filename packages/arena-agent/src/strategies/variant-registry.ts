@@ -58,6 +58,12 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),
+    /**
+     * TTR 预撤离（2026-08-07，竞品 time-to-range 对照）：敌人位置差分估算
+     * 逼近速度，TTR（到射程时间）≤16 tick 即触发迁移——比 12 格固定阈值
+     * 更早（高速逼近的敌人在 20 格外 TTR 已 ≤16）。小股快攻更早预警。
+     */
+    "core-evade-ttr-v1": Object.freeze({ coreEvade: true, coreEvadeTtr: true, coreEvadePersist: true }),
     "guard-axes-v1": Object.freeze({ guardAxes: true }),
     "guard-heal-rotation-v1": Object.freeze({ guardHealRotation: true }),
     "detached-squad-v1": Object.freeze({ detachedSquadResponse: true }),
