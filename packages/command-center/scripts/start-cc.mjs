@@ -15,7 +15,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const CC = resolve(HERE, "..");
 const LOGS = join(CC, "logs");
 mkdirSync(LOGS, { recursive: true });
-const SERVER = join(CC, "server.mjs");
+const SERVER = join(CC, "server.ts"); // Node 24 type stripping 直接执行 TS
 const LOG = join(LOGS, "cc-server.log");
 const PID = join(LOGS, "cc-server.pid");
 const PORT = process.env.COMMAND_CENTER_PORT ?? "8787";
@@ -49,6 +49,9 @@ if (stop) {
 }
 
 const env = { ...process.env, COMMAND_CENTER_PORT: PORT };
+// 显式注入共享数据根：command-center/.. = packages, /.. = arena-ts, /.. = 协调根，
+// + data —— 在 main 工作树与 .worktrees 下均解析到同一份协调根 data/。
+env.ARENA_DATA_ROOT = process.env.ARENA_DATA_ROOT ?? resolve(join(CC, "..", "..", "..", "data"));
 
 if (hidden) {
   if (await portBusy(PORT)) {
