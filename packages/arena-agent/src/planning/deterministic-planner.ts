@@ -38,6 +38,7 @@ import type { PlanProvider } from "../runtime/decision-types.ts";
 import type { MacroPolicy } from "../runtime/macro-policy.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { type CoreHuntTarget } from "../domain/world.ts";
+import { unitSpawnCosts } from "../domain/pricing.ts";
 import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snapshot.ts";
 import { WorkerTaskPlanner, type Assignment } from "./worker-task-planner.ts";
 
@@ -333,6 +334,11 @@ export function selectDeterministicCoreAction(
    *  （生产 t2：res 恒 5 < cost 5 + reserve 2 = 7 → 永不 SPAWN → pop 3 冻结），
    *  reserve=0 可突破平衡扩编；默认 WORKER_SPAWN_RESERVE=2 保持生产行为零回归。 */
   spawnReserve = WORKER_SPAWN_RESERVE,
+  /** 人口上限（2026-08-07 动态定价配套）：SURGE/产兵分支越过该值不再 SPAWN——
+   *  v0.14 第 21 单位起动态涨价（Worker 7/Vanguard 13/Ranger 16），超 20 的
+   *  单位 ROI 骤降；与 SafetyPlanner.populationCeiling 对齐（默认 20）。
+   *  缺省 Infinity = 历史行为（deterministic 不设上限，零回归）。 */
+  populationCeiling = Number.POSITIVE_INFINITY,
   /** 威胁防御产兵（2026-08-07 竞品 _control_core 对照）：可见战斗敌距
    *  Core <=5 格（预警带）且 VANGUARD < 3 → 优先产 VANGUARD。实验 A/B
    *  （threat-defense-experiment，120 ticks × 3 seeds）：资源紧张场景
@@ -372,6 +378,14 @@ export function selectDeterministicCoreAction(
   }
 
   if (core !== null && core.state === "NORMAL") {
+    // v0.14 动态定价（2026-08-07 生产实证：pop 24 RANGER 实收 16、pop 25
+    // VANGUARD 实收 13）：所有产兵分支用 unitSpawnCosts（按 spawn 前人口），
+    // 不再用 base 价预算——旧固定价导致 pop≥21 后连串 INSUFFICIENT_RESOURCES
+    // 失败（t1 67452-67478 实证）。人口超上限（默认 20 = 动态价线）不再产兵。
+    const spawnCosts = unitSpawnCosts(state.population);
+    if (state.population >= populationCeiling) {
+      return { action: null, intent: null, surgeActive: active };
+    }
     // Core 格被空载/非 Worker 单位占位时阻塞生成（SPAWN 会叠加容量）；
     // 满载 Worker 是"卸货等待"不阻塞（资源满时 DEPOSIT 暂不合法，但 SPAWN
     // 消耗资源后立即可卸——资源满 + 占格 + 无法卸货会形成永久经济死锁）。
@@ -394,7 +408,7 @@ export function selectDeterministicCoreAction(
       if (surgeOn) {
         // 爆兵期：全力产兵（交替 VANGUARD/RANGER，不受 militaryRatio 限制）
         const unitType: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
-        const cost = unitType === "VANGUARD" ? 10 : 12;
+        const cost = spawnCosts[unitType];
         if (state.resources >= cost + spawnReserve) {
           return {
             action: { type: "SPAWN", unitType },
@@ -411,7 +425,7 @@ export function selectDeterministicCoreAction(
         // 补员是送死（官方 DEFENSE_VANGUARD_TARGET=3，威胁响应先于经济
         // 扩张）。紧急防御豁免 spawnReserve（官方语义：威胁产兵只看纯
         // 成本 resources >= VANGUARD_COST——防御是生存行为不囤 reserve）。
-        if (state.resources >= 10) {
+        if (state.resources >= spawnCosts.VANGUARD) {
           return {
             action: { type: "SPAWN", unitType: "VANGUARD" },
             intent: "spawn_vanguard_defense",
@@ -419,7 +433,7 @@ export function selectDeterministicCoreAction(
           };
         }
       } else if (state.workers.length < workerTarget && !needMilitary) {
-        if (state.resources >= WORKER_SPAWN_COST + (emergency ? 0 : spawnReserve)) {
+        if (state.resources >= spawnCosts.WORKER + (emergency ? 0 : spawnReserve)) {
           return {
             action: { type: "SPAWN", unitType: "WORKER" },
             intent: emergency ? "emergency_spawn_worker" : "spawn_worker_target",
@@ -430,7 +444,7 @@ export function selectDeterministicCoreAction(
         // 军事单位产出：默认交替（VANGUARD ↔ RANGER）；vanguardRatio 实验配置
         // 覆盖为按目标占比产出。资源门禁：VANGUARD 10 / RANGER 12 + reserve
         const unitType: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
-        const cost = unitType === "VANGUARD" ? 10 : 12;
+        const cost = spawnCosts[unitType];
         if (state.resources >= cost + spawnReserve) {
           return {
             action: { type: "SPAWN", unitType },
@@ -544,6 +558,9 @@ export class DeterministicPlanner implements PlanProvider {
       this.accumulateThreshold,
       this.surgeActive,
       this.spawnReserve,
+      // 动态定价配套：deterministic 产兵尊重 Safety 配置的人口上限（默认 20
+      // = v0.14 动态价线）；strike-core-v1 的 SafetyPlanner 用默认 20。
+      this.fallbackPlanner.config.populationCeiling,
     );
     this.surgeActive = coreDecision.surgeActive;
     if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;

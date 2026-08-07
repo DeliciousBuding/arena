@@ -11,19 +11,17 @@
  * - 初始/respawn Worker 免费由 world 初始化/respawn resolver 保证，本模块
  *   只负责主动 SPAWN 的价格。
  *
- * 未实机验证：生产人口峰值 8，pop ≥ 21 的行为按文档公式实现（见
- * rules-v0.14.json evidence.discrepancies）。
+ * 实机验证（2026-08-07 生产 t1）：pop 24 RANGER 实收 16、pop 25 VANGUARD
+ * 实收 13（CORE_SPAWN_SUCCEEDED.values.cost）——live 动态价与公式一致。
  *
  * 版本隔离：computeUnitCost 只接受 v0.14 manifest（union 编译期限定）；
  * spawnUnitCost 按 rulesVersion 分派，v0.11 路径行为与历史实现逐字节一致。
  */
 
+import { DYNAMIC_PRICING, unitSpawnCost } from "../../domain/pricing.ts";
+import { BASE_COST as DOMAIN_BASE } from "../../domain/pricing.ts";
 import type { UnitType } from "../../domain/model.ts";
 import type { RulesManifest, RulesManifestV014 } from "./rules-manifest.ts";
-
-/** growthFactor 13/10 的整数形式：base × 13^k / 10^k 只取整一次。 */
-const GROWTH_NUMERATOR = 13;
-const GROWTH_DENOMINATOR = 10;
 
 /**
  * v0.14 动态价格：第 21 单位起 round_half_up(base × (13/10)^k)。
@@ -35,18 +33,20 @@ export function computeUnitCost(
   populationBeforeSpawn: number,
   rules: RulesManifestV014,
 ): number {
+  // 公式唯一实现在 domain/pricing.ts（决策侧与 sim 共用，防两处漂移）；
+  // 这里校验 manifest 参数与 spec 常量一致（fail-fast 抓 manifest 漂移）。
   const { base, dynamicPricing } = rules.rules.unitCosts;
-  const basePrice = base[unitType];
-  const k = Math.max(0, Math.floor((populationBeforeSpawn - dynamicPricing.tierSize) / dynamicPricing.tierStep) + 1);
-  if (k === 0) {
-    return basePrice;
+  if (
+    base[unitType] !== DOMAIN_BASE[unitType] ||
+    dynamicPricing.tierSize !== DYNAMIC_PRICING.tierSize ||
+    dynamicPricing.tierStep !== DYNAMIC_PRICING.tierStep
+  ) {
+    throw new Error(
+      `v0.14 unitCosts manifest 与 spec 常量不一致（${String(unitType)} base=${String(base[unitType])} ` +
+        `tierSize=${String(dynamicPricing.tierSize)} tierStep=${String(dynamicPricing.tierStep)}）`,
+    );
   }
-  // 官方公式要求"exact fraction rounded only once at the end"：用整数乘方
-  // 避免中间取整；k 极大（13^k 溢出 double）时饱和为 MAX_SAFE_INTEGER
-  // （恒不可负担且 JSON 可序列化，防御性兜底，现实人口不可达）。
-  const exactFraction = (basePrice * GROWTH_NUMERATOR ** k) / GROWTH_DENOMINATOR ** k;
-  const price = Math.round(exactFraction);
-  return Number.isFinite(price) ? price : Number.MAX_SAFE_INTEGER;
+  return unitSpawnCost(unitType, populationBeforeSpawn);
 }
 
 /**

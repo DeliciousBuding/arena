@@ -59,6 +59,7 @@ test("威胁防御产兵：敌距 Core 3 格内 + VANGUARD 未达标 → spawn V
     0,
     false,
     2,
+    undefined, // populationCeiling 默认无限
     true, // threatDefenseSpawn 显式开启（默认关闭候选）
   );
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
@@ -80,6 +81,7 @@ test("威胁防御产兵：敌 6 格外（预警带外）不触发", () => {
     0,
     false,
     2,
+    undefined,
     true,
   );
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" }, "6 格威胁不触发防御产兵");
@@ -94,6 +96,7 @@ test("威胁防御产兵：敌 5 格（预警带内、射程外）触发", () =>
     0,
     false,
     2,
+    undefined,
     true,
   );
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" }, "5 格 = 预警带内触发防御产兵");
@@ -108,6 +111,7 @@ test("威胁防御产兵：VANGUARD 已达 3 防御目标 → worker 补员", ()
     0,
     false,
     2,
+    undefined,
     true,
   );
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" }, "防御达标回经济");
@@ -122,6 +126,7 @@ test("威胁防御产兵：资源 10（纯成本，豁免 reserve）→ spawn", 
     0,
     false,
     2,
+    undefined,
     true,
   );
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" }, "威胁产兵豁免 reserve——10 即可产");
@@ -136,6 +141,7 @@ test("威胁防御产兵：资源 9（<10）→ 不 spawn", () => {
     0,
     false,
     2,
+    undefined,
     true,
   );
   assert.equal(decision.action, null, "9 < 10 → 不产 VANGUARD");
@@ -143,7 +149,7 @@ test("威胁防御产兵：资源 9（<10）→ 不 spawn", () => {
 
 test("威胁防御产兵：敌方 WORKER 不触发（非战斗单位）", () => {
   const enemy: VisibleEntity = { id: "e1", kind: "UNIT", position: [3, 0], hp: 2, unitType: "WORKER" };
-  const decision = selectDeterministicCoreAction(makeState(15, 3, 0, [enemy]), null, undefined, undefined, 0, false, 2, true);
+  const decision = selectDeterministicCoreAction(makeState(15, 3, 0, [enemy]), null, undefined, undefined, 0, false, 2, undefined, true);
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" }, "敌方 WORKER 不是威胁");
 });
 
@@ -154,7 +160,7 @@ test("威胁防御产兵：Core 格被占（非满载 worker）→ 不 spawn（�
     units: [{ ...state.units[0], position: [0, 0] as Position }, ...state.units.slice(1)],
     workers: [{ ...state.workers[0], position: [0, 0] as Position }, ...state.workers.slice(1)],
   };
-  const decision = selectDeterministicCoreAction(stateWithOccupant, null, undefined, undefined, 0, false, 2, true);
+  const decision = selectDeterministicCoreAction(stateWithOccupant, null, undefined, undefined, 0, false, 2, undefined, true);
   assert.equal(decision.action, null, "Core 格被占 → 容量预检阻止 spawn");
 });
 
