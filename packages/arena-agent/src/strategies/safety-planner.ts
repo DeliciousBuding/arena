@@ -1216,11 +1216,19 @@ export class SafetyPlanner {
     if (enemies.length > 0) {
       moveTarget = guardAxesPost ?? nearestEnemy(enemies, unit.position)?.position ?? null;
     } else if (this.effectiveAggression === "aggressive" && state.core !== null) {
-      const enemyCoreMemory = this.world.coreHuntTargets().find(
-        (target) =>
-          target.source === "CORE" &&
-          chebyshev(state.core!.position, target.position) <= BOUNDED_RAID_DISTANCE,
-      );
+      // 兵力门槛（2026-08-07 第二轮 jerkman 攻坚实证）：Ranger 单独前压被
+      // 敌方爆兵防线消耗殆尽（5 Ranger 全灭、核心未破）——guide 要求"有护卫
+      // 核心先集结、全员到齐再共同出击"。兵力 < attackForce 时守家重建，
+      // 达标后 Vanguard+Ranger 成建制压上（与 Vanguard forceGate 同门槛）。
+      const military = state.vanguards.length + state.rangers.length;
+      const forceGate = (this.config.attackForce ?? 0) > 0 && military < (this.config.attackForce ?? 0);
+      const enemyCoreMemory = forceGate
+        ? undefined
+        : this.world.coreHuntTargets().find(
+            (target) =>
+              target.source === "CORE" &&
+              chebyshev(state.core!.position, target.position) <= BOUNDED_RAID_DISTANCE,
+          );
       moveTarget = enemyCoreMemory?.position ?? this.effectivePolicy?.focusRegion ?? home;
     } else {
       moveTarget = this.effectivePolicy?.focusRegion ?? home;
