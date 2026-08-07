@@ -139,3 +139,20 @@ mapEngine.ts 对应函数。
 - `mapEngine.ts` 由 `./utils.js`/`./api.js` 迁移到类型化 `./utils.ts`/`./api.ts`
   （同源导出超集）；全仓确认无其他调用方后删除两个遗留 .js。tsc + build 全绿。
 
+## 8. 2026-08-08 续：后端结构性性能优化 + 开发测试一键流程
+
+### 8.1 /api/map 缓存（commit 5ec4ed9）——poll 热点 2000ms → 1.1ms
+- **问题**：`/api/map` 每 3s poll 一次，原每次重扫 4 租户 × 最近 24 个 case
+  （~96 次文件读 + 全量 JSON 解析，冷 ~2000ms）。
+- **修复**：case 文件原子写入 → 以 `(runId, caseCount, 最新 case 名)` 为签名的
+  `mergedCache`；tick 未前进直接命中（15s tick vs 3s poll 命中率 ~80%）。
+- **附带**：`latestRunDir` 全量扫描 run 目录（被 stream/replay/plan/world/store
+  多端点共用，签名本身 ~100ms/次）加 1.5s TTL 记忆化（run 身份只在 agent 重启时变，
+  语义不变）。
+- **实测**：缓存命中路径 2000ms → 1.1ms/次；HTTP /api/map 冷 129ms / 命中 16ms。
+
+### 8.2 一键 check:all（commit ee28a3f）
+- `packages/command-center` 根新增 `npm run check:all`（server tsc → web typecheck →
+  web build）与 `npm run test:regression` 转发；README 增「开发与测试流程」节，
+  与 CI `command-center` job 等价。
+
