@@ -561,6 +561,19 @@ export class DeterministicPlanner implements PlanProvider {
         }
         continue;
       }
+      // 核心迁移中持货待命（core-moving-hold-v1，2026-08-07）：deterministic worker
+      // 的 DEPOSIT 任务直接覆盖 Safety 的 WAIT——迁移期照常追交空跑（生产 t3 实证
+      // CORE_MOVING/CORE_NOT_PRESENT）。这里对齐 SafetyPlanner：coreMovingHold 且
+      // 核心 MOVING 时，cargo worker 原地 WAIT，等核心回 NORMAL 再交仓。
+      if (
+        assignment.task.type === "DEPOSIT" &&
+        snapshot.coreState === "MOVING" &&
+        this.fallbackPlanner.config.coreMovingHold === true
+      ) {
+        unitActions[assignment.unitId] = { type: "WAIT" };
+        intents[assignment.unitId] = "worker_hold_cargo_moving";
+        continue;
+      }
       unitActions[assignment.unitId] = this.taskAction(assignment, snapshot);
       intents[assignment.unitId] = assignment.task.type;
     }
