@@ -28,6 +28,7 @@ function makeState(opts: {
   workers: UnitSnapshot[];
   resourceSpace?: number;
   obstacleCells?: Position[];
+  events?: { eventType: string; actorId: string | null; reasonCode: string | null; position: Position }[];
 }): TickState {
   return {
     tick: opts.tick ?? 1,
@@ -45,7 +46,16 @@ function makeState(opts: {
     resourceCells: new Set(),
     obstacleCells: new Set((opts.obstacleCells ?? []).map((c) => `${c[0]},${c[1]}`)),
     beacon: { position: [100, 100], status: "GROUND", carrierId: null },
-    events: [],
+    events: (opts.events ?? []).map((e, i) => ({
+      eventId: `evt-${i}`,
+      tick: opts.tick ?? 1,
+      eventType: e.eventType,
+      reasonCode: e.reasonCode,
+      actorId: e.actorId,
+      targetId: null,
+      position: e.position,
+      values: {},
+    })),
   };
 }
 
