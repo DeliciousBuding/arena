@@ -1848,7 +1848,7 @@ function tactRenderActionDialog() {
       <span class="act-icon"><img src="${artPath}" alt="" /></span>
       <div class="act-id">
         <b>${name} · ${sel.tenant.toUpperCase()}</b>
-        <span class="mono">${obj.hp} HP${obj.shield !== undefined ? ` · ${obj.shield} SHD` : ''}${(obj.cargo ?? 0) > 0 ? ` · 载货 ${obj.cargo}` : ''}</span>
+        <span class="mono">${obj.hp} HP${obj.shield != null ? ` · ${obj.shield} SHD` : ''}${(obj.cargo ?? 0) > 0 ? ` · 载货 ${obj.cargo}` : ''}</span>
         <span class="mono dim">[${obj.position[0]}, ${obj.position[1]}]${obj.controlled ? '' : ' · 敌方'}</span>
       </div>
       <button class="act-close" data-close aria-label="关闭">✕</button>
