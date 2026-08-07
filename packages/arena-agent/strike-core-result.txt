@@ -1,0 +1,19 @@
+=== strike-core-v1 攻坚 A/B v2（300 ticks × 3 seeds；p2 恒 defensive deterministic）===
+场景                  | 臂        | p1活 p2拆 t拆 | p1资源 | 射击 | 清扫
+strike-defense-2-ranger | defensive   | 3/3 1/3 t204  |     26 |     0 |     6
+strike-defense-2-ranger | aggressive  | 3/3 3/3 t24   |      8 |     0 |    37
+strike-defense-2-ranger | strike      | 3/3 1/3 t22   |      7 |     0 |    20
+strike-defense-6       | defensive   | 3/3 0/3 t0    |     20 |     0 |     8
+strike-defense-6       | aggressive  | 3/3 0/3 t0    |      4 |     0 |    15
+strike-defense-6       | strike      | 3/3 0/3 t0    |      1 |     0 |     4
+threat-defense-raid    | defensive   | 2/3 0/3 t0    |      1 |     0 |     0
+threat-defense-raid    | aggressive  | 2/3 0/3 t0    |      1 |     0 |     0
+threat-defense-raid    | strike      | 2/3 0/3 t0    |      1 |     0 |     0
+ranged-siege           | defensive   | 3/3 0/3 t0    |      2 |     0 |     0
+ranged-siege           | aggressive  | 3/3 0/3 t0    |      2 |     0 |     0
+ranged-siege           | strike      | 3/3 0/3 t0    |      2 |     0 |     0
+worker-hunt            | defensive   | 3/3 0/3 t0    |      2 |     0 |     0
+worker-hunt            | aggressive  | 3/3 0/3 t0    |      2 |     0 |     0
+worker-hunt            | strike      | 3/3 0/3 t0    |      2 |     0 |     0
+
+图例: p1活 x/3 = p1 Core 存活数; p2拆 x/3 = p2 Core 被拆数; tN = 平均拆毁 tick（无拆=∞）; 射击/清扫 = p1 进攻动作事件数

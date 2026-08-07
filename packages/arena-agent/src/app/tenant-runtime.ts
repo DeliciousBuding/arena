@@ -28,7 +28,7 @@ import { DecisionCoordinator } from "../runtime/decision-coordinator.ts";
 import { LeaseRegistry } from "../runtime/lease-registry.ts";
 import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
 import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
-import { resolveVariantsConfig } from "../strategies/variant-registry.ts";
+import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
@@ -469,6 +469,10 @@ export async function runTenant(
     //    coordinator 短路语义同 safety——不启动 Agent）
     // 候选变体（config.variants）经注册表解析合并进 SafetyPlanner 配置（2026-08-06 架构整理）。
     const variantConfig = resolveVariantsConfig(config.variants);
+    // deterministic 侧参数覆盖（2026-08-07）：变体可同时声明 core 生产参数
+    // （vanguardRatio/accumulateThreshold/spawnReserve）——"变体启用=配置声明"
+    // 在 deterministic 模式同样成立（如 strike-core-v1 爆兵打水晶）。
+    const deterministicVariantConfig = resolveDeterministicVariantsConfig(config.variants);
     const planner =
       decisionMode === "deterministic"
         ? Object.keys(variantConfig).length === 0
@@ -477,6 +481,9 @@ export async function runTenant(
               new WorkerTaskPlanner(),
               new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...variantConfig }),
               new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...variantConfig }),
+              deterministicVariantConfig.vanguardRatio,
+              deterministicVariantConfig.accumulateThreshold ?? 0,
+              deterministicVariantConfig.spawnReserve,
             )
         : new SafetyPlanner({ ...AGGRESSIVE_SAFETY_CONFIG, ...variantConfig });
     const coordinator = new DecisionCoordinator({

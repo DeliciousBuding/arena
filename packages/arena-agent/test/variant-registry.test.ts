@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  resolveDeterministicVariantsConfig,
+  resolveDeterministicVariantConfig,
   isSafetyVariant,
   resolveSafetyVariantConfig,
   resolveVariantsConfig,
@@ -37,6 +39,23 @@ test("variant registry: empty or undefined variants list is zero override", () =
   assert.deepEqual(resolveVariantsConfig([]), {});
 });
 
+test("variant registry: strike-core-v1 resolves safety + deterministic parts", () => {
+  assert.deepEqual(resolveSafetyVariantConfig("strike-core-v1"), {
+    aggression: "aggressive",
+    attackForce: 6,
+    boundedRaid: true,
+    rangerMemoryShot: true,
+    strikeGroupReserve: true,
+  });
+  assert.deepEqual(resolveDeterministicVariantConfig("strike-core-v1"), {
+    vanguardRatio: 0.5,
+    accumulateThreshold: 30,
+  });
+  // 未知 id fail-fast（deterministic 侧同样）
+  assert.throws(() => resolveDeterministicVariantConfig("no-such-variant"), /unknown deterministic variant/);
+  assert.deepEqual(resolveDeterministicVariantsConfig(undefined), {});
+  assert.deepEqual(resolveDeterministicVariantsConfig([]), {});
+});
 test("variant registry: multiple variants merge into one config", () => {
   const merged = resolveVariantsConfig(["threat-recall-v1", "core-evade-v1"]);
   assert.deepEqual(merged, { threatRecall: true, coreEvade: true });
