@@ -46,6 +46,9 @@ test("variant registry: strike-core-v1 resolves safety + deterministic parts", (
     boundedRaid: true,
     rangerMemoryShot: true,
     strikeGroupReserve: true,
+    militarySearchDense: true,
+    militaryRingHoldTicks: 20,
+    enemyCoreMemoryTicks: 1200,
   });
   assert.deepEqual(resolveDeterministicVariantConfig("strike-core-v1"), {
     vanguardRatio: 0.5,

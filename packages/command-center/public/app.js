@@ -143,6 +143,7 @@ async function poll() {
     renderTenantCards();
     renderTenantToggles();
     if (!state.view.ready) draw();
+    if (state.soloTenant) tactRefreshLive(state.soloTenant);
   } catch (err) {
     els.badge.className = 'badge err';
     els.badge.textContent = '数据离线';
@@ -583,6 +584,25 @@ async function tactShowTenant(tenant) {
   tactRenderPending();
   draw();
 }
+/** 战术层实时刷新（2026-08-07）：聚焦单租户时每轮 poll 重取世界+计划，
+ *  待执行命令面板/计划箭头/单位位置跟随最新 tick；按 id 重解析选中对象保持选中态。 */
+async function tactRefreshLive(tenant) {
+  try {
+    const [world, plan] = await Promise.all([
+      tactLoadWorld(tenant, true),
+      getJSON('/api/plan?tenant=' + tenant),
+    ]);
+    if (world) T().worlds[tenant] = world;
+    if (plan && plan.plan) T().plan = { tick: plan.tick, plan: plan.plan };
+    const sel = T().selected;
+    if (sel && sel.tenant === tenant && world) {
+      const byId = world.state.objects.find((x) => x.id === sel.obj.id);
+      if (byId) sel.obj = byId;
+    }
+    tactRenderPending();
+    draw();
+  } catch { /* 保持上次快照，下次重试 */ }
+}
 async function tactLoadPlan(tenant) {
   try {
     const r = await getJSON('/api/plan?tenant=' + tenant);
@@ -990,8 +1010,8 @@ function tactUnitCost(unitType, pop) {
   const exp = pop < 20 ? 0 : Math.floor((pop - 20) / 5) + 1;
   return Math.round(base * Math.pow(1.3, exp));
 }
-async function tactLoadWorld(tenant) {
-  if (T().worlds[tenant]) return T().worlds[tenant];
+async function tactLoadWorld(tenant, force) {
+  if (!force && T().worlds[tenant]) return T().worlds[tenant];
   try {
     const w = await getJSON(`/api/world?tenant=${tenant}`);
     if (w.state) { const world = { state: w.state, tick: w.tick, caseFile: w.caseFile, tenant }; T().worlds[tenant] = world; return world; }

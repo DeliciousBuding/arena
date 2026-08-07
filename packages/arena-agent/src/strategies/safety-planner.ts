@@ -220,6 +220,29 @@ export interface SafetyPlannerConfig {
    */
   readonly rangerMemoryShot?: boolean;
   /**
+   * 敌 Core 记忆窗口（2026-08-07，攻坚候选）：aggressive 敌 Core 记忆推进
+   * /Ranger 记忆射击的 maxAge。默认 60（历史行为）；Core 是慢速目标，长局
+   * （t1 已 6 万+ tick）中 60 tick 记忆导致"看一眼就忘、部队圈巡找不到家"。
+   * strike-core-v1 设 1200——一旦发现敌 Core，部队在 1200 tick 内持续前压。
+   */
+  readonly enemyCoreMemoryTicks?: number;
+  /**
+   * 密集军事搜索（2026-08-07，攻坚候选）：aggressive 军事打野改用 16 方位
+   * （含半八分位）目标选择。根因：8 方位对角巡逻线距 off-diagonal 敌 Core
+   * 的 Manhattan 最近距离 ≥7（视野 4），几何上永远发现不了（t1 敌 Core 在
+   * NE 对角 17° 偏角，[-611,-169] vs home [-619,-154]，8 方位 NE 线最近
+   * Manhattan 7）。16 方位含 [1,-2]（NNE，-63.4°）→ 距 Core Manhattan ~1，
+   * 进入视野 → 记忆 → 前压。默认 false = 历史 8 方位（零回归）。
+   */
+  readonly militarySearchDense?: boolean;
+  /**
+   * 军事打野环停留预算（2026-08-07，攻坚候选）：军事打野在**同一 patrolRing
+   * 上停留超过该 tick 数**即强制推进下一环（不再要求精确到达巡逻点）——防
+   * 止单位被争格/振荡卡死在同一环，让搜索持续外扩覆盖新半径。默认 0 = 关闭
+   * （历史行为：到达精确点才升环）。strike-core-v1 设 20。
+   */
+  readonly militaryRingHoldTicks?: number;
+  /**
    * worker 空闲回血（2026-08-07，B13 候选，竞品 heal priority 对照）：
    * 空 worker（无 cargo、无资源任务、未撤离）HP 未满且 Core 资源足够
    * 补满时回 Core 补血——在 Core 上由主循环 HEAL 分支结算（1 HP=1 资源，
@@ -244,6 +267,33 @@ export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
   maxFocusDistance: 32,
 });
 
+/** 密集军事搜索 16 方位（2026-08-07）：8 方位 + 半八分位（整数格近似）。
+ *  顺时针（y 向南）：0=E 1=ESE 2=SE 3=SSE 4=S 5=SSW 6=SW 7=WSW
+ *  8=W 9=WNW 10=NW 11=NNW 12=N 13=NNE 14=NE 15=ENE。
+ *  [1,-2]（NNE，-63.4°）是 t1 敌 Core 方向（[-611,-169] vs home
+ *  [-619,-154] = -61.9°）——8 方位没有该角，最近 NE 线 Manhattan 7 超出
+ *  视野 4；16 方位 [1,-2] 距 Core Manhattan ~1 进入视野。 */
+const DENSE_DELTAS: readonly Position[] = [
+  [1, 0], [2, 1], [1, 1], [1, 2],
+  [0, 1], [-1, 2], [-1, 1], [-2, 1],
+  [-1, 0], [-2, -1], [-1, -1], [-1, -2],
+  [0, -1], [1, -2], [1, -1], [2, -1],
+] as const;
+
+/** 密集方位目标点（16 方向 × 半径，锚定 beacon 方位旋转）。 */
+function exploreTargetDense(
+  home: Position,
+  beacon: Position,
+  directionIndex: number,
+  radius: number,
+): Position {
+  const dx = beacon[0] - home[0];
+  const dy = beacon[1] - home[1];
+  const base = Math.round(Math.atan2(dy, dx) / (Math.PI / 8) / 2) * 2 % 16;
+  const norm = ((base + directionIndex) % 16 + 16) % 16;
+  const [mx, my] = DENSE_DELTAS[norm]!;
+  return [home[0] + mx * radius, home[1] + my * radius];
+}
 /** 威胁召回触发距离（12 = ALERT 级威胁的确认接触半径，与 threat.ts 一致）。 */
 const THREAT_RECALL_DISTANCE = 12;
 /** 召回时 worker 的守家巡逻半径。 */
@@ -265,6 +315,8 @@ const DETACHED_RESPONSE_RADIUS = 5;
 const DETACHED_RETURN_TICKS = 8;
 /** B6 有界攻坚（竞品 bounded mission distance）：记忆敌 Core 距我方 Core 上限。 */
 const BOUNDED_RAID_DISTANCE = 40;
+/** 军事打野沿环扫描时间预算：同一八分点目标 >N tick 未到达强制换向（防障碍点卡死）。 */
+const SCAVENGE_HOLD_TICKS = 24;
 /** B10 worker 遭遇撤离（竞品 Scout And Observer Response）：撤离触发半径。 */
 const SCOUT_EVADE_RADIUS = 3;
 /** 到 Core 3 格内后的冷却 tick（竞品 three-Tick cooldown）。 */
@@ -324,6 +376,9 @@ export class SafetyPlanner {
   /** 爆兵状态（2026-08-06）：accumulateThreshold 达标后置 true 并保持——
    *  持续爆兵直到资源不足以产兵才回积累期（防止"产 1 兵掉回阈值下"振荡）。 */
   private surgeActive = false;
+  /** 军事打野环停留起始 tick（2026-08-07）：单位进入某 patrolRing 的时间点，
+   *  用于 militaryRingHoldTicks 时间预算强制升环（破"精确到达才升环"卡死）。 */
+  private readonly unitRingSince = new Map<string, number>();
   /** Core 迁移方向（coreEvade）：START_MOVE 发起时记录；次 tick 仍 MOVING
    *  同向 = 已提交（本地等效 move_progress≥2，竞品 CANCEL 语义用）。 */
   private coreMoveDirection: Direction | null = null;
@@ -342,6 +397,12 @@ export class SafetyPlanner {
   private currentThreat: ThreatAssessment | null = null;
   /** B5 突击组被拦截后的返回截止 tick（unitId → tick；8-tick 防抖动记忆）。 */
   private detachedReturnUntil = new Map<string, number>();
+  /** 军事打野沿环扫描状态（unitId → 当前环已扫八分点数 + 上次到达 tick）：
+   *  2026-08-07 攻坚发现修复——旧版"单点到达即进环"在 8 方位点之间留缝，
+   *  敌 Core 恰在缝里（t1 敌 Core 距 Core ~15 格、角度 -62°，NE/NW 环线差 8 格）
+   *  → 军事永不出视野接敌。改沿环扫描（到达八分点后 direction+1 扫圆周，
+   *  扫满 8 点进下一环）+ 时间预算（同一目标 >SCAVENGE_HOLD_TICKS 未到达强制换向）。 */
+  private scavengeSweep = new Map<string, { ring: number; reached: number; lastReach: number }>();
   /** B10 worker 遭遇撤离状态（unitId → 返回截止/冷却截止 tick）。 */
   private scoutEvadeState = new Map<string, { returnUntil: number; cooldownUntil: number }>();
   /** B8 守卫轮换 one-at-a-time：回修流程中的守卫（unitId → 名额占用截止 tick）。 */
@@ -783,7 +844,7 @@ export class SafetyPlanner {
       // Core 是慢速目标，记忆有效期放宽到 60 ticks（单位记忆默认 6）。
       // 优先级高于守家巡逻：有攻坚目标时不空转。
       if (enemies.length === 0 && state.core !== null) {
-        const enemyCoreMemory = this.world.enemyHints(60).find((hint) => hint.kind === "CORE");
+        const enemyCoreMemory = this.world.enemyHints(this.config.enemyCoreMemoryTicks ?? 60).find((hint) => hint.kind === "CORE");
         if (enemyCoreMemory !== undefined) {
           // B6 有界攻坚（boundedRaid 候选，竞品 "exceeds the bounded mission
           // distance" → withdraw）：记忆中的敌 Core 距我方 Core 超上限（40 格）
@@ -809,20 +870,37 @@ export class SafetyPlanner {
       // Core 格被 Worker 回仓占用时永远到不了 → 打野永不触发、Vanguard 枯竭后
       // 空转守家。无敌人时 target 恒为 Core 位置，该到位限制无意义。
       if (enemies.length === 0 && state.resourceCells.size === 0 && state.core !== null) {
-        const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % EXPLORE_DIRECTION_COUNT);
+        const dense = this.config.militarySearchDense === true;
+        const directionCount = dense ? 16 : EXPLORE_DIRECTION_COUNT;
+        const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % directionCount);
         const home = state.core.position;
         const beacon = state.beacon.position ?? home;
         let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
-        let patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
-        if (samePosition(unit.position, patrolPoint)) {
+        let patrolPoint = dense
+          ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
+          : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+        // 环推进触发：到达精确巡逻点（历史行为）**或**同环停留超时间预算
+        // （militaryRingHoldTicks，2026-08-07——破争格/振荡导致的"永不到点、
+        // 永不升环、搜索不外扩"；t1 生产实证 8 个 Vanguard 全部卡在 Core
+        // 8 格内小振荡）。升环后重置停留计时。
+        const ringSince = this.unitRingSince.get(unit.id) ?? state.tick;
+        const ringHoldExceeded =
+          (this.config.militaryRingHoldTicks ?? 0) > 0 &&
+          state.tick - ringSince >= (this.config.militaryRingHoldTicks ?? 0);
+        if (samePosition(unit.position, patrolPoint) || ringHoldExceeded) {
+          this.unitRingSince.set(unit.id, state.tick);
           if (memory.patrolRing < EXPLORE_RING_COUNT - 1) {
             memory.patrolRing += 1;
             patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
-            patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+            patrolPoint = dense
+              ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
+              : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
           } else {
             memory.patrolRing = 0;
-            memory.patrolDirection = (memory.patrolDirection + 3) % EXPLORE_DIRECTION_COUNT;
-            patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+            memory.patrolDirection = (memory.patrolDirection + 3) % directionCount;
+            patrolPoint = dense
+              ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
+              : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
           }
         }
         const direction = stepToward(unit.position, patrolPoint, militaryObstacles);
@@ -1037,7 +1115,7 @@ export class SafetyPlanner {
     // cell-fire（射程内）——短暂视野丢失不浪费射程压制（Vanguard memory
     // 推进的 Ranger 版：Vanguard 走向记忆，Ranger 打记忆）。
     if (this.config.rangerMemoryShot === true && this.effectiveAggression === "aggressive") {
-      const coreMemory = this.world.enemyHints(60).find(
+      const coreMemory = this.world.enemyHints(this.config.enemyCoreMemoryTicks ?? 60).find(
         (hint) =>
           hint.kind === "CORE" &&
           hint.prevPosition !== undefined &&
