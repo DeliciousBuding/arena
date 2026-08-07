@@ -614,7 +614,7 @@ body::after {
 }
 
 /* ---------- 威胁情报对话框 ---------- */
-.intel-dialog { width: min(680px, 94vw); }
+.intel-dialog { width: min(720px, 94vw); }
 .intel-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
 .intel-tabs button {
   appearance: none; background: transparent; border: 1px solid var(--border-strong);
@@ -623,23 +623,82 @@ body::after {
 }
 .intel-tabs button:hover { color: var(--text); border-color: rgba(255,255,255,.3); }
 .intel-tabs button.active { color: #fff; background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.35); }
-.intel-body { max-height: 52vh; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
+/* 摘要行：我方/遭遇计数 + 展开按钮 */
+.intel-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.is-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .05em; color: var(--text-dim);
+  padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,.03);
+}
+.is-chip b { color: var(--text); font-weight: 700; }
+.is-dot { width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
+.is-dot.ours { background: #fff; box-shadow: 0 0 0 1px rgba(255,255,255,.25); }
+.is-dot.met { background: rgba(255,255,255,.4); }
+.chip-link {
+  appearance: none; background: transparent; border: none; cursor: pointer;
+  color: var(--text-dim); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .05em;
+  padding: 3px 8px; border-radius: 999px; text-decoration: underline; text-underline-offset: 3px;
+  transition: color .2s var(--ease);
+}
+.chip-link:hover { color: var(--text); }
+/* 过滤 chips */
+.intel-filters { display: flex; gap: 6px; margin-bottom: 10px; }
+.intel-filters .chip {
+  appearance: none; background: transparent; border: 1px solid var(--border-strong);
+  color: var(--text-dim); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .06em;
+  padding: 4px 12px; border-radius: 999px; cursor: pointer; transition: all .2s var(--ease);
+}
+.intel-filters .chip:hover { color: var(--text); border-color: rgba(255,255,255,.3); }
+.intel-filters .chip.active { color: #fff; background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.4); }
+.intel-body { max-height: 52vh; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; padding-right: 4px; }
 .intel-row {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 10px;
   padding: 7px 10px; border-radius: var(--radius-sm);
   border-bottom: 1px dashed var(--border-faint);
   font-family: var(--font-mono); font-size: 12px; transition: background .2s ease;
 }
 .intel-row:hover { background: rgba(255,255,255,.04); }
-.intel-row .ir-rank { width: 30px; flex: none; color: var(--text-faint); font-size: 11px; }
+.intel-row .ir-rank { width: 34px; flex: none; color: var(--text-faint); font-size: 11px; }
 .intel-row .ir-name { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.intel-row .ir-score { color: var(--text-dim); flex: none; }
+.intel-row .ir-score { color: var(--text-dim); flex: none; font-variant-numeric: tabular-nums; }
 .intel-row .ir-tag { flex: none; font-size: 10px; letter-spacing: .06em; padding: 2px 8px; border-radius: 999px; border: 1px solid; font-weight: 700; }
 .ir-tag.elite { color: var(--danger); border-color: rgba(221,98,109,.5); background: rgba(221,98,109,.1); }
 .ir-tag.agg { color: var(--warn); border-color: rgba(211,173,85,.45); background: rgba(211,173,85,.08); }
 .ir-tag.std { color: var(--text-dim); border-color: var(--border-strong); background: rgba(255,255,255,.04); }
 .intel-row.ir-top { background: linear-gradient(90deg, rgba(255,255,255,.05), transparent); }
 .intel-row.ir-top .ir-rank { color: var(--warn); font-weight: 700; }
+/* 我方账号行：白色提升 + 租户色圆点徽章（身份语义，非装饰染色） */
+.intel-row.ir-ours { background: rgba(255,255,255,.07); }
+.intel-row.ir-ours:hover { background: rgba(255,255,255,.09); }
+.intel-row.ir-ours .ir-rank,
+.intel-row.ir-ours .ir-name { color: #fff; }
+/* 遭遇行：极淡中性底（不压过我方行） */
+.intel-row.ir-met { background: rgba(255,255,255,.028); }
+/* 行内徽章 */
+.ir-badge {
+  flex: none; display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; letter-spacing: .06em; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid; font-weight: 700; white-space: nowrap;
+}
+.ir-badge.ours { color: #fff; background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.45); }
+.ir-tdot { width: 7px; height: 7px; border-radius: 2px; background: var(--rc, #fff); display: inline-block; }
+.ir-badge.met { color: var(--text-dim); border-color: var(--border-strong); background: rgba(255,255,255,.05); cursor: help; }
+.ir-tenant-dots { display: inline-flex; gap: 3px; }
+.ir-tenant-dots .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+/* 榜外我方置顶分隔 */
+.ir-pin-sep {
+  margin: 6px 10px 2px; padding: 2px 0 6px;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em;
+  color: var(--text-faint); text-transform: uppercase;
+  border-bottom: 1px solid var(--border-faint);
+}
+/* 顶栏按钮徽标（威胁情报 · 遭遇 N） */
+.btn-count {
+  margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+  background: rgba(255,255,255,.14); color: #fff;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: .02em;
+  vertical-align: 1px;
+}
 
 /* ---------- 全局轻提示（toast）：每次点击都有反馈，杜绝"点了没反应" ---------- */
 #uiToast {

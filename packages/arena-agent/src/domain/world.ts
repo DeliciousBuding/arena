@@ -1,5 +1,5 @@
 import { cellKey, parseCellKey, type Position, type TickState, type UnitType, type VisibleEntity } from "./model.ts";
-import { chebyshev, exploreRadiusForRing, exploreTarget } from "./nav.ts";
+import { chebyshev, exploreRadiusForRing, exploreTarget, lineBlocked, manhattan } from "./nav.ts";
 
 export type ResourceState = "visible" | "stale" | "harvested";
 export type WorkerMode = "patrol" | "go_harvest";
@@ -95,6 +95,10 @@ export interface CoreHuntTarget {
    *  播种时从 calibration 提取；用于把官方排行榜"猛攻蛆"威胁等级映射到
    *  攻坚目标——高威胁对手留强防守。缺省 null/undefined = 未知所有者。 */
   readonly owner?: string | null;
+  /** 敌方 Core 实体 id（2026-08-08，旧核验证协议）：用于同 id 迁移去重——
+   *  核心移动后旧位置条目被新位置替换，杜绝"地图上两个同款核心"幽灵。
+   *  缺省 null/undefined = 未知/播种条目（不参与去重）。 */
+  readonly ownerId?: string | null;
 }
 
 /** 敌 Core 兵力记忆（2026-08-07，assault-overmatch-v1）：可见敌战斗单位
@@ -164,6 +168,11 @@ export class World {
   /** 敌情狩猎记忆（sticky）：敌 Core 基地候选（绝对坐标——C2 RECOVERY 不清，
    *  属战略 intel 而非相对 Core 的战场记忆）。 */
   private readonly coreHuntMemory = new Map<string, CoreHuntTarget>();
+  /** 旧核验证确认计数（2026-08-08，ref 协议对齐）：核心位置被视野覆盖
+   *  确认缺失的次数——连续 2 次独立确认缺失才删除（防"暂时看不见"误删）；
+   *  重新目击/迁移到新位置时清零。对应 guide：旧核重见但不在 → 标记待
+   *  彻查 + 擦除区域，仅 DESTRUCTION_PARTICIPATION 或全区域覆盖才删。 */
+  private readonly coreHuntMissingCount = new Map<string, number>();
   /** 敌 Core 兵力记忆（assault-overmatch-v1）：key = cellKey(敌 Core 位置)。 */
   private readonly enemyCoreForceRecords = new Map<string, {
     position: Position;
@@ -317,11 +326,28 @@ export class World {
       // 推断基地候选（轨迹双向延伸 / 单次目击远离我方猜测——竞品 worker
       // trajectory 推断 Core 方向）。同一格保留更新鲜的目击。
       if (enemy.kind === "CORE") {
-        this.coreHuntMemory.set(cellKey(enemy.position), {
+        const key = cellKey(enemy.position);
+        // 旧核验证协议（2026-08-08，ref 对齐）：同 enemy id 迁移 → 删旧位置条目，
+        // 杜绝"地图上两个同款核心"幽灵（核心迁移后旧位置 sticky 2000 tick 不清）。
+        if (enemy.id !== undefined && enemy.id !== null) {
+          for (const [oldKey, target] of this.coreHuntMemory) {
+            if (
+              oldKey !== key &&
+              target.source === "CORE" &&
+              target.ownerId === enemy.id
+            ) {
+              this.coreHuntMemory.delete(oldKey);
+              this.coreHuntMissingCount.delete(oldKey);
+            }
+          }
+        }
+        this.coreHuntMissingCount.delete(key);
+        this.coreHuntMemory.set(key, {
           position: enemy.position,
           lastSeenTick: state.tick,
           source: "CORE",
           owner: enemy.ownerUsername ?? null,
+          ownerId: enemy.id ?? null,
         });
       } else if (enemy.unitType === "VANGUARD" || enemy.unitType === "RANGER") {
         // 敌 Core 兵力记忆（assault-overmatch-v1）：战斗单位分配给最近已知
@@ -379,6 +405,41 @@ export class World {
     for (const unit of state.units) this.chunkMemory.set(chunkKeyFor(unit.position), state.tick);
     if (state.core !== null) this.chunkMemory.set(chunkKeyFor(state.core.position), state.tick);
     this.chunkMemory.set(chunkKeyFor(state.beacon.position), state.tick);
+
+    // 旧核验证协议（2026-08-08，ref 对齐）：视野覆盖确认缺失——我方单位视野
+    // （按类型半径：worker 3/vanguard 4/ranger 5）覆盖核心记忆位置且无遮挡、
+    // 且可见敌人中无 CORE 实体在该格 → confirmCoreHuntMissing（连续 2 次确认
+    // 才删）。解决"地图上两个同款核心/军事打空城"：核心被毁/迁移后，视野
+    // 覆盖确认其不在旧位置，sticky 记忆被清理。视线遮挡（障碍）时不确认——
+    // 只是"看不见"不是"确认不在"。
+    // sim visibility 是 Manhattan 视野（官方：|dx|+|dy| ≤ radius 且无遮挡）——
+    // 用 Manhattan 判定"视野覆盖"，Chebyshev 会把 Manhattan 8 处的单位误判为
+    // 覆盖（生产实证：t57 军事在核心 Manhattan 8 处被误判确认缺失 → 死核被删
+    // → vanguard_hunt 中断）。worker 3 / vanguard 4 / ranger 5 / core 5。
+    const UNIT_VISION_RADIUS: Readonly<Record<string, number>> = { WORKER: 3, VANGUARD: 4, RANGER: 5 };
+    const visibleCoreCells = new Set(
+      state.visibleEnemies
+        .filter((enemy) => enemy.kind === "CORE")
+        .map((enemy) => cellKey(enemy.position)),
+    );
+    for (const [key, target] of this.coreHuntMemory) {
+      if (target.source !== "CORE") continue;
+      let covered = false;
+      for (const unit of state.units) {
+        const radius = UNIT_VISION_RADIUS[unit.unitType] ?? 3;
+        if (manhattan(unit.position, target.position) > radius) continue;
+        if (lineBlocked(unit.position, target.position, this.obstacleMemory)) continue;
+        covered = true;
+        break;
+      }
+      if (state.core !== null) {
+        const coreRadius = 5;
+        if (manhattan(state.core.position, target.position) <= coreRadius) covered = true;
+      }
+      if (covered && !visibleCoreCells.has(key)) {
+        this.confirmCoreHuntMissing(target.position);
+      }
+    }
   }
 
   unitMemory(unitId: string, initialPatrolDirection = 0): UnitMemory {
@@ -540,6 +601,45 @@ export class World {
       }
     }
     return seeded;
+  }
+
+  /** 旧核验证协议：DESTRUCTION_PARTICIPATION（CORE）事件删除（2026-08-08，
+   *  ref 对齐）——敌核心被摧毁的强信号，直接删除记忆 + 兵力估计，军事不再
+   *  反复去打已毁核心（用户反馈"地方核心还活着吗？为啥不去打掉"——死核
+   *  残留导致军事打空城）。无目标返回 false。 */
+  forgetCoreHuntAt(position: Position): boolean {
+    const key = cellKey(position);
+    const existed = this.coreHuntMemory.delete(key);
+
+    this.coreHuntMissingCount.delete(key);
+    this.enemyCoreForceRecords.delete(key);
+    return existed;
+  }
+
+  /** 旧核验证协议：视野覆盖确认缺失计数（2026-08-08，ref 对齐）——我方单位
+   *  视野覆盖核心记忆位置但该格无 Core 实体 → 确认缺失计数 +1；连续 2 次
+   *  独立确认才删除（防"暂时看不见"误删——障碍/视野边缘遮挡不是真缺失）。
+   *  返回 true = 本 tick 确认缺失（可能尚未删除）；false = 已删除或未确认。
+   *  重新目击/迁移由 observe 清零计数。 */
+  confirmCoreHuntMissing(position: Position): boolean {
+    const key = cellKey(position);
+    const target = this.coreHuntMemory.get(key);
+    if (target === undefined) return false;
+    if (target.source !== "CORE") {
+      // WORKER_INFER 猜测：无 Core 实体时直接删（短窗口推断，不配验证）
+      this.coreHuntMemory.delete(key);
+      this.coreHuntMissingCount.delete(key);
+      return true;
+    }
+    const count = (this.coreHuntMissingCount.get(key) ?? 0) + 1;
+    if (count >= 2) {
+      this.coreHuntMemory.delete(key);
+      this.coreHuntMissingCount.delete(key);
+      this.enemyCoreForceRecords.delete(key);
+      return true;
+    }
+    this.coreHuntMissingCount.set(key, count);
+    return false;
   }
 
   /** 敌战斗单位 → 归属敌 Core（assault-overmatch-v1）：取最近已知敌 Core
