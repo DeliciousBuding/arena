@@ -165,3 +165,51 @@ test("beaconGrab 开启：Core 被敌围攻（reinforce-home）→ 回援优先�
   });
   assert.equal(plan.intents["v0"], "vanguard_reinforce", "家被围攻先回援，信标稍后再抢");
 });
+
+test("beaconGrab 开启：信标在移动（敌方载者携带/漂移）→ 不追标（防送人头）", () => {
+  const planner = new SafetyPlanner(GRAB_CONFIG);
+  const v0: Position[] = [[12, 0]];
+  // tick1：信标 [10,0]（静止）
+  planner.decide({ state: makeState(1, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  // tick2：信标东移到 [11,0]——近 10 tick 内 2 个不同位置 = 在移动（t2 实证：
+  // 信标被 jerkman 核心带着东移）→ 单骑北上追标 = 送人头 → 不 fetch
+  const plan = planner.decide({ state: makeState(2, { vanguards: v0, beacon: { position: [11, 0], status: "GROUND", carrierId: null } }) });
+  assert.notEqual(plan.intents["v0"], "vanguard_beacon_fetch", "移动信标 = 追敌方载者，不单独 fetch");
+});
+
+test("beaconGrab 开启：信标静止（真掉落）连续多 tick → 仍正常 fetch（回归）", () => {
+  const planner = new SafetyPlanner(GRAB_CONFIG);
+  const v0: Position[] = [[12, 0]];
+  planner.decide({ state: makeState(1, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  // 同一位置连续观察 = 静止 → 可抢
+  const plan = planner.decide({ state: makeState(2, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  assert.equal(plan.intents["v0"], "vanguard_beacon_fetch", "静止 GROUND 信标仍由最近 Vanguard 拾取");
+});
+
+
+test("beaconGrab 开启：信标刚停下（30 tick 窗口内移动过）→ 仍不 fetch（敌方停靠嫌疑）", () => {
+  const planner = new SafetyPlanner(GRAB_CONFIG);
+  const v0: Position[] = [[12, 0]];
+  planner.decide({ state: makeState(1, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  planner.decide({ state: makeState(2, { vanguards: v0, beacon: { position: [11, 0], status: "GROUND", carrierId: null } }) });
+  // tick3：信标停在 [11,0]——窗口内仍有 2 个不同位置（刚停靠）→ 不 fetch
+  const plan = planner.decide({ state: makeState(3, { vanguards: v0, beacon: { position: [11, 0], status: "GROUND", carrierId: null } }) });
+  assert.notEqual(plan.intents["v0"], "vanguard_beacon_fetch", "刚停下 = 敌方停靠嫌疑，不单骑深入");
+});
+
+test("beaconGrab 开启：信标彻底静止（窗口内单一位置）→ 正常 fetch（真掉落）", () => {
+  const planner = new SafetyPlanner(GRAB_CONFIG);
+  const v0: Position[] = [[12, 0]];
+  planner.decide({ state: makeState(1, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  planner.decide({ state: makeState(2, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  planner.decide({ state: makeState(3, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  const plan = planner.decide({ state: makeState(4, { vanguards: v0, beacon: { position: [10, 0], status: "GROUND", carrierId: null } }) });
+  assert.equal(plan.intents["v0"], "vanguard_beacon_fetch", "窗口内单一位置 = 真掉落，可拾取");
+});
+
+test("beaconGrab 开启：信标 24 格外（默认安全半径外）→ 不 fetch（ref 远征取消）", () => {
+  const planner = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, aggression: "aggressive" as const, beaconGrab: true });
+  // 默认 beaconGrabMaxDist=24：信标 [30,0] 距 Core 30 >24 → 不单骑远征
+  const plan = planner.decide({ state: makeState(1, { vanguards: [[12, 0]], beacon: { position: [30, 0], status: "GROUND", carrierId: null } }) });
+  assert.notEqual(plan.intents["v0"], "vanguard_beacon_fetch", "24 格外 = 远征取消，不取");
+});

@@ -86,3 +86,23 @@ test("World: visible 资源不受 TTL 影响（活跃引用保持）", () => {
   }
   assert.equal(world.resourceHints().length, 1, "持续可见资源永不因 TTL 删除");
 });
+
+test("World: HARVEST_FAILED NOT_RESOURCE_CELL → 负记忆（visited-empty 立即失效）", () => {
+  const world = new World();
+  world.observe(makeState(100, { resourceCells: new Set(["5,5"]) }));
+  assert.equal(world.resourceHints().length, 1, "可见资源入记忆");
+
+  // 下一 tick 资源消失 + 采集失败 NOT_RESOURCE_CELL（追死记忆矿）→ 记 harvested
+  world.observe(makeState(101, {
+    resourceCells: new Set(),
+    events: [{
+      eventId: "e1", tick: 101, eventType: "HARVEST_FAILED", reasonCode: "NOT_RESOURCE_CELL",
+      actorId: "worker-1", targetId: null, position: [5, 5], values: {},
+    }],
+  }));
+  assert.equal(world.resourceHints().length, 0, "NOT_RESOURCE_CELL 后不再从记忆提示（防 30-78 格无效脚程）");
+
+  // refill 后重新可见 → 恢复提示（不永久丢失）
+  world.observe(makeState(106, { resourceCells: new Set(["5,5"]) }));
+  assert.equal(world.resourceHints().length, 1, "refill 重新可见即恢复");
+});

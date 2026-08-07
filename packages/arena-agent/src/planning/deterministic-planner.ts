@@ -36,7 +36,7 @@ import {
 } from "../domain/nav.ts";
 import type { PlanProvider } from "../runtime/decision-types.ts";
 import type { MacroPolicy } from "../runtime/macro-policy.ts";
-import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
+import { DEFAULT_SAFETY_CONFIG, SafetyPlanner, type SafetyPlannerConfig } from "../strategies/safety-planner.ts";
 import { type CoreHuntTarget } from "../domain/world.ts";
 import type { ThreatProfile } from "../strategies/safety-planner-config.ts";
 import { unitSpawnCosts } from "../domain/pricing.ts";
@@ -488,14 +488,15 @@ export class DeterministicPlanner implements PlanProvider {
   /** 只用于“资源格已被其他 Worker 占用”时继续探索；永远看不到 resourceCells，
    *  因此不会把额外 Worker 再次派往同一可见资源格。 */
   private readonly patrolPlanner: SafetyPlanner;
-  /** 军事配比（实验）：VANGUARD 目标占比 [0,1]；undefined = 交替产兵（历史行为）。 */
-  private readonly vanguardRatio: number | undefined;
+  /** 军事配比（实验）：VANGUARD 目标占比 [0,1]；undefined = 交替产兵（历史行为）。
+   *  热加载（2026-08-08）：updateConfig 原子替换，不重建 planner、不丢记忆。 */
+  private vanguardRatio: number | undefined;
   /** 爆兵阈值（2026-08-06）：resources 达标前只产 Worker 积累、达标后持续爆兵。 */
-  private readonly accumulateThreshold: number;
+  private accumulateThreshold: number;
   /** 爆兵状态（跨 tick 保持：达标后持续爆兵直到资源耗尽回积累期）。 */
   private surgeActive = false;
   /** 补员 reserve（第十轮实验配置；默认 2 = 生产行为零回归）。 */
-  private readonly spawnReserve: number;
+  private spawnReserve: number;
   /** 官方排行榜威胁画像（2026-08-07，威胁自适应）：透传内部 SafetyPlanner。 */
   private readonly threatProfiles: ReadonlyMap<string, ThreatProfile>;
   private previousAssignments: readonly Assignment[] = [];
@@ -515,6 +516,10 @@ export class DeterministicPlanner implements PlanProvider {
      *  SafetyPlanner——攻坚目标所有者是高伤害玩家时"留强"（提高成型门槛 +
      *  增加守家预留）。缺省空 Map = 无威胁情报（零回归）。 */
     threatProfiles: ReadonlyMap<string, ThreatProfile> = new Map(),
+    /** 跨 run 测绘种子（2026-08-08，survey-db 联动）：已知矿注入内部两个
+     *  SafetyPlanner 的 World——重启后 worker 不再从零探索（"矿发现了没
+     *  分配去挖"的持久化端）。缺省空 = 零回归。 */
+    initialResourceCells: readonly Position[] = [],
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
@@ -527,8 +532,29 @@ export class DeterministicPlanner implements PlanProvider {
       fallbackPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
       patrolPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
     }
+    if (initialResourceCells.length > 0) {
+      fallbackPlanner.world.seedResourceMemory(initialResourceCells, 0);
+      patrolPlanner.world.seedResourceMemory(initialResourceCells, 0);
+    }
     fallbackPlanner.seedThreatProfiles(threatProfiles);
     patrolPlanner.seedThreatProfiles(threatProfiles);
+  }
+
+  /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
+   *  保留 World/巡逻/攻坚记忆（不重建 planner）。调用方先校验变体合法性。 */
+  updateConfig(
+    safetyConfig: SafetyPlannerConfig,
+    deterministicConfig: {
+      readonly vanguardRatio?: number;
+      readonly accumulateThreshold?: number;
+      readonly spawnReserve?: number;
+    },
+  ): void {
+    this.fallbackPlanner.updateConfig(safetyConfig);
+    this.patrolPlanner.updateConfig(safetyConfig);
+    this.vanguardRatio = deterministicConfig.vanguardRatio;
+    this.accumulateThreshold = deterministicConfig.accumulateThreshold ?? 0;
+    this.spawnReserve = deterministicConfig.spawnReserve ?? WORKER_SPAWN_RESERVE;
   }
 
   decide(input: DeterministicPlannerInput): Plan {
@@ -702,3 +728,4 @@ export class DeterministicPlanner implements PlanProvider {
     }
   }
 }
+

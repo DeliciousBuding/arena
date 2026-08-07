@@ -111,6 +111,19 @@ export class DebugServer {
       });
       return;
     }
+    if (path === "/config-reload" && req.method === "POST") {
+      // 配置热加载（2026-08-08）：supervisor preflight 校验（schema+变体）后 IPC
+      // 通知 tenant 应用（child 内部 last-good，非法配置不应用、不崩溃）。
+      // ?tenant=t1 只热更该租户；缺省 = 全部。仅 127.0.0.1 可及。
+      const tenantParam = urlObj.searchParams.get("tenant");
+      const results = this.options.supervisor.reloadConfigs(tenantParam ?? undefined);
+      this.json(res, 200, { reloaded: results });
+      return;
+    }
+    if (path === "/config-reload") {
+      this.json(res, 405, { error: "method not allowed; use POST /config-reload" });
+      return;
+    }
     if (path === "/shutdown" && req.method === "POST") {
       // 受控优雅关停（2026-08-07 增加）：触发 supervisor.shutdown()，tenant 经
       // IPC 收到 arena.shutdown 后执行 cleanup stack——recorder.close() 写

@@ -15,6 +15,10 @@ const TRANSIENT_MOVE_FAILURE_REASONS = new Set([
  *  防"幽灵资源"——记忆中的资源格实际已被采空/不再 refill。 */
 const RESOURCE_MEMORY_TTL_TICKS = 64;
 
+/** 信标位置历史长度上限（beaconGrab 防追标）：10 tick 窗口内 2+ 个不同位置 =
+ *  信标在移动（敌方携带/漂移），窗口 20 足够判定且不拖内存。 */
+const BEACON_HISTORY_MAX = 20;
+
 /** 敌情狩猎（2026-08-07，持久敌情测绘）：CORE 目击目标 sticky 窗口
  *  （≈2000 tick ≈ 敌 Core 残血回满/迁移周期——回访最后已知基地仍有效）。 */
 const CORE_HUNT_STICKY_TICKS = 2000;
@@ -51,6 +55,10 @@ export interface ResourceMemory {
   state: ResourceState;
   readonly firstSeenTick: number;
   lastSeenTick: number;
+  /** 跨 run 测绘种子（survey-db seed）：stale 时不受 hints 新鲜度窗口限制，
+   *  直到被真实观察/采集/确认耗尽自然刷新——否则 seed lastSeenTick=0 会被
+   *  maxAge 窗口滤掉（tick 68000 - 0 > 32），seed 永不提示。 */
+  seeded?: boolean;
 }
 
 export interface EnemyMemory {
@@ -149,6 +157,10 @@ export class World {
    *  观察来源 = 视野实体格（障碍/资源/敌人/我方单位/Core/Beacon）——
    *  巡逻/采集到达的区域随实体观察自然更新老化。 */
   private readonly chunkMemory = new Map<string, number>();
+  /** 信标位置历史（beaconGrab 防追标）：近 N tick 的 beacon.position 序列——
+   *  移动中的信标 = 被敌方核心携带/漂移（t2 生产实证：信标被 jerkman 核心
+   *  带着东移），单骑追标会深入敌区送死；静止（真掉落）才可 fetch。 */
+  private readonly beaconHistory: { tick: number; position: Position }[] = [];
   /** 敌情狩猎记忆（sticky）：敌 Core 基地候选（绝对坐标——C2 RECOVERY 不清，
    *  属战略 intel 而非相对 Core 的战场记忆）。 */
   private readonly coreHuntMemory = new Map<string, CoreHuntTarget>();
@@ -189,11 +201,14 @@ export class World {
       this.unitMoveFailures.clear();
       this.unitMemories.clear();
       this.chunkMemory.clear();
+      this.beaconHistory.length = 0;
       this.coreHuntMemory.clear();
       this.worldResetCount += 1;
       this.lastWorldResetTick = state.tick;
     }
     this.tick = state.tick;
+    this.beaconHistory.push({ tick: state.tick, position: state.beacon.position });
+    if (this.beaconHistory.length > BEACON_HISTORY_MAX) this.beaconHistory.shift();
     for (const cell of state.obstacleCells) this.obstacleMemory.add(cell);
     for (const cell of state.obstacleCells) this.chunkMemory.set(chunkKeyFor(parseCellKey(cell)), state.tick);
 
@@ -221,11 +236,18 @@ export class World {
       const cell = cellKey(event.position);
       if (event.eventType === "HARVEST_FAILED") {
         // reasonCode 分流：CARGO_FULL 表示格子仍有资源（cargo 满）——不写失败
-        // 冷却、不降级；RESOURCE_DEPLETED 表示格子已耗尽——写失败冷却 + 降级 stale。
+        // 冷却、不降级；RESOURCE_DEPLETED（被他人采空）→ 失败冷却 + 降级 stale。
+        // NOT_RESOURCE_CELL（记忆格已不存在/已耗尽——t4 实证 go_harvest_mem 104
+        // 意图仅 12 次成功、worker 跨 30-78 格追空记忆）→ 记 harvested 负记忆
+        // （不进 hints，visited-empty 立即失效，杜绝多 worker 反复追同一死矿）。
+        // 不写 failedCells：refill 后重新可见即恢复（failedCells 会误压可见矿）。
         if (event.reasonCode === "RESOURCE_DEPLETED") {
           this.failedCells.set(cell, state.tick);
           const memory = this.resourceMemory.get(cell);
           if (memory?.state === "visible") memory.state = "stale";
+        } else if (event.reasonCode === "NOT_RESOURCE_CELL") {
+          const memory = this.resourceMemory.get(cell);
+          if (memory !== undefined) memory.state = "harvested";
         }
       } else if (event.eventType === "HARVEST_SUCCEEDED") {
         const previous = this.resourceMemory.get(cell);
@@ -344,7 +366,7 @@ export class World {
     // 资源记忆过期：stale/harvested 超过 TTL（≈4 个 refill 周期）删除——
     // 若 refill 会重新可见（重新入记忆），未恢复说明已被采空/不再生成。
     for (const [cell, memory] of this.resourceMemory) {
-      if (memory.state !== "visible" && state.tick - memory.lastSeenTick > RESOURCE_MEMORY_TTL_TICKS) {
+      if (memory.state !== "visible" && memory.seeded !== true && state.tick - memory.lastSeenTick > RESOURCE_MEMORY_TTL_TICKS) {
         this.resourceMemory.delete(cell);
         this.failedCells.delete(cell);
       }
@@ -401,6 +423,27 @@ export class World {
     return result;
   }
 
+  /** 跨 run 测绘种子（2026-08-08，survey-db 联动）：把已知矿注入资源记忆——
+   *  worker 重启后不再从零探索（"矿发现了没标注/没分配去挖"的持久化端）。
+   *  state=stale、lastSeenTick=nowTick（纳入 hints 窗口）；后续真实可见/采集
+   *  自然刷新状态。返回实际注入格数（已记忆的跳过）。 */
+  seedResourceMemory(cells: readonly Position[], nowTick: number): number {
+    let n = 0;
+    for (const cell of cells) {
+      const key = cellKey(cell);
+      if (this.resourceMemory.has(key)) continue;
+      this.resourceMemory.set(key, {
+        cell,
+        state: "stale",
+        firstSeenTick: nowTick,
+        lastSeenTick: nowTick,
+        seeded: true,
+      });
+      n += 1;
+    }
+    return n;
+  }
+
   resourceHints(options: { maxAge?: number; failedCooldown?: number } = {}): readonly Position[] {
     // maxAge 8→32、failedCooldown 4→32（2026-08-06 生产实证配对）：
     // - 记忆窗口 32 tick：巡逻环升级需要数十 tick（8 worker 分头巡逻一圈），
@@ -416,7 +459,7 @@ export class World {
       const failedAt = this.failedCells.get(cellKey(memory.cell)) ?? Number.NEGATIVE_INFINITY;
       if (this.tick - failedAt < failedCooldown) continue;
       if (memory.state === "visible") visible.push(memory);
-      else if (memory.state === "stale" && this.tick - memory.lastSeenTick <= maxAge) recent.push(memory);
+      else if (memory.state === "stale" && (memory.seeded === true || this.tick - memory.lastSeenTick <= maxAge)) recent.push(memory);
     }
     const compare = (a: ResourceMemory, b: ResourceMemory) =>
       b.lastSeenTick - a.lastSeenTick || a.cell[0] - b.cell[0] || a.cell[1] - b.cell[1];
@@ -432,6 +475,22 @@ export class World {
   /** 敌情狩猎目标（排序：CORE 目击优先 → 新鲜度 → 坐标 tie-break）。
    *  CORE 目击 sticky（maxAge = CORE_HUNT_STICKY_TICKS）；WORKER_INFER
    *  短窗口（CORE_HUNT_WORKER_INFER_TICKS）——推断目标会漂移。 */
+  /** 信标是否在近 withinTicks 内移动过（≥2 个不同位置）。移动中的信标 =
+   *  被敌方核心携带/漂移——单骑追标会深入敌区送死（t2 生产实证 2026-08-08：
+   *  信标被 jerkman 核心带着沿 y=0 东移，vanguard 北上追标 = 送人头）。
+   *  静止（真掉落）才可 fetch。 */
+  beaconMoving(withinTicks: number): boolean {
+    if (withinTicks <= 0 || this.beaconHistory.length < 2) return false;
+    const since = this.tick - withinTicks;
+    const seen = new Set<string>();
+    for (const entry of this.beaconHistory) {
+      if (entry.tick < since) continue;
+      seen.add(entry.position[0] + "," + entry.position[1]);
+      if (seen.size >= 2) return true;
+    }
+    return false;
+  }
+
   coreHuntTargets(maxAge?: number): readonly CoreHuntTarget[] {
     const coreAge = maxAge ?? CORE_HUNT_STICKY_TICKS;
     const workerAge = maxAge ?? CORE_HUNT_WORKER_INFER_TICKS;
@@ -627,4 +686,11 @@ export class World {
     };
   }
 }
+
+
+
+
+
+
+
 

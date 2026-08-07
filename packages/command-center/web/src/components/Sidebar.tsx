@@ -1,9 +1,31 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useEngine, getEngine } from "../lib/bridge";
 
 const TENANTS = ["t1", "t2", "t3", "t4"];
 const TENANT_LABEL: Record<string, string> = { t1: "租户 1", t2: "租户 2", t3: "租户 3", t4: "租户 4" };
 const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
+
+const PREFS_KEY = "arena-cc-web.prefs";
+/** 侧栏分区折叠（2026-08-08）：1080p 下"图层/租户视图"在折叠线以下，点标题可收起大区块。
+ *  子元素保持挂载（display:none），引擎依赖的 #tenantCards/#layerToggles 等 id 不丢失。 */
+function CollapsiblePanel({ id, title, children, className = "" }: { id: string; title: ReactNode; children: React.ReactNode; className?: string }) {
+  const [open, setOpen] = useState(() => {
+    try { const p = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"); return p[`sec_${id}`] !== false; } catch { return true; }
+  });
+  useEffect(() => {
+    try { const p = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"); p[`sec_${id}`] = open; localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch { /* 忽略 */ }
+  }, [open]);
+  return (
+    <section className={`panel collapsible${className ? " " + className : ""}${open ? "" : " closed"}`}>
+      <h3 className="panel-title sec-head" role="button" tabIndex={0} aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(!open); } }}>
+        <span className="sec-title">{title}</span><span className="sec-chev">{open ? "▾" : "▸"}</span>
+      </h3>
+      <div className="sec-body" hidden={!open}>{children}</div>
+    </section>
+  );
+}
 
 const fmt = (n: number | null | undefined, digits = 0): string => {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
@@ -122,7 +144,7 @@ function Legend() {
 
 const LAYERS: Array<[string, string]> = [
   ["obstacle", "障碍"], ["resource", "资源"], ["unit", "单位"], ["core", "核心"], ["beacon", "信标"],
-  ["survey", "测绘"], ["patrol", "巡逻环"], ["plan", "计划箭头"], ["trail", "移动轨迹"], ["beaconEdge", "信标指示"],
+  ["survey", "测绘"], ["patrol", "巡逻环"], ["plan", "计划箭头"], ["trail", "移动轨迹"], ["beaconEdge", "信标指示"], ["coreTrail", "敌核轨迹"],
 ];
 
 function LayerToggles() {
@@ -197,10 +219,7 @@ function CommandStatusPanel() {
   }, 0);
   const anyOverride = TENANTS.some((t) => stores[t]?.mode === "override");
   return (
-    <section className="panel cmd-panel">
-      <h3 className="panel-title">人类指挥 · HUMAN COMMAND
-        {total > 0 ? <span className="cmd-total mono" title="全联盟人类指令总数">{total}</span> : null}
-      </h3>
+    <CollapsiblePanel id="cmd" className="cmd-panel" title={<><span className="sec-title-inline">人类指挥 · HUMAN COMMAND</span>{total > 0 ? <span className="cmd-total mono" title="全联盟人类指令总数">{total}</span> : null}</>}>
       <div className="cmd-toggle-row">
         <span className="cmd-toggle-label">{anyOverride ? "接管中 · 命令优先于 agent" : "已交还 agent 全权"}</span>
         <button
@@ -243,7 +262,7 @@ function CommandStatusPanel() {
           );
         })}
       </ul>
-    </section>
+    </CollapsiblePanel>
   );
 }
 
@@ -263,11 +282,11 @@ function EngineContainers() {
 export function Sidebar() {
   return (
     <aside id="sidebar">
-      <TenantCards />
+      <CollapsiblePanel id="tenants" title="租户 · TENANTS"><TenantCards /></CollapsiblePanel>
       <CommandStatusPanel />
-      <section className="panel"><h3 className="panel-title">图例</h3><Legend /></section>
-      <section className="panel"><h3 className="panel-title">图层</h3><LayerToggles /></section>
-      <section className="panel"><h3 className="panel-title">租户视图</h3><ViewSwitch /></section>
+      <CollapsiblePanel id="legend" title="图例 · LEGEND"><Legend /></CollapsiblePanel>
+      <CollapsiblePanel id="layers" title="图层 · LAYERS"><LayerToggles /></CollapsiblePanel>
+      <CollapsiblePanel id="view" title="租户视图 · VIEW"><ViewSwitch /></CollapsiblePanel>
       <EngineContainers />
     </aside>
   );

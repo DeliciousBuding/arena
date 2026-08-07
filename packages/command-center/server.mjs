@@ -12,8 +12,9 @@
  */
 
 import { createServer } from "node:http";
-import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -190,6 +191,97 @@ function loadBeaconTrail(tenant) {
   beaconTrailCache.set(tenant, { latestRun, latestFile, trail });
   return trail;
 }
+/** 敌方核心历史轨迹（跨 run 增量缓存，2026-08-08）：与信标轨迹同机制，按
+ *  username 收集敌 CORE 位置序列（controlled=false）——面板画虚线展示谁在
+ *  迁移/逼近（如 jerkman 核心带信标东移）。 */
+const coreTrailCache = new Map(); // tenant -> { latestRun, lastFile, byUser, list }
+const CORE_TRAIL_RUNS = 6;
+const CORE_TRAIL_CASE_LIMIT = 300;
+const CORE_TRAIL_MAX_POINTS = 48;
+
+function corePointsFromRun(tenant, runDir, maxCases) {
+  const files = listCases(tenant, runDir).slice(-maxCases);
+  const byUser = new Map(); // username -> { lastKey, pts }
+  for (const file of files) {
+    const path = join(calibrationDir(tenant), runDir, "cases", file);
+    let raw;
+    try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+    const objs = raw?.before?.state?.objects;
+    if (!Array.isArray(objs)) continue;
+    const tick = parseTick(file);
+    for (const obj of objs) {
+      if (obj?.kind !== "CORE" || obj.controlled !== false || !obj.owner_username || !obj.position) continue;
+      const x = obj.position[0], y = obj.position[1];
+      const key = x + "," + y;
+      let rec = byUser.get(obj.owner_username);
+      if (!rec) { rec = { lastKey: null, pts: [] }; byUser.set(obj.owner_username, rec); }
+      if (key === rec.lastKey) continue; // 连续同格去重
+      rec.lastKey = key;
+      rec.pts.push({ x, y, tick });
+      if (rec.pts.length > CORE_TRAIL_MAX_POINTS) rec.pts.shift();
+    }
+  }
+  return byUser;
+}
+
+function loadCoreTrails(tenant) {
+  const runs = runsByMaxTick(tenant).slice(0, CORE_TRAIL_RUNS);
+  if (!runs.length) return [];
+  const latestRun = runs[0].run;
+  const latestFiles = listCases(tenant, latestRun);
+  const latestFile = latestFiles.length ? latestFiles[latestFiles.length - 1] : null;
+  const cached = coreTrailCache.get(tenant);
+  if (cached && cached.latestRun === latestRun && cached.lastFile === latestFile) return cached.list;
+  let byUser = null;
+  if (cached && cached.latestRun === latestRun && cached.lastFile) {
+    const from = latestFiles.indexOf(cached.lastFile);
+    if (from >= 0) {
+      byUser = new Map(cached.byUser);
+      for (let i = from + 1; i < latestFiles.length; i++) {
+        const path = join(calibrationDir(tenant), latestRun, "cases", latestFiles[i]);
+        let raw;
+        try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+        const objs = raw?.before?.state?.objects;
+        if (!Array.isArray(objs)) continue;
+        const tick = parseTick(latestFiles[i]);
+        for (const obj of objs) {
+          if (obj?.kind !== "CORE" || obj.controlled !== false || !obj.owner_username || !obj.position) continue;
+          const x = obj.position[0], y = obj.position[1], key = x + "," + y;
+          let rec = byUser.get(obj.owner_username);
+          if (!rec) { rec = { lastKey: null, pts: [] }; byUser.set(obj.owner_username, rec); }
+          if (key === rec.lastKey) continue;
+          rec.lastKey = key;
+          rec.pts.push({ x, y, tick });
+          if (rec.pts.length > CORE_TRAIL_MAX_POINTS) rec.pts.shift();
+        }
+      }
+    }
+  }
+  if (!byUser) {
+    byUser = new Map();
+    for (const r of runs) {
+      for (const [u, rec] of corePointsFromRun(tenant, r.run, CORE_TRAIL_CASE_LIMIT)) {
+        const target = byUser.get(u);
+        if (!target) { byUser.set(u, rec); continue; }
+        const merged = [...target.pts, ...rec.pts].sort((a, b) => a.tick - b.tick);
+        const pts = [];
+        let lastKey = null;
+        for (const p of merged) {
+          const key = p.x + "," + p.y;
+          if (key === lastKey) continue;
+          lastKey = key;
+          pts.push(p);
+          if (pts.length > CORE_TRAIL_MAX_POINTS) pts.shift();
+        }
+        byUser.set(u, { lastKey: pts.length ? pts[pts.length - 1].x + "," + pts[pts.length - 1].y : null, pts });
+      }
+    }
+  }
+  const list = [...byUser.entries()].map(([username, rec]) => ({ username, trail: rec.pts }));
+  coreTrailCache.set(tenant, { latestRun, lastFile: latestFile, byUser, list });
+  return list;
+}
+
 function loadMergedMap() {
   const cells = new Map();
   const perTenant = [];
@@ -239,6 +331,30 @@ function loadMergedMap() {
         }
       }
     }
+    // —— 动态层实时化（2026-08-08）：单位/核心改用最新 case 的 after.state ——
+    // before.state 是上一 tick 起点，after.state 才是当前实时位置（recorder 在 tick 完成后写 case）；
+    // 以 after 为准重建动态层 → 已摧毁/失联的单位核心不再残留（修复"已摧毁还显示""落后 1 tick"）。
+    let lastCaseRaw = null;
+    if (caseFiles.length > 0) {
+      const lastPath = join(calibrationDir(tenant), runDir, "cases", caseFiles[caseFiles.length - 1]);
+      try { lastCaseRaw = JSON.parse(readFileSync(lastPath, "utf8")); } catch { lastCaseRaw = null; }
+      const afterTick = Number.isFinite(lastCaseRaw?.after?.tick) ? lastCaseRaw.after.tick : latestTick;
+      if (afterTick > latestTick) latestTick = afterTick;
+      const after = lastCaseRaw?.after?.state;
+      if (after?.objects) {
+        unitById.clear(); coreById.clear();
+        for (const obj of after.objects) {
+          if (obj.kind === "UNIT" && obj.id) {
+            const [x, y] = obj.position ?? [0, 0];
+            unitById.set(obj.id, { x, y, type: "unit", tick: latestTick, hp: obj.hp, unitType: obj.unit_type ?? "WORKER", cargo: obj.cargo ?? 0, controlled: obj.controlled, id: obj.id });
+          } else if (obj.kind === "CORE") {
+            const [x, y] = obj.position ?? [0, 0];
+            const id = obj.id ?? `core@${x},${y}`;
+            coreById.set(id, { x, y, type: "core", tick: latestTick, hp: obj.hp, shield: obj.shield, controlled: obj.controlled, owner: obj.owner_username ?? null, id: obj.id ?? null });
+          }
+        }
+      }
+    }
     // 组装：地形在下，动态在上（同格冲突按优先级 obstacle < resource < unit < core）
     const byCell = new Map();
     const put = (c, prio) => {
@@ -255,9 +371,7 @@ function loadMergedMap() {
     let beacon = null;
     if (caseFiles.length > 0) {
       const lastPath = join(calibrationDir(tenant), runDir, "cases", caseFiles[caseFiles.length - 1]);
-      try {
-        const lastRaw = JSON.parse(readFileSync(lastPath, "utf8"));
-        const cb = lastRaw?.before?.state?.champion_beacon;
+      try {        const cb = lastCaseRaw?.after?.state?.champion_beacon ?? lastCaseRaw?.before?.state?.champion_beacon;
         if (cb?.position) beacon = { x: cb.position[0], y: cb.position[1], status: cb.status ?? "GROUND", carrier_id: cb.carrier_id ?? null, trail: loadBeaconTrail(tenant) };
       } catch { /* 忽略 beacon 读取失败 */ }
     }
@@ -270,6 +384,16 @@ function loadMergedMap() {
     ? { minX: 0, maxX: 0, minY: 0, maxY: 0 }
     : { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
   const beacons = perTenant.map((t) => t.beacon ? { tenant: t.tenant, ...t.beacon } : null).filter(Boolean);
+  // 敌方核心轨迹（跨租户按 username 去重，保留最长轨迹——同一敌核被多租户目击）
+  const coreTrailByUser = new Map();
+  for (const t of perTenant) {
+    for (const ct of loadCoreTrails(t.tenant)) {
+      const cur = coreTrailByUser.get(ct.username);
+      if (!cur || ct.trail.length > cur.trail.length) coreTrailByUser.set(ct.username, { ...ct, tenant: t.tenant });
+    }
+  }
+  const coreTrails = [...coreTrailByUser.values()];
+  return { generatedAt: new Date().toISOString(), tenants: perTenant, bounds, cellCount: list.length, cells: list, beacons, coreTrails };
   return { generatedAt: new Date().toISOString(), tenants: perTenant, bounds, cellCount: list.length, cells: list, beacons };
 }
 
@@ -397,6 +521,46 @@ function loadReplay(tenant) {
   return replay;
 }
 
+/** 测绘库（survey-db，2026-08-08 跨 run 完整测绘）：优先于 calibration 扫描——
+ *  calibration case 只覆盖"最新 run 已同步 tick"，测绘库累积全部历史 run 的
+ *  资源/障碍/敌核心（node:sqlite 只读）。返回形状与 loadSurvey 兼容（前端
+ *  tactSurveyLayer 直接消费），资源格额外带 state/seenCount 供状态着色。
+ *  库缺失/空 = null（调用方回退 loadSurvey）。 */
+function loadSurveyDb(tenant) {
+  const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(file)) return null;
+  let db;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+  } catch {
+    return null;
+  }
+  try {
+    const resources = db.prepare(
+      "SELECT x, y, last_seen_tick AS tick, state, seen_count AS seenCount FROM resources ORDER BY last_seen_tick DESC",
+    ).all();
+    const obstacles = db.prepare(
+      "SELECT x, y, last_seen_tick AS tick FROM obstacles ORDER BY last_seen_tick DESC",
+    ).all();
+    const cores = db.prepare(
+      "SELECT x, y, last_seen_tick AS tick, owner, source FROM core_hunts ORDER BY last_seen_tick DESC",
+    ).all();
+    const meta = db.prepare("SELECT MAX(last_tick) AS m, SUM(cases_synced) AS c FROM sync_meta").get();
+    return {
+      obstacleCells: obstacles,
+      resourceCells: resources,
+      coreCells: cores,
+      caseCount: Number(meta?.c ?? 0),
+      tickMax: Number(meta?.m ?? 0),
+      fromDb: true,
+    };
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
 /** 测绘累积缓存：每个租户同一 run 的全部 calibration case 合并出的已知地形（探索过的范围）。 */
 const surveyCache = new Map(); // tenant -> { runId, survey }
 
@@ -486,8 +650,8 @@ function loadWorld(tenant) {
     generatedAt: new Date().toISOString(),
     runId: runDir,
     caseFile: file,
-    tick: raw?.before?.tick ?? null,
-    state: raw?.before?.state ?? null,
+    tick: raw?.after?.tick ?? raw?.before?.tick ?? null,
+    state: raw?.after?.state ?? raw?.before?.state ?? null,
   };
 }
 
@@ -792,6 +956,26 @@ function loadAllianceIntel() {
     intel.totalEnemyCores += enemyCores.length;
   }
   intel.enemies.sort((a, b) => (b.lastSeenTick - a.lastSeenTick) || a.username.localeCompare(b.username));
+  // 信标状态 + 载者推断（2026-08-08）：轨迹最近点 = 当前位置；近 12 tick 内移动过
+  // = 载者活动（敌方核心携带/漂移）；距信标 ≤30 的已知敌核心 = 载者猜测（如 jerkman）。
+  intel.beacons = [];
+  for (const t of intel.tenants) {
+    if (!t.runId) continue;
+    const trail = loadBeaconTrail(t.tenant);
+    if (!trail.length) continue;
+    const last = trail[trail.length - 1];
+    const prev = trail.length >= 2 ? trail[trail.length - 2] : null;
+    const moving = prev !== null && (last.tick - prev.tick) <= 12 && (last.x !== prev.x || last.y !== prev.y);
+    let carrierGuess = null;
+    let carrierDist = null;
+    let best = 31;
+    for (const e of intel.enemies) {
+      const d = Math.max(Math.abs(e.position[0] - last.x), Math.abs(e.position[1] - last.y));
+      if (d < best) { best = d; carrierGuess = e.username; }
+    }
+    if (best <= 30) carrierDist = best;
+    intel.beacons.push({ tenant: t.tenant, x: last.x, y: last.y, tick: last.tick, moving, carrierGuess, carrierDist });
+  }
   intelCache = { at: Date.now(), data: intel };
   return intel;
 }
@@ -856,7 +1040,10 @@ function writeHumanStore(tenant, store) {
   const dir = humanCommandsDir();
   mkdirSync(dir, { recursive: true });
   const out = { version: 1, mode: store.mode, commands: store.commands, goals: store.goals, updatedAt: new Date().toISOString() };
-  writeFileSync(join(dir, `${tenant}.json`), JSON.stringify(out, null, 2));
+  const file = join(dir, `${tenant}.json`);
+  const tmp = join(dir, `${tenant}.json.tmp`);
+  writeFileSync(tmp, JSON.stringify(out, null, 2));
+  renameSync(tmp, file); // 原子替换：中途崩溃不会留半截坏 JSON（readHumanStore 已有 try/catch 兜底）
   return out;
 }
 /** 从 outcome.jsonl 读取最新一条 humanOverride 遥测（applied/rejected/satisfied）。
@@ -870,6 +1057,75 @@ function latestHumanOverride(tenant) {
   const h = last.humanOverride;
   if (!h.active && (h.applied ?? []).length === 0 && (h.rejected ?? []).length === 0 && (h.satisfied ?? []).length === 0) return null;
   return { tick: last.tick ?? null, ...h };
+}
+
+/** 卡死跳出（2026-08-08）：活跃 goal 若单位连续 STUCK_TICKS tick 只 WAIT（路径被堵/目标不可达），
+ *  自动取消并回报——防止"人类指令死锁"永远挂着。WAIT = 无推进；MOVE/HARVEST/DEPOSIT 都算在动。 */
+const STUCK_TICKS = 8;
+const stuckRing = new Map(); // tenant -> [{ unitId, kind, target, reason, at }]
+function cancelStuckGoals(tenant, store, h) {
+  const applied = new Set(h.applied ?? []);
+  const activeGoals = store.goals.filter((g) => applied.has(g.unitId));
+  if (activeGoals.length === 0) return { store, stuck: [] };
+  const runDir = latestRunDir(tenant);
+  if (runDir === null) return { store, stuck: [] };
+  const cases = listCases(tenant, runDir);
+  if (cases.length < STUCK_TICKS) return { store, stuck: [] };
+  const stuck = [];
+  for (const g of activeGoals) {
+    let waitCount = 0;
+    for (let i = 0; i < STUCK_TICKS; i++) {
+      const f2 = cases[cases.length - 1 - i];
+      const p2 = join(calibrationDir(tenant), runDir, "cases", f2);
+      try {
+        const raw = JSON.parse(readFileSync(p2, "utf8"));
+        const act = raw?.plan?.unitActions?.[g.unitId];
+        if (!act) continue;
+        if (act.type === "WAIT") waitCount++;
+        else if (act.type === "MOVE" || act.type === "HARVEST" || act.type === "DEPOSIT") { waitCount = 0; break; }
+      } catch { /* 跳过坏文件 */ }
+    }
+    if (waitCount >= STUCK_TICKS - 1) {
+      const reason = `连续 ${waitCount} tick 无推进（路径被堵/目标不可达），已自动取消`;
+      stuck.push({ unitId: g.unitId, kind: g.kind, target: g.target, reason, at: new Date().toISOString() });
+      store.goals = store.goals.filter((x) => x.id !== g.id);
+      console.log(`[human-goal] ${tenant} 卡死跳出 ${g.unitId} ${g.kind} [${g.target[0]}, ${g.target[1]}] → ${reason}`);
+    }
+  }
+  return { store, stuck };
+}
+
+/** 人类指令闭环自愈（2026-08-08）：agent 只消费 store 不写回——satisfied 的 goal、
+ *  applied 的一键 command、unknown_unit（单位已销毁）的指令会永久残留（实测 t4 陈旧 goal
+ *  挂了 8 小时）。本函数在 /api/commands 读取时按最新遥测行对账清理（server 是 store 唯一写者）。
+ *  语义：satisfied → goal 完成交还 agent；applied → 一键动作已生效（单 tick 覆盖）；
+ *       rejected(unknown_unit) → 单位已不存在，指令作废。
+ *  时序守卫：仅清理 createdAt ≤ 遥测 updatedAt 的指令（避免误删刚下发、尚未执行的同单位新指令）。 */
+function reconcileHumanStore(tenant) {
+  const store = readHumanStore(tenant);
+  if (store.commands.length === 0 && store.goals.length === 0) return store;
+  const h = latestHumanOverride(tenant);
+  if (!h) return store;
+  const processedAt = h.updatedAt ?? null; // agent 处理 store 时回显的 updatedAt
+  const within = (createdAt) => processedAt === null || (typeof createdAt === "string" && createdAt <= processedAt);
+  const satisfied = new Set(h.satisfied ?? []);
+  const applied = new Set(h.applied ?? []);
+  const unknown = new Set((h.rejected ?? []).filter((r) => r && r.reason === "unknown_unit").map((r) => r.unitId));
+  if (satisfied.size === 0 && applied.size === 0 && unknown.size === 0) return store;
+  const g0 = store.goals.length, c0 = store.commands.length;
+  if (satisfied.size) store.goals = store.goals.filter((g) => !(satisfied.has(g.unitId) && within(g.createdAt)));
+  if (applied.size) store.commands = store.commands.filter((c) => !(applied.has(c.unitId) && within(c.createdAt)));
+  if (unknown.size) {
+    store.goals = store.goals.filter((g) => !(unknown.has(g.unitId) && within(g.createdAt)));
+    store.commands = store.commands.filter((c) => !(unknown.has(c.unitId) && within(c.createdAt)));
+  }
+  const { store: s2, stuck } = cancelStuckGoals(tenant, store, h);
+  if (s2.goals.length !== g0 || s2.commands.length !== c0) writeHumanStore(tenant, s2);
+  if (stuck.length) {
+    const ring = stuckRing.get(tenant) ?? [];
+    stuckRing.set(tenant, [...ring, ...stuck].slice(-6));
+  }
+  return s2;
 }
 
 const VALID_ACTION_TYPES = new Set([
@@ -927,7 +1183,7 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === "/api/exploration") {
       const tenant = url.searchParams.get("tenant") ?? "t1";
-      const survey = loadSurvey(tenant);
+      const survey = loadSurveyDb(tenant) ?? loadSurvey(tenant); // 测绘库优先（跨 run），缺失回退 calibration
       if (!survey) return sendJson(res, { tenant, generatedAt: new Date().toISOString(), survey: null });
       const world = loadWorld(tenant);
       return sendJson(res, {
@@ -936,6 +1192,26 @@ const server = createServer(async (req, res) => {
         survey,
         current: world.state ? { caseFile: world.caseFile, tick: world.tick, objects: world.state.objects, resources: world.state.resources, population: world.state.population, champion_beacon: world.state.champion_beacon } : null,
       });
+    }
+    if (pathname === "/api/survey") {
+      // 跨 run 测绘库原始数据（2026-08-08，调试/前端图层）：每租户矿（含状态/
+      // seenCount）、障碍、敌核心。?tenant=t1|all；?states=visible,stale 过滤。
+      const tenant = url.searchParams.get("tenant") ?? "all";
+      const states = (url.searchParams.get("states") ?? "visible,stale").split(",").map((s) => s.trim()).filter(Boolean);
+      const tenants = tenant === "all" ? TENANTS : [tenant];
+      const out = { generatedAt: new Date().toISOString(), tenants: {} };
+      for (const t of tenants) {
+        const s = loadSurveyDb(t);
+        if (!s) { out.tenants[t] = { error: "survey db missing" }; continue; }
+        out.tenants[t] = {
+          resources: s.resourceCells.filter((r) => states.includes(r.state)),
+          obstacles: s.obstacleCells,
+          coreHunts: s.coreCells,
+          caseCount: s.caseCount,
+          tickMax: s.tickMax,
+        };
+      }
+      return sendJson(res, out);
     }
     if (pathname === "/api/events") {
       const tenant = url.searchParams.get("tenant") ?? "t1";
@@ -954,8 +1230,8 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/commands" && req.method === "GET") {
       const tenant = url.searchParams.get("tenant") ?? "";
       if (!validTenant(tenant)) return sendJson(res, { error: "非法租户" }, 400);
-      const store = readHumanStore(tenant);
-      return sendJson(res, { ...store, telemetry: latestHumanOverride(tenant) });
+      const store = reconcileHumanStore(tenant);
+      return sendJson(res, { ...store, telemetry: latestHumanOverride(tenant), stuck: stuckRing.get(tenant) ?? [] });
     }
     if (pathname === "/api/command" && req.method === "POST") {
       const b = await parseBody(req);
@@ -1105,5 +1381,22 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`Arena 指挥面板：http://127.0.0.1:${PORT}`);
   console.log(`数据根（只读）：${DATA_ROOT}`);
 });
+
+server.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(`端口 ${PORT} 已被占用——可能已有指挥面板实例在运行（陈旧 pid 文件除外）。`);
+    console.error(`停止旧实例：node scripts/start-cc.mjs --stop；若 pid 文件陈旧，先删 logs/cc-server.pid 再启动。`);
+    process.exitCode = 1;
+    return;
+  }
+  console.error("指挥面板服务器错误", err);
+  process.exitCode = 1;
+});
+
+
+
+
+
+
 
 

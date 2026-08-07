@@ -338,6 +338,18 @@ export interface SafetyPlannerConfig {
    * 默认 false = 历史行为（允许军事占核心格，零回归）。
    */
   readonly coreClearance?: boolean;
+  /**
+   * 记忆矿主动开采（2026-08-08，harvest-memory-mine-v1，survey-db 联动）：
+   * 空 worker 无可见资源且无活跃采集目标时，从已知矿记忆（resourceHints，
+   * 含跨 run 测绘 seed）挑最近的去挖——修复"矿发现了但永远不被主动去挖"
+   * （生产实证：worker 只在可见时采，巡逻错过已知矿后永不回头，t1 校准窗口
+   * 184 tick 只见 11 个互异矿格、t4 go_harvest_mem 104 意图仅 12 次成功）。
+   * 默认 false = 历史行为（只挖当前可见矿，零回归）。
+   */
+  readonly harvestMemoryMine?: boolean;
+  /** 记忆矿开采距离上限（Manhattan，默认 40 = 探索最外环）：防止追 70+ 格
+   *  远矿（t4 实证 worker 跨 30-78 格追空记忆）——超出上限交给巡逻发现。 */
+  readonly harvestMemoryMaxDist?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -359,5 +371,6 @@ export const AGGRESSIVE_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
   ...DEFAULT_SAFETY_CONFIG,
   aggression: "aggressive",
 });
+
 
 

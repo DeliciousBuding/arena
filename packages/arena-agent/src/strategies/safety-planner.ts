@@ -111,6 +111,8 @@ export function threatWeightedDirection(
 const THREAT_RECALL_DISTANCE = 12;
 /** 召回时 worker 的守家巡逻半径。 */
 const RECALL_PATROL_RADIUS = 4;
+/** 记忆矿开采距离上限（Manhattan，默认 40 = 探索最外环）：防追 70+ 格远矿。 */
+const HARVEST_MEMORY_MAX_DIST = 40;
 /** Core 迁移 TTR 预撤离阈值（竞品 time-to-range ≤16 tick）。 */
 const TTR_PRE_EVADE_TICKS = 16;
 /** B9 迁移取消冷却（coreMigrationCancel）：取消后 N tick 内不重触发 START_MOVE。 */
@@ -137,12 +139,22 @@ const REINFORCE_HOLD_TICKS = 8;
 const REINFORCE_HOME_RING = 4;
 /** 信标夺取默认最大距离（Chebyshev，以我方 Core 为圆心）：官方信标坐标全员
  *  公开，超出视为远征——信标所在区域可能被敌方埋伏（远距公敌），不值得送死。 */
-const BEACON_GRAB_DEFAULT_MAX_DIST = 80;
+/** 信标夺取安全距离（2026-08-08 对齐 ref guide"冠军信标远征机制已经取消"、
+ *  arena-hero-agent LOCKED_BEACON_POLICY=retreat）：默认只在核心 24 格防区内
+ *  机会取标（2× 采集 + 盾 10），之外一律撤退不接近——远距取标 = 单骑深入
+ *  敌区送死（t2 实证：信标 51 格北侧，疑似 jerkman 停靠）。生产 config 已
+ *  停用 beacon-grab-v1；此默认保证未来重启用也安全。 */
+const BEACON_GRAB_DEFAULT_MAX_DIST = 24;
 /** 信标争夺半径：信标距已知敌核心（coreHuntMemory）≤ 该值 = 敌方基地/战区，
  *  不单独 fetch（单骑深入送死——t2 生产实证：信标即 jerkman 核心所在地，
  *  小队 1V+3R+1W 埋伏，信标 Vanguard 被击杀）。由 militaryHunt 攻坚处理，
  *  敌核心被摧毁后我方单位在格上经主循环自动拾取。 */
 const BEACON_CONTEST_RADIUS = 10;
+/** 信标移动判定窗口（beaconGrab 防追标，2026-08-08）：近 30 tick 内信标
+ *  出现过 ≥2 个不同位置 = 在移动/刚停下（敌方核心携带中或停靠）——不单独 fetch；
+ *  彻底静止 30+ tick（真掉落/无主）才拾取。10 tick 只挡"正在追"，挡不住
+ *  "敌方刚停靠"（t2 实证：信标 68891 后停 [-11,-1]，疑似 jerkman 停靠）。 */
+const BEACON_MOVE_WINDOW_TICKS = 30;
 /** 威胁自适应（2026-08-07，排行榜威胁画像"留强"）：AGGRESSOR（伤害 top30）
  *  攻坚成型门槛叠加 +2；ELITE_AGGRESSOR（伤害 top10，猛攻蛆头子）叠加 +4。 */
 const THREAT_AGGRESSOR_ATTACK_FORCE_BONUS = 2;
@@ -216,7 +228,16 @@ export function workerDenseDirection(index: number): number {
 export class SafetyPlanner {
   readonly world: World;
   readonly phase: PhaseMachine;
-  readonly config: SafetyPlannerConfig;
+  private configValue: SafetyPlannerConfig;
+  /** 当前 SafetyPlanner 配置（热加载 2026-08-08：updateConfig 原子替换引用，
+   *  World/巡逻记忆不丢；所有决策路径经 this.config 实时读取）。 */
+  get config(): SafetyPlannerConfig {
+    return this.configValue;
+  }
+  /** 热加载配置快照（tick 间调用；非法配置由调用方先校验，这里只做引用替换）。 */
+  updateConfig(config: SafetyPlannerConfig): void {
+    this.configValue = config;
+  }
   /** 本 decide 生效的 aggression（policy 优先，其次 config.aggression）。 */
   private effectiveAggression: AggressionLevel = "defensive";
   /** 本 decide 生效的 workerTarget（policy 优先，其次 config.workerTarget）。 */
@@ -282,7 +303,7 @@ export class SafetyPlanner {
     world = new World(),
     threatProfiles: ReadonlyMap<string, ThreatProfile> = new Map(),
   ) {
-    this.config = config;
+    this.configValue = config;
     this.world = world;
     this.phase = new PhaseMachine(config.phase);
     for (const [username, profile] of threatProfiles) {
@@ -475,6 +496,11 @@ export class SafetyPlanner {
     if (beacon.status === "CARRIED") {
       return beacon.carrierId === unit.id ? "return" : null;
     }
+    // 追移动信标 = 追敌方载者（t2 生产实证 2026-08-08：信标被 jerkman 核心
+    // 带着沿 y=0 东移，vanguard 单骑北上追标 = 送人头）。近 10 tick 信标移动过
+    // （≥2 个不同位置）→ 视为敌方携带/漂移，不单独 fetch；等信标静止（真掉落）
+    // 再拾取（静止 GROUND 信标 = 无主可拿）。
+    if (this.world.beaconMoving(BEACON_MOVE_WINDOW_TICKS)) return null;
     // 信标在已知敌核心附近（敌方基地/战区）→ 不单独 fetch：单骑深入送死
     // （t2 生产实证：信标即 jerkman 核心所在地，小队埋伏）。由 militaryHunt
     // 攻坚处理；敌核心被摧毁后我方单位在格上经主循环 PICKUP_BEACON 自动拾取。
@@ -837,6 +863,32 @@ export class SafetyPlanner {
         if (direction !== null) set(unit, { type: "MOVE", direction }, "go_harvest_mem");
       }
       return;
+    }
+
+    // 记忆矿主动开采（harvest-memory-mine-v1，2026-08-08，survey-db 联动）：
+    // 无可见资源且无活跃目标时，从已知矿记忆（含跨 run 测绘 seed）挑最近的
+    // 去挖——修复"矿发现了但永远不被主动去挖"（生产实证：worker 只在可见时
+    // 采，巡逻错过已知矿后永不回头）。距离上限防追 70+ 格远矿（t4 实证）。
+    if (this.config.harvestMemoryMine === true && memory.harvestTarget === null) {
+      const maxDist = this.config.harvestMemoryMaxDist ?? HARVEST_MEMORY_MAX_DIST;
+      let best: Position | null = null;
+      let bestDist = Number.POSITIVE_INFINITY;
+      for (const hint of hints) {
+        const d = manhattan(unit.position, hint);
+        if (d <= maxDist && (home === null || manhattan(hint, home) <= maxPatrolRadius) && d < bestDist) {
+          best = hint;
+          bestDist = d;
+        }
+      }
+      if (best !== null) {
+        memory.workerMode = "go_harvest";
+        memory.harvestTarget = best;
+        if (!samePosition(unit.position, best)) {
+          const direction = stepToward(unit.position, best, movementObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "go_harvest_mem");
+        }
+        return;
+      }
     }
 
     memory.workerMode = "patrol";
@@ -1695,3 +1747,9 @@ export class SafetyPlanner {
     return { type: "SPAWN", unitType };
   }
 }
+
+
+
+
+
+

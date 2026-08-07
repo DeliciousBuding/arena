@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { loadRuntimeConfig, type TenantRuntimeConfig } from "./runtime-config.ts";
+import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
 import {
   resolveArenaDataRoot,
   resolveArenaRuntimeRoot,
@@ -295,6 +296,30 @@ export class TenantSupervisor {
     this.shuttingDown = true;
     this.shutdownPromise = this.shutdownInternal();
     return this.shutdownPromise;
+  }
+
+  /** 配置热加载（2026-08-08）：按租户重读 config → schema/变体 preflight →
+   *  IPC 通知 child 应用（child 内部 last-good，非法配置不应用）。
+   *  tenantId 缺省 = 全部。返回每租户 sent/error。 */
+  reloadConfigs(tenantId?: string): Readonly<Record<string, { sent: boolean; error: string | null }>> {
+    const result: Record<string, { sent: boolean; error: string | null }> = {};
+    for (const [id, entry] of this.children) {
+      if (tenantId !== undefined && id !== tenantId) continue;
+      try {
+        const nextConfig = loadRuntimeConfig(entry.spec.configPath);
+        resolveVariantsConfig(nextConfig.variants);
+        resolveDeterministicVariantsConfig(nextConfig.variants);
+        if (entry.child.connected && typeof entry.child.send === "function") {
+          entry.child.send({ type: "arena.config_reload" }, () => {});
+          result[id] = { sent: true, error: null };
+        } else {
+          result[id] = { sent: false, error: "child IPC not connected" };
+        }
+      } catch (error) {
+        result[id] = { sent: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    return result;
   }
 
   private async shutdownInternal(): Promise<void> {
