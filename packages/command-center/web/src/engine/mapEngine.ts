@@ -2470,7 +2470,7 @@ function enterTargetingMode(tip: any) {
     const p = project(sel.obj.position[0], sel.obj.position[1]);
     els.actionDialog.innerHTML = `
       <div class="act-targeting">
-        <span class="at-dot" />
+        <span class="at-dot"></span>
         <span class="at-text">${escapeHtml(tip)}</span>
         <button class="at-cancel" data-cancel-target type="button">✕ 取消</button>
       </div>`;
