@@ -308,6 +308,14 @@ export interface SafetyPlannerConfig {
   readonly raidWatchRadius?: number;
   /** 敌核心守家半径（Chebyshev，默认 24）：邻近敌核心存在 → 恒留守家兵力。 */
   readonly raidCoreRadius?: number;
+  /**
+   * worker 密集扫图（2026-08-07，worker-dense-scan-v1）：worker 巡逻改用 16
+   * 方位（DENSE_DELTAS 复用军事密集搜索）——8 方位在半径 24 处相邻方位间距
+   * ~18 格 > 视野 3×2，资源稀缺时大片盲区（生产实测 avgVisible 0.5-0.6 格/
+   * tick）；16 方位间距 ~9 格，覆盖更密、发现率更高。默认 false = 历史 8
+   * 方位（零回归）。
+   */
+  readonly workerDenseScan?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
