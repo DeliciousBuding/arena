@@ -202,6 +202,14 @@ export interface SafetyPlannerInput {
 }
 
 /** Deterministic, side-effect-free with respect to the game. World memory is local to this planner. */
+/** worker 密集扫图方位（worker-dense-scan-v1，纯函数可测）：16 方位分散——
+ *  (index*3+7)%16 与 8 方位 (index*3+7)%8 同构；12 worker 覆盖全部 16 方位
+ *  （8 方位下 12 worker 每方位 1-2，密集模式每方位 0-1 但方位数翻倍 →
+ *  相邻方位间距减半，盲区小）。 */
+export function workerDenseDirection(index: number): number {
+  return (index * 3 + 7) % 16;
+}
+
 export class SafetyPlanner {
   readonly world: World;
   readonly phase: PhaseMachine;
@@ -611,9 +619,27 @@ export class SafetyPlanner {
     return { tick: state.tick, unitActions: actions, coreAction, intents };
   }
 
+  /** worker 巡逻目标点（worker-dense-scan-v1，2026-08-07）：密集模式用 16 方位
+   *  （exploreTargetDense，相邻方位间距减半——8 方位在半径 24 处相邻 ~18 格 >
+   *  视野 3×2 盲区大）；默认 8 方位 exploreTarget（零回归）。 */
+  private workerPatrolPoint(
+    home: Position,
+    beacon: Position,
+    direction: number,
+    radius: number,
+  ): Position {
+    return this.config.workerDenseScan === true
+      ? exploreTargetDense(home, beacon, direction, radius)
+      : exploreTarget(home, beacon, direction, radius);
+  }
+
   /** worker 巡逻方位（threat-sector-scout-v1）：变体开启且有威胁方向时向威胁
    *  扇区加权（threatWeightedDirection），否则历史均匀方位（零回归）。 */
   private workerPatrolDirection(index: number, home: Position | null): number {
+    // worker 密集扫图（worker-dense-scan-v1）：16 方位直接分散（workerDenseDirection，
+    // 与 8 方位 +3 步进同构的分散方案）——威胁扇区加权是 8 方位口径，密集模式
+    // 暂不叠加（覆盖分散优先）。默认走威胁加权/均匀 8 方位（零回归）。
+    if (this.config.workerDenseScan === true) return workerDenseDirection(index);
     const sector =
       this.config.threatSectorScout === true && home !== null
         ? this.world.threatSectorFrom(home)
@@ -788,9 +814,12 @@ export class SafetyPlanner {
     let target: Position | null = null;
     if (home !== null) {
       const beacon = state.beacon.position ?? home;
+      // worker 密集扫图（worker-dense-scan-v1）：16 方位 → 方位数/步进/目标点
+      // 全部按 16 口径；默认 8 方位（EXPLORE_DIRECTION_COUNT）零回归。
+      const directionCount = this.config.workerDenseScan === true ? 16 : EXPLORE_DIRECTION_COUNT;
       let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
       if (maxPatrolRadius < patrolRadius) patrolRadius = maxPatrolRadius;
-      let patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+      let patrolPoint = this.workerPatrolPoint(home, beacon, memory.patrolDirection, patrolRadius);
       const patrolPointBlocked = obstacles.has(cellKey(patrolPoint));
       // 到达/越过当前环半径（含精确到点与绕路越界）：连续外扩到下一环——
       // 修复 2026-08-07 t4 生产实证：worker 绕路错过精确环点（chebyshev 30
@@ -802,7 +831,7 @@ export class SafetyPlanner {
         if (memory.patrolRing < EXPLORE_RING_COUNT - 1) {
           memory.patrolRing += 1;
           patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
-          patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+          patrolPoint = this.workerPatrolPoint(home, beacon, memory.patrolDirection, patrolRadius);
           target = patrolPoint;
         } else {
           memory.patrolReturning = true;
@@ -823,20 +852,20 @@ export class SafetyPlanner {
                   beacon,
                   memory.patrolRing,
                   this.config.exploreRadius,
-                  EXPLORE_DIRECTION_COUNT,
-                  // 分散偏移与初始方向同构（(index*3+7)%8 生产验证的分散方案）：
+                  directionCount,
+                  // 分散偏移与初始方向同构（(index*3+7)%N 生产验证的分散方案）：
                   // 纯 index 位次会让全部 worker 涌向"最老"位次（实验实证：
                   // 双对角远矿场景 east 0/3 west 3/3——东侧被集体放弃）；
                   // 固定偏移保证不同 worker 取不同老化位次，老方位优先 + 覆盖分散。
-                  (index * 3 + 7) % EXPLORE_DIRECTION_COUNT,
+                  (index * 3 + 7) % directionCount,
                 )
-              : (memory.patrolDirection + 3) % EXPLORE_DIRECTION_COUNT;
+              : (memory.patrolDirection + 3) % directionCount;
           memory.patrolRing = (memory.patrolRing + 1) % EXPLORE_RING_COUNT;
         }
         else memory.patrolStarted = true;
         memory.patrolReturning = false;
         patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
-        patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+        patrolPoint = this.workerPatrolPoint(home, beacon, memory.patrolDirection, patrolRadius);
         target = patrolPoint;
       } else if (memory.patrolReturning) {
         target = home;
@@ -851,7 +880,7 @@ export class SafetyPlanner {
         if (memory.patrolRing < EXPLORE_RING_COUNT - 1) {
           memory.patrolRing += 1;
           patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
-          patrolPoint = exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+          patrolPoint = this.workerPatrolPoint(home, beacon, memory.patrolDirection, patrolRadius);
           target = patrolPoint;
         } else {
           memory.patrolReturning = true;

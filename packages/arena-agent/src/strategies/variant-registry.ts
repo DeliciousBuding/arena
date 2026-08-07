@@ -65,6 +65,13 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 默认 false = 历史行为（仅 12 格确认接触 + 高威胁对手才留强，零回归）。
      */
     "raid-defense-v1": Object.freeze({ raidDefense: true }),
+    /**
+     * worker 密集扫图（2026-08-07，worker-dense-scan-v1）：worker 巡逻 8→16
+     * 方位（DENSE_DELTAS），相邻方位间距减半——资源稀缺时盲区大（生产实测
+     * avgVisible 0.5-0.6 格/tick，8 方位在半径 24 处相邻 ~18 格 > 视野 3×2）。
+     * 默认 false = 历史 8 方位（零回归）。离线 A/B 出证据后再决定是否启用。
+     */
+    "worker-dense-scan-v1": Object.freeze({ workerDenseScan: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),
