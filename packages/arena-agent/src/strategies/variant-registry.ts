@@ -80,6 +80,15 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 默认 false = 历史 8 方位（零回归）。离线 A/B 出证据后再决定是否启用。
      */
     "worker-dense-scan-v1": Object.freeze({ workerDenseScan: true }),
+    /**
+     * 核心迁移中交仓待命（2026-08-07，core-moving-hold-v1）：Core MOVING 时
+     * （START_MOVE 迁移中，引擎拒 DEPOSIT——CORE_MOVING/CORE_NOT_PRESENT），
+     * cargo worker 原地持货等核心稳定，不追着移动核心空跑（生产实测 t2/t3
+     * 手操迁移时 150 tick 内 DEPOSIT_FAILED 17/11 次）。与 core-clearance-v1
+     * 互补：一个管迁移中不追交、一个管不堵核心格。
+     * 默认 false = 历史行为（迁移中也追交，零回归）。
+     */
+    "core-moving-hold-v1": Object.freeze({ coreMovingHold: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),
