@@ -1268,7 +1268,12 @@ function renderStream() {
     const all = [];
     for (const t of TENANTS) for (const ev of state.events[t] ?? []) all.push({ tenant: t, ...ev });
     all.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
-    if (!all.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无事件数据</div>'; setStreamCount('0 条'); return; }
+    if (!all.length) {
+      els.streamBody.innerHTML = '<div class="stream-empty">暂无事件数据</div>';
+      setStreamCount('0 条');
+      state.streamLive = null; updateStreamLive(); // 无事件 → 折叠胶囊同步隐藏
+      return;
+    }
     state.rowKeys = state.rowKeys || {};
     const eprev = state.rowKeys.events || new Set();
     const ecur = new Set();
@@ -1306,10 +1311,15 @@ function renderStream() {
   }
   rows.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
   if (state.streamFilterQuiet) {
-    const kept = rows.filter((r) => !(String(r.deadlineOutcome ?? '') === 'not_applicable' && String(r.submitResult ?? '') === 'accepted'));
+    // 「无需决策」= deadlineOutcome not_applicable（submitResult 有 accepted/not_submitted 等变体，统一按 outcome 判定）
+    const kept = rows.filter((r) => String(r.deadlineOutcome ?? '') !== 'not_applicable');
     if (kept.length || rows.length) rows.length = 0, rows.push(...kept); // 只显示实际决策
   }
-  if (!rows.length) { els.streamBody.innerHTML = '<div class="stream-empty">暂无决策数据</div>'; return; }
+  if (!rows.length) {
+    els.streamBody.innerHTML = '<div class="stream-empty">暂无决策数据</div>';
+    state.streamLive = null; updateStreamLive(); // 过滤后无行 → 折叠胶囊同步隐藏
+    return;
+  }
   state.rowKeys = state.rowKeys || {};
   const rprev = state.rowKeys[state.tab] || new Set();
   const rcur = new Set();
@@ -1319,7 +1329,7 @@ function renderStream() {
     const color = TENANT_COLORS[r.tenant] ?? '#999';
     const outcome = String(r.deadlineOutcome ?? '');
     const submit = String(r.submitResult ?? '');
-    const quiet = outcome === 'not_applicable' && submit === 'accepted';
+    const quiet = outcome === 'not_applicable';
     if (quiet) quietCount++;
     const outCls = submit === 'accepted' ? 'accepted' : submit === 'rejected' ? 'rejected' : (outcome.includes('timeout') || outcome.includes('missed')) ? 'timeout' : '';
     const kindCn = DECISION_KIND_CN[outcome] ?? '决策';
