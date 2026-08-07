@@ -67,7 +67,7 @@ function projectAround(
 export function projectThreatField(
   sightings: readonly EntitySighting[],
   nowTick: number,
-  opts: { radius?: number; coreRaidRadius?: number } = {},
+  opts: { radius?: number; coreRaidRadius?: number; generatedAtMs?: number } = {},
 ): ThreatField {
   const radius = opts.radius ?? THREAT_FIELD_RADIUS;
   const coreRaidRadius = opts.coreRaidRadius ?? CORE_RAID_RADIUS;
@@ -98,7 +98,7 @@ export function projectThreatField(
     tickWindow: sightings.length > 0
       ? [Math.min(...sightings.map((s) => s.firstSeenTick)), Math.max(...sightings.map((s) => s.lastSeenTick))]
       : [nowTick, nowTick],
-    generatedAtMs: Date.now(),
+    generatedAtMs: opts.generatedAtMs ?? Date.now(),
   };
 }
 
@@ -124,3 +124,4 @@ export function adjustWithLeaderboardPrior(
   }
   return { ...field, cells };
 }
+

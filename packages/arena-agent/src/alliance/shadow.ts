@@ -16,7 +16,8 @@ import { type AllianceObservation } from "./snapshot.ts";
 import { computeForceCounts } from "./counts.ts";
 import { projectThreatField } from "./threat-field.ts";
 import { updateSightingsTick } from "./sightings.ts";
-import { type EntitySighting } from "./types.ts";
+import { isCombatUnit, type AllianceMemberState, type EntitySighting } from "./types.ts";
+import type { AllianceShadowFrameV1 } from "./shadow-frame.ts";
 import { EMPTY_ROSTER, registerAlliedEntities, type AllianceRoster } from "./roster.ts";
 
 export const ALLIANCE_SHADOW_INTERVAL_DEFAULT = 4;
@@ -43,6 +44,28 @@ export function observationsFromState(state: TickState, tenantId: string): {
     evidence: "LIVE",
   }));
   return { alliedIds, observations };
+}
+
+/** TickState -> canonical compressed member facts. No planner/control state leaks in. */
+export function memberStateFromState(
+  state: TickState,
+  tenantId: string,
+  observedAtMs: number,
+): AllianceMemberState {
+  return {
+    tenantId, tick: state.tick, observedAtMs,
+    core: state.core === null ? null : {
+      id: state.core.id, position: state.core.position, hp: state.core.hp, shield: state.core.shield,
+      moving: state.core.state === "MOVING",
+    },
+    resources: state.resources, resourceCapacity: state.resourceCapacity, population: state.population,
+    workers: state.workers.length, vanguards: state.vanguards.length, rangers: state.rangers.length,
+    carriedResources: state.workers.reduce((sum, worker) => sum + worker.cargo, 0),
+    activeFleetIds: [],
+    localThreat: state.visibleEnemies.filter((enemy) => enemy.kind === "UNIT" && isCombatUnit(enemy.unitType)).length,
+    localHarvestRate: 0,
+    status: state.status === "RESPAWNING" ? "RESPAWNING" : "READY",
+  };
 }
 
 export interface AllianceShadowRecordV1 {
@@ -83,6 +106,10 @@ export interface AllianceShadowWriterOptions {
   /** 每 N tick 输出一帧（默认 4，spec §7.2 alliance loop 建议）。 */
   readonly intervalTicks?: number;
   readonly rotation?: typeof DEFAULT_JSONL_ROTATION;
+  /** Optional in-memory observation seam. Default absent; callback failure is fail-open. */
+  readonly onFrame?: (frame: AllianceShadowFrameV1) => void;
+  /** Injectable clock for deterministic tests. */
+  readonly nowMs?: () => number;
 }
 
 /** 影子快照写入器：累积目击记忆 + roster，按 interval 输出 JSONL 帧。 */
@@ -92,6 +119,8 @@ export class AllianceShadowWriter {
   private readonly path: string;
   private readonly intervalTicks: number;
   private readonly rotation: typeof DEFAULT_JSONL_ROTATION;
+  private readonly onFrame: ((frame: AllianceShadowFrameV1) => void) | null;
+  private readonly nowMs: () => number;
   private sightings: readonly EntitySighting[] = [];
   private roster: AllianceRoster = EMPTY_ROSTER;
   private lastWrittenTick = -Infinity;
@@ -104,10 +133,12 @@ export class AllianceShadowWriter {
     this.path = options.path;
     this.intervalTicks = options.intervalTicks ?? ALLIANCE_SHADOW_INTERVAL_DEFAULT;
     this.rotation = options.rotation ?? DEFAULT_JSONL_ROTATION;
+    this.onFrame = options.onFrame ?? null;
+    this.nowMs = options.nowMs ?? Date.now;
   }
 
   /** 每 tick 调用（onTick 钩子内）：累积观测，到 interval 边界输出一帧。 */
-  onState(state: TickState): void {
+  onState(state: TickState): AllianceShadowFrameV1 | null {
     const { alliedIds, observations } = observationsFromState(state, this.tenantId);
     this.roster = registerAlliedEntities(this.roster, {
       tenantId: this.tenantId,
@@ -129,13 +160,24 @@ export class AllianceShadowWriter {
     this.rawCombatCount += observations.filter(
       (o) => !o.controlled && o.kind === "UNIT" && (o.unitType === "VANGUARD" || o.unitType === "RANGER"),
     ).length;
-    if (state.tick - this.lastWrittenTick < this.intervalTicks) return;
+    if (state.tick - this.lastWrittenTick < this.intervalTicks) return null;
     this.lastWrittenTick = state.tick;
     // 以累积 sightings 为准（跨 tick 记忆）直接统计 + 投影，不经空观测重建。
     const counts = computeForceCounts(this.sightings, state.tick, { historicalSightingCount: this.rawCombatCount });
     const threat = projectThreatField(this.sightings, state.tick);
+    const observedAtMs = this.nowMs();
+    const frame: AllianceShadowFrameV1 = Object.freeze({
+      schema: "alliance-shadow-frame-v1",
+      processRunId: this.processRunId, tenantId: this.tenantId, tick: state.tick, observedAtMs,
+      member: memberStateFromState(state, this.tenantId, observedAtMs),
+      sightings: Object.freeze([...this.sightings]),
+      allyEntityIds: Object.freeze([...this.roster.allyEntityIds].sort()),
+      historicalSightingCount: this.rawCombatCount,
+    });
+    if (this.onFrame !== null) { try { this.onFrame(frame); } catch {} }
     const record = this.toRecord(state.tick, counts, threat.cells.size, threat.maxDirect?.position ?? null, threat.estimatedCombatForce);
     appendJsonlLine(this.path, JSON.stringify(sanitizeValue(record)), this.rotation);
+    return frame;
   }
 
   private toRecord(

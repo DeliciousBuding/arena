@@ -4,7 +4,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -32,7 +32,13 @@ const MANIFEST_PATH = join(CONTRACT_DIR, "rules-v0.14.json");
 const V011_MANIFEST_PATH = join(CONTRACT_DIR, "rules-v0.11.json");
 const REPO_ROOT = resolve(here, "..", "..", "..");
 const COORDINATION_ROOT = resolve(REPO_ROOT, "..");
-const MIRROR_DIR = join(COORDINATION_ROOT, "reference", "arena-hero-python", "arena_hero");
+const localMirrorCandidates = [
+  join(COORDINATION_ROOT, "reference", "arena-hero-python", "arena_hero"),
+  resolve(REPO_ROOT, "..", "..", "..", "reference", "arena-hero-python", "arena_hero"),
+];
+const MIRROR_DIR = process.env.ARENA_SDK_MIRROR_DIR
+  ? resolve(process.env.ARENA_SDK_MIRROR_DIR)
+  : localMirrorCandidates.find((candidate) => existsSync(candidate)) ?? localMirrorCandidates[0]!;
 
 test("S0 v0.11 显式回退: v0.11 manifest 加载成功且关键字段齐全", () => {
   const manifest = loadRulesManifest(V011_MANIFEST_PATH) as RulesManifestV011;

@@ -112,3 +112,38 @@ test("AllianceShadowWriter：跨 tick 累积去重 + 不可见衰减 + interval 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test("AllianceShadowWriter：onFrame 返回完整事实帧，callback 抛错仍 fail-open 写盘", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arena-shadow-frame-"));
+  const path = join(dir, "alliance-shadow.jsonl");
+  const frames: unknown[] = [];
+  try {
+    const writer = new AllianceShadowWriter({
+      tenantId: "t2",
+      processRunId: "run-frame",
+      path,
+      intervalTicks: 1,
+      nowMs: () => 123_456,
+      onFrame: (frame) => { frames.push(frame); throw new Error("observer down"); },
+    });
+    const returned = writer.onState(makeState(100, {
+      units: [{ id: "t2-u1", unitType: "WORKER" }, { id: "t2-v1", unitType: "VANGUARD" }],
+      enemies: [{ id: "enemy-v", kind: "UNIT", position: [2, 2], hp: 3, unitType: "VANGUARD" }],
+    }));
+    assert.ok(returned !== null);
+    assert.equal(returned.schema, "alliance-shadow-frame-v1");
+    assert.equal(returned.observedAtMs, 123_456);
+    assert.equal(returned.member.tenantId, "t2");
+    assert.equal(returned.member.vanguards, 1);
+    assert.equal(returned.member.localThreat, 1);
+    assert.equal(returned.historicalSightingCount, 1);
+    assert.ok(returned.allyEntityIds.includes("core-1"));
+    assert.equal(frames.length, 1);
+    // callback error is swallowed: record still exists and a later state still progresses.
+    assert.doesNotThrow(() => writer.onState(makeState(101)));
+    assert.equal(readFileSync(path, "utf8").trim().split(/\r?\n/).length, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

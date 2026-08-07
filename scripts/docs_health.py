@@ -22,10 +22,37 @@ neat-freak 快速自检的脚本化。每次改动 docs 后运行：
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _main_repo_root() -> Path:
+    """Resolve the primary checkout root when running from a secondary Git worktree."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        if proc.returncode == 0:
+            common = Path(proc.stdout.strip())
+            if not common.is_absolute():
+                common = (ROOT / common).resolve()
+            if common.name == ".git":
+                return common.parent.resolve()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return ROOT.resolve()
+
+
+MAIN_REPO_ROOT = _main_repo_root()
 DOCS = ROOT / "docs"
 SKILL_RULES = ROOT / ".agents" / "skills" / "arena-hero" / "references" / "game-rules.md"
 DOCS_RULES = DOCS / "game-rules.md"
@@ -115,10 +142,22 @@ def check_broken_links() -> list[str]:
                 if not target or target.startswith("http"):
                     continue
                 resolved = (path.parent / target).resolve()
-                if not resolved.exists():
-                    problems.append(
-                        f"{path.relative_to(ROOT)}:{lineno} 坏链接 → {target}（不存在）"
-                    )
+                if resolved.exists():
+                    continue
+                # Secondary worktree 中，`../../docs/...` 这类协调根链接会错误落到
+                # `.worktrees/docs/...`。将当前文档映射回主 clone 后再解析一次。
+                if ROOT.resolve() != MAIN_REPO_ROOT:
+                    main_copy = MAIN_REPO_ROOT / path.relative_to(ROOT)
+                    remapped = (main_copy.parent / target).resolve()
+                    if remapped.exists():
+                        continue
+                # GitHub standalone checkout 没有本地协调根；明确的 ../../docs/*
+                # 是跨仓链接，CI 无法验证存在性，不应误报成 arena-ts 内部坏链接。
+                if target.replace(chr(92), "/").startswith("../../docs/"):
+                    continue
+                problems.append(
+                    f"{path.relative_to(ROOT)}:{lineno} 坏链接 → {target}（不存在）"
+                )
     return problems
 
 
@@ -169,3 +208,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

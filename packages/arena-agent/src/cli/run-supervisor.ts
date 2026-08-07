@@ -15,6 +15,7 @@ const ENV_DEFAULTS = {
   "live-ticks": "ARENA_LIVE_TICKS",
   "max-ticks": "ARENA_MAX_TICKS",
   "startup-sync-ticks": "ARENA_STARTUP_SYNC_TICKS",
+  "alliance-shadow-interval-ticks": "ARENA_ALLIANCE_SHADOW_INTERVAL_TICKS",
   "shutdown-timeout-ms": "ARENA_SHUTDOWN_TIMEOUT_MS",
   port: "ARENA_DEBUG_PORT",
   "debug-host": "ARENA_DEBUG_HOST",
@@ -35,6 +36,8 @@ async function main(): Promise<void> {
       "max-ticks": { type: "string" },
       "startup-sync-ticks": { type: "string" },
       "record-calibration": { type: "boolean" },
+      "record-alliance-shadow": { type: "boolean" },
+      "alliance-shadow-interval-ticks": { type: "string" },
       "shutdown-timeout-ms": { type: "string" },
       port: { type: "string" },
       "debug-host": { type: "string" },
@@ -68,6 +71,17 @@ async function main(): Promise<void> {
   if (serviceMode === "live") tenantArgs.push(`--mode=${decisionMode}`, "--live");
   // S8b 旁路 Runtime-Golden：仅 live 有效（run-tenant 门禁），透传给每个 child
   if (values["record-calibration"] === true) tenantArgs.push("--record-calibration");
+  // Alliance observation shadow: default-off, read-only, no action ownership.
+  const allianceShadowEnabled = values["record-alliance-shadow"] === true
+    || /^(1|true)$/i.test(process.env.ARENA_RECORD_ALLIANCE_SHADOW ?? "");
+  if (allianceShadowEnabled) tenantArgs.push("--record-alliance-shadow");
+  const allianceShadowInterval = option("alliance-shadow-interval-ticks");
+  if (allianceShadowInterval !== undefined) {
+    const value = Number(allianceShadowInterval);
+    if (!Number.isInteger(value) || value < 1) throw new Error(`--alliance-shadow-interval-ticks has invalid value: ${allianceShadowInterval}`);
+    if (!allianceShadowEnabled) throw new Error("--alliance-shadow-interval-ticks requires --record-alliance-shadow");
+    tenantArgs.push(`--alliance-shadow-interval-ticks=${allianceShadowInterval}`);
+  }
   for (const [key, flag] of [
     ["live-ticks", "--live-ticks"],
     ["max-ticks", "--max-ticks"],
