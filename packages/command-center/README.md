@@ -29,6 +29,12 @@
   面板入场 `panelIn` 非线性动画；`prefers-reduced-motion` 全量降级。
 - **对齐**：JS `TENANT_COLORS` 与 CSS `--t1..--t4` 同步 muted 版本，跨地图/卡片一致。
 
+## 设计体系
+
+- 完整视觉规范见 **DESIGN.md**（SSOT：achromatic 黑白灰、本地 Geist 字体、
+  阴影代边框、单一白色强调、3 档圆角、字重体系、动效规格、红线）。
+- 租户卡无左侧色条：租户身份 = 名字前 8px 圆角小色块（`.tenant-name::before`）。
+
 ## 已知修复
 
 - `latestRunDir` 按 run 内最高 case tick 选 run（UUID 字典序 ≠ 时间序——旧 bug 导致
