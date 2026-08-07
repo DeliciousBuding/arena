@@ -118,8 +118,12 @@ const REINFORCE_HOME_RING = 4;
 /** 信标夺取默认最大距离（Chebyshev，以我方 Core 为圆心）：官方信标坐标全员
  *  公开，超出视为远征——信标所在区域可能被敌方埋伏（远距公敌），不值得送死。 */
 const BEACON_GRAB_DEFAULT_MAX_DIST = 80;
-/** B6 有界攻坚（竞品 bounded mission distance）：记忆敌 Core 距我方 Core 上限。 */
-const BOUNDED_RAID_DISTANCE = 40;
+/** B6 有界攻坚（竞品 bounded mission distance）：记忆敌 Core 距我方 Core 上限。
+ *  40→64（2026-08-07 对齐官方 guide ASSAULT_HOME_CORE_DISTANCE=64，Chebyshev）：
+ *  旧 40 把"65 格外的近敌基地"误判为远征送死——t2 生产实证：敌方 jerkman 核心
+ *  在 [-38,0]（Chebyshev 49，持信标、主动来犯）被判 bounded_return 全体回家、
+ *  军事永不还击。guide 语义：≤64 格由最近完整小队直接远征。 */
+const BOUNDED_RAID_DISTANCE = 64;
 /** 军事打野沿环扫描时间预算：同一八分点目标 >N tick 未到达强制换向（防障碍点卡死）。 */
 const SCAVENGE_HOLD_TICKS = 24;
 /** 敌情狩猎清扫半径（Chebyshev）：进入该范围视为"到达基地"，开始扇形清扫。 */
