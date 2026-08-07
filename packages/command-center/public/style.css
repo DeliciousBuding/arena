@@ -412,6 +412,7 @@ body::after {
   overflow: hidden;
   background: linear-gradient(180deg, rgba(7,7,7,.92), rgba(5,5,5,.96));
   border-top: 1px solid var(--border);
+  box-shadow: 0 -14px 30px rgba(0,0,0,.22); /* 与画布分隔的柔和过渡阴影 */
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   transition: height .55s cubic-bezier(.22, 1, .36, 1);
 }
@@ -428,7 +429,7 @@ body::after {
   background: #fff; border-radius: 2px; transform: scaleX(0); transform-origin: center; transition: transform .3s var(--ease);
 }
 .tabs button:hover { color: var(--text-dim); }
-.tabs button.active { color: #fff; }
+.tabs button.active { color: #fff; background: rgba(255,255,255,.05); border-radius: 6px 6px 0 0; }
 .tabs button.active::after { transform: scaleX(1); }
 #streamBody { flex: 1; overflow-y: auto; padding: 8px 14px; scroll-behavior: smooth; transition: opacity .3s ease, transform .4s var(--ease), visibility 0s linear .4s; }
 .stream-line {
