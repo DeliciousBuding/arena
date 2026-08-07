@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#050607" />
+  <meta name="description" content="Arena 本地指挥面板：4 租户全局联盟测绘地图 + 资源展示 + 实时决策流（只读）" />
+  <title>Arena 指挥面板 · Command Center</title>
+  <link rel="icon" href="/assets/game/units/core.png" type="image/png" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">
+      <img src="/assets/game/units/core.png" alt="" class="brand-icon" draggable="false" />
+      <div class="brand-text">
+        <h1>Arena 指挥面板</h1>
+        <p class="subtitle">COMMAND CENTER · 4 租户全局联盟测绘 · 只读观测</p>
+      </div>
+    </div>
+    <div class="top-status">
+      <span id="clock" class="mono dim"></span>
+      <span id="dataRoot" class="mono dim" title="数据根（只读）"></span>
+      <span id="refreshBadge" class="badge ok">已连接</span>
+      <button id="redeemBtn" class="btn primary" type="button">兑换码</button>
+    </div>
+  </header>
+
+  <main id="layout">
+    <aside id="sidebar">
+      <div id="tenantCards" class="stack"></div>
+      <section class="panel">
+        <h3 class="panel-title">图例</h3>
+        <ul id="legendList" class="legend"></ul>
+      </section>
+      <section class="panel">
+        <h3 class="panel-title">图层</h3>
+        <div id="layerToggles" class="toggles">
+          <label><input type="checkbox" data-layer="obstacle" checked /><span>障碍</span></label>
+          <label><input type="checkbox" data-layer="resource" checked /><span>资源</span></label>
+          <label><input type="checkbox" data-layer="unit" checked /><span>单位</span></label>
+          <label><input type="checkbox" data-layer="core" checked /><span>核心</span></label>
+          <label><input type="checkbox" data-layer="beacon" checked /><span>信标</span></label>
+        </div>
+      </section>
+      <section class="panel">
+        <h3 class="panel-title">租户视图</h3>
+        <div id="tenantToggles" class="toggles"></div>
+        <div class="view-switch">
+          <button id="viewGlobal" class="btn active" type="button">全局联盟</button>
+          <button id="viewFit" class="btn" type="button">适应视口</button>
+        </div>
+      </section>
+    </aside>
+
+    <section id="mapPane">
+      <canvas id="map"></canvas>
+      <div id="mapHint">拖拽平移 · 滚轮缩放 · 双击适应</div>
+      <div id="mapTooltip" hidden></div>
+      <div id="mapControls">
+        <button id="zoomIn" class="ctl" type="button" title="放大">+</button>
+        <button id="zoomOut" class="ctl" type="button" title="缩小">−</button>
+        <button id="fitBtn" class="ctl" type="button" title="适应视口">⤢</button>
+      </div>
+    </section>
+  </main>
+
+  <section id="streamPane">
+    <div id="streamTabs" class="tabs" role="tablist"></div>
+    <div id="streamBody"></div>
+  </section>
+
+  <dialog id="redeemDialog" class="shop-dialog">
+    <div id="redeemForm">
+      <div class="dialog-head">
+        <h2>官方商店 · 兑换码</h2>
+        <button type="button" id="redeemClose" class="btn ghost" aria-label="关闭">✕</button>
+      </div>
+      <div class="shop-cookie-row">
+        <input id="shopCookie" class="input" type="password" placeholder="粘贴官方商店登录 Cookie（linuxdoshop.arenahero.io）" autocomplete="off" spellcheck="false" />
+        <button type="button" id="cookieSave" class="btn">保存</button>
+        <button type="button" id="cookieTest" class="btn">连接</button>
+      </div>
+      <div id="shopAccount" class="shop-account" hidden></div>
+      <div id="shopList" class="shop-list"><div class="stream-empty">加载官方商品…</div></div>
+      <div id="redeemResult" class="redeem-result" hidden></div>
+      <div class="dialog-history">
+        <h3>我的兑换订单</h3>
+        <ul id="redeemHistory"></ul>
+      </div>
+      <p class="dialog-note">价格与库存来自官方商店（动态变化）。Cookie 仅保存在本机浏览器，请求时经内存转发，不落盘服务器。</p>
+    </div>
+  </dialog>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

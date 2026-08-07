@@ -1,0 +1,10 @@
+{
+  "name": "@arena/command-center",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Arena 本地指挥面板：4 租户全局测绘地图 + 资源展示 + 实时决策流（只读，Node 内置能力）",
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}
