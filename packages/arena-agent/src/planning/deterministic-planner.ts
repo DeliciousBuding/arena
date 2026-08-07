@@ -443,15 +443,22 @@ export function selectDeterministicCoreAction(
         }
       } else if (needMilitary) {
         // 军事单位产出：默认交替（VANGUARD ↔ RANGER）；vanguardRatio 实验配置
-        // 覆盖为按目标占比产出。资源门禁：VANGUARD 10 / RANGER 12 + reserve
-        const unitType: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
-        const cost = spawnCosts[unitType];
-        if (state.resources >= cost + spawnReserve) {
-          return {
-            action: { type: "SPAWN", unitType },
-            intent: `spawn_${unitType.toLowerCase()}_military_ratio`,
-            surgeActive: active,
-          };
+        // 覆盖为按目标占比产出。资源门禁：VANGUARD 10 / RANGER 12 + reserve。
+        // 修复（2026-08-07 t2 生产实证：3V+0R、ratio 0.5 → nextMilitaryType
+        // 要求补 RANGER 12+2=14 > res 13 → 永远产不起 → 军事冻结在 3V，恰逢
+        // 上方 jerkman 猛攻蛆威胁）：首选兵种买不起时回退到次选兵种（有兵比
+        // 按配比空等强——配比偏移是临时妥协，兵力成型后可自然回归）。
+        const preferred: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
+        const candidates: readonly ("VANGUARD" | "RANGER")[] =
+          preferred === "VANGUARD" ? ["VANGUARD", "RANGER"] : ["RANGER", "VANGUARD"];
+        for (const unitType of candidates) {
+          if (state.resources >= spawnCosts[unitType] + spawnReserve) {
+            return {
+              action: { type: "SPAWN", unitType },
+              intent: `spawn_${unitType.toLowerCase()}_military_ratio`,
+              surgeActive: active,
+            };
+          }
         }
       }
     }
