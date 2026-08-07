@@ -187,6 +187,12 @@ const PREY_WORKER_RADIUS = 12;
 /** 清剿目标与敌核心记忆的最小距离（Chebyshev）：敌核心 8 格内 = 有守军风险，
  *  不追（避免冲进敌核心射程送死）。 */
 const PREY_CORE_SAFE = 8;
+/** 挂机 WORKER 记忆回访窗口（tick，2026-08-08）："确认静止"目击后仍可追的时限——
+ *  短窗口防追已经移动/消失的幽灵目标。 */
+const PREY_STATIONARY_TTL = 12;
+/** 挂机 WORKER 记忆回访半径（Manhattan）：无敌核清扫目标时 Vanguard 对静止敌
+ *  WORKER 的追击上限——有界不跨图远征（白赚但不过度绕路）。 */
+const PREY_STATIONARY_RADIUS = 25;
 /** 军事打野沿环扫描时间预算：同一八分点目标 >N tick 未到达强制换向（防障碍点卡死）。 */
 const SCAVENGE_HOLD_TICKS = 24;
 /** 敌情狩猎清扫半径（Chebyshev）：进入该范围视为"到达基地"，开始扇形清扫。 */
@@ -1384,6 +1390,34 @@ export class SafetyPlanner {
             const direction = stepToward(unit.position, point, militaryObstacles);
             if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_hunt");
             return;
+          }
+          // 挂机 WORKER 回访（vanguardPreyWorker 扩展，2026-08-08，用户"挂机单位
+          // 赶紧打掉"）：无敌核清扫目标时，回访"确认静止"（连续目击同位置）的
+          // 敌方 WORKER——白赚断经济（无反击）。TTL/半径有界；敌核心记忆 8 格内
+          // 不追（避守军，与可见 prey 同守卫）。每 Vanguard 选自己最近的静止
+          // WORKER，天然分散清剿（不同 Vanguard 去不同目标）。
+          if (this.config.vanguardPreyWorker === true) {
+            const stationary = this.world
+              .stationaryWorkerTargets(PREY_STATIONARY_TTL)
+              .filter((w) => !enemies.some((e) => e.id === w.id));
+            const candidate = stationary
+              .map((w) => ({ w, d: manhattan(unit.position, w.position) }))
+              .filter((x) => x.d <= PREY_STATIONARY_RADIUS)
+              .sort((a, b) => a.d - b.d || a.w.id.localeCompare(b.w.id))[0];
+            if (candidate !== undefined) {
+              const nearEnemyCore = this.world.coreHuntTargets().some(
+                (t) => t.source === "CORE" && chebyshev(t.position, candidate.w.position) <= PREY_CORE_SAFE,
+              );
+              if (!nearEnemyCore) {
+                const nearest = [...state.vanguards]
+                  .sort((a, b) => manhattan(a.position, candidate.w.position) - manhattan(b.position, candidate.w.position))[0];
+                if (nearest !== undefined && nearest.id === unit.id) {
+                  const direction = stepToward(unit.position, candidate.w.position, militaryObstacles);
+                  if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_prey_worker_stationary");
+                  return;
+                }
+              }
+            }
           }
         }
         const dense = this.config.militarySearchDense === true;

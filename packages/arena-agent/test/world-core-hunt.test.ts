@@ -110,3 +110,37 @@ test("敌情狩猎：启动播种 + 更新鲜目击不覆盖 + 世界重置清�
   world.observe(makeState(50, {}));
   assert.equal(world.coreHuntTargets().length, 0, "重置清空狩猎目标");
 });
+
+test("挂机 WORKER 狩猎：连续同位置目击 → 静止目标；移动/单次/过期不算", () => {
+  const world = new World();
+  // 单次目击（无 prevPosition）→ 不算静止
+  world.observe(makeState(100, {
+    visibleEnemies: [{ id: "e-w", kind: "UNIT", position: [20, 0], hp: 2, unitType: "WORKER" }],
+  }));
+  assert.equal(world.stationaryWorkerTargets().length, 0, "单次目击不算静止");
+  // 第二次目击同位置 → 确认静止
+  world.observe(makeState(101, {
+    visibleEnemies: [{ id: "e-w", kind: "UNIT", position: [20, 0], hp: 2, unitType: "WORKER" }],
+  }));
+  const stationary = world.stationaryWorkerTargets();
+  assert.equal(stationary.length, 1, "连续同位置目击 = 静止目标");
+  assert.deepEqual(stationary[0]!.position, [20, 0]);
+  // 第三次目击移动到 [22,0] → 不再静止（位置变了）
+  world.observe(makeState(102, {
+    visibleEnemies: [{ id: "e-w", kind: "UNIT", position: [22, 0], hp: 2, unitType: "WORKER" }],
+  }));
+  assert.equal(world.stationaryWorkerTargets().length, 0, "移动后不再静止");
+  // 回到同位置且超过 TTL：tick 120 观察一次（单次，不算），tick 121 同位置再观察
+  // → 新确认静止，但用 TTL=5 在 tick 130 查询应过期
+  world.observe(makeState(120, {
+    visibleEnemies: [{ id: "e-w", kind: "UNIT", position: [20, 0], hp: 2, unitType: "WORKER" }],
+  }));
+  world.observe(makeState(121, {
+    visibleEnemies: [{ id: "e-w", kind: "UNIT", position: [20, 0], hp: 2, unitType: "WORKER" }],
+  }));
+  assert.equal(world.stationaryWorkerTargets().length, 1, "再次确认静止");
+  // tick 130 观察（worker 不在视野）→ 世界 tick 前进，worker lastSeenTick 仍 121
+  world.observe(makeState(130, { visibleEnemies: [] }));
+  assert.equal(world.stationaryWorkerTargets(5).length, 0, "TTL=5 已过期（age 9 > 5）");
+  assert.equal(world.stationaryWorkerTargets(12).length, 1, "TTL=12 仍有效（age 9 ≤ 12）");
+});

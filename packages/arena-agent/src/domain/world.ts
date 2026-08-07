@@ -653,6 +653,27 @@ export class World {
       .sort((a, b) => b.lastSeenTick - a.lastSeenTick || a.id.localeCompare(b.id));
   }
 
+  /** 挂机 WORKER 狩猎目标（2026-08-08，用户"挂机/落单单位赶紧打掉"）：EnemyMemory
+   *  中"确认静止"（上一可见位置 === 当前位置，即连续两次目击同位置）的敌方
+   *  WORKER，短 TTL 内存——白赚断经济目标（WORKER 无攻击力、无反击）。与可见
+   *  prey 互补：可见走 vanguardPreyWorker（12 格），短暂失明后的静止 WORKER 由
+   *  这里按记忆回访（半径/TTL 有界，防远征）。单次目击（无 prevPosition）不算
+   *  静止；敌核心格上的 WORKER 由调用方 nearEnemyCore 守卫排除。 */
+  stationaryWorkerTargets(maxAgeTicks = 12): readonly { id: string; position: Position; lastSeenTick: number }[] {
+    return [...this.enemyMemory.values()]
+      .filter(
+        (memory) =>
+          memory.kind === "UNIT" &&
+          memory.unitType === "WORKER" &&
+          memory.prevPosition !== undefined &&
+          memory.prevPosition[0] === memory.position[0] &&
+          memory.prevPosition[1] === memory.position[1] &&
+          this.tick - memory.lastSeenTick <= maxAgeTicks,
+      )
+      .sort((a, b) => b.lastSeenTick - a.lastSeenTick || a.id.localeCompare(b.id))
+      .map((memory) => ({ id: memory.id, position: memory.position, lastSeenTick: memory.lastSeenTick }));
+  }
+
   /** 敌情狩猎目标（排序：CORE 目击优先 → 新鲜度 → 坐标 tie-break）。
    *  CORE 目击 sticky（maxAge = CORE_HUNT_STICKY_TICKS）；WORKER_INFER
    *  短窗口（CORE_HUNT_WORKER_INFER_TICKS）——推断目标会漂移。 */
