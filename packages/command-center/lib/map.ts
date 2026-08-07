@@ -112,7 +112,10 @@ export function loadMergedMap(): MergedMap {
         }
       }
     }
-    // 组装：地形在下，动态在上（同格冲突按优先级 obstacle < resource < unit < core）
+    // 组装：地形在下，动态在上。
+    // 地形（障碍/资源）按格去重（priority：obstacle < resource，一格只能一种）；
+    // 单位/核心按对象 id 各自保留——同租户多单位可同格（如 worker 叠 core），
+    // 此前按格去重会吞掉同格单位，表现为"单位数少于实际/时有时无"。
     const byCell = new Map<string, MapCell & { prio: number }>();
     const put = (c: Omit<MapCell, "tenant" | "fresh">, prio: number): void => {
       const key = cellKey(c.x, c.y);
@@ -121,9 +124,13 @@ export function loadMergedMap(): MergedMap {
       byCell.set(key, { ...c, tenant, fresh: c.tick === latestTick, prio });
     };
     for (const c of terrain.values()) put({ ...c }, c.type === "obstacle" ? 1 : 2);
-    for (const c of unitById.values()) put({ ...c }, 3);
-    for (const c of coreById.values()) put({ ...c }, 4);
-    for (const { prio, ...c } of byCell.values()) cells.set(cellKey(c.x, c.y), c);
+    // 全局合并键 = `tenant:kind:id`（2026-08-08 修复）：
+    //  - 地形/单位/核心都带上租户，多租户同格各自保留（此前按 `x,y` 去重，
+    //    后处理的租户整格覆盖前面租户，表现为"某租户单位看不到"）；
+    //  - 单位/核心再带对象 id，同租户同格多对象不互吞。
+    for (const { prio, ...c } of byCell.values()) cells.set(`${tenant}:${c.type}:${c.x},${c.y}`, c);
+    for (const c of unitById.values()) cells.set(`${tenant}:unit:${c.id}`, { ...c, tenant, fresh: c.tick === latestTick });
+    for (const c of coreById.values()) cells.set(`${tenant}:core:${c.id}`, { ...c, tenant, fresh: c.tick === latestTick });
     // 最新 case 的冠军信标（用于全局测绘 beacon 图层）
     let beacon: MergedMap["tenants"][number]["beacon"] = null;
     if (caseFiles.length > 0) {

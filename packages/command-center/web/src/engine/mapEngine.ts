@@ -339,7 +339,9 @@ async function poll() {
     emit('intel', state.intel);
     state.bounds = map.bounds ?? null;
     state.cellIndex = new Map();
-    for (const c of state.cells) state.cellIndex.set(`${c.x},${c.y}`, c);
+    // 索引键 = `tenant:x,y`（与后端 loadMergedMap 对齐，2026-08-08）：
+    // 多租户同格各自保留，查目标格时带上当前租户，避免误判他租户的地形/单位。
+    for (const c of state.cells) state.cellIndex.set(`${c.tenant}:${c.x},${c.y}`, c);
     // 静态层脏检查：仅当障碍/资源测绘变化才重建底图缓存（单位移动不触发重建）
     let sig = 0, n = 0;
     for (const c of state.cells) {
@@ -1077,8 +1079,8 @@ function drawLiveTrails(s: any) {
     const pts = trail.slice(-TRAIL_POINTS);
     const last = pts[pts.length - 1];
     // 与当前 live 位置一致才画（避免回放旧 run 轨迹错位）
-    const liveCell = state.cellIndex.get(`${last.x},${last.y}`);
-    if (liveCell && liveCell.tenant !== state.soloTenant) continue;
+    const liveCell = state.cellIndex.get(`${state.soloTenant}:${last.x},${last.y}`);
+    if (!liveCell) continue;
     const scr = pts.map((t) => project(t.x, t.y));
     ctx.save();
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -3584,7 +3586,7 @@ function tactShowFeature(cell: any, px: any, py: any) {
         tac.routePreview = null;
         tac.mode = null;
         // 意图式指挥：点矿 = 下达「采矿任务」（到达自动挖、满仓回仓）；点空地 = 移动任务
-        const key = wx + ',' + wy;
+        const key = `${tac.selected.tenant}:${wx},${wy}`;
         const cell = state.cellIndex.get(key);
         const isResource = (cell && cell.type === 'resource') ||
           (world.state?.objects ?? []).some((o) => o.kind === 'RESOURCE' && (o.positions ?? []).some((p) => p[0] === wx && p[1] === wy));
@@ -3593,7 +3595,7 @@ function tactShowFeature(cell: any, px: any, py: any) {
         tactRenderActionDialog(); tactRenderInspect(); draw();
       } else {
         // 目标不可达（路径被堵/在障碍中）——官方 routeBlocked/routeUnknown 语义
-        const blockedCell = state.cellIndex.get(wx + ',' + wy);
+        const blockedCell = state.cellIndex.get(`${tac.selected.tenant}:${wx},${wy}`);
         const onObstacle = blockedCell && blockedCell.type === 'obstacle' || (world.state && world.state.objects || []).some((o) => o.kind === 'OBSTACLE' && (o.positions || []).some((p) => p[0] === wx && p[1] === wy));
         var msg = onObstacle ? ('目标 [' + wx + ', ' + wy + '] 是障碍，无法到达') : ('目标 [' + wx + ', ' + wy + '] 不可达（路径被堵）');
         toast(msg, 'warn');
