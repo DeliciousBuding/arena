@@ -18,17 +18,19 @@ const DEFAULT_DATA_ROOT = resolve(import.meta.dirname, "..", "..", "..", "data")
 function parseArgs(argv: readonly string[]): { dataRoot: string; tenants: string[]; latestOnly: boolean } {
   let dataRoot = DEFAULT_DATA_ROOT;
   let latestOnly = false;
+  let force = false;
   let tenants: string[] = [];
   for (const arg of argv) {
     if (arg.startsWith("--data-root=")) dataRoot = resolve(arg.slice("--data-root=".length));
     else if (arg === "--latest-only") latestOnly = true;
     else if (arg.startsWith("--tenants=")) tenants = arg.slice("--tenants=".length).split(",").filter(Boolean);
     else if (arg === "--all") tenants = ["t1", "t2", "t3", "t4"];
+    else if (arg === "--force") force = true;
   }
-  return { dataRoot, tenants, latestOnly };
+  return { dataRoot, tenants, latestOnly, force };
 }
 
-const { dataRoot, tenants, latestOnly } = parseArgs(process.argv.slice(2));
+const { dataRoot, tenants, latestOnly, force } = parseArgs(process.argv.slice(2));
 if (tenants.length === 0) {
   console.error("用法：npm run survey:sync -- --tenants=t1,t2,t3,t4 [--latest-only]");
   process.exit(2);
@@ -36,7 +38,7 @@ if (tenants.length === 0) {
 
 const lines: string[] = [];
 for (const tenant of tenants) {
-  const summary = syncTenantSurvey(dataRoot, tenant, { latestRunOnly: latestOnly });
+  const summary = syncTenantSurvey(dataRoot, tenant, { latestRunOnly: latestOnly, force });
   const line =
     `[survey] ${tenant}: runs=${summary.runs} cases=${summary.cases} ` +
     `resources=${summary.resources} obstacles=${summary.obstacles} coreHunts=${summary.coreHunts}`;
@@ -55,5 +57,6 @@ try {
 } catch {
   // 日志写失败不影响同步结果
 }
+
 
 

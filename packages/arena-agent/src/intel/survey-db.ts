@@ -104,7 +104,46 @@ CREATE TABLE IF NOT EXISTS sync_meta (
 );
 CREATE INDEX IF NOT EXISTS idx_resources_last_seen ON resources(last_seen_tick);
 CREATE INDEX IF NOT EXISTS idx_core_hunts_last_seen ON core_hunts(last_seen_tick);
-`;
+
+-- 矿物生命周期事件（2026-08-08）：矿格 × tick 的采集/失败序列
+CREATE TABLE IF NOT EXISTS resource_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cell TEXT NOT NULL,
+  tick INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  reason_code TEXT,
+  amount INTEGER,
+  actor_id TEXT,
+  UNIQUE(cell, tick, event_type, actor_id)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_events_cell ON resource_events(cell, tick);
+
+-- 单位生命周期（2026-08-08）：出生/死亡/最近目击
+CREATE TABLE IF NOT EXISTS unit_lifecycle (
+  unit_id TEXT PRIMARY KEY,
+  unit_type TEXT NOT NULL,
+  birth_tick INTEGER,
+  birth_pos TEXT,
+  death_tick INTEGER,
+  death_pos TEXT,
+  death_reason TEXT,
+  last_seen_tick INTEGER NOT NULL,
+  last_seen_pos TEXT,
+  current_state TEXT NOT NULL DEFAULT 'alive'
+);
+CREATE INDEX IF NOT EXISTS idx_unit_lifecycle_last_seen ON unit_lifecycle(last_seen_tick);
+CREATE INDEX IF NOT EXISTS idx_unit_lifecycle_type ON unit_lifecycle(unit_type, current_state);
+
+-- 核心消费记账（2026-08-08）：spawn/heal/repair 每笔支出
+CREATE TABLE IF NOT EXISTS core_spends (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  tick INTEGER NOT NULL,
+  amount INTEGER NOT NULL,
+  unit_type TEXT,
+  unit_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_core_spends_kind ON core_spends(kind, tick);`;
 
 /** 打开（或创建）某租户的测绘库。write=true 时确保目录存在。 */
 export function openSurveyDb(dataRoot: string, tenant: string, write = false): DatabaseSync {
@@ -292,3 +331,180 @@ export function markResourceState(
 export { dirname };
 
 
+
+
+// ---------- 生命周期（2026-08-08：单位/矿物标注 + 消费记账） ----------
+
+/** 矿物采集事件（HARVEST_SUCCEEDED/FAILED）追加。 */
+export function recordResourceEvent(
+  db: DatabaseSync,
+  cell: string,
+  tick: number,
+  eventType: string,
+  reasonCode: string | null,
+  amount: number | null,
+  actorId: string | null,
+): void {
+  db.prepare(`
+    INSERT OR IGNORE INTO resource_events (cell, tick, event_type, reason_code, amount, actor_id)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(cell, tick, eventType, reasonCode, amount, actorId);
+}
+
+/** 单位出生（CORE_SPAWN_SUCCEEDED target_id）。 */
+export function recordUnitBirth(
+  db: DatabaseSync,
+  unitId: string,
+  unitType: string,
+  tick: number,
+  pos: { x: number; y: number } | null,
+): void {
+  db.prepare(`
+    INSERT INTO unit_lifecycle (unit_id, unit_type, birth_tick, birth_pos, last_seen_tick, last_seen_pos, current_state)
+    VALUES (?, ?, ?, ?, ?, ?, 'alive')
+    ON CONFLICT(unit_id) DO UPDATE SET
+      birth_tick = COALESCE(unit_lifecycle.birth_tick, excluded.birth_tick),
+      birth_pos = COALESCE(unit_lifecycle.birth_pos, excluded.birth_pos),
+      last_seen_tick = MAX(unit_lifecycle.last_seen_tick, excluded.last_seen_tick),
+      current_state = 'alive'
+  `).run(unitId, unitType, tick, pos === null ? null : `${pos.x},${pos.y}`, tick, pos === null ? null : `${pos.x},${pos.y}`);
+}
+
+/** 单位死亡（UNIT_DESTROYED actor_id）。 */
+export function recordUnitDeath(
+  db: DatabaseSync,
+  unitId: string,
+  tick: number,
+  pos: { x: number; y: number } | null,
+): void {
+  db.prepare(`
+    UPDATE unit_lifecycle SET death_tick = ?, death_pos = ?, death_reason = 'DESTROYED', current_state = 'dead'
+    WHERE unit_id = ? AND (death_tick IS NULL OR death_tick < ?)
+  `).run(tick, pos === null ? null : `${pos.x},${pos.y}`, unitId, tick);
+}
+
+/** 单位目击刷新（来自 case before.state.objects UNIT）。 */
+export function touchUnitSeen(
+  db: DatabaseSync,
+  unitId: string,
+  unitType: string,
+  tick: number,
+  pos: { x: number; y: number },
+): void {
+  const key = `${pos.x},${pos.y}`;
+  db.prepare(`
+    INSERT INTO unit_lifecycle (unit_id, unit_type, last_seen_tick, last_seen_pos, current_state)
+    VALUES (?, ?, ?, ?, 'alive')
+    ON CONFLICT(unit_id) DO UPDATE SET
+      unit_type = excluded.unit_type,
+      last_seen_tick = MAX(unit_lifecycle.last_seen_tick, excluded.last_seen_tick),
+      last_seen_pos = excluded.last_seen_pos
+  `).run(unitId, unitType, tick, key);
+}
+
+/** 核心消费记账（spawn/heal/repair 成功事件的 cost）。 */
+export function recordCoreSpend(
+  db: DatabaseSync,
+  kind: string,
+  tick: number,
+  amount: number,
+  unitType: string | null,
+  unitId: string | null,
+): void {
+  db.prepare(`
+    INSERT INTO core_spends (kind, tick, amount, unit_type, unit_id)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(kind, tick, amount, unitType, unitId);
+}
+
+export interface ResourceLifecycleSummary {
+  readonly cell: string;
+  readonly x: number;
+  readonly y: number;
+  readonly state: SurveyResourceState;
+  readonly firstSeenTick: number;
+  readonly lastSeenTick: number;
+  readonly seenCount: number;
+  readonly harvestCount: number;
+  readonly lastHarvestTick: number | null;
+  readonly failCount: number;
+}
+
+/** 矿生命周期摘要（资源表 + resource_events 聚合）。 */
+export function resourceLifecycle(db: DatabaseSync): readonly ResourceLifecycleSummary[] {
+  const rows = db.prepare(`
+    SELECT r.cell, r.x, r.y, r.state, r.first_seen_tick, r.last_seen_tick, r.seen_count,
+      (SELECT COUNT(*) FROM resource_events e WHERE e.cell = r.cell AND e.event_type = 'HARVEST_SUCCEEDED') AS harvest_count,
+      (SELECT MAX(e.tick) FROM resource_events e WHERE e.cell = r.cell AND e.event_type = 'HARVEST_SUCCEEDED') AS last_harvest_tick,
+      (SELECT COUNT(*) FROM resource_events e WHERE e.cell = r.cell AND e.event_type = 'HARVEST_FAILED') AS fail_count
+    FROM resources r
+  `).all() as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    cell: String(r.cell),
+    x: Number(r.x),
+    y: Number(r.y),
+    state: r.state as SurveyResourceState,
+    firstSeenTick: Number(r.first_seen_tick),
+    lastSeenTick: Number(r.last_seen_tick),
+    seenCount: Number(r.seen_count),
+    harvestCount: Number(r.harvest_count),
+    lastHarvestTick: r.last_harvest_tick === null ? null : Number(r.last_harvest_tick),
+    failCount: Number(r.fail_count),
+  }));
+}
+
+export interface UnitLifecycleRow {
+  readonly unitId: string;
+  readonly unitType: string;
+  readonly birthTick: number | null;
+  readonly deathTick: number | null;
+  readonly currentState: "alive" | "dead";
+  readonly lastSeenTick: number;
+}
+
+/** 单位生命周期列表（按类型/状态过滤）。 */
+export function unitLifecycleRows(
+  db: DatabaseSync,
+  filter: { type?: string; state?: "alive" | "dead" } = {},
+): readonly UnitLifecycleRow[] {
+  const cond: string[] = [];
+  const params: (string)[] = [];
+  if (filter.type !== undefined) { cond.push("unit_type = ?"); params.push(filter.type); }
+  if (filter.state !== undefined) { cond.push("current_state = ?"); params.push(filter.state); }
+  const where = cond.length > 0 ? `WHERE ${cond.join(" AND ")}` : "";
+  const rows = db.prepare(
+    `SELECT unit_id, unit_type, birth_tick, death_tick, current_state, last_seen_tick
+     FROM unit_lifecycle ${where} ORDER BY last_seen_tick DESC LIMIT 2000`,
+  ).all(...params) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    unitId: String(r.unit_id),
+    unitType: String(r.unit_type),
+    birthTick: r.birth_tick === null ? null : Number(r.birth_tick),
+    deathTick: r.death_tick === null ? null : Number(r.death_tick),
+    currentState: r.current_state as "alive" | "dead",
+    lastSeenTick: Number(r.last_seen_tick),
+  }));
+}
+
+export interface CoreSpendSummary {
+  readonly kind: string;
+  readonly count: number;
+  readonly total: number;
+  readonly minTick: number;
+  readonly maxTick: number;
+}
+
+/** 核心消费汇总（按 kind）。 */
+export function coreSpendsSummary(db: DatabaseSync): readonly CoreSpendSummary[] {
+  const rows = db.prepare(`
+    SELECT kind, COUNT(*) AS count, SUM(amount) AS total, MIN(tick) AS min_tick, MAX(tick) AS max_tick
+    FROM core_spends GROUP BY kind ORDER BY total DESC
+  `).all() as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    kind: String(r.kind),
+    count: Number(r.count),
+    total: Number(r.total),
+    minTick: Number(r.min_tick),
+    maxTick: Number(r.max_tick),
+  }));
+}
