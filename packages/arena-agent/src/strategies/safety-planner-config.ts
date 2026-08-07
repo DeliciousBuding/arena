@@ -277,6 +277,15 @@ export interface SafetyPlannerConfig {
    * 对手身份，零回归）。
    */
   readonly threatAdaptiveDefense?: boolean;
+  /**
+   * 严格占优攻坚（2026-08-07，guide v3.0 overmatch 对照）：攻坚成型门槛在
+   * threatAdaptive 基础上再按**目标敌 Core 实测守军**动态抬高——门槛 =
+   * max(基础/威胁自适应门槛, 守军估计 + 1)。存活兵力严格大于守军估计才
+   * 压上（v3.0 "只选择使存活兵力严格多于守军估计的最少完整巡逻队"）；
+   * 守军增援 → 门槛同步抬高 → 兵力不足自动蓄势等待，不再单薄送死。
+   * 默认 false = 历史行为（静态门槛，零回归）。
+   */
+  readonly assaultOvermatch?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

@@ -24,6 +24,11 @@ const CORE_HUNT_WORKER_INFER_TICKS = 400;
 const CORE_HUNT_INFER_EXTEND = 8;
 /** 敌情狩猎：敌 Worker 单次目击（无轨迹）时"远离最近我方单位"的猜测距离（格）。 */
 const CORE_HUNT_SINGLE_EXTEND = 8;
+/** 敌战斗单位归属敌 Core 的最大距离（assault-overmatch-v1，Chebyshev）：
+ *  可见 Vanguard/Ranger 距某已知敌 Core ≤ 该值 = 该基地守军（v3.0
+ *  ASSAULT_CORE_FORCE_RADIUS=16 放宽到 30——记忆目标可能滞后于实际位置，
+ *  单位在视野边缘游走仍应计入守军）。 */
+const ENEMY_CORE_ASSIGN_RADIUS = 30;
 /** 敌情狩猎：单次目击猜测的 8 方位候选（与巡逻探索同构，覆盖全向）。 */
 const HUNT_AWAY_DELTAS: readonly (readonly [number, number])[] = [
   [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1],
@@ -84,6 +89,19 @@ export interface CoreHuntTarget {
   readonly owner?: string | null;
 }
 
+/** 敌 Core 兵力记忆（2026-08-07，assault-overmatch-v1）：可见敌战斗单位
+ *  (Vanguard/Ranger) 按最近已知敌 Core 分配——按 Core 估计守军兵力，供攻坚
+ *  "严格占优"决策（存活兵力 > 守军估计才压上；守军增援则提高门槛/蓄势）。
+ *  与 coreHuntMemory 同 key（cellKey of Core position）。单位按 ID 去重。 */
+export interface EnemyCoreForce {
+  readonly position: Position;
+  readonly vanguards: ReadonlySet<string>;
+  readonly rangers: ReadonlySet<string>;
+  readonly lastSeenTick: number;
+  /** cellKey(敌 Core 位置)（与 coreHuntMemory 同 key）。 */
+  readonly key: string;
+}
+
 export interface UnitMemory {
   workerMode: WorkerMode;
   harvestTarget: Position | null;
@@ -134,6 +152,13 @@ export class World {
   /** 敌情狩猎记忆（sticky）：敌 Core 基地候选（绝对坐标——C2 RECOVERY 不清，
    *  属战略 intel 而非相对 Core 的战场记忆）。 */
   private readonly coreHuntMemory = new Map<string, CoreHuntTarget>();
+  /** 敌 Core 兵力记忆（assault-overmatch-v1）：key = cellKey(敌 Core 位置)。 */
+  private readonly enemyCoreForceRecords = new Map<string, {
+    position: Position;
+    vanguards: Set<string>;
+    rangers: Set<string>;
+    lastSeenTick: number;
+  }>();
   /** 世界重置计数（tick 回退检测触发；决策层 telemetry/测试可读）。 */
   worldResetCount = 0;
   /** 最近一次世界重置发生时的 tick（从未重置 = null）。 */
@@ -276,6 +301,23 @@ export class World {
           source: "CORE",
           owner: enemy.ownerUsername ?? null,
         });
+      } else if (enemy.unitType === "VANGUARD" || enemy.unitType === "RANGER") {
+        // 敌 Core 兵力记忆（assault-overmatch-v1）：战斗单位分配给最近已知
+        // 敌 Core（CORE 目击优先）——按 Core 估计守军兵力供严格占优攻坚。
+        const assigned = this.assignEnemyCombatUnit(enemy, state.tick);
+        if (assigned !== null) {
+          const key = cellKey(assigned.position);
+          const record = this.enemyCoreForceRecords.get(key) ?? {
+            position: assigned.position,
+            vanguards: new Set<string>(),
+            rangers: new Set<string>(),
+            lastSeenTick: 0,
+          };
+          if (enemy.unitType === "VANGUARD") record.vanguards.add(enemy.id);
+          else record.rangers.add(enemy.id);
+          record.lastSeenTick = state.tick;
+          this.enemyCoreForceRecords.set(key, record);
+        }
       } else if (enemy.unitType === "WORKER") {
         for (const anchor of this.inferWorkerCoreAnchors(enemy, state)) {
           const key = cellKey(anchor);
@@ -424,6 +466,40 @@ export class World {
       }
     }
     return seeded;
+  }
+
+  /** 敌战斗单位 → 归属敌 Core（assault-overmatch-v1）：取最近已知敌 Core
+   *  （CORE 目击优先，同 coreHuntTargets 排序），距其 ≤ ENEMY_CORE_ASSIGN_RADIUS
+   *  才归属（防远征单位误计入无关基地）。无合适目标返回 null。 */
+  private assignEnemyCombatUnit(enemy: VisibleEntity, tick: number): CoreHuntTarget | null {
+    const target = this.coreHuntTargets().find(
+      (t) => t.source === "CORE" && chebyshev(enemy.position, t.position) <= ENEMY_CORE_ASSIGN_RADIUS,
+    );
+    if (target === undefined) return null;
+    return target;
+  }
+
+  /** 敌 Core 兵力记忆（assault-overmatch-v1）：返回每个已知敌 Core 的守军
+   *  估计（Vanguard/Ranger 数量，按 ID 去重），过滤 maxAge 内新鲜度。
+   *  排序：CORE 目击优先 → 新鲜度（与 coreHuntTargets 同口径）。 */
+  enemyCoreForces(maxAge = 12): readonly EnemyCoreForce[] {
+    const out: EnemyCoreForce[] = [];
+    for (const [key, record] of this.enemyCoreForceRecords) {
+      if (this.tick - record.lastSeenTick > maxAge) continue;
+      out.push({
+        position: record.position,
+        vanguards: new Set(record.vanguards),
+        rangers: new Set(record.rangers),
+        lastSeenTick: record.lastSeenTick,
+        key,
+      });
+    }
+    out.sort((a, b) => {
+      const pa = a.key && this.coreHuntMemory.get(a.key)?.source === "CORE" ? 1 : 0;
+      const pb = b.key && this.coreHuntMemory.get(b.key)?.source === "CORE" ? 1 : 0;
+      return pb - pa || b.lastSeenTick - a.lastSeenTick || a.position[0] - b.position[0] || a.position[1] - b.position[1];
+    });
+    return out;
   }
 
   /** 敌 Worker 目击 → 基地候选锚点（竞品 "worker trajectory 推断 Core 方向"）：
