@@ -12,7 +12,7 @@
  */
 
 import { createServer } from "node:http";
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -729,6 +729,49 @@ function loadLeaderboardIntel() {
   }
 }
 
+// ---------- 人类最高控制权：指挥指令存储（数据层，tenant 主循环提交前合并） ----------
+const WEB_DIR = join(HERE, "web", "dist"); // React 构建产物（vite build --base=/app/）
+const humanCommandsDir = () => join(DATA_ROOT, "runtime", "human-commands");
+const EMPTY_STORE = { version: 1, mode: "override", commands: [], goals: [], updatedAt: null };
+function readHumanStore(tenant) {
+  const file = join(humanCommandsDir(), `${tenant}.json`);
+  if (!existsSync(file)) return { ...EMPTY_STORE, tenant };
+  try {
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    return {
+      version: Number(raw.version ?? 1),
+      mode: raw.mode === "disabled" ? "disabled" : "override",
+      commands: Array.isArray(raw.commands) ? raw.commands : [],
+      goals: Array.isArray(raw.goals) ? raw.goals : [],
+      updatedAt: raw.updatedAt ?? null,
+      tenant,
+    };
+  } catch {
+    return { ...EMPTY_STORE, tenant };
+  }
+}
+function writeHumanStore(tenant, store) {
+  const dir = humanCommandsDir();
+  mkdirSync(dir, { recursive: true });
+  const out = { version: 1, mode: store.mode, commands: store.commands, goals: store.goals, updatedAt: new Date().toISOString() };
+  writeFileSync(join(dir, `${tenant}.json`), JSON.stringify(out, null, 2));
+  return out;
+}
+const VALID_ACTION_TYPES = new Set([
+  "WAIT", "MOVE", "HARVEST", "DEPOSIT", "SWEEP", "SHOOT", "PICKUP_BEACON", "DROP_BEACON",
+  "SELF_DESTRUCT", "HEAL", "REPAIR_SHIELD", "SPAWN", "START_MOVE", "CANCEL_MOVE",
+]);
+async function readBody(req) {
+  let body = "";
+  for await (const chunk of req) body += chunk;
+  return body;
+}
+async function parseBody(req) {
+  try { return JSON.parse(await readBody(req) || "{}"); }
+  catch { return {}; }
+}
+function validTenant(t) { return TENANTS.includes(t); }
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
   const pathname = url.pathname;
@@ -792,6 +835,82 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/intel") {
       return sendJson(res, loadAllianceIntel());
     }
+    // ---------- 人类指挥：指令/意图/模式（数据层，仅本机可写） ----------
+    if (pathname === "/api/commands" && req.method === "GET") {
+      const tenant = url.searchParams.get("tenant") ?? "";
+      if (!validTenant(tenant)) return sendJson(res, { error: "非法租户" }, 400);
+      return sendJson(res, readHumanStore(tenant));
+    }
+    if (pathname === "/api/command" && req.method === "POST") {
+      const b = await parseBody(req);
+      if (!validTenant(b.tenant)) return sendJson(res, { error: "非法租户" }, 400);
+      if (typeof b.unitId !== "string" || !b.unitId) return sendJson(res, { error: "缺少 unitId" }, 400);
+      if (!b.action || typeof b.action !== "object" || !VALID_ACTION_TYPES.has(String(b.action.type ?? ""))) {
+        return sendJson(res, { error: "非法动作类型" }, 400);
+      }
+      const store = readHumanStore(b.tenant);
+      const cmd = {
+        id: `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        unitId: b.unitId,
+        action: b.action,
+        note: typeof b.note === "string" ? b.note : undefined,
+        createdAt: new Date().toISOString(),
+      };
+      store.commands = store.commands.filter((c) => c.unitId !== b.unitId).concat(cmd);
+      const out = writeHumanStore(b.tenant, store);
+      console.log(`[human-cmd] ${b.tenant} ${b.unitId} ${JSON.stringify(b.action)}`);
+      return sendJson(res, { ok: true, command: cmd, mode: out.mode, total: out.commands.length });
+    }
+    if (pathname === "/api/command/goal" && req.method === "POST") {
+      const b = await parseBody(req);
+      if (!validTenant(b.tenant)) return sendJson(res, { error: "非法租户" }, 400);
+      if (typeof b.unitId !== "string" || !b.unitId) return sendJson(res, { error: "缺少 unitId" }, 400);
+      if (b.kind !== "mine" && b.kind !== "goto") return sendJson(res, { error: "非法意图类型" }, 400);
+      if (!Array.isArray(b.target) || b.target.length !== 2 || !Number.isInteger(b.target[0]) || !Number.isInteger(b.target[1])) {
+        return sendJson(res, { error: "非法目标坐标" }, 400);
+      }
+      const store = readHumanStore(b.tenant);
+      const goal = {
+        id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        unitId: b.unitId,
+        kind: b.kind,
+        target: [b.target[0], b.target[1]],
+        note: typeof b.note === "string" ? b.note : undefined,
+        createdAt: new Date().toISOString(),
+      };
+      store.goals = store.goals.filter((g) => g.unitId !== b.unitId).concat(goal);
+      const out = writeHumanStore(b.tenant, store);
+      console.log(`[human-goal] ${b.tenant} ${b.unitId} ${b.kind} [${b.target[0]}, ${b.target[1]}]`);
+      return sendJson(res, { ok: true, goal, mode: out.mode, total: out.goals.length });
+    }
+    if (pathname === "/api/command" && req.method === "DELETE") {
+      const b = await parseBody(req);
+      if (!validTenant(b.tenant)) return sendJson(res, { error: "非法租户" }, 400);
+      if (typeof b.unitId !== "string" || !b.unitId) return sendJson(res, { error: "缺少 unitId" }, 400);
+      const scope = b.scope === "goal" ? "goal" : b.scope === "action" ? "action" : "all";
+      const store = readHumanStore(b.tenant);
+      if (scope === "all" || scope === "action") store.commands = store.commands.filter((c) => c.unitId !== b.unitId);
+      if (scope === "all" || scope === "goal") store.goals = store.goals.filter((g) => g.unitId !== b.unitId);
+      const out = writeHumanStore(b.tenant, store);
+      return sendJson(res, { ok: true, mode: out.mode, total: out.commands.length + out.goals.length });
+    }
+    if (pathname === "/api/command/clear" && req.method === "POST") {
+      const b = await parseBody(req);
+      if (!validTenant(b.tenant)) return sendJson(res, { error: "非法租户" }, 400);
+      const store = readHumanStore(b.tenant);
+      store.commands = []; store.goals = [];
+      const out = writeHumanStore(b.tenant, store);
+      return sendJson(res, { ok: true, mode: out.mode, total: 0 });
+    }
+    if (pathname === "/api/command/mode" && req.method === "POST") {
+      const b = await parseBody(req);
+      if (!validTenant(b.tenant)) return sendJson(res, { error: "非法租户" }, 400);
+      const mode = b.mode === "disabled" ? "disabled" : "override";
+      const store = readHumanStore(b.tenant);
+      store.mode = mode;
+      writeHumanStore(b.tenant, store);
+      return sendJson(res, { ok: true, mode, message: mode === "override" ? "人类指挥已启用（手操优先于 agent）" : "人类指挥已停用（交还 agent 全权）" });
+    }
     if (pathname === "/api/shop" && req.method === "GET") {
       const data = await shopProducts();
       return sendJson(res, { generatedAt: new Date().toISOString(), ...data });
@@ -835,6 +954,19 @@ const server = createServer(async (req, res) => {
         receivedAt: new Date().toISOString(),
         historyLength: redeemLog.length,
       });
+    }
+    // React 前端（web/dist，vite build --base=/app/）：SPA 回退 index.html
+    if ((pathname === "/app" || pathname.startsWith("/app/")) && existsSync(join(WEB_DIR, "index.html"))) {
+      const rel = pathname === "/app" ? "/index.html" : pathname.slice(4);
+      const file = join(WEB_DIR, rel);
+      if (existsSync(file) && statSync(file).isFile()) {
+        const ext = file.slice(file.lastIndexOf("."));
+        res.writeHead(200, { "content-type": MIME[ext] ?? "application/octet-stream" });
+        return res.end(readFileSync(file));
+      }
+      const body = readFileSync(join(WEB_DIR, "index.html"));
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      return res.end(body);
     }
     if (pathname === "/") {
       const body = readFileSync(join(PUBLIC_DIR, "index.html"));

@@ -128,3 +128,33 @@ command-center/
 ## 门禁
 
 本包**不加入** arena-ts 根 workspaces，`npm run check` / `npm test` / `npm run schema:check` 不受影响。
+
+## 启动（随用随起，无计划任务/管理员）
+
+- npm start                 前台：node server.mjs（终端可见日志）
+- node scripts/start-cc.mjs 前台：日志同时落 logs/cc-server.log
+- node scripts/start-cc.mjs --hidden 后台：无终端窗口，日志落 logs/cc-server.log
+- node scripts/start-cc.mjs --stop   停止上次 --hidden 实例
+
+访问：http://127.0.0.1:8787/ （legacy 面板） · http://127.0.0.1:8787/app/ （React 前端构建产物）
+
+## React + Vite + Bun/Node 工具链（web/）
+
+- cd web 之后 bun install
+- bun run dev        vite dev :5173，/api 代理到 8787
+- bun run build      vite build --base=/app/ 到 web/dist（server 以 /app/* 托管）
+- bun run typecheck  tsc --noEmit
+
+架构：React chrome（顶栏/侧栏/决策流/对话框） + src/engine/mapEngine.js（由 public/app.js 移植的画布引擎，
+React 挂载到 main#layout，引擎管理地图/战术/回放/覆盖层）。视觉单一源 = public/style.css（React 直接 import，不复制）。
+
+## 人类最高控制权（真实指挥，Manual 优先于 Agent 优先于 Safety）
+
+- 前端（/app）：战术动作框按钮 = 真实命令（非演练）。点工人-点移动-点矿 = 下达采矿任务（到达自动采集、
+  满仓自动回仓、目标采空自动交还 agent）；点空地 = 移动任务；SHOOT/SWEEP/SPAWN/采集/回仓等 = 一键动作直提。
+- 后端：server.mjs 提供 /api/command（一键动作）、/api/command/goal（持续意图）、/api/commands（读取）、
+  /api/command DELETE（按单位清除）、/api/command/clear（清空租户）、/api/command/mode（开关人类接管）。
+  指令写入 data/runtime/human-commands/<tenant>.json（数据层，仅本机）。
+- 控制链：tenant 主循环提交前由 packages/arena-agent/src/runtime/human-override.ts 合并人类指令/意图
+  （复用 validatePlan 权威净校验；未知单位/不适配动作逐条拒绝并进遥测），保持单一 writer（仅 agent 经官方 SDK 提交）。
+- 测试：packages/arena-agent/test/human-override.test.ts（9 例：意图全流程/校验拒绝/优先级/disabled 交还）。

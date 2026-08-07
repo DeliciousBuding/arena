@@ -1,0 +1,9 @@
+/* React 前端附加样式（设计系统主体 = 复用 public/style.css，单一视觉源）。 */
+:root { color-scheme: dark; }
+html, body { height: 100%; }
+body { overflow: hidden; }
+#root { display: flex; flex-direction: column; height: 100%; }
+#root > header { flex: none; }
+#root > #layout { flex: 1; min-height: 0; }
+#root > #streamPane { flex: none; }
+#mapPane { min-width: 0; }

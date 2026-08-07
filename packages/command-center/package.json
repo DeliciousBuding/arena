@@ -5,6 +5,9 @@
   "type": "module",
   "description": "Arena 本地指挥面板：4 租户全局测绘地图 + 资源展示 + 实时决策流（只读，Node 内置能力）",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "start:cc": "node scripts/start-cc.mjs",
+    "start:cc:bg": "node scripts/start-cc.mjs --hidden",
+    "stop:cc": "node scripts/start-cc.mjs --stop"
   }
 }
