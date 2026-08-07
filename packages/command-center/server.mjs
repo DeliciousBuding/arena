@@ -203,6 +203,62 @@ function loadStream(tenant, n) {
   return { tenant, generatedAt: new Date().toISOString(), rows };
 }
 
+/** 测绘累积缓存：每个租户同一 run 的全部 calibration case 合并出的已知地形（探索过的范围）。 */
+const surveyCache = new Map(); // tenant -> { runId, survey }
+
+/**
+ * 累积测绘：遍历同一 run 全部 cases（同一世界连续 tick 采样），
+ * 把每个 case "当前看到的物体子集"（obstacle/resource 静态地形）去重累积成完整地形；
+ * core/unit 保留最后看到的位置（动态层）。
+ */
+function loadSurvey(tenant) {
+  const runDir = latestRunDir(tenant);
+  if (!runDir) return null;
+  const cached = surveyCache.get(tenant);
+  if (cached && cached.runId === runDir) return cached.survey;
+  const caseFiles = listCases(tenant, runDir);
+  if (!caseFiles.length) return null;
+  const obstacle = new Map(), resource = new Map();
+  const cores = new Map(), units = new Map();
+  let tickMax = 0, caseCount = 0;
+  for (const file of caseFiles) {
+    const tick = parseTick(file);
+    if (tick > tickMax) tickMax = tick;
+    const path = join(calibrationDir(tenant), runDir, "cases", file);
+    let raw;
+    try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+    const state = raw?.before?.state;
+    if (!state?.objects) continue;
+    caseCount++;
+    for (const obj of state.objects) {
+      if (obj.kind === "OBSTACLE") {
+        for (const [x, y] of obj.positions ?? []) obstacle.set(cellKey(x, y), { x, y, tick });
+      } else if (obj.kind === "RESOURCE") {
+        for (const [x, y] of obj.positions ?? []) resource.set(cellKey(x, y), { x, y, tick });
+      } else if (obj.kind === "CORE") {
+        const [x, y] = obj.position ?? [0, 0];
+        const k = cellKey(x, y);
+        const cur = cores.get(k);
+        if (!cur || tick > cur.tick) cores.set(k, { x, y, tick, hp: obj.hp, shield: obj.shield, controlled: obj.controlled, owner: obj.owner_username ?? null });
+      } else if (obj.kind === "UNIT") {
+        const [x, y] = obj.position ?? [0, 0];
+        const k = cellKey(x, y);
+        const cur = units.get(k);
+        if (!cur || tick > cur.tick) units.set(k, { x, y, tick, unitType: obj.unit_type ?? "WORKER", controlled: obj.controlled, hp: obj.hp });
+      }
+    }
+  }
+  const survey = {
+    tenant, runId: runDir, caseCount, tickMax,
+    obstacleCells: [...obstacle.values()],
+    resourceCells: [...resource.values()],
+    coreCells: [...cores.values()],
+    unitCells: [...units.values()],
+  };
+  surveyCache.set(tenant, { runId: runDir, survey });
+  return survey;
+}
+
 /** 完整世界快照：最新 calibration case 的 before.state（供前端交互计算：寻路/攻击范围/动作可用性）。 */
 function loadWorld(tenant) {
   const runDir = latestRunDir(tenant);
@@ -367,6 +423,18 @@ const server = createServer(async (req, res) => {
     if (pathname === "/api/world") {
       const tenant = url.searchParams.get("tenant") ?? "t1";
       return sendJson(res, loadWorld(tenant));
+    }
+    if (pathname === "/api/exploration") {
+      const tenant = url.searchParams.get("tenant") ?? "t1";
+      const survey = loadSurvey(tenant);
+      if (!survey) return sendJson(res, { tenant, generatedAt: new Date().toISOString(), survey: null });
+      const world = loadWorld(tenant);
+      return sendJson(res, {
+        tenant,
+        generatedAt: new Date().toISOString(),
+        survey,
+        current: world.state ? { caseFile: world.caseFile, tick: world.tick, objects: world.state.objects, resources: world.state.resources, population: world.state.population, champion_beacon: world.state.champion_beacon } : null,
+      });
     }
     if (pathname === "/api/events") {
       const tenant = url.searchParams.get("tenant") ?? "t1";

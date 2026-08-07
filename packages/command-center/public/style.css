@@ -533,3 +533,11 @@ body::after {
   transition: filter .2s ease;
 }
 .beacon-arrow:hover::before { filter: drop-shadow(0 0 12px rgba(217,166,46,.85)); }
+
+/* 测绘统计行 */
+.hud-survey {
+  margin-top: 7px; padding-top: 7px; border-top: 1px dashed rgba(255,255,255,.08);
+  font-size: 11px;
+}
+.hud-survey .hud-label { color: var(--green-resource); }
+.hud-survey .hud-val { font-size: 11px; color: #b9c4cd; }
