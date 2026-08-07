@@ -4,8 +4,11 @@
  * 每 tick 为每个 tenant 生成一个 case（before/after 经 projectPlayerState
  * 投影为官方 PlayerState），manifest 严格格式（sha256 全链路）。
  *
- * 用法：cd packages/arena-agent && npx tsx scripts/synthetic-case-gen.mts <scenario> <outDir> [ticks]
- * 例：npx tsx scripts/synthetic-case-gen.mts scripts/scenarios/strike-group-exchange.json D:/x/syn-run 80
+ * 用法：cd packages/arena-agent && npx tsx scripts/synthetic-case-gen.mts <scenario> <outDir> [ticks] [p2Posture] [p1MilitaryRatio]
+ * 例：npx tsx scripts/synthetic-case-gen.mts scripts/scenarios/strike-group-exchange.json D:/x/syn-run 80 balanced 0.5
+ * p2Posture 可选（默认 aggressive）——对手策略变体（balanced/harvest）；
+ * p1MilitaryRatio 可选（默认 0）——我方军事产兵比例（>0 可产生完整
+ * 战斗演化——补充兵力、推进拆家）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -20,6 +23,8 @@ import { parseCalibrationCase, type CalibrationCaseV1 } from "../src/sim/calibra
 const SCENARIO_PATH = process.argv[2];
 const OUT_DIR = resolve(process.argv[3]);
 const TICKS = Number(process.argv[4] ?? 60);
+const P2_POSTURE = (process.argv[5] ?? "aggressive") as "aggressive" | "balanced" | "harvest";
+const P1_MILITARY_RATIO = Number(process.argv[6] ?? 0);
 const RULES_PATH = "src/sim/contracts/rules-v0.14.json";
 const RUNTIME_GOLDEN_SCHEMA = "runtime-golden-dataset-v1";
 
@@ -49,8 +54,8 @@ const result = runEpisode({
   seed,
   ticks: TICKS,
   tenants: [
-    { id: "p1", planner: "safety", policy: { posture: "aggressive", workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: "core" } },
-    { id: "p2", planner: "safety", policy: { posture: "aggressive", workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: "core" } },
+    { id: "p1", planner: "safety", policy: { posture: "aggressive", workerTarget: 4, militaryRatio: P1_MILITARY_RATIO, focusRegion: null, attackPriority: "core" } },
+    { id: "p2", planner: "safety", policy: { posture: P2_POSTURE, workerTarget: 4, militaryRatio: 0, focusRegion: null, attackPriority: P2_POSTURE === "aggressive" ? "core" : "balanced" } },
   ],
   onTickRecorded: ({ tick, before, after, plans, events }) => {
     for (const tenantId of ["p1", "p2"] as const) {
