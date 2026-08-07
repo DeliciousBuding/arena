@@ -13,7 +13,7 @@
    梯度（#fff→#e8e8e8→#d9d9d9），不引入第二种强调色。
 4. **留白即设计**：面板内 padding ≥12px、卡片间距 10px、行高 1.6+；不靠边框堆砌密度。
 5. **瑞士排印**：等宽字（Geist Mono）只用于数据/标签/ID，正文用 Geist Sans；字重层次
-   靠 400/500/600 三级，不滥用粗体。
+   靠 500/600/700 三级（去掉 400 细字重），中文一律黑体类回退，杜绝细宋体。
 6. **动效克制**：交互反馈 150-250ms、`cubic-bezier(.16,1,.3,1)`（expo-out）；
    `prefers-reduced-motion` 全量降级。
 
@@ -38,10 +38,15 @@
 - 本地 `@font-face`（`public/assets/fonts/`，SIL OFL，离线可用）：
   - **Geist**（Vercel 官方）：400/500/600/700 → `--font-sans` / `--font-display`
   - **Geist Mono**：400/500/600 → `--font-mono`
-- CJK 回退：`PingFang SC` / `Microsoft YaHei`（黑体类），Latin/数字用 Geist 保证高级感。
-- 字重体系：`--weight-regular/medium/semibold/bold`（400/500/600/700）；
-  标题/数据 600，正文/按钮 500，小标签 400-500。
-- 画布内浮动文字同用 Geist Mono（`ctx.font` 前缀）。
+- CJK 回退（**黑体类，杜绝细宋体**）：`PingFang SC` / `Microsoft YaHei UI` /
+  `Microsoft YaHei` / `Noto Sans CJK SC`；Latin/数字用 Geist 保证高级感。
+  `--font-mono` 末尾同样追加 CJK 黑体回退——决策流/标签等中英混排文字
+  **不得**回退到 SimSun（宋体细瘦）。
+- 字重体系：`--weight-regular/medium/semibold/bold`（**500/600/700/800**）；
+  正文 500、数据/标签 600、标题 700——全站去掉 400 细字重，小字号也保持辨识度。
+- 画布内浮动文字（`ctx.font`）：统一 `CANVAS_FONT` 粗黑体栈
+  `"Geist","PingFang SC","Microsoft YaHei UI","Microsoft YaHei","Noto Sans CJK SC",sans-serif`，
+  字重 600-700；**不再用 Geist Mono**（其无 CJK 字形，中文会回退成细宋体）。
 
 ## 4. 圆角 / 阴影 / 间距
 
