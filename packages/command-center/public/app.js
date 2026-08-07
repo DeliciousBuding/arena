@@ -2489,6 +2489,15 @@ function tactSpawnEventFx(frameTick) {
   if (!frame) return;
   const tac = T();
   for (const ev of frame.events) {
+    const isShot = ev.t === 'SHOT_HIT' || ev.t === 'SHOT_MISSED' || ev.t === 'SHOT_BLOCKED';
+    const isSweep = ev.t === 'SWEEP_RESOLVED';
+    if ((isShot || isSweep) && ev.f && ev.q) {
+      tac.eventFx.push({
+        kind: isShot ? 'SHOT' : 'SWEEP', from: ev.f, to: ev.q, hit: ev.t === 'SHOT_HIT',
+        born: performance.now(), life: isShot ? 950 : 760, seq: ++tac.fxSeq,
+      });
+      continue; // 弹道弧/剑光代替浮字（更直观）
+    }
     const spec = FX_KIND_CN[ev.t] ?? null;
     if (!spec) continue;
     const amount = ev.v ? (ev.v.amount !== undefined ? ev.v.amount : ev.v.damage !== undefined ? ev.v.damage : ev.v.hp !== undefined ? ev.v.hp : '') : '';
@@ -2506,6 +2515,90 @@ function tactSpawnEventFx(frameTick) {
   if (tac.eventFx.length > 80) tac.eventFx.splice(0, tac.eventFx.length - 80);
   if (tac.debris.length > 240) tac.debris.splice(0, tac.debris.length - 240);
 }
+/** 官方 shotCurve 移植：弹道抛物线（法向侧偏 + 弓高 + 起终点内收）。 */
+function shotCurveFx(a, b, cell) {
+  const dx = b.sx - a.sx, dy = b.sy - a.sy, length = Math.hypot(dx, dy);
+  if (!length) return null;
+  const ux = dx / length, uy = dy / length, px = -uy, py = ux;
+  const side = dx > 0 ? -1 : dx < 0 ? 1 : dy > 0 ? -1 : 1;
+  const arcHeight = Math.min(cell * 0.8, length * 0.24);
+  const arcNormalX = px * side, arcNormalY = py * side;
+  const bowX = a.sx + arcNormalX * cell * 0.29 + ux * cell * 0.1, bowY = a.sy + arcNormalY * cell * 0.29 + uy * cell * 0.1;
+  const startX = bowX + ux * cell * 0.08, startY = bowY + uy * cell * 0.08;
+  const endX = b.sx - ux * cell * 0.2, endY = b.sy - uy * cell * 0.2;
+  const controlX = (startX + endX) / 2 + px * arcHeight * side, controlY = (startY + endY) / 2 + py * arcHeight * side;
+  return { startX, startY, controlX, controlY, endX, endY };
+}
+/** 官方 drawResolvedShot 移植：飞行弹丸 + 命中/未中特效（回放战斗可视化）。 */
+function drawResolvedShotFx(a, b, cell, progress, hit) {
+  const curve = shotCurveFx(a, b, cell); if (!curve) return;
+  const flightEnd = 0.76, flight = Math.min(1, progress / flightEnd), eased = 1 - Math.pow(1 - flight, 3);
+  const inv = 1 - eased;
+  const x = inv * inv * curve.startX + 2 * inv * eased * curve.controlX + eased * eased * curve.endX;
+  const y = inv * inv * curve.startY + 2 * inv * eased * curve.controlY + eased * eased * curve.endY;
+  const tanX = 2 * inv * (curve.controlX - curve.startX) + 2 * eased * (curve.endX - curve.controlX);
+  const tanY = 2 * inv * (curve.controlY - curve.startY) + 2 * eased * (curve.endY - curve.controlY);
+  const tl = Math.hypot(tanX, tanY) || 1;
+  const tx = tanX / tl, ty = tanY / tl, px = -ty, py = tx;
+  const arrowLength = Math.max(12, cell * 0.3), head = Math.max(5, cell * 0.12);
+  const tailX = x - tx * arrowLength, tailY = y - ty * arrowLength;
+  const arrowOpacity = progress <= flightEnd ? 1 : Math.max(0, 1 - (progress - flightEnd) / (1 - flightEnd));
+  ctx.save(); ctx.globalAlpha = arrowOpacity; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.shadowColor = '#69b3d8'; ctx.shadowBlur = Math.max(5, cell * 0.12);
+  ctx.strokeStyle = '#69b3d8'; ctx.lineWidth = Math.max(2, cell * 0.045);
+  ctx.beginPath(); ctx.moveTo(tailX, tailY); ctx.lineTo(x, y); ctx.stroke();
+  ctx.fillStyle = '#a8d3ea';
+  ctx.beginPath(); ctx.moveTo(x + tx * head * 0.25, y + ty * head * 0.25);
+  ctx.lineTo(x - tx * head + px * head * 0.55, y - ty * head + py * head * 0.55);
+  ctx.lineTo(x - tx * head - px * head * 0.55, y - ty * head - py * head * 0.55);
+  ctx.closePath(); ctx.fill(); ctx.restore();
+  if (progress < flightEnd) return;
+  const impact = Math.min(1, (progress - flightEnd) / (1 - flightEnd)), fade = 1 - impact;
+  ctx.save(); ctx.globalAlpha = fade; ctx.lineCap = 'round'; ctx.lineWidth = Math.max(1.5, cell * 0.035);
+  if (hit) {
+    ctx.strokeStyle = '#dd626d'; ctx.shadowColor = '#dd626d'; ctx.shadowBlur = Math.max(5, cell * 0.11);
+    const radius = cell * (0.1 + impact * 0.28);
+    ctx.beginPath(); ctx.arc(b.sx, b.sy, radius, 0, Math.PI * 2); ctx.stroke();
+    for (let k = 0; k < 4; k++) {
+      const ang = Math.PI / 2 * k + Math.PI / 4, inner = radius * 0.35, outer = radius * 1.25;
+      ctx.beginPath(); ctx.moveTo(b.sx + Math.cos(ang) * inner, b.sy + Math.sin(ang) * inner);
+      ctx.lineTo(b.sx + Math.cos(ang) * outer, b.sy + Math.sin(ang) * outer); ctx.stroke();
+    }
+  } else {
+    ctx.strokeStyle = '#d4d4d8'; ctx.setLineDash([Math.max(3, cell * 0.07), Math.max(2, cell * 0.05)]);
+    ctx.beginPath(); ctx.arc(b.sx, b.sy, cell * (0.12 + impact * 0.22), 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.restore();
+}
+/** 官方 drawResolvedSweep 移植：横扫剑光（VANGUARD 清扫回放可视化）。 */
+function drawResolvedSweepFx(a, b, cell, progress) {
+  const dx = b.sx - a.sx, dy = b.sy - a.sy, direction = Math.atan2(dy, dx);
+  if (!Math.hypot(dx, dy)) return;
+  const attackProgress = Math.min(1, progress / 0.72), eased = 1 - Math.pow(1 - attackProgress, 3);
+  const fade = progress < 0.72 ? 1 : Math.max(0, 1 - (progress - 0.72) / 0.28);
+  const startAngle = direction - Math.PI * 0.42, currentAngle = startAngle + Math.PI * 0.84 * eased;
+  const radius = cell * 0.78, handleRadius = cell * 0.2, tipRadius = cell * 0.94;
+  const handleX = a.sx + Math.cos(currentAngle) * handleRadius, handleY = a.sy + Math.sin(currentAngle) * handleRadius;
+  const tipX = a.sx + Math.cos(currentAngle) * tipRadius, tipY = a.sy + Math.sin(currentAngle) * tipRadius;
+  ctx.save(); ctx.globalAlpha = fade; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.shadowColor = '#69b3d8'; ctx.shadowBlur = cell * 0.14;
+  ctx.strokeStyle = 'rgba(69,145,197,.34)'; ctx.lineWidth = Math.max(5, cell * 0.13);
+  ctx.beginPath(); ctx.arc(a.sx, a.sy, radius, startAngle, currentAngle); ctx.stroke();
+  ctx.strokeStyle = '#a8d3ea'; ctx.lineWidth = Math.max(1.5, cell * 0.035);
+  ctx.beginPath(); ctx.arc(a.sx, a.sy, radius, startAngle, currentAngle); ctx.stroke();
+  ctx.strokeStyle = '#f4f4f5'; ctx.lineWidth = Math.max(2.5, cell * 0.065);
+  ctx.beginPath(); ctx.moveTo(handleX, handleY); ctx.lineTo(tipX, tipY); ctx.stroke();
+  const guardX = handleX + Math.cos(currentAngle) * cell * 0.17, guardY = handleY + Math.sin(currentAngle) * cell * 0.17;
+  const gpx = -Math.sin(currentAngle), gpy = Math.cos(currentAngle);
+  ctx.beginPath(); ctx.moveTo(guardX - gpx * cell * 0.1, guardY - gpy * cell * 0.1);
+  ctx.lineTo(guardX + gpx * cell * 0.1, guardY + gpy * cell * 0.1); ctx.stroke();
+  if (progress > 0.42) {
+    const impact = Math.min(1, (progress - 0.42) / 0.38);
+    ctx.globalAlpha = fade * (1 - impact); ctx.strokeStyle = '#dd626d'; ctx.lineWidth = Math.max(1.5, cell * 0.04);
+    ctx.beginPath(); ctx.arc(b.sx, b.sy, cell * (0.12 + impact * 0.28), 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.restore();
+}
 function tactDrawEventFx(s) {
   const tac = T();
   if (!tac.eventFx.length) return;
@@ -2513,9 +2606,18 @@ function tactDrawEventFx(s) {
   const alive = [];
   for (const fx of tac.eventFx) {
     const age = now - fx.born;
-    if (age > FX_LIFE_MS) continue;
+    const life = fx.life ?? FX_LIFE_MS;
+    if (age > life) continue;
     alive.push(fx);
-    const t = age / FX_LIFE_MS;
+    const t = age / life;
+    if (fx.kind === 'SHOT' && fx.from && fx.to) {
+      drawResolvedShotFx(project(fx.from[0], fx.from[1]), project(fx.to[0], fx.to[1]), s, Math.min(1, t * 1.1), fx.hit === true);
+      continue;
+    }
+    if (fx.kind === 'SWEEP' && fx.from && fx.to) {
+      drawResolvedSweepFx(project(fx.from[0], fx.from[1]), project(fx.to[0], fx.to[1]), s, Math.min(1, t * 1.15));
+      continue;
+    }
     const fade = 1 - t * t;
     const p = project(fx.x, fx.y);
     ctx.save();

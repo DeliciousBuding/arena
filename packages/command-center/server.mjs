@@ -270,15 +270,23 @@ function loadReplay(tenant) {
     const path = join(calibrationDir(tenant), runDir, "cases", file);
     let raw;
     try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
-    const events = (raw?.before?.state?.events ?? [])
+    const st = raw?.before?.state;
+    const byId = new Map();
+    for (const o of st?.objects ?? []) if (o.id) byId.set(o.id, o);
+    const events = (st?.events ?? [])
       .filter((ev) => ev && ev.event_type && ev.position)
-      .map((ev) => ({
-        t: ev.event_type,
-        p: ev.position,
-        a: ev.actor_id ? String(ev.actor_id).slice(0, 8) : null,
-        g: ev.target_id ? String(ev.target_id).slice(0, 8) : null,
-        v: ev.values ?? null,
-      }));
+      .map((ev) => {
+        const actor = byId.get(ev.actor_id), target = byId.get(ev.target_id);
+        return {
+          t: ev.event_type,
+          p: ev.position,
+          f: actor?.position ?? null,   // 射击/清扫 起点（绘制弹道弧）
+          q: target?.position ?? null,  // 终点（命中/落点特效）
+          a: ev.actor_id ? String(ev.actor_id).slice(0, 8) : null,
+          g: ev.target_id ? String(ev.target_id).slice(0, 8) : null,
+          v: ev.values ?? null,
+        };
+      });
     if (events.length) eventFrames.push({ tick, events });
   }
   const replay = {
