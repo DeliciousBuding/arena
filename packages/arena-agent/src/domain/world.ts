@@ -43,6 +43,74 @@ const HUNT_AWAY_DELTAS: readonly (readonly [number, number])[] = [
  *  chunk 记忆驱动"未观察分区优先"（frontier-v1：观察最老的分区先巡）。 */
 const CHUNK_SIZE = 16;
 
+/** 官方视野半径（rules-v0.11/v0.14 钉定，sim/contracts 核对）：
+ *  WORKER 3 / VANGUARD 4 / RANGER 5 / CORE 5。 */
+const VISION_RADIUS: Readonly<Record<UnitType | "CORE", number>> = {
+  WORKER: 3,
+  VANGUARD: 4,
+  RANGER: 5,
+  CORE: 5,
+};
+
+/** 视野遮挡判定：integer supercover 线（与官方 SDK sim/visibility/supercoverLine
+ *  及 arena-hero-agent _has_vision_line 同构）。途经格（不含 origin，含 target）
+ *  任一为障碍 → 遮挡；target 自身不算遮挡（目标格是资源/单位，非障碍）。 */
+function visionLineBlocked(
+  origin: Position,
+  target: Position,
+  obstacles: ReadonlySet<string>,
+): boolean {
+  const dx = target[0] - origin[0];
+  const dy = target[1] - origin[1];
+  const nx = Math.abs(dx);
+  const ny = Math.abs(dy);
+  const sx = Math.sign(dx);
+  const sy = Math.sign(dy);
+  let x = origin[0];
+  let y = origin[1];
+  let ix = 0;
+  let iy = 0;
+  while (ix < nx || iy < ny) {
+    // Cell-center → cell-center 穿越：比较下一个半格边界交叉时刻（纯整数，
+    // 无浮点）。nextX==nextY 时对角过角，先推 x 再推 y，两角侧格都算。
+    const nextX = (2 * ix + 1) * ny;
+    const nextY = (2 * iy + 1) * nx;
+    if (nextX < nextY) {
+      x += sx;
+      ix += 1;
+    } else if (nextX > nextY) {
+      y += sy;
+      iy += 1;
+    } else {
+      x += sx;
+      y += sy;
+      ix += 1;
+      iy += 1;
+    }
+    if (ix === nx && iy === ny) break; // 到达 target，自身不算遮挡
+    if (obstacles.has(cellKey([x, y]))) return true;
+  }
+  return false;
+}
+
+/** 视线感知资源失效（ref arena-hero-agent v0.2.0 CHANGELOG：
+ *  "Vision-aware resource invalidation ... integer supercover lines"）：
+ *  格子被任意我方观察者"确认可见"（Manhattan 半径内 + supercover 视线无遮挡）
+ *  则返回 true。障碍遮挡不算确认——可能只是躲在障碍后面看不见，资源未必消失。 */
+function resourceCellCoveredByVision(
+  state: TickState,
+  cell: Position,
+  obstacleMemory: ReadonlySet<string>,
+): boolean {
+  const covered = (origin: Position, radius: number): boolean =>
+    manhattan(origin, cell) <= radius && !visionLineBlocked(origin, cell, obstacleMemory);
+  if (state.core !== null && covered(state.core.position, VISION_RADIUS.CORE)) return true;
+  for (const unit of state.units) {
+    if (covered(unit.position, VISION_RADIUS[unit.unitType])) return true;
+  }
+  return false;
+}
+
 /** chunk 坐标支持负坐标（t1 Core [-619,-154]）：floor 除法而非截断。 */
 function chunkKeyFor(position: Position): string {
   const cx = Math.floor(position[0] / CHUNK_SIZE);
@@ -149,7 +217,20 @@ export interface WorldSnapshot {
   }[];
 }
 
+export interface WorldOptions {
+  /** 视线感知资源失效（2026-08-08，ref arena-hero-agent v0.2.0）：被视野
+   *  确认可见却不在本轮 resourceCells 的资源格 → 立即记 harvested 负记忆。
+   *  默认开启；关闭退回纯 stale 降级（A/B 对照/热加载预留）。 */
+  readonly visionInvalidation?: boolean;
+}
+
 export class World {
+  private readonly visionInvalidation: boolean;
+
+  constructor(options: WorldOptions = {}) {
+    this.visionInvalidation = options.visionInvalidation ?? true;
+  }
+
   private tick = 0;
   private readonly obstacleMemory = new Set<string>();
   private readonly resourceMemory = new Map<string, ResourceMemory>();
@@ -233,10 +314,20 @@ export class World {
     }
     for (const [cell, memory] of this.resourceMemory) {
       if (visibleResources.has(cell)) continue;
-      // harvested（自采成功）保持负记忆不进 hints，不降级 stale——
-      // 自采空格若 refill 会重新可见，未 refill 说明已耗尽（TTL 后删除）。
       if (memory.state === "visible") {
-        memory.state = "stale";
+        // 视线感知资源失效（ref arena-hero-agent _refresh_resource_memory：
+        // definitely_visible && not in current_resources → 立即失效）：
+        // 格子被任意我方观察者确认可见（Manhattan 半径 + supercover 无遮挡）
+        // 却不在本轮 visibleResources → 资源已被采空 → 直接记 harvested 负记忆
+        // （不进 hints，TTL 后删除），杜绝 worker 跨 30-78 格追空矿
+        // （t4 实证 go_harvest_mem 104 意图仅 12 次成功）。
+        if (this.visionInvalidation && resourceCellCoveredByVision(state, parseCellKey(cell), this.obstacleMemory)) {
+          memory.state = "harvested";
+        } else {
+          // harvested（自采成功）保持负记忆不进 hints，不降级 stale——
+          // 自采空格若 refill 会重新可见，未 refill 说明已耗尽（TTL 后删除）。
+          memory.state = "stale";
+        }
       }
     }
 
