@@ -3,8 +3,8 @@
 /* Arena 指挥面板前端引擎 — 由 React（command-center/web）挂载到地图宿主容器。
  * 由 public/app.js 移植：chrome（顶栏/侧栏/决策流/对话框）剥离到 React 组件，
  * 地图/战术/回放/覆盖层保持原生 Canvas + DOM。入口 createMapEngine(host)。 */
-import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos } from './utils.js';
-import { getJSON } from './api.js';
+import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos } from './utils.ts';
+import { getJSON } from './api.ts';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
 const TENANT_COLORS = { t1: '#69b3d8', t2: '#57bd84', t3: '#a892d6', t4: '#dd626d' };
@@ -326,20 +326,35 @@ async function loadSprites() {
 /* ---------- 数据拉取 ---------- */
 
 async function poll() {
+  // 逐端点容错（2026-08-08）：单个端点慢/失败不再整轮 abort——并行 agent 高 CPU 时
+  // overview/map 可能 >8s，原来 Promise.all 一挂全挂导致"界面卡住/单位冻结"。
+  // 成功才覆盖 state，失败保留上一轮数据（地图/单位不闪没）。
+  const [oR, mR, iR] = await Promise.allSettled([
+    getJSON('/api/overview', 30000), getJSON('/api/map', 30000), getJSON('/api/intel', 30000),
+  ]);
+  const overview = oR.status === 'fulfilled' ? oR.value : null;
+  const map = mR.status === 'fulfilled' ? mR.value : null;
+  const intel = iR.status === 'fulfilled' ? iR.value : null;
   try {
-    const [overview, map, intel] = await Promise.all([
-      getJSON('/api/overview'), getJSON('/api/map'), getJSON('/api/intel').catch(() => null),
-    ]);
-    state.overview = overview;
+    if (overview) state.overview = overview;
+    if (intel) { state.intel = intel; emit('intel', intel); }
+    if (!map) {
+      // 地图端点失败：保留上一轮 cells 继续渲染（插值/动画不中断），下轮 poll 恢复
+      captureUnitPrev();
+      if (!state.view.ready && state.bounds && state.cells.length) fitView();
+      emit('overview', state.overview);
+      draw();
+      return;
+    }
     state.map = map;
     state.cells = map.cells ?? [];
     state.beacons = map.beacons ?? [];
     state.coreTrails = map.coreTrails ?? [];
-    state.intel = intel ?? null;
-    emit('intel', state.intel);
     state.bounds = map.bounds ?? null;
     state.cellIndex = new Map();
-    for (const c of state.cells) state.cellIndex.set(`${c.x},${c.y}`, c);
+    // 索引键 = `tenant:x,y`（与后端 loadMergedMap 对齐，2026-08-08）：
+    // 多租户同格各自保留，查目标格时带上当前租户，避免误判他租户的地形/单位。
+    for (const c of state.cells) state.cellIndex.set(`${c.tenant}:${c.x},${c.y}`, c);
     // 静态层脏检查：仅当障碍/资源测绘变化才重建底图缓存（单位移动不触发重建）
     let sig = 0, n = 0;
     for (const c of state.cells) {
@@ -610,12 +625,21 @@ function drawTenantRegions(s: any) {
     const span = Math.max(30, Math.max(maxX - minX, maxY - minY));
     const p = project(cx, cy);
     const radius = Math.max(60, span * s * 0.62);
+    // 疆域色晕（2026-08-08 弱化）：用户反馈"诡异绿色球/绿色区域"——原 alpha .10 的
+    // 径向色晕在缩放后像一团实色球。降为 .045/.02 极淡打底 + 虚线疆域环（结构化
+    // "领地边界"，不再是一团实心色球）；租户色只作身份语义，不装饰性铺满。
     const grad = ctx.createRadialGradient(p.sx, p.sy, 0, p.sx, p.sy, radius);
-    grad.addColorStop(0, hexA(color, 0.10));
-    grad.addColorStop(0.55, hexA(color, 0.045));
+    grad.addColorStop(0, hexA(color, 0.045));
+    grad.addColorStop(0.55, hexA(color, 0.02));
     grad.addColorStop(1, hexA(color, 0));
     ctx.fillStyle = grad;
     ctx.beginPath(); ctx.arc(p.sx, p.sy, radius, 0, Math.PI * 2); ctx.fill();
+    // 疆域边界环：虚线细环（alpha .16，随缩放 1.2-2px），一眼圈出领地但不抢内容层
+    ctx.strokeStyle = hexA(color, 0.16);
+    ctx.lineWidth = Math.min(2, Math.max(1.2, s * 0.07));
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.arc(p.sx, p.sy, radius, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
     // 疆域标签：贴在核心/最密点上方
     const core = cells.find((c) => c.type === 'core');
     const lx = core ? core.x : cx, ly = core ? core.y : cy;
@@ -1077,8 +1101,8 @@ function drawLiveTrails(s: any) {
     const pts = trail.slice(-TRAIL_POINTS);
     const last = pts[pts.length - 1];
     // 与当前 live 位置一致才画（避免回放旧 run 轨迹错位）
-    const liveCell = state.cellIndex.get(`${last.x},${last.y}`);
-    if (liveCell && liveCell.tenant !== state.soloTenant) continue;
+    const liveCell = state.cellIndex.get(`${state.soloTenant}:${last.x},${last.y}`);
+    if (!liveCell) continue;
     const scr = pts.map((t) => project(t.x, t.y));
     ctx.save();
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -3584,7 +3608,7 @@ function tactShowFeature(cell: any, px: any, py: any) {
         tac.routePreview = null;
         tac.mode = null;
         // 意图式指挥：点矿 = 下达「采矿任务」（到达自动挖、满仓回仓）；点空地 = 移动任务
-        const key = wx + ',' + wy;
+        const key = `${tac.selected.tenant}:${wx},${wy}`;
         const cell = state.cellIndex.get(key);
         const isResource = (cell && cell.type === 'resource') ||
           (world.state?.objects ?? []).some((o) => o.kind === 'RESOURCE' && (o.positions ?? []).some((p) => p[0] === wx && p[1] === wy));
@@ -3593,7 +3617,7 @@ function tactShowFeature(cell: any, px: any, py: any) {
         tactRenderActionDialog(); tactRenderInspect(); draw();
       } else {
         // 目标不可达（路径被堵/在障碍中）——官方 routeBlocked/routeUnknown 语义
-        const blockedCell = state.cellIndex.get(wx + ',' + wy);
+        const blockedCell = state.cellIndex.get(`${tac.selected.tenant}:${wx},${wy}`);
         const onObstacle = blockedCell && blockedCell.type === 'obstacle' || (world.state && world.state.objects || []).some((o) => o.kind === 'OBSTACLE' && (o.positions || []).some((p) => p[0] === wx && p[1] === wy));
         var msg = onObstacle ? ('目标 [' + wx + ', ' + wy + '] 是障碍，无法到达') : ('目标 [' + wx + ', ' + wy + '] 不可达（路径被堵）');
         toast(msg, 'warn');

@@ -8,30 +8,43 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../src/strategies/safety-planner.ts";
+import { World } from "../src/domain/world.ts";
 import type { Position, TickState } from "../src/domain/model.ts";
 
 const CORE: Position = [0, 0];
 
-function makeState(opts: { enemies?: TickState["visibleEnemies"]; coreHunt?: { position: Position }[] } = {}): TickState {
+function makeState(opts: {
+  enemies?: TickState["visibleEnemies"];
+  coreHunt?: { position: Position }[];
+  tick?: number;
+  units?: TickState["units"];
+  vanguards?: TickState["vanguards"];
+  rangers?: TickState["rangers"];
+  workers?: TickState["workers"];
+} = {}): TickState {
+  const units = opts.units ?? [
+    { id: "v1", position: [0, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
+    { id: "v2", position: [0, 2], hp: 4, unitType: "VANGUARD", cargo: 0 },
+    { id: "w1", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 0 },
+  ];
+  const vanguards = opts.vanguards ?? [
+    { id: "v1", position: [0, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
+    { id: "v2", position: [0, 2], hp: 4, unitType: "VANGUARD", cargo: 0 },
+  ];
+  const rangers = opts.rangers ?? [];
+  const workers = opts.workers ?? [{ id: "w1", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 0 }];
   return {
-    tick: 100,
+    tick: opts.tick ?? 100,
     status: "ACTIVE",
     resources: 30,
     resourceCapacity: 30,
     resourceSpace: 30,
     population: 3,
     core: { id: "c1", position: CORE, hp: 5, shield: 5, state: "NORMAL", ownerUsername: "p1" },
-    units: [
-      { id: "v1", position: [0, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
-      { id: "v2", position: [0, 2], hp: 4, unitType: "VANGUARD", cargo: 0 },
-      { id: "w1", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 0 },
-    ],
-    workers: [{ id: "w1", position: [2, 0], hp: 2, unitType: "WORKER", cargo: 0 }],
-    vanguards: [
-      { id: "v1", position: [0, 1], hp: 4, unitType: "VANGUARD", cargo: 0 },
-      { id: "v2", position: [0, 2], hp: 4, unitType: "VANGUARD", cargo: 0 },
-    ],
-    rangers: [],
+    units,
+    workers,
+    vanguards,
+    rangers,
     visibleEnemies: opts.enemies ?? [],
     resourceCells: new Set(),
     obstacleCells: new Set(),
@@ -104,4 +117,56 @@ test("vanguardPreyWorker：多个敌 WORKER 选最近的可猎（旧版 find-fir
   assert.ok(preyIntents.length >= 1, "expected prey intent for near worker, got: " + JSON.stringify(plan.intents));
   const [unitId] = preyIntents[0];
   assert.equal(unitId, "v1");
+});
+
+test("vanguardPreyWorker：无敌核目标时回访确认静止的挂机 WORKER（记忆狩猎）", () => {
+  const world = new World();
+  // tick 100/101 连续两次目击敌 WORKER 于 [20,0]（确认静止，距 v1 [0,1] = 19 ≤ 25）
+  world.observe(makeState({
+    tick: 100,
+    enemies: [{ id: "e-w", kind: "UNIT", position: [20, 0], hp: 2, unitType: "WORKER" }],
+  }));
+  world.observe(makeState({
+    tick: 101,
+    enemies: [{ id: "e-w", kind: "UNIT", position: [20, 0], hp: 2, unitType: "WORKER" }],
+  }));
+  // 清掉目击 WORKER 生成的 WORKER_INFER 基地锚点（隔离测试静止 WORKER 分支本身）
+  (world as unknown as { coreHuntMemory: Map<string, unknown> }).coreHuntMemory.clear();
+  const planner = new SafetyPlanner({
+    ...PREY_CONFIG,
+    militaryHunt: true,
+  }, world);
+  // tick 102：无可见敌、无可见资源 → militaryHunt 分支 → 静止 WORKER 回访
+  const state = makeState({ tick: 102, enemies: [] });
+  const plan = planner.decide({ state });
+  const preyIntents = Object.entries(plan.intents).filter(([, i]) => i === "vanguard_prey_worker_stationary");
+  assert.ok(preyIntents.length >= 1, "expected stationary prey intent, got: " + JSON.stringify(plan.intents));
+  const [unitId] = preyIntents[0];
+  assert.equal(unitId, "v1"); // 最近的 Vanguard 去
+});
+
+test("Ranger 射程环展开：拥挤格内 Ranger 向相邻空位移动保持火力散开", () => {
+  const world = new World();
+  world.seedCoreHuntTargets([{ position: [10, 0], lastSeenTick: 100, source: "CORE" }]);
+  const planner = new SafetyPlanner({
+    ...PREY_CONFIG,
+  }, world);
+  // 两只 Ranger 同站 [8,0]（距敌核记忆 [10,0] = 2 ≤ 3 射程环），拥挤 → 展开
+  const state = makeState({
+    tick: 101,
+    enemies: [],
+    units: [
+      { id: "r1", position: [8, 0], hp: 2, unitType: "RANGER", cargo: 0 },
+      { id: "r2", position: [8, 0], hp: 2, unitType: "RANGER", cargo: 0 },
+    ],
+    vanguards: [],
+    rangers: [
+      { id: "r1", position: [8, 0], hp: 2, unitType: "RANGER", cargo: 0 },
+      { id: "r2", position: [8, 0], hp: 2, unitType: "RANGER", cargo: 0 },
+    ],
+    workers: [],
+  });
+  const plan = planner.decide({ state });
+  const spread = Object.entries(plan.intents).filter(([, i]) => i === "ranger_spread");
+  assert.ok(spread.length >= 1, "拥挤 Ranger 应展开，got: " + JSON.stringify(plan.intents));
 });

@@ -187,6 +187,19 @@ const PREY_WORKER_RADIUS = 12;
 /** 清剿目标与敌核心记忆的最小距离（Chebyshev）：敌核心 8 格内 = 有守军风险，
  *  不追（避免冲进敌核心射程送死）。 */
 const PREY_CORE_SAFE = 8;
+/** 挂机 WORKER 记忆回访窗口（tick，2026-08-08）："确认静止"目击后仍可追的时限——
+ *  短窗口防追已经移动/消失的幽灵目标。 */
+const PREY_STATIONARY_TTL = 12;
+/** 挂机 WORKER 记忆回访半径（Manhattan）：无敌核清扫目标时 Vanguard 对静止敌
+ *  WORKER 的追击上限——有界不跨图远征（白赚但不过度绕路）。 */
+const PREY_STATIONARY_RADIUS = 25;
+/** Ranger 射程环展开方向（2026-08-08，t1 生产实证：6 Ranger 全堆敌核记忆
+ *  3 格环同格，capacity_wait:ranger_move 92 次/30 tick，火力无法展开）：
+ *  射程内站定且本格拥挤时，向相邻空位移动保持火力散开（8 方向优先横竖）。 */
+const RANGER_SPREAD_DELTAS: readonly (readonly [number, number])[] = [
+  [1, 0], [-1, 0], [0, 1], [0, -1],
+  [1, 1], [1, -1], [-1, 1], [-1, -1],
+];
 /** 军事打野沿环扫描时间预算：同一八分点目标 >N tick 未到达强制换向（防障碍点卡死）。 */
 const SCAVENGE_HOLD_TICKS = 24;
 /** 敌情狩猎清扫半径（Chebyshev）：进入该范围视为"到达基地"，开始扇形清扫。 */
@@ -1400,6 +1413,34 @@ export class SafetyPlanner {
             if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_hunt");
             return;
           }
+          // 挂机 WORKER 回访（vanguardPreyWorker 扩展，2026-08-08，用户"挂机单位
+          // 赶紧打掉"）：无敌核清扫目标时，回访"确认静止"（连续目击同位置）的
+          // 敌方 WORKER——白赚断经济（无反击）。TTL/半径有界；敌核心记忆 8 格内
+          // 不追（避守军，与可见 prey 同守卫）。每 Vanguard 选自己最近的静止
+          // WORKER，天然分散清剿（不同 Vanguard 去不同目标）。
+          if (this.config.vanguardPreyWorker === true) {
+            const stationary = this.world
+              .stationaryWorkerTargets(PREY_STATIONARY_TTL)
+              .filter((w) => !enemies.some((e) => e.id === w.id));
+            const candidate = stationary
+              .map((w) => ({ w, d: manhattan(unit.position, w.position) }))
+              .filter((x) => x.d <= PREY_STATIONARY_RADIUS)
+              .sort((a, b) => a.d - b.d || a.w.id.localeCompare(b.w.id))[0];
+            if (candidate !== undefined) {
+              const nearEnemyCore = this.world.coreHuntTargets().some(
+                (t) => t.source === "CORE" && chebyshev(t.position, candidate.w.position) <= PREY_CORE_SAFE,
+              );
+              if (!nearEnemyCore) {
+                const nearest = [...state.vanguards]
+                  .sort((a, b) => manhattan(a.position, candidate.w.position) - manhattan(b.position, candidate.w.position))[0];
+                if (nearest !== undefined && nearest.id === unit.id) {
+                  const direction = stepToward(unit.position, candidate.w.position, militaryObstacles);
+                  if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_prey_worker_stationary");
+                  return;
+                }
+              }
+            }
+          }
         }
         const dense = this.config.militarySearchDense === true;
         const directionCount = dense ? 16 : EXPLORE_DIRECTION_COUNT;
@@ -1813,6 +1854,27 @@ export class SafetyPlanner {
       if (!keepRange) {
         const direction = stepToward(unit.position, moveTarget, militaryObstacles);
         if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_move");
+      } else if (keepRange) {
+        // 射程环展开（2026-08-08，t1 生产实证）：Ranger 射程内站定时若本格拥挤
+        // （≥2 单位，容量 2 会被继续堆叠），向相邻空位移动——保持火力散开、
+        // 各占不同射击格，杜绝"6 Ranger 堆 1 格 + capacity_wait 空转"。
+        // 候选仍须满足：非目标格、非障碍、距目标 1-3（保留射程）、空位。
+        const occupancy = occupancyCounts(state);
+        const here = occupancy.get(cellKey(unit.position)) ?? 0;
+        if (here >= 2) {
+          for (const delta of RANGER_SPREAD_DELTAS) {
+            const cand: Position = [unit.position[0] + delta[0], unit.position[1] + delta[1]];
+            if (samePosition(cand, moveTarget)) continue;
+            if (militaryObstacles.has(cellKey(cand))) continue;
+            if ((occupancy.get(cellKey(cand)) ?? 0) >= 2) continue;
+            const cd = manhattan(cand, moveTarget);
+            if (cd >= 1 && cd <= 3) {
+              const direction = stepToward(unit.position, cand, militaryObstacles);
+              if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_spread"); return; }
+            }
+          }
+        }
+        // 已展开或环上无空位：原地待机（保持射程）
       }
     }
   }

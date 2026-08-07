@@ -110,3 +110,32 @@ mapEngine.ts 对应函数。
   **旧 `engine/api.js` / `engine/utils.js` 仍保留在仓**（未删除，待确认调用方后清理）。
 - **UI 状态壳**：`lib/shell.tsx`（ShellContext）+ `lib/shopApi.ts`（商店 API 封装）。
 - 该轮前端重构独立于并行 agent 边界——所有涉及文件本轮已合并入库。
+
+## 7. 2026-08-08 续：数据完整性修复 + 视觉弱化 + 依赖清理（本轮）
+
+### 7.1 全局地图合并键修复（commit 8501ab0）——"某租户单位看不到/时有时无"根因
+- **问题**：`lib/map.ts` 最终 cells 只按 `x,y` 去重（cellKey 不带租户），
+  后处理的租户整格覆盖前租户（TENANTS 顺序 t4 最后 → t4 覆盖 t1/t2/t3）；
+  且单位/核心也按格去重，**同租户同格叠放单位**（worker 叠 core）会被吞。
+- **修复**：cells 键改为 `tenant:kind:id`（地形 `tenant:type:x,y`；单位/核心
+  `tenant:unit:id` / `tenant:core:id`）。前端 `cellIndex` 同步 `tenant:x,y`，
+  drawLiveTrails/点矿判定/障碍判定查目标格都带当前租户。
+- **实测**：修复前 t1 18/t2 14/t3 8/t4 4 单位；修复后与各租户最新 case
+  `after.state` 逐项一致（t1 24/t2 20/t3 11/t4 5），cellCount 161→279+。
+- **副作用修好**：点矿判定不再误读他租户地形（曾因跨租户同格覆盖）。
+
+### 7.2 疆域色晕弱化（commit e75ba0e）——"诡异绿色球/绿色区域"
+- 原 `drawTenantRegions` 径向色晕 alpha .10/.045，缩放后像一团实色球（t2 绿最扎眼）。
+- 现降为 .045/.02 极淡打底 + 租户色虚线疆域环（结构化领地边界，随缩放 1.2-2px），
+  租户色只作身份语义。
+
+### 7.3 回归脚本抗 CPU 高占用（commit e75ba0e）
+- API 超时 5s→25s（`CC_API_TIMEOUT_MS` 可覆盖）；survey tab 轮询等真实内容；
+  聚焦 HUD / worker 资产行改轮询等待（并行 agent 高 CPU 时不再误报）。
+- 并行高占用环境实测 5/12→10/12；余 2 项为并行 worktree 重启 8787 服务打断
+  （服务 PID 会被并行 agent 的 start-cc.mjs 争抢，回归需在低 CPU 时段跑）。
+
+### 7.4 引擎依赖类型化（commit e61c230）
+- `mapEngine.ts` 由 `./utils.js`/`./api.js` 迁移到类型化 `./utils.ts`/`./api.ts`
+  （同源导出超集）；全仓确认无其他调用方后删除两个遗留 .js。tsc + build 全绿。
+

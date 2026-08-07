@@ -20,6 +20,8 @@ import { loadMergedMap } from "./lib/map.ts";
 import { loadOverview, loadStream, loadReplay, loadPlan, loadWorld, loadEvents } from "./lib/streams.ts";
 import { loadSurveyDb, loadLifecycleDb, loadSurvey, loadResourceTimeline, loadSpendTrend, loadUnitLifecycleDb, loadChunksDb } from "./lib/survey.ts";
 import { loadTenantSurveyCached, startSurveyCacheLoop } from "./lib/survey-cache.ts";
+import { loadDeeds, startDeedsCacheLoop } from "./lib/deeds.ts";
+import { loadAllianceSurvey, refreshAllianceSurvey, TENANT_COLORS } from "./lib/alliance-survey.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
 import { loadLeaderboardIntel, loadOurUsernames } from "./lib/leaderboard.ts";
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
@@ -41,7 +43,8 @@ app.get("/api/tenants", async (c) => {
     const s = sup?.tenants?.find((x) => x.tenantId === t) ?? null;
     return { tenant: t, live: s ? s.ready === true && s.alive === true : false, supervisor: s };
   });
-  return c.json({ generatedAt: new Date().toISOString(), tenants });
+  // 租户区分色（2026-08-08）：前端左栏四租户卡片/地图/树目录共用，无需硬编码。
+  return c.json({ generatedAt: new Date().toISOString(), tenants, colors: TENANT_COLORS });
 });
 app.get("/api/overview", async (c) => {
   const sup = await supervisorState();
@@ -82,7 +85,7 @@ app.get("/api/survey", (c) => {
   const tenant = c.req.query("tenant") ?? "all";
   const states = (c.req.query("states") ?? "visible,stale").split(",").map((s) => s.trim()).filter(Boolean);
   const tenants = tenant === "all" ? [...TENANTS] : [tenant];
-  const out: Record<string, unknown> = { generatedAt: new Date().toISOString(), tenants: {} };
+  const out: Record<string, unknown> = { generatedAt: new Date().toISOString(), tenants: {}, colors: TENANT_COLORS };
   for (const t of tenants) {
     const cached = loadTenantSurveyCached(t);
     const s = cached.survey;
@@ -120,6 +123,26 @@ app.get("/api/survey/mine", (c) => {
   const cell = `${mine.x},${mine.y}`;
   return c.json({ tenant, mine, cell, timeline: loadResourceTimeline(tenant, cell) });
 });
+
+app.get("/api/deeds", (c) => {
+  // 事迹/日记（2026-08-08）：跨租户叙事级事迹，?tenant=all|t1..t4&limit=60。
+  // 数据源分层：★3-4 稀有事件扫描 + ★2 里程碑（survey-db）+ ★1 常规（限流）。
+  // 45s 内存缓存 + 后台预热，前端轮询不实时扫库。
+  const tenant = c.req.query("tenant") ?? "all";
+  const n = Number(c.req.query("limit") ?? 60);
+  const limit = Math.min(Math.max(Number.isFinite(n) ? n : 60, 1), 200);
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  const deeds = loadDeeds(tenant, limit);
+  return c.json({ generatedAt: new Date().toISOString(), tenant, limit, deeds });
+});
+app.get("/api/alliance/survey", (c) => {
+  // 联盟共享测绘（2026-08-08）：四租户 survey-db 聚合（敌核/矿/障碍/探索分区
+  // + 生命周期 + 租户色）——地图「全联盟」层数据源，30s 聚合缓存。
+  return c.json(loadAllianceSurvey());
+});
+
 app.get("/api/events", (c) => {
   const tenant = c.req.query("tenant") ?? "t1";
   const n = Number(c.req.query("n") ?? 60);
@@ -322,7 +345,17 @@ app.onError((err, c) => {
 serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: number }) => {
   console.log(`Arena 指挥面板：http://127.0.0.1:${info.port}`);
   console.log(`数据根（只读）：${DATA_ROOT}`);
-  // 测绘内存缓存后台预热 + 30s 刷新（2026-08-08 UX 优化：前端请求读缓存毫秒级）
+  // 后台预热 + 定时刷新（2026-08-08 UX 优化：前端请求读缓存毫秒级，数据不
+  // 等前端打开才加载）：测绘 30s / 事迹 45s / 联盟情报 30s / 共享测绘 30s。
   startSurveyCacheLoop(30_000);
-  console.log("测绘缓存：后台预热 + 30s 刷新已启动");
+  startDeedsCacheLoop(45_000);
+  const warmAlliance = (): void => {
+    try {
+      loadAllianceIntel(); // 内部 30s 缓存（排行榜 + 遭遇索引）
+      refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存
+    } catch { /* 数据缺失/临时 IO 失败不阻塞启动 */ }
+  };
+  warmAlliance();
+  setInterval(warmAlliance, 30_000);
+  console.log("后台预热：测绘 30s / 事迹 45s / 联盟情报 + 共享测绘 30s 已启动");
 });

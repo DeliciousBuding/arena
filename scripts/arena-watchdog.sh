@@ -6,7 +6,7 @@
 set -u
 
 LOG="$HOME/arena-watchdog.log"
-REPO="/d/Code/Projects/arena/arena-ts"
+REPO="/d/Code/Projects/arena/arena-ts/.worktrees/production-runtime"
 DATA_ROOT="/d/Code/Projects/arena/data"
 RUNTIME_ROOT="$DATA_ROOT/runtime"
 READY_URL="http://127.0.0.1:8120/ready"
@@ -78,25 +78,40 @@ if [ -n "$PID" ]; then
   fi
 fi
 
-# 2) 再确认没有残留 run-tenant / run-supervisor 进程（双 writer 红线）
-STRAY=$(wmic process where "name='node.exe'" get processid,commandline 2>/dev/null \
-  | grep -E 'run-tenant|run-supervisor' | grep -oE '[0-9]+$' | head -1)
-if [ -n "$STRAY" ]; then
-  taskkill //PID "$STRAY" //T //F >> "$LOG" 2>&1
+# 2) 再确认没有残留 run-tenant / run-supervisor 进程（双 writer 红线）。
+# 旧版只 `head -1` 杀第一个 stray，随后无条件 rm 四租户锁；若 supervisor 树
+# 尚有其他 child 存活，就会制造“writer 仍在写、single-writer lock 被删”的危险
+# 假恢复（2026-08-08 生产实证）。现在循环清完整个集合，并在删锁前做最终硬门禁。
+arena_pids() {
+  wmic process where "name='node.exe'" get processid,commandline 2>/dev/null \
+    | grep -E 'run-tenant|run-supervisor' | grep -oE '[0-9]+$' | tr -d '\r' | sort -u
+}
+for ATTEMPT in 1 2 3; do
+  STRAYS=$(arena_pids)
+  [ -z "$STRAYS" ] && break
+  for STRAY in $STRAYS; do
+    taskkill //PID "$STRAY" //T //F >> "$LOG" 2>&1 || true
+  done
   sleep 3
+done
+STRAYS=$(arena_pids)
+if [ -n "$STRAYS" ]; then
+  echo "$(now) ABORT recovery: live arena process(es) still present after kill attempts: $STRAYS; locks preserved" >> "$LOG"
+  exit 1
 fi
 
-# 3) 清理死锁（进程已确认死透；t1-t4 全部由 TS 线管理）
+# 3) 清理死锁——只有上面的最终进程门禁确认所有 writer/supervisor 都已退出后才允许。
 rm -f "$RUNTIME_ROOT/t1/locks/"*.lock "$RUNTIME_ROOT/t2/locks/"*.lock "$RUNTIME_ROOT/t3/locks/"*.lock "$RUNTIME_ROOT/t4/locks/"*.lock
 
 # 4) 重启 live supervisor（脱离当前会话，日志追加；--record-calibration 旁路
 #    只记录 raw Runtime-Golden dataset；后续校准严格离线执行）
 cd "$REPO" || exit 1
-nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --port=8120 >> "$LOG" 2>&1 &
-echo "$(now) supervisor restarted (pid $!)" >> "$LOG"
+nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --record-alliance-shadow --alliance-shadow-interval-ticks=3 --port=8120 >> "$LOG" 2>&1 &
+echo "$(now) supervisor restarted (pid $!, alliance-shadow interval=3)" >> "$LOG"
 # 测绘库增量同步（2026-08-08，survey-db 联动）：重启后同步最新 run 的
 # calibration case → 测绘库（幂等；供下次启动 seed + 面板 /api/survey）。
 # 只读 calibration + 写 survey 库，与 supervisor 无 writer 冲突。
 (cd "$REPO" && npm run survey:sync --silent -- --tenants=t1,t2,t3,t4 --latest-only) >> "$LOG" 2>&1 || true
+
 
 
