@@ -52,6 +52,7 @@ const state = {
   drag: null,
   hover: null, hoverKey: '',
   streamCollapsed: false,
+  streamHeight: 244,             // 决策流高度（可拖拽 140-460px，持久化）
   streamFilterQuiet: false, // 「只看决策」：隐藏无需决策行
   streamLive: null, // 折叠态胶囊：最新一条决策摘要
   viewAnim: null,
@@ -82,7 +83,7 @@ const els = {
   streamTabs: $('#streamTabs'), streamBody: $('#streamBody'), streamJump: $('#streamJump'),
   tooltip: $('#mapTooltip'), hint: $('#mapHint'),
   redeemBtn: $('#redeemBtn'), redeemDialog: $('#redeemDialog'), redeemClose: $('#redeemClose'),
-  redeemResult: $('#redeemResult'), redeemHistory: $('#redeemHistory'),
+  redeemResult: $('#redeemResult'), redeemHistory: $('#redeemHistory'), streamGrip: $('#streamGrip'),
   shopCookie: $('#shopCookie'), cookieSave: $('#cookieSave'), cookieTest: $('#cookieTest'),
   shopAccount: $('#shopAccount'), shopList: $('#shopList'),
   zoomLevel: $('#zoomLevel'), mapGlobal: $('#mapGlobal'), viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'), streamLive: $('#streamLive'), streamFilter: $('#streamFilter'),
@@ -110,6 +111,7 @@ function savePrefs() {
   try {
     localStorage.setItem(PREFS_KEY, JSON.stringify({
       streamCollapsed: state.streamCollapsed,
+      streamHeight: state.streamHeight,
       streamFilterQuiet: state.streamFilterQuiet,
       tab: state.tab,
       layers: state.layers,
@@ -120,13 +122,15 @@ function savePrefs() {
 function applyPrefs() {
   const p = loadPrefs();
   if (typeof p.streamCollapsed === 'boolean') state.streamCollapsed = p.streamCollapsed;
+  if (typeof p.streamHeight === 'number' && p.streamHeight >= 140 && p.streamHeight <= 460) state.streamHeight = p.streamHeight;
   if (typeof p.streamFilterQuiet === 'boolean') state.streamFilterQuiet = p.streamFilterQuiet;
   if (PREFS_TABS.includes(p.tab)) state.tab = p.tab;
   if (p.layers && typeof p.layers === 'object') {
     for (const k of Object.keys(state.layers)) if (typeof p.layers[k] === 'boolean') state.layers[k] = p.layers[k];
   }
-  // 同步 DOM 表达（折叠类 / aria / 只看决策按钮态）
+  // 同步 DOM 表达（折叠类 / aria / 只看决策按钮态 / 高度）
   els.streamPane.classList.toggle('collapsed', state.streamCollapsed);
+  els.streamPane.style.height = state.streamCollapsed ? '38px' : state.streamHeight + 'px';
   els.streamToggle.setAttribute('aria-expanded', String(!state.streamCollapsed));
   els.streamFilter.classList.toggle('on', state.streamFilterQuiet);
   els.streamFilter.title = state.streamFilterQuiet ? '显示全部（含无需决策）' : '只显示实际决策（隐藏无需决策行）';
@@ -1567,6 +1571,7 @@ function bindEvents() {
   els.streamToggle.addEventListener('click', () => {
     state.streamCollapsed = !state.streamCollapsed;
     els.streamPane.classList.toggle('collapsed', state.streamCollapsed);
+    els.streamPane.style.height = state.streamCollapsed ? '38px' : state.streamHeight + 'px';
     els.streamToggle.setAttribute('aria-expanded', String(!state.streamCollapsed));
     trackCanvasResize(); // 高度过渡期间逐帧同步画布位图（防拉伸）
     updateStreamLive();  // 折叠时显示/展开时隐藏最新决策胶囊
@@ -1576,6 +1581,27 @@ function bindEvents() {
     }
     savePrefs();
   });
+  // 决策流高度拖拽（140-460px，松手持久化）
+  if (els.streamGrip) {
+    els.streamGrip.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      const startY = e.clientY;
+      const startH = state.streamCollapsed ? state.streamHeight : els.streamPane.getBoundingClientRect().height;
+      const move = (ev) => {
+        const h = Math.max(140, Math.min(460, startH + (startY - ev.clientY)));
+        state.streamHeight = h;
+        els.streamPane.style.height = h + 'px';
+        trackCanvasResize(); // 高度变化逐帧同步画布位图（防拉伸）
+      };
+      const up = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        savePrefs();
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+    });
+  }
   // "最新"悬浮按钮：点击回到顶部（最新）；手动回到顶部自动隐藏
   if (els.streamJump) {
     els.streamJump.addEventListener('click', () => { els.streamBody.scrollTop = 0; els.streamJump.hidden = true; });
