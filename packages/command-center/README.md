@@ -37,6 +37,20 @@ type stripping）+ React 19 + Vite 8 + TS（Bun/Node 工具链），浏览器访
 
 - `latestRunDir` 按 run 内最高 case tick 选 run（UUID 字典序 ≠ 时间序——旧 bug 导致
   面板恒显示旧 run 的 stale tick，即"界面卡住显示旧数据"根因）。
+## 开发与测试流程（一键，生产级稳定基线）
+
+```bash
+cd arena-ts/packages/command-center
+npm run check:all        # ① server tsc → ② web typecheck → ③ web build（一键全绿）
+npm run test:regression  # ④ Playwright 回归 12 项（需本机 8787 + chromium；高 CPU 下自动放宽超时）
+```
+
+- CI（`.github/workflows/ci.yml` `command-center` job）：server tsc + web typecheck + web build，
+  与 `check:all` 等价；回归（依赖 live 数据）在本地跑。
+- 改动地图/引擎/API 后：`npm run check:all` 全绿再提交；涉及渲染行为再跑回归。
+- 回归在并行 agent 高 CPU 时会变慢（API 达 8-25s）：已把超时放宽到 25s 可覆盖
+  （`CC_API_TIMEOUT_MS`）、关键项改轮询等待，不再误报。
+
 ## 启动（随用随起，无计划任务/管理员）
 
 ```bash
