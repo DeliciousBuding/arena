@@ -436,8 +436,17 @@ export class SafetyPlanner {
     if (focus !== null && home !== null && this.effectivePolicy !== null && chebyshev(home, focus) > this.config.maxFocusDistance) {
       this.effectivePolicy = { ...this.effectivePolicy, focusRegion: null };
     }
+    // 攻坚权威性（2026-08-07 修复）：config.aggression === "aggressive"（变体声明，
+    // 如 strike-core-v1）时**恒 aggressive**——policy 只能把它从 defensive 升到
+    // aggressive，不能反向覆盖（否则 LLM 策略层翻烙饼到 harvest 会把攻坚掐掉，
+    // t1 生产实证：policy 在 aggressive/harvest 间每 32 tick 翻转，8 万 tick 局
+    // 里 aggressive 变体形同虚设）。无 policy 时用 config 默认。
     this.effectiveAggression =
-      input.policy !== undefined ? aggressionOf(input.policy) : (this.config.aggression ?? "defensive");
+      input.policy !== undefined
+        ? this.config.aggression === "aggressive" || aggressionOf(input.policy) === "aggressive"
+          ? "aggressive"
+          : "defensive"
+        : (this.config.aggression ?? "defensive");
     this.effectiveWorkerTarget = input.policy?.workerTarget ?? this.config.workerTarget;
     // C2 RECOVERY（竞品 lifecycle overlay 对照，2026-08-07）：Core 重生 =
     // 全新 UUID 替换（引擎 P12 respawn：CORE_DESTROYED + CORE_RESPAWNED，

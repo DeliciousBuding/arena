@@ -50,10 +50,14 @@ function scenario(seed: number) {
   };
 }
 
-function run(strike: boolean, seed: number) {
+const HARVEST_POLICY: MacroPolicy = {
+  posture: "harvest", workerTarget: 12, militaryRatio: 0.2, focusRegion: null, attackPriority: null,
+};
+
+function run(strike: boolean, seed: number, harvestPolicy = false) {
   const result = runEpisode({
     scenario: scenario(seed), rulesPath: MANIFEST_PATH, seed, ticks: 200, tenants: [
-      { id: "p1", planner: "deterministic", policy: AGGRESSIVE_POLICY },
+      { id: "p1", planner: "deterministic", policy: harvestPolicy ? HARVEST_POLICY : AGGRESSIVE_POLICY },
       { id: "p2", planner: "deterministic", policy: AGGRESSIVE_POLICY },
     ],
     plannerFactory: (tenant) =>
@@ -89,5 +93,6 @@ function run(strike: boolean, seed: number) {
 for (const seed of [1, 2, 3]) {
   const base = run(false, seed);
   const strike = run(true, seed);
-  console.log(`seed=${seed} base: p2Down=${base.p2Down} minHp=${base.p2CoreHp} shots=${base.shots} sweeps=${base.sweeps} maxMilDist=${base.maxMilDist} | strike: p2Down=${strike.p2Down} minHp=${strike.p2CoreHp} shots=${strike.shots} sweeps=${strike.sweeps} maxMilDist=${strike.maxMilDist}`);
+  const strikeHarvestPolicy = run(true, seed, true);
+  console.log(`seed=${seed} base: p2Down=${base.p2Down} minHp=${base.p2CoreHp} shots=${base.shots} sweeps=${base.sweeps} | strike: p2Down=${strike.p2Down} sweeps=${strike.sweeps} | strike+harvestPolicy: p2Down=${strikeHarvestPolicy.p2Down} sweeps=${strikeHarvestPolicy.sweeps}`);
 }
