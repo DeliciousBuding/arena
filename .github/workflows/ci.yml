@@ -13,8 +13,17 @@ jobs:
   quality:
     name: Check, test, contracts and docs
     runs-on: ubuntu-latest
+    env:
+      ARENA_SDK_MIRROR_DIR: ${{ github.workspace }}/.ci/arena-hero-python/src/arena_hero
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout pinned Arena Python SDK
+        uses: actions/checkout@v4
+        with:
+          repository: arena-hero/arena-hero-python
+          ref: 423d252adcca439669adb3e7b04252e53b4430bd
+          path: .ci/arena-hero-python
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24

@@ -34,13 +34,15 @@ async function main(): Promise<void> {
       "live-ticks": { type: "string" },
       "startup-sync-ticks": { type: "string" },
       "record-calibration": { type: "boolean" },
+      "record-alliance-shadow": { type: "boolean" },
+      "alliance-shadow-interval-ticks": { type: "string" },
       repoRoot: { type: "string" },
       "data-root": { type: "string" },
     },
   });
 
   if (values.config === undefined) {
-    console.error("用法：run-tenant --config=<tenant.json> [--doctor] [--live] [--mode=safety|deterministic|agent-shadow|hybrid] [--live-ticks=N|--max-ticks=N] [--startup-sync-ticks=N] [--record-calibration]");
+    console.error("用法：run-tenant --config=<tenant.json> [--doctor] [--live] [--mode=safety|deterministic|agent-shadow|hybrid] [--live-ticks=N|--max-ticks=N] [--startup-sync-ticks=N] [--record-calibration] [--record-alliance-shadow] [--alliance-shadow-interval-ticks=N]");
     process.exitCode = 1;
     return;
   }
@@ -87,6 +89,14 @@ async function main(): Promise<void> {
   if (!Number.isInteger(startupSyncTurns) || startupSyncTurns < 0) {
     throw new Error(`--startup-sync-ticks 必须是非负整数，实际=${startupSyncRaw}`);
   }
+  const allianceShadowIntervalRaw = values["alliance-shadow-interval-ticks"];
+  const allianceShadowIntervalTicks = allianceShadowIntervalRaw === undefined ? undefined : Number(allianceShadowIntervalRaw);
+  if (allianceShadowIntervalTicks !== undefined && (!Number.isInteger(allianceShadowIntervalTicks) || allianceShadowIntervalTicks < 1)) {
+    throw new Error(`--alliance-shadow-interval-ticks 必须是正整数，实际=${allianceShadowIntervalRaw}`);
+  }
+  if (allianceShadowIntervalTicks !== undefined && values["record-alliance-shadow"] !== true) {
+    throw new Error("--alliance-shadow-interval-ticks 只能与 --record-alliance-shadow 一起使用");
+  }
   const decisionMode = values.mode === undefined
     ? undefined
     : (values.mode as "safety" | "deterministic" | "agent-shadow" | "hybrid");
@@ -98,6 +108,8 @@ async function main(): Promise<void> {
     maxLiveTicks,
     startupSyncTurns,
     recordCalibration: values["record-calibration"] === true,
+    recordAllianceShadow: values["record-alliance-shadow"] === true,
+    allianceShadowIntervalTicks,
     onSignal: registerShutdownRequest,
   });
   console.log(

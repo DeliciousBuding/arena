@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,9 +8,29 @@ import Ajv2020 from "ajv/dist/2020.js";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptDirectory, "..");
-const sharedDataRoot = process.env.ARENA_DATA_ROOT
+const defaultCoordinationDataRoots = [
+  resolve(repositoryRoot, "..", "data"),
+  resolve(repositoryRoot, "..", "..", "..", "data"),
+];
+const requestedCoordinationDataRoot = process.env.ARENA_DATA_ROOT
   ? resolve(process.env.ARENA_DATA_ROOT)
-  : resolve(repositoryRoot, "..", "data");
+  : defaultCoordinationDataRoots.find((candidate) => existsSync(join(candidate, "schema")))
+    ?? defaultCoordinationDataRoots[0];
+const bundledSharedDataRoot = join(
+  repositoryRoot,
+  "packages",
+  "arena-agent",
+  "test",
+  "fixtures",
+  "shared-data",
+);
+const coordinationSchemaDirectory = join(requestedCoordinationDataRoot, "schema");
+const bundledSharedSchemaDirectory = join(bundledSharedDataRoot, "schema");
+const coordinationSchemasAvailable = existsSync(coordinationSchemaDirectory);
+if (process.env.ARENA_DATA_ROOT && !coordinationSchemasAvailable) {
+  throw new Error(`ARENA_DATA_ROOT does not contain schema/: ${requestedCoordinationDataRoot}`);
+}
+const sharedDataRoot = coordinationSchemasAvailable ? requestedCoordinationDataRoot : bundledSharedDataRoot;
 const sharedSchemaDirectory = join(sharedDataRoot, "schema");
 const sharedFixtureDirectory = join(sharedSchemaDirectory, "fixtures");
 const calibrationSchemaName = "sim-calibration-case-v1";
@@ -180,6 +201,60 @@ async function validateTypeScriptCalibrationFixtures(validator) {
   return validatedFixtureCount;
 }
 
+async function verifyBundledSharedDataMirror() {
+  if (!coordinationSchemasAvailable) {
+    return;
+  }
+
+  const externalSchemaFiles = (await readdir(coordinationSchemaDirectory))
+    .filter((fileName) => fileName.endsWith(".schema.json"))
+    .sort();
+  const bundledSchemaFiles = (await readdir(bundledSharedSchemaDirectory))
+    .filter((fileName) => fileName.endsWith(".schema.json"))
+    .sort();
+  assert.deepEqual(
+    bundledSchemaFiles,
+    externalSchemaFiles,
+    "bundled CI schema mirror must contain exactly the external shared schemas",
+  );
+  for (const fileName of externalSchemaFiles) {
+    const [externalBytes, bundledBytes] = await Promise.all([
+      readFile(join(coordinationSchemaDirectory, fileName)),
+      readFile(join(bundledSharedSchemaDirectory, fileName)),
+    ]);
+    assert.ok(
+      externalBytes.equals(bundledBytes),
+      `bundled CI schema mirror drift: ${fileName}`,
+    );
+  }
+
+  const externalFixtureDirectory = join(coordinationSchemaDirectory, "fixtures");
+  const bundledFixtureDirectory = join(bundledSharedSchemaDirectory, "fixtures");
+  const externalFixtures = (await listFilesRecursively(externalFixtureDirectory))
+    .filter((filePath) => filePath.endsWith(".json"))
+    .map((filePath) => relative(externalFixtureDirectory, filePath))
+    .sort();
+  const bundledFixtures = (await listFilesRecursively(bundledFixtureDirectory))
+    .filter((filePath) => filePath.endsWith(".json"))
+    .map((filePath) => relative(bundledFixtureDirectory, filePath))
+    .sort();
+  assert.deepEqual(
+    bundledFixtures,
+    externalFixtures,
+    "bundled CI fixture mirror must contain exactly the external shared fixtures",
+  );
+  for (const relativePath of externalFixtures) {
+    const [externalBytes, bundledBytes] = await Promise.all([
+      readFile(join(externalFixtureDirectory, relativePath)),
+      readFile(join(bundledFixtureDirectory, relativePath)),
+    ]);
+    assert.ok(
+      externalBytes.equals(bundledBytes),
+      `bundled CI fixture mirror drift: ${relativePath}`,
+    );
+  }
+}
+
 async function verifyCalibrationSchemaCopy() {
   const sharedCalibrationSchemaPath = join(
     sharedSchemaDirectory,
@@ -201,6 +276,9 @@ async function validateOptionalLiveSamples(validator) {
   }
   if (process.env.CI) {
     throw new Error("ARENA_SCHEMA_SAMPLE_LIVE is read-only local validation and must not run in CI");
+  }
+  if (!coordinationSchemasAvailable) {
+    throw new Error("ARENA_SCHEMA_SAMPLE_LIVE requires the external coordination data root");
   }
 
   const requestedSampleCount = Number.parseInt(process.env.ARENA_SCHEMA_LIVE_SAMPLE_COUNT ?? "10", 10);
@@ -227,6 +305,7 @@ async function validateOptionalLiveSamples(validator) {
   return boundedSamplePaths.length;
 }
 
+await verifyBundledSharedDataMirror();
 const validator = createValidator();
 const sharedSchemaCount = await registerSharedSchemas(validator);
 const sharedFixtureCount = await validateSharedFixtures(validator);

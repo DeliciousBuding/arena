@@ -20,5 +20,8 @@
   },
   "devDependencies": {
     "ajv": "^8.20.0"
+  },
+  "optionalDependencies": {
+    "@typescript/typescript-linux-x64": "7.0.2"
   }
 }
