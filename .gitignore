@@ -33,6 +33,8 @@ runtime/
 runs/run-*/n/
 # 例外：arena-agent 源码目录 src/runtime/ 不是运行时产物（gitignore 的 runtime/ 会误匹配任意层级）
 !packages/arena-agent/src/runtime/
+!packages/arena-agent/src/alliance/runtime/
+!packages/arena-agent/src/alliance/runtime/**
 
 # 模拟器 worktree（独立分支，模拟器工程专用）
 .worktrees/
