@@ -36,6 +36,7 @@ const VARIANTS: ReadonlyArray<{ readonly name: string; readonly config: Partial<
   { name: "guardHealRotation", config: { guardHealRotation: true } },
   { name: "rangerMemoryShot", config: { rangerMemoryShot: true } },
   { name: "scoutEvade", config: { scoutEvade: true } },
+  { name: "idleHealReturn", config: { idleHealReturn: true } },
 ];
 
 interface Outcome {

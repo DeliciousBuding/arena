@@ -219,6 +219,15 @@ export interface SafetyPlannerConfig {
    * 行为（无可见目标时移动/守位，零回归）。
    */
   readonly rangerMemoryShot?: boolean;
+  /**
+   * worker 空闲回血（2026-08-07，B13 候选，竞品 heal priority 对照）：
+   * 空 worker（无 cargo、无资源任务、未撤离）HP 未满且 Core 资源足够
+   * 补满时回 Core 补血——在 Core 上由主循环 HEAL 分支结算（1 HP=1 资源，
+   * 引擎 P10-unit-heal）。优先级低于撤离/回仓（竞品 worker 行为序：逃 →
+   * 撤 → 回仓 → 治疗 → 扫描 → 采集 → 巡逻）。默认 false = 历史行为
+   * （带伤 worker 继续采集/巡逻，零回归）。
+   */
+  readonly idleHealReturn?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -566,6 +575,23 @@ export class SafetyPlanner {
           return;
         }
       }
+    }
+
+    // B13 worker 空闲回血（idleHealReturn 候选，竞品 heal priority 对照）：
+    // 空 worker（无 cargo/资源任务/撤离）HP 未满且 Core 资源足够补满时回
+    // Core 补血——在 Core 上由主循环 HEAL 分支结算；治疗成本 1 HP=1 资源，
+    // 资源不足不返航（竞品"远处单位保持原有空闲任务"）。优先级低于撤离/
+    // 回仓（见上），高于采集与巡逻。
+    if (
+      this.config.idleHealReturn === true &&
+      home !== null &&
+      unit.hp < UNIT_MAX_HP[unit.unitType] &&
+      state.resources >= UNIT_MAX_HP[unit.unitType] - unit.hp &&
+      !samePosition(unit.position, home)
+    ) {
+      const direction = stepToward(unit.position, home, movementObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, "worker_heal_return");
+      return;
     }
 
     if (state.resourceCells.has(cellKey(unit.position))) {
