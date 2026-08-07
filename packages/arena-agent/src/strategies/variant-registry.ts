@@ -157,6 +157,15 @@ export interface DeterministicVariantConfig {
 export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, DeterministicVariantConfig>> =
   Object.freeze({
     "strike-core-v1": Object.freeze({ vanguardRatio: 0.5, accumulateThreshold: 30 }),
+    /**
+     * 前锋重装（2026-08-08，用户裁决"多生产前锋"）：vanguardRatio 0.5→0.75——
+     * 军事单位 3/4 为 Vanguard（攻坚拆家/守家前排），Ranger 保留 1/4 远程压制。
+     * military-composition-experiment（v0.11）：防守对手 Vanguard 配比越高越优
+     * （1.0:+35 / 0.5:+33）；进攻对手 Vanguard 前压被集火（全 Ranger 存活）——
+     * 0.75 是"偏前锋但不裸奔"折中。与 strike-core-v1 叠加：仅调配比，保留
+     * accumulateThreshold=30 爆兵节奏。
+     */
+    "vanguard-heavy-v1": Object.freeze({ vanguardRatio: 0.75 }),
   });
 
 /** 解析变体 id → SafetyPlanner 配置覆盖；未知 id 抛错（fail-fast）。 */
@@ -198,3 +207,4 @@ export function resolveDeterministicVariantsConfig(
   if (ids === undefined || ids.length === 0) return {};
   return Object.assign({}, ...ids.map((id) => resolveDeterministicVariantConfig(id)));
 }
+
