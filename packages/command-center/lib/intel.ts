@@ -107,10 +107,11 @@ export function loadAllianceIntel(): IntelPayload {
       })
       .slice(0, RUN_SCAN);
     const seenCores = new Map<string, { position: Position; tick: number }>(); // owner -> { position, tick }
-    let enemyUnits = 0;
+    let enemyUnitSightings = 0; // naive 目击条数（审计口径，不做兵力展示）
     let ourCore: Position | null = null; // 我方（controlled）Core 位置——快攻威胁距离基准
     let ourCoreTick = -1; // ourCore 对应的目击 tick（防旧 run 覆盖新位置）
     const combatNearCore = new Map<string, number>(); // 我方核心 18 格警戒圈内的敌军战斗单位 id -> 最近目击 tick
+    const enemyUnitById = new Map<string, { unitType: string; position: Position; tick: number }>(); // 敌战斗单位最后目击记忆（面板敌情记忆层）
     let latestTick = 0; // 本租户扫描窗口内的最高 tick（新鲜度基准）
     for (const rd of runDirs) {
       const caseFiles = listCases(tenant, rd).slice(-INTEL_CASE_LIMIT);
@@ -134,10 +135,15 @@ export function loadAllianceIntel(): IntelPayload {
             const prev = seenCores.get(obj.owner_username as string);
             if (prev === undefined || tick > prev.tick) seenCores.set(obj.owner_username as string, { position: obj.position as Position, tick });
           } else if (obj.kind === "UNIT" && !obj.controlled && obj.unit_type !== "WORKER") {
-            enemyUnits += 1;
+            enemyUnitSightings += 1; // naive：同 id 多 tick 目击会重复放大（spec §1.1），仅审计
             if (ourCore !== null && manhattan(obj.position as Position, ourCore) <= RAID_UNIT_WATCH_RADIUS) {
               const prev = combatNearCore.get(obj.id as string);
               if (prev === undefined || tick > prev) combatNearCore.set(obj.id as string, tick);
+            }
+            // 记忆层：任何敌战斗单位的最后目击（id 级去重，供面板画半透明敌情标记）
+            const prevUnit = enemyUnitById.get(obj.id as string);
+            if (prevUnit === undefined || tick > prevUnit.tick) {
+              enemyUnitById.set(obj.id as string, { unitType: (obj.unit_type as string) ?? "VANGUARD", position: obj.position as Position, tick });
             }
           }
         }
@@ -176,11 +182,21 @@ export function loadAllianceIntel(): IntelPayload {
         raidActivityAge: maxRecentAge,
       };
     }).sort((a, b) => (b.lastSeenTick - a.lastSeenTick) || a.username.localeCompare(b.username));
+    const enemyUnitMemory = [...enemyUnitById.entries()]
+      .map(([id, u]) => ({ id, unitType: u.unitType, position: u.position, lastSeenTick: u.tick }))
+      .sort((a, b) => b.lastSeenTick - a.lastSeenTick)
+      .slice(0, 100); // 上限 100：面板敌情记忆层（单位是动态目标，只取最近目击）
     intel.tenants.push({
       tenant,
       runId: runDir,
       enemyCores,
-      enemyUnits,
+      // 2026-08-08 alliance-model：enemyUnits 改为 id 级去重 unique 战斗单位数
+      // （enemyUnitById.size）；naive 条数保留 enemyUnitSightings 供审计。
+      // 旧 `enemyUnits += 1` 会重复累加——离线实证 494 naive vs 44 unique
+      // （放大 11.23x），"83 敌单位"即此类假象。
+      enemyUnits: enemyUnitById.size,
+      enemyUnitSightings,
+      enemyUnitMemory,
       ourCore,
       combatUnitsNearCore: recentCount,
       raidActivityAge: maxRecentAge,
