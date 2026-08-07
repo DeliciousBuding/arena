@@ -23,6 +23,7 @@ import { loadTenantSurveyCached, startSurveyCacheLoop } from "./lib/survey-cache
 import { loadDeeds, startDeedsCacheLoop } from "./lib/deeds.ts";
 import { loadAllianceSurvey, refreshAllianceSurvey, TENANT_COLORS } from "./lib/alliance-survey.ts";
 import { loadAllianceSnapshot, refreshAllianceSnapshot } from "./lib/alliance-snapshot.ts";
+import { loadAllianceAdvice, refreshAllianceAdvice } from "./lib/alliance-advice.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
 import { loadLeaderboardIntel, loadOurUsernames } from "./lib/leaderboard.ts";
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
@@ -148,6 +149,12 @@ app.get("/api/alliance/snapshot", (c) => {
   // 世界状态 + 排行榜先验——members/sightings/counts/intel/threat/
   // threatSummaries（8 扇区），30s 缓存。前端「联盟态势」tab 数据源。
   return c.json(loadAllianceSnapshot());
+});
+app.get("/api/alliance/advice", (c) => {
+  // 联盟参谋建议（2026-08-08）：快照 + 共享测绘 + 排行榜综合成可执行运维
+  // 建议（经济/军事/威胁/抢矿/高威胁玩家），按严重度排序——人机协同决策
+  // 支持。纯快照数据（不触发 intel 扫描），30s 缓存。
+  return c.json(loadAllianceAdvice());
 });
 
 app.get("/api/events", (c) => {
@@ -364,6 +371,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
       refreshAllianceSnapshot(); // 联盟态势快照 30s 缓存（读 survey/世界缓存，快）
+      refreshAllianceAdvice(); // 联盟参谋建议 30s 缓存（读快照/共享测绘缓存，快）
       void supervisorState(); // 8120 健康状态 5s 缓存（/api/overview、/api/tenants 首开即快）
     } catch { /* 数据缺失/临时 IO 失败不阻塞启动 */ }
   };
