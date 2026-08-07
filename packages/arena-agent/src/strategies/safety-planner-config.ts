@@ -316,6 +316,28 @@ export interface SafetyPlannerConfig {
    * 方位（零回归）。
    */
   readonly workerDenseScan?: boolean;
+  /**
+   * 核心迁移中交仓待命（2026-08-07，core-moving-hold-v1）：Core 处于 MOVING
+   * 时（START_MOVE 迁移中，不可 DEPOSIT——引擎 CORE_MOVING/CORE_NOT_PRESENT
+   * 拒绝），cargo worker 原地待命持货，不追着移动核心交仓（生产实测 t2/t3
+   * 手操迁移时 150 tick 内 DEPOSIT_FAILED 17/11 次，经济拖累）；核心回 NORMAL
+   * 后恢复交仓。与 coreClearance 互补（一个管迁移中不追交、一个管不堵核心格）。
+   * 默认 false = 历史行为（迁移中也追交，零回归）。
+   */
+  readonly coreMovingHold?: boolean;
+  /**
+   * 核心通道清障（2026-08-07，core-clearance-v1）：核心格容量 = 2（含 Core，
+   * 仅余 1 槽）且是 worker 卸货/SPAWN 唯一通道——军事守位回退到核心格会把
+   * 通道占死（生产 t2 实证：Vanguard 站核心格 → 满载 worker 4 邻格全 WAIT、
+   * DEPOSIT_FAILED 77%，手操移开下 tick 又被放回）。启用后：
+   *  - 军事单位绝不站核心格：homeCell 四邻全堵时守位回退到外圈（Chebyshev 2），
+   *    不落核心格；
+   *  - 已在核心格的军事单位疏散到最近空邻格/外圈（让位给卸货 worker）；
+   *  - 满载 worker 在核心格但卸不了（核心满/迁移中）→ 离开核心格待命，
+   *    不堵通道（guide 竞品 "Core 满仓分散待命并腾空生产格" 对齐）。
+   * 默认 false = 历史行为（允许军事占核心格，零回归）。
+   */
+  readonly coreClearance?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

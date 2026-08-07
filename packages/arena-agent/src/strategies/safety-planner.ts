@@ -434,6 +434,20 @@ export class SafetyPlanner {
     return min;
   }
 
+  /** 核心外圈守位点（core-clearance-v1，2026-08-07）：距核心 Chebyshev 2 的
+   *  16 方位点（DENSE_DELTAS×2），按单位序号轮转选第一个非障碍点——homeCell
+   *  四邻全堵时军事守位回退到外圈而非核心格（核心格容量 2 含 Core，是 worker
+   *  卸货唯一通道，被军事占 = 卸货死锁）。极端全堵返回核心自身（配合疏散分支，
+   *  站在核心格的单位每 tick 先被移走，兜底只影响回援目标不造成滞留）。 */
+  private coreGuardFallback(core: Position, obstacles: ReadonlySet<string>, index: number): Position {
+    for (let k = 0; k < DENSE_DELTAS.length; k += 1) {
+      const [dx, dy] = DENSE_DELTAS[(index * 3 + k) % DENSE_DELTAS.length]!;
+      const pos: Position = [core[0] + dx * 2, core[1] + dy * 2];
+      if (!obstacles.has(cellKey(pos))) return pos;
+    }
+    return core;
+  }
+
   /** 邻近敌核心（raid-defense-v1，2026-08-07）：coreHuntTargets 中 CORE 目击
    *  （sticky 记忆）距我方 Core ≤ raidCoreRadius → 站立威胁——即使该玩家从不
    *  进攻，也可能随时派小股来偷家/骚扰（用户裁决"别人可以只派一些人来打"）。
@@ -680,8 +694,30 @@ export class SafetyPlanner {
       recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
 
     if (unit.cargo > 0) {
+      // 核心迁移中交仓待命（core-moving-hold-v1，2026-08-07）：MOVING 期间
+      // 引擎拒绝 DEPOSIT（CORE_MOVING/CORE_NOT_PRESENT——生产实测 t2/t3 手操
+      // 迁移时 150 tick 内 17/11 次失败），cargo worker 原地持货等核心稳定，
+      // 不追着移动核心空跑；核心回 NORMAL 后恢复正常交仓。
+      if (
+        this.config.coreMovingHold === true &&
+        state.core?.state === "MOVING"
+      ) {
+        set(unit, { type: "WAIT" }, "worker_hold_cargo_moving");
+        return;
+      }
       if (home !== null && samePosition(unit.position, home)) {
         if (state.resourceSpace > 0) set(unit, { type: "DEPOSIT" }, "deposit");
+        else if (this.config.coreClearance === true) {
+          // 核心满/迁移中卸不了 → 离开核心格待命，不堵通道（guide 竞品
+          // "Core 满仓分散待命并腾空生产格" 对齐——满载 worker 占核心格会
+          // 挡 SPAWN/后续卸货）。
+          const exit = homeCell(home, movementObstacles, index)
+            ?? this.coreGuardFallback(home, movementObstacles, index);
+          if (exit !== null && !samePosition(unit.position, exit)) {
+            const direction = stepToward(unit.position, exit, movementObstacles);
+            if (direction !== null) { set(unit, { type: "MOVE", direction }, "worker_clear_core"); return; }
+          }
+        }
       } else if (home !== null) {
         const stuckTicks = this.moveFailedStreak.get(unit.id) ?? 0;
         const direction =
@@ -921,14 +957,37 @@ export class SafetyPlanner {
     const militaryObstacles = state.core === null
       ? movementObstacles
       : new Set([...movementObstacles, cellKey(state.core.position)]);
+    // 核心通道清障（core-clearance-v1）：homeCell 四邻全堵时历史行为回退到核心
+    // 格（占死卸货通道）——coreClearance 下回退到外圈守位点，军事绝不落核心格。
     const approachTarget = state.core === null
       ? null
-      : homeCell(state.core.position, militaryObstacles, index) ?? state.core.position;
+      : homeCell(state.core.position, militaryObstacles, index)
+        ?? (this.config.coreClearance === true
+          ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
+          : state.core.position);
     const adjacent = enemies.find((enemy) => manhattan(unit.position, enemy.position) === 1);
     if (adjacent !== undefined) {
       const direction = directionToAdjacent(unit.position, adjacent.position);
       if (direction !== null) set(unit, { type: "SWEEP", direction }, "sweep");
       return;
+    }
+
+    // 核心通道清障（core-clearance-v1，2026-08-07）：本 Vanguard 站在核心格上
+    // → 立即疏散到最近空邻格/外圈（让位给满载 worker 卸货）。核心格容量 2
+    // （含 Core）且是卸货/SPAWN 唯一通道，军事占核心格 = 卸货死锁（生产 t2
+    // 实证：Vanguard 占核心格 → 满载 worker 4 邻格全 WAIT、DEPOSIT_FAILED
+    // 77%，手操移开下 tick 又被放回）。SWEEP 已在上方处理邻接敌。
+    if (
+      this.config.coreClearance === true &&
+      state.core !== null &&
+      samePosition(unit.position, state.core.position)
+    ) {
+      const exit = homeCell(state.core.position, movementObstacles, index)
+        ?? this.coreGuardFallback(state.core.position, movementObstacles, index);
+      if (exit !== null && !samePosition(unit.position, exit)) {
+        const direction = stepToward(unit.position, exit, movementObstacles);
+        if (direction !== null) { set(unit, { type: "MOVE", direction }, "vanguard_clear_core"); return; }
+      }
     }
 
     // 远端军事回援（remoteReinforce 候选，竞品 "敌方战斗单位已经进入 Core
@@ -973,7 +1032,12 @@ export class SafetyPlanner {
       const force = this.adaptiveAttackForce();
       const forceGate = force > 0 && military < force;
       if (forceGate) {
-        const home = state.core === null ? null : homeCell(state.core.position, militaryObstacles, index);
+        const home = state.core === null
+          ? null
+          : homeCell(state.core.position, militaryObstacles, index)
+            ?? (this.config.coreClearance === true
+              ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
+              : state.core.position);
         if (home !== null && !samePosition(unit.position, home)) {
           const direction = stepToward(unit.position, home, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_hold");
@@ -991,7 +1055,12 @@ export class SafetyPlanner {
         sortedVanguards.length > reserveGuards &&
         sortedVanguards.slice(-reserveGuards).includes(unit.id);
       if (reserveGuard) {
-        const home = state.core === null ? null : homeCell(state.core.position, militaryObstacles, index);
+        const home = state.core === null
+          ? null
+          : homeCell(state.core.position, militaryObstacles, index)
+            ?? (this.config.coreClearance === true
+              ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
+              : state.core.position);
         if (home !== null && !samePosition(unit.position, home)) {
           const direction = stepToward(unit.position, home, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_home_guard");
@@ -1263,9 +1332,29 @@ export class SafetyPlanner {
     const militaryObstacles = state.core === null
       ? movementObstacles
       : new Set([...movementObstacles, cellKey(state.core.position)]);
+    // 核心通道清障（core-clearance-v1）：homeCell 四邻全堵时历史行为回退到核心
+    // 格（占死卸货通道）——coreClearance 下回退到外圈守位点，军事绝不落核心格。
     const approachTarget = state.core === null
       ? null
-      : homeCell(state.core.position, militaryObstacles, index) ?? state.core.position;
+      : homeCell(state.core.position, militaryObstacles, index)
+        ?? (this.config.coreClearance === true
+          ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
+          : state.core.position);
+
+    // 核心通道清障（core-clearance-v1，2026-08-07）：本 Ranger 站在核心格上
+    // → 疏散到最近空邻格/外圈（与 Vanguard 同，核心格只留给卸货 worker）。
+    if (
+      this.config.coreClearance === true &&
+      state.core !== null &&
+      samePosition(unit.position, state.core.position)
+    ) {
+      const exit = homeCell(state.core.position, movementObstacles, index)
+        ?? this.coreGuardFallback(state.core.position, movementObstacles, index);
+      if (exit !== null && !samePosition(unit.position, exit)) {
+        const direction = stepToward(unit.position, exit, movementObstacles);
+        if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_clear_core"); return; }
+      }
+    }
 
     // Precision shot at a visible enemy in range. Aggressive mode prioritizes
     // enemy Workers to cut their economy (cargo never reaches their Core).
