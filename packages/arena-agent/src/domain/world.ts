@@ -15,6 +15,10 @@ const TRANSIENT_MOVE_FAILURE_REASONS = new Set([
  *  防"幽灵资源"——记忆中的资源格实际已被采空/不再 refill。 */
 const RESOURCE_MEMORY_TTL_TICKS = 64;
 
+/** 信标位置历史长度上限（beaconGrab 防追标）：10 tick 窗口内 2+ 个不同位置 =
+ *  信标在移动（敌方携带/漂移），窗口 20 足够判定且不拖内存。 */
+const BEACON_HISTORY_MAX = 20;
+
 /** 敌情狩猎（2026-08-07，持久敌情测绘）：CORE 目击目标 sticky 窗口
  *  （≈2000 tick ≈ 敌 Core 残血回满/迁移周期——回访最后已知基地仍有效）。 */
 const CORE_HUNT_STICKY_TICKS = 2000;
@@ -149,6 +153,10 @@ export class World {
    *  观察来源 = 视野实体格（障碍/资源/敌人/我方单位/Core/Beacon）——
    *  巡逻/采集到达的区域随实体观察自然更新老化。 */
   private readonly chunkMemory = new Map<string, number>();
+  /** 信标位置历史（beaconGrab 防追标）：近 N tick 的 beacon.position 序列——
+   *  移动中的信标 = 被敌方核心携带/漂移（t2 生产实证：信标被 jerkman 核心
+   *  带着东移），单骑追标会深入敌区送死；静止（真掉落）才可 fetch。 */
+  private readonly beaconHistory: { tick: number; position: Position }[] = [];
   /** 敌情狩猎记忆（sticky）：敌 Core 基地候选（绝对坐标——C2 RECOVERY 不清，
    *  属战略 intel 而非相对 Core 的战场记忆）。 */
   private readonly coreHuntMemory = new Map<string, CoreHuntTarget>();
@@ -189,11 +197,14 @@ export class World {
       this.unitMoveFailures.clear();
       this.unitMemories.clear();
       this.chunkMemory.clear();
+      this.beaconHistory.length = 0;
       this.coreHuntMemory.clear();
       this.worldResetCount += 1;
       this.lastWorldResetTick = state.tick;
     }
     this.tick = state.tick;
+    this.beaconHistory.push({ tick: state.tick, position: state.beacon.position });
+    if (this.beaconHistory.length > BEACON_HISTORY_MAX) this.beaconHistory.shift();
     for (const cell of state.obstacleCells) this.obstacleMemory.add(cell);
     for (const cell of state.obstacleCells) this.chunkMemory.set(chunkKeyFor(parseCellKey(cell)), state.tick);
 
@@ -439,6 +450,22 @@ export class World {
   /** 敌情狩猎目标（排序：CORE 目击优先 → 新鲜度 → 坐标 tie-break）。
    *  CORE 目击 sticky（maxAge = CORE_HUNT_STICKY_TICKS）；WORKER_INFER
    *  短窗口（CORE_HUNT_WORKER_INFER_TICKS）——推断目标会漂移。 */
+  /** 信标是否在近 withinTicks 内移动过（≥2 个不同位置）。移动中的信标 =
+   *  被敌方核心携带/漂移——单骑追标会深入敌区送死（t2 生产实证 2026-08-08：
+   *  信标被 jerkman 核心带着沿 y=0 东移，vanguard 北上追标 = 送人头）。
+   *  静止（真掉落）才可 fetch。 */
+  beaconMoving(withinTicks: number): boolean {
+    if (withinTicks <= 0 || this.beaconHistory.length < 2) return false;
+    const since = this.tick - withinTicks;
+    const seen = new Set<string>();
+    for (const entry of this.beaconHistory) {
+      if (entry.tick < since) continue;
+      seen.add(entry.position[0] + "," + entry.position[1]);
+      if (seen.size >= 2) return true;
+    }
+    return false;
+  }
+
   coreHuntTargets(maxAge?: number): readonly CoreHuntTarget[] {
     const coreAge = maxAge ?? CORE_HUNT_STICKY_TICKS;
     const workerAge = maxAge ?? CORE_HUNT_WORKER_INFER_TICKS;
@@ -634,4 +661,8 @@ export class World {
     };
   }
 }
+
+
+
+
 
