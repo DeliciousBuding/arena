@@ -169,16 +169,16 @@
 - 不把租户色/语义色用于装饰（发光、渐变、大色块背景）。
 - 改字体/颜色先改本文件与 `:root`，再动组件。
 
-## 7. 真实指挥（人类最高控制权，2026-08-07）
+## 8. 真实指挥（人类最高控制权，2026-08-07）
 
 - 意图式指挥：点工人-点移动-点目标格 = 下达持续任务。点矿格 到 mine 采矿意图（到达自动 HARVEST、
   满仓自动回仓 DEPOSIT、目标采空 satisfied 交还 agent）；点空地 到 goto 移动意图（到位即完成）。
   MOVE/SHOOT/SWEEP/SPAWN/采集/回仓/治疗等 = 一键动作（单 tick 覆盖，最高优先）。
 - 交互反馈：动作按钮 title=提交（人类指挥）；动作框顶部「人类指挥已接管 N 条指令」徽章；
   提交/拒绝/意图完成均有 toast；动作框与舰队 HUD 实时回显指令状态；清除指令即交还 agent。
-- 架构：前端（React /app）到 server.ts /api/command* 到 data/runtime/human-commands/<tenant>.json
-  （数据层）到 human-override.ts（tenant 主循环提交前合并，复用 validatePlan 净校验 + 逐条拒绝原因）
-  到 官方 SDK 提交（单一 writer 不变）。mode=disabled 一键交还 agent 全权。
-- React 前端：web/（Vite+React+TS+Bun，全量 TS）。React 管 chrome（三栏布局 + 右栏面板），
-  src/engine/mapEngine.ts 管地图/战术/回放；视觉单一源 = public/style.css（React 直接 import）。
-  构建 bun run build 到 web/dist 到 /app/。
+- 架构：前端（React /app）→ `server.ts` `/api/command*` → `data/runtime/human-commands/<tenant>.json`
+  （数据层）→ `human-override.ts`（tenant 主循环提交前合并，复用 validatePlan 净校验 + 逐条拒绝原因）
+  → 官方 SDK 提交（单一 writer 不变）。mode=disabled 一键交还 agent 全权。
+- React 前端：`web/`（Vite+React+TS+Bun，全量 TS）。React 管 chrome（三栏布局 + 右栏面板），
+  `src/engine/mapEngine.ts` 管地图/战术/回放；视觉单一源 = `public/style.css`（React 直接 import）。
+  构建 `bun run build` 到 `web/dist` 到 `/app/`。

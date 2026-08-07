@@ -48,7 +48,10 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
 # 打开 http://127.0.0.1:8787
 ```
 
-访问：http://127.0.0.1:8787/ （legacy 面板） · http://127.0.0.1:8787/app/ （React 前端构建产物）
+访问：http://127.0.0.1:8787/ （重定向到 /app/ · React 前端） · http://127.0.0.1:8787/app/ （React 构建产物）。
+
+> 注：旧 `public/index.html` + `public/app.js`（零依赖原生 JS 面板）已被 React 前端取代，
+> 根 `/` 重定向到 `/app/`；`public/` 现仅作静态素材（美术/字体）+ `style.css` 单一视觉源。
 
 环境变量：
 
@@ -64,6 +67,9 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
   测绘语义：障碍/资源静态累积（带 lastSeen 新鲜度，被采完的资源淡出）、单位/核心按 id 保留最新
   tick 快照（消除旧版"单位云团/核心幽灵"——之前 3 个 case 每 tick 位置堆成 cell 导致单位成片、
   核心像有两个）。每租户疆域色晕 + 核心标签，一眼区分 4 租户领地。
+- **跨 run 测绘库（survey-db）**：`runtime/survey/<tenant>.db`（node:sqlite 只读）累积全部历史 run
+  的资源/障碍/敌核（含 firstSeenTick/seenCount/state）+ 单位生命周期（unit_lifecycle 出生/阵亡/原因）+
+  消费记账（core_spends）/矿格事件时间线（resource_events）；数据源优先级高于 calibration 扫描。
 - **探索测绘（fog 记忆）**：聚焦租户时，`/api/exploration` 累积同一 run 全部 calibration case
   （同一世界连续 tick 采样）的 obstacle/resource 位置 → 完整地形测绘（半透明"已测绘"层，按距最新
   tick 的步数淡出），当前 case 可见物体全亮覆盖。HUD 显示测绘统计；"测绘"图层可开关。
@@ -75,6 +81,8 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
 - **三栏布局 + 右栏面板（2026-08-08）**：左栏（租户/图层）+ 地图 + 右栏三 tab（决策流 / 威胁情报 / 兑换码），
   左右栏可折叠为 40px 窄条（VSCode 侧边栏模式，折叠状态持久化）。威胁情报 = 官方排行榜（威胁/信标/核心三 tab、
   我方/遭遇高亮、榜外遭遇补全）；兑换码 = 官方商店面板（Cookie 连接、库存徽章、兑换历史）。
+- **测绘生命周期（2026-08-08）**：矿/障碍悬停查看生命周期（状态/seenCount/首次/最后看到 tick，源
+  survey-db）；HUD 生命行含累计阵亡数（unit_lifecycle）；`/api/survey` 提供每租户矿/障碍/敌核/探索分区 + 消费趋势。
 - **敌情记忆层**：出视野的敌方核心/战斗单位半透明常驻（新鲜度衰减），hover 显示 lastSeen；图例/图层可开关。
 - **战术交互层（官方 Arena Hero 前端移植 · 人类真实指挥）**：
   - 舰队索引（AssetList）：聚焦租户的受控单位列表，点击选中；
@@ -131,9 +139,9 @@ command-center/
 │                         #   leaderboard/store/shop/supervisor，全 TS）
 ├── scripts/start-cc.mjs  # 前台/后台/停止启动器（--hidden/--stop）
 ├── package.json
-├── public/               # 静态资源 + 官方美术素材 + style.css（单一视觉源；legacy app.js 已退役）
+├── public/               # 静态素材 + style.css（单一视觉源）；app.js/index.html 为已退役 legacy 面板
 │   └── assets/           # 官方 Arena Hero 美术素材（自 reference/arena-hero-web 拷贝）
-├── web/                  # React + Vite + TS 前端（构建到 dist，/app/* 托管）
+├── web/                  # React + Vite + TS 前端（web/src；构建到 dist，/app/* 托管）
 └── docs/command-center-preview.png
 ```
 
@@ -145,7 +153,8 @@ command-center/
 
 ## 门禁
 
-本包**不加入** arena-ts 根 workspaces，`npm run check` / `npm test` / `npm run schema:check` 不受影响。
+本包**不加入** arena-ts 根 workspaces，`npm run check` / `npm test` / `npm run schema:check`
+不受影响。CI 有独立专项 job 校验本包（`ci.yml`：server `tsc --noEmit` + web typecheck + vite build）。
 
 ## React + Vite + Bun/Node 工具链（web/，全 TS）
 
