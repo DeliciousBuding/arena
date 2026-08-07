@@ -1914,8 +1914,8 @@ function tactRenderInspect() {
     ['HP', obj.hp],
     ['归属', obj.controlled ? '我方' : '敌方'],
   ];
-  if (obj.shield !== undefined) rows.push(['护盾', obj.shield]);
-  if (obj.cargo !== undefined) rows.push(['载货', obj.cargo]);
+  if (obj.shield != null) rows.push(['护盾', obj.shield]);
+  if (obj.cargo != null) rows.push(['载货', obj.cargo]);
   if (obj.owner_username) rows.push(['拥有者', obj.owner_username]);
   if (obj.state === 'MOVING') rows.push(['状态', `移动中 → [${obj.destination?.[0] ?? '?'}, ${obj.destination?.[1] ?? '?'}]`]);
   const goal = tac.moveGoals[obj.id];
