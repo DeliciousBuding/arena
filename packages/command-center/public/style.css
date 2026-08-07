@@ -442,6 +442,17 @@ body::after {
 .tabs button:hover { color: var(--text-dim); }
 .tabs button.active { color: #fff; background: rgba(255,255,255,.05); border-radius: 6px 6px 0 0; }
 .tabs button.active::after { transform: scaleX(1); }
+/* 标签页决策计数徽标 */
+.tab-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 16px; padding: 0 5px; margin-left: 6px;
+  border-radius: 999px; font-size: 9px; font-weight: 700; line-height: 1;
+  color: var(--text-faint); background: rgba(255,255,255,.07); border: 1px solid var(--border);
+  vertical-align: middle; font-variant-numeric: tabular-nums;
+  transition: background .2s ease, color .2s ease;
+}
+.tabs button:hover .tab-badge { color: var(--text-dim); }
+.tabs button.active .tab-badge { color: #fff; background: rgba(255,255,255,.16); }
 #streamBody { flex: 1; overflow-y: auto; padding: 8px 14px; scroll-behavior: smooth; transition: opacity .3s ease, transform .4s var(--ease), visibility 0s linear .4s; }
 .stream-line {
   display: flex; align-items: baseline; gap: 10px;
