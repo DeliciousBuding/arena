@@ -28,7 +28,12 @@
 
   <main id="layout">
     <aside id="sidebar">
+      <div id="fleetHud" class="panel fleet-hud" hidden></div>
       <div id="tenantCards" class="stack"></div>
+      <section id="assetPanel" class="panel" hidden>
+        <h3 class="panel-title">舰队索引 · FLEET INDEX</h3>
+        <div id="assetList" class="asset-list"></div>
+      </section>
       <section class="panel">
         <h3 class="panel-title">图例</h3>
         <ul id="legendList" class="legend"></ul>
@@ -55,8 +60,12 @@
 
     <section id="mapPane">
       <canvas id="map"></canvas>
-      <div id="mapHint">拖拽平移 · 滚轮缩放 · 双击适应</div>
+      <div id="mapHint">拖拽平移 · 滚轮缩放 · 点击单位/核心进入战术视图 · Esc 取消</div>
       <div id="mapTooltip" hidden></div>
+      <div id="beaconIndicator" hidden></div>
+      <div id="actionDialog" class="action-dialog" hidden></div>
+      <div id="inspectPanel" class="panel inspect-panel" hidden></div>
+      <div id="pendingPanel" class="panel pending-panel" hidden></div>
       <div id="mapControls">
         <button id="zoomIn" class="ctl" type="button" title="放大">+</button>
         <button id="zoomOut" class="ctl" type="button" title="缩小">−</button>

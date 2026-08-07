@@ -423,3 +423,113 @@ body::after {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* ---------- 战术交互层（官方 Arena Hero 移植） ---------- */
+/* 舰队 HUD（GameStats 风格） */
+.fleet-hud { padding: 10px 12px; }
+.hud-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 12px; }
+.hud-label { font-family: var(--font-mono); font-size: 9px; letter-spacing: .18em; color: #7d8b98; text-transform: uppercase; }
+.hud-val { display: flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-weight: 650; color: #edf2f5; }
+.hud-val img { width: 15px; height: 15px; object-fit: contain; }
+.hud-val i { color: #7d8b98; font-style: normal; font-weight: 500; }
+
+/* 资产列表（AssetList 风格） */
+.asset-list { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow-y: auto; }
+.asset-row {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; min-height: 40px; padding: 4px 8px;
+  border: 1px solid transparent; border-radius: var(--gold);
+  background: transparent; color: #9aa6b0; cursor: pointer;
+  font-size: 12px; text-align: left;
+  transition: all .2s var(--ease);
+}
+.asset-row:hover { background: rgba(255,255,255,.04); color: #e6ebee; }
+.asset-row.active { background: rgba(31,37,91,.55); color: var(--blue-soft); border-color: rgba(69,145,197,.3); }
+.asset-icon {
+  width: 28px; height: 28px; flex: none; display: grid; place-items: center;
+  border-radius: var(--gold-sm); border: 1px solid rgba(104,117,167,.15); background: rgba(31,37,91,.45);
+}
+.asset-icon img { width: 20px; height: 20px; object-fit: contain; }
+.asset-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-pos { font-size: 9px; color: #6f7d89; }
+.asset-hp { font-size: 9px; color: #b9c4cd; }
+
+/* 单位详情面板 */
+.inspect-panel { position: absolute; right: 12px; top: 12px; z-index: 5; width: 190px; }
+.ins-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 11.5px; border-bottom: 1px dashed rgba(255,255,255,.05); }
+.ins-row span { color: #7d8b98; }
+.ins-row b { color: #d7dfe5; font-family: var(--font-mono); font-weight: 600; font-size: 11px; }
+
+/* 动作面板（UnitActionDialog 风格） */
+.action-dialog {
+  position: absolute; z-index: 6; width: min(17.5rem, calc(100% - 1rem));
+  background: rgba(8, 9, 13, .94); border: 1px solid rgba(104,117,167,.3);
+  border-radius: var(--gold-lg); padding: 12px;
+  box-shadow: 0 24px 70px rgba(0,0,0,.6), inset 0 1px rgba(255,255,255,.04);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  animation: dialogIn .25s var(--ease);
+}
+.act-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.act-icon {
+  width: 38px; height: 38px; flex: none; display: grid; place-items: center;
+  border-radius: var(--gold); border: 1px solid rgba(104,117,167,.18); background: rgba(31,37,91,.5);
+}
+.act-icon img { width: 30px; height: 30px; object-fit: contain; }
+.act-id { flex: 1; min-width: 0; }
+.act-id b { display: block; font-size: 13px; color: #eef3f6; }
+.act-id .mono { display: block; font-size: 10px; color: #9aa6b0; margin-top: 1px; }
+.act-close { flex: none; width: 30px; height: 30px; border-radius: var(--gold); border: none; background: transparent; color: #8a95a0; cursor: pointer; font-size: 14px; }
+.act-close:hover { background: rgba(255,255,255,.06); color: #fff; }
+.act-mode-badge {
+  margin-bottom: 8px; padding: 6px 10px; border-radius: var(--gold-sm);
+  background: rgba(69,145,197,.1); border: 1px solid rgba(69,145,197,.3);
+  color: var(--blue-soft); font-size: 11px; font-family: var(--font-mono);
+  animation: dotPulse 1.6s ease-in-out infinite;
+}
+.act-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.act-btn {
+  min-height: 38px; border-radius: var(--gold); border: 1px solid rgba(255,255,255,.1);
+  background: rgba(255,255,255,.035); color: #dbe5ea; font-size: 12px; cursor: pointer;
+  transition: all .2s var(--ease);
+}
+.act-btn:hover:not(:disabled) { border-color: rgba(69,145,197,.5); background: rgba(31,37,91,.4); transform: translateY(-1px); }
+.act-btn:active:not(:disabled) { transform: scale(.96); }
+.act-btn:disabled { opacity: .38; cursor: not-allowed; color: #5a6670; }
+.act-btn.danger { border-color: rgba(198,99,112,.35); background: rgba(198,99,112,.08); color: var(--coral-hostile); }
+.act-btn.danger:hover:not(:disabled) { background: rgba(198,99,112,.16); border-color: var(--coral-hostile); }
+.act-spawn-row { margin-top: 10px; border-top: 1px solid rgba(255,255,255,.07); padding-top: 9px; }
+.act-spawn-label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #8a95a0; margin-bottom: 7px; }
+.act-spawn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.act-spawn {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-height: 62px; padding: 7px 4px; border-radius: var(--gold);
+  border: 1px solid rgba(255,255,255,.07); background: rgba(255,255,255,.025); color: #c4cdd4;
+  font-size: 10px; cursor: pointer; transition: all .2s var(--ease);
+}
+.act-spawn:hover { border-color: rgba(118,184,137,.35); background: rgba(118,184,137,.06); }
+.act-spawn img { width: 24px; height: 24px; object-fit: contain; }
+.act-spawn b { font-family: var(--font-mono); font-size: 9px; color: var(--green-resource); }
+.act-goal {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 10px; padding: 8px 10px; border-radius: var(--gold);
+  background: rgba(31,37,91,.4); border: 1px solid rgba(104,117,167,.15);
+  font-family: var(--font-mono); font-size: 10px; color: var(--blue-soft);
+}
+.act-goal button { border: none; background: transparent; color: #8a95a0; cursor: pointer; font-size: 10px; }
+.act-goal button:hover { color: var(--coral-hostile); }
+.act-note { margin-top: 10px; text-align: center; font-size: 9.5px; color: #5f7180; letter-spacing: .08em; }
+
+/* 信标方向指示（BeaconDirectionIndicator 风格） */
+#beaconIndicator { position: absolute; z-index: 7; pointer-events: auto; }
+.beacon-arrow {
+  position: relative; width: 46px; height: 46px; border: none; background: transparent; cursor: pointer;
+  transform-origin: center; margin-left: -23px; margin-top: -23px;
+}
+.beacon-arrow::before {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(circle at 50% 42%, #ffe29a 0%, #d9a62e 55%, #8a6a1e 100%);
+  clip-path: polygon(50% 0%, 100% 55%, 62% 55%, 62% 100%, 38% 100%, 38% 55%, 0% 55%);
+  filter: drop-shadow(0 0 7px rgba(217,166,46,.55));
+  transition: filter .2s ease;
+}
+.beacon-arrow:hover::before { filter: drop-shadow(0 0 12px rgba(217,166,46,.85)); }
