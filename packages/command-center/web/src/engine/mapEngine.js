@@ -1404,6 +1404,9 @@ function toggleSolo(tenant) {
   } else {
     fitView();
     tactClear();
+    const sb = document.getElementById('sidebar');
+    if (sb) sb.scrollTo({ top: 0, behavior: 'smooth' });
+    lastRevealSolo = null;
   }
   emit('solo', state.soloTenant);
   emit('overview', state.overview);
@@ -1445,6 +1448,24 @@ async function tactRenderRespawn(tenant) {
     title.textContent = d.selfDestructed ? '核心自毁 · 等待重生' : (d.destroyedBy ? `核心被 ${d.destroyedBy} 摧毁 · 等待重生` : '核心被摧毁 · 等待重生');
   }
 }
+/** 聚焦单租户后侧栏自动滚动到 HUD/舰队索引：侧栏内容高（租户卡+图例+图层+视图）
+ *  会把 fleetHud/assetPanel 推到可视区外（实测 relY≈1326/1516 vs 可视 751）——
+ *  用户聚焦后看不到资源/测绘/舰队信息。聚焦时自动 reveal（退出/重聚焦才触发，非每 poll）。 */
+let lastRevealSolo = null;
+function revealSidebarHud() {
+  const sb = document.getElementById('sidebar');
+  if (!sb || !state.soloTenant) return;
+  const fh = document.getElementById('fleetHud');
+  if (!fh || fh.hidden) return;
+  const fhTop = fh.offsetTop;
+  const sbH = sb.clientHeight;
+  // 目标滚动位置：让 fleetHud 顶部进入可视区（留 12px padding）
+  const target = Math.max(0, fhTop - 12);
+  if (sb.scrollTop > target) { sb.scrollTo({ top: target, behavior: 'smooth' }); }
+  else if (fhTop + fh.offsetHeight > sb.scrollTop + sbH) {
+    sb.scrollTo({ top: Math.min(sb.scrollHeight, target), behavior: 'smooth' });
+  }
+}
 async function tactShowTenant(tenant) {
   const [world, expl, rp, plan] = await Promise.all([
     tactLoadWorld(tenant), tactLoadExploration(tenant), replayLoad(tenant), tactLoadPlan(tenant),
@@ -1460,6 +1481,8 @@ async function tactShowTenant(tenant) {
   tactRefreshCommands(tenant);
   // 租户切换过渡：内容更新后让单租户面板丝滑重现（不依赖首次插入动画）
   popPanel(els.fleetHud); popPanel(els.assetPanel); popPanel(els.pendingPanel); popPanel(els.activityPanel);
+  // 聚焦后自动滚动侧栏到 HUD（用户默认可见资源/测绘/舰队信息）
+  if (lastRevealSolo !== tenant) { lastRevealSolo = tenant; setTimeout(revealSidebarHud, 60); }
   invalidateStatic();
   draw();
 }
@@ -2018,6 +2041,9 @@ function exitSolo() {
   tactClear();
   invalidateStatic();
   fitView();
+  lastRevealSolo = null;
+  const sb = document.getElementById('sidebar');
+  if (sb) sb.scrollTo({ top: 0, behavior: 'smooth' });
   emit('solo', state.soloTenant);
   emit('overview', state.overview);
   els.mapGlobal.hidden = true;
