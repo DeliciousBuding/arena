@@ -14,8 +14,9 @@ import { DATA_ROOT } from "./fs-jsonl.ts";
 export interface HumanAuditEntry {
   at: string;
   tenant: string;
-  /** 操作类型：command（指令）/ goal（目标）/ mode（模式切换）/ clear（清空）/ delete（删除）。 */
-  kind: "command" | "goal" | "mode" | "clear" | "delete";
+  /** 操作类型：command（指令）/ goal（目标）/ goal_dup（目标去重，未重写）/
+   *  mode（模式切换）/ clear（清空）/ delete（删除）。 */
+  kind: "command" | "goal" | "goal_dup" | "mode" | "clear" | "delete";
   unitId?: string;
   /** 动作摘要（如 MOVE [x,y] / mine [x,y] / override）。 */
   action?: string;
