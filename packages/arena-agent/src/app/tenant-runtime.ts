@@ -1311,8 +1311,26 @@ export async function runTenant(
       // 模块默认关；无计划文件 = 零影响。lease/epoch/coreId 任一不满足 → fail-closed。
       migrationOverlay: ({ state, plan, nowMs, phase }) => {
         if (!migrationConfig.enabled) return null;
+        // M6 迁移助手核心快照（手动窗口抑制/清路订单/失败签名共用）。
+        const assistCore: AssistCoreSnapshot = state.core === null
+          ? { position: null, state: null, destination: null, moveProgress: null, moveRequiredTicks: null }
+          : {
+              position: state.core.position ?? null,
+              state: state.core.state,
+              destination: null,
+              moveProgress: null,
+              moveRequiredTicks: null,
+            };
         const read = readMigrationPlan(migrationPlanPath(dataRoot, config.tenantId));
-        if (!read.ok) return null;
+        if (!read.ok) {
+          // M6 手动窗口抑制（migration-assist-v1 §4-E）：核心 MOVING 且无计划
+          // 文件 = 用户手操迁移窗口——planner 不抢方向（START_MOVE → null）。
+          // 必须在 read 之前生效（手操场景恰是无计划文件）。
+          if (phase === "pre-submit" && assistCore.state === "MOVING" && plan.coreAction?.type === "START_MOVE") {
+            return { plan: { ...plan, coreAction: null }, active: false, failClosed: false };
+          }
+          return null;
+        }
         if (phase === "pre-decision") {
           // 勘探前向约束（migration-system-v1 §3.3，评审 P1）：决策前把计划注入
           // planner——EXPLORE worker 朝计划路径前向探路（替代 core 坐标差分触发）。
@@ -1379,15 +1397,7 @@ export async function runTenant(
         }
         // M6 迁移助手（migration-assist-v1）：手动窗口抑制 + 清路订单 + 失败签名。
         // 在 overlay 之后、humanOverride 之前生效（loop 内 overlay 即在此点）。
-        const assistCore: AssistCoreSnapshot = state.core === null
-          ? { position: null, state: null, destination: null, moveProgress: null, moveRequiredTicks: null }
-          : {
-              position: state.core.position ?? null,
-              state: state.core.state,
-              destination: null,
-              moveProgress: null,
-              moveRequiredTicks: null,
-            };
+        // assistCore 已在闭包头部提取（read 失败分支的手动窗口抑制共用）。
         const assist = migrationAssist({
           tick: state.tick,
           core: assistCore,
