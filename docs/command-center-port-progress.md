@@ -190,3 +190,12 @@ mapEngine.ts 对应函数。
 - 参谋建议 tab 切换正常（6 条建议，左竖条已移除）。
 - 零 console/pageerror；`npm run check:all`（server tsc + web typecheck + vite build）全绿；
   dist 已构建，服务 /app/ 直接托管新包（index-Bcv1IvGf.js）。
+
+
+### 9.4 决策流「事迹」tab（commit a18aed1）
+- StreamPane 新增「事迹」tab：纯前端 30s 轮询 `/api/deeds/journal`，不经过引擎 stream
+  状态机（`prefs.tab` 白名单加 `deeds`，同步 effect 跳过 deeds，避免干扰决策流轮询）。
+- 事迹行 = 租户 / tick / 标题 / 详情 / ★星级；有坐标的行可点击 → `engine.jumpTo` +
+  toast 定位（敌核摧毁 / 夺取核心资源 / 敌情高浓度区 / 资源濒危等）。
+- 样式：`.st-badge.deed`（琥珀）/ `.deed-hot`（高危红）/ `.stream-line.clickable`。
+- 验证：check:all 全绿；Playwright 冒烟 30 事迹行 / 18 可点击 / 0 报错。
