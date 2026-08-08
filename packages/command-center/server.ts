@@ -48,6 +48,7 @@ import { loadAllianceMining, warmAllianceMining } from "./lib/alliance-mining.ts
 import { loadMiningEffectiveness, warmMiningEffectiveness } from "./lib/mining-effectiveness.ts";
 import { loadAuditTrail, warmAuditTrail } from "./lib/audit-trail.ts";
 import { loadConsensusMining, warmConsensusMining } from "./lib/consensus-mining.ts";
+import { loadShopHistory, refreshShopHistory } from "./lib/shop-history.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 import { loadCoreMovingGuard } from "./lib/human-command-guard.ts";
 
@@ -539,6 +540,20 @@ app.post("/api/command/mode", async (c) => {
 });
 
 // ---------- 官方商店代理 ----------
+app.get("/api/shop/history", (c) => {
+  // 商店价格历史（2026-08-08，数据记录层）：products 快照落盘 → 涨跌/库存变化
+  // 趋势（不依赖登录 cookie，请求驱动刷新）。只读，30s 缓存。
+  return c.json(loadShopHistory());
+});
+app.post("/api/shop/history/refresh", async (c) => {
+  // 手动/请求驱动快照（无计划任务）：拉官方 products，有变化才追加落盘。
+  try {
+    const r = await refreshShopHistory();
+    return c.json(r);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : "刷新失败" }, 502);
+  }
+});
 app.get("/api/shop", async (c) => {
   const data = await shopProducts();
   return c.json({ generatedAt: new Date().toISOString(), ...(data as Record<string, unknown>) });
