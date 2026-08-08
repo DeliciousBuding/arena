@@ -137,6 +137,7 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
 | `GET /api/overview` | 4 租户 outcome 最新快照 + 60 tick 均值 |
 | `GET /api/map` | 同一 run 校准 case 合并 → 全局 cells（含 fresh 新鲜度）/bounds/beacons |
 | `GET /api/stream?tenant=&n=` | runtime.jsonl 尾部（决策流） |
+| `GET /api/audit/workers?tenant=all&window=4000` | Worker 局部活性审计：假活/无效 MOVE/振荡/拥挤饥饿 + targeted recovery 证据 |
 | `GET /api/events?tenant=&n=` | calibration case 结构化事件聚合（`after.state.events`，2026-08-08 修复） |
 | `GET /api/survey?tenant=all&states=` | 跨 run 测绘库：矿/障碍/敌核/探索分区 chunks + 生命周期 + 消费趋势（30s 内存缓存） |
 | `GET /api/exploration?tenant=` | 单租户测绘 + 生命周期 + 当前帧（fog 记忆层数据源） |
