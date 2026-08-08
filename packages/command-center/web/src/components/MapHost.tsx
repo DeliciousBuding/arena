@@ -20,6 +20,7 @@ export function MapHost({ hostRef }: { hostRef: RefObject<HTMLElement | null> })
   return (
     <section id="mapPane">
       <canvas id="map" />
+      <canvas id="minimap" title="全局小地图 · 点击/拖拽跳转视野" />
       <div id="mapHint">拖拽平移 · 滚轮缩放 · 左键选中 / 右键命令 · Esc 取消</div>
       <div id="mapTooltip" hidden />
       <div id="beaconIndicator" hidden />
