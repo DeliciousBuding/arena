@@ -140,7 +140,10 @@ export function buildGoldMineAdvice(
       title: t + " 金牌矿 " + cell + "（累计收益 " + amount + "）",
       detail: "该矿累计采集 " + Number(top.harvestOk ?? 0) + " 次——高价值矿脉，值得守/抢",
       action: "优先派 worker 守护并持续采集；观察敌人是否觊觎（高价值目标）",
-      weight: -amount,
+      // 战略资产锚点（2026-08-08 A16 修复）：金额通常个位数，weight=-amount 排不进
+      // 15 条上限（被 MEDIUM/INFO 挤掉）——加权 -amount*100-1000 保证同 severity 靠前，
+      // 且金额大的矿仍相对优先。
+      weight: -(amount * 100 + 1000),
       confidence: 0.75,
       evidence: [{ type: "survey", tenant: t, ref: "gold=" + cell + " amount=" + amount }],
       at: new Date().toISOString(),
