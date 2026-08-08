@@ -202,6 +202,7 @@ export function openSurveyDb(dataRoot: string, tenant: string, write = false): D
   if (write) {
     migrateUnitsSeenXY(db); // 数据架构审计 A2：旧库补 x/y 列 + 回填
     migrateCoreHuntSanity(db); // 数据质量 A5：核心时间戳倒挂修复（first<=last）
+    migrateResourceSanity(db); // 数据质量 A10：矿时间戳倒挂 + seen_count 重建（force 重跑污染）
   }
   return db;
 }
@@ -241,6 +242,29 @@ function migrateCoreHuntSanity(db: DatabaseSync): void {
   }
 }
 
+/** 矿表健康迁移（2026-08-08，数据质量 A10）：resources 时间戳倒挂
+ *  + seen_count 重建。与 core_hunts A5 同因：旧 upsert 无条件覆盖 last 导致
+ *  run 处理顺序不一时间戳回退；seen_count 被 force 重跑污染
+ *  （每次重处理 +1，但 resource_seen_history 是 INSERT OR IGNORE (cell,tick)
+ *  幂等记录——是 seen_count 的准确重建源）。幂等：只触发有异常行。 */
+function migrateResourceSanity(db: DatabaseSync): void {
+  try {
+    db.exec(
+      "UPDATE resources SET first_seen_tick = MIN(first_seen_tick, last_seen_tick), " +
+      "last_seen_tick = MAX(first_seen_tick, last_seen_tick) WHERE first_seen_tick > last_seen_tick;"
+    );
+    // seen_count 重建为 resource_seen_history 计数（仅异常行）
+    db.exec(
+      "UPDATE resources SET seen_count = " +
+      "(SELECT COUNT(*) FROM resource_seen_history h WHERE h.cell = resources.cell) " +
+      "WHERE seen_count != " +
+      "(SELECT COUNT(*) FROM resource_seen_history h WHERE h.cell = resources.cell);"
+    );
+  } catch {
+    // 容错；下次 sync 重试
+  }
+}
+
 /** upsert 一组可见矿（服务端投影：资源存在）。返回受影响行数。 */
 export function upsertResources(
   db: DatabaseSync,
@@ -251,7 +275,8 @@ export function upsertResources(
     INSERT INTO resources (cell, x, y, first_seen_tick, last_seen_tick, state, last_state_tick, seen_count)
     VALUES (?, ?, ?, ?, ?, 'visible', ?, 1)
     ON CONFLICT(cell) DO UPDATE SET
-      last_seen_tick = excluded.last_seen_tick,
+      -- 2026-08-08 数据质量修复：MAX 保护 last_seen 单调递增（旧无条件覆盖导致 run 处理顺序不一时间戳回退→ first>last 倒挂）
+      last_seen_tick = MAX(resources.last_seen_tick, excluded.last_seen_tick),
       state = 'visible',
       last_state_tick = excluded.last_state_tick,
       seen_count = resources.seen_count + 1
