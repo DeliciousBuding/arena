@@ -19,7 +19,8 @@ import { loadMineUtilization } from "./mine-utilization.ts";
 import { loadDecisionTrend } from "./decision-audit.ts";
 import { loadHumanConflict } from "./human-conflict.ts";
 import { loadAllianceExploration, type ResurveyTarget } from "./exploration-coverage.ts";
-import { loadCoreTrailsFromSurveyDb, computeCoreMovement } from "./trails.ts";
+import { loadCoreTrailsFromSurveyDb } from "./trails.ts";
+import { collectCoreThreats } from "./core-threats.ts";
 import { loadMiningEffectiveness } from "./mining-effectiveness.ts";
 import { TtlCache } from "./cache.ts";
 
@@ -473,64 +474,49 @@ export function loadAllianceAdvice(): AllianceAdvicePayload {
   } catch { /* 矿利用数据不可用不阻断 */ }
 
   // 11) 敌核逼近/近距目击（2026-08-08，算法适配·raid-defense 输入）：core_hunts 历史
-  //     轨迹——(a) ≥2点可判方向时，approaching 且进入 60 格 = 正在逼近的入侵者；
-  //     (b) 方向未知（敌核目击稀疏，多为单点）但最近目击 ≤40 格 = 近距威胁兕底
-  //     （标注目击新旧度，防陈旧噪音）。读 survey-db 只读 + 世界快照，无触网。
+  //     轨迹 → collectCoreThreats 提炼结构化威胁（approaching 半径 60 /
+  //     proximity 半径 40，stale 降 INFO 防幽灵威胁占槽）——每租户 cap 3 转建议。
   try {
-    const CORE_APPROACH_RADIUS = 60; // approaching 且进入此半径 → 预警
-    const CORE_PROXIMITY_RADIUS = 40; // 方向未知但近距目击（≤40 格）→ 兕底预警
     const PER_TENANT_THREAT_CAP = 3; // 每租户最多 3 条，防刷屏
-    const cheb = (a: readonly number[], b: readonly number[]) =>
-      Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
     for (const [t, m] of Object.entries(snap.members)) {
       const friendlyCore = m.core?.position ?? null;
       if (!friendlyCore) continue;
-      const curTick = m.tick;
       const threats: AllianceAdvice[] = [];
-      // minPoints=1：单点目击也保留（近距威胁主体恰是单点，方向未知走兜底）
-      for (const tr of loadCoreTrailsFromSurveyDb(t, 48, 1)) {
-        const mv = computeCoreMovement(tr.trail, friendlyCore);
-        const last = tr.trail[tr.trail.length - 1];
-        const dist = mv.distToCoreCells ?? cheb([last.x, last.y], friendlyCore);
-        if (!Number.isFinite(dist)) continue;
-        const age = curTick > 0 ? Math.max(0, curTick - last.tick) : null;
-        if (mv.direction === "approaching") {
-          if (dist > CORE_APPROACH_RADIUS) continue;
+      // minPoints=1：单点目击也保留（近距威胁主体恰是单点，方向未知走 proximity 兕底）
+      for (const ct of collectCoreThreats(loadCoreTrailsFromSurveyDb(t, 48, 1), friendlyCore, m.tick)) {
+        const dist = ct.distCells;
+        if (ct.kind === "approaching") {
           threats.push({
             severity: dist < 30 ? "HIGH" : "MEDIUM",
             category: "THREAT",
             tenant: t,
-            title: t + " 敌核逼近（" + tr.username + " 距 " + dist + " 格）",
-            detail: "敌核 " + tr.username + " 正朝友核移动：距 " + dist + " 格，速度 "
-              + (mv.speedCellsPerTick ?? 0).toFixed(2) + " 格/tick，最近目击 " + last.x + "," + last.y,
+            title: t + " 敌核逼近（" + ct.username + " 距 " + dist + " 格）",
+            detail: "敌核 " + ct.username + " 正朝友核移动：距 " + dist + " 格，速度 "
+              + (ct.speedCellsPerTick ?? 0).toFixed(2) + " 格/tick，最近目击 " + ct.x + "," + ct.y,
             action: dist < 30
               ? "高威胁：立即预备拦截/转移核心，别让敌核贴近"
               : "提高警觉，向逼近方向预部署防守兵力",
             weight: -dist,
             confidence: 0.7,
-            evidence: [{ type: "sighting", tenant: t, ref: "core_hunts " + tr.username + " @" + last.x + "," + last.y + " tick=" + last.tick }],
+            evidence: [{ type: "sighting", tenant: t, ref: "core_hunts " + ct.username + " @" + ct.x + "," + ct.y + " tick=" + ct.lastSeenTick }],
             at: new Date().toISOString(),
           });
         } else {
-          // 方向未知（多数敌核仅单点目击）→ 仅近距兕底
-          if (dist > CORE_PROXIMITY_RADIUS) continue;
-          const stale = age !== null && age > 5000;
+          // 陈旧目击（可能已离开）统一 INFO：幽灵威胁不占 HIGH/MEDIUM 高槽位
           threats.push({
-            // 陈旧目击（可能已离开）统一 INFO：幽灵威胁不占 HIGH/MEDIUM 高槽位，
-            // 免把高价值建议（金牌矿/补测）挤出 15 条上限。
-            severity: stale ? "INFO" : dist < 15 ? "HIGH" : dist < 25 ? "MEDIUM" : "INFO",
+            severity: ct.stale ? "INFO" : dist < 15 ? "HIGH" : dist < 25 ? "MEDIUM" : "INFO",
             category: "THREAT",
             tenant: t,
-            title: t + " 敌核近距目击（" + tr.username + " 距 " + dist + " 格）",
-            detail: "敌核 " + tr.username + " 最近目击距友核 " + dist + " 格"
-              + (stale ? "（" + age + " tick 前，可能已离开）" : "（方向待确认，建议侦察）")
-              + " @" + last.x + "," + last.y,
-            action: stale
+            title: t + " 敌核近距目击（" + ct.username + " 距 " + dist + " 格）",
+            detail: "敌核 " + ct.username + " 最近目击距友核 " + dist + " 格"
+              + (ct.stale ? "（" + Math.max(0, m.tick - ct.lastSeenTick) + " tick 前，可能已离开）" : "（方向待确认，建议侦察）")
+              + " @" + ct.x + "," + ct.y,
+            action: ct.stale
               ? "派侦察确认该方向敌核是否仍在；若已离开则移出威胁清单"
               : "就近侦察 + 预备防御；若再次目击确认逼近则升级拦截",
             weight: -dist,
-            confidence: stale ? 0.4 : 0.6,
-            evidence: [{ type: "sighting", tenant: t, ref: "core_hunts " + tr.username + " @" + last.x + "," + last.y + " tick=" + last.tick }],
+            confidence: ct.stale ? 0.4 : 0.6,
+            evidence: [{ type: "sighting", tenant: t, ref: "core_hunts " + ct.username + " @" + ct.x + "," + ct.y + " tick=" + ct.lastSeenTick }],
             at: new Date().toISOString(),
           });
         }

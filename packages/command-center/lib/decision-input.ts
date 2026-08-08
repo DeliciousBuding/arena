@@ -16,6 +16,9 @@ import { loadMinePatterns, type MineRefillPrediction } from "./mine-patterns.ts"
 import { loadAllianceExploration } from "./exploration-coverage.ts";
 import { loadTenantSurveyCached } from "./survey-cache.ts";
 import { loadConsensusMining } from "./consensus-mining.ts";
+import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
+import { loadCoreTrailsFromSurveyDb } from "./trails.ts";
+import { collectCoreThreats, type CoreThreatInput } from "./core-threats.ts";
 
 const TTL_MS = 30_000;
 const cache = new TtlCache<DecisionInputPayload>(TTL_MS);
@@ -62,6 +65,8 @@ export interface DecisionInputPayload {
   chunkCoverage: ChunkCoverageInput[];
   /** 补测目标（2026-08-08）：旧观测区按陈旧度降序——勘探方向直接输入。 */
   resurveyTargets: ResurveyInput[];
+  /** 敌核威胁（2026-08-08）：逼近/近距目击全量（不 cap）——mission 层防御部署方向输入。 */
+  coreThreats: CoreThreatInput[];
   cachedAt: string;
 }
 
@@ -75,6 +80,7 @@ export function buildDecisionInput(
   chunks: readonly { key?: unknown; cx?: unknown; cy?: unknown; lastSeenTick?: unknown }[],
   threatByCell?: ReadonlyMap<string, { threatLevel: 0 | 1 | 2 | 3; threatCombat: number }>,
   resurvey?: readonly { key?: unknown; cx?: unknown; cy?: unknown; lastSeenTick?: unknown; stalenessTicks?: unknown; distChunks?: unknown }[],
+  coreThreats: readonly CoreThreatInput[] = [],
 ): DecisionInputPayload {
   const refillPredictions: RefillPredictionInput[] = (predictions ?? [])
     .filter((p) => p && p.cell)
@@ -120,6 +126,7 @@ export function buildDecisionInput(
     refillPredictions,
     chunkCoverage,
     resurveyTargets,
+    coreThreats: [...coreThreats],
     cachedAt: new Date().toISOString(),
   };
 }
@@ -153,7 +160,17 @@ export function loadDecisionInput(tenant: string): DecisionInputPayload {
       key: r.key, cx: r.cx, cy: r.cy, lastSeenTick: r.lastSeenTick, stalenessTicks: r.stalenessTicks, distChunks: r.distChunks,
     }));
   } catch { /* 探索数据不可用不阻断 */ }
-  const payload = buildDecisionInput(tenant, currentTick, patterns.tenants?.[tenant]?.predictions ?? [], chunkRows, threatByCell, resurveyRows);
+  // 敌核威胁（2026-08-08）：core_hunts 轨迹提炼全量（不 cap，mission 层自行决策）。
+  let coreThreats: CoreThreatInput[] = [];
+  try {
+    // 友核位置从联盟快照取（世界状态，30s 缓存，无触网）
+    const friendlyCore = loadAllianceSnapshot().members[tenant]?.core?.position ?? null;
+    const curTick = currentTick ?? 0;
+    if (friendlyCore) {
+      coreThreats = collectCoreThreats(loadCoreTrailsFromSurveyDb(tenant, 48, 1), friendlyCore, curTick);
+    }
+  } catch { /* 敌核轨迹不可用不阻断 */ }
+  const payload = buildDecisionInput(tenant, currentTick, patterns.tenants?.[tenant]?.predictions ?? [], chunkRows, threatByCell, resurveyRows, coreThreats);
   cache.set(key, payload);
   return payload;
 }
