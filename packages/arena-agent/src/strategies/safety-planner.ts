@@ -914,6 +914,26 @@ export class SafetyPlanner {
       return;
     }
 
+    // 核心通道清障（core-clearance-v1 扩展，2026-08-08）：空载 worker 占核心格
+    // 且不在此刻回血（主循环 HEAL 已处理）→ 疏散到最近空邻格/外圈，让位给满载
+    // worker 卸货。生产 t2 实证：同一空 worker 占核心格 130+ tick（无资源任务
+    // WAIT），4 满载 worker + 4 Vanguard 围死卸货通道，deposit=0 经济冻结——原有
+    // coreClearance 只疏散军事/满载占核心格，漏了空载 idle worker。快照里的
+    // worker 均非本 tick 刚产（出生 tick 不可行动由服务器裁决），疏散合法。
+    if (
+      this.config.coreClearance === true &&
+      home !== null &&
+      samePosition(unit.position, home) &&
+      !(unit.hp < UNIT_MAX_HP[unit.unitType])
+    ) {
+      const exit = homeCell(home, movementObstacles, index)
+        ?? this.coreGuardFallback(home, movementObstacles, index);
+      if (exit !== null && !samePosition(unit.position, exit)) {
+        const direction = stepToward(unit.position, exit, movementObstacles);
+        if (direction !== null) { set(unit, { type: "MOVE", direction }, "worker_clear_core_empty"); return; }
+      }
+    }
+
     // B10 worker 遭遇撤离（scoutEvade 候选，竞品 Scout And Observer
     // Response 对照）：空 worker 视野内（3 格）出现战斗单位 → 撤离回
     // Core（EVADE+RETURN 合一——向 Core 步进即远离敌人，敌占格视为
