@@ -126,7 +126,10 @@ if (MODE === "ffa") {
       ...(recordTo === undefined ? {} : { recordTo }),
     });
     if (result.winner !== null) {
-      const winnerKey = result.winner === "mine" ? "mine" : specs.find((s) => s.name === result.winner)?.name;
+      // winner 是 entry.id（mine 或 <注册名>-s<seed>）——映射回注册名统计
+      const winnerKey = result.winner === "mine"
+        ? "mine"
+        : specs.find((s) => result.winner === `${s.name}-s${seed}`)?.name;
       if (winnerKey !== undefined) wins.set(winnerKey, (wins.get(winnerKey) ?? 0) + 1);
     }
     for (const [key, values] of finals) {
