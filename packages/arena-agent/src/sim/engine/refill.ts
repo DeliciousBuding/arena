@@ -14,7 +14,6 @@ import { createHash } from "node:crypto";
 import { cellKey, type Position } from "../../domain/model.ts";
 import { createSeededRng } from "../deterministic/rng.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
-import { worldHash } from "../world/canonical.ts";
 import { chunkBounds, chunkKey, chunkOf, chunkQuota, parseChunkKey } from "../world/chunks.ts";
 import type { SimWorld } from "../world/types.ts";
 
@@ -37,17 +36,21 @@ function parsePosition(key: string): Position {
 }
 
 /**
- * 确定性 seed：稳定输入 (worldHash, tick, chunkId, missingSlots) → 固定
- * uint32。禁止 Math.random；同 seed 恒同结果。
+ * 确定性环境随机流：稳定输入 (environmentSeed, tick, chunkId) → 固定
+ * uint32。禁止 Math.random；同 environment seed 恒同结果。
+ *
+ * 这里刻意不依赖 worldHash / policy outcome：counterfactual A/B 必须共享
+ * 同一外生随机流（common random numbers）。策略可以改变可选空槽集合与
+ * missing 数，但不能悄悄改变“随机数本身”。这也更贴近 server-secret
+ * world seed 的语义，而不是把 agent 行为哈希进 RNG。
  */
 function deriveRefillSeed(
-  worldHashHex: string,
+  environmentSeed: number,
   tick: number,
   chunk: string,
-  missingSlots: number,
 ): number {
   const digest = createHash("sha256")
-    .update(`${worldHashHex}|${tick}|${chunk}|${missingSlots}`)
+    .update(`${environmentSeed}|${tick}|${chunk}`)
     .digest();
   return digest.readUInt32LE(0);
 }
@@ -71,7 +74,6 @@ export function refillChunkQuota(
   chunks: readonly string[],
   tick: number,
 ): RefillSummary {
-  const hash = worldHash(draft);
   const coreCells = coreOccupiedCells(draft);
   const summaries: ChunkRefillSummary[] = [];
   let total = 0;
@@ -103,7 +105,7 @@ export function refillChunkQuota(
     }
 
     // 不放回随机抽样：从候选空槽中逐次选位，同 seed 恒同结果。
-    const rng = createSeededRng(deriveRefillSeed(hash, tick, chunk, missing));
+    const rng = createSeededRng(deriveRefillSeed(draft.seed, tick, chunk));
     const resources = new Map(draft.terrain.resources);
     for (let i = 0; i < missing; i += 1) {
       const index = Math.floor(rng.next() * candidates.length);
