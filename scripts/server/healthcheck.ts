@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-await main().catch((error) => {
+void main().catch((error) => {
   console.error(JSON.stringify({
     ok: false,
     error: error instanceof Error ? error.message : String(error),
