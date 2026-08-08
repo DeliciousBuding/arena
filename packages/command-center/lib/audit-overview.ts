@@ -20,6 +20,7 @@ import { loadMineUtilizationTrend } from "./mine-utilization.ts";
 import { loadMiningEffectiveness, type MiningEffectivenessPayload } from "./mining-effectiveness.ts";
 import { loadAlignmentAudit, type AlignmentPayload } from "./alignment-audit.ts";
 import { loadMinePatterns, type MinePatternsPayload } from "./mine-patterns.ts";
+import { computeDecisionQuality, aggregateQuality, type DecisionQuality } from "./decision-quality.ts";
 
 const TTL_MS = 30_000;
 
@@ -75,6 +76,8 @@ export interface TenantAuditOverview {
     visibleNeverPrev: number;
     stallRate: number | null;
   } | null;
+  /** 综合决策质量分（2026-08-08）：0-100 + 等级 + 权重归因。 */
+  quality: DecisionQuality | null;
 }
 
 export interface AuditOverviewPayload {
@@ -94,6 +97,8 @@ export interface AuditOverviewPayload {
     miningFulfillment: { assigned: number; harvested: number; harvestedByOther: number; open: number; stale: number; effectiveRate: number | null } | null;
     /** 决策-分配对齐汇总（2026-08-08）：misaligned/aligned/dataGap + 未兑现分工数。 */
     alignment: { aligned: number; misaligned: number; dataGap: number; unfulfilledAssignments: number } | null;
+    /** 综合决策质量分（2026-08-08）：联盟平均（有数据租户等权）。 */
+    quality: DecisionQuality | null;
   };
   cachedAt: string;
 }
@@ -199,6 +204,13 @@ export function aggregateAuditOverview(
         avgDistance: mining.perTenant[t].avgDistance,
       } : null,
       trend: trends[t] ?? null,
+      quality: dec ? computeDecisionQuality({
+        stallRate: dec.decision.records > 0 ? dec.decision.stallTicks / dec.decision.records : null,
+        cargoEff: dec.outcome.cargoEfficiency,
+        planChurn: dec.decision.planChurn?.rate ?? null,
+        coreDelta: num(dec.outcome.coreDeltaSum),
+        effectiveRate: miningEff?.perTenant?.[t]?.progressRate ?? null,
+      }) : null,
     };
   }
 
@@ -228,6 +240,7 @@ export function aggregateAuditOverview(
         dataGap: num(alignment.global?.dataGap),
         unfulfilledAssignments: num(alignment.global?.unfulfilledAssignments),
       } : null,
+      quality: aggregateQuality(TENANTS.map((t) => tenants[t]?.quality ?? null)),
     },
     cachedAt: new Date().toISOString(),
   };

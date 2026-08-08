@@ -118,6 +118,10 @@ test("audit-overview: 单租户折叠 + 全局汇总", () => {
   assert.equal(a.global.totalUnits, 2);
   assert.equal(a.global.totalCoreDelta, 5);
   assert.equal(a.global.totalOverdueRefills, 1, 'patterns dueInTicks<0 全联盟加总');
+  assert.ok(a.tenants.t1.quality, "综合决策质量分应生成");
+  assert.ok((a.tenants.t1.quality?.score ?? 0) >= 0 && (a.tenants.t1.quality?.score ?? 0) <= 100);
+  assert.ok(a.global.quality, "联盟平均质量分应生成");
+
   assert.equal(a.global.coveragePct, 0.25);
   assert.equal(a.global.currentTick, 1000);
   assert.equal(t1.conflict?.applied, 3);
