@@ -3097,6 +3097,7 @@ function tactRenderAssets(tenant: any) {
       const art = o.kind === 'CORE' ? 'CORE' : (o.unit_type ?? 'WORKER');
       const artPath = art === 'CORE' ? SPRITE.core : unitSpritePath(art);
       const selected = T().selected?.obj?.id === o.id;
+      const inSquad = !selected && T().multi.has(o.id); // 编队成员高亮（与画布连接线呼应）
       const human = unitHumanCommandOf(tenant, o.id);
       const plan = state.soloTenant === tenant ? T().plan?.plan : T().plans?.[tenant];
       const cmdLine = cmdLabel(T(), tenant, o.id, plan); // 当前指令标签（人类指挥/算法决策）
@@ -3104,7 +3105,7 @@ function tactRenderAssets(tenant: any) {
       const hpMax = art === 'CORE' ? Math.max(o.hp ?? 0, o.shield ?? 0, 1) : maxUnitHp(art);
       const hpVal = art === 'CORE' ? Math.max(o.hp ?? 0, o.shield ?? 0) : (o.hp ?? 0);
       const hpPct = hpMax > 0 ? Math.max(0, Math.min(100, (hpVal / hpMax) * 100)) : 100;
-      return `<button class="asset-row ${selected ? 'active' : ''}${human ? ' human' : ''}" data-asset="${o.id}" ${human ? 'title="人类指挥中 · 点击查看/清除指令"' : ''}>
+      return `<button class="asset-row ${selected ? 'active' : ''}${inSquad ? ' squad' : ''}${human ? ' human' : ''}" data-asset="${o.id}" ${human ? 'title="人类指挥中 · 点击查看/清除指令"' : inSquad ? 'title="编队成员"' : ''}>
         <span class="asset-icon"><img src="${artPath}" alt="" /></span>
         ${human ? '<span class="asset-h" title="人类指挥中">H</span>' : ''}
         <span class="asset-name">${o.kind === 'CORE' ? '核心' : (TACT_UNIT_CN[o.unit_type] ?? o.unit_type)}</span>

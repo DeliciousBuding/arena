@@ -1688,3 +1688,7 @@ body {
 
 /* 右键/批量菜单动作图标（2026-08-08） */
 .ctx-item .ctx-ico { flex: none; width: 16px; margin-right: 7px; display: inline-block; text-align: center; font-size: 11px; line-height: 1; opacity: .85; }
+
+/* 资产行编队成员高亮（2026-08-08）：与画布编队连接线呼应 */
+.asset-row.squad { border-color: rgba(240,136,62,.4); background: rgba(240,136,62,.06); }
+.asset-row.squad:hover { border-color: rgba(240,136,62,.6); }
