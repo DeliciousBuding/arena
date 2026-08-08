@@ -47,20 +47,23 @@ function isInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value);
 }
 
-/** Exact key set + required keys (additionalProperties:false semantics). */
+/** Exact key set + required keys (additionalProperties:false semantics).
+ *  `optionalKeys` are allowed but not required (backward-compatible schema
+ *  extensions such as provenance.realLabelValidity). */
 function checkKeys(
   problems: ProblemCollector,
   path: string,
   value: unknown,
   expected: readonly string[],
+  optionalKeys: readonly string[] = [],
 ): value is Record<string, unknown> {
   if (!isRecord(value)) {
     problems.push(path, "must be an object");
     return false;
   }
-  const expectedSet = new Set(expected);
+  const allowed = new Set([...expected, ...optionalKeys]);
   for (const key of Object.keys(value)) {
-    if (!expectedSet.has(key)) problems.push(`${path}.${key}`, "is not allowed");
+    if (!allowed.has(key)) problems.push(`${path}.${key}`, "is not allowed");
   }
   for (const key of expected) {
     if (!(key in value)) problems.push(`${path}.${key}`, "is required");
@@ -217,7 +220,7 @@ export function validateMlSample(value: unknown): readonly string[] {
   if (checkKeys(problems, "provenance", provenance, [
     "rulesVersion", "rulesManifestHash", "sourceCommit", "engine", "processRunId", "runId",
     "tick", "seed", "source", "observationScope", "opponentPlans", "sampleStatus", "sourceRefs",
-  ])) {
+  ], ["realLabelValidity", "simReplayConfidence"])) {
     if (!nonEmptyString(provenance.rulesVersion)) {
       problems.push("provenance.rulesVersion", "must be a non-empty string");
     }
@@ -250,6 +253,40 @@ export function validateMlSample(value: unknown): readonly string[] {
       provenance.sampleStatus !== "conclusive" && provenance.sampleStatus !== "inconclusive"
     ) {
       problems.push("provenance.sampleStatus", "must be conclusive, inconclusive, or null");
+    }
+    if (provenance.realLabelValidity !== undefined) {
+      const validity = provenance.realLabelValidity;
+      if (checkKeys(problems, "provenance.realLabelValidity", validity, [
+        "observed", "lineageValid", "windowComplete", "usableForSupervisedLearning",
+      ])) {
+        if (typeof validity.observed !== "boolean") {
+          problems.push("provenance.realLabelValidity.observed", "must be a boolean");
+        }
+        if (typeof validity.lineageValid !== "boolean") {
+          problems.push("provenance.realLabelValidity.lineageValid", "must be a boolean");
+        }
+        if (typeof validity.windowComplete !== "boolean") {
+          problems.push("provenance.realLabelValidity.windowComplete", "must be a boolean");
+        }
+        if (typeof validity.usableForSupervisedLearning !== "boolean") {
+          problems.push(
+            "provenance.realLabelValidity.usableForSupervisedLearning",
+            "must be a boolean",
+          );
+        }
+      }
+    }
+    if (
+      provenance.simReplayConfidence !== undefined && provenance.simReplayConfidence !== null &&
+      provenance.simReplayConfidence !== "match" &&
+      provenance.simReplayConfidence !== "expectedUnknown" &&
+      provenance.simReplayConfidence !== "mismatch" &&
+      provenance.simReplayConfidence !== "unsupported"
+    ) {
+      problems.push(
+        "provenance.simReplayConfidence",
+        "must be match, expectedUnknown, mismatch, unsupported, or null",
+      );
     }
     if (!Array.isArray(provenance.sourceRefs) || provenance.sourceRefs.length === 0) {
       problems.push("provenance.sourceRefs", "must be a non-empty array");

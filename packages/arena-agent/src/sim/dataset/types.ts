@@ -136,6 +136,20 @@ export interface QualityReport {
     readonly unclassifiedDifferenceCount: number;
     readonly expectedUnknownCount: number;
   };
+  /** 2026-08-08 契约两维：真实监督样本资格（与 simReplayConfidence 正交）。 */
+  readonly realLabelValidity: {
+    readonly observedSamples: number;
+    readonly lineageValidSamples: number;
+    readonly windowCompleteSamples: number;
+    readonly usableForSupervisedLearning: number;
+  };
+  /** 2026-08-08 契约两维：Simulator 对 transition 的证明强度分布。 */
+  readonly simReplayConfidenceCounts: {
+    readonly match: number;
+    readonly expectedUnknown: number;
+    readonly mismatch: number;
+    readonly unsupported: number;
+  };
   readonly coverage: {
     readonly combat: number;
     readonly core: number;

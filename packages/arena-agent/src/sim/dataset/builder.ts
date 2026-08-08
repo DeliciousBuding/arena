@@ -830,6 +830,14 @@ export function buildDataset(options: DatasetBuildOptions): DatasetBuildResult {
       }
       const beforeUnits = controlledUnitIds(caseValue.before.state);
       const afterUnits = controlledUnitIds(caseValue.after.state);
+      const observed = source === "live";
+      const windowComplete = label.windowComplete === true;
+      const simReplayConfidence: "match" | "expectedUnknown" | "mismatch" | "unsupported" =
+        parsedCase.sampleStatus === "conclusive"
+          ? "match"
+          : parsedCase.sampleStatus === "inconclusive"
+            ? "expectedUnknown"
+            : "unsupported";
       const sampleWithoutId: Record<string, unknown> = {
         schema: "ml-sample-v1",
         state: caseValue.before,
@@ -854,6 +862,16 @@ export function buildDataset(options: DatasetBuildOptions): DatasetBuildResult {
           observationScope: "private-player-projection",
           opponentPlans: "not-included",
           sampleStatus: parsedCase.sampleStatus,
+          // 2026-08-08 契约两维：真实监督样本资格与 simReplayConfidence 正交。
+          // observed = label 由真实服务器后续观测计算；EXPECTED_UNKNOWN 不使
+          // 真实监督样本失效（全 EXPECTED_UNKNOWN 数据旧规则会全灭）。
+          realLabelValidity: {
+            observed,
+            lineageValid: true,
+            windowComplete,
+            usableForSupervisedLearning: observed && windowComplete,
+          },
+          simReplayConfidence,
           sourceRefs: [
             {
               kind: "calibration-case",
@@ -1136,6 +1154,25 @@ function buildQualityReport(input: ReportInput): QualityReport {
   const byEngine: Record<string, number> = { "arena-ts": input.samples.length };
   const completeLabelWindows = input.samples.filter((sample) =>
     (sample.label as Record<string, unknown>).windowComplete === true).length;
+  // 2026-08-08 契约两维统计：从每个样本的 provenance 汇总。
+  const realLabelValidityCounts = { observed: 0, lineageValid: 0, windowComplete: 0, usable: 0 };
+  const simReplayConfidenceCounts = { match: 0, expectedUnknown: 0, mismatch: 0, unsupported: 0 };
+  for (const sample of input.samples) {
+    const provenance = sample.provenance as Record<string, unknown>;
+    const validity = provenance.realLabelValidity as
+      | Record<string, unknown> | null | undefined;
+    if (validity) {
+      if (validity.observed === true) realLabelValidityCounts.observed += 1;
+      if (validity.lineageValid === true) realLabelValidityCounts.lineageValid += 1;
+      if (validity.windowComplete === true) realLabelValidityCounts.windowComplete += 1;
+      if (validity.usableForSupervisedLearning === true) realLabelValidityCounts.usable += 1;
+    }
+    const confidence = provenance.simReplayConfidence;
+    if (confidence === "match") simReplayConfidenceCounts.match += 1;
+    else if (confidence === "expectedUnknown") simReplayConfidenceCounts.expectedUnknown += 1;
+    else if (confidence === "mismatch") simReplayConfidenceCounts.mismatch += 1;
+    else simReplayConfidenceCounts.unsupported += 1;
+  }
   const runAssignments = input.runOrder.map((runKey) => {
     const runSamples = input.samples.filter((sample) => {
       const provenance = sample.provenance as Record<string, unknown>;
@@ -1208,6 +1245,13 @@ function buildQualityReport(input: ReportInput): QualityReport {
       unclassifiedDifferenceCount: input.calibrationAggregate.unclassifiedDifferenceCount,
       expectedUnknownCount: input.calibrationAggregate.taxonomyCounts.EXPECTED_UNKNOWN,
     },
+    realLabelValidity: {
+      observedSamples: realLabelValidityCounts.observed,
+      lineageValidSamples: realLabelValidityCounts.lineageValid,
+      windowCompleteSamples: realLabelValidityCounts.windowComplete,
+      usableForSupervisedLearning: realLabelValidityCounts.usable,
+    },
+    simReplayConfidenceCounts: simReplayConfidenceCounts,
     coverage: { ...input.coverage },
     splits: {
       rule: "chronological by run completion time; runs are never split across buckets",
