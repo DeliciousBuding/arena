@@ -379,6 +379,36 @@ export interface SafetyPlannerConfig {
   /** 入侵观察记忆 TTL（tick，默认 60，与 World.CORE_WATCH_TTL 同值）。 */
   readonly coreThreatWatchTicks?: number;
   /**
+   * 产兵让位（2026-08-08，spawn-yield-v1）：核心本 tick 计划 SPAWN 时，
+   * 满载 worker 让位——核心格/邻格的满载 worker 不卸货（WAIT 或让出核心
+   * 格），保证 SPAWN 不被自己人占格挡掉（生产 t2 实证 112 次
+   * CORE_SPAWN_FAILED/CELL_UNIT_LIMIT：DEPOSIT Phase8 先于 SPAWN Phase10，
+   * worker 卸货成功仍占核心格 → 同 tick SPAWN 失败）。产兵价值 > 1 资源
+   * 卸货，让位净赚。默认 false = 历史行为（卸货优先，零回归）。
+   */
+  readonly spawnYield?: boolean;
+  /** 让位连续上限（默认 3）：满载 worker 连续让位 ≥N tick 后强制卸货——
+   *  防"核心永远想产兵、worker 永远卸不了"的让位饿死循环。 */
+  readonly spawnYieldMaxTicks?: number;
+  /**
+   * 锁阵（2026-08-08，worker-blockade-v1，研究驱动设计见
+   * docs/design/blockade-tactics-v1.md）：主动利用格子容量 2 + 移动冲突规则
+   * 锁死敌方单位——预判敌方回程路径/环境瓶颈锁点（敌核心邻格/资源旁/窄
+   * 通道），巡逻 worker 去目标格站桩（WAIT 占格），敌方 MOVE 进不来
+   * （MOVE_DESTINATION_OCCUPIED），脚本对手无反馈无限重试（reference
+   * farmer 无 MOVE_FAILED 处理）。t2 日志实证 669 次 MOVE_CONTESTED 全是我方
+   * 被动挨卡——本变体把被动变主动。默认 false = 历史行为（零回归）。
+   */
+  readonly workerBlockade?: boolean;
+  /** 锁位 worker 数量上限（默认 2）：最多派 N 个巡逻 worker 当锁位手——
+   *  再多伤经济（t2 worker avg 11.5，抽 2 个不影响采集曲线）。 */
+  readonly blockadeWorkerCap?: number;
+  /** 锁位连续上限（默认 10）：站桩超过 N tick 目标仍未到锁点 → 放弃回巡逻
+   *  （预测错误/敌方已绕路，防锁位单位长期闲置）。 */
+  readonly blockadeLockMaxTicks?: number;
+  /** 经济保底（默认 6）：worker 数 < 该值时锁阵停用（保采集优先）。 */
+  readonly blockadeMinWorkers?: number;
+  /**
    * 威胁优先产兵（2026-08-08，military-priority-v1）：活跃敌核贴脸
    * （raid-defense nearbyEnemyCore ≤ raidCoreRadius 24 格）且军事规模未达
    * 地板（threatMilitaryFloor，默认 4）→ 跳过 worker 积累直接产兵，并用
