@@ -266,3 +266,16 @@ mapEngine.ts 对应函数。
     + 失败诊断；`getState` 暴露 cells/multi/mode/selected 投影。
 - **验证**：完整 22 项回归全绿（含编队多选、命令队列、右键菜单、人类指挥链、tick 读条）；
   `check:all`（server tsc + alliance-sync + web typecheck + build）全绿。
+
+
+### 9.11 移动渲染 20fps→60fps（2026-08-08 高刷丝滑）
+- **背景**：单位插值移动动画窗口贯穿整个 15s tick，但调度器对移动态 draw 节流 50ms
+  （20fps）——175Hz 显示器上单位移动/虚线流动发虚跳帧（"不够丝滑"残留点）。
+- **实测**：全局视图拖拽采样 draw() 单帧中位 2.0ms / p99 3.8ms（6515 格），余量充足；
+  solo 视图 1.7ms。20fps 纯属节流浪费。
+- **修复**：animLoop 移动 draw 节流 50ms → 16ms（60fps）；idle 仍 120ms 降频省电。
+- **同轮修复**：右键菜单偶发红——`openCtxMenu` 原内联实时命中半径 1（左键已统一 3），
+  单位位移后渲染格脱靶；重构为与左键共用 `resolveLiveTarget`（半径 3 + 写回真实坐标 +
+  solo 兜底），右键空白仍保持取消选中语义。
+- **验证**：`#map` 画布实例 clearRect 计数（=draw 次数），solo 移动态 **20→61fps**；
+  右键菜单定向 3/3 + 完整回归 22/22 全绿（连跑两轮）+ check:all 全绿。

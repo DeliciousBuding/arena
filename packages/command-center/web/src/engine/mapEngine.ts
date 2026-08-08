@@ -2503,7 +2503,7 @@ async function boot() {
       draw();
     } else if (animating || zooming) {
       draw();
-    } else if (active && ts - lastAnim > (moving ? 50 : 120)) {
+    } else if (active && ts - lastAnim > (moving ? 16 : 120)) {
       lastAnim = ts;
       draw();
     }
@@ -3350,36 +3350,28 @@ async function openCtxMenu(px: any, py: any) {
   const tac = T();
   // 选点模式中右键：先取消当前模式再开菜单（避免模式悬空）
   if (tac.mode) tactClear();
-  let cell = nearestCell(px, py);
-  // 实时命中校正（同 handleCanvasClick 2026-08-08）：轮询陈旧窗口下右键落空无菜单
-  if (cell && (cell.type === 'unit' || cell.type === 'core')) {
-    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
-    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
-    let world: any = T().worlds[cell.tenant];
-    let liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
-    if (!liveObj) { world = await tactLoadWorld(cell.tenant, true); liveObj = world ? tactObjectNear(world, wx, wy, 1) : null; }
-    if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
-      cell = { ...cell, x: liveObj.position[0], y: liveObj.position[1], fresh: true, id: liveObj.id };
+  // 实时命中校正（2026-08-08 结构性统一）：与左键共用 resolveLiveTarget（半径 3、
+  // 写回真实坐标、含 solo 租户兜底）——轮询陈旧窗口下右键脱靶（右键菜单回归偶发红）
+  // 与左键同源根治：单位位移后其渲染格可能已不在最近命中，统一走同一套实时命中。
+  // 命中单位/核心 → 弹命令菜单；空白/资源/障碍 → 取消选中（与旧语义一致）。
+  const hit = await resolveLiveTarget(px, py);
+  const obj = hit?.obj ?? null;
+  if (obj && (obj.kind === 'UNIT' || obj.kind === 'CORE')) {
+    const tenant = hit.cell?.tenant ?? tac.selected?.tenant ?? state.soloTenant;
+    if (!tenant) { hideCtxMenu(); return; }
+    if (obj.controlled !== true) { toast('敌方单位无法指挥（可左键选中查看情报）', 'warn'); return; }
+    // 多选 ≥2 且命中编队成员：弹批量命令菜单
+    if (tac.multi.size >= 2 && tac.multi.has(obj.id)) {
+      renderBatchCtxMenu(tenant, px, py);
+      return;
     }
-  }
-  if (cell && (cell.type === 'unit' || cell.type === 'core')) {
-    tactLoadWorld(cell.tenant).then((world) => {
-      const obj = world ? tactObjectAt(world, cell.x, cell.y) : null;
-      if (!obj) { toast('该单位/核心为已探索记忆，已不在当前 tick', 'warn'); return; }
-      if (obj.controlled !== true) { toast('敌方单位无法指挥（可左键选中查看情报）', 'warn'); return; }
-      // 多选 ≥2 且命中编队成员：弹批量命令菜单
-      if (tac.multi.size >= 2 && tac.multi.has(obj.id)) {
-        renderBatchCtxMenu(cell.tenant, px, py);
-        return;
-      }
-      const selected = tac.selected && tac.selected.obj.id === obj.id;
-      const open = () => renderCtxMenu(cell.tenant, obj, px, py);
-      if (selected) open();
-      else tactSelect(cell.tenant, obj).then(open);
-    });
+    const selected = tac.selected && tac.selected.obj.id === obj.id;
+    const open = () => renderCtxMenu(tenant, obj, px, py);
+    if (selected) open();
+    else tactSelect(tenant, obj).then(open);
     return;
   }
-  // 右键空白：取消选中（群星右键空白 = 取消目标/收镜）
+  // 右键空白/非单位：取消选中（群星右键空白 = 取消目标/收镜）
   if (tac.selected) { tactClear(); return; }
   hideCtxMenu();
 }
