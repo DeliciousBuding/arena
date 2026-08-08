@@ -696,10 +696,79 @@ test("S10 economy: 双方 Core 同归于尽时不捕获，延迟 respawn 也不�
     ctx,
   );
   assert.ok(!result.events.some((event) => event.eventType === "CORE_RESOURCES_CAPTURED"));
+  // W45: 双方 Core 同 Tick 阵亡 → 无 ACTIVE 赢家 → 残留库存记为
+  // CORE_RESOURCES_DESTROYED（内部统计事件，不投影 wire 白名单）。
+  // 每个受害 Core 各发一条，amount = victim 残留库存。
+  const destroyedEvents = result.events.filter(
+    (event) => event.eventType === "CORE_RESOURCES_DESTROYED",
+  );
+  assert.equal(destroyedEvents.length, 2, "每个被摧毁 Core 发一条 DESTROYED");
+  const p1Destroyed = destroyedEvents.find((event) => event.targetId === P1_CORE);
+  const p2Destroyed = destroyedEvents.find((event) => event.targetId === P2_CORE);
+  assert.ok(p1Destroyed !== undefined, "p1 Core DESTROYED 存在");
+  assert.ok(p2Destroyed !== undefined, "p2 Core DESTROYED 存在");
+  assert.deepEqual(p1Destroyed!.values, { amount: 9 });
+  assert.deepEqual(p2Destroyed!.values, { amount: 8 });
+  assert.equal(p1Destroyed!.position![0], 0);
+  assert.equal(p1Destroyed!.position![1], 0);
   assert.equal(result.world.players.get("p1")!.resources, 0);
   assert.equal(result.world.players.get("p2")!.resources, 0);
   assert.equal(result.world.players.get("p1")!.status, "RESPAWNING");
   assert.equal(result.world.players.get("p2")!.status, "RESPAWNING");
+});
+
+test("S10 economy (W45): 赢家当 Tick 阵亡 → 资源销毁不捕获", () => {
+  // p2 单方击毁 p1 Core（hp 1），但 p2 Core 同 Tick 也被 p1 击毁 →
+  // p2 非 ACTIVE，无法接收捕获 → p1 残留库存记为 DESTROYED。
+  const p1Ranger = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const p2Ranger = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+  const world = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 6,
+        core: { id: P1_CORE, position: [0, 0], hp: 1, shield: 0, state: "NORMAL" },
+        units: [{ id: p1Ranger, owner: "p1", position: [6, 3], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+      {
+        id: "p2",
+        username: "p2",
+        resources: 4,
+        core: { id: P2_CORE, position: [6, 0], hp: 1, shield: 0, state: "NORMAL" },
+        units: [{ id: p2Ranger, owner: "p2", position: [0, 3], hp: 2, unitType: "RANGER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: null,
+  });
+  const result = settleTick(
+    world,
+    new Map([
+      ["p1", planOf(world, { [p1Ranger]: { type: "SHOOT", targetId: P2_CORE, expectedCell: [6, 0] } })],
+      ["p2", planOf(world, { [p2Ranger]: { type: "SHOOT", targetId: P1_CORE, expectedCell: [0, 0] } })],
+    ]),
+    ctx,
+  );
+  // 互杀 → 双方 Core 阵亡，无 ACTIVE 赢家 → 不捕获，全部销毁
+  assert.ok(!result.events.some((event) => event.eventType === "CORE_RESOURCES_CAPTURED"));
+  const destroyed = result.events.filter(
+    (event) => event.eventType === "CORE_RESOURCES_DESTROYED",
+  );
+  assert.equal(destroyed.length, 2);
+  assert.deepEqual(
+    destroyed.find((event) => event.targetId === P1_CORE)?.values,
+    { amount: 6 },
+  );
+  assert.deepEqual(
+    destroyed.find((event) => event.targetId === P2_CORE)?.values,
+    { amount: 4 },
+  );
+  assert.equal(result.world.players.get("p1")!.resources, 0);
+  assert.equal(result.world.players.get("p2")!.resources, 0);
 });
 
 /** OP1 (v0.2.14): Core self-destruct runs AFTER combat. A Core killed by

@@ -526,6 +526,23 @@ export interface SafetyPlannerConfig {
   readonly weakCoreFirst?: boolean;
   /** 弱核优先的守军记忆窗口（默认 20 tick，enemyCoreForces maxAge）。 */
   readonly weakCoreFirstForceTicks?: number;
+  /**
+   * 斩首配额会计（2026-08-09，sortie-quota-v1，W10，B2 缺陷 1 修复）：
+   * weakCoreOrderedTargets 全军事扑同一弱核 → 按家防余量分档借调 1V+2R
+   * 编成 sortie（跨 tick sticky，Map 持久化）。生命周期 72 tick、目击 ≤96 tick、
+   * 距离 ≤28、4 种取消回收（超时/目击过期/家防被袭击/目标消失）。默认 false =
+   * 历史 weakCoreOrderedTargets 行为（零回归）。参考：arena_hero_strategy.py
+   * _beacon_local_core_sortie_assignments :5816-6068。
+   */
+  readonly sortieQuota?: boolean;
+  /** sortie 目标距我方 Core 最大距离（Chebyshev，默认 28，CORE_ASSAULT_MAX_HOME_DISTANCE :145）。 */
+  readonly sortieMaxHomeDistance?: number;
+  /** sortie 生命周期上限（tick，默认 72）。超时回收（取消理由 ①）。 */
+  readonly sortieLifetimeTicks?: number;
+  /** sortie 目击有效窗口（tick，默认 96）。敌 Core 目击超该窗口 = 过期，取消（理由 ②）。 */
+  readonly sortieSightingTicks?: number;
+  /** sortie 护卫半径（Chebyshev，默认 8）：目标敌核该格内计守军（与 PREY_CORE_SAFE 同口径）。 */
+  readonly sortieGuardRadius?: number;
   /** 联盟 no-fire 硬规则（2026-08-08，alliance-no-fire-v1）：租户加载联盟
    *  roster（受控实体 id 并集）后，decide 将联盟友军从可见敌人/威胁/打击目标
    *  中剔除——knownAllianceEntityId => never deliberate target（spec §5.5），

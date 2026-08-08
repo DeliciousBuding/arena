@@ -1,7 +1,9 @@
 /**
  * Authoritative settlement pipeline：phase registry、draft management、atomic commit。
  *
- * 固定顺序执行 15 个内部 phase（architecture §6，映射官方 resolution order）。
+ * 固定顺序执行 16 个内部 phase（architecture §6，映射官方 15 步 resolution
+ * order；本仓库把 capacity-shrink 与 upkeep 显式化为独立 phase，见
+ * rules-v0.14.json granularityNote）。
  * 所有 mutation 只在 structuredClone 的 draft 上进行；任一 phase 抛错或
  * invariant 失败 → 整体抛错，不返回半更新 world。
  *
@@ -103,7 +105,7 @@ function scanUnsupported(world: SimWorld, plans: ReadonlyMap<string, Plan>): Sim
     if (player.status === "RESPAWNING") {
       // 裸 RESPAWNING（缺 respawnAtTick）：外部快照带入、重试进度未知，
       // 无法确定性推进，仍算 unsupported；Sim 自产 RESPAWNING（combat 摧毁
-      // 后由 P12 处理；延迟则带 respawnAtTick）不算 unsupported。
+      // 后由 P13 处理；延迟则带 respawnAtTick）不算 unsupported。
       if (player.respawnAtTick === null) {
         hit.add("respawn");
       }
@@ -127,10 +129,10 @@ const PHASES: readonly Phase[] = [
   ...economyPhases.slice(3, 4), // P08 harvest-and-deposit
   combatPhase, // P09 combat（SWEEP/SHOOT 快照结算；伤害累积 → 同时应用）
   coreSelfDestructPhaseExport, // P10-core-self-destruct（幸存 Core 在 heal/spawn 前自毁）
-  ...economyPhases.slice(4, 6), // P10 unit-heal / P11 core-action
-  respawnPhase, // P12 respawn（combat 摧毁/延迟重试；同 Tick 放置 replacement）
+  ...economyPhases.slice(4, 6), // P11 unit-heal / P12 core-action
+  respawnPhase, // P13 respawn（combat 摧毁/延迟重试；同 Tick 放置 replacement）
   {
-    id: "P13-refill-policy",
+    id: "P14-refill-policy",
     officialPhase: 13,
     run: (draft, ctx) => {
       // 官方 refill 是 server secret（seed 不可见）——每 refill cadence
@@ -174,7 +176,7 @@ const PHASES: readonly Phase[] = [
     },
   },
   {
-    id: "P14-invariant-check-and-commit",
+    id: "P15-invariant-check-and-commit",
     officialPhase: 14,
     run: (draft) => {
       assertWorldInvariants(draft);
@@ -182,7 +184,7 @@ const PHASES: readonly Phase[] = [
     },
   },
   {
-    id: "P15-next-observation",
+    id: "P16-next-observation",
     officialPhase: 15,
     run: () => EMPTY_OUTCOME, // tick 递增在 settleTick 末尾统一做
   },
@@ -226,7 +228,7 @@ export function settleTick(
     unsupported.push(...out.unsupported);
   }
 
-  // P15：tick 推进 + resolvedTickCount 递增（invariant 已通过）
+  // P16：tick 推进 + resolvedTickCount 递增（invariant 已通过）
   const next: SimWorld = {
     ...draft,
     tick: draft.tick + 1,
@@ -257,6 +259,11 @@ function sortEvents(events: readonly ResolutionEvent[]): readonly ResolutionEven
 /** 调试/诊断：列出 phase 顺序（供测试断言）。 */
 export function phaseOrder(): readonly string[] {
   return PHASES.map((p) => p.id);
+}
+
+/** 调试/诊断：列出 phase id → officialPhase 映射（供 manifest 契约测试断言）。 */
+export function phaseOfficialMap(): ReadonlyMap<string, number> {
+  return new Map(PHASES.map((p) => [p.id, p.officialPhase] as const));
 }
 
 /** 便捷：从世界构造空计划（全部 WAIT）——测试与 harness 用。 */

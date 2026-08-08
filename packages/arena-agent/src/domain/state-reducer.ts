@@ -212,3 +212,88 @@ function assertPositiveTick(tick: number): void {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W12 按类型替补队列（replacement-queue-v1，2026-08-09，algorithm-update-plan-v1
+// §4-W12）。问题 A2 缺陷 4：阵亡只靠通用产兵，人口崩塌恢复慢。参考定位
+// reference/arena-hero-clone-waaiging/arena_hero_strategy.py HEAD 26675e36：
+// - replacement_queue: Counter[str]（:528 field，持久化 :852-856）
+// - 入队（:1157-1172）：lost_unit_ids = previous_unit_ids - live_unit_ids，
+//   按 previous_labels[unit_id].object_type 计数（set-difference，不依赖事件
+//   values.unit_type——UNIT_DESTROYED 事件 values 在实测中恒 null，类型只能
+//   靠上一 tick 的单位标签解析）。
+// - 出队（:1163-1170）：本 tick 新出现的军事单位（id 不在 previous_unit_ids
+//   中）即产兵确认 → 该类型计数 -1（产后确认而非决策时扣减——SPAWN 可能
+//   被服务端拒，确认式出队失败时下 tick 自动重试）。
+// 本模块只暴露纯函数（state-reducer 无跨 tick 状态）：入队 / 出队的状态
+// 转移。可变实例状态由 DeterministicPlanner 持有（与 surgeActive /
+// previousCorePosition / previousAssignments 同语义）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 军事单位类型（替补队列只覆盖 VANGUARD/RANGER；WORKER 不入队——
+ *  spec：worker 阵亡只靠通用产兵补员，不入按类型替补队列）。 */
+export type MilitaryUnitType = "VANGUARD" | "RANGER";
+
+/** 按类型计数的阵亡补员队列。不可变（每次转移返回新冻结对象）。 */
+export type ReplacementQueue = Readonly<Record<MilitaryUnitType, number>>;
+
+export const EMPTY_REPLACEMENT_QUEUE: ReplacementQueue = Object.freeze({
+  VANGUARD: 0,
+  RANGER: 0,
+});
+
+/** UNIT_DESTROYED 事件 → 该类型计数 +1。类型解析靠 previousUnitTypes
+ *  （阵亡单位已从 turn.units 消失，事件 actor_id 是阵亡单位 id；UNIT_DESTROYED
+ *  的 values 在实测中恒 null，无 unit_type 字段——只能靠上一 tick 标签）。
+ *  敌方阵亡事件的 actor_id 不在 previousUnitTypes（只含我方单位）→ 自动过滤。
+ *  WORKER 阵亡不入队（spec：只军事单位）。
+ *  变体未启用（enabled=false）→ 恒空（零回归）。 */
+export function applyReplacementQueueDelta(
+  previous: ReplacementQueue,
+  events: readonly ResolutionEventSnapshot[],
+  previousUnitTypes: ReadonlyMap<string, UnitType>,
+  enabled: boolean,
+): ReplacementQueue {
+  if (!enabled) return EMPTY_REPLACEMENT_QUEUE;
+  let vanguard = previous.VANGUARD;
+  let ranger = previous.RANGER;
+  for (const event of events) {
+    if (event.eventType !== "UNIT_DESTROYED") continue;
+    const actorId = event.actorId;
+    if (actorId === null) continue;
+    const unitType = previousUnitTypes.get(actorId);
+    if (unitType === "VANGUARD") {
+      vanguard += 1;
+    } else if (unitType === "RANGER") {
+      ranger += 1;
+    }
+    // WORKER 阵亡不入队；未知 id（敌方/未追踪）不入队
+  }
+  if (vanguard === previous.VANGUARD && ranger === previous.RANGER) return previous;
+  return Object.freeze({ VANGUARD: vanguard, RANGER: ranger });
+}
+
+/** 产兵确认出队（reference :1163-1170）：本 tick 新出现的军事单位（id 不在
+ *  previousUnitIds 中）即 SPAWN 已被服务端确认 → 该类型计数 -1。变体关 → 恒空。
+ *  队列已空时短路返回（无新单位也不必重建对象）。 */
+export function consumeReplacementQueue(
+  queue: ReplacementQueue,
+  currentUnits: readonly { readonly id: string; readonly unitType: UnitType }[],
+  previousUnitIds: ReadonlySet<string>,
+  enabled: boolean,
+): ReplacementQueue {
+  if (!enabled) return EMPTY_REPLACEMENT_QUEUE;
+  if (queue.VANGUARD === 0 && queue.RANGER === 0) return queue;
+  let vanguard = queue.VANGUARD;
+  let ranger = queue.RANGER;
+  for (const unit of currentUnits) {
+    if (previousUnitIds.has(unit.id)) continue;
+    if (unit.unitType === "VANGUARD" && vanguard > 0) {
+      vanguard -= 1;
+    } else if (unit.unitType === "RANGER" && ranger > 0) {
+      ranger -= 1;
+    }
+  }
+  if (vanguard === queue.VANGUARD && ranger === queue.RANGER) return queue;
+  return Object.freeze({ VANGUARD: vanguard, RANGER: ranger });
+}

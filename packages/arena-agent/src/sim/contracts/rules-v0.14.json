@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "rulesVersion": "v0.14",
-  "verifiedAt": "2026-08-07T01:40:00+08:00",
+  "verifiedAt": "2026-08-09T15:00:00+08:00",
   "evidence": {
     "docs": {
       "repo": "github.com/arena-hero/arena-hero-doc",
@@ -14,14 +14,14 @@
       "note": "official changelog 2026-08-06 cites server commit b24cfcd22b82c0af0f3993397d2696629762e7e5 (dynamic Unit prices replace maintenance); server repo anonymous clone unavailable for direct verification"
     },
     "discrepancies": [
-      "population >= 21 dynamic pricing not observed in production (historical production population peak 8); formula implemented from official changelog text only, marked NOT-VERIFIED-LIVE in pricing notes",
+      "dynamic pricing k=1 tier verified in production（2026-08-08 t1：RANGER 16 @pre-spawn pop 23、VANGUARD 13 @pop 24）；exact round-half-up .5 boundary 与 k>=2 tiers not observed live, formula-extrapolated；formula cross-verified via SDK 183/183 + community tests",
       "python SDK v0.2.9 unit_cost(unit_type, population) verified against local implementation: 183/183 vectors identical (3 unit types x population 0..60, official wheel arena_hero-0.2.9 rules.py run as-is); pricing.ts integer round-half-up semantics match official (2n+d)//(2d)"
     ],
     "sdk": {
       "repo": "github.com/arena-hero/arena-hero-python",
       "tag": "v0.2.9",
       "publicCommit": "423d252adcca439669adb3e7b04252e53b4430bd",
-      "mirrorDir": "../reference/arena-hero-python/arena_hero",
+      "mirrorDir": "../reference/arena-hero-python/src/arena_hero",
       "mirrorFileCount": 13,
       "mirrorAggregateSha256": "a4f00014f3772ff246b5436d8ed4f05bb1d594c1ec1935f7ec76f95a496a4acd",
       "documentedCommit": "423d252adcca439669adb3e7b04252e53b4430bd",
@@ -81,7 +81,7 @@
     "settlement": {
       "officialPhaseCount": 15,
       "localPhaseCount": 16,
-      "granularityNote": "16 步是本仓库展开表达（两次 capacity overflow 显式化），官方 15 阶段无语义冲突"
+      "granularityNote": "16 步是本仓库展开表达：P03 capacity-shrink 并入 combat 结算（officialPhase 7），P04 upkeep 在 v0.14 为 no-op（officialPhase 8）；官方 15 阶段（含 upkeep no-op 槽位）与本仓库 16 phase 映射自洽无语义冲突"
     }
   },
   "constraints": {
@@ -103,6 +103,6 @@
       "simulation": "chunk-quota-empty-slot-v1",
       "note": "官方每 4 个 resolved tick 按 32×32 chunk 配额 max(2,floor(16*8/(8+ring))) 补自然点；placement 用永久 secret world seed（客户端不可预测）。模拟器实现自洽确定性 chunk-quota 空槽模型（行为等价），结算中仍标记 unknown（精确位置归 EXPECTED_UNKNOWN）"
     },
-    "settlementOrder": "self-destruct -> capacity-shrink -> upkeep -> movement -> start-move-validation -> beacon -> harvest/deposit -> combat -> heal -> core-action -> respawn -> refill(4-tick) -> commit"
+    "settlementOrder": "lock -> self-destruct -> movement -> start-move-validation -> beacon -> harvest/deposit -> combat -> upkeep(v0.14 no-op) -> core-self-destruct -> unit-heal -> core-action -> respawn -> refill -> commit -> next-observation"
   }
 }

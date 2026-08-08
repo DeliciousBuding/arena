@@ -188,7 +188,7 @@ export function resolveCoreMigration(
 
 export const coreMigrationPhase: Phase = {
   id: "P06-core-migration-actions",
-  officialPhase: 6,
+  officialPhase: 4,
   run: (draft, ctx) => {
     const resolution = resolveCoreMigration(draft, ctx.plans);
     if (resolution.updatedCores.size > 0) {

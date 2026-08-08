@@ -555,18 +555,32 @@ function applyCoreCaptures(
 ): void {
   const players = new Map(draft.players);
   for (const victim of destroyedFleets) {
+    // 官方 resolution-results.md:82 只定义 CORE_RESOURCES_CAPTURED；victim=0
+    // 仍静默（无可捕获/可毁资源）。无赢家或赢家当 Tick 阵亡时，受害方残留
+    // 库存既不归属赢家也不保留——记为内部统计事件 CORE_RESOURCES_DESTROYED
+    // （arena-evolve 自造，不在官方 wire 事件表；不得进入 protocol-bridge 白名单）。
     if (victim.availableResources <= 0) continue;
     const winnerId = captureWinner(resolution, victim.coreId);
-    if (winnerId === null) continue;
-    const winner = players.get(winnerId);
-    if (winner === undefined || winner.status !== "ACTIVE" || winner.core === null) continue;
+    const winner = winnerId === null ? null : players.get(winnerId);
+    const winnerCanCapture =
+      winner !== undefined && winner !== null &&
+      winner.status === "ACTIVE" && winner.core !== null;
+    if (winnerId === null || !winnerCanCapture) {
+      events.push(eventOf(draft.tick, "CORE_RESOURCES_DESTROYED", {
+        targetId: victim.coreId,
+        position: victim.corePosition,
+        values: { amount: victim.availableResources },
+      }));
+      continue;
+    }
 
-    const capacity = capacityOf(rules, winner.units.length);
-    const amount = Math.min(victim.availableResources, Math.max(0, capacity - winner.resources));
+    const winnerActive = winner!;
+    const capacity = capacityOf(rules, winnerActive.units.length);
+    const amount = Math.min(victim.availableResources, Math.max(0, capacity - winnerActive.resources));
     const destroyed = victim.availableResources - amount;
-    players.set(winnerId, { ...winner, resources: winner.resources + amount });
+    players.set(winnerId, { ...winnerActive, resources: winnerActive.resources + amount });
     events.push(eventOf(draft.tick, "CORE_RESOURCES_CAPTURED", {
-      actorId: winner.core.id,
+      actorId: winnerActive.core!.id,
       targetId: victim.coreId,
       position: victim.corePosition,
       values: {
@@ -582,7 +596,7 @@ function applyCoreCaptures(
 
 export const combatPhase: Phase = {
   id: "P09-combat",
-  officialPhase: 9,
+  officialPhase: 7,
   run: (draft, ctx) => {
     if (!ctx.features.has("combat")) return outcome({});
     const resolution = resolveCombat(draft, ctx.plans);

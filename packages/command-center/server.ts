@@ -756,8 +756,24 @@ const MIME: Record<string, string> = {
 };
 function serveFile(c: Context, filePath: string): Response | Promise<Response> {
   if (existsSync(filePath) && statSync(filePath).isFile()) {
+    const st = statSync(filePath);
     const ext = filePath.slice(filePath.lastIndexOf("."));
-    return new Response(readFileSync(filePath), { headers: { "content-type": MIME[ext] ?? "application/octet-stream" } });
+    const etag = `W/"${Math.floor(st.mtimeMs / 1000)}-${st.size}"`;
+    const ifNoneMatch = c.req.header("if-none-match");
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      return new Response(null, { status: 304, headers: { etag, "cache-control": "no-cache" } });
+    }
+    // 字体/位图 immutable（内容寻址或极少变更）；js/css/html 协商缓存（304 零传输）
+    const immutable = ext === ".woff2" || ext === ".png" || ext === ".webp" || ext === ".jpg" || ext === ".jpeg" || ext === ".ico" || ext === ".svg";
+    const cacheControl = immutable ? "public, max-age=31536000, immutable" : "no-cache";
+    return new Response(readFileSync(filePath), {
+      headers: {
+        "content-type": MIME[ext] ?? "application/octet-stream",
+        etag,
+        "last-modified": st.mtime.toUTCString(),
+        "cache-control": cacheControl,
+      },
+    });
   }
   return new Response("not found", { status: 404 });
 }

@@ -318,7 +318,18 @@ function main(): void {
       const result = conductorStep(input);
       heldState = result.held;
       if (result.plan === null) {
-        if (plan !== null) {
+        // W40 饿死兜底：plan=null 且饿死触发信号存在且无 --target → 写 PLAN 计划
+        // （不直接 START_MOVE；绕过 overlay 契约/单写者纪律，conductor 只输出信号）
+        if (result.starveTrigger !== undefined && options.target === null && plan === null) {
+          const starveTarget = {
+            x: result.starveTrigger.target.x,
+            y: result.starveTrigger.target.y,
+            reason: result.starveTrigger.reason,
+          };
+          plan = buildInitialPlan(tenant, observation, starveTarget, config);
+          writeMigrationPlanAtomic(planPath, plan);
+          console.log(`[${tenant}] tick ${observation.tick}：饿死兜底触发 → 计划写入（PLAN，目标 [${starveTarget.x},${starveTarget.y}]，理由：${starveTarget.reason}）`);
+        } else if (plan !== null) {
           clearMigrationPlan(planPath);
           console.log(`[${tenant}] tick ${observation.tick}：计划清理完成`);
         }

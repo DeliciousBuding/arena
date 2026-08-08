@@ -76,6 +76,16 @@ export interface MigrationRuntimeConfig {
     readonly minMilitaryCount: number;
     readonly minGapTicks: number;
   };
+  /**
+   * W40（饿死迁移兜底，M7 补位）：核心长期无采集 + survey 无新鲜资源目击
+   * → 兜底迁移计划（仅写 PLAN，不直接 START_MOVE；绕过 overlay 单写者纪律）。
+   * 参考 arena-evolve heuristic.py：MIGRATE_STARVE_TICKS=300/MIGRATE_COOLDOWN=400，
+   * 此处保守加倍 triggerTicks=600；minAreaSeen=30 对应 area_seen>30 前置。
+   * **零回归**：字段 undefined（DEFAULT 不设）→ 永不触发；变体显式 opt-in 才启用。
+   */
+  readonly starveTriggerTicks?: number;
+  readonly starveCooldownTicks?: number;
+  readonly starveMinAreaSeen?: number;
 }
 
 export const DEFAULT_MIGRATION_RUNTIME_CONFIG: MigrationRuntimeConfig = {

@@ -64,7 +64,7 @@ test("S3: 16 个内部 phase 按固定顺序运行", () => {
   assert.equal(order.length, 16);
   assert.deepEqual(order.slice(0, 4), ["P01-lock-final-plans", "P02-self-destruct", "P03-capacity-shrink-after-removal", "P04-upkeep-and-deficit"]);
   assert.ok(order.includes("P10-core-self-destruct"), "core self-destruct is its own phase after combat");
-  assert.deepEqual(order.slice(-2), ["P14-invariant-check-and-commit", "P15-next-observation"]);
+  assert.deepEqual(order.slice(-2), ["P15-invariant-check-and-commit", "P16-next-observation"]);
 });
 
 test("S3: no-op tick——世界推进且原 world 不被修改", () => {

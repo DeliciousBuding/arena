@@ -216,6 +216,21 @@ const RALLY_TIMEOUT_TICKS = 40;
 /** 攻坚单位距敌核 ≤ RALLY_ATTACK_RADIUS = 已在敌核攻击圈内，直接压上不集结
  *  （已投入战斗，回集结位反而送死）。 */
 const RALLY_ATTACK_RADIUS = 4;
+/** 斩首配额会计（W10，sortie-quota-v1，2026-08-09，B2 缺陷 1 修复）：
+ *  weakCoreOrderedTargets 全军事扑同一弱核 → 按家防余量分档借调 1V+2R
+ *  编成 sortie。参数对齐 arena_hero_strategy.py：
+ *  - CORE_ASSAULT_MAX_HOME_DISTANCE=28（:145）：sortie 目标距我方 Core 上限；
+ *  - lifecycle 72 tick / sighting 96 tick / guard radius 8（与 PREY_CORE_SAFE 同口径）；
+ *  - AGGRESS_DEFENDER_VANGUARDS=3 + RANGERS=3（:138-139）家防余量门槛；
+ *  - CORE_ASSAULT_MIN_VANGUARDS=1 + MIN_RANGERS=2（:143-144）每 sortie 借调编成。 */
+const SORTIE_MAX_HOME_DISTANCE = 28;
+const SORTIE_LIFETIME_TICKS = 72;
+const SORTIE_SIGHTING_TICKS = 96;
+const SORTIE_GUARD_RADIUS = 8;
+const SORTIE_HOME_VANGUARD_RESERVE = 3;
+const SORTIE_HOME_RANGER_RESERVE = 3;
+const SORTIE_VANGUARDS_PER_SORTIE = 1;
+const SORTIE_RANGERS_PER_SORTIE = 2;
 /** 寡不敌众撤退参数（2026-08-08，outnumbered-retreat-v1，guide 巡逻单位兵力
  *  不足撤退对照）：判定半径 aggressive 10 / defensive 6（guide 同值，Chebyshev）；
  *  守家豁免圈 = REINFORCE_HOME_RING（4，Core 防区不撤——最后防线接战）；敌核
@@ -326,6 +341,22 @@ export interface SafetyPlannerInput {
 export function workerDenseDirection(index: number): number {
   if (index < 8) return ((index * 3 + 7) % 8) * 2;
   return (((index - 8) * 3 + 7) % 8) * 2 + 1;
+}
+
+/** 斩首配额 sortie 记录（W10，sortie-quota-v1，2026-08-09）：每个活跃 sortie
+ *  对应一个敌核目标（cellKey 索引），记录编成会计 + 生命周期。借调 1V+2R
+ *  编成攻坚小队，跨 tick sticky。取消回收 4 种理由（超时/目击过期/家防被
+ *  袭击/目标消失）在 pruneSorties 中裁决。参考 arena_hero_strategy.py
+ *  _beacon_local_core_sortie_assignments :5816-6068。 */
+interface SortieRecord {
+  /** sortie 发起 tick（≤lifetime 超时回收，取消理由 ①）。 */
+  startedTick: number;
+  /** 目标敌核最近目击 tick（>sightingTicks 过期回收，取消理由 ②）。 */
+  sightingTick: number;
+  /** 借调先锋 id 集（≤SORTIE_VANGUARDS_PER_SORTIE）。 */
+  vanguardIds: Set<string>;
+  /** 借调游侠 id 集（≤SORTIE_RANGERS_PER_SORTIE）。 */
+  rangerIds: Set<string>;
 }
 
 export class SafetyPlanner {
@@ -459,6 +490,11 @@ export class SafetyPlanner {
   /** 攻坚集结状态（2026-08-08，rally-assault-v1）：targetKey -> { ready, firstArriveTick }。
    *  集结位在敌核外圈，组齐（ready）或超时后成建制压上；目标被重新目击/更换时重置。 */
   private readonly rallyTargets = new Map<string, { ready: boolean; firstArriveTick: number }>();
+  /** 斩首配额会计（W10，sortie-quota-v1，2026-08-09）：sortieKey（目标 cellKey）
+   *  → SortieRecord。借调 1V+2R 编成攻坚小队，按家防余量分档借调，不全部扑同一
+   *  弱核。跨 tick sticky（Map 持久化）+ 超时/过期/家防回援/目标消失 4 种取消回收。
+   *  只在 config.sortieQuota === true 时消费；未启用时 Map 永空（零回归）。 */
+  private readonly coreSorties = new Map<string, SortieRecord>();
   /** B10 worker 遭遇撤离状态（unitId → 返回截止/冷却截止 tick）。 */
   private scoutEvadeState = new Map<string, { returnUntil: number; cooldownUntil: number }>();
   /** B8 守卫轮换 one-at-a-time：回修流程中的守卫（unitId → 名额占用截止 tick）。 */
@@ -485,6 +521,11 @@ export class SafetyPlanner {
   coreRecoveryCount = 0;
   /** C2 RECOVERY 事件日志（telemetry/测试可读；正常对局为空）。 */
   readonly recoveryLog: string[] = [];
+  /** W10 sortie 取消回收计数（telemetry/测试可读）：pruneSorties 每删除一条
+   *  sortie 记录 +1（含 4 种取消理由：超时/目击过期/家防被袭击/目标消失 +
+   *  借调单位全灭）。用于验证生命周期回收确实触发（新 sortie 会立即重建，
+   *  intent 计数无法区分"旧记录超时回收 + 新记录重建"）。 */
+  sortiePruneCount = 0;
 
   /** 官方排行榜威胁画像（username → tier，2026-08-07）：由 tenant-runtime 从
    *  data/leaderboard/ 快照加载注入；缺省空 Map = 无威胁情报（零回归）。
@@ -664,6 +705,160 @@ export class SafetyPlanner {
       }
       return a.position[0] - b.position[0] || a.position[1] - b.position[1];
     });
+  }
+
+  /** 家防余量（W10，sortie-quota-v1）：总军事减去已借调入 sortie 的单位 = 留守
+   *  家防可调度的余量。借调门槛要求余量 vanguards ≥3 + rangers ≥3 才能再借调
+   *  1V+2R（arena_hero_strategy.py :138-139 AGGRESS_DEFENDER_*）；家防被袭击时
+   *  余量跌破门槛 → 取消借调回援（取消理由 ③）。纯查询，不修改状态。 */
+  private homeDefenseReserves(state: TickState): { vanguards: number; rangers: number } {
+    let borrowedVanguards = 0;
+    let borrowedRangers = 0;
+    for (const rec of this.coreSorties.values()) {
+      borrowedVanguards += rec.vanguardIds.size;
+      borrowedRangers += rec.rangerIds.size;
+    }
+    return {
+      vanguards: Math.max(0, state.vanguards.length - borrowedVanguards),
+      rangers: Math.max(0, state.rangers.length - borrowedRangers),
+    };
+  }
+
+  /** sortie 取消回收（W10，sortie-quota-v1）：decide 入口每 tick 调用一次，
+   *  裁决 4 种取消理由——
+   *  ① 生命周期超时（startedTick + lifetime ≤ tick）；
+   *  ② 目击过期（目标敌核不在当前 coreHuntTargets 或 lastSeenTick 已超 sightingTicks）；
+   *  ③ 家防被袭击（threat 非 NORMAL/CALM 且家防余量跌破门槛）→ 取消借调回援；
+   *  ④ 目标敌核被摧毁/迁移消失（不在 coreHuntTargets，且非过期——已被 forgetCoreHuntAt
+   *    在 decide 入口清除，此处兜底清理残留 sortie 记录）。
+   *  TODO：W 源码 9 种取消理由中的另外 5 种（rally 失败/护卫脱节/敌核移动出新位置/
+   *  我方 Core 被迫迁移/补给线被截）留 W15 beacon-expedition 实现。 */
+  private pruneSorties(state: TickState): void {
+    if (this.coreSorties.size === 0) return;
+    const lifetimeTicks = this.config.sortieLifetimeTicks ?? SORTIE_LIFETIME_TICKS;
+    const sightingTicks = this.config.sortieSightingTicks ?? SORTIE_SIGHTING_TICKS;
+    const liveTargets = new Map<string, CoreHuntTarget>();
+    for (const target of this.world.coreHuntTargets()) {
+      if (target.source === "CORE") liveTargets.set(cellKey(target.position), target);
+    }
+    const homeUnderAttack =
+      this.currentThreat !== null && this.currentThreat.level !== "NORMAL";
+    const reserves = this.homeDefenseReserves(state);
+    const reservesShortfall =
+      homeUnderAttack &&
+      (reserves.vanguards < SORTIE_HOME_VANGUARD_RESERVE || reserves.rangers < SORTIE_HOME_RANGER_RESERVE);
+    for (const [key, rec] of this.coreSorties) {
+      // ① 生命周期超时
+      if (state.tick - rec.startedTick >= lifetimeTicks) {
+        this.coreSorties.delete(key);
+        this.sortiePruneCount += 1;
+        continue;
+      }
+      const target = liveTargets.get(key);
+      // ④ 目标消失（已被 forgetCoreHuntAt 清除）或 ② 目击过期
+      if (
+        target === undefined ||
+        state.tick - target.lastSeenTick > sightingTicks
+      ) {
+        this.coreSorties.delete(key);
+        this.sortiePruneCount += 1;
+        continue;
+      }
+      // ③ 家防被袭击 + 余量跌破门槛 → 取消借调回援
+      if (reservesShortfall) {
+        this.coreSorties.delete(key);
+        this.sortiePruneCount += 1;
+        continue;
+      }
+      // 清理已死亡/不存在单位的 id（防 stale 累积——单位阵亡后 id 残留）
+      const aliveIds = new Set([...state.vanguards, ...state.rangers].map((u) => u.id));
+      for (const id of [...rec.vanguardIds]) if (!aliveIds.has(id)) rec.vanguardIds.delete(id);
+      for (const id of [...rec.rangerIds]) if (!aliveIds.has(id)) rec.rangerIds.delete(id);
+      // 借调单位全灭 → sortie 自然消亡
+      if (rec.vanguardIds.size === 0 && rec.rangerIds.size === 0) {
+        this.coreSorties.delete(key);
+        this.sortiePruneCount += 1;
+      }
+    }
+  }
+
+  /** 斩首配额 sortie 目标选择（W10，sortie-quota-v1）：weakCoreOrderedTargets 全
+   *  军事扑同一弱核 → 按家防余量分档借调 1V+2R 编成 sortie，分流不扑同一目标。
+   *  单位已编入活跃 sortie → 返回该 sortie 目标；否则尝试加入未满编的既有 sortie；
+   *  家防余量 ≥3V+3R → 为下一可用目标新建 sortie 借调；余量不足 → 返回
+   *  undefined（单位不扑弱核，fall through 到 prey/scavenge/home，零回归意图）。
+   *  只在 config.sortieQuota === true 时调用（调用方保证）；Map 跨 tick sticky。 */
+  private sortieTargetFor(
+    unit: UnitSnapshot,
+    orderedTargets: readonly CoreHuntTarget[],
+    state: TickState,
+  ): CoreHuntTarget | undefined {
+    if (state.core === null) return undefined;
+    const maxDist = this.config.sortieMaxHomeDistance ?? SORTIE_MAX_HOME_DISTANCE;
+    const sightingTicks = this.config.sortieSightingTicks ?? SORTIE_SIGHTING_TICKS;
+    const isFresh = (target: CoreHuntTarget): boolean =>
+      state.tick - target.lastSeenTick <= sightingTicks &&
+      chebyshev(state.core!.position, target.position) <= maxDist;
+
+    // 1. 单位已编入活跃 sortie → 返回该 sortie 目标（目标仍有效时）
+    for (const [key, rec] of this.coreSorties) {
+      const member = rec.vanguardIds.has(unit.id) || rec.rangerIds.has(unit.id);
+      if (!member) continue;
+      const target = orderedTargets.find((t) => cellKey(t.position) === key);
+      if (target !== undefined && isFresh(target)) {
+        return target;
+      }
+      // sortie 目标失效 → 退出该 sortie（pruneSorties 下 tick 清记录，此处先脱编）
+      rec.vanguardIds.delete(unit.id);
+      rec.rangerIds.delete(unit.id);
+      break;
+    }
+
+    // 2. 加入既有未满编 sortie（补齐 1V+2R 编成）
+    for (const [key, rec] of this.coreSorties) {
+      const target = orderedTargets.find((t) => cellKey(t.position) === key);
+      if (target === undefined || !isFresh(target)) continue;
+      if (
+        unit.unitType === "VANGUARD" &&
+        rec.vanguardIds.size < SORTIE_VANGUARDS_PER_SORTIE
+      ) {
+        rec.vanguardIds.add(unit.id);
+        return target;
+      }
+      if (
+        unit.unitType === "RANGER" &&
+        rec.rangerIds.size < SORTIE_RANGERS_PER_SORTIE
+      ) {
+        rec.rangerIds.add(unit.id);
+        return target;
+      }
+    }
+
+    // 3. 家防余量 ≥3V+3R → 为下一可用目标新建 sortie 借调 1V+2R
+    const reserves = this.homeDefenseReserves(state);
+    const canBorrow =
+      reserves.vanguards >= SORTIE_HOME_VANGUARD_RESERVE &&
+      reserves.rangers >= SORTIE_HOME_RANGER_RESERVE;
+    if (!canBorrow) return undefined;
+    for (const target of orderedTargets) {
+      if (target.source !== "CORE") continue;
+      const key = cellKey(target.position);
+      if (this.coreSorties.has(key)) continue;
+      if (!isFresh(target)) continue;
+      const rec: SortieRecord = {
+        startedTick: state.tick,
+        sightingTick: target.lastSeenTick,
+        vanguardIds: new Set<string>(),
+        rangerIds: new Set<string>(),
+      };
+      if (unit.unitType === "VANGUARD") rec.vanguardIds.add(unit.id);
+      else rec.rangerIds.add(unit.id);
+      this.coreSorties.set(key, rec);
+      return target;
+    }
+
+    // 4. 无可用 sortie → 不扑弱核（调用方 fall through 到其他行为）
+    return undefined;
   }
 
   /** 攻坚集结位（rally-assault-v1）：敌核外圈 Chebyshev RALLY_DISTANCE 的 8 方位
@@ -1026,6 +1221,13 @@ export class SafetyPlanner {
         recentAttackUntilTick: this.recentAttackUntilTick,
         tick: state.tick,
       });
+    }
+    // 斩首配额 sortie 生命周期回收（W10，sortie-quota-v1）：decide 入口每 tick
+    //   裁决一次 4 种取消理由（超时/目击过期/家防被袭击/目标消失），必须在
+    //   威胁评估之后（取消理由 ③ 依赖 currentThreat）、消费侧（sortieTargetFor）
+    //   之前。未启用时 Map 永空，pruneSorties 直接 return（零回归）。
+    if (this.config.sortieQuota === true) {
+      this.pruneSorties(state);
     }
     // MOVE_FAILED 反馈（moveFailedAvoidance）：上 tick 结算拒绝的单位计连续失败，
     // 其余清零——连续失败 ≥2 时单位改走垂直绕行格探路（见 detourDirection）。
@@ -2304,11 +2506,24 @@ export class SafetyPlanner {
             this.config.weakCoreFirst === true
               ? this.weakCoreOrderedTargets(state)
               : this.world.coreHuntTargets();
-          const target = hunt.find((t) => {
-            const sweptAt = this.huntSweptAt.get(cellKey(t.position));
-            return sweptAt === undefined || t.lastSeenTick > sweptAt;
-          });
+          // W10 斩首配额（sortie-quota-v1）：开启时单位编入 sortie 按家防余量
+          // 分流不扑同一弱核；未编入 sortie 的单位不扑弱核（fall through 到
+          // prey/scavenge/home）。关闭时历史 .find 行为（零回归）。
+          const target = this.config.sortieQuota === true
+            ? this.sortieTargetFor(unit, hunt, state)
+            : hunt.find((t) => {
+                const sweptAt = this.huntSweptAt.get(cellKey(t.position));
+                return sweptAt === undefined || t.lastSeenTick > sweptAt;
+              });
           if (target !== undefined) {
+            // sortie 编入单位直奔目标（无清扫旋转——sortie 是 committed assault）；
+            // 关闭时走清扫语义（历史行为）。
+            if (this.config.sortieQuota === true) {
+              const direction = stepToward(unit.position, target.position, militaryObstacles);
+              if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_sortie");
+              else set(unit, { type: "WAIT" }, "vanguard_sortie");
+              return;
+            }
             const key = cellKey(target.position);
             const reach = chebyshev(unit.position, target.position);
             if (reach <= HUNT_SWEEP_RADIUS) {
@@ -2836,16 +3051,23 @@ export class SafetyPlanner {
       // 时门槛提高，Ranger 不单薄前压送死。
       const force = this.adaptiveAttackForce();
       const forceGate = force > 0 && military < force;
-      const enemyCoreMemory = forceGate
+      // W10 斩首配额（sortie-quota-v1）：开启时 Ranger 编入 sortie 按家防余量
+      // 分流不扑同一弱核；未编入 sortie 的 Ranger 不前压弱核（fall through 到
+      // focus/scavenge/home）。关闭时历史 .find 行为（零回归）。
+      const huntTargets = forceGate
         ? undefined
         : (this.config.weakCoreFirst === true
             ? this.weakCoreOrderedTargets(state)
-            : this.world.coreHuntTargets()
-          ).find(
-            (target) =>
-              target.source === "CORE" &&
-              chebyshev(state.core!.position, target.position) <= BOUNDED_RAID_DISTANCE,
-          );
+            : this.world.coreHuntTargets());
+      const enemyCoreMemory = huntTargets === undefined
+        ? undefined
+        : this.config.sortieQuota === true
+          ? this.sortieTargetFor(unit, huntTargets, state)
+          : huntTargets.find(
+              (target) =>
+                target.source === "CORE" &&
+                chebyshev(state.core!.position, target.position) <= BOUNDED_RAID_DISTANCE,
+            );
       // 攻坚集结（rally-assault-v1 Ranger 版，2026-08-08）：Vanguard 先集结但
       // Ranger 单独前压仍会被守军逐个点掉（t2 二轮 jerkman 攻坚实证：5 Ranger
       // 独立前压全灭、核心未破）。Ranger 与 Vanguard 同集结位汇合（同目标同
