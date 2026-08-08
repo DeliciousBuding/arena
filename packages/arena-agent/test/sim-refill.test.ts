@@ -32,10 +32,10 @@ const rules = loadRulesManifest(MANIFEST_PATH);
 
 const CORE_CELL: Position = [0, 0];
 const MINE_CELLS: readonly Position[] = [
-  [3, 0],
   [3, 1],
   [3, 2],
   [3, 3],
+  [3, 4],
 ];
 
 function workerId(index: number): string {
@@ -215,7 +215,7 @@ test("refill: 补回数量 = quota - 现存，补位不在现有自然点/障碍
   };
 
   const world = run();
-  const remainingMine = cellKey([3, 3]);
+  const remainingMine = cellKey([3, 4]);
   const refilled = [...world.terrain.resources.keys()].filter((key) => key !== remainingMine);
   assert.equal(world.terrain.resources.size, chunkQuota(0, 0), "总点数 = quota");
   assert.equal(refilled.length, chunkQuota(0, 0) - 1, "补回数量 = quota - 现存(1)");
@@ -229,9 +229,10 @@ test("refill: 补回数量 = quota - 现存，补位不在现有自然点/障碍
 test("refill: 单位脚下补位允许（官方语义）", () => {
   // 障碍填满 chunk 内除 16 个空槽（4 矿 + 12 额外格）外的全部格；
   // quota(0,0)=16 → 补位必覆盖全部 16 个候选，含 4 个 worker 脚下的矿格。
+  // 矿格与额外格均取非主干（x≠0 且 y≠0），避免 backbone 排除干扰。
   const extras: Position[] = [];
   for (const x of [5, 6, 7]) {
-    for (const y of [0, 1, 2, 3]) extras.push([x, y]);
+    for (const y of [1, 2, 3, 4]) extras.push([x, y]);
   }
   const scenario = chunkZeroScenario({ harvesters: 4, obstacleFill: true, extraOpenCells: extras });
   const ctx = makeRefillContext(["0,0"], 4);
@@ -264,11 +265,11 @@ test("refill: 同 tick 先采后补（P13 在 harvest 之后）", () => {
   const ctx = makeRefillContext(["0,0"], 4);
   let world = worldFromScenario(scenario);
   world = settleTick(world, partialHarvestPlans(world, 3), ctx).world;
-  assert.equal(world.terrain.resources.size, 1, "tick 1 后剩 [3,3]");
+  assert.equal(world.terrain.resources.size, 1, "tick 1 后剩 [3,4]");
   for (let i = 0; i < 2; i += 1) {
     world = settleTick(world, idlePlans(world), ctx).world;
   }
-  world = settleTick(world, harvestPlans(world), ctx).world; // tick 4：采空 [3,3] + refill
+  world = settleTick(world, harvestPlans(world), ctx).world; // tick 4：采空 [3,4] + refill
   assert.equal(world.terrain.resources.size, chunkQuota(0, 0), "P08 先采、P13 后补 → 补 16");
 });
 
@@ -289,4 +290,43 @@ test("refill: everyTicks 配置生效；无配置保持不补", () => {
     bare = settleTick(bare, idlePlans(bare), noRefill).world;
   }
   assert.equal(bare.terrain.resources.size, 0, "无配置不补");
+});
+
+test("refill (W47): chunk 边界主干通道不被选为补位（backbone 排除）", () => {
+  // 官方 map-and-vision.md:62-63 "outside chunk's backbone passages"——
+  // 补点候选排除 x%32===0 或 y%32===0 的格。本用例用障碍填满 chunk 内
+  // 除 16 个开放格外的全部格，其中 13 个非主干 + 3 个主干（y=0）。
+  // quota(0,0)=16，但主干候选被排除 → 只能补 13 个非主干格。
+  const extras: Position[] = [];
+  // 9 个非主干额外格（x=5..7, y=1..3）= 9 格
+  for (const x of [5, 6, 7]) {
+    for (const y of [1, 2, 3]) extras.push([x, y]);
+  }
+  // 3 个主干额外格（x=5..7, y=0）——backbone（y=0）应被排除
+  extras.push([5, 0], [6, 0], [7, 0]);
+  // 开放格 = 4 矿（非主干）+ 12 extras（9 非主干 + 3 主干）= 16 格；
+  // 候选 = 4 + 9 = 13（3 个主干 extras 被排除）。
+  const scenario = chunkZeroScenario({ harvesters: 4, obstacleFill: true, extraOpenCells: extras });
+  const ctx = makeRefillContext(["0,0"], 4);
+  let world = worldFromScenario(scenario);
+  world = settleTick(world, harvestPlans(world), ctx).world;
+  for (let i = 0; i < 3; i += 1) {
+    world = settleTick(world, idlePlans(world), ctx).world;
+  }
+  // 补位数量 = 13（非主干候选全集），不到 quota 16（缺 3 个主干槽）
+  assert.equal(world.terrain.resources.size, 13, "backbone 候选排除 → 只补 13 非主干格");
+  // 全部补位均非主干（x%32≠0 且 y%32≠0）
+  for (const key of world.terrain.resources.keys()) {
+    const [x, y] = key.split(",").map(Number);
+    const modX = ((x % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+    const modY = ((y % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+    assert.ok(modX !== 0 && modY !== 0, `补位 ${key} 不在 backbone（x%32≠0 且 y%32≠0）`);
+  }
+  // 3 个主干 extras 确实未被补
+  for (const backbone of [[5, 0], [6, 0], [7, 0]] as const) {
+    assert.ok(
+      !world.terrain.resources.has(cellKey(backbone)),
+      `主干格 ${cellKey(backbone)} 未被选为补位`,
+    );
+  }
 });

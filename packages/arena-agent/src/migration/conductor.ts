@@ -64,9 +64,26 @@ import {
   MIGRATION_RESOURCE_FRESH_WINDOW,
   MIGRATION_ENEMY_ACTIVE_WINDOW,
 } from "../domain/migration-audit.ts";
+import { selectTarget, DEFAULT_TARGET_SCORE_CONFIG, type TargetSurveyInput } from "./target.ts";
 
 /** 引擎事件：核心受击（DEFENSIVE_HOLD 进入条件之一）。 */
 export const CORE_DAMAGED_EVENT = "CORE_DAMAGED" as const;
+
+/** 引擎事件：采集成功（W40 饿死跟踪重置源）。 */
+export const HARVEST_SUCCEEDED_EVENT = "HARVEST_SUCCEEDED" as const;
+
+/**
+ * W40 饿死兜底：远离 [0,0] 死亡区的锚点阈值（Chebyshev）。
+ * 参考 arena-evolve heuristic.py:1010-1030 "主动远离 [0,0] 死亡区"——
+ * 兜底候选/方向锚点必须距原点 > 此值，避免核心被推向出生区枯竭死锁。
+ */
+export const STARVE_DEATH_ZONE_AVOID_RADIUS = 20;
+
+/**
+ * W40 饿死兜底：无已知矿格时的默认迁移步长（远离 [0,0] 方向锚点距核心的距离）。
+ * 参考长征单腿 LEG_MAX_CELLS=150，饿死是小步试探 → 取 50 格（≈1/3 腿）。
+ */
+export const STARVE_FALLBACK_STEP_CELLS = 50;
 
 /**
  * lease 续期窗口（§6.1 计划 lease.untilTick = tick + 本值）。
@@ -152,6 +169,10 @@ export interface ConductorHeldState {
   readonly threatReplanCount: number;
   /** M8（migration-survival-v1 §4）：编成缺口持续 tick（缺口恢复/写请求后复位）。 */
   readonly gapTicks: number;
+  /** W40：饿死持续 tick（无采集+无新鲜资源目击；HARVEST_SUCCEEDED/新鲜目击重置）。 */
+  readonly starveSince: number;
+  /** W40：饿死触发冷却截止 tick（触发后设 = tick + cooldown；此前不再触发）。 */
+  readonly starveCooldownUntil: number;
 }
 
 export interface ConductorTransitionRecord {
@@ -170,6 +191,12 @@ export interface ConductorStepResult {
   readonly transitions: readonly ConductorTransitionRecord[];
   /** 中文决策理由（遥测日志用），每 tick 至少一条。 */
   readonly reasons: readonly string[];
+  /**
+   * W40 饿死触发信号（plan=null 且饿死条件达成）。shell（run-conductor.mts）
+   * 据此调用 buildInitialPlan 写 PLAN 计划——**不直接 START_MOVE**，
+   * 绕过 overlay 契约/单写者纪律（conductor 只输出信号，不写盘）。
+   */
+  readonly starveTrigger?: { readonly target: MigrationPosition; readonly reason: string };
 }
 
 export const INITIAL_CONDUCTOR_HELD_STATE: ConductorHeldState = {
@@ -183,6 +210,8 @@ export const INITIAL_CONDUCTOR_HELD_STATE: ConductorHeldState = {
   threatFirstTick: 0,
   threatReplanCount: 0,
   gapTicks: 0,
+  starveSince: 0,
+  starveCooldownUntil: 0,
 };
 
 const chebyshev = (first: readonly [number, number], second: { readonly x: number; readonly y: number }): number =>
@@ -949,11 +978,200 @@ function defensiveHoldStep(
  * - plan 从磁盘读回（断点续传，仅同一 operation 合法——lease 过期即拒绝）；
  * - plan=null 返回时 clearMigrationPlan。
  */
+
+// ---------------------------------------------------------------------------
+// W40 饿死迁移兜底（M7 补位；plan=null 时跟踪，触发 → starveTrigger 信号）
+// ---------------------------------------------------------------------------
+
+/** 两个 MigrationPosition 的 Chebyshev 距离（target.ts 同名私有副本，此处独立以复用）。 */
+function positionChebyshev(first: MigrationPosition, second: MigrationPosition): number {
+  return Math.max(Math.abs(first.x - second.x), Math.abs(first.y - second.y));
+}
+
+/**
+ * W40 饿死兜底目的地选择（plan=null 且饿死条件达成时调用）。
+ *
+ * 策略（规格 §4）：
+ * 1. **评分优先**：候选 = 已知矿格（survey.resources 位置）远离 [0,0] 死亡区者，
+ *    交 selectTarget 评分（资源富集/安全/测绘覆盖）；
+ * 2. **兜底候选注入**：selectTarget 无候选通过（硬门槛：活跃敌核/富集下限）→
+ *    取距 [0,0] 最远的已知矿格（远离死亡区）；
+ * 3. **无已知矿格**：沿核心当前方位远离 [0,0] 生成方向锚点（STARVE_FALLBACK_STEP_CELLS 格外）。
+ *
+ * 返回 null 仅当核心位置未知（无法生成方向）——对应"全方向 blocked → 放弃等冷却"。
+ */
+function pickStarveTarget(
+  input: ConductorStepInput,
+  minAreaSeen: number,
+): MigrationPosition | null {
+  void minAreaSeen; // minAreaSeen 仅作触发前置（区域已勘探），选目标时不直接用
+  const core = input.core;
+  if (core?.position === null || core === null) return null;
+  const origin: MigrationPosition = { x: core.position[0], y: core.position[1] };
+  const deathZone: MigrationPosition = { x: 0, y: 0 };
+
+  // 1. 候选 = 已知矿格远离 [0,0] 死亡区者（去重）
+  const seen = new Set<string>();
+  const candidates: MigrationPosition[] = [];
+  for (const resource of input.survey.resources) {
+    const position: MigrationPosition = { x: resource.x, y: resource.y };
+    if (positionChebyshev(position, deathZone) <= STARVE_DEATH_ZONE_AVOID_RADIUS) continue;
+    const key = `${position.x},${position.y}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push(position);
+  }
+
+  // 评分优先：selectTarget（资源富集/安全/测绘覆盖硬门槛）
+  const targetConfig = input.config.targetScore ?? DEFAULT_TARGET_SCORE_CONFIG;
+  const surveyInput: TargetSurveyInput = {
+    resources: input.survey.resources,
+    enemyCores: input.survey.enemyCores,
+  };
+  const selected = selectTarget(candidates, surveyInput, targetConfig, input.tick);
+  if (selected !== null) return selected.target;
+
+  // 2. 兜底候选注入：距 [0,0] 最远的已知矿格（远离死亡区）
+  if (candidates.length > 0) {
+    let farthest = candidates[0]!;
+    for (const candidate of candidates) {
+      if (positionChebyshev(candidate, deathZone) > positionChebyshev(farthest, deathZone)) {
+        farthest = candidate;
+      }
+    }
+    return farthest;
+  }
+
+  // 3. 无已知矿格：沿核心当前方位远离 [0,0] 生成方向锚点
+  //    核心已在死亡区内 → 默认正方位（+x/+y）外出；否则沿核心所在象限外推。
+  const stepX = origin.x === 0 ? STARVE_FALLBACK_STEP_CELLS : Math.sign(origin.x) * STARVE_FALLBACK_STEP_CELLS;
+  const stepY = origin.y === 0 ? STARVE_FALLBACK_STEP_CELLS : Math.sign(origin.y) * STARVE_FALLBACK_STEP_CELLS;
+  return { x: origin.x + stepX, y: origin.y + stepY };
+}
+
+/**
+ * W40 饿死检测（纯函数；plan=null 时由 conductorStep 调用）。
+ *
+ * 双判据 AND（规格 §2）：
+ * - **事件源**：observation.events 含 HARVEST_SUCCEEDED → 重置 starveSince；
+ * - **survey 记忆**：无新鲜资源目击（窗口 > starveTriggerTicks，即任一资源
+ *   lastSeenTick 距今 ≤ triggerTicks 即视为有新鲜目击 → 不满足此判据）。
+ *
+ * 触发前置（规格 §5）：
+ * - **Core 非 MOVING**（coreEvade 活跃/正在移动不触发——避免与既有
+ *   DEFENSIVE_HOLD/ABORT 仲裁冲突；饿死计划写入后自动继承这些机制）；
+ * - **coreEvade 不活跃**：活跃敌核贴脸（≤ hold.enterRadius）时不触发
+ *   （防御优先于饿死迁移）。
+ *
+ * 触发后：starveSince 复位、starveCooldownUntil = tick + cooldownTicks。
+ * 变体零回归：config.starveTriggerTicks === undefined → 永不触发（DEFAULT 不设）。
+ */
+function detectStarvation(
+  input: ConductorStepInput,
+  held: ConductorHeldState,
+): {
+  readonly held: ConductorHeldState;
+  readonly trigger: { readonly target: MigrationPosition; readonly reason: string } | null;
+  readonly reasons: readonly string[];
+} {
+  const triggerTicks = input.config.starveTriggerTicks;
+  if (triggerTicks === undefined) {
+    return { held, trigger: null, reasons: [] }; // 变体未启用饿死兜底 → 零影响
+  }
+  const cooldownTicks = input.config.starveCooldownTicks ?? 400;
+  const minAreaSeen = input.config.starveMinAreaSeen ?? 30;
+  const reasons: string[] = [];
+
+  // 事件源：HARVEST_SUCCEEDED 即重置 starveSince（采集成功 = 当前区域仍有产出）
+  const harvested = input.events.some((event) => event.type === HARVEST_SUCCEEDED_EVENT);
+  // survey 记忆：新鲜资源目击（窗口 = minAreaSeen；近期见过矿 = 区域未枯竭）
+  const freshSighting = input.survey.resources.some(
+    (resource) => input.tick - resource.lastSeenTick <= minAreaSeen,
+  );
+
+  let starveSince = held.starveSince;
+  if (harvested || freshSighting) {
+    starveSince = 0;
+  } else {
+    starveSince += 1;
+  }
+  const updatedHeld: ConductorHeldState = { ...held, starveSince };
+
+  // 触发前置：Core 非 MOVING（正在移动不触发；coreEvade/移动让位给既有机制）
+  const core = input.core;
+  if (core === null || core.state === null || core.state === "MOVING") {
+    return {
+      held: updatedHeld,
+      trigger: null,
+      reasons: [...reasons, `饿死跟踪 ${starveSince}/${triggerTicks}（核心缺失/MOVING，暂不触发）`],
+    };
+  }
+  // coreEvade 活跃（敌核贴脸）不触发——防御优先于饿死迁移
+  if (activeEnemyNearCore(input, input.config.hold.enterRadius)) {
+    return {
+      held: updatedHeld,
+      trigger: null,
+      reasons: [...reasons, `饿死跟踪 ${starveSince}/${triggerTicks}（coreEvade 活跃/敌核贴脸，暂不触发）`],
+    };
+  }
+
+  // 触发条件 AND：
+  // A. starveSince >= triggerTicks（事件源：triggerTicks 内无采集/无新鲜目击）
+  // B. survey 无新鲜资源目击窗口 > triggerTicks（survey 记忆枯竭：任一资源
+  //    lastSeenTick 距今 ≤ triggerTicks 即视为有目击 → 不满足）
+  const noFreshWithinTriggerWindow = !input.survey.resources.some(
+    (resource) => input.tick - resource.lastSeenTick <= triggerTicks,
+  );
+  // C. 区域已勘探：已知矿格 >= minAreaSeen（area_seen > 30 前置；未勘探足够
+  //    不触发——可能只是没探到矿，非真枯竭）
+  const areaExplored = input.survey.resources.length >= minAreaSeen;
+  // D. 冷却：tick >= starveCooldownUntil
+  const cooldownElapsed = input.tick >= held.starveCooldownUntil;
+
+  if (
+    starveSince >= triggerTicks &&
+    noFreshWithinTriggerWindow &&
+    areaExplored &&
+    cooldownElapsed
+  ) {
+    const target = pickStarveTarget(input, minAreaSeen);
+    if (target === null) {
+      return {
+        held: updatedHeld,
+        trigger: null,
+        reasons: [...reasons, `饿死 ${starveSince} >= ${triggerTicks} 但无可用兜底方向（核心位置未知/全 blocked）→ 等冷却`],
+      };
+    }
+    const cooldownUntil = input.tick + cooldownTicks;
+    return {
+      held: { ...updatedHeld, starveSince: 0, starveCooldownUntil: cooldownUntil },
+      trigger: {
+        target,
+        reason: `饿死兜底迁移（${starveSince} tick 无采集/无新鲜资源目击，远离 [0,0] 死亡区）`,
+      },
+      reasons: [...reasons, `饿死触发：${starveSince} >= ${triggerTicks} tick 无采集 + survey 无新鲜目击 + 区域已勘探（${input.survey.resources.length} >= ${minAreaSeen}）→ 兜底迁移计划（目标 [${target.x},${target.y}]，冷却 ${cooldownTicks} tick）`],
+    };
+  }
+
+  return {
+    held: updatedHeld,
+    trigger: null,
+    reasons: [...reasons, `饿死跟踪 ${starveSince}/${triggerTicks}（新鲜目击=${freshSighting}，区域勘探=${input.survey.resources.length}/${minAreaSeen}，冷却未过=${!cooldownElapsed}）`],
+  };
+}
+
 export function conductorStep(input: ConductorStepInput): ConductorStepResult {
   const held = input.held ?? INITIAL_CONDUCTOR_HELD_STATE;
   if (input.plan === null) {
-    // 零影响：无迁移意图
-    return { plan: null, held, transitions: [], reasons: ["无迁移意图，IDLE"] };
+    // W40：饿死兜底检测（plan=null 且无 --target 时 shell 据信号 buildInitialPlan 写 PLAN 计划）
+    const starve = detectStarvation(input, held);
+    return {
+      plan: null,
+      held: starve.held,
+      transitions: [],
+      reasons: ["无迁移意图，IDLE", ...starve.reasons],
+      starveTrigger: starve.trigger ?? undefined,
+    };
   }
 
   const plan = input.plan;

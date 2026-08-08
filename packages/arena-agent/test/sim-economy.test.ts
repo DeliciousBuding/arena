@@ -156,6 +156,27 @@ test("S5: deficit 同距按 raw UUID 序受伤", () => {
   assert.equal(damaged[0].targetId, uuid(40));
 });
 
+test("W44: P04 upkeep 在 v0.14 无副作用（maintenance removed → 无 UPKEEP_PAID / 无 deficit 伤害）", () => {
+  // 同一场景在 v0.11 会触发 upkeep due 1 + deficit（resources 0）；v0.14 必须完全 no-op。
+  const units = Array.from({ length: 20 }, (_, i) => ({ id: uuid(i + 1), position: [1 + Math.floor(i / 2), i % 2] as Position }));
+  const world = makeWorld([{ id: "p1", resources: 0, core: [0, 0], units }]);
+  const result = settle(world, new Map([["p1", idlePlans(world).get("p1")!]]));
+  assert.ok(
+    !result.events.some((e) => e.eventType === "UPKEEP_PAID"),
+    "v0.14 must not emit UPKEEP_PAID (maintenance removed)",
+  );
+  assert.ok(
+    !result.events.some((e) => e.eventType === "UNIT_DAMAGED" && e.reasonCode === "UPKEEP_DEFICIT"),
+    "v0.14 must not apply upkeep deficit damage",
+  );
+  assert.ok(
+    !result.unknownEffects.some((e) => e.kind === "rule-assumption" && e.note.includes("upkeep")),
+    "v0.14 must not produce upkeep rule-assumption unknowns",
+  );
+  // 资源不变（无扣费）
+  assert.equal(result.world.players.get("p1")!.resources, 0);
+});
+
 /* ---------------- capacity / self-destruct ---------------- */
 
 test("S5: capacity floor 10（population 1 → cap 10，超量销毁）", () => {

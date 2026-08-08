@@ -1,5 +1,5 @@
 /** worker 空闲回血候选测试（2026-08-07，B13 idleHealReturn）：空 worker 带伤
- * 且 Core 资源足够补满时回 Core 补血（引擎 P10-unit-heal 结算）；优先级低于
+ * 且 Core 资源足够补满时回 Core 补血（引擎 P11-unit-heal 结算）；优先级低于
  * 撤离/回仓、高于采集/巡逻。默认关 = 历史行为零回归。 */
 
 import assert from "node:assert/strict";

@@ -19,8 +19,10 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, "..");
 
-/** 基线 2026-08-09，测试数只增不减；低于此值门禁失败。 */
-const MIN_TEST_COUNT = 2037;
+/** 基线 2026-08-09（f09e7e7 后实测 1966，含全部 201 个 test 文件），
+ *  测试数只增不减；低于此值门禁失败。注：3b7edf2 曾设 2037 与其提交说明
+ *  "全量 1911/1912 pass" 矛盾（可能计入了未提交 WIP 测试），已修正。 */
+const MIN_TEST_COUNT = 1966;
 
 /** 与 package.json 的 test 脚本保持同一 glob 模式（node --test 自带 glob 展开）。 */
 const TEST_GLOB = "test/**/*.test.ts";
