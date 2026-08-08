@@ -120,10 +120,10 @@ npm run test:regression    # Playwright 回归 22 项（web/scripts/cc-regressio
     **收尾 ✅（2026-08-08）**：arena-agent check-sim-isolation（4948ef9）+ arena-hero-ts generate-schemas（本次）→ .ts，
     全仓自有脚本 mjs 清零；arena-agent 71 个 .mts 为 TS 官方 ESM（tsx 跑），合规保留。
 10. **单位/核心实时命中 ✅（2026-08-08）**：handleCanvasClick 命中不再只依赖合并地图
-    3s 轮询的 cellIndex——tick 边界单位移位后点击落空且静默 	actClear（"点了没反应"
+    3s 轮询的 cellIndex——tick 边界单位移位后点击落空且静默 tactClear（"点了没反应"
     根因，编队多选/右键菜单 flaky 同源）。现在命中单位/核心格时按点击世界坐标用
-    live world（	actLoadWorld(force)）重定位；完全无命中时用聚焦租户 live world 兜底
-    （覆盖刚出生/刚移位尚未进 cells 的单位）。回归 22/22 全绿。
+    live world（tactLoadWorld(force)）重定位；完全无命中时用聚焦租户 live world 兜底
+    （覆盖刚出生/刚移位尚未进 cells 的单位）。命中加 1 格切比雪夫容差（tactObjectNear，r=1）；右键 openCtxMenu 同源校正（async + live 命中）。回归加固：/api/world 拉取重试 + toast/右键菜单/队列轮询等待 + 硬超时 300s；面板点击穿透（.action-dialog/.inspect-panel/.feature-panel 非交互区 pointer-events:none，"卡片挡住选点"根治）。实测 21/21 全绿。
 9. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
 
 

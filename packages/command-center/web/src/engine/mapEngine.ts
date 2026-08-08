@@ -2453,6 +2453,19 @@ async function tactLoadWorld(tenant: any, force?: any) {
     return null;
   } catch { return null; }
 }
+/** 单位/核心近邻命中（2026-08-08）：在 r 格（切比雪夫）内找最近的单位/核心。
+ *  用于点击实时命中容差——tick 边界单位移位 1-2 格后，点击其渲染位仍能选中（贴近视觉瞄准）。 */
+function tactObjectNear(world: any, x: any, y: any, r: number) {
+  if (!world || !world.state || !Array.isArray(world.state.objects)) return null;
+  let best: any = null, bestD = Infinity;
+  for (const o of world.state.objects) {
+    if (o.kind !== 'UNIT' && o.kind !== 'CORE') continue;
+    if (!o.position) continue;
+    const d = Math.max(Math.abs(o.position[0] - x), Math.abs(o.position[1] - y));
+    if (d <= r && d < bestD) { bestD = d; best = o; }
+  }
+  return best;
+}
 function tactObjectAt(world: any, x: any, y: any) {
   if (!world) return null;
   for (const o of world.state.objects) {
@@ -3134,11 +3147,21 @@ function renderCtxMenu(tenant: any, obj: any, px: any, py: any) {
     tactChooseAction(act);
   }));
 }
-function openCtxMenu(px: any, py: any) {
+async function openCtxMenu(px: any, py: any) {
   const tac = T();
   // 选点模式中右键：先取消当前模式再开菜单（避免模式悬空）
   if (tac.mode) tactClear();
-  const cell = nearestCell(px, py);
+  let cell = nearestCell(px, py);
+  // 实时命中校正（同 handleCanvasClick 2026-08-08）：轮询陈旧窗口下右键落空无菜单
+  if (cell && (cell.type === 'unit' || cell.type === 'core')) {
+    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+    const world = await tactLoadWorld(cell.tenant, true);
+    const liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
+    if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
+      cell = { ...cell, x: wx, y: wy, fresh: true, id: liveObj.id };
+    }
+  }
   if (cell && (cell.type === 'unit' || cell.type === 'core')) {
     tactLoadWorld(cell.tenant).then((world) => {
       const obj = world ? tactObjectAt(world, cell.x, cell.y) : null;
@@ -4303,7 +4326,7 @@ function tactShowFeature(cell: any, px: any, py: any) {
     const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
     const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
     const world = await tactLoadWorld(cell.tenant, true);
-    const liveObj = world ? tactObjectAt(world, wx, wy) : null;
+    const liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
     if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
       cell = { ...cell, x: wx, y: wy, fresh: true, id: liveObj.id };
     }
@@ -4311,7 +4334,7 @@ function tactShowFeature(cell: any, px: any, py: any) {
     const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
     const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
     const world = await tactLoadWorld(state.soloTenant, true);
-    const liveObj = world ? tactObjectAt(world, wx, wy) : null;
+    const liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
     if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
       cell = { tenant: state.soloTenant, type: liveObj.kind === 'CORE' ? 'core' : 'unit', x: wx, y: wy, fresh: true, id: liveObj.id, controlled: liveObj.controlled };
     }

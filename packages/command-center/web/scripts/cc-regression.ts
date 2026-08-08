@@ -55,6 +55,23 @@ function bad(name, detail = "") { fail++; results.push(`  ❌ ${name}${detail ? 
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 轮询等待 toast 文本包含 needle（服务重启/慢 world 拉取时点击处理可能 >350ms 才出 toast）。
+ *  返回最后一次读到的 toast 文本（超时返回最近一次，调用方用 includes 判定）。 */
+async function waitToast(page, needle, timeoutMs = 3000) {
+  let last = "";
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    last = await page.evaluate(() => {
+      const el = document.getElementById("uiToast");
+      if (!el) return "";
+      return (el.className || "").includes("show") ? el.textContent || "" : "";
+    });
+    if (last.includes(needle)) return last;
+    await sleep(150);
+  }
+  return last;
+}
+
 /** 前置健康：node:http 直连（绕开 HTTP_PROXY 环境变量对 undici fetch 的代理劫持，不依赖 NO_PROXY 配置） */
 function probeHealth(url, timeoutMs) {
   return new Promise((resolve) => {
@@ -85,7 +102,7 @@ async function main() {
     console.log(results.join("\n"));
     console.log(`\n通过 ${pass} / ${pass + fail}（超时中止）`);
     process.exit(2);
-  }, 240000);
+  }, 300000);
   const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
   const page = await ctx.newPage();
   const errs = [];
@@ -214,7 +231,9 @@ async function main() {
           if (!eng) return { err: "无 __arenaEngine 调试钩子" };
           const st = eng.getState();
           const tenant = st.soloTenant || "t1";
-          const w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json();
+                    let w = null;
+          for (let r = 0; r < 5 && !w; r++) { try { w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json(); } catch { await new Promise((s) => setTimeout(s, 800)); } }
+          if (!w || !w.state) return { err: "world fetch failed (service restart?)" };
           const objs = w?.state?.objects ?? [];
           const unit = objs.find((o) => o.kind === "UNIT" && o.controlled === true && o.position);
           if (!unit) return { err: "无受控单位" };
@@ -329,7 +348,9 @@ async function main() {
         if (!eng) return { err: "no engine" };
         const st = eng.getState();
         const tenant = st.soloTenant || "t1";
-        const w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json();
+                  let w = null;
+          for (let r = 0; r < 5 && !w; r++) { try { w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json(); } catch { await new Promise((s) => setTimeout(s, 800)); } }
+          if (!w || !w.state) return { err: "world fetch failed (service restart?)" };
         const objs = w?.state?.objects ?? [];
         const unit = objs.find((o) => (o.kind === "UNIT" || o.kind === "CORE") && o.controlled === true && o.position);
         if (!unit) return { err: "no controlled obj" };
@@ -341,11 +362,17 @@ async function main() {
         await page.mouse.click(tgt.sx, tgt.sy);
         await sleep(700);
         await page.mouse.click(tgt.sx, tgt.sy, { button: "right" });
-        await sleep(1200);
-        const m1 = await page.evaluate(() => {
-          const el = document.querySelector(".ctx-menu");
-          return { hidden: el ? el.hidden : "no-el", items: document.querySelectorAll(".ctx-item").length };
-        });
+        let m1 = null;
+        for (let p = 0; p < 10 && !m1; p++) {
+          m1 = await page.evaluate(() => {
+            const el = document.querySelector(".ctx-menu");
+            if (!el || el.hidden) return null;
+            const items = document.querySelectorAll(".ctx-item").length;
+            return items > 0 ? { hidden: false, items } : null;
+          });
+          if (!m1) await sleep(200);
+        }
+        m1 = m1 || { hidden: true, items: 0 };
         if (m1.hidden === false && m1.items > 0) {
           await page.keyboard.press("Escape");
           await sleep(400);
@@ -369,7 +396,9 @@ async function main() {
         if (!eng) return { err: "no engine" };
         const st = eng.getState();
         const tenant = st.soloTenant || "t1";
-        const w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json();
+                  let w = null;
+          for (let r = 0; r < 5 && !w; r++) { try { w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json(); } catch { await new Promise((s) => setTimeout(s, 800)); } }
+          if (!w || !w.state) return { err: "world fetch failed (service restart?)" };
         // 优先 VANGUARD（非 worker 无 cargo toast 干扰）；不足则任意 UNIT
         let us = (w?.state?.objects ?? []).filter((o) => o.kind === "UNIT" && o.unit_type === "VANGUARD" && o.controlled === true && o.position);
         if (us.length < 2) us = (w?.state?.objects ?? []).filter((o) => o.kind === "UNIT" && o.controlled === true && o.position);
@@ -382,19 +411,11 @@ async function main() {
       }, { boxX: boxF.x, boxY: boxF.y, boxW: boxF.width, boxH: boxF.height });
       if (picks.err) { multiOk = false; }
       else {
-        const readToast = async () => {
-          const el = await page.$("#uiToast");
-          if (!el) return "";
-          const cls = await el.getAttribute("class").catch(() => "");
-          return (cls || "").includes("show") ? (await el.innerText().catch(() => "")) || "" : "";
-        };
         await page.keyboard.down("Shift");
         await page.mouse.click(picks.a.sx, picks.a.sy);
-        await sleep(350);
-        const t1 = await readToast();
+        const t1 = await waitToast(page, "编队 +1", 2000);
         await page.mouse.click(picks.b.sx, picks.b.sy);
-        await sleep(350);
-        const t2 = await readToast();
+        const t2 = await waitToast(page, "共 2", 2000);
         await page.keyboard.up("Shift");
         multiOk = t1.includes("编队 +1") && t2.includes("共 2");
       }
@@ -427,7 +448,9 @@ async function main() {
           if (!eng) return { err: "no engine" };
           const st = eng.getState();
           const tenant = st.soloTenant || "t1";
-          const w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json();
+                    let w = null;
+          for (let r = 0; r < 5 && !w; r++) { try { w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json(); } catch { await new Promise((s) => setTimeout(s, 800)); } }
+          if (!w || !w.state) return { err: "world fetch failed (service restart?)" };
           const objs = w?.state?.objects ?? [];
           const unit = objs.find((o) => o.kind === "UNIT" && o.controlled === true && o.position);
           if (!unit) return { err: "no unit" };
@@ -446,13 +469,18 @@ async function main() {
           await page.keyboard.down("Shift");
           await page.mouse.click(hitG.sx, hitG.sy);
           await page.keyboard.up("Shift");
-          await sleep(700);
-          const qInfo = await page.evaluate(() => {
-            const el = document.getElementById("uiToast");
-            const toastTxt = el && (el.className || "").includes("show") ? el.textContent || "" : "";
-            const qTitle = document.querySelector(".act-queue .q-title")?.textContent || "";
-            return { toastTxt, qTitle, qSegs: document.querySelectorAll(".act-queue .q-seg").length };
-          });
+          // 队列落盘/面板出现可能受服务重启窗口影响：轮询最多 4s
+          let qInfo = { toastTxt: "", qTitle: "", qSegs: 0 };
+          for (let p = 0; p < 12; p++) {
+            qInfo = await page.evaluate(() => {
+              const el = document.getElementById("uiToast");
+              const toastTxt = el && (el.className || "").includes("show") ? el.textContent || "" : "";
+              const qTitle = document.querySelector(".act-queue .q-title")?.textContent || "";
+              return { toastTxt, qTitle, qSegs: document.querySelectorAll(".act-queue .q-seg").length };
+            });
+            if (qInfo.toastTxt.includes("已加入队列") || (qInfo.qTitle.includes("命令队列") && qInfo.qSegs > 0)) break;
+            await sleep(200);
+          }
           queueOk = qInfo.toastTxt.includes("已加入队列") || (qInfo.qTitle.includes("命令队列") && qInfo.qSegs > 0);
         }
       } else { queueOk = false; }
