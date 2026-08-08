@@ -121,15 +121,30 @@ export interface LifecycleEvents {
   harvests: { cell: string; tick: number; amount: number | null; actorId: string | null }[];
   harvestFails: { cell: string; tick: number; reason: string | null; actorId: string | null }[];
   spends: { kind: string; tick: number; amount: number; unitType: string | null; unitId: string | null }[];
-  /** 稀有事迹（★2-4：核心摧毁/夺取/信标/自爆/阵亡等）——持久化防 run 轮换丢失。 */
-  notables: { eventType: string; actorId: string | null; targetId: string | null; pos: { x: number; y: number } | null; amount: number | null; unitType: string | null }[];
+  /** 稀有事迹（★2-4：核心摧毁/夺取/信标/自爆/阵亡等）——持久化防 run 轮换丢失。
+   *  叙事 A11（2026-08-08）：CORE_DESTROYED 补 reasonCode / destroyedBy（攻击者数组）
+   *  / isOurCore（target ∈ before.state 受控核心）——deeds 敌我语义修复。 */
+  notables: { eventType: string; actorId: string | null; targetId: string | null; pos: { x: number; y: number } | null; amount: number | null; unitType: string | null; reasonCode: string | null; destroyedBy: readonly string[] | null; isOurCore: boolean | null }[];
 }
 
 /** 解析 case 的 after.events → 生命周期事件集（容错坏事件）。 */
 export function parseCaseLifecycle(raw: unknown, tick: number): LifecycleEvents {
   const out: LifecycleEvents = { births: [], deaths: [], harvests: [], harvestFails: [], spends: [], notables: [] };
   if (typeof raw !== "object" || raw === null) return out;
-  const after = (raw as { after?: { state?: { events?: unknown } } }).after?.state;
+  const rawCase = raw as { before?: { state?: { objects?: unknown } }; after?: { state?: { events?: unknown } } };
+  // 叙事 A11：受控核心集合（target_id ∈ 集合 → CORE_DESTROYED 是我方核心被打爆）。
+  // 与 builder.coreRiskAt / deeds 迁移 coreDestroyedByTick 同判据。
+  const ourCoreIds = new Set<string>();
+  const objects = rawCase.before?.state?.objects;
+  if (Array.isArray(objects)) {
+    for (const o of objects) {
+      if (o && typeof o === "object") {
+        const obj = o as { kind?: unknown; controlled?: unknown; id?: unknown };
+        if (obj.kind === "CORE" && obj.controlled && typeof obj.id === "string") ourCoreIds.add(obj.id);
+      }
+    }
+  }
+  const after = rawCase.after?.state;
   if (typeof after !== "object" || after === null) return out;
   const events = (after as { events?: unknown }).events;
   if (!Array.isArray(events)) return out;
@@ -189,6 +204,13 @@ export function parseCaseLifecycle(raw: unknown, tick: number): LifecycleEvents 
       }
     } else if (NOTABLE_TYPES.has(String(type))) {
       // 稀有事迹（2026-08-08，审计 A4）：持久化，deeds 查库替代回扫
+      // 叙事 A11：CORE_DESTROYED 带 reasonCode / destroyedBy（数组）/ isOurCore
+      const rawBy = vals.destroyed_by;
+      const destroyedBy = Array.isArray(rawBy)
+        ? rawBy.filter((u): u is string => typeof u === "string")
+        : typeof rawBy === "string" && rawBy.trim() !== ""
+          ? [rawBy]
+          : null;
       out.notables.push({
         eventType: String(type),
         actorId: typeof e.actor_id === "string" ? e.actor_id : null,
@@ -196,6 +218,11 @@ export function parseCaseLifecycle(raw: unknown, tick: number): LifecycleEvents 
         pos,
         amount: typeof vals.amount === "number" ? Math.round(vals.amount) : null,
         unitType: typeof vals.unit_type === "string" ? vals.unit_type : null,
+        reasonCode: typeof e.reason_code === "string" ? e.reason_code : null,
+        destroyedBy: destroyedBy && destroyedBy.length > 0 ? destroyedBy : null,
+        isOurCore: String(type) === "CORE_DESTROYED" && typeof e.target_id === "string"
+          ? ourCoreIds.has(e.target_id)
+          : null,
       });
     }
   }
@@ -322,7 +349,7 @@ export function syncTenantSurvey(
       }
       for (const s of lc.spends) recordCoreSpend(db, s.kind, s.tick, s.amount, s.unitType, s.unitId);
       for (const n of lc.notables) {
-        summary.notables += recordNotableEvent(db, { tenant, tick, eventType: n.eventType, actorId: n.actorId, targetId: n.targetId, x: n.pos?.x ?? null, y: n.pos?.y ?? null, amount: n.amount, unitType: n.unitType });
+        summary.notables += recordNotableEvent(db, { tenant, tick, eventType: n.eventType, actorId: n.actorId, targetId: n.targetId, x: n.pos?.x ?? null, y: n.pos?.y ?? null, amount: n.amount, unitType: n.unitType, reasonCode: n.reasonCode, destroyedBy: n.destroyedBy, isOurCore: n.isOurCore });
       }
       if (tick > maxTick) maxTick = tick;
       casesInRun += 1;

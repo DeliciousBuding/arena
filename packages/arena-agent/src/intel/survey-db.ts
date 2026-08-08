@@ -12,7 +12,7 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export type SurveyResourceState = "visible" | "stale" | "harvested" | "empty";
@@ -176,6 +176,9 @@ CREATE TABLE IF NOT EXISTS notable_events (
   y INTEGER,
   amount INTEGER,
   unit_type TEXT,
+  reason_code TEXT,
+  destroyed_by TEXT,
+  is_our_core INTEGER,
   UNIQUE(tenant, tick, event_type, actor_id, target_id)
 );
 CREATE INDEX IF NOT EXISTS idx_notable_events_tick ON notable_events(tick);
@@ -203,6 +206,7 @@ export function openSurveyDb(dataRoot: string, tenant: string, write = false): D
     migrateUnitsSeenXY(db); // 数据架构审计 A2：旧库补 x/y 列 + 回填
     migrateCoreHuntSanity(db); // 数据质量 A5：核心时间戳倒挂修复（first<=last）
     migrateResourceSanity(db); // 数据质量 A10：矿时间戳倒挂 + seen_count 重建（force 重跑污染）
+    migrateNotableSanity(db, dataRoot, tenant); // 叙事 A11：CORE_DESTROYED 敌我/摧毁者回填（旧库）
   }
   return db;
 }
@@ -269,6 +273,99 @@ function migrateResourceSanity(db: DatabaseSync): void {
   } catch {
     // 容错；下次 sync 重试
   }
+}
+
+/** 叙事表健康迁移（2026-08-08，叙事 A11）：notable_events 补
+ *  reason_code / destroyed_by / is_our_core 三列（新库 SCHEMA 已含，旧库 ALTER），
+ *  并对历史 CORE_DESTROYED 回填——deeds 需区分"我方核心被打爆 vs 敌方核心被摧毁
+ *  vs 自爆"，且 destroyed_by 真实值是数组（combat.ts ATTACK 事件），旧解析只认
+ *  string 导致摧毁者丢失。回填源 = calibration case（按 tick 匹配，扫描该租户
+ *  calibration 全量 case；CORE_DESTROYED 稀有，仅一次迁移可接受）。
+ *  幂等：只处理 reason_code IS NULL 的行；已回填行不再触发全扫。 */
+function migrateNotableSanity(db: DatabaseSync, dataRoot: string, tenant: string): void {
+  try {
+    const cols = db.prepare("PRAGMA table_info(notable_events)").all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("reason_code")) db.exec("ALTER TABLE notable_events ADD COLUMN reason_code TEXT;");
+    if (!names.has("destroyed_by")) db.exec("ALTER TABLE notable_events ADD COLUMN destroyed_by TEXT;");
+    if (!names.has("is_our_core")) db.exec("ALTER TABLE notable_events ADD COLUMN is_our_core INTEGER;");
+    const pending = db.prepare(
+      "SELECT id, tick, target_id FROM notable_events WHERE event_type = 'CORE_DESTROYED' AND reason_code IS NULL",
+    ).all() as Array<{ id: number; tick: number; target_id: string | null }>;
+    if (pending.length === 0) return;
+    const byTick = coreDestroyedByTick(dataRoot, tenant);
+    if (byTick.size === 0) return;
+    const upd = db.prepare(
+      "UPDATE notable_events SET reason_code = ?, destroyed_by = ?, is_our_core = ? WHERE id = ?",
+    );
+    for (const row of pending) {
+      const info = byTick.get(Number(row.tick));
+      if (!info) continue;
+      upd.run(
+        info.reason,
+        info.destroyedBy.length > 0 ? JSON.stringify(info.destroyedBy) : null,
+        info.ourCore ? 1 : 0,
+        row.id,
+      );
+    }
+  } catch {
+    // 容错；下次 sync 重试
+  }
+}
+
+/** 扫描某租户 calibration cases，收集 CORE_DESTROYED 的
+ *  reason_code / destroyed_by / 是否我方核心（target ∈ before.state 受控核心）。
+ *  与 survey-sync.parseCaseLifecycle / builder.coreRiskAt 同判据。 */
+function coreDestroyedByTick(dataRoot: string, tenant: string): Map<number, { reason: string | null; destroyedBy: string[]; ourCore: boolean }> {
+  const out = new Map<number, { reason: string | null; destroyedBy: string[]; ourCore: boolean }>();
+  const cal = join(dataRoot, "runtime", tenant, "calibration");
+  if (!existsSync(cal)) return out;
+  for (const run of readdirSync(cal, { withFileTypes: true })) {
+    if (!run.isDirectory()) continue;
+    const casesDir = join(cal, run.name, "cases");
+    if (!existsSync(casesDir)) continue;
+    for (const f of readdirSync(casesDir)) {
+      if (!f.endsWith(".json")) continue;
+      let raw: { before?: { state?: { objects?: unknown } }; after?: { state?: { events?: unknown } } } | null = null;
+      try {
+        raw = JSON.parse(readFileSync(join(casesDir, f), "utf8")) as { before?: { state?: { objects?: unknown } }; after?: { state?: { events?: unknown } } } | null;
+      } catch {
+        continue;
+      }
+      const events = raw?.after?.state?.events;
+      if (!Array.isArray(events)) continue;
+      const coreIds = new Set<string>();
+      const objects = raw?.before?.state?.objects;
+      if (Array.isArray(objects)) {
+        for (const o of objects) {
+          if (o && typeof o === "object") {
+            const obj = o as { kind?: unknown; controlled?: unknown; id?: unknown };
+            if (obj.kind === "CORE" && obj.controlled && typeof obj.id === "string") coreIds.add(obj.id);
+          }
+        }
+      }
+      for (const ev of events) {
+        if (!ev || typeof ev !== "object") continue;
+        const e = ev as { event_type?: unknown; tick?: unknown; target_id?: unknown; reason_code?: unknown; values?: unknown };
+        if (e.event_type !== "CORE_DESTROYED") continue;
+        const tick = typeof e.tick === "number" ? e.tick : Number(e.tick);
+        if (!Number.isFinite(tick)) continue;
+        const vals = (e.values ?? {}) as Record<string, unknown>;
+        const rawBy = vals.destroyed_by;
+        const destroyedBy = Array.isArray(rawBy)
+          ? rawBy.filter((u): u is string => typeof u === "string")
+          : typeof rawBy === "string" && rawBy.trim() !== ""
+            ? [rawBy]
+            : [];
+        out.set(tick, {
+          reason: typeof e.reason_code === "string" ? e.reason_code : null,
+          destroyedBy,
+          ourCore: typeof e.target_id === "string" && coreIds.has(e.target_id),
+        });
+      }
+    }
+  }
+  return out;
 }
 
 /** upsert 一组可见矿（服务端投影：资源存在）。返回受影响行数。 */
@@ -356,7 +453,9 @@ export function upsertUnitSeen(
 }
 
 /** 稀有事迹写入（幂等：UNIQUE(tenant,tick,event_type,actor_id,target_id)
- *  INSERT OR IGNORE——force 重跑不重复。位置/金额/单位类型供 deeds 叙事。 */
+ *  INSERT OR IGNORE——force 重跑不重复。位置/金额/单位类型供 deeds 叙事。
+ *  叙事 A11（2026-08-08）：CORE_DESTROYED 补 reason_code / destroyed_by（JSON 数组）
+ *  / is_our_core——deeds 需区分"我方核心被打爆 vs 敌方核心被摧毁 vs 自爆"。 */
 export function recordNotableEvent(
   db: DatabaseSync,
   e: {
@@ -369,12 +468,19 @@ export function recordNotableEvent(
     y: number | null;
     amount: number | null;
     unitType: string | null;
+    reasonCode?: string | null;
+    destroyedBy?: readonly string[] | null;
+    isOurCore?: boolean | null;
   },
 ): number {
+  const destroyedByJson = e.destroyedBy && e.destroyedBy.length > 0 ? JSON.stringify(e.destroyedBy) : null;
   return Number(db.prepare(`
-    INSERT OR IGNORE INTO notable_events (tenant, tick, event_type, actor_id, target_id, x, y, amount, unit_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(e.tenant, e.tick, e.eventType, e.actorId, e.targetId, e.x, e.y, e.amount, e.unitType).changes);
+    INSERT OR IGNORE INTO notable_events (tenant, tick, event_type, actor_id, target_id, x, y, amount, unit_type, reason_code, destroyed_by, is_our_core)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    e.tenant, e.tick, e.eventType, e.actorId, e.targetId, e.x, e.y, e.amount, e.unitType,
+    e.reasonCode ?? null, destroyedByJson, e.isOurCore == null ? null : (e.isOurCore ? 1 : 0),
+  ).changes);
 }
 
 /** 已知矿查询（跨 run 累积；可过滤状态/新鲜度）。 */
