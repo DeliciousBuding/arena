@@ -12,7 +12,7 @@
  */
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { TournEntry } from "./tournament.ts";
@@ -48,11 +48,30 @@ export interface OpponentSpec {
   readonly endpoint?: string;
 }
 
-/** 内置对手（与 python-agents.json 同步维护）。 */
-export const BUILTIN_OPPONENTS: Readonly<Record<string, OpponentSpec>> = {
-  farmer: { name: "farmer", desc: "arena_farmer（榜二守矿型）", kind: "reference-python", pythonAgent: "farmer" },
-  core: { name: "core", desc: "arena_core_agent（官方完整参考）", kind: "reference-python", pythonAgent: "core" },
-};
+/** python-agents.json 注册表路径（单一事实源：Python 对手在此登记，TS 侧自动可见）。 */
+const PYTHON_AGENTS_JSON = fileURLToPath(
+  new URL("../../../scripts/python-agents.json", import.meta.url),
+);
+
+/** 从 python-agents.json 动态构建内置对手（注册表加条目 → TS 零改动可用）。 */
+function loadBuiltinOpponents(): Readonly<Record<string, OpponentSpec>> {
+  const raw = JSON.parse(readFileSync(PYTHON_AGENTS_JSON, "utf8")) as {
+    agents: Readonly<Record<string, { readonly desc?: string }>>;
+  };
+  const builtin: Record<string, OpponentSpec> = {};
+  for (const [name, entry] of Object.entries(raw.agents)) {
+    builtin[name] = {
+      name,
+      desc: entry.desc ?? name,
+      kind: "reference-python",
+      pythonAgent: name,
+    };
+  }
+  return builtin;
+}
+
+/** 内置对手（由 python-agents.json 驱动，勿手写列表）。 */
+export const BUILTIN_OPPONENTS: Readonly<Record<string, OpponentSpec>> = loadBuiltinOpponents();
 
 /** 解析对手名/端点：内置名 → 内置 spec；http:// 前缀 → HTTP spec。 */
 export function resolveOpponent(name: string): OpponentSpec {
