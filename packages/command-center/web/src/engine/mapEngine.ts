@@ -5,6 +5,7 @@
 import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos } from './utils.js';
 import { getJSON } from './api.js';
 import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets } from './tactical.js';
+import { findPath } from './pathfind.ts';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
 const POLL_MS = 3000;
@@ -2001,6 +2002,30 @@ function showTooltip(px: any, py: any, cell: any) {
   els.tooltip.dataset.side = side;
 }
 
+/** 纯坐标提示（2026-08-08）：指针悬停空地图/雾区时显示世界坐标——
+ *  官方 web HUD 同款 cursor 坐标常显；无格命中不再是"无反馈"。 */
+function showPlainCoordTooltip(px: any, py: any) {
+  const rect = els.canvas.getBoundingClientRect();
+  const wx = Math.round(state.view.cx + (px - rect.width / 2) / state.view.scale);
+  const wy = Math.round(state.view.cy + (py - rect.height / 2) / state.view.scale);
+  const cx = Math.floor(wx / 16), cy = Math.floor(wy / 16);
+  els.tooltip.innerHTML = `<span class="tt-arrow" aria-hidden="true"></span>
+    <div class="tt-head"><div class="tt-head-text">
+      <div class="tt-title" style="color:#9aa3ad">坐标</div>
+      <div class="tt-row"><span>世界</span><b>${wx}, ${wy}</b></div>
+    </div></div>
+    <div class="tt-row"><span>区块</span><b>${cx}, ${cy}</b></div>
+    <div class="tt-row"><span>缩放</span><b>${state.view.scale.toFixed(1)}x</b></div>`;
+  els.tooltip.hidden = false;
+  const tw = els.tooltip.offsetWidth, th = els.tooltip.offsetHeight;
+  let left = px + 16, top = py + 16, side = 'left';
+  if (left + tw > rect.width - 8) { left = px - tw - 16; side = 'right'; }
+  if (top + th > rect.height - 8) top = py - th - 16;
+  els.tooltip.style.left = `${left}px`;
+  els.tooltip.style.top = `${top}px`;
+  els.tooltip.dataset.side = side;
+}
+
 /* ---------- 记忆层 tooltip（敌情记忆 / 测绘记忆） ---------- */
 function positionTooltip(px: any, py: any, html: any) {
   els.tooltip.innerHTML = `<span class="tt-arrow" aria-hidden="true"></span>${html}`;
@@ -2238,6 +2263,9 @@ function bindEvents() {
   // 地图交互
   els.canvas.addEventListener('pointerdown', (e: any) => {
     els.canvas.setPointerCapture(e.pointerId);
+    // 仅左键参与拖拽/框选/点击：右键全权交给 contextmenu（openCtxMenu），
+    // 不再污染 drag 状态（右键触发左键逻辑与右键菜单竞态 = 右键菜单偶发红根因）
+    if (e.button !== 0) return;
     state.viewAnim = null;
     state.zoom.active = false; // 拖拽接管
     // shiftKey：框选模式（拖拽画矩形，不平移）；否则平移
@@ -2253,6 +2281,8 @@ function bindEvents() {
   // 点击判定：抬起时位移 < 6px 视为点击（选中/战术目标），否则为拖拽
   els.canvas.addEventListener('pointerup', (e: any) => {
     if (!state.drag) return;
+    // 仅左键"抬起"算点击：右键的 pointerup 仅清 drag（点击逻辑走 contextmenu）
+    if (e.button !== 0) { state.drag = null; return; }
     const d = state.drag;
     state.drag = null;
     const moved = Math.hypot(e.clientX - d.x, e.clientY - d.y);
@@ -2317,8 +2347,13 @@ function bindEvents() {
       } else {
         // 无可见格命中 → 测绘记忆（聚焦租户的矿/障碍记忆详情）
         const surveyMem = nearestSurveyMemory(px, py);
-        if (surveyMem) showSurveyTooltip(px, py, surveyMem);
-        else els.tooltip.hidden = true;
+        if (surveyMem) {
+          showSurveyTooltip(px, py, surveyMem);
+        } else {
+          // 纯坐标提示（2026-08-08）：指针悬停任意地图位置都显示世界坐标——
+          // 官方 web 同款（HUD 常显 cursor 坐标），空地图/雾区不再是"无反馈"
+          showPlainCoordTooltip(px, py);
+        }
       }
       // MOVE 模式：悬停任意格实时预览远距离路线（含雾区绕行 + ETA）
       const tac = T();
@@ -2581,37 +2616,14 @@ async function tactLoadWorld(tenant: any, force?: any) {
   } catch { return null; }
 }
 function tactFindPath(world: any, from: any, to: any, tenant: any) {
-  const obstacles = tactTerrain(world, 'OBSTACLE');
-  // 合并测绘层已知障碍（雾区记忆）：远距离移动应绕开探索过的石头，而非直线穿雾
+  // 合并测绘层已知障碍（雾区记忆）：远距离移动应绕开探索过的石头，而非直线穿雾；
+  // BFS 核心在 pathfind.ts（纯函数，可单测）。
   const tac = T();
+  const extra = new Set<string>();
   if (tenant && tac.surveys[tenant]) {
-    for (const cell of tac.surveys[tenant].obstacleCells) obstacles.add(pKey([cell.x, cell.y]));
+    for (const cell of tac.surveys[tenant].obstacleCells) extra.add(pKey([cell.x, cell.y]));
   }
-  if (obstacles.has(pKey(to))) return null;
-  const entities = new Set();
-  for (const o of world.state.objects) {
-    if (o.kind !== 'UNIT' && o.kind !== 'CORE') continue;
-    const p = o.position; if (p) entities.add(pKey(p));
-  }
-  entities.delete(pKey(from));
-  const goalK = pKey(to);
-  const queue = [[from]], visited = new Set([pKey(from)]);
-  const LIMIT = 20000;
-  while (queue.length) {
-    const path = queue.shift();
-    if (!path) continue;
-    const cur = path[path.length - 1];
-    if (pKey(cur) === goalK) return path;
-    if (path.length >= LIMIT) return null;
-    for (const { dx, dy } of TACT_STEPS) {
-      const n = [cur[0] + dx, cur[1] + dy] as [number, number], k = pKey(n);
-      if (visited.has(k) || obstacles.has(k)) continue;
-      if (k !== goalK && entities.has(k)) continue;
-      visited.add(k);
-      queue.push([...path, n]);
-    }
-  }
-  return null;
+  return findPath(world, from, to, extra);
 }
 function tactRangerRange(world: any, obj: any) {
   const obstacles = tactTerrain(world, 'OBSTACLE');
@@ -4398,32 +4410,31 @@ function tactShowFeature(cell: any, px: any, py: any) {
 async function resolveLiveTarget(px: any, py: any, tenantHint?: any) {
   const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
   const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
-  let cell = nearestCell(px, py);
-  if (cell && (cell.type === 'unit' || cell.type === 'core')) {
-    let world: any = T().worlds[cell.tenant];
-    // 半径 3（2026-08-08）：高缩放下单位插值移位可达 2-3 格，2 格仍会脱靶（scale>20 实证）。
-    let liveObj = world ? tactObjectNear(world, wx, wy, 3) : null;
-    if (!liveObj) { world = await tactLoadWorld(cell.tenant, true); liveObj = world ? tactObjectNear(world, wx, wy, 3) : null; }
-    if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
-      cell = { ...cell, x: liveObj.position[0], y: liveObj.position[1], fresh: true, id: liveObj.id };
-      return { cell, world, obj: liveObj, ghost: false };
-    }
-    // 渲染位有单位但 live 无：陈旧 ghost —— 标记 fresh=false，下游给明确反馈而非静默吞点击
-    return { cell: { ...cell, fresh: false }, world, obj: null, ghost: true };
-  }
-  const t = tenantHint ?? state.soloTenant;
-  if (!cell && t) {
+  const cell = nearestCell(px, py);
+  const isUnitCell = !!(cell && (cell.type === 'unit' || cell.type === 'core'));
+  // 单位优先于地形（RTS 语义）：单位站在资源/障碍格上时，点单位=选中单位——
+  // "点工人没反应"（nearestCell 命中资源格弹资源卡）根因，2026-08-08 诊断实证
+  // hit=resource 且 /api/map 存在 unit+resource 同格。命中半径：
+  //   单位格 3（插值移位可达 2-3 格）；地形格 0（仅单位恰在该格才抢，不误吞空白/邻格）；
+  //   空白 1（保留 solo 兜底：刚出生/移位未进 cells 的单位）。
+  const radius = isUnitCell ? 3 : (cell ? 0 : 1);
+  const tenantSet = new Set<string>();
+  if (cell?.tenant) tenantSet.add(cell.tenant);
+  if (tenantHint) tenantSet.add(tenantHint);
+  if (state.soloTenant) tenantSet.add(state.soloTenant);
+  for (const t of tenantSet) {
     let world: any = T().worlds[t];
-    let liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
-    if (!liveObj) { world = await tactLoadWorld(t, true); liveObj = world ? tactObjectNear(world, wx, wy, 1) : null; }
+    let liveObj = world ? tactObjectNear(world, wx, wy, radius) : null;
+    if (!liveObj) { world = await tactLoadWorld(t, true); liveObj = world ? tactObjectNear(world, wx, wy, radius) : null; }
     if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
       return {
-        cell: { tenant: t, type: liveObj.kind === 'CORE' ? 'core' : 'unit', x: liveObj.position[0], y: liveObj.position[1], fresh: true, id: liveObj.id, controlled: liveObj.controlled },
+        cell: { ...(cell ?? {}), tenant: t, type: liveObj.kind === 'CORE' ? 'core' : 'unit', x: liveObj.position[0], y: liveObj.position[1], fresh: true, id: liveObj.id, controlled: liveObj.controlled },
         world, obj: liveObj, ghost: false,
       };
     }
-    return { cell, world, obj: null, ghost: false };
   }
+  // 无 live 单位：渲染位有单位但 live 无 → 陈旧 ghost（下游明确反馈）；否则原 cell 解释
+  if (isUnitCell) return { cell: { ...cell, fresh: false }, world: null, obj: null, ghost: true };
   return { cell, world: null, obj: null, ghost: false };
 }
 async function handleCanvasClick(px: any, py: any, shift = false) {
