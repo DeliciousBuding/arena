@@ -193,7 +193,16 @@ export const OUTCOME_COUNT_EVENT_TYPES = {
  */
 export interface OutcomeCountEvent {
   readonly eventType: string;
+  readonly actorId?: string | null;
+  readonly targetId?: string | null;
   readonly values?: Readonly<Record<string, unknown>> | null;
+}
+
+export interface OutcomeCountOwnershipContext {
+  readonly priorUnitIds: ReadonlySet<string>;
+  readonly currentUnitIds?: ReadonlySet<string>;
+  readonly priorCoreId?: string | null;
+  readonly currentCoreId?: string | null;
 }
 
 /** outcome.jsonl 经济计数器聚合（W50；W51 fitness 硬前置）。 */
@@ -220,32 +229,46 @@ export interface OutcomeEventCounts {
  * 与 CORE_DESTROYED 误计 unitLoss——名单漂移时 switch 案例标签即拦截。
  * 输入数组不被修改（透传只读引用）。
  */
-export function countOutcomeEvents(events: readonly OutcomeCountEvent[]): OutcomeEventCounts {
+export function countOutcomeEvents(
+  events: readonly OutcomeCountEvent[],
+  ownership?: OutcomeCountOwnershipContext,
+): OutcomeEventCounts {
   let grossDeposit = 0;
   let spawnCount = 0;
   let healCount = 0;
   let unitLossCount = 0;
+  const ownedActor = (actorId: string | null | undefined): boolean => {
+    if (ownership === undefined) return true;
+    if (actorId === null || actorId === undefined) return false;
+    return actorId === ownership.priorCoreId || actorId === ownership.currentCoreId ||
+      ownership.priorUnitIds.has(actorId) || ownership.currentUnitIds?.has(actorId) === true;
+  };
   for (const event of events) {
     switch (event.eventType) {
       case OUTCOME_COUNT_EVENT_TYPES.DEPOSIT_SUCCEEDED: {
+        if (!ownedActor(event.actorId)) break;
         const amount = event.values?.amount;
-        if (typeof amount === "number" && Number.isFinite(amount)) {
+        if (typeof amount === "number" && Number.isFinite(amount) && (ownership === undefined || amount >= 0)) {
           grossDeposit += amount;
         }
         break;
       }
       case OUTCOME_COUNT_EVENT_TYPES.CORE_SPAWN_SUCCEEDED:
+        if (!ownedActor(event.actorId)) break;
         spawnCount += 1;
         break;
       case OUTCOME_COUNT_EVENT_TYPES.UNIT_HEAL_SUCCEEDED:
       case OUTCOME_COUNT_EVENT_TYPES.CORE_HEAL_SUCCEEDED:
+        if (!ownedActor(event.actorId)) break;
         healCount += 1;
         break;
       // 显式只计 UNIT_DESTROYED + UNIT_SELF_DESTRUCTED；CORE_RESOURCE_OVERFLOW_DESTROYED
       // 与 CORE_DESTROYED 不计入 unitLoss（前者是资源销毁，后者是核心摧毁，均非单位损失）。
       case OUTCOME_COUNT_EVENT_TYPES.UNIT_DESTROYED:
       case OUTCOME_COUNT_EVENT_TYPES.UNIT_SELF_DESTRUCTED:
-        unitLossCount += 1;
+        if (ownership === undefined || (event.actorId !== null && event.actorId !== undefined && ownership.priorUnitIds.has(event.actorId))) {
+          unitLossCount += 1;
+        }
         break;
     }
   }

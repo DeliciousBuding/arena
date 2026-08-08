@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { countOutcomeEvents } from "../src/telemetry/outcome-events.ts";
+import { countOutcomeEvents } from "../src/telemetry/decision-trace.ts";
 
 const CORE = "core-owned";
 const W1 = "worker-owned-1";

@@ -75,7 +75,6 @@ import {
 } from "../telemetry/jsonl-writer.ts";
 import { countOutcomeEvents, planHashOf } from "../telemetry/decision-trace.ts";
 import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
-import { countOutcomeEvents } from "../telemetry/outcome-events.ts";
 import { AllianceShadowWriter } from "../alliance/shadow.ts";
 import type { AllianceShadowFrameV1 } from "../alliance/shadow-frame.ts";
 import { EMPTY_ROSTER_ID_SET, loadAllianceRosterFile, type AllianceRosterRef } from "../alliance/roster-file.ts";
@@ -1234,10 +1233,7 @@ export async function runTenant(
             ? undefined
             : workerDistances.reduce((total, distance) => total + distance, 0) / workerDistances.length,
           failedEvents,
-          // W50 outcome.jsonl 经济计数器：从本 tick 结算事件流聚合四计数器
-          // （grossDeposit/spawnCount/healCount/unitLossCount）。schema Optional
-          // 曾让"不填"过校验——这里显式填充，W51 fitness 直接消费。
-          ...countOutcomeEvents(outcome.state.events),
+          // W50 四计数器已由上方 ownership-aware SSOT 聚合；禁止再无上下文覆盖。
           events: outcome.state.events.map((e) => e.eventType),
           humanOverride: outcome.humanOverride === undefined || outcome.humanOverride === null
               || (!outcome.humanOverride.active && outcome.humanOverride.applied.length === 0
