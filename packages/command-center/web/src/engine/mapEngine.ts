@@ -11,7 +11,7 @@ import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT
 import { findPath } from './pathfind.ts';
 import { createReplayState, replayAdvance, replayLoad, replayStep, replayToggle, replayCycleSpeed, updateReplayUI } from './replay.js';
 import { spawnEventFx, drawEventFx } from './fx.js';
-import { commandTelemetryDeltas as teleDeltas, commandGoalOf as cmdGoalOf, commandActionOf as cmdActionOf, unitHumanCommandOf as cmdHumanOf, commandStatusText as cmdStatusText, unitTelemetryOf as cmdUnitTelemetry } from './commands.js';
+import { commandTelemetryDeltas as teleDeltas, commandGoalOf as cmdGoalOf, commandActionOf as cmdActionOf, unitHumanCommandOf as cmdHumanOf, commandStatusText as cmdStatusText, unitTelemetryOf as cmdUnitTelemetry, unitCommandLabel as cmdLabel } from './commands.js';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
 const POLL_MS = 3000;
@@ -1786,6 +1786,12 @@ function showTooltip(px: any, py: any, cell: any) {
     lines.push(`<div class="tt-row"><span>HP</span><b>${fmt(cell.hp)}</b></div>`);
     if (cell.cargo > 0) lines.push(`<div class="tt-row"><span>载货</span><b>${fmt(cell.cargo)}</b></div>`);
     lines.push(`<div class="tt-row"><span>归属</span><b>${cell.controlled ? '我方' : '敌方'}</b></div>`);
+    // 当前指令（hover 即见：人类指挥白 / 算法决策青）——便于人观察“单位正在干什么”
+    if (cell.controlled) {
+      const plan = state.soloTenant === cell.tenant ? T().plan?.plan : T().plans?.[cell.tenant];
+      const cmdLine = cmdLabel(T(), cell.tenant, cell.id, plan);
+      if (cmdLine) lines.push(`<div class="tt-row"><span>当前</span><b style="color:${cmdHumanOf(T(), cell.tenant, cell.id) ? '#ffffff' : 'var(--cyan)'}">${cmdLine}</b></div>`);
+    }
   }
   if (cell.type === 'core') {
     lines.push(`<div class="tt-row"><span>HP / 盾</span><b>${fmt(cell.hp)} / ${fmt(cell.shield)}</b></div>`);
