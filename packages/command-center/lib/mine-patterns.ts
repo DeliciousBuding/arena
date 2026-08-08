@@ -56,6 +56,9 @@ export interface MineTenantPattern {
    *  矿格，预测下次出现 tick = 最后出现窗口起始 + 平均周期。dueInTicks 正=还有多久
    *  预计刷新，负=已过预期（历史异常/被永久采空）。按 dueInTicks 升序（即将刷新优先）。 */
   predictions: readonly MineRefillPrediction[];
+  /** 预测命中率（2026-08-08，算法适配验证）：已过预测时间的预测重见率——mission 层
+   *  Phase 2 死矿剔除的可靠度信号。 */
+  predictionAccuracy: MinePredictionAccuracy | null;
 }
 
 /** 逐矿刷新预测（2026-08-08）：cell 级 refill 估计。 */
@@ -180,6 +183,55 @@ export function computeRefillPredictions(
   return out;
 }
 
+/** 矿刷新预测命中率评估（2026-08-08，算法适配验证）：对已过预测时间的预测，
+ *  检查该格是否在预测时间 ± 容差内被再次观测到。hitRate 高低直接决定 mission 层
+ *  Phase 2「死矿剔除」的可靠度——过低则预测不可信，不应剔除只应降权。纯函数可测。 */
+export interface MinePredictionAccuracy {
+  /** 已过预测时间的预测数（可判定样本）。 */
+  evaluated: number;
+  /** 预测时间 ± 容差内重见的格数。 */
+  hits: number;
+  misses: number;
+  hitRate: number | null;
+  /** 未命中预测平均已过预期时长（tick）——偏离程度。 */
+  avgMissOverdue: number | null;
+}
+
+export function computePredictionAccuracy(
+  predictions: readonly MineRefillPrediction[],
+  rows: readonly { cell: string; tick: number }[],
+  currentTick: number,
+): MinePredictionAccuracy | null {
+  const maxByCell = new Map<string, number>();
+  for (const r of rows) {
+    const cur = maxByCell.get(r.cell) ?? -1;
+    if (num(r.tick) > cur) maxByCell.set(r.cell, num(r.tick));
+  }
+  const TOL = REFILL_GAP_TICKS;
+  let evaluated = 0, hits = 0, missSum = 0;
+  for (const p of predictions) {
+    const next = p.predictedNextTick;
+    if (next === null || next === undefined || !Number.isFinite(next)) continue;
+    if (currentTick - next < TOL) continue; // 未到判定窗口（预测时间还没到 / 刚到）
+    evaluated += 1;
+    const maxSeen = maxByCell.get(p.cell) ?? -1;
+    if (maxSeen >= next - TOL) {
+      hits += 1; // 预测时间 ± 容差内重见
+    } else {
+      missSum += currentTick - next;
+    }
+  }
+  if (evaluated === 0) return null;
+  const misses = evaluated - hits;
+  return {
+    evaluated,
+    hits,
+    misses,
+    hitRate: Math.round((hits / evaluated) * 1000) / 1000,
+    avgMissOverdue: misses > 0 ? Math.round(missSum / misses) : null,
+  };
+}
+
 function num(v: unknown): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
@@ -191,7 +243,7 @@ function tenantPattern(tenant: string): MineTenantPattern {
   const empty: MineTenantPattern = {
     tenant, total: 0, visible: 0, stale: 0, avgAgeTicks: 0, medianSeenCount: 0,
     harvestSuccessRate: null, harvestSucceeded: 0, harvestFailed: 0, topActive: [],
-    refill: null, predictions: [],
+    refill: null, predictions: [], predictionAccuracy: null,
   };
   if (!existsSync(file)) return empty;
   let db: DatabaseSync;
@@ -259,6 +311,15 @@ function tenantPattern(tenant: string): MineTenantPattern {
       predictions: computeRefillPredictions(
         histRows,
         rows.map((r) => ({ cell: r.x + "," + r.y, x: num(r.x), y: num(r.y) })),
+        currentTick,
+      ),
+      predictionAccuracy: computePredictionAccuracy(
+        computeRefillPredictions(
+          histRows,
+          rows.map((r) => ({ cell: r.x + "," + r.y, x: num(r.x), y: num(r.y) })),
+          currentTick,
+        ),
+        histRows,
         currentTick,
       ),
     };

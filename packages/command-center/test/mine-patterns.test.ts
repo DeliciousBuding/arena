@@ -1,47 +1,40 @@
 /**
- * mine-patterns 矿刷新预测算法测试（2026-08-08）：
- * - 出现窗口切分（gap ≤ REFILL_GAP_TICKS 同窗口）；
- * - avgGapTicks = 相邻窗口起始差（完整周期）；
- * - predictedNextTick = 最后窗口结束 + 平均缺席长（消失→再出现的可行动信号）；
- * - 单窗口格不预测；按 dueInTicks 升序。
+ * 矿刷新预测命中率测试（2026-08-08）：computePredictionAccuracy——
+ * 已过预测时间的预测重见率 + 未到判定窗口跳过 + 空兜底。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { computeRefillPredictions, type MineRefillPrediction } from "../lib/mine-patterns.ts";
+import { computePredictionAccuracy } from "../lib/mine-patterns.ts";
+import type { MineRefillPrediction } from "../lib/mine-patterns.ts";
 
-test("mine-patterns: 逐矿刷新预测——窗口切分/周期/缺席长/排序", () => {
-  const rows = [
-    // cell A：3 个窗口 [100-104] [130-134] [160-164]（窗口内 gap ≤5，窗口间 gap 30）
-    ...[100, 101, 102, 103, 104, 130, 131, 132, 133, 134, 160, 161, 162, 163, 164].map((tick) => ({ cell: "A", tick })),
-    // cell B：单窗口（无法预测）
-    ...[300, 301, 302].map((tick) => ({ cell: "B", tick })),
-  ];
-  const resources = [
-    { cell: "A", x: 5, y: 6 },
-    { cell: "B", x: 7, y: 8 },
-  ];
-  const out = computeRefillPredictions(rows, resources, 200);
-  assert.equal(out.length, 1, "只有 ≥2 窗口的格进入预测");
-  const a = out[0] as MineRefillPrediction;
-  assert.equal(a.cell, "A");
-  assert.equal(a.x, 5);
-  assert.equal(a.y, 6);
-  assert.equal(a.windows, 3);
-  // gaps: 130-100=30, 160-130=30 → avg 30
-  assert.equal(a.avgGapTicks, 30);
-  // absents: (130-104)=26, (160-134)=26 → avg 26；lastEnd=164 → predicted=190
-  assert.equal(a.predictedNextTick, 190);
-  assert.equal(a.lastSeenTick, 164);
-  assert.equal(a.dueInTicks, 190 - 200);
+const pred = (cell: string, next: number | null): MineRefillPrediction => ({
+  cell, x: 0, y: 0, windows: 2, avgGapTicks: 10, lastSeenTick: 100, predictedNextTick: next, dueInTicks: next === null ? null : next - 500,
 });
 
-test("mine-patterns: 预测按 dueInTicks 升序（即将刷新优先）", () => {
+test("mine-patterns: 预测命中率（重见=hit / 未见=miss / 未到期跳过）", () => {
+  const predictions = [pred("a", 300), pred("b", 320), pred("c", 480)];
+  // currentTick=500，容差 REFILL_GAP_TICKS=5：
+  //  - a: next=300，已过；maxSeen=302 ≥ 295 → hit
+  //  - b: next=320，已过；maxSeen=310 < 315 → miss
+  //  - c: next=480，500-480=20 ≥ 5 → 判定；maxSeen=300 < 475 → miss
   const rows = [
-    ...[100, 120, 150].map((tick) => ({ cell: "soon", tick })),      // windows [100][120][150]，gap 20/30
-    ...[1000, 1010, 2000, 2010, 3000, 3010].map((tick) => ({ cell: "far", tick })),
+    { cell: "a", tick: 302 }, { cell: "a", tick: 100 },
+    { cell: "b", tick: 310 }, { cell: "b", tick: 100 },
+    { cell: "c", tick: 300 },
   ];
-  const out = computeRefillPredictions(rows, [], 100);
-  assert.equal(out.length, 2);
-  assert.ok((out[0]?.dueInTicks ?? 0) <= (out[1]?.dueInTicks ?? 0), "dueInTicks 升序");
-  assert.equal(out[0]?.cell, "soon");
+  const acc = computePredictionAccuracy(predictions, rows, 500);
+  assert.ok(acc, "应生成准确率");
+  assert.equal(acc.evaluated, 3);
+  assert.equal(acc.hits, 1);
+  assert.equal(acc.misses, 2);
+  assert.equal(acc.hitRate, 0.333); // 1/3 四舍五入到千分位
+  assert.ok((acc.avgMissOverdue ?? 0) > 0, "miss 平均已过预期");
 });
+
+test("mine-patterns: 命中率空兜底 + 未到期跳过", () => {
+  // 全部未到判定窗口（next 都在 current 附近）
+  const acc = computePredictionAccuracy([pred("a", 498)], [{ cell: "a", tick: 100 }], 500);
+  assert.equal(acc, null, "500-498=2 < 5 未到判定窗口 → null");
+  assert.equal(computePredictionAccuracy([], [], 500), null, "空预测 → null");
+});
+
