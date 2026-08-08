@@ -7,6 +7,7 @@
 import { loadDeeds, type Deed } from "./deeds.ts";
 import { loadAllianceDeeds } from "./alliance-deeds.ts";
 import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
+import { loadAuditOverview } from "./audit-overview.ts";
 import { TtlCache } from "./cache.ts";
 import { TENANTS } from "./fs-jsonl.ts";
 
@@ -55,6 +56,7 @@ const KIND_GROUP: Record<string, string> = {
   ALLIANCE_MINE_CONFLICT: "conflict",
   ALLIANCE_ECONOMY: "economy",
   ALLIANCE_STATUS: "status",
+  AUDIT_INSIGHT: "audit",
 };
 
 export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query: JournalQuery = {}): Promise<DeedsJournalPayload> {
@@ -67,8 +69,8 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
   const currentTick = snap.currentTick;
   const windowStart = currentTick - windowTicks;
   const all = tenant === "all"
-    ? [...(await loadDeeds("all", 500)), ...loadAllianceDeeds()]
-    : [...(await loadDeeds(tenant, 500))];
+    ? [...(await loadDeeds("all", 500)), ...loadAllianceDeeds(), ...buildAuditDeeds()]
+    : [...(await loadDeeds(tenant, 500)), ...buildAuditDeeds().filter((d) => d.tenant === tenant)];
   let windowed = all
     .filter((d) => d.tick >= windowStart && d.tick <= currentTick)
     .sort((a, b) => b.star - a.star || b.tick - a.tick);
@@ -110,6 +112,46 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
   return payload;
 }
 
+/** 审计事迹（2026-08-08）：把综合审计总览的关键健康信号合成可读日记条目——
+ *  负增长/发现未开采缺口/决策空转/搬运瓶颈/经济停滞。kind=AUDIT_INSIGHT →
+ *  分组 "audit"；star 按严重度 2-4。纯读 audit/overview（30s 缓存），无新增 I/O。 */
+function buildAuditDeeds(): Deed[] {
+  const ov = loadAuditOverview();
+  const out: Deed[] = [];
+  const now = ov.global.currentTick ?? 0;
+  for (const [t, x] of Object.entries(ov.tenants)) {
+    const dec = x.decisions;
+    const lc = x.lifecycle;
+    const mu = x.mines;
+    if (dec && dec.coreDelta < 0) {
+      out.push({ id: `audit-neg-${t}`, tick: now, tenant: t, star: 4, kind: "AUDIT_INSIGHT",
+        title: `${t} 核心负增长 ${dec.coreDelta}`, detail: `窗口内核心净增为负（手操/自动冲突或经济失血）——需专项复盘。`,
+        position: null, actor: null, target: null });
+    }
+    if (mu && mu.visibleNever >= 10) {
+      out.push({ id: `audit-unmined-${t}`, tick: now, tenant: t, star: 3, kind: "AUDIT_INSIGHT",
+        title: `${t} ${mu.visibleNever} 个可见矿未开采`, detail: `已发现但从未采集（分配缺口）——优先派 worker，候选格见 audit/mines。`,
+        position: null, actor: null, target: null });
+    }
+    if (dec && dec.stallRate !== null && dec.stallRate >= 0.9) {
+      out.push({ id: `audit-stall-${t}`, tick: now, tenant: t, star: 3, kind: "AUDIT_INSIGHT",
+        title: `${t} 决策空转率 ${Math.round(dec.stallRate * 100)}%`, detail: `wait 空转占主导（停摆 tick 占比）——搬运/目标链需优化。`,
+        position: null, actor: null, target: null });
+    }
+    if (dec && dec.cargoEff !== null && dec.cargoEff < 0.25) {
+      out.push({ id: `audit-cargo-${t}`, tick: now, tenant: t, star: 2, kind: "AUDIT_INSIGHT",
+        title: `${t} 满载率 ${dec.cargoEff}（搬运瓶颈）`, detail: `worker 满载占比低——采了运不回来/分配不均。`,
+        position: null, actor: null, target: null });
+    }
+    if (lc && lc.units <= 2 && lc.spendTotal >= 100) {
+      out.push({ id: `audit-eco-${t}`, tick: now, tenant: t, star: 3, kind: "AUDIT_INSIGHT",
+        title: `${t} 经济停滞（${lc.units} 单位/已花 ${lc.spendTotal}）`, detail: `大量 spawn 投入但现役单位极少——可能被灭/未续产。`,
+        position: null, actor: null, target: null });
+    }
+  }
+  return out;
+}
+
 function buildNarrative(
   deeds: readonly Deed[],
   counts: Record<string, number>,
@@ -129,6 +171,7 @@ function buildNarrative(
   if (counts.heatZone) parts.push(`敌情高浓度区 ${counts.heatZone} 处`);
   if (counts.conflict) parts.push(`抢矿冲突 ${counts.conflict} 处`);
   if (counts.economy) parts.push(`资源濒危 ${counts.economy} 租户次`);
+  if (counts.audit) parts.push(`数据层审计 ${counts.audit} 条`);
   const active = TENANTS.filter((t) => (perTenant[t]?.count ?? 0) > 0).length;
   parts.push(`活跃租户 ${active}/${TENANTS.length}`);
   return parts.length > 0 ? `${lead}${parts.join("，")}。` : `${lead}无突出事件。`;
