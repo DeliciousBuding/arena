@@ -1967,6 +1967,25 @@ export class SafetyPlanner {
               target.source === "CORE" &&
               chebyshev(state.core!.position, target.position) <= BOUNDED_RAID_DISTANCE,
           );
+      // 攻坚集结（rally-assault-v1 Ranger 版，2026-08-08）：Vanguard 先集结但
+      // Ranger 单独前压仍会被守军逐个点掉（t2 二轮 jerkman 攻坚实证：5 Ranger
+      // 独立前压全灭、核心未破）。Ranger 与 Vanguard 同集结位汇合（同目标同
+      // 点位同 rallyReady 状态），组齐/超时后再一起压上——成建制共同出击。
+      if (
+        this.config.rallyAssault === true &&
+        enemyCoreMemory !== undefined &&
+        !this.rallyReady(enemyCoreMemory.position, cellKey(enemyCoreMemory.position), state) &&
+        chebyshev(unit.position, enemyCoreMemory.position) > RALLY_ATTACK_RADIUS
+      ) {
+        const point = this.rallyPoint(enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
+        if (!samePosition(unit.position, point)) {
+          const direction = stepToward(unit.position, point, militaryObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_rally");
+          return;
+        }
+        set(unit, { type: "WAIT" }, "ranger_rally_hold");
+        return;
+      }
       moveTarget = enemyCoreMemory?.position ?? this.effectivePolicy?.focusRegion ?? home;
     } else {
       moveTarget = this.effectivePolicy?.focusRegion ?? home;
