@@ -1,4 +1,5 @@
-import { escapeHtml } from './utils.ts';
+import { escapeHtml, shortId } from './utils.ts';
+import { TACT_ACTION_CN } from './tactical.ts';
 
 /* Arena 指挥面板前端 — 人类指令选择器/遥测差分层（纯函数，无 DOM/state 依赖，可单测）。
  * 读取战术状态中的 commands/commandsByTenant，派生 UI 需要的状态与差分；
@@ -72,3 +73,25 @@ export function unitTelemetryOf(tac: any, unitId: any) {
   if (!parts.length) return null;
   return `人类指挥 · ${parts.join(' ')}`;
 }
+
+/** 单位当前指令标签（hover/信息卡用）：人类 goal 优先（指挥·采矿/移动 → 目标），
+ *  否则算法决策 action 兜底（决策·移动/采集/... 方向或目标）。纯派生：
+ *  从战术状态读取，返回一行中文或 null；可单测。 */
+export function unitCommandLabel(tac: any, tenant: string, unitId: any, plan: any): string | null {
+  // 1) 人类指令优先：commandsByTenant（全局）或 commands（单租户）
+  const byT = tac?.commandsByTenant ? tac.commandsByTenant[tenant] : null;
+  const goals = (byT?.goals ?? tac?.commands?.goals ?? []) as any[];
+  const g = goals.find((x: any) => x.unitId === unitId && Array.isArray(x.target) && x.target.length >= 2);
+  if (g) return `${g.kind === 'mine' ? '指挥 · 采矿' : '指挥 · 移动'} → [${g.target[0]}, ${g.target[1]}]`;
+  // 2) 算法决策：plan.unitActions / unit_actions
+  const actions = plan ? (plan.unitActions ?? plan.unit_actions ?? {}) : {};
+  const act = actions[unitId];
+  if (act) {
+    const cn = TACT_ACTION_CN[act.type] ?? act.type;
+    if (act.direction) return `决策 · ${cn} ${act.direction}`;
+    if (act.targetId) return `决策 · ${cn} → ${shortId(act.targetId)}`;
+    return `决策 · ${cn}`;
+  }
+  return null;
+}
+
