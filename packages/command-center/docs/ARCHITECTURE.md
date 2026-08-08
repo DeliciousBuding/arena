@@ -82,4 +82,7 @@ npm run test:regression    # Playwright 回归 16 项（web/scripts/cc-regressio
 3. **回归脚本适配**：组件重构若改选择器/类名，回归需跟随（data-rp-tab/tenant-card 等通用选择器优先）。
 4. **jumpPins 命中排除 shift**：handleCanvasClick 已加 shift 参数（框选），jumpPins 点击命中需补 `!shift`（Shift+点 pin 不应清 pin 而应多选）。
 5. **手操审计 UI 上线**：SituationPanel「HUMAN AUDIT」区块复用 .sit-sight 结构，build 后随 dist 生效；回归可加断言。
+6. **arena-agent 迁移观察（2026-08-08）**：并行 agent 全量删除 arena-agent/arena-hero-ts 包并正在把联盟逻辑迁入
+   command-center（alliance-survey.ts 已改租户色统一 muted）。迁移完成需验证：
+   `lib/alliance-snapshot.ts` 的 `../../arena-agent/src/alliance/*` import 是否已内联/改路径，server tsc 恢复。
 4. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
