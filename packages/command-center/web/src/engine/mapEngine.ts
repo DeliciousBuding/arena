@@ -80,6 +80,7 @@ interface ArenaState extends Jsonish {
   threatRose: Jsonish | null;
   threatRoseAt: number;
   jumpMark: { x: number; y: number; at: number } | null;
+  jumpPins: Jsonish[];
   bounds: { minX: number; minY: number; maxX: number; maxY: number } | null;
   lastRefresh: number;
   unitPrev: Map<string, Jsonish>;
@@ -119,6 +120,7 @@ const state: ArenaState = {
   threatRose: null,     // 威胁扇区玫瑰（/api/alliance/snapshot threatSummaries，全局联盟）
   threatRoseAt: 0,      // 上次拉取时间戳（20s 节流）
   jumpMark: null,       // 跳转定位标记（目击/扇区/事迹跳图后短暂脉冲圈，防丢失目标）
+  jumpPins: [],          // 跳图定位标记集合（持久可见，点击/Esc 可清除）
   surveyHits: new Map(), // 测绘记忆命中（tactSurveyLayer 构建）：cellKey -> {kind,tick,state,seenCount,firstSeen}
   bounds: null,
   lastRefresh: 0,
@@ -604,6 +606,7 @@ function draw() {
   if (state.hover && !state.drag) drawHoverCell(state.hover, s);
   tactDrawLayer(s);
   drawJumpMark(s);
+  drawJumpPins(s);
   if (replayActive) replayDrawLayer(s);
   const ztxt = `×${state.view.scale.toFixed(1)}`;
   if (!state.tactical.mode && els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽/方向键平移 · 滚轮缩放 · 双击适应 · G 全局 · ${ztxt}`; }
@@ -1521,6 +1524,49 @@ function drawJumpMark(s: any) {
   ctx.stroke();
   ctx.restore();
 }
+/** 跳图定位标记（jumpPins）：目击/扇区/事迹跳图后目标持久可见（不再只有 3.2s 脉冲），
+ *  带标签徽标 + 入场动效；点击 pin 或 Esc 清除——解决「跳图后卡住/关不掉/不知如何取消」。 */
+function drawJumpPins(s: any) {
+  const pins = state.jumpPins;
+  if (!pins.length) return;
+  const now = performance.now();
+  ctx.save();
+  ctx.font = '600 11px ' + CANVAS_FONT;
+  for (const pin of pins) {
+    const age = now - pin.at;
+    const p = project(pin.x, pin.y);
+    const pr = Math.max(3, s * 0.15);
+    const t = Math.min(1, age / 350);
+    const scale = 0.6 + 0.4 * (1 - Math.pow(1 - t, 3));
+    const r = pr * scale;
+    const isNew = age < 5000;
+    const pulse = isNew ? 0.5 + 0.5 * Math.sin(age / 120) : 0;
+    ctx.globalAlpha = 0.55 + 0.3 * pulse;
+    ctx.strokeStyle = 'rgba(211,173,85,.85)';
+    ctx.lineWidth = Math.max(1.2, s * 0.03);
+    ctx.beginPath(); ctx.arc(p.sx, p.sy, r * (1 + 0.12 * pulse), 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = 'rgba(255,255,255,.85)';
+    ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.arc(p.sx, p.sy, r * 0.6, 0, Math.PI * 2); ctx.stroke();
+    const cr = r * 0.18;
+    ctx.beginPath();
+    ctx.moveTo(p.sx - cr, p.sy); ctx.lineTo(p.sx + cr, p.sy);
+    ctx.moveTo(p.sx, p.sy - cr); ctx.lineTo(p.sx, p.sy + cr);
+    ctx.stroke();
+    if (pin.label && s >= 3) {
+      const label = String(pin.label).slice(0, 18);
+      const tw = ctx.measureText(label).width;
+      const bx = p.sx + r + 5, by = p.sy - r - 4;
+      ctx.fillStyle = 'rgba(10,14,18,.85)';
+      ctx.beginPath(); ctx.roundRect(bx - 3, by - 12, tw + 8, 17, 4); ctx.fill();
+      ctx.fillStyle = '#e6c96a'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, bx, by - 3);
+      ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+    }
+  }
+  ctx.restore();
+}
 function drawThreatRose(s: any) {
   const rose = state.threatRose;
   if (!Array.isArray(rose) || !rose.length) return;
@@ -2225,7 +2271,8 @@ async function boot() {
       return;
     }
     if (e.key === 'Escape') {
-      if (state.tactical.mode || state.tactical.selected) tactClear();
+      if (state.jumpPins.length) { state.jumpPins = []; state.jumpMark = null; draw(); toast('已清除全部定位标记'); }
+      else if (state.tactical.mode || state.tactical.selected) tactClear();
       else if (els.featurePanel && !els.featurePanel.hidden) { els.featurePanel.hidden = true; }
       else if (state.soloTenant) exitSolo();
     }
@@ -3774,6 +3821,19 @@ function tactShowFeature(cell: any, px: any, py: any) {
   }
 }async function handleCanvasClick(px: any, py: any) {
   const tac = T();
+  // 定位标记命中：非命令模式下点击 pin 清除单个（看到即清除，不再卡住关不掉）
+  if (!tac.mode && state.jumpPins.length) {
+    const hitIdx = state.jumpPins.findIndex((pin: any) => {
+      const pp = project(pin.x, pin.y);
+      return Math.hypot(pp.sx - px, pp.sy - py) < Math.max(10, state.view.scale * 0.3);
+    });
+    if (hitIdx >= 0) {
+      const removed = state.jumpPins.splice(hitIdx, 1)[0];
+      draw();
+      toast(removed?.label ? `已清除定位「${removed.label}」` : '已清除定位标记');
+      return;
+    }
+  }
   const cell = nearestCell(px, py);
   if (tac.mode === 'MOVE' && tac.selected) {
     const world = tac.worlds[tac.selected.tenant];
@@ -4081,7 +4141,15 @@ export function createMapEngine(host: any) {
     setLayer: (name: any, on: any) => { state.layers[name] = on; invalidateStatic(); draw(); savePrefs(); emit('layers', { ...state.layers }); },
     setTenantOn: (t: any, on: any) => { state.tenantsOn[t] = on; invalidateStatic(); draw(); },
     setTab: (tab: any) => { state.tab = tab; savePrefs(); pollStreams(); },
-    jumpTo: (x: any, y: any) => { state.view.cx = x; state.view.cy = y; state.viewAnim = null; state.zoom.active = false; state.jumpMark = { x, y, at: performance.now() }; draw(); },
+    jumpTo: (x: any, y: any, label?: any) => {
+      state.view.cx = x; state.view.cy = y; state.viewAnim = null; state.zoom.active = false;
+      const now = performance.now();
+      state.jumpMark = { x, y, at: now };
+      const dup = state.jumpPins.find((p: any) => p.x === x && p.y === y);
+      if (dup) dup.at = now;
+      else { state.jumpPins.push({ x, y, at: now, label: label ?? null }); if (state.jumpPins.length > 12) state.jumpPins.shift(); }
+      draw();
+    },
     resize: () => { resizeCanvas(); draw(); },
     getState: () => ({ soloTenant: state.soloTenant, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length }),
     subscribe: (cb: any) => { _subs.add(cb); return () => _subs.delete(cb); },
