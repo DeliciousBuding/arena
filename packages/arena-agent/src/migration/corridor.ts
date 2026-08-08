@@ -122,18 +122,30 @@ function auditCells(
   }
 
   const reasons: string[] = [];
+  let hardReject = false;
   if (freshResourceCount < minFreshResources) {
-    reasons.push(
-      `走廊 ${corridorWidth} 格内新鲜资源 ${freshResourceCount} < ${minFreshResources}（已知 ${resources.size}）——资源不足`,
-    );
+    if (resources.size < minFreshResources) {
+      // M7（migration-long-march-v1 §2/§4-C）：测绘盲区 ≠ 无矿——走廊内已知
+      // 资源格过少说明该段未被测绘，降级为警告（长征可穿越盲区，探路前置
+      // 由 convoy/recon 承担）；敌核门禁仍独立生效。
+      reasons.push(
+        `走廊内测绘盲区（已知资源 ${resources.size} < ${minFreshResources}）——盲区穿越需探路前置（警告）`,
+      );
+    } else {
+      reasons.push(
+        `走廊 ${corridorWidth} 格内新鲜资源 ${freshResourceCount} < ${minFreshResources}（已知 ${resources.size}）——资源不足`,
+      );
+      hardReject = true;
+    }
   }
   if (activeEnemyCoreCount > 0) {
     reasons.push(
       `走廊内有 ${activeEnemyCoreCount} 个活跃敌核记忆（已知 ${enemyCores.size}）——段中敌核风险`,
     );
+    hardReject = true;
   }
   return {
-    ok: reasons.length === 0,
+    ok: !hardReject,
     reasons,
     freshResourceCount,
     activeEnemyCoreCount,
