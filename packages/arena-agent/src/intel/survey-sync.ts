@@ -14,6 +14,7 @@ import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
+  markResourceState,
   markSyncMeta,
   openSurveyDb,
   recordNotableEvent,
@@ -303,8 +304,22 @@ export function syncTenantSurvey(
       const lc = parseCaseLifecycle(raw, tick);
       for (const b of lc.births) recordUnitBirth(db, b.unitId, b.unitType, b.tick, b.pos);
       for (const d of lc.deaths) recordUnitDeath(db, d.unitId, d.tick, d.pos);
-      for (const h of lc.harvests) recordResourceEvent(db, h.cell, h.tick, "HARVEST_SUCCEEDED", null, h.amount, h.actorId);
-      for (const f of lc.harvestFails) recordResourceEvent(db, f.cell, f.tick, "HARVEST_FAILED", f.reason, null, f.actorId);
+      // 矿生命周期状态回写（2026-08-08 闭环）：采集事件是"该格当前无矿"的权威证据。
+      //  - HARVEST_SUCCEEDED：该格刚被采空（2-6 tick 后从视野消失前仍可见时），
+      //    立即标 harvested——此前 state 永远是 visible，"过时矿"地图层根因；
+      //  - HARVEST_FAILED RESOURCE_DEPLETED：他人已采空（我们视野可见但无矿）→ empty；
+      //  - HARVEST_FAILED NOT_RESOURCE_CELL：记忆格已耗尽/不存在 → harvested（负记忆）；
+      //  - 矿 refill 后重新可见时 upsertResources 自动置回 visible（游戏 4 tick 结算
+      //    后按 chunk quota 确定性补充，实证同格 refill 周期 avg 37 tick）。
+      for (const h of lc.harvests) {
+        recordResourceEvent(db, h.cell, h.tick, "HARVEST_SUCCEEDED", null, h.amount, h.actorId);
+        markResourceState(db, h.cell, "harvested", h.tick);
+      }
+      for (const f of lc.harvestFails) {
+        recordResourceEvent(db, f.cell, f.tick, "HARVEST_FAILED", f.reason, null, f.actorId);
+        if (f.reason === "RESOURCE_DEPLETED") markResourceState(db, f.cell, "empty", f.tick);
+        else if (f.reason === "NOT_RESOURCE_CELL") markResourceState(db, f.cell, "harvested", f.tick);
+      }
       for (const s of lc.spends) recordCoreSpend(db, s.kind, s.tick, s.amount, s.unitType, s.unitId);
       for (const n of lc.notables) {
         summary.notables += recordNotableEvent(db, { tenant, tick, eventType: n.eventType, actorId: n.actorId, targetId: n.targetId, x: n.pos?.x ?? null, y: n.pos?.y ?? null, amount: n.amount, unitType: n.unitType });
