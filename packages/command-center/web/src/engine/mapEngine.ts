@@ -844,7 +844,8 @@ function cellAlpha(c: any, floor = 0.45) {
 const SELECTION_RIPPLE_MS = 900;
 const selectionRipples = new Map(); // objId -> born
 function startSelectionRipple(id: any) { if (id) selectionRipples.set(id, performance.now()); }
-/** 多选单位环（编队可视）：multi 中非主选中的单位画淡白细环。 */
+/** 多选单位环 + 编队连接线（编队可视）：multi 中非主选中的单位画淡白细环；
+ *  主选中 → 各成员画星形虚线（编队拓扑直观可见，一眼看出编队锚点与成员分布）。 */
 function drawMultiSelection(s: any) {
   const tac = T();
   if (tac.multi.size < 2) return;
@@ -852,6 +853,20 @@ function drawMultiSelection(s: any) {
   const world = tac.selected ? tac.worlds[tac.selected.tenant] : null;
   if (!world) return;
   ctx.save();
+  // 编队连接线（2026-08-08）：主选中 → 成员（虚线，淡白）
+  const selObj = tac.selected?.obj;
+  if (selObj && selObj.position) {
+    const sp = project(selObj.position[0], selObj.position[1]);
+    ctx.strokeStyle = 'rgba(255,255,255,.30)';
+    ctx.lineWidth = Math.max(1, s * 0.03);
+    ctx.setLineDash([4, 4]);
+    for (const o of world.state.objects) {
+      if (!tac.multi.has(o.id) || o.id === selId || o.kind === 'CORE' || !o.position) continue;
+      const p = project(o.position[0], o.position[1]);
+      ctx.beginPath(); ctx.moveTo(sp.sx, sp.sy); ctx.lineTo(p.sx, p.sy); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
   ctx.strokeStyle = 'rgba(255,255,255,.55)';
   ctx.lineWidth = Math.max(1, s * 0.045);
   ctx.setLineDash([3, 3]);
