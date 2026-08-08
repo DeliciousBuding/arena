@@ -3,6 +3,7 @@
  *
  * 消息方向：
  * - child → supervisor: arena.alliance.member（租户状态报告）
+ * - child → supervisor: arena.alliance.frame（完整 tokenless shadow intelligence frame）
  * - supervisor → child: arena.alliance.directive（联盟指令下发）
  * - child → supervisor: arena.alliance.ack（指令确认/拒绝）
  *
@@ -15,6 +16,7 @@
  */
 
 import type { AllianceDirective, AllianceMemberReport } from "../control-types.ts";
+import type { AllianceShadowFrameV1 } from "../shadow-frame.ts";
 
 // ── Schema version ────────────────────────────────────────────
 
@@ -33,6 +35,17 @@ export interface AllianceMemberMessage {
   readonly tenantId: string;
   readonly tick: number;
   readonly report: AllianceMemberReport;
+}
+
+
+/** child → supervisor：完整 AllianceShadowFrameV1。
+ * 仅包含观测/成员事实，无 token、Plan、submit capability；用于中央 Director 聚合敌情。 */
+export interface AllianceFrameMessage {
+  readonly type: "arena.alliance.frame";
+  readonly schemaVersion: number;
+  readonly tenantId: string;
+  readonly tick: number;
+  readonly frame: AllianceShadowFrameV1;
 }
 
 /**
@@ -67,6 +80,7 @@ export interface AllianceAckMessage {
 /** Alliance IPC 消息 discriminated union。 */
 export type AllianceIpcMessage =
   | AllianceMemberMessage
+  | AllianceFrameMessage
   | AllianceDirectiveMessage
   | AllianceAckMessage;
 
@@ -86,6 +100,8 @@ export function isAllianceIpcMessage(message: unknown): message is AllianceIpcMe
   switch (m.type) {
     case "arena.alliance.member":
       return isAllianceMemberMessage(message);
+    case "arena.alliance.frame":
+      return isAllianceFrameMessage(message);
     case "arena.alliance.directive":
       return isAllianceDirectiveMessage(message);
     case "arena.alliance.ack":
@@ -117,6 +133,28 @@ export function isAllianceMemberMessage(message: unknown): message is AllianceMe
   if (!Number.isFinite(report.observedAtMs) || (report.observedAtMs as number) < 0) return false;
   if (report.tenantId !== m.tenantId || report.tick !== m.tick) return false;
 
+  return true;
+}
+
+/** 验证 child→supervisor full shadow frame。只做边界 shape/identity 校验，
+ * 深层实体语义由 canonical snapshot 聚合器负责；malformed 仍 fail-open=false。 */
+export function isAllianceFrameMessage(message: unknown): message is AllianceFrameMessage {
+  if (message === null || typeof message !== "object") return false;
+  const m = message as Record<string, unknown>;
+  if (m.type !== "arena.alliance.frame" || m.schemaVersion !== ALLIANCE_IPC_SCHEMA_VERSION) return false;
+  if (typeof m.tenantId !== "string" || m.tenantId.length === 0) return false;
+  if (!Number.isInteger(m.tick) || (m.tick as number) < 0) return false;
+  if (m.frame === null || typeof m.frame !== "object") return false;
+  const frame = m.frame as Record<string, unknown>;
+  if (frame.schema !== "alliance-shadow-frame-v1") return false;
+  if (typeof frame.processRunId !== "string" || frame.processRunId.length === 0) return false;
+  if (frame.tenantId !== m.tenantId || frame.tick !== m.tick) return false;
+  if (!Number.isFinite(frame.observedAtMs) || (frame.observedAtMs as number) < 0) return false;
+  if (frame.member === null || typeof frame.member !== "object") return false;
+  const member = frame.member as Record<string, unknown>;
+  if (member.tenantId !== m.tenantId || member.tick !== m.tick) return false;
+  if (!Array.isArray(frame.sightings) || !Array.isArray(frame.allyEntityIds)) return false;
+  if (!Number.isInteger(frame.historicalSightingCount) || (frame.historicalSightingCount as number) < 0) return false;
   return true;
 }
 
@@ -182,6 +220,17 @@ export function createMemberMessage(report: AllianceMemberReport): AllianceMembe
     tenantId: report.tenantId,
     tick: report.tick,
     report,
+  };
+}
+
+/** 构造 child→supervisor full shadow intelligence frame。 */
+export function createFrameMessage(frame: AllianceShadowFrameV1): AllianceFrameMessage {
+  return {
+    type: "arena.alliance.frame",
+    schemaVersion: ALLIANCE_IPC_SCHEMA_VERSION,
+    tenantId: frame.tenantId,
+    tick: frame.tick,
+    frame,
   };
 }
 

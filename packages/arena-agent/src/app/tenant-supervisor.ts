@@ -1,6 +1,6 @@
 /** Native multi-tenant process supervisor. One child process owns one tenant writer. */
 
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess, type Serializable } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -77,6 +77,8 @@ export interface TenantSupervisorOptions {
   readonly spawnChild?: (args: readonly string[], spec: TenantSpec) => ChildProcess;
   readonly forceKillTree?: (child: ChildProcess) => Promise<void>;
   readonly onEvent?: (event: SupervisorEvent) => void;
+  /** Raw child IPC observation seam; caller must runtime-guard message type. */
+  readonly onChildMessage?: (tenantId: string, message: unknown) => void;
   readonly shutdownTimeoutMs?: number;
   readonly eventLogPath?: string;
 }
@@ -218,6 +220,9 @@ export class TenantSupervisor {
         this.children.set(spec.tenantId, entry);
         child.stdout?.on("data", (chunk) => process.stdout.write(`[${spec.tenantId}] ${chunk}`));
         child.stderr?.on("data", (chunk) => process.stderr.write(`[${spec.tenantId}] ${chunk}`));
+        child.on("message", (message) => {
+          try { this.options.onChildMessage?.(spec.tenantId, message); } catch {}
+        });
         child.on("error", (error) => {
           entry.lastError = error.message;
           if (!entry.terminating) entry.lifecycle = "failed";
@@ -243,6 +248,18 @@ export class TenantSupervisor {
       this.emit("error", "cluster", `partial start rollback: ${message}`);
       await this.shutdown();
       throw error;
+    }
+  }
+
+  /** Send a tokenless control-plane IPC message to one live child. Never throws to caller. */
+  sendToTenant(tenantId: string, message: Serializable): boolean {
+    const entry = this.children.get(tenantId);
+    if (entry === undefined || entry.exited || entry.terminating || !entry.child.connected) return false;
+    try {
+      entry.child.send(message, () => {});
+      return true;
+    } catch {
+      return false;
     }
   }
 

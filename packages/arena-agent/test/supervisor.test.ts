@@ -757,3 +757,116 @@ function processStopped(pid: number): boolean {
     return true;
   }
 }
+
+
+test("TenantSupervisor routes child IPC and targeted sends without affecting writer lifecycle", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  const received: Array<{ tenantId: string; message: unknown }> = [];
+  const supervisor = new TenantSupervisor({
+    repoRoot: repo.root,
+    configs: ["t1.json"],
+    spawnChild: fakeSpawn(children),
+    onChildMessage: (tenantId, message) => received.push({ tenantId, message }),
+  });
+  try {
+    await supervisor.start();
+    const child = children.get("t1")!;
+    const probe = { type: "arena.alliance.frame", schemaVersion: 1, tenantId: "t1" };
+    child.emit("message", probe);
+    assert.deepEqual(received, [{ tenantId: "t1", message: probe }]);
+    assert.equal(supervisor.sendToTenant("t1", { type: "arena.alliance.directive", revision: 1 }), true);
+    assert.deepEqual(child.sent.at(-1), { type: "arena.alliance.directive", revision: 1 });
+    assert.equal(supervisor.sendToTenant("missing", { type: "probe" }), false);
+    child.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("DebugServer GET /alliance-director exposes read-only ASSIST_ONLY contract", async () => {
+  const repo = makeTempRepo();
+  const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"] });
+  const debug = new DebugServer({
+    repoRoot: repo.root,
+    supervisor,
+    port: 0,
+    allianceDirectorView: () => ({ enabled: true, mode: "ASSIST_ONLY", actionOwnership: "none", revision: 7 }),
+  });
+  try {
+    await debug.listen();
+    const port = debug.address()!.port;
+    const get = await requestJson(port, "/alliance-director");
+    assert.equal(get.status, 200);
+    assert.equal(get.body.mode, "ASSIST_ONLY");
+    assert.equal(get.body.actionOwnership, "none");
+    assert.equal(get.body.revision, 7);
+    const post = await requestJson(port, "/alliance-director", { method: "POST" });
+    assert.equal(post.status, 405);
+  } finally {
+    await debug.close();
+    repo.cleanup();
+  }
+});
+
+
+test("Supervisor + central Alliance shadow: frames -> ASSIST directives -> ACK, never Arena actions", async () => {
+  const repo = makeTempRepo([{ file: "t1.json", tenantId: "t1" }, { file: "t2.json", tenantId: "t2" }]);
+  const children = new Map<string, FakeChild>();
+  const { createCentralAllianceShadowRuntime } = await import("../src/alliance/runtime/central-shadow-runtime.ts");
+  const { createFrameMessage, createAckMessage } = await import("../src/alliance/runtime/ipc.ts");
+  let central: ReturnType<typeof createCentralAllianceShadowRuntime> | null = null;
+  const supervisor = new TenantSupervisor({
+    repoRoot: repo.root,
+    configs: ["t1.json", "t2.json"],
+    spawnChild: fakeSpawn(children),
+    onChildMessage: (tenantId, message) => central?.onChildMessage(tenantId, message),
+  });
+  const makeFrame = (tenantId: string, tick: number, x: number) => ({
+    schema: "alliance-shadow-frame-v1" as const,
+    processRunId: `run-${tenantId}`,
+    tenantId,
+    tick,
+    observedAtMs: tick * 1000,
+    member: {
+      tenantId, tick, observedAtMs: tick * 1000,
+      core: { id: `core-${tenantId}`, position: [x, 0] as const, hp: 5, shield: 5, moving: false },
+      resources: 10, resourceCapacity: 50, population: 8, workers: 2, vanguards: 4, rangers: 2,
+      carriedResources: 0, activeFleetIds: [`${tenantId}:home:0`, `${tenantId}:strike:0`],
+      localThreat: 0, localHarvestRate: 0, status: "READY" as const,
+    },
+    sightings: [], allyEntityIds: [`core-${tenantId}`], historicalSightingCount: 0,
+  });
+  try {
+    await supervisor.start();
+    central = createCentralAllianceShadowRuntime({
+      enabled: true, expectedTenants: ["t1", "t2"], periodTicks: 1, maxSkewTicks: 0,
+      send: (tenantId, message) => supervisor.sendToTenant(tenantId, message),
+    });
+    children.get("t1")!.emit("message", createFrameMessage(makeFrame("t1", 100, 0)));
+    assert.equal(children.get("t1")!.sent.length, 0, "partial frame set must not emit directive");
+    children.get("t2")!.emit("message", createFrameMessage(makeFrame("t2", 100, 5)));
+    for (const tenantId of ["t1", "t2"]) {
+      const messages = children.get(tenantId)!.sent as Array<any>;
+      const d = messages.find((m) => m.type === "arena.alliance.directive");
+      assert.ok(d, `${tenantId} should receive an ASSIST directive`);
+      assert.equal(d.directive.mode, "ASSIST");
+      assert.equal("unitActions" in d, false);
+      assert.equal("coreAction" in d, false);
+      assert.equal("submit" in d, false);
+      children.get(tenantId)!.emit("message", createAckMessage(tenantId, 100, d.revision, "accepted", "stored only"));
+    }
+    const view = central.view() as any;
+    assert.equal(view.mode, "ASSIST_ONLY");
+    assert.equal(view.actionOwnership, "none");
+    assert.equal(view.runtime.ackCount, 2);
+    assert.equal(view.runtime.ackRecords.filter((r: any) => r.state === "accepted").length, 2);
+    assert.ok(view.policy.missions.length >= 2);
+
+    for (const child of children.values()) child.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    repo.cleanup();
+  }
+});
