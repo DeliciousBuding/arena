@@ -246,7 +246,6 @@ export class WorkerTaskPlanner {
         });
       }
     }
-    }
 
     return { assignments };
   }

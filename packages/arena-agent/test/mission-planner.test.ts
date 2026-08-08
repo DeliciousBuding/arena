@@ -105,7 +105,7 @@ test("mission: surveyorIds 上限 + 测绘期地板 + 确定性", () => {
   assert.equal(surveyorIds(workers, DEFAULT_MISSION_CONFIG, true).size, 0); // 缺省关闭
 });
 
-test("mission: WorkerTaskPlanner 陈旧种子低于门槛 → 转 EXPLORE（SURVEYOR），不再空跑", () => {
+test("mission: WorkerTaskPlanner 陈旧种子低于门槛 → 剩余 worker WAIT（非测绘期无 EXPLORE，不空跑）", () => {
   const workers = [worker("w1", 0, 0), worker("w2", 0, 1), worker("w3", 0, 2), worker("w4", 0, 3)];
   // 3 个陈旧种子（龄 300、远距 20+ 格）+ 1 个可见新鲜矿：可见矿必被采，
   // 陈旧种子 score（−45 以下）低于门槛 −30 → 不派，转勘探
@@ -124,7 +124,9 @@ test("mission: WorkerTaskPlanner 陈旧种子低于门槛 → 转 EXPLORE（SURV
   const byType = (type: string) => plan.assignments.filter((a) => a.task.type === type);
   assert.equal(byType("GO_RESOURCE").length, 1, "只有可见新鲜矿可采");
   assert.equal(byType("GO_RESOURCE")[0]?.task.targetCellKey, "5,0");
-  assert.equal(byType("EXPLORE").length, 3, "剩余 3 worker 转勘探（cap=3）");
+  // 生产重构：非测绘期不预留勘探者——剩余 worker WAIT（不空跑陈旧种子）。
+  assert.equal(byType("EXPLORE").length, 0, "非测绘期无 EXPLORE");
+  assert.equal(byType("WAIT").length, 3, "剩余 3 worker 守家 WAIT（不空跑陈旧种子）");
 });
 
 test("mission: 默认配置（缺省）行为与现架构一致——剩余 worker 全部 WAIT", () => {
@@ -140,9 +142,11 @@ test("mission: 默认配置（缺省）行为与现架构一致——剩余 work
   const planner = new WorkerTaskPlanner(); // 缺省 = 现行为
   const plan = planner.plan(snapshot, []);
   const byType = (type: string) => plan.assignments.filter((a) => a.task.type === type);
-  assert.equal(byType("GO_RESOURCE").length, 2, "缺省：陈旧种子也照采（与现架构一致）");
+  // 生产重构（匈牙利矩阵）：缺省 maxCollectionDistance 上限过滤超距陈旧种子（100 格）——
+  // 仅新鲜可见矿被采，剩余 worker WAIT（非测绘期无勘探者）。零回归语义保持。
+  assert.equal(byType("GO_RESOURCE").length, 1, "缺省：超距陈旧种子被门槛过滤，只采新鲜可见矿");
   assert.equal(byType("EXPLORE").length, 0);
-  assert.equal(byType("WAIT").length, 0);
+  assert.equal(byType("WAIT").length, 1, "缺省：剩余 worker 守家 WAIT（与现架构一致）");
 });
 
 test("mission: 测绘期（surveyBurstActive）保证 floor 个勘探者", () => {
@@ -194,8 +198,9 @@ test("mission: alwaysSurvey=false（缺省）保持 cap 行为——超 cap 守�
   const plan = planner.plan(snapshot, []);
   const byType = (type: string) => plan.assignments.filter((a) => a.task.type === type);
   assert.equal(byType("GO_RESOURCE").length, 1);
-  assert.equal(byType("EXPLORE").length, 1, "cap=1 只留 1 个勘探者");
-  assert.equal(byType("WAIT").length, 2, "超 cap 守家 WAIT（历史行为零回归）");
+  // 生产重构：非测绘期（surveyBurstActive=false）不预留勘探者——剩余 worker 全部 WAIT。
+  assert.equal(byType("EXPLORE").length, 0, "非测绘期无 EXPLORE");
+  assert.equal(byType("WAIT").length, 3, "剩余 worker 守家 WAIT（零回归）");
 });
 
 test("mission: 结果确定性——同快照两次 plan 输出一致", () => {
