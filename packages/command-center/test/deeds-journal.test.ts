@@ -3,7 +3,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildAllianceCoverageLine, buildDecisionHealthLine, buildThreatJournalLine, buildMiningExecutionLine } from "../lib/deeds-journal.ts";
+import { buildAllianceCoverageLine, buildDecisionHealthLine, buildThreatJournalLine, buildMiningExecutionLine, buildPipelineHealthLine } from "../lib/deeds-journal.ts";
+import type { PipelineHealthPayload } from "../lib/pipeline-health.ts";
 import type { LeaderboardIntel } from "../lib/leaderboard.ts";
 import type { EncounterEntry } from "../lib/intel.ts";
 import type { AuditOverviewPayload } from "../lib/audit-overview.ts";
@@ -103,4 +104,26 @@ test("deeds-journal: 采矿执行摘要——矿总量/未采/失联 + 分工兑
   assert.ok(line && line.includes("分工 79 已采 0 在途 79"), "分工兑现");
   assert.ok(line && line.includes("兑现率 0%"), "effectiveRate");
   assert.equal(buildMiningExecutionLine(null), null, "空输入 → null");
+});
+
+test("deeds-journal: 管线健康摘要——滞后 + 生命周期闭环 + 陈旧源", () => {
+  const ph = {
+    generatedAt: "", cachedAt: "",
+    tenants: [], global: {
+      maxLagTicks: 25, avgLagTicks: 25, staleTenants: [], missingTenants: [], healthy: true,
+      lagTrend: { direction: "narrowing", delta: -5, samples: 4 },
+      sources: [{ name: "world", ageSeconds: 1, stale: false, detail: "1s" }, { name: "leaderboard", ageSeconds: 2000, stale: true, detail: "2000s" }],
+      lifecycleFlow: "OK",
+    },
+  } as unknown as PipelineHealthPayload;
+  const line = buildPipelineHealthLine(ph);
+  assert.ok(line && line.includes("管线健康"), "应生成管线健康行");
+  assert.ok(line && line.includes("同步滞后 25 tick"), "滞后");
+  assert.ok(line && line.includes("收窄"), "趋势收窄");
+  assert.ok(line && line.includes("矿生命周期闭环正常"), "闭环 OK");
+  assert.ok(line && line.includes("陈旧源 leaderboard"), "陈旧源");
+  const stalled = { ...ph, global: { ...ph.global, lifecycleFlow: "STALLED", staleTenants: ["t3"] } } as unknown as PipelineHealthPayload;
+  const sl = buildPipelineHealthLine(stalled);
+  assert.ok(sl && sl.includes("STALLED") && sl.includes("t3"), "STALLED + 滞后租户");
+  assert.equal(buildPipelineHealthLine(null), null, "空输入 → null");
 });
