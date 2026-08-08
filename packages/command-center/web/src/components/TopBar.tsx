@@ -7,6 +7,20 @@ interface HealthPayload {
   global?: { healthy?: boolean; maxLagTicks?: number; avgLagTicks?: number; staleTenants?: string[]; missingTenants?: string[] };
 }
 
+const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#7fd8a5", t3: "#a892d6", t4: "#fc5646" };
+const TENANT_LABEL: Record<string, string> = { t1: "T1", t2: "T2", t3: "T3", t4: "T4" };
+
+interface OverviewTenant {
+  tenant: string;
+  live?: boolean;
+  latest?: {
+    resources?: number | null;
+    resourceDelta?: number | null;
+    workers?: number | null;
+    tick?: number | null;
+  };
+}
+
 export function TopBar() {
   const engine = useEngine();
   const { openRight } = useShell();
@@ -14,6 +28,7 @@ export function TopBar() {
   const [dataRoot, setDataRoot] = useState<string>("");
   const [refreshOk, setRefreshOk] = useState<boolean>(true);
   const [encounteredCount, setEncounteredCount] = useState(0);
+  const [overview, setOverview] = useState<OverviewTenant[]>([]);
   const [health, setHealth] = useState<HealthPayload | null>(null);
 
   useEffect(() => {
@@ -22,6 +37,10 @@ export function TopBar() {
       if (topic === "tick") setTick(payload as TickPayload);
       else if (topic === "dataRoot") setDataRoot(String(payload ?? ""));
       else if (topic === "refresh") setRefreshOk(payload !== false);
+      else if (topic === "overview") {
+        const ov = payload as { tenants?: OverviewTenant[] } | null;
+        setOverview(Array.isArray(ov?.tenants) ? ov.tenants : []);
+      }
       else if (topic === "intel") {
         const intel = payload as { enemies?: Array<{ username?: string | null }> } | null;
         const enemies = Array.isArray(intel?.enemies) ? intel.enemies : [];
@@ -56,6 +75,19 @@ export function TopBar() {
           <h1>Arena 指挥面板</h1>
           <p className="subtitle">COMMAND CENTER · 4 租户全局联盟测绘 · 人类最高控制权</p>
         </div>
+      </div>
+      <div className="empire-strip" title="帝国总览：各租户 资源 / 工人 / 增量（点击租户卡可聚焦）">
+        {overview.map((t) => {
+          const color = TENANT_COLORS[t.tenant] ?? "#69b3d8";
+          const L = t.latest ?? {};
+          const d = L.resourceDelta ?? 0;
+          return (
+            <div key={t.tenant} className="empire-cell" style={{ ["--tc" as string]: color }}>
+              <b><i>{TENANT_LABEL[t.tenant] ?? t.tenant.toUpperCase()}</i> {L.resources ?? "—"}</b>
+              <span>工人 {L.workers ?? "—"} · <em className={d > 0 ? "delta-pos" : d < 0 ? "delta-neg" : ""}>{d > 0 ? `+${d}` : d}</em></span>
+            </div>
+          );
+        })}
       </div>
       <div className="top-status">
         <span id="clock" className="mono dim">{tick?.clock ?? "—"}</span>

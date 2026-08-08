@@ -5,7 +5,7 @@ const fmt = (n: number | null | undefined): string => {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   return Math.abs(n) >= 1000 ? n.toLocaleString("en-US") : String(n);
 };
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
+const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#7fd8a5", t3: "#a892d6", t4: "#fc5646" };
 
 interface EncounterEntry { tenant: string; lastSeenTick?: number | null; distanceToFriendlyCore?: number | null; raidRisk?: string | null }
 interface LeaderboardRow { rank: number; username: string; score?: number; damage?: number; tier?: string; ours?: string | null; encountered?: EncounterEntry[] | null }

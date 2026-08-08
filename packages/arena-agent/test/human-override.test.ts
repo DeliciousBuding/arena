@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import type { Plan, TickState, UnitAction } from "../src/domain/model.ts";
+import type { Plan, TickState, UnitAction, CoreAction } from "../src/domain/model.ts";
 import {
   actionFromWire,
   applyHumanOverrides,
@@ -16,6 +16,7 @@ import {
 } from "../src/runtime/human-override.ts";
 
 const WORKER = "22222222-2222-2222-2222-222222222222";
+const CORE = "core-1";
 
 function makeState(overrides: Partial<TickState> = {}): TickState {
   return {
@@ -204,4 +205,102 @@ test("actionFromWire: SHOOT null/缺省 targetId 保持 null", () => {
   assert.deepEqual(actionFromWire({ type: "SHOOT", expectedCell: [3, 3] }), {
     type: "SHOOT", targetId: null, expectedCell: [3, 3],
   });
+});
+
+/* ---- 核心迁移 / 核心动作（2026-08-08 端到端控制补齐） ---- */
+function coreActionOf(result: ReturnType<typeof applyHumanOverrides>): CoreAction | null {
+  return result.plan.coreAction;
+}
+
+test("核心一键动作：START_MOVE 方向合法 → 覆盖 coreAction 并 applied", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    const state = makeState(); // core 在 [0,0]，NORMAL
+    const src = makeSource(dir, "t1", {
+      version: 1, mode: "override",
+      commands: [{ id: "c1", unitId: CORE, action: { type: "START_MOVE", direction: "RIGHT" }, createdAt: "x" }],
+      goals: [],
+    });
+    const r = applyHumanOverrides(state, basePlan(), src);
+    assert.equal(r.active, true);
+    assert.deepEqual(r.applied, [CORE]);
+    assert.deepEqual(coreActionOf(r), { type: "START_MOVE", direction: "RIGHT" });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("核心一键动作：CANCEL_MOVE（MOVING 态）→ 覆盖 coreAction", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    const state = makeState({
+      core: { id: CORE, position: [0, 0], hp: 5, shield: 5, state: "MOVING", ownerUsername: "me" },
+    });
+    const src = makeSource(dir, "t1", {
+      version: 1, mode: "override",
+      commands: [{ id: "c1", unitId: CORE, action: { type: "CANCEL_MOVE" }, createdAt: "x" }],
+      goals: [],
+    });
+    const r = applyHumanOverrides(state, basePlan(), src);
+    assert.equal(r.active, true);
+    assert.deepEqual(coreActionOf(r), { type: "CANCEL_MOVE" });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("核心一键动作：SPAWN 合法（资源充足）→ 覆盖 coreAction", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    const state = makeState({ resources: 50 });
+    const src = makeSource(dir, "t1", {
+      version: 1, mode: "override",
+      commands: [{ id: "c1", unitId: CORE, action: { type: "SPAWN", unitType: "VANGUARD" }, createdAt: "x" }],
+      goals: [],
+    });
+    const r = applyHumanOverrides(state, basePlan(), src);
+    assert.equal(r.active, true);
+    assert.deepEqual(coreActionOf(r), { type: "SPAWN", unitType: "VANGUARD" });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("核心一键动作：SPAWN 资源不足 → 被权威校验拒绝", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    const state = makeState({ resources: 3 }); // VANGUARD 需 10
+    const src = makeSource(dir, "t1", {
+      version: 1, mode: "override",
+      commands: [{ id: "c1", unitId: CORE, action: { type: "SPAWN", unitType: "VANGUARD" }, createdAt: "x" }],
+      goals: [],
+    });
+    const r = applyHumanOverrides(state, basePlan(), src);
+    assert.equal(r.active, false);
+    assert.equal(coreActionOf(r), null); // 非法 core 动作被剔除
+    assert.ok(r.rejected.some((x) => x.unitId === CORE));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("核心一键动作：MOVING 态 START_MOVE → 被权威校验拒绝", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    const state = makeState({
+      core: { id: CORE, position: [0, 0], hp: 5, shield: 5, state: "MOVING", ownerUsername: "me" },
+    });
+    const src = makeSource(dir, "t1", {
+      version: 1, mode: "override",
+      commands: [{ id: "c1", unitId: CORE, action: { type: "START_MOVE", direction: "UP" }, createdAt: "x" }],
+      goals: [],
+    });
+    const r = applyHumanOverrides(state, basePlan(), src);
+    assert.equal(r.active, false);
+    assert.equal(coreActionOf(r), null);
+    assert.ok(r.rejected.some((x) => x.unitId === CORE));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("actionFromWire: 核心/方向/生产动作 wire 形状解析", () => {
+  assert.deepEqual(actionFromWire({ type: "START_MOVE", direction: "LEFT" }), { type: "START_MOVE", direction: "LEFT" });
+  assert.deepEqual(actionFromWire({ type: "CANCEL_MOVE" }), { type: "CANCEL_MOVE" });
+  assert.deepEqual(actionFromWire({ type: "SPAWN", unitType: "RANGER" }), { type: "SPAWN", unitType: "RANGER" });
+  assert.deepEqual(actionFromWire({ type: "SWEEP", direction: "DOWN" }), { type: "SWEEP", direction: "DOWN" });
+  // 非法方向/单位类型 → null（逐条拒绝）
+  assert.equal(actionFromWire({ type: "START_MOVE", direction: "NOPE" }), null);
+  assert.equal(actionFromWire({ type: "SPAWN", unitType: "DRONE" }), null);
+  assert.equal(actionFromWire({ type: "MOVE" }), null); // 缺 direction
 });
