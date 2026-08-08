@@ -220,6 +220,7 @@ export function openSurveyDb(dataRoot: string, tenant: string, write = false): D
     migrateResourceSanity(db); // 数据质量 A10：矿时间戳倒挂 + seen_count 重建（force 重跑污染）
     migrateNotableSanity(db, dataRoot, tenant); // 叙事 A11：CORE_DESTROYED 敌我/摧毁者回填（旧库）
     migrateUnitsSeenArchive(db); // 共享记忆分层 A13：旧目击归档 heat_archive + 清理原始行
+    migrateDropControlledSeen(db); // 记忆收敛 A14：清理我方目击行（units_seen 纯敌方记忆）
   }
   return db;
 }
@@ -403,6 +404,21 @@ function coreDestroyedByTick(dataRoot: string, tenant: string): Map<number, { re
  *  防 units_seen 无限膨胀（t1 20 万行/16k tick 实测）。与 enemy-heat recent
  *  窗口（2000）略大，保守保留近期完整目击。 */
 export const ARCHIVE_CUTOFF_TICKS = 3000;
+
+/** 记忆收敛迁移（2026-08-08，A14）：units_seen 定位为纯敌方目击记忆表——
+ *  我方单位生命周期由 unit_lifecycle 追踪（touchUnitSeen），我方目击行
+ *  （controlled=1）无任何消费方（enemy-heat/deeds/advice 全部只读
+ *  controlled=0），却占表 99% 行数（t1 实测 205,014/205,165）。此迁移
+ *  一次性 DELETE 历史我方行；写入侧 survey-sync 同步改为仅敌方写 units_seen
+ *  （A14）。幂等：删完 controlled=1 行数为 0，重复跑无效果。仅 write 执行。 */
+function migrateDropControlledSeen(db: DatabaseSync): void {
+  try {
+    db.prepare("DELETE FROM units_seen WHERE controlled = 1").run();
+  } catch {
+    // 容错；下次 sync 重试
+  }
+}
+
 
 /** 共享记忆分层迁移（2026-08-08，记忆生命周期 A13）：units_seen 旧目击
  *  （controlled=0 且 tick ≤ 最新-3000）聚合写入 heat_archive（每格×类型计数 +
