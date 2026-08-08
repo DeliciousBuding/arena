@@ -31,10 +31,22 @@ const CONTRACT_DIR = join(here, "..", "src", "sim", "contracts");
 const MANIFEST_PATH = join(CONTRACT_DIR, "rules-v0.14.json");
 const V011_MANIFEST_PATH = join(CONTRACT_DIR, "rules-v0.11.json");
 const REPO_ROOT = resolve(here, "..", "..", "..");
-const COORDINATION_ROOT = resolve(REPO_ROOT, "..");
+function findCoordinationRoot(start: string): string {
+  let current = start;
+  for (let depth = 0; depth < 12; depth += 1) {
+    if (existsSync(join(current, "reference", "arena-hero-python", "src", "arena_hero"))) return current;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return resolve(REPO_ROOT, "..");
+}
+const COORDINATION_ROOT = findCoordinationRoot(REPO_ROOT);
 const localMirrorCandidates = [
+  // arena-hero-python is a standard src-layout package.
+  join(COORDINATION_ROOT, "reference", "arena-hero-python", "src", "arena_hero"),
+  // Legacy layout kept as a compatibility fallback for older mirrors.
   join(COORDINATION_ROOT, "reference", "arena-hero-python", "arena_hero"),
-  resolve(REPO_ROOT, "..", "..", "..", "reference", "arena-hero-python", "arena_hero"),
 ];
 const MIRROR_DIR = process.env.ARENA_SDK_MIRROR_DIR
   ? resolve(process.env.ARENA_SDK_MIRROR_DIR)
