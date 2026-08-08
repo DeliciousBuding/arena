@@ -71,6 +71,14 @@ if (summary.total < 0) {
 console.log(
   `test count: ${summary.total} total, ${summary.failed} failed (baseline >= ${minTestCount}; 基线 2026-08-09，测试数只增不减)`,
 );
+if (summary.failed > 0 || run.status !== 0) {
+  console.error(
+    `test count check FAILED: node --test reported ${summary.failed} failed (exit ${String(run.status)})`,
+  );
+  const failureTail = rawOutput.split(/\r?\n/).slice(-80).join("\n");
+  console.error(failureTail);
+  process.exit(1);
+}
 if (summary.total < minTestCount) {
   console.error(
     `test count check FAILED: ${summary.total} tests < baseline ${minTestCount}（测试数只增不减，见 scripts/check-test-count.mts）`,
