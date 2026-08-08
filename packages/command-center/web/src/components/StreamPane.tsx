@@ -52,6 +52,22 @@ interface StreamsPayload {
   events: Record<string, EventRow[]>;
 }
 
+interface JournalDeed {
+  id?: string;
+  tick?: number;
+  tenant?: string;
+  star?: number;
+  kind?: string;
+  title?: string;
+  detail?: string;
+  position?: number[] | null;
+}
+interface JournalPayload {
+  deeds?: JournalDeed[];
+  narrative?: string;
+  generatedAt?: string;
+}
+
 interface Prefs { collapsed: boolean; height: number; quiet: boolean; tab: string }
 function loadPrefs(): Prefs {
   try {
@@ -60,7 +76,7 @@ function loadPrefs(): Prefs {
       collapsed: !!p.collapsed,
       height: typeof p.height === "number" ? Math.max(140, Math.min(460, p.height)) : 244,
       quiet: !!p.quiet,
-      tab: ["all", "t1", "t2", "t3", "t4", "events"].includes(p.tab) ? p.tab : "all",
+      tab: ["all", "t1", "t2", "t3", "t4", "events", "deeds"].includes(p.tab) ? p.tab : "all",
     };
   } catch {
     return { collapsed: false, height: 244, quiet: false, tab: "all" };
@@ -77,6 +93,7 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
   const [payload, setPayload] = useState<StreamsPayload | null>(null);
   const [prefs, setPrefsState] = useState<Prefs>(loadPrefs);
   const [newDot, setNewDot] = useState(false);
+  const [journal, setJournal] = useState<JournalPayload | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -87,10 +104,27 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
     return off;
   }, [engine]);
 
+  // 事迹 tab：纯前端拉取 /api/deeds/journal（不经过引擎 stream 状态机），30s 刷新
+  useEffect(() => {
+    if (prefs.tab !== "deeds") return;
+    let stop = false;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/deeds/journal", { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const d = (await r.json()) as JournalPayload;
+        if (!stop) setJournal(d);
+      } catch { /* 静默：保留上次数据 */ }
+    };
+    load();
+    const timer = setInterval(load, 30000);
+    return () => { stop = true; clearInterval(timer); };
+  }, [prefs.tab]);
+
   // 折叠/只看决策/标签页变化 → 通知引擎（引擎持有 tab 状态并决定拉哪个租户）
   useEffect(() => { savePrefs(prefs); }, [prefs]);
   useEffect(() => {
-    if (engine && payload && payload.tab !== prefs.tab) getEngine()?.setTab(prefs.tab);
+    if (engine && prefs.tab !== "deeds" && payload && payload.tab !== prefs.tab) getEngine()?.setTab(prefs.tab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefs.tab, engine]);
 
@@ -175,8 +209,10 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
         )}
       </div>
       <div id="streamTabs" className="tabs" role="tablist">
-        {[{ id: "all", label: "统一决策" }, ...TENANTS.map((t) => ({ id: t, label: t.toUpperCase() })), { id: "events", label: "事件" }].map((tb) => {
-          const n = tb.id === "events"
+        {[{ id: "all", label: "统一决策" }, ...TENANTS.map((t) => ({ id: t, label: t.toUpperCase() })), { id: "events", label: "事件" }, { id: "deeds", label: "事迹" }].map((tb) => {
+          const n = tb.id === "deeds"
+            ? journal?.deeds?.length ?? 0
+            : tb.id === "events"
             ? TENANTS.reduce((a, t) => a + (payload?.events[t]?.length ?? 0), 0)
             : (prefs.quiet ? kept : rows).filter((r) => tb.id === "all" || r.tenant === tb.id).length;
           return (
@@ -202,6 +238,27 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
                   <span className="st-tick">{fmt(e.tick)}</span>
                   <span className="st-kind" style={{ color: evColor }}>{EVENT_KIND_CN[e.kind] ?? e.kind}</span>
                   <span className="st-detail">{detail}</span>
+                </div>
+              );
+            })
+          )
+        ) : tab === "deeds" ? (
+          (journal?.deeds?.length ?? 0) === 0 ? (
+            <div className="stream-empty">{journal ? "暂无联盟事迹（30s 刷新）" : "加载联盟事迹…"}</div>
+          ) : (
+            journal?.deeds?.map((d) => {
+              const color = TENANT_COLORS[d.tenant ?? ""] ?? "#999";
+              const star = d.star ?? 0;
+              const pos = d.position;
+              return (
+                <div key={d.id} className={`stream-line${pos ? " clickable" : ""}`} style={{ ["--tc" as string]: color }}
+                  title={pos ? `点击定位 (${pos[0]}, ${pos[1]})` : undefined}
+                  onClick={pos ? () => { const e = getEngine(); if (e) { e.jumpTo(pos[0], pos[1]); e.toast(`定位事迹「${d.title ?? ""}」`); } } : undefined}>
+                  <span className="st-tenant">{d.tenant ? d.tenant.toUpperCase() : "盟"}</span>
+                  <span className="st-tick">{fmt(d.tick)}</span>
+                  <span className="st-kind">{d.title ?? d.kind ?? "事迹"}</span>
+                  <span className="st-detail">{d.detail ?? ""}</span>
+                  <span className={`st-badge${star >= 3 ? " deed-hot" : " deed"}`}>★{star}</span>
                 </div>
               );
             })
