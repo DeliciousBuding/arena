@@ -16,7 +16,7 @@
  * 用法：cd packages/arena-agent && npx tsx scripts/arena-ctl.mts <cmd> ...
  */
 import { spawn, execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, readdirSync, openSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, readdirSync, openSync, renameSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -299,7 +299,12 @@ function parsePhases(s: string | undefined): [number, number][] | null {
 
 function writeHumanStore(tenant: string, data: Record<string, unknown>): void {
   const dir = join(DATA_ROOT, "runtime", "human-commands");
-  writeFileSync(join(dir, `${tenant}.json`), JSON.stringify(data, null, 2) + "\n", "utf-8");
+  const finalPath = join(dir, `${tenant}.json`);
+  // 原子写：临时文件 + rename——tenant 每 tick 读该文件，避免读到半写 JSON
+  // （2026-08-08 t3 goals 偶发丢失：并发读写竞态）。
+  const tmpPath = join(dir, `${tenant}.json.tmp-${process.pid}-${Date.now()}`);
+  writeFileSync(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+  renameSync(tmpPath, finalPath);
 }
 
 function clearHumanStore(tenant: string): void {
