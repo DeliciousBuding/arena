@@ -506,6 +506,30 @@ test("survey-db: 记忆分层 A13——units_seen 旧目击归档 heat_archive +
   }
 });
 
+test("survey-db: 记忆收敛 A14——units_seen 清理我方目击行（纯敌方记忆表）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-ctlseen-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    upsertUnitSeen(db, { x: 1, y: 1 }, "RANGER", false, 5000);
+    upsertUnitSeen(db, { x: 2, y: 2 }, "WORKER", true, 2000); // 我方目击行
+    upsertUnitSeen(db, { x: 3, y: 3 }, "VANGUARD", false, 6000);
+    upsertUnitSeen(db, { x: 4, y: 4 }, "WORKER", true, 4000); // 我方目击行
+    db.close();
+    // 第二次 open 触发迁移：DELETE controlled=1，敌方行保留
+    const db2 = openSurveyDb(dir, "t1", true);
+    const rows = db2.prepare("SELECT controlled, COUNT(*) AS c FROM units_seen GROUP BY controlled ORDER BY controlled").all() as Array<{ controlled: number; c: number }>;
+    assert.deepEqual(rows.map((r) => [r.controlled, r.c]), [[0, 2]], "我方行清理，敌方行保留");
+    // 幂等：再次 open 不报错、结果不变
+    db2.close();
+    const db3 = openSurveyDb(dir, "t1", true);
+    const ctl1 = db3.prepare("SELECT COUNT(*) AS c FROM units_seen WHERE controlled=1").get() as { c: number };
+    assert.equal(ctl1.c, 0, "幂等：重复跑无效果");
+    db3.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("survey-db: recordUnitDeath 死亡 tick 只进不退 + 语义单调（审计 A12）", () => {
   const dir = mkdtempSync(join(tmpdir(), "survey-death-mono-"));
   try {
