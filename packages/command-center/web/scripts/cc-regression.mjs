@@ -16,6 +16,7 @@
  *   7. API 健康：overview/stream/survey 响应 < 5s
  */
 import { createRequire } from "node:module";
+import { request as httpRequest } from "node:http";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -52,6 +53,26 @@ function bad(name, detail = "") { fail++; results.push(`  ❌ ${name}${detail ? 
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 前置健康：node:http 直连（绕开 HTTP_PROXY 环境变量对 undici fetch 的代理劫持，不依赖 NO_PROXY 配置） */
+function probeHealth(url, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    try {
+      const u = new URL(url);
+      const req = httpRequest(
+        { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: "GET", timeout: timeoutMs },
+        (res) => { res.resume(); done({ ok: res.statusCode === 200, status: res.statusCode }); }
+      );
+      req.on("timeout", () => { req.destroy(new Error("timeout")); });
+      req.on("error", (e) => done({ ok: false, err: e.message.slice(0, 40) }));
+      req.end();
+    } catch (e) {
+      done({ ok: false, err: String(e?.message ?? e).slice(0, 40) });
+    }
+  });
+}
+
 async function main() {
   const exec = resolveChrome();
   if (!exec) { console.error("未找到 Playwright chromium，先 npx playwright-core install chromium"); process.exit(2); }
@@ -63,6 +84,18 @@ async function main() {
   page.on("console", (m) => { if (m.type() === "error") errs.push(m.text()); });
 
   try {
+    // 0) 前置健康：8787 可达性快速诊断（node:http 直连绕代理；失败关浏览器后打印退出，避免 return 吞掉结果）
+    let pre = null, preErr = "";
+    try { pre = await probeHealth(BASE + "/api/overview", 5000); } catch (e) { preErr = String(e?.name ?? e).slice(0, 40); }
+    if (!pre || !pre.ok) {
+      await browser.close().catch(() => {});
+      console.log("\n== 指挥面板回归 ==");
+      console.log("  ❌ 前置健康 — 8787 不可达（" + (pre ? "HTTP " + pre.status : preErr || "连接失败") + "）——确认 server.ts 已启动且 /api/overview 可用");
+      console.log("\n通过 0 / 1");
+      process.exit(1);
+    }
+    ok("前置健康", "8787 /api/overview 可达");
+
     // 1) 加载
     await page.goto(BASE + "/", { waitUntil: "domcontentloaded", timeout: 30000 });
     await sleep(8000);
@@ -174,12 +207,16 @@ async function main() {
         if (hit.err) { bad("人类指挥 UI 链", hit.err); }
         else {
           await page.mouse.click(hit.sx, hit.sy);
-          await sleep(1000);
-          const cmds = await page.evaluate(async () => {
-            const r = await fetch("/api/commands?tenant=t1", { cache: "no-store" });
-            const j = await r.json();
-            return { goals: (j.goals ?? []).length, commands: (j.commands ?? []).length };
-          });
+          // 轮询等待落盘（≤4s）：实时世界下服务端写库/应用存在 tick 时序，单次 1s 查询易 flaky
+          let cmds = { goals: 0, commands: 0 };
+          for (let i = 0; i < 8 && cmds.goals === 0 && cmds.commands === 0; i++) {
+            cmds = await page.evaluate(async () => {
+              const r = await fetch("/api/commands?tenant=t1", { cache: "no-store" });
+              const j = await r.json();
+              return { goals: (j.goals ?? []).length, commands: (j.commands ?? []).length };
+            });
+            if (cmds.goals === 0 && cmds.commands === 0) await sleep(500);
+          }
           if (cmds.goals > 0 || cmds.commands > 0) { goalOk = true; ok("人类指挥 UI 链（goal 落盘）", JSON.stringify(cmds)); }
           else bad("人类指挥 UI 链（goal 落盘）", `点击可达格 (${hit.tx},${hit.ty}) 未落盘`);
         }
@@ -214,6 +251,46 @@ async function main() {
     else if (pinOk === false) bad("跳图定位标记（jumpPins）", "点目击后未生成 pin 或 Esc 未清空");
     else results.push("  ⚠ 跳图定位标记（jumpPins）— 无目击数据，跳过");
 
+
+    // 6c) 手操审计 UI：HUMAN AUDIT 区块存在且有记录（手操链刚写过 goal，应有记录；无记录则跳过不误报）
+    let auditOk = null; // true | false | null(跳过)
+    try {
+      await page.click('.rp-tab[data-rp-tab="situation"]', { timeout: 4000 }).catch(() => {});
+      await sleep(2500);
+      const auditState = await page.evaluate(() => {
+        const blocks = [...document.querySelectorAll(".sit-sight")];
+        const b = blocks.find((x) => (x.querySelector(".sit-sight-head")?.innerText ?? "").includes("HUMAN AUDIT"));
+        if (!b) return { exists: false, rows: 0, empty: false };
+        return { exists: true, rows: b.querySelectorAll(".sit-sight-list .sit-sight-row").length, empty: !!b.querySelector(".sv-empty") };
+      });
+      if (auditState.exists && auditState.rows > 0) auditOk = true;
+      else if (auditState.exists && auditState.empty) auditOk = null;
+      else auditOk = false;
+    } catch (e) { auditOk = false; }
+    if (auditOk === true) ok("手操审计 UI", "HUMAN AUDIT 记录可见");
+    else if (auditOk === false) bad("手操审计 UI", "手操记录区块缺失/异常");
+    else results.push("  ⚠ 手操审计 UI — 暂无手操记录，跳过");
+
+    // 6d) 15s tick 读条可视化：tickFill 存在且随 tick 推进（两次采样 transform 变化）
+    let tickOk = null; // true | false | null(跳过)
+    let tickDetail = "";
+    try {
+      const t1 = await page.evaluate(() => {
+        const el = document.getElementById("tickFill");
+        return { exists: !!el, transform: el ? (el.style.transform || getComputedStyle(el).transform) : null, label: document.getElementById("tickLabel")?.innerText ?? null };
+      });
+      await sleep(4000);
+      const t2 = await page.evaluate(() => {
+        const el = document.getElementById("tickFill");
+        return { exists: !!el, transform: el ? (el.style.transform || getComputedStyle(el).transform) : null };
+      });
+      if (t1.exists && t2.exists && t1.transform && t1.transform !== t2.transform) { tickOk = true; tickDetail = (t1.label ?? "") + " 推进 " + t1.transform + "→" + t2.transform; }
+      else if (!t1.exists) tickOk = false;
+      else tickOk = null;
+    } catch (e) { tickOk = false; }
+    if (tickOk === true) ok("15s tick 读条", tickDetail);
+    else if (tickOk === false) bad("15s tick 读条", "tickFill 缺失");
+    else results.push("  ⚠ 15s tick 读条 — 采样窗口内未推进，跳过");
     // 7) API 健康
     for (const path of ["/api/overview", "/api/stream?tenant=t1&n=5", "/api/survey?tenant=t1", "/api/alliance/director"]) {
       const t0 = Date.now();

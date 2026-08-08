@@ -3,7 +3,9 @@
  * 组装，领域逻辑在 lib/ 各模块；TypeScript，Node 24 type stripping 直接执行）。
  *
  * 只读：不写 data/runtime、不连接 Arena、不启动任何 writer（人类指挥写
- * data/runtime/human-commands 除外，见 lib/store.ts）。数据源：
+ * data/runtime/human-commands 除外，见 lib/store.ts；测绘保鲜例外：面板可惰性
+ * 触发 survey:sync CLI 补同步——写库仍是该 CLI（单一 writer），见
+ * lib/survey-sync-bridge.ts）。数据源：
  *  - ARENA_DATA_ROOT（缺省 = 仓库同级 data/）下 runtime/{t1..t4}/calibration
  *    最新 run 的 calibration case + telemetry JSONL；
  *  - supervisor Debug API（127.0.0.1:8120 /ready，探测在线状态）；
@@ -26,7 +28,9 @@ import { loadAllianceSurvey, refreshAllianceSurvey, TENANT_COLORS } from "./lib/
 import { loadAllianceSnapshot, refreshAllianceSnapshot } from "./lib/alliance-snapshot.ts";
 import { loadAllianceAdvice, refreshAllianceAdvice } from "./lib/alliance-advice.ts";
 import { loadEnemyHeat, refreshEnemyHeat } from "./lib/enemy-heat.ts";
+import { loadAllianceExploration, refreshAllianceExploration } from "./lib/exploration-coverage.ts";
 import { loadPipelineHealth, refreshPipelineHealth } from "./lib/pipeline-health.ts";
+import { maybeTriggerSurveySync, surveySyncBridgeState } from "./lib/survey-sync-bridge.ts";
 import { loadAllianceDeeds, refreshAllianceDeeds } from "./lib/alliance-deeds.ts";
 import { loadDeedsJournal, refreshDeedsJournal } from "./lib/deeds-journal.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
@@ -34,12 +38,15 @@ import { loadLeaderboardIntel, loadOurUsernames, maybeRefreshLeaderboardLazy, re
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
 import { shopProducts, shopCookie, shopMe, shopOrders, shopOrder } from "./lib/shop.ts";
 import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/redeem-log.ts";
+import { appendArbitration, clearArbitration, listArbitrations } from "./lib/arbitration.ts";
+import { loadDecisionAudit, warmDecisionAudit } from "./lib/decision-audit.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
 const WEB_DIR = join(HERE, "web", "dist"); // React 构建产物（vite build --base=/app/）
 const PORT = Number(process.env.COMMAND_CENTER_PORT ?? 8787);
+const DEFAULT_AUDIT_WINDOW = 3000;
 
 // 兑换申请记录：落盘 JSONL 持久化（2026-08-08，重启不丢），内存只做最近窗口缓存
 const redeemLog: RedeemRecord[] = loadRedeemHistory();
@@ -197,6 +204,29 @@ app.get("/api/alliance/survey", (c) => {
     cachedAt: full.cachedAt,
   });
 });
+// 共享测绘人工仲裁（2026-08-08，冲突闭环）：人类覆盖同格矿默认仲裁
+// （lastSeen 最新者胜）——落盘 arbitration.jsonl（不写 survey-db），
+// 写后失效聚合缓存立即生效；GET 列当前生效仲裁。
+app.get("/api/alliance/survey/arbitrations", (c) => c.json({ generatedAt: new Date().toISOString(), arbitrations: listArbitrations() }));
+app.post("/api/alliance/survey/arbitrate", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const cell = String(body?.cell ?? "").trim();
+  const winnerTenant = String(body?.winnerTenant ?? "").trim();
+  if (!cell || !TENANTS.includes(winnerTenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法参数：cell 必填（x,y）+ winnerTenant ∈ t1..t4" }, 400);
+  }
+  appendArbitration({ cell, winnerTenant, note: String(body?.note ?? ""), createdAt: new Date().toISOString() });
+  refreshAllianceSurvey();
+  return c.json({ ok: true, cell, winnerTenant, arbitrations: listArbitrations() });
+});
+app.post("/api/alliance/survey/arbitrate/clear", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const cell = String(body?.cell ?? "").trim();
+  if (!cell) return c.json({ error: "cell 必填（x,y）" }, 400);
+  clearArbitration(cell);
+  refreshAllianceSurvey();
+  return c.json({ ok: true, cell, arbitrations: listArbitrations() });
+});
 app.get("/api/alliance/snapshot", (c) => {
   // 联盟态势快照（2026-08-08）：canonical 联盟域模型 + survey-db 敌核 +
   // 世界状态 + 排行榜先验——members/sightings/counts/intel/threat/
@@ -215,6 +245,11 @@ app.get("/api/alliance/director", async (c) => {
   return c.json(await supervisorAllianceDirectorState());
 });
 
+app.get("/api/alliance/exploration", (c) => {
+  // 联盟探索覆盖（2026-08-08，地图系统 + 共享测绘 + 综合决策）：per-tenant 探索
+  // 格数/新鲜度/bbox/独家贡献 + 联盟并集覆盖 + 距核心未探索盲区。30s 缓存 + 预热。
+  return c.json(loadAllianceExploration());
+});
 app.get("/api/events", (c) => {
   const tenant = c.req.query("tenant") ?? "t1";
   const n = Number(c.req.query("n") ?? 60);
@@ -252,7 +287,11 @@ app.get("/api/intel", (c) => c.json(loadAllianceIntel()));
 app.get("/api/health/pipeline", (c) => {
   // 数据管线健康（2026-08-08）：survey-db 同步水位 vs live tick 滞后/数据量/
   // 缓存新鲜度——测绘记录层是否健康前进一眼可读。15s 缓存。
-  return c.json(loadPipelineHealth());
+  const payload = loadPipelineHealth();
+  // 惰性同步桥（2026-08-08，无计划任务）：滞后 > 阈值 → 后台补一次
+  // survey:sync --latest-only（防抖 + 单实例锁），请求路径触发不阻塞返回。
+  maybeTriggerSurveySync(payload.global.maxLagTicks, TENANTS);
+  return c.json({ ...payload, surveySync: surveySyncBridgeState() });
 });
 app.get("/api/intel/heat", (c) => {
   // 敌情热区（2026-08-08）：survey-db units_seen 聚合为敌方活动热力图
@@ -279,6 +318,18 @@ app.get("/api/commands", (c) => {
   if (!validTenant(tenant)) return c.json({ error: "非法租户" }, 400);
   const store = reconcileHumanStore(tenant);
   return c.json({ ...store, telemetry: latestHumanOverride(tenant), stuck: stuckRecord(tenant) });
+});
+app.get("/api/audit/decisions", (c) => {
+  // 决策-结果审计（2026-08-08，综合决策 + 日志系统）：telemetry decision/outcome
+  // 尾部聚合——动作构成/意图 top/planHash 振荡/停摆 tick + 交付成功率/经济吞吐/
+  // 满载率/人类覆盖执行。?tenant=all|tN&window=3000。30s 缓存 + 启动预热。
+  const tenant = c.req.query("tenant") ?? "all";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  const w = Number(c.req.query("window") ?? DEFAULT_AUDIT_WINDOW);
+  const window = Number.isFinite(w) ? Math.min(Math.max(w, 200), 20_000) : DEFAULT_AUDIT_WINDOW;
+  return c.json(loadDecisionAudit(tenant, window));
 });
 app.get("/api/audit/human", (c) => {
   // 人类指挥审计（2026-08-08）：手操流水（指令/目标/模式/清空/删除），
@@ -473,6 +524,8 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   // （setTimeout 0，不阻塞首次 listen），不进周期循环；过期后按请求惰性
   // 刷新（内部 30s 缓存，原有行为）。周期循环只做轻量刷新。
   setTimeout(() => { try { loadAllianceIntel(); } catch { /* 忽略 */ } }, 0);
+  // 决策审计（重 I/O 尾部截读）：启动预热一次，不进 30s 周期循环（请求惰性 30s 缓存）。
+  setTimeout(() => { try { warmDecisionAudit(); } catch { /* 忽略 */ } }, 50);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
@@ -484,6 +537,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
       void refreshDeedsJournal(); // 事迹日记摘要 30s 缓存（读 deeds 缓存，快）
       maybeRefreshLeaderboardLazy(); // 排行榜惰性刷新检查（无计划任务：stale 且间隔到才后台拉）
       refreshMinePatterns(); // 矿生命周期模式 30s 缓存（读 survey-db，快）
+      refreshAllianceExploration(); // 联盟探索覆盖 30s 缓存（读 survey chunks，快）
       void supervisorState(); // 8120 健康状态 5s 缓存（/api/overview、/api/tenants 首开即快）
     } catch { /* 数据缺失/临时 IO 失败不阻塞启动 */ }
   };

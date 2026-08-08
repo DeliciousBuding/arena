@@ -8,6 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { TENANTS, calibrationDir, chebyshev, latestRunDir, listCases, manhattan, parseTick, type Position } from "./fs-jsonl.ts";
 import { loadBeaconTrail } from "./trails.ts";
+import { loadTenantSurveyCached } from "./survey-cache.ts";
 import { loadLeaderboardIntel } from "./leaderboard.ts";
 
 /** 快攻威胁评估（raid-risk，镜像 arena-agent/src/domain/raid-risk.ts 常量与级联）：
@@ -63,6 +64,14 @@ function assessRaidRisk(input: { enemyCoreDistance: number; combatUnitsNear: num
 }
 
 const RUN_SCAN = 30; // 联盟情报扫描 run 数（平衡覆盖与性能）
+/** 贴脸敌核记忆合并半径（2026-08-08，intel 补全）：calibration 只扫近期
+ *  run——survey 库 core_hunts 里贴脸但久未重新目击的敌核会漏报
+ *  （t3 实证 969510853@[-527,258] 距核 3 格、euler_ghost@[-534,278] 20 格
+ *  未进威胁列表，仅 clucky@17 报了 HIGH）。合并 survey 记忆：距我方核
+ *  不超过 RAID_CORE_RADIUS 且目击距今不超过 SURVEY_MEMORY_WINDOW → 补进列表，
+ *  陈旧降级（raid-risk 同口径）。 */
+const SURVEY_MEMORY_RADIUS = 24;
+const SURVEY_MEMORY_WINDOW = 10_000; // 联盟情报扫描 run 数（平衡覆盖与性能）
 const INTEL_CASE_LIMIT = 8; // 联盟情报每个 run 取最近 N 个 case（核心是慢速目标，8 个足够捕获目击——2026-08-08 扫描减负 24→8，720→240 文件）
 
 export interface IntelEnemy {
@@ -187,6 +196,26 @@ function scanAllianceIntelNow(): IntelPayload {
       .map(([id, t]) => ({ id, age: latestTick - t }));
     const recentCount = recentCombat.length;
     const maxRecentAge = recentCount > 0 ? Math.max(...recentCombat.map((c) => c.age)) : null;
+    // 贴脸敌核记忆合并（2026-08-08，intel 补全）：survey 库 core_hunts 是跨 run
+    // 累积测绘（core-threat-watch/raid-risk 决策同源），calibration 扫描会漏掉
+    // 近期未重新目击但贴脸的敌核——t3 实证 969510853@3 格 / euler_ghost@20 格
+    // 未进威胁列表。距我方核不超过 SURVEY_MEMORY_RADIUS 且目击距今不超过
+    // SURVEY_MEMORY_WINDOW 的记忆补进 seenCores（owner 去重，取 survey 最新 tick），
+    // 陈旧目击由 assessRaidRisk 的 stale 降级处理（不误报 CRITICAL）。
+    const survey = loadTenantSurveyCached(tenant).survey;
+    if (survey?.coreCells && ourCore !== null) {
+      for (const mem of survey.coreCells) {
+        const owner = typeof mem.owner === "string" && mem.owner.length > 0 ? String(mem.owner) : null;
+        if (owner === null) continue;
+        if (seenCores.has(owner)) continue;
+        const pos = [Number(mem.x), Number(mem.y)] as Position;
+        if (!Number.isFinite(pos[0]) || !Number.isFinite(pos[1])) continue;
+        if (chebyshev(pos, ourCore) > SURVEY_MEMORY_RADIUS) continue;
+        const tick = Number(mem.tick ?? 0);
+        if (!Number.isFinite(tick) || latestTick - tick > SURVEY_MEMORY_WINDOW) continue;
+        seenCores.set(owner, { position: pos, tick });
+      }
+    }
     const enemyCores = [...seenCores.entries()].map(([username, info]): Omit<IntelEnemy, "tenant"> => {
       const profile = lb?.profiles?.find((p) => p.username === username);
       // 快攻威胁（raid-risk）：距离 = 敌核心到我们 Core 的 Chebyshev；实测接近

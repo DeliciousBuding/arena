@@ -2202,6 +2202,14 @@ export class SafetyPlanner {
     }
 
     const military = state.vanguards.length + state.rangers.length;
+    // 威胁优先产兵（2026-08-08，military-priority-v1）：活跃敌核贴脸
+    // （raid-defense nearbyEnemyCore ≤24 格）且军事未达地板 → 跳过 worker
+    // 积累直接产兵（reference guide"敌方进入 Core 防区 → 守家队优先补齐"）。
+    // 默认关闭零回归；t3 实证 3 活跃敌核 ≤20 格仅 1 Vanguard。
+    const threatened =
+      this.config.threatMilitaryPriority === true &&
+      military < (this.config.threatMilitaryFloor ?? 4) &&
+      this.nearbyEnemyCore(state);
     // 三阶段爆兵状态机（2026-08-06 用户导向"积累到一定程度开始爆兵"）：
     // 1. 积累期（surgeActive=false 且 res < 阈值）：只产 Worker 积累经济；
     // 2. 爆兵期（surgeActive=true）：持续全力产兵（交替 VANGUARD/RANGER，
@@ -2216,16 +2224,22 @@ export class SafetyPlanner {
     const unitType = threshold > 0
       ? this.surgeActive
         ? nextMilitary(state, this.config)
-        : "WORKER"
-      : this.config.accumulateTarget > 0 &&
+        : threatened
+          ? nextMilitary(state, this.config)
+          : "WORKER"
+      : threatened
+        ? nextMilitary(state, this.config)
+        : this.config.accumulateTarget > 0 &&
           state.resources >= this.config.guardResources &&
           military < this.config.guardForce
         ? nextMilitary(state, this.config)
         : nextSpawn(state, this.effectiveWorkerTarget, this.config);
     const cost = unitType === "WORKER" ? 5 : unitType === "VANGUARD" ? 10 : 12;
-    const reserve = state.resources >= this.config.wealthyThreshold
-      ? this.config.reserveWealthy
-      : this.config.reserveEarly;
+    const reserve = threatened
+      ? this.config.reserveEarly
+      : state.resources >= this.config.wealthyThreshold
+        ? this.config.reserveWealthy
+        : this.config.reserveEarly;
     if (state.resources < cost + reserve) {
       if (threshold > 0 && this.surgeActive) this.surgeActive = false;
       return null;

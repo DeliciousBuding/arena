@@ -32,10 +32,10 @@ graph LR
 |---|---|---|
 | 设计 token SSOT | `public/style.css` `:root` | 颜色/字体/圆角/阴影/动效 token |
 | React 附加 | `web/src/styles/theme.css` | 仅 React 布局 + feature-panel（49 行，无同名冲突） |
-| 引擎画布 | `mapEngine.ts` | canvas 绘制（当前为硬编码语义色，**待对齐 CSS token**） |
+| 引擎画布 | `mapEngine.ts` | canvas 绘制（语义色已对齐 CSS token，2026-08-08） |
 
 - `main.tsx` 经 vite 把 `style.css` + `theme.css` 统一打进 dist —— 单一视觉源成立。
-- 引擎语义色与 CSS 尚未单一源（见 §6 接力清单）。
+- 引擎语义色已对齐 CSS token（success/warn/cyan，2026-08-08）；`public/style.css` 残留旧色已清理（7055b22）。
 
 ## 3. 官方子集映射（arena-hero-web → 本面板）
 
@@ -54,15 +54,30 @@ graph LR
 | WorldCanvas | mapEngine canvas | ✅ |
 | account/（API keys/GitHub） | 不需要（本地只读 + 兑换码 Cookie） | ⏭ |
 
+官方 `lib/` 逻辑映射（2026-08-08 核对）：
+
+| 官方 lib | 本面板对应 | 状态 |
+|---|---|---|
+| combatAnimation / combatPreview | tactDrawEventFx + drawResolvedShotFx/SweepFx + debris 碎片（SHOT_HIT/MISSED/SWEEP_RESOLVED/CORE_DESTROYED） | ✅ |
+| movementAnimation / movementPreview | drawMovementDashes（起点/终点/虚线/箭头）+ routePreview 悬停预览 | ✅ |
+| pathfinding | tactFindPath（BFS + 测绘记忆障碍合并） | ✅ |
+| commandPlans | plan 层（tactPlanLayer + 意图标签 + drawHumanGoalPaths） | ✅ |
+| exploration / visibility | tactSurveyLayer（测绘记忆 + 新鲜度淡出）+ 敌情记忆（drawEnemyMemory） | ✅ |
+| destruction | CORE_DESTROYED 扩散环 + 碎片外抛物理 | ✅ |
+| resourceActivity / statArt | 资源活动面板 + 消费条形图 | ✅ |
+| beaconArt / obstacleArt / unitArt / worldArt | SPRITE 精灵映射 + 画布绘制 | ✅ |
+| gameRules / actionAvailability | tactActionTypes + tactAvailability（动作可用性） | ✅ |
+
 ## 4. 质量门（生产级稳定基线）
 
 ```bash
-npm run check:all          # server tsc → web typecheck → web build 一键全绿
-npm run test:regression    # Playwright 回归 16 项（web/scripts/cc-regression.mjs）
+npm run check:all          # server tsc → 联盟同步护栏 → web typecheck → web build 一键全绿
+npm run test:regression    # Playwright 回归 19 项（web/scripts/cc-regression.mjs）
 ```
 
 - 回归覆盖：页面零错误 / 六 tab / 威胁玫瑰 / 决策流 / 聚焦 HUD / 计划层像素 /
-  人类指挥链（goal 落盘）/ 跳图定位标记 jumpPins / API 健康。
+  人类指挥链（goal 落盘）/ 跳图定位标记 jumpPins / 手操审计 UI / 15s tick 读条 / API 健康。
+- 联盟同步护栏 `check:alliance-sync`：diff lib/alliance 与 arena-agent/src/alliance，漂移即失败。
 - 2026-08-08 实测：console 全量审计零 warning/error；压力交互（快速切 tab/缩放/跳图）零 JS 错误。
 - 临时 build 验证（不部署）：`vite build --outDir <tmp>`，确认新代码 + 新 token 打包正确。
 
@@ -74,15 +89,25 @@ npm run test:regression    # Playwright 回归 16 项（web/scripts/cc-regressio
 
 ## 6. 接力清单（并行重构提交后）
 
-1. **build + 回归**：`npm run check:all`（含 build 覆盖 dist）→ `npm run test:regression`，
-   确认 achromatic 新视觉不破坏 16 项。
-2. **引擎颜色对齐**：`mapEngine.ts` 残留旧板 `#7fd8a5`(success ×11) `#d9a62e`/`#e0b94f`(amber)
-   `#1fe0ca`(cyanSignal) —— 对齐 CSS 新 token（success `#8fce9f`、amber `#f0883e` 等），
-   或改为读 CSS 变量（单一源）。
+1. **build + 回归 ✅（2026-08-08）**：`npm run check:all` 全绿（server tsc 0 错 + web typecheck 0 错 + build）；
+   `npm run test:regression` **18/18 全绿**（含前置健康/六 tab/威胁玫瑰/决策流/HUD/计划层/人类指挥链/jumpPins/手操审计/API）。
+2. **引擎颜色对齐 ✅（2026-08-08，本轮提交）**：`mapEngine.ts` 语义色已对齐新 token——
+   success `#7fd8a5→#8fce9f`、warn/信标 `#e0b94f→#f0883e`（含 rgba 环）、cyanSignal `#1fe0ca→#5fd4e8`。
 3. **回归脚本适配**：组件重构若改选择器/类名，回归需跟随（data-rp-tab/tenant-card 等通用选择器优先）。
-4. **jumpPins 命中排除 shift**：handleCanvasClick 已加 shift 参数（框选），jumpPins 点击命中需补 `!shift`（Shift+点 pin 不应清 pin 而应多选）。
-5. **手操审计 UI 上线**：SituationPanel「HUMAN AUDIT」区块复用 .sit-sight 结构，build 后随 dist 生效；回归可加断言。
-6. **arena-agent 迁移观察（2026-08-08）**：并行 agent 全量删除 arena-agent/arena-hero-ts 包并正在把联盟逻辑迁入
-   command-center（alliance-survey.ts 已改租户色统一 muted）。迁移完成需验证：
-   `lib/alliance-snapshot.ts` 的 `../../arena-agent/src/alliance/*` import 是否已内联/改路径，server tsc 恢复。
-4. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
+   **健壮化 ✅（1004faa）**：前置健康改 `node:http` 直连（绕 HTTP_PROXY/undici 劫持）；失败打印结果后退出（不再被 `return` 吞输出）；
+   人类指挥链点击后轮询等落盘（≤4s）消 flaky。
+4. **jumpPins 命中排除 shift ✅（2026-08-08）**：`handleCanvasClick` 已补 `!shift`——Shift+点 pin 不进清除，走框选。
+5. **手操审计 UI 上线 ✅（`1cbc5ef`）**：SituationPanel「HUMAN AUDIT」区块已随 dist 生效。
+6. **arena-agent 迁移收尾 ✅（2026-08-08，`3f3290c`）**：联盟纯函数从 git HEAD 复制进
+   `lib/alliance/`（snapshot/shared-intel/sightings/threat-summary/types/counts/roster/threat-field/control-types 共 9 文件），
+   `lib/alliance-snapshot.ts` 5 处 import 改 `./alliance/*`，server tsc 恢复、面板已重启（pid 44952）。
+   **遗留（并行 agent 收尾）**：arena-agent/arena-hero-ts 包删除 + 根 `package.json` workspaces/CI 同步未提交——
+   root workspaces 仍引用这两个包，删除未提交前勿动。
+7. **人类指挥链修复 ✅（1004faa）**：MOVE 点击目标非实时障碍必提交——测绘记忆寻路失败不再吞命令
+   （服务端权威导航）；实时障碍才 toast 拒绝。修复"点了没反应"类交互。
+8. **全局旧色残留清理 ✅（7055b22）**：`public/style.css` 信标渐变/HP 条/tick 信号青统一到 DESIGN token。
+9. **人类指挥意图线验证 ✅（2026-08-08）**：`drawHumanGoalPaths` + `tactDrawRoute` 已实现且实测通过——
+   发布 goto goal 后 ≤3s（poll 周期）canvas 出现青色 #5fd4e8 完整寻路路径（首步实线/未来步虚线/方向箭头/
+   目标旗/行进脉冲）；mine=白、goto=青、agent 规划=绿，命令被服务端对账清理后自然消失。
+
+9. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
