@@ -17,6 +17,12 @@ import { type Position } from "../domain/model.ts";
 import { forcedTaskFor, type Task } from "./task.ts";
 import type { PlanningSnapshot, PlanningUnit } from "./planning-snapshot.ts";
 import { minimumCostAssignment } from "../algorithms/min-cost-assignment.ts";
+import {
+  DEFAULT_MISSION_CONFIG,
+  isCollectable,
+  surveyorIds,
+  type MissionConfig,
+} from "./mission-planner.ts";
 
 /** 格子键："x,y"（与 domain model.ts 的 cellKey 同格式）。 */
 export function cellKey(x: number, y: number): string {
@@ -37,6 +43,14 @@ export interface WorkerTaskPlannerConfig {
   readonly stickyBonus?: number;
   /** 目标格已被分配数的拥挤惩罚，默认 1.0（唯一性硬约束下恒为 0；若后续匹配算法允许多分配则启用）。 */
   readonly congestionPenalty?: number;
+  /** 使命层配置（worker-mission-v1）：缺省 = 关闭（现行为零回归）。 */
+  readonly mission?: MissionConfig;
+}
+
+/** plan() 每次调用级选项（核心迁移状态由调用方追踪）。 */
+export interface PlanOptions {
+  /** 迁移后测绘期激活（DeterministicPlanner 依据核心位置变化判定）。 */
+  readonly surveyBurstActive?: boolean;
 }
 
 export const DEFAULT_STICKY_BONUS = 0.5;
@@ -87,14 +101,26 @@ function sameCell(a: Position, b: Position): boolean {
 export class WorkerTaskPlanner {
   readonly stickyBonus: number;
   readonly congestionPenalty: number;
+  private mission: MissionConfig;
 
   constructor(config: WorkerTaskPlannerConfig = {}) {
     this.stickyBonus = config.stickyBonus ?? DEFAULT_STICKY_BONUS;
     this.congestionPenalty = config.congestionPenalty ?? DEFAULT_CONGESTION_PENALTY;
+    this.mission = { ...DEFAULT_MISSION_CONFIG, ...(config.mission ?? {}) };
   }
 
-  /** 全局任务分配。previousAssignments：上一 Tick 分配结果（sticky 用）。 */
-  plan(snapshot: PlanningSnapshot, previousAssignments: readonly Assignment[] = []): WorkerTaskPlan {
+  /** 热加载使命层配置（DeterministicPlanner.updateConfig 转发）。 */
+  updateConfig(config: WorkerTaskPlannerConfig = {}): void {
+    this.mission = { ...DEFAULT_MISSION_CONFIG, ...(config.mission ?? {}) };
+  }
+
+  /** 全局任务分配。previousAssignments：上一 Tick 分配结果（sticky 用）。
+   *  options.surveyBurstActive：迁移后测绘期（调用方按核心位置变化判定）。 */
+  plan(
+    snapshot: PlanningSnapshot,
+    previousAssignments: readonly Assignment[] = [],
+    options: PlanOptions = {},
+  ): WorkerTaskPlan {
     const workers = snapshot.units.filter((unit) => unit.unitType === "WORKER");
     const assignments: Assignment[] = [];
 
@@ -125,6 +151,16 @@ export class WorkerTaskPlanner {
     // dummy cost 取高于任一真实候选的确定性上界，因此资源数不足时才 WAIT；
     // 若未来加入不可达判定，可把不可达候选提升到 forbiddenCost，仍复用同一求解器。
     const pool = [...unassigned].sort((a, b) => a.id.localeCompare(b.id));
+    // 使命层（worker-mission-v1）：迁移后测绘期保证 ≥ surveyWorkerFloor 个勘探者——
+    // 在求解前预留（否则好矿多时 floor 保证失效：worker 全去采集、无人测绘新家园）。
+    const surveyors = surveyorIds(pool, this.mission, options.surveyBurstActive === true);
+    if (options.surveyBurstActive === true && surveyors.size > 0) {
+      for (const worker of [...pool]) {
+        if (!surveyors.has(worker.id)) continue;
+        assignments.push({ unitId: worker.id, task: { type: "EXPLORE" } });
+        pool.splice(pool.indexOf(worker), 1);
+      }
+    }
     if (pool.length > 0) {
       const targetPositions = availableCells
         .map((key) => snapshot.resourceCells.get(key)?.position)
@@ -157,8 +193,19 @@ export class WorkerTaskPlanner {
       // worker to violate the memory-distance safety boundary.
       const waitCost = maxReal + 1_000_000;
       const forbiddenCost = waitCost + 1_000_000;
-      const matrix = realNetValues.map((row) => [
-        ...row.map((net) => Number.isFinite(net) ? -net : forbiddenCost),
+      // 使命层（worker-mission-v1）：低于采集价值门槛/超距的格 = forbidden——
+      // worker 宁可选 WAIT（→ patrol 勘探）也不长途奔陈旧种子（t1 实证空跑）。
+      const matrix = realNetValues.map((row, rowIndex) => [
+        ...row.map((net, colIndex) => {
+          if (!Number.isFinite(net)) return forbiddenCost;
+          const worker = pool[rowIndex]!;
+          const key = availableCells[colIndex]!;
+          const cell = snapshot.resourceCells.get(key);
+          if (cell !== undefined && !isCollectable(net, worker, cell.position, this.mission)) {
+            return forbiddenCost;
+          }
+          return -net;
+        }),
         ...Array.from({ length: pool.length }, () => waitCost),
       ]);
       const columns = minimumCostAssignment(matrix);
