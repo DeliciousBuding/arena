@@ -10,13 +10,28 @@ REPO="/d/Code/Projects/arena/arena-ts/.worktrees/production-runtime"
 DATA_ROOT="/d/Code/Projects/arena/data"
 RUNTIME_ROOT="$DATA_ROOT/runtime"
 READY_URL="http://127.0.0.1:8120/ready"
+MAINTENANCE_LEASE="$RUNTIME_ROOT/maintenance.lease"
 
 now() { date '+%Y-%m-%d %H:%M:%S'; }
+
+# 维护租约（2026-08-08）：Scheduled Task 永远保持 Enabled。维护者只写一个
+# 有明确过期时间的 lease，watchdog 在 lease 有效时暂不拉起生产；即使维护者
+# 崩溃/终端断开，lease 过期后下一轮自动恢复，避免“任务被 Disabled 后永久停服”。
+if [ -f "$MAINTENANCE_LEASE" ]; then
+  LEASE_EXPIRES=$(sed -n '1p' "$MAINTENANCE_LEASE" | tr -d '\r')
+  LEASE_REASON=$(sed -n '3p' "$MAINTENANCE_LEASE" | tr -d '\r')
+  NOW_EPOCH=$(date +%s)
+  if [[ "$LEASE_EXPIRES" =~ ^[0-9]+$ ]] && [ "$NOW_EPOCH" -lt "$LEASE_EXPIRES" ]; then
+    exit 0
+  fi
+  echo "$(now) maintenance lease expired/invalid (${LEASE_REASON:-unknown}) -> auto-resume" >> "$LOG"
+  rm -f "$MAINTENANCE_LEASE"
+fi
 
 # 健康则无事。注意：grep 必须取第一个 "ready" 字段（JSON 顶层），
 # 否则 tenants 数组内其他租户的 "ready":true 会让子串匹配误判健康
 # （2026-08-06 实测：t1 单线 failed 时 watchdog 因此漏恢复）。
-READY=$(curl -sS -m 5 "$READY_URL" 2>/dev/null | grep -oE '"ready":(true|false)' | head -1)
+READY=$(curl -sS -m 10 "$READY_URL" 2>/dev/null | grep -oE '"ready":(true|false)' | head -1)
 if [ "$READY" = '"ready":true' ]; then
   # 第二道健康检查（2026-08-07 t1/t2 同时 stall 事件）：/ready 只证明进程
   # 存活，无法感知"连接半开但 tick 流停更"。outcome JSONL 超过 STALL_MAX_AGE_S
@@ -60,6 +75,19 @@ if [ "$READY" = '"ready":true' ]; then
   fi
   echo "$(now) STALL detected ($STALL_TENANT outcome stale > ${STALL_MAX_AGE_S}s or decision inactive) -> recovering" >> "$LOG"
 else
+  # 启动宽限（2026-08-08 11:17-11:32 重启循环实证）：/ready 未 true 但 8120 有
+  # 监听 = supervisor 可能仍在启动/响应慢（45s 启动 > 60s 检查周期 → 每次在
+  # ready 前被误杀 → 16 次连续重启，游戏每次只活 ~50s）。给 30s 再查一次，
+  # 仍不健康才走恢复——慢启动不再是"必须杀"。
+  LISTEN_PID=$(netstat -ano 2>/dev/null | grep ':8120' | grep -i LISTEN | head -1 | awk '{print $NF}')
+  if [ -n "$LISTEN_PID" ]; then
+    sleep 30
+    READY2=$(curl -sS -m 10 "$READY_URL" 2>/dev/null | grep -oE '"ready":(true|false)' | head -1)
+    if [ "$READY2" = '"ready":true' ]; then
+      echo "$(now) supervisor booted within grace (first probe not ready) -> OK" >> "$LOG"
+      exit 0
+    fi
+  fi
   echo "$(now) NOT ready -> recovering" >> "$LOG"
 fi
 
@@ -83,8 +111,18 @@ fi
 # 尚有其他 child 存活，就会制造“writer 仍在写、single-writer lock 被删”的危险
 # 假恢复（2026-08-08 生产实证）。现在循环清完整个集合，并在删锁前做最终硬门禁。
 arena_pids() {
-  wmic process where "name='node.exe'" get processid,commandline 2>/dev/null \
-    | grep -E 'run-tenant|run-supervisor' | grep -oE '[0-9]+$' | tr -d '\r' | sort -u
+  # fail-closed（2026-08-08）：wmic 在本机已不可用（Win11 移除，实测
+  # "wmic: command not found"）——旧版盲放行会删锁重启造成双 writer 假恢复，
+  # 补丁版 fail-closed 又会让看护永远 ABORT（失去自动恢复）。改用 PowerShell
+  # CIM 精确枚举 run-tenant/run-supervisor（排除 pm2/MCP 等无关 node 进程）。
+  # 枚举失败（PS 不可用等）仍 fail-closed 保锁：绝不在"探测不到进程"时清锁。
+  local OUT
+  if ! OUT=$(powershell -NoProfile -ExecutionPolicy Bypass -File "$REPO/scripts/arena-pids.ps1" 2>/dev/null); then
+    echo "PID_SCAN_UNAVAILABLE"
+    return 1
+  fi
+  printf '%s
+' "$OUT" | tr -d '' | grep -E '^[0-9]+$' | sort -u
 }
 for ATTEMPT in 1 2 3; do
   STRAYS=$(arena_pids)
@@ -95,6 +133,10 @@ for ATTEMPT in 1 2 3; do
   sleep 3
 done
 STRAYS=$(arena_pids)
+if [ "$STRAYS" = "PID_SCAN_UNAVAILABLE" ]; then
+  echo "$(now) ABORT recovery: process enumeration unavailable, cannot verify process absence; locks preserved" >> "$LOG"
+  exit 1
+fi
 if [ -n "$STRAYS" ]; then
   echo "$(now) ABORT recovery: live arena process(es) still present after kill attempts: $STRAYS; locks preserved" >> "$LOG"
   exit 1
