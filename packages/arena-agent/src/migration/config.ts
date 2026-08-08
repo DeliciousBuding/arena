@@ -86,6 +86,18 @@ export interface MigrationRuntimeConfig {
   readonly starveTriggerTicks?: number;
   readonly starveCooldownTicks?: number;
   readonly starveMinAreaSeen?: number;
+  /**
+   * W60（direction-commitment-v1，竞品 "core 方向承诺迟滞" 对照）：迁移目标
+   * 评分中，已选方向（上一轮 PLAN 的 target）加迟滞带加分——候选落在
+   * `commitmentBand` Chebyshev 半径内即视为"方向未变"，加 `commitmentBonus`
+   * 分。防每 tick REPLAN 因微小资源波动换方向（换向成本：重新探路/集结/
+   * 清路）。**零回归**：undefined = 不启用方向承诺（scoreTarget 不加成）。
+   * lastTarget（状态）由 conductor 从上一轮 plan.target 注入 survey，非配置项。
+   */
+  readonly directionCommitment?: {
+    readonly commitmentBand: number;
+    readonly commitmentBonus: number;
+  };
 }
 
 export const DEFAULT_MIGRATION_RUNTIME_CONFIG: MigrationRuntimeConfig = {

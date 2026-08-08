@@ -1024,11 +1024,25 @@ function pickStarveTarget(
 
   // 评分优先：selectTarget（资源富集/安全/测绘覆盖硬门槛）
   const targetConfig = input.config.targetScore ?? DEFAULT_TARGET_SCORE_CONFIG;
+  // W60 方向承诺（direction-commitment-v1）：把 config.directionCommitment
+  // 的 band/bonus 并入评分配置，并把上一轮 plan.target 作为 lastTarget（方向
+  // 承诺锚点）注入 survey——selectTarget 内对落在 band 内的候选加 bonus，
+  // 防饿死兜底重触发时换方向（plan=null 时无 lastTarget = 零回归）。
+  const commitment = input.config.directionCommitment;
+  const targetConfigWithCommitment = commitment === undefined
+    ? targetConfig
+    : {
+        ...targetConfig,
+        commitmentBand: commitment.commitmentBand,
+        commitmentBonus: commitment.commitmentBonus,
+      };
+  const lastTarget = input.plan?.target;
   const surveyInput: TargetSurveyInput = {
     resources: input.survey.resources,
     enemyCores: input.survey.enemyCores,
+    lastTarget: lastTarget === undefined ? null : { x: lastTarget.x, y: lastTarget.y },
   };
-  const selected = selectTarget(candidates, surveyInput, targetConfig, input.tick);
+  const selected = selectTarget(candidates, surveyInput, targetConfigWithCommitment, input.tick);
   if (selected !== null) return selected.target;
 
   // 2. 兜底候选注入：距 [0,0] 最远的已知矿格（远离死亡区）

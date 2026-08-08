@@ -18,6 +18,14 @@ export interface TargetSurveyInput {
   readonly obstacleCells?: readonly (readonly [number, number])[];
   /** 已知资源格（历史 seen_count>0，辅助评分；可空）。 */
   readonly knownResourceCells?: readonly (readonly [number, number])[];
+  /**
+   * W60（direction-commitment-v1，竞品 "core 方向承诺迟滞" 对照）：上一轮
+   * PLAN/REPLAN 选定的迁移目标（方向承诺锚点）。提供时，候选目标若落在
+   * `commitmentBand` Chebyshev 半径内（=方向未变），加 `commitmentBonus`
+   * 分——防止每 tick REPLAN 因微小资源波动就换方向（迁移换向有实际成本：
+   * 重新探路/集结/清路）。null/undefined = 无承诺（零回归）。
+   */
+  readonly lastTarget?: Readonly<{ readonly x: number; readonly y: number }> | null;
 }
 
 export interface TargetScoreConfig {
@@ -29,6 +37,17 @@ export interface TargetScoreConfig {
   readonly enemySafeRadius: number;
   /** 测绘未知带惩罚系数（0-1：候选带测绘覆盖越少惩罚越重）。 */
   readonly unknownPenalty: number;
+  /**
+   * W60（direction-commitment-v1）：方向承诺迟滞带（Chebyshev 半径）。
+   * 候选距 `survey.lastTarget` ≤ 此值视为"方向未变" → 加 `commitmentBonus`。
+   * undefined = 不启用方向承诺（零回归）。
+   */
+  readonly commitmentBand?: number;
+  /**
+   * W60：方向承诺加分（落 commitmentBand 内的候选获得此分）。与
+   * `commitmentBand` 成对启用；任一 undefined = 零回归。
+   */
+  readonly commitmentBonus?: number;
 }
 
 export const DEFAULT_TARGET_SCORE_CONFIG: TargetScoreConfig = {
@@ -40,13 +59,15 @@ export const DEFAULT_TARGET_SCORE_CONFIG: TargetScoreConfig = {
 
 export interface TargetScore {
   readonly candidate: MigrationPosition;
-  /** 总分（资源分 - 安全惩罚 - 未知惩罚；越高越好）。 */
+  /** 总分（资源分 - 安全惩罚 - 未知惩罚 + 方向承诺；越高越好）。 */
   readonly score: number;
   readonly freshResources: number;
   readonly activeEnemyCores: number;
   readonly knownResources: number;
   /** 测绘覆盖（半径内已知矿格/半径内总格数 的代理：knownResources 数）。 */
   readonly coverage: number;
+  /** W60：是否命中方向承诺带（true = 候选与 lastTarget 同向，已加成）。 */
+  readonly directionCommitted: boolean;
   readonly reasons: readonly string[];
 }
 
@@ -100,6 +121,23 @@ export function scoreTarget(
     reasons.push(`新鲜矿 ${freshResources} < 下限 ${config.minFreshResources}（富集假设弱）`);
   }
 
+  // W60 方向承诺迟滞（direction-commitment-v1）：候选落在 lastTarget 的
+  // commitmentBand 内 = 方向未变 → 加 commitmentBonus 分。防每 tick REPLAN
+  // 因微小资源波动换方向（换向成本：重新探路/集结/清路）。band/bonus 任一
+  // 未设或 lastTarget 缺省 → 不加成（零回归）。
+  let directionCommitted = false;
+  const lastTarget = survey.lastTarget;
+  const band = config.commitmentBand;
+  const bonus = config.commitmentBonus;
+  if (lastTarget !== undefined && lastTarget !== null && band !== undefined && bonus !== undefined) {
+    const deviation = chebyshev(candidate, { x: lastTarget.x, y: lastTarget.y });
+    if (deviation <= band) {
+      score += bonus;
+      directionCommitted = true;
+      reasons.push(`方向承诺命中（距 lastTarget ${deviation} ≤ 迟滞带 ${band}）→ +${bonus}`);
+    }
+  }
+
   return {
     candidate,
     score,
@@ -107,6 +145,7 @@ export function scoreTarget(
     activeEnemyCores,
     knownResources,
     coverage: knownResources,
+    directionCommitted,
     reasons,
   };
 }

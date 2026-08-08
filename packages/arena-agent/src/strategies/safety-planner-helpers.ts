@@ -203,6 +203,173 @@ export function homeCell(core: Position, obstacles: ReadonlySet<string>, index =
   return null;
 }
 
+/**
+ * W64 地形背靠守位（2026-08-09，竞品 arena_hero_strategy.py
+ * `_core_attack_surface_profile` :2043 / `_terrain_guard_offsets` :2080 /
+ * `_core_patrol_slots` :9303 对照）：守位选择时考虑地形背靠——从 Core 锚点
+ * 沿 8 方向（RANGER_LINE_DELTAS）步进至 TERRAIN_GUARD_RAY_REACH，统计"开阔
+ * 远程格"（每方向首个障碍前的 2..reach 格）总数与四轴（N/E/S/W）开阔半侧
+ * 集中度。若位置"地形背靠"（open_axis 存在 + 开阔远程格总数 ≤ 上限 + 集中度
+ * 达标），则将 Core 四邻守位按"开阔半侧优先"重排（守位站开阔侧、岩石在
+ * 背后——背靠地形减少受击方向）；否则返回历史 homeCell 四邻轮转（零回归）。
+ *
+ * 与 guard-axes（B4）正交：guard-axes 按**威胁方向**（敌来路）分桶选守位轴，
+ * W64 按**地形背靠**（岩石分布）重排四邻顺序——两者可叠加（guard-axes 在
+ * 有可见敌时接管轴选位、W64 在无可见敌时接管四邻轮转顺序），维度不同
+ * （threat vs terrain）。默认关闭（terrainGuard=false）= homeCell 历史行为。
+ */
+const TERRAIN_GUARD_RAY_REACH = 4;
+/** 开阔远程格总数上限：超过 = 四面开阔（无背靠可言），不重排（历史行为）。 */
+const TERRAIN_GUARD_MAX_OPEN_RANGED = 16;
+/** 集中度门槛分子/分母（concentrated/open ≥ 该比例才算"背靠"——半侧集中
+ *  足够多远程格时岩石才构成有效后盾）。对齐 ref MIGRATION_SITE_MIN_OPEN_HALF_RATIO。 */
+const TERRAIN_GUARD_MIN_OPEN_HALF_NUMERATOR = 1;
+const TERRAIN_GUARD_MIN_OPEN_HALF_DENOMINATOR = 2;
+
+/** 8 方向单位向量（顺时针，y 向南）：E SE S SW W NW N NE。 */
+const TERRAIN_GUARD_RAY_DELTAS: readonly Position[] = [
+  [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1],
+];
+
+/** 统计锚点的开阔远程格与最佳背靠轴（竞品 `_core_attack_surface_profile`）。
+ *  返回 [openRangedCount, bestAxis, concentratedCount, meleeOpen]。 */
+function coreAttackSurfaceProfile(
+  anchor: Position,
+  obstacles: ReadonlySet<string>,
+): { openRanged: readonly Position[]; bestAxis: Position | null; concentrated: number; meleeOpen: number } {
+  const openRanged: Position[] = [];
+  let meleeOpen = 0;
+  for (const [dx, dy] of TERRAIN_GUARD_RAY_DELTAS) {
+    for (let distance = 1; distance <= TERRAIN_GUARD_RAY_REACH; distance += 1) {
+      const cell: Position = [anchor[0] + dx * distance, anchor[1] + dy * distance];
+      if (obstacles.has(cellKey(cell))) break;
+      if (distance === 1) meleeOpen += 1;
+      else openRanged.push([dx * distance, dy * distance]);
+    }
+  }
+  let bestAxis: Position | null = null;
+  let bestCount = -1;
+  for (const axis of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    const count = openRanged.reduce(
+      (sum, offset) => sum + (offset[0] * axis[0] + offset[1] * axis[1] >= 0 ? 1 : 0),
+      0,
+    );
+    if (count > bestCount) {
+      bestAxis = [...axis] as Position;
+      bestCount = count;
+    }
+  }
+  return { openRanged, bestAxis, concentrated: Math.max(0, bestCount), meleeOpen };
+}
+
+/** W64 地形背靠守位：Core 四邻按"开阔半侧优先"重排后取第 index 个非障碍格。
+ *  非地形背靠（四面开阔/集中度不足）= 回退 homeCell 历史四邻轮转（零回归）。 */
+export function terrainGuardPost(
+  core: Position,
+  obstacles: ReadonlySet<string>,
+  index = 0,
+): Position | null {
+  const { openRanged, bestAxis, concentrated } = coreAttackSurfaceProfile(core, obstacles);
+  const order: readonly Direction[] = ["UP", "RIGHT", "DOWN", "LEFT"];
+  const cellOf = (dir: Direction): Position =>
+    dir === "UP" ? [core[0], core[1] - 1]
+    : dir === "RIGHT" ? [core[0] + 1, core[1]]
+    : dir === "DOWN" ? [core[0], core[1] + 1]
+    : [core[0] - 1, core[1]];
+  // 非地形背靠：回退历史四邻轮转（与 homeCell 同序——UP/RIGHT/DOWN/LEFT）。
+  const notTerrainBacked =
+    bestAxis === null
+    || openRanged.length > TERRAIN_GUARD_MAX_OPEN_RANGED
+    || concentrated * TERRAIN_GUARD_MIN_OPEN_HALF_DENOMINATOR
+      < openRanged.length * TERRAIN_GUARD_MIN_OPEN_HALF_NUMERATOR;
+  if (notTerrainBacked) return homeCell(core, obstacles, index);
+  // 开阔半侧优先（offset·axis >= 0 = 与背靠轴同侧的远程格多 = 该侧开阔、
+  // 另一侧有岩石背靠）。将四邻按"开阔半侧在前"重排，取第 index 个非障碍格。
+  const [axisX, axisY] = bestAxis;
+  const offsets: Direction[] = [...order];
+  const openHalf = offsets.filter((dir) => {
+    const cell = cellOf(dir);
+    return (cell[0] - core[0]) * axisX + (cell[1] - core[1]) * axisY >= 0;
+  });
+  const blockedHalf = offsets.filter((dir) => !openHalf.includes(dir));
+  const reordered = [...openHalf, ...blockedHalf];
+  for (let offset = 0; offset < reordered.length; offset += 1) {
+    const dir = reordered[(index + offset) % reordered.length];
+    const cell = cellOf(dir);
+    if (!obstacles.has(cellKey(cell))) return cell;
+  }
+  return null;
+}
+
+/** W55 单入口掩体入口（竞品 `_shelter_entrance` :2297）：四邻中恰有一个
+ *  开放（三面被障碍包围的口袋）→ 返回该唯一开放邻格；否则返回 null
+ *  （0 开放 = 死格、≥2 开放 = 非掩体）。 */
+function shelterEntrance(
+  position: Position,
+  obstacles: ReadonlySet<string>,
+): Position | null {
+  const neighbors: Position[] = [];
+  for (const [dx, dy] of [[0, -1], [1, 0], [0, 1], [-1, 0]] as const) {
+    const cell: Position = [position[0] + dx, position[1] + dy];
+    if (!obstacles.has(cellKey(cell))) neighbors.push(cell);
+  }
+  return neighbors.length === 1 ? neighbors[0]! : null;
+}
+
+/**
+ * W55 单入口掩体寻找（2026-08-09，竞品 arena_hero_strategy.py
+ * `_find_core_shelter` :9388 对照）：在 Core 的 searchRadius（Chebyshev）
+ * 范围内寻找单入口掩体（四邻恰一开放 = 三面岩石口袋）作为迁移目标——
+ * 背靠地形防守（仅一方向需布防，raid 难以多轴夹击）。
+ *
+ * 选择顺序（竞品 score 字典序）：距 Core 越近越优（迁移路径短、风险小）。
+ * 候选必须：非障碍/非资源格、自身是掩体（shelterEntrance 非空）、入口
+ * 非障碍/非资源。返回 [target, entrance]；无候选返回 null（调用方不迁移）。
+ *
+ * 与 coreEvade 正交：coreEvade 是"敌逼近时远敌"反应式迁移，W55 是"无威胁
+ * 时抢占地形"主动式迁移。与 chokepointLockPoint 不同：chokepoint 找敌核
+ * 邻格锁点（封锁敌回程），W55 找我核迁移掩体（地形防守）。
+ */
+export function coreShelterTarget(
+  core: Position,
+  obstacles: ReadonlySet<string>,
+  resourceCells: ReadonlySet<string>,
+  searchRadius = 8,
+): { target: Position; entrance: Position } | null {
+  let best: { target: Position; entrance: Position; distance: number } | null = null;
+  for (let dx = -searchRadius; dx <= searchRadius; dx += 1) {
+    for (let dy = -searchRadius; dy <= searchRadius; dy += 1) {
+      if (Math.abs(dx) > searchRadius || Math.abs(dy) > searchRadius) continue;
+      if (Math.abs(dx) + Math.abs(dy) === 0) continue; // 跳过 Core 自身（调用方单独判定 hold）
+      const candidate: Position = [core[0] + dx, core[1] + dy];
+      const candidateKey = cellKey(candidate);
+      if (obstacles.has(candidateKey)) continue;
+      if (resourceCells.has(candidateKey)) continue;
+      const entrance = shelterEntrance(candidate, obstacles);
+      if (entrance === null) continue;
+      const entranceKey = cellKey(entrance);
+      if (obstacles.has(entranceKey)) continue;
+      if (resourceCells.has(entranceKey)) continue;
+      const distance = Math.abs(dx) + Math.abs(dy);
+      if (
+        best === null
+        || distance < best.distance
+        || (distance === best.distance
+          && (candidate[0] < best.target[0]
+            || (candidate[0] === best.target[0] && candidate[1] < best.target[1])))
+      ) {
+        best = { target: candidate, entrance, distance };
+      }
+    }
+  }
+  return best === null ? null : { target: best.target, entrance: best.entrance };
+}
+
+/** 当前 Core 位置是否本身已是掩体（hold 判定用）。 */
+export function isCoreShelter(core: Position, obstacles: ReadonlySet<string>): Position | null {
+  return shelterEntrance(core, obstacles);
+}
+
 export function nearestEnemy(enemies: readonly VisibleEntity[], position: Position): VisibleEntity | null {
   return [...enemies].sort(
     (a, b) => manhattan(position, a.position) - manhattan(position, b.position) || a.id.localeCompare(b.id),

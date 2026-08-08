@@ -76,6 +76,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "rally-assault-v1": Object.freeze({ rallyAssault: true }),
     /**
+     * W62 环形扇区扫荡（2026-08-09，竞品 arena_hero_strategy.py
+     * `_assault_frontier_target` :6955 对照）：aggressive 军事打野改用全队共享
+     * 前沿航点（半径 MIN→MAX 振荡 + 扇区 8 方位旋转 + 全员到齐门控），替代
+     * per-unit patrolRing 散开各自升环。与 rally-assault 不同（搜索阶段几何 vs
+     * 压已知目标前集结）。默认关闭零回归。
+     */
+    "assault-sector-sweep-v1": Object.freeze({ assaultSectorSweep: true }),
+    /**
      * 寡不敌众撤退（2026-08-08，guide 巡逻单位兵力不足撤退对照）：非守家军事单位
      * 遇可见敌战斗单位且附近我方军事 < 敌 → 向家撤退（绕开敌人占位），防 1v2+
      * 单薄送死；敌核守军（known CORE 8 格内）不计入。与 rally-assault-v1 互补：
@@ -198,8 +206,37 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 更早（高速逼近的敌人在 20 格外 TTR 已 ≤16）。小股快攻更早预警。
      */
     "core-evade-ttr-v1": Object.freeze({ coreEvade: true, coreEvadeTtr: true, coreEvadePersist: true }),
+    /**
+     * W55 单入口掩体寻找（2026-08-09，竞品 arena_hero_strategy.py
+     * `_find_core_shelter` :9388 / `_shelter_entrance` :2297 对照）：
+     * aggressive 且无可见敌人时主动抢占单入口掩体（三面岩石口袋）作为 Core
+     * 迁移目标——背靠地形防守（仅一方向需布防，raid 难以多轴夹击）。与
+     * coreEvade 正交（反应式 vs 主动式）。默认关闭零回归。
+     */
+    "core-shelter-v1": Object.freeze({ coreShelter: true }),
     "guard-axes-v1": Object.freeze({ guardAxes: true }),
+    /**
+     * W64 地形背靠守位（2026-08-09，竞品 arena_hero_strategy.py
+     * `_core_attack_surface_profile` :2043 / `_terrain_guard_offsets` :2080 /
+     * `_core_patrol_slots` :9303 对照）：无可见敌人时按地形背靠重排 Core 四邻
+     * 守位顺序（守位站开阔侧、岩石在背后——背靠地形减少受击方向）。与
+     * guard-axes 正交（threat vs terrain 维度），可叠加。默认关闭零回归。
+     */
+    "terrain-guard-v1": Object.freeze({ terrainGuard: true }),
     "guard-heal-rotation-v1": Object.freeze({ guardHealRotation: true }),
+    /**
+     * W57 双相轮换治疗（2026-08-09，竞品 arena_hero_strategy.py 两相 heal
+     * rotation 对照）：将 v1 单相 hold-timer 升级为 patient + relief 两相
+     * FSM——patient 相（伤员 HP ≤ 触发阈值占用治疗槽向 Core 回修）→ relief
+     * 相（前伤员脱离危险血量后槽冷却，阻止下一个伤员立即冲入仍被占用的 Core
+     * 格造成 capacity 互堵）→ 冷却到期释放槽接受新伤员。复用 v1 的回修触发
+     * 条件（HP 阈值/无反击压力/不在 Core 格），仅替换 one-at-a-time 槽管理。
+     * 默认参数 patientPhaseTicks=12 / reliefPhaseTicks=4（config 可调）。
+     */
+    "guard-heal-rotation-v2": Object.freeze({
+      guardHealRotation: true,
+      guardHealRotationTwoPhase: true,
+    }),
     "detached-squad-v1": Object.freeze({ detachedSquadResponse: true }),
     "bounded-raid-v1": Object.freeze({ boundedRaid: true }),
     "scout-evade-v1": Object.freeze({ scoutEvade: true }),
@@ -371,6 +408,30 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 回归。safety 侧空覆盖（消费由 migration/conductor 处理）。
      */
     "starve-migration-v1": Object.freeze({}),
+    /**
+     * 方向承诺迟滞（2026-08-09，direction-commitment-v1，W60 竞品 "core 方向
+     * 承诺迟滞" 对照）：迁移目标评分中，已选方向（上一轮 plan.target）加迟滞
+     * 带加分——候选落在 commitmentBand 内（方向未变）加 commitmentBonus，
+     * 防 REPLAN 因微小资源波动换方向（换向成本：重新探路/集结/清路）。
+     * migration 层 directionCommitment.{commitmentBand,commitmentBonus} 配置 +
+     * conductor pickStarveTarget 注入 lastTarget（状态）。默认关零回归
+     * （directionCommitment undefined = scoreTarget 不加成）。safety 侧空覆盖
+     * （消费由 migration/target.ts + conductor 处理）。
+     */
+    "direction-commitment-v1": Object.freeze({}),
+    /**
+     * 信标距离迟滞 + 进度权重（2026-08-09，beacon-commitment-v1，W61 竞品
+     * "信标距离迟滞带 + 进度权重" 对照）：beacon fetch 设计者选择加距离
+     * 迟滞带（上一轮设计者减 hysteresis，新候选须近 > 迟滞带才替换）+ 进度
+     * 权重（越接近信标的设计者减得越多，越难被替换——防中途放弃信标 →
+     * 取标进度全废）。beaconFetchDesigneeId 跨 tick 持久。默认关零回归
+     * （beaconCommitment undefined = pickBeaconFetchDesignee 纯最近距离）。
+     */
+    "beacon-commitment-v1": Object.freeze({
+      beaconCommitment: true,
+      beaconCommitmentHysteresis: 2,
+      beaconCommitmentProgress: 3,
+    }),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要
