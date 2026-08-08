@@ -42,7 +42,23 @@ import sys
 from pathlib import Path
 
 ARENA_TS_ROOT = Path(__file__).resolve().parents[3]
-COORDINATION_ROOT = ARENA_TS_ROOT.parent
+
+
+def _find_coordination_root(start: Path) -> Path:
+    """从脚本目录向上找协调根（含 reference/arena-hero-python）——主工作树与
+    .worktrees/<分支> 层级不同，硬编码 parents 级数在 worktree 会落空。"""
+    dir_ = start
+    for _ in range(12):
+        if (dir_ / "reference" / "arena-hero-python").exists():
+            return dir_
+        parent = dir_.parent
+        if parent == dir_:
+            break
+        dir_ = parent
+    raise FileNotFoundError("coordination root (reference/arena-hero-python) not found")
+
+
+COORDINATION_ROOT = _find_coordination_root(Path(__file__).resolve().parent)
 DEFAULT_FARMER_REPO = COORDINATION_ROOT / "reference" / "arena-hero-agent"
 DEFAULT_CORE_REPO = COORDINATION_ROOT / "reference" / "arena-hero-guide"
 DEFAULT_SDK_REPO = COORDINATION_ROOT / "reference" / "arena-hero-python"

@@ -11,6 +11,7 @@ import { Worker } from "node:worker_threads";
 
 import { resolveOpponent, opponentEntry } from "../src/sim/opponent/registry.ts";
 import { HttpBridge } from "../src/sim/opponent/http-decider.ts";
+import { makeArenaScenarioN, makeSafetyEntry, runFreeForAll } from "../src/sim/opponent/tournament.ts";
 import {
   inWindow,
   makeSurveyScenario,
@@ -169,4 +170,72 @@ test("http-bridge: 连接拒绝 fail-fast（服务不可达）", async () => {
   } finally {
     bridge.close();
   }
+});
+
+// ---------- 多玩家混战（runFreeForAll） ----------
+
+const MANIFEST_PATH = "src/sim/contracts/rules-v0.14.json";
+
+test("ffa: makeArenaScenarioN 三方圆周布局——核心/worker/资源唯一且不重叠", () => {
+  const entries = ["mine", "farmer-s1", "core-s1"].map((id) => makeSafetyEntry(id));
+  const scenario = makeArenaScenarioN(entries, 7) as {
+    players: Array<{ id: string; core: { position: [number, number]; id: string }; units: Array<{ id: string }> }>;
+    terrain: { resources: Array<[number, number]> };
+  };
+  assert.equal(scenario.players.length, 3);
+  const corePositions = scenario.players.map((p) => p.core.position.join(","));
+  assert.equal(new Set(corePositions).size, 3, "核心位置必须唯一");
+  const coreIds = scenario.players.map((p) => p.core.id);
+  assert.equal(new Set(coreIds).size, 3, "核心 id 必须唯一");
+  const workerIds = scenario.players.flatMap((p) => p.units.map((u) => u.id));
+  assert.equal(new Set(workerIds).size, 9, "9 个 worker id 必须唯一");
+  assert.equal(scenario.terrain.resources.length, 12, "3 核 × 4 近距资源");
+  // 每核资源盘在自己 ±7 内（无跨核漂移）
+  for (let i = 0; i < 3; i += 1) {
+    const [cx, cy] = scenario.players[i].core.position;
+    for (const [x, y] of scenario.terrain.resources.slice(i * 4, i * 4 + 4)) {
+      assert.ok(Math.abs(x - cx) <= 7 && Math.abs(y - cy) <= 7);
+    }
+  }
+});
+
+test("ffa: 三方纯 TS 混战完整跑完（多计划同场结算）", () => {
+  const entries = ["mine", "p2", "p3"].map((id) => makeSafetyEntry(id));
+  const result = runFreeForAll(entries, 3, 40, MANIFEST_PATH, { validatePlans: false, refillEveryTicks: null });
+  assert.equal(result.players.length, 3);
+  assert.equal(result.tickCount, 40);
+  assert.ok(result.eventCount > 0);
+  // 胜者要么是参与者之一，要么平局（全活资源/人口并列）
+  if (result.winner !== null) {
+    assert.ok(result.players.includes(result.winner));
+  }
+  // 三家核心状态与最终资源都记录
+  for (const id of ["mine", "p2", "p3"]) {
+    assert.ok(id in result.coreAlive);
+    assert.ok(id in result.finalResources);
+    assert.ok(id in result.finalPopulation);
+  }
+});
+
+test("ffa: 四方混战（4 玩家）同样完整跑完", () => {
+  const entries = ["mine", "p2", "p3", "p4"].map((id) => makeSafetyEntry(id));
+  const result = runFreeForAll(entries, 5, 30, MANIFEST_PATH, { validatePlans: false, refillEveryTicks: null });
+  assert.equal(result.players.length, 4);
+  assert.equal(Object.keys(result.coreAlive).length, 4);
+});
+
+test("ffa: 五方混战（5 玩家）核心/worker id 全图唯一（防静默覆盖回归）", () => {
+  const entries = ["mine", "p2", "p3", "p4", "p5"].map((id) => makeSafetyEntry(id));
+  const scenario = makeArenaScenarioN(entries, 7) as {
+    players: readonly {
+      readonly core: { readonly id: string };
+      readonly units: readonly { readonly id: string }[];
+    }[];
+  };
+  const allCoreIds = scenario.players.map((p) => p.core.id);
+  const allWorkerIds = scenario.players.flatMap((p) => p.units.map((u) => u.id));
+  assert.equal(new Set(allCoreIds).size, 5, "5 家 core id 必须唯一");
+  assert.equal(new Set(allWorkerIds).size, 15, "15 个 worker id 必须唯一");
+  const result = runFreeForAll(entries, 7, 30, MANIFEST_PATH, { validatePlans: false, refillEveryTicks: null });
+  assert.equal(Object.keys(result.coreAlive).length, 5);
 });

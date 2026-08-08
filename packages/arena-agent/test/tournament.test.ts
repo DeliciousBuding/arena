@@ -101,6 +101,42 @@ test("decideWinner：核心存活优先 → 资源 → 人口", () => {
   assert.equal(decideWinner(players, undefined as never, fullTie).winner, null);
 });
 
+test("decideWinner：FFA 中间态——部分核心被拆、多存活时按存活阵营资源定胜", () => {
+  const players = ["a", "b", "c", "d"];
+  const midState = {
+    players: new Map([
+      // b/c/d 存活，a 核心被拆；存活者资源 b=10 > c=4 > d=2 → b 胜
+      ["a", { core: null, resources: 0, units: [] }],
+      ["b", { core: { id: "b" }, resources: 10, units: [{}] }],
+      ["c", { core: { id: "c" }, resources: 4, units: [{}] }],
+      ["d", { core: { id: "d" }, resources: 2, units: [{}] }],
+    ]),
+  } as unknown as SimWorld;
+  assert.equal(decideWinner(players, undefined as never, midState).winner, "b");
+
+  // 唯一存活（a 死、c/d 死）→ 最后幸存者胜，资源无关
+  const lastStanding = {
+    players: new Map([
+      ["a", { core: null, resources: 0, units: [] }],
+      ["b", { core: { id: "b" }, resources: 1, units: [] }],
+      ["c", { core: null, resources: 0, units: [] }],
+      ["d", { core: null, resources: 0, units: [] }],
+    ]),
+  } as unknown as SimWorld;
+  assert.equal(decideWinner(players, undefined as never, lastStanding).winner, "b");
+
+  // 存活者资源平且人口平 → null（不误判）
+  const midTie = {
+    players: new Map([
+      ["a", { core: null, resources: 0, units: [] }],
+      ["b", { core: { id: "b" }, resources: 3, units: [{}] }],
+      ["c", { core: { id: "c" }, resources: 3, units: [{}] }],
+      ["d", { core: null, resources: 0, units: [] }],
+    ]),
+  } as unknown as SimWorld;
+  assert.equal(decideWinner(players, undefined as never, midTie).winner, null);
+});
+
 test("TournEntry：makeSafetyEntry 构造可用的 SafetyPlanner provider", () => {
   const entry = { id: "mine", desc: "t", build: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, aggression: "aggressive" }) } satisfies TournEntry;
   const provider = entry.build();
