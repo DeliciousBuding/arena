@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useEngine, getEngine } from "../lib/bridge";
 
 const TENANTS = ["t1", "t2", "t3", "t4"];
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
+const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#7fd8a5", t3: "#a892d6", t4: "#fc5646" };
 const DECISION_KIND_CN: Record<string, string> = {
   accepted: "已接受", rejected: "已拒绝", timeout: "超时", missed: "错过", aborted: "中止",
   not_applicable: "无需决策", in_progress: "进行中", unknown: "未知",
@@ -234,8 +234,8 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
           ) : (
             eventRows.map((e) => {
               const color = TENANT_COLORS[e.tenant] ?? "#999";
-              const evColor = e.kind.startsWith("SHOT") || e.kind.includes("DESTROYED") || e.kind.includes("FAILED") ? "#dd626d"
-                : e.kind.includes("SUCCEEDED") || e.kind === "SPAWN" || e.kind === "PICKUP_BEACON" || e.kind === "HEAL" ? "#57bd84" : "#d3ad55";
+              const evColor = e.kind.startsWith("SHOT") || e.kind.includes("DESTROYED") || e.kind.includes("FAILED") ? "#fc5646"
+                : e.kind.includes("SUCCEEDED") || e.kind === "SPAWN" || e.kind === "PICKUP_BEACON" || e.kind === "HEAL" ? "#7fd8a5" : "#e4a02e";
               const detail = [e.actor ? `actor ${shortId(e.actor)}` : "", e.target ? `target ${shortId(e.target)}` : "", e.amount != null ? `×${e.amount}` : ""].filter(Boolean).join(" ");
               return (
                 <div key={`${e.tenant}:${e.tick}:${e.kind}:${e.actor ?? ""}:${e.target ?? ""}`} className="stream-line" style={{ ["--tc" as string]: color }}>

@@ -37,7 +37,7 @@ export interface EngineHandle {
   setLayer(name: string, on: boolean): void;
   setTenantOn(t: string, on: boolean): void;
   setTab(tab: string): void;
-  jumpTo(x: number, y: number): void;
+  jumpTo(x: number, y: number, label?: string): void;
   resize(): void;
   getState(): EngineState;
   subscribe(cb: (topic: string, payload: unknown) => void): () => void;

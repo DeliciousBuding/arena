@@ -366,6 +366,18 @@ export interface SafetyPlannerConfig {
    * 敌 Core 因可见模型不含 shield，不做“预计已死”过滤。默认 false 零回归。
    */
   readonly coordinatedFire?: boolean;
+  /**
+   * 近核入侵观察（2026-08-08，core-threat-watch-v1）：敌单位距我方 Core
+   * ≤ coreThreatWatchRadius（Chebyshev 默认 18）即入长 TTL 观察记忆
+   * （coreThreatWatchTicks，默认 60）——短 TTL（enemyHints 6 / stationary 12）
+   * 会漏掉“盘踞/间歇可见”的近核敌情。启用后威胁评估、远端回援与
+   * Vanguard 回访清剿都可复用该长 TTL 观察；默认 false = 历史行为。
+   */
+  readonly coreThreatWatch?: boolean;
+  /** 入侵观察半径（Chebyshev，默认 18，与 World.CORE_WATCH_RADIUS 同值）。 */
+  readonly coreThreatWatchRadius?: number;
+  /** 入侵观察记忆 TTL（tick，默认 60，与 World.CORE_WATCH_TTL 同值）。 */
+  readonly coreThreatWatchTicks?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
