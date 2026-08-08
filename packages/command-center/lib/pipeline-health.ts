@@ -7,10 +7,10 @@
  * watchdog 重启周期同步，非连续）——热区/快照/冲突都在用滞后数据，本端点
  * 显性化该滞后，供运维判断是否需要补同步。
  */
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { DATA_ROOT, TENANTS } from "./fs-jsonl.ts";
+import { DATA_ROOT, TENANTS, calibrationDir, latestRunDir, listCases } from "./fs-jsonl.ts";
 import { loadWorld } from "./streams.ts";
 import { loadTenantSurveyCached } from "./survey-cache.ts";
 import { TtlCache } from "./cache.ts";
@@ -39,6 +39,16 @@ export interface PipelineTenantHealth {
   health: "OK" | "STALE" | "MISSING";
 }
 
+/** 数据源新鲜度（2026-08-08，综合管线）：每数据源最近写入年龄 + 陈旧标记——
+ *  综合调试一屏看全"哪个源在健康前进"。world=live case 文件 / surveyDb=tN.db /
+ *  leaderboard=官方快照 / shop=商店历史 / humanAudit=手操流水。 */
+export interface SourceFreshness {
+  name: "world" | "surveyDb" | "leaderboard" | "shop" | "humanAudit";
+  ageSeconds: number | null;
+  stale: boolean;
+  detail: string;
+}
+
 export interface PipelineHealthPayload {
   generatedAt: string;
   tenants: readonly PipelineTenantHealth[];
@@ -51,6 +61,8 @@ export interface PipelineHealthPayload {
     /** 滞后趋势（2026-08-08）：滚动窗口内 avgLag 变化方向 + delta——同步水位在
      *  缩小（narrowing）/扩大（widening）/稳定（stable）。样本 <3 时 null。 */
     lagTrend: { direction: "narrowing" | "widening" | "stable"; delta: number; samples: number } | null;
+    /** 数据源新鲜度表（2026-08-08）。 */
+    sources: readonly SourceFreshness[];
   };
   cachedAt: string;
 }
@@ -130,6 +142,56 @@ function tenantHealth(tenant: string): PipelineTenantHealth {
   return base;
 }
 
+/** 各数据源陈旧阈值（秒）：world 15s tick 容忍 6 tick；survey-db 周期同步；
+ *  leaderboard 官方 15min 一档；shop/手操请求驱动。 */
+const SOURCE_STALE_SECONDS: Record<SourceFreshness["name"], number> = {
+  world: 90, surveyDb: 600, leaderboard: 900, shop: 3600, humanAudit: 3600,
+};
+
+function fileAgeSeconds(path: string): number | null {
+  try {
+    if (!existsSync(path)) return null;
+    return Math.max(0, Math.round((Date.now() - statSync(path).mtimeMs) / 1000));
+  } catch {
+    return null;
+  }
+}
+
+/** 数据源新鲜度（2026-08-08）：取各源最新文件 mtime → 年龄 + 陈旧标记。纯文件读取。 */
+export function computeSourceFreshness(dataRoot: string = DATA_ROOT): SourceFreshness[] {
+  // live world：各租户最新 calibration case 文件（取最年轻）
+  let worldAge: number | null = null;
+  for (const t of TENANTS) {
+    const runDir = latestRunDir(t);
+    if (!runDir) continue;
+    const cases = listCases(t, runDir);
+    if (cases.length === 0) continue;
+    const age = fileAgeSeconds(join(calibrationDir(t), runDir, "cases", cases[cases.length - 1]));
+    if (age !== null) worldAge = worldAge === null ? age : Math.min(worldAge, age);
+  }
+  let dbAge: number | null = null;
+  for (const t of TENANTS) {
+    const age = fileAgeSeconds(join(dataRoot, "runtime", "survey", t + ".db"));
+    if (age !== null) dbAge = dbAge === null ? age : Math.min(dbAge, age);
+  }
+  let lbAge: number | null = null;
+  try {
+    const dir = join(dataRoot, "leaderboard");
+    if (existsSync(dir)) {
+      const snaps = readdirSync(dir).filter((x) => /^leaderboard-.*\.json$/.test(x)).map((x) => join(dir, x));
+      const latest = snaps.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+      if (latest) lbAge = fileAgeSeconds(latest);
+    }
+  } catch { /* 忽略 */ }
+  const shopAge = fileAgeSeconds(join(dataRoot, "runtime", "shop-history.jsonl"));
+  const auditAge = fileAgeSeconds(join(dataRoot, "runtime", "human-command-audit.jsonl"));
+  const mk = (name: SourceFreshness["name"], age: number | null): SourceFreshness => ({
+    name, ageSeconds: age, stale: age !== null && age > SOURCE_STALE_SECONDS[name],
+    detail: age === null ? "缺失" : age + "s",
+  });
+  return [mk("world", worldAge), mk("surveyDb", dbAge), mk("leaderboard", lbAge), mk("shop", shopAge), mk("humanAudit", auditAge)];
+}
+
 export function loadPipelineHealth(): PipelineHealthPayload {
   const hit = healthCache.get("latest");
   if (hit !== undefined) return hit;
@@ -161,6 +223,7 @@ export function loadPipelineHealth(): PipelineHealthPayload {
       missingTenants,
       healthy: staleTenants.length === 0 && missingTenants.length === 0,
       lagTrend,
+      sources: computeSourceFreshness(),
     },
     cachedAt: new Date().toISOString(),
   };
