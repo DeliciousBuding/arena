@@ -10,11 +10,20 @@ const MAX_TAIL_BYTES = 256 * 1024;
 const MAX_EVENT_ROWS = 200;
 const STATE_STREAMS = new Set(["runtime", "decision", "outcome", "pi"]);
 
+export interface AllianceStrategyDebugControl {
+  view(): unknown;
+  requestProfile(name: string): { readonly accepted: boolean; readonly error?: string; readonly strategy: unknown };
+  requestRollback(): { readonly accepted: boolean; readonly error?: string; readonly strategy: unknown };
+  markLastGood(): { readonly accepted: boolean; readonly error?: string; readonly strategy: unknown };
+}
+
 export interface DebugServerOptions {
   readonly repoRoot: string;
   readonly supervisor: TenantSupervisor;
   /** Optional tokenless Alliance Director shadow view. Read-only observability only. */
   readonly allianceDirectorView?: () => unknown;
+  /** Strategic profile control only; applies at Director replan boundaries and never owns Arena actions. */
+  readonly allianceStrategyControl?: AllianceStrategyDebugControl;
   readonly port?: number;
   readonly host?: string;
 }
@@ -118,6 +127,36 @@ export class DebugServer {
       }
       const view = this.options.allianceDirectorView?.();
       this.json(res, 200, view ?? { enabled: false, mode: "ASSIST_ONLY", actionOwnership: "none", available: false });
+      return;
+    }
+    if (path === "/alliance-strategy") {
+      const control = this.options.allianceStrategyControl;
+      if (req.method === undefined || req.method === "GET") {
+        this.json(res, 200, control?.view() ?? { available: false, mode: "ASSIST_ONLY", actionOwnership: "none" });
+        return;
+      }
+      if (req.method !== "POST") {
+        this.json(res, 405, { error: "method not allowed; use GET/POST /alliance-strategy" });
+        return;
+      }
+      if (control === undefined) {
+        this.json(res, 503, { error: "Alliance strategic control is unavailable" });
+        return;
+      }
+      const profile = urlObj.searchParams.get("profile");
+      const action = urlObj.searchParams.get("action");
+      const result = profile !== null
+        ? control.requestProfile(profile)
+        : action === "rollback"
+          ? control.requestRollback()
+          : action === "mark-good"
+            ? control.markLastGood()
+            : null;
+      if (result === null) {
+        this.json(res, 400, { error: "use ?profile=<registered> or ?action=rollback|mark-good" });
+        return;
+      }
+      this.json(res, result.accepted ? 202 : 400, result);
       return;
     }
     if (path === "/events") {

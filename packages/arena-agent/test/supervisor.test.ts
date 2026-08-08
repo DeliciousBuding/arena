@@ -1050,9 +1050,7 @@ test("auto-respawn gives up after limit and reports final exit", async () => {
   } finally {
     repo.cleanup();
   }
-});  }
-}
-
+});
 
 test("TenantSupervisor routes child IPC and targeted sends without affecting writer lifecycle", async () => {
   const repo = makeTempRepo();
@@ -1105,6 +1103,61 @@ test("DebugServer GET /alliance-director exposes read-only ASSIST_ONLY contract"
   }
 });
 
+test("DebugServer /alliance-strategy queues profile/rollback/mark-good control without action ownership", async () => {
+  const repo = makeTempRepo();
+  const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"] });
+  let active = "balanced";
+  let pending: unknown = null;
+  let lastGood: string | null = null;
+  const view = () => ({ active, pending, lastGood, mode: "ASSIST_ONLY", actionOwnership: "none" });
+  const debug = new DebugServer({
+    repoRoot: repo.root,
+    supervisor,
+    port: 0,
+    allianceStrategyControl: {
+      view,
+      requestProfile: (name) => {
+        if (name === "missing") return { accepted: false, error: "unknown profile", strategy: view() };
+        pending = { action: "select", profile: name };
+        return { accepted: true, strategy: view() };
+      },
+      requestRollback: () => {
+        pending = { action: "rollback" };
+        return { accepted: true, strategy: view() };
+      },
+      markLastGood: () => {
+        lastGood = active;
+        return { accepted: true, strategy: view() };
+      },
+    },
+  });
+  try {
+    await debug.listen();
+    const port = debug.address()!.port;
+    const get = await requestJson(port, "/alliance-strategy");
+    assert.equal(get.status, 200);
+    assert.equal(get.body.actionOwnership, "none");
+
+    const select = await requestJson(port, "/alliance-strategy?profile=aggressive", { method: "POST" });
+    assert.equal(select.status, 202);
+    assert.deepEqual(select.body.strategy.pending, { action: "select", profile: "aggressive" });
+    assert.equal(active, "balanced", "debug control queues only; Director replan owns activation");
+
+    const invalid = await requestJson(port, "/alliance-strategy?profile=missing", { method: "POST" });
+    assert.equal(invalid.status, 400);
+    const rollback = await requestJson(port, "/alliance-strategy?action=rollback", { method: "POST" });
+    assert.equal(rollback.status, 202);
+    assert.deepEqual(rollback.body.strategy.pending, { action: "rollback" });
+    const good = await requestJson(port, "/alliance-strategy?action=mark-good", { method: "POST" });
+    assert.equal(good.status, 202);
+    assert.equal(good.body.strategy.lastGood, "balanced");
+    const malformed = await requestJson(port, "/alliance-strategy", { method: "POST" });
+    assert.equal(malformed.status, 400);
+  } finally {
+    await debug.close();
+    repo.cleanup();
+  }
+});
 
 test("Supervisor + central Alliance shadow: frames -> ASSIST directives -> ACK, never Arena actions", async () => {
   const repo = makeTempRepo([{ file: "t1.json", tenantId: "t1" }, { file: "t2.json", tenantId: "t2" }]);

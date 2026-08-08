@@ -72,8 +72,10 @@ export function computeProfileHash(profile: {
 export class StrategicPolicyRegistry {
   private readonly _profiles = new Map<string, StrategicPolicyProfile>();
   private _defaultName: string | null = null;
+  private _sealed = false;
 
   register(profile: StrategicPolicyProfile): void {
+    if (this._sealed) throw new Error("StrategicPolicyRegistry: registry is sealed");
     if (this._profiles.has(profile.name)) {
       throw new Error(`StrategicPolicyRegistry: profile "${profile.name}" already registered`);
     }
@@ -81,11 +83,13 @@ export class StrategicPolicyRegistry {
   }
 
   unregister(name: string): boolean {
+    if (this._sealed) throw new Error("StrategicPolicyRegistry: registry is sealed");
     if (this._defaultName === name) this._defaultName = null;
     return this._profiles.delete(name);
   }
 
   setDefault(name: string): void {
+    if (this._sealed) throw new Error("StrategicPolicyRegistry: registry is sealed");
     if (!this._profiles.has(name)) {
       throw new Error(`StrategicPolicyRegistry: default profile "${name}" not registered`);
     }
@@ -109,6 +113,14 @@ export class StrategicPolicyRegistry {
 
   get size(): number {
     return this._profiles.size;
+  }
+
+  seal(): void {
+    this._sealed = true;
+  }
+
+  get sealed(): boolean {
+    return this._sealed;
   }
 }
 
@@ -286,5 +298,4 @@ STRATEGIC_REGISTRY.register(BALANCED_PROFILE);
 STRATEGIC_REGISTRY.register(AGGRESSIVE_PROFILE);
 STRATEGIC_REGISTRY.register(DEFEND_PROFILE);
 STRATEGIC_REGISTRY.setDefault("balanced");
-
-export const STRATEGIC_SELECTOR = new StrategicPolicySelector(STRATEGIC_REGISTRY);
+STRATEGIC_REGISTRY.seal();
