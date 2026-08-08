@@ -375,3 +375,37 @@ test("陈旧判定：updatedAt 非法/缺失不判超龄（旧格式兼容）", 
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("goto 远距目标（>64 格）：插值中间点移动而非 WAIT（t4 NE 深探 240 格实证）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    // worker [1,1] → 目标 [199,199]（Chebyshev 198 > 64 searchRadius 上限）
+    const state = makeState({ units: [{ id: WORKER, position: [1, 1], hp: 2, unitType: "WORKER", cargo: 0 }], workers: [{ id: WORKER, position: [1, 1], hp: 2, unitType: "WORKER", cargo: 0 }] });
+    const src = makeSource(dir, "t1", {
+      version: 1, mode: "override", updatedAt: new Date().toISOString(),
+      commands: [],
+      goals: [{ id: "g-far", unitId: WORKER, kind: "goto", target: [199, 199], createdAt: "x" }],
+    });
+    const r = applyHumanOverrides(state, basePlan(), src);
+    assert.equal(r.active, true, "远距 goto 应应用（插值中间点）");
+    const action = actionOf(r, WORKER);
+    assert.ok(action?.type === "MOVE", "远距目标应走插值中间点 MOVE 而非 WAIT");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("goto 远距目标：插值点不越过目标且保持主轴方向", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    const state = makeState({ units: [{ id: WORKER, position: [10, 10], hp: 2, unitType: "WORKER", cargo: 0 }], workers: [{ id: WORKER, position: [10, 10], hp: 2, unitType: "WORKER", cargo: 0 }] });
+    const src = makeSource(dir, "t1", {
+      version: 1, mode: "override", updatedAt: new Date().toISOString(),
+      commands: [],
+      goals: [{ id: "g-far2", unitId: WORKER, kind: "goto", target: [200, 10], createdAt: "x" }],
+    });
+    const r = applyHumanOverrides(state, basePlan(), src);
+    const action = actionOf(r, WORKER);
+    assert.equal(action?.type, "MOVE");
+    // 主轴正 X 方向（东）移动，不是 WAIT
+    assert.ok(action?.type === "MOVE" && ["RIGHT"].includes(action.direction), "应向目标主轴方向移动");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
