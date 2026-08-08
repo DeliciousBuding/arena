@@ -41,7 +41,7 @@ import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/
 import { appendArbitration, clearArbitration, listArbitrations } from "./lib/arbitration.ts";
 import { loadDecisionAudit, warmDecisionAudit, loadDecisionTrend, warmDecisionTrend } from "./lib/decision-audit.ts";
 import { loadLifecycleAudit, warmLifecycleAudit } from "./lib/lifecycle-audit.ts";
-import { loadMineUtilization, warmMineUtilization } from "./lib/mine-utilization.ts";
+import { loadMineUtilization, warmMineUtilization, loadMineUtilizationTrend, warmMineUtilizationTrend } from "./lib/mine-utilization.ts";
 import { loadAuditOverview, warmAuditOverview } from "./lib/audit-overview.ts";
 import { loadHumanConflict, warmHumanConflict } from "./lib/human-conflict.ts";
 import { loadAllianceMining, warmAllianceMining } from "./lib/alliance-mining.ts";
@@ -371,6 +371,20 @@ app.get("/api/audit/overview", (c) => {
   // 单调用合成——前端"综合态势"面板一次拉取。纯组合（复用各 30s 缓存），只读。
   return c.json(loadAuditOverview());
 });
+app.get("/api/audit/mines/trend", (c) => {
+  // 矿利用趋势（2026-08-08，共享记忆）：可见未开采缺口在扩大还是缩小。
+  // ?tenant=tN&window=2000&steps=6。累计 last_seen 近似（近期窗口准确），只读 survey-db。
+  const tenant = c.req.query("tenant") ?? "t1";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  if (tenant === "all") return c.json({ error: "趋势仅支持单租户" }, 400);
+  const w = Number(c.req.query("window") ?? 2000);
+  const window = Number.isFinite(w) ? Math.min(Math.max(w, 500), 4000) : 2000;
+  const s = Number(c.req.query("steps") ?? 6);
+  const steps = Number.isFinite(s) ? Math.min(Math.max(s, 2), 10) : 6;
+  return c.json(loadMineUtilizationTrend(tenant, window, steps));
+});
 app.get("/api/audit/mines", (c) => {
   // 矿发现-利用缺口审计（2026-08-08）：survey-db 只读——已发现未开采矿
   // （visibleNever 立即分配候选 / staleNever 历史遗留）+ 利用率 + 发现→首采耗时。
@@ -604,6 +618,8 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { warmLifecycleAudit(); } catch { /* 忽略 */ } }, 60);
   // 矿利用审计（survey-db 只读）：启动预热一次，不进周期循环（请求惰性 30s 缓存）。
   setTimeout(() => { try { warmMineUtilization(); } catch { /* 忽略 */ } }, 70);
+  // 矿利用趋势（survey-db 只读）：启动预热一次，不进周期循环。
+  setTimeout(() => { try { warmMineUtilizationTrend(); } catch { /* 忽略 */ } }, 75);
   // 综合审计总览（复用子审计缓存）：启动预热一次，不进周期循环。
   setTimeout(() => { try { warmAuditOverview(); } catch { /* 忽略 */ } }, 80);
   // 人机冲突审计（尾部只读）：启动预热一次，不进周期循环。
