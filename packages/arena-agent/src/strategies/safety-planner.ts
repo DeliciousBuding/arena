@@ -226,6 +226,11 @@ const SPAWN_YIELD_MAX_TICKS = 3;
 const BLOCKADE_WORKER_CAP = 2;
 const BLOCKADE_MIN_WORKERS = 6;
 const BLOCKADE_LOCK_MAX_TICKS = 10;
+/** 终点封锁锁龄上限（2026-08-08）：核心入口锁手提前部署（敌方可能还有
+ *  十几格回程），10 tick 普通锁龄会先满而敌方未到 → 提前放弃。30 tick
+ *  覆盖常见回程长度（t2 实证敌方直线段 3-18 tick）+ 缓冲；敌方真绕路/
+ *  预测错 30 tick 后锁手回巡逻（自我纠正）。 */
+const BLOCKADE_CORE_LOCK_MAX_TICKS = 30;
 const BLOCKADE_ENV_MAX_DIST = 24;
 /** B10 worker 遭遇撤离（竞品 Scout And Observer Response）：撤离触发半径。 */
 const SCOUT_EVADE_RADIUS = 3;
@@ -325,6 +330,10 @@ export class SafetyPlanner {
    *  要进的格，站桩即挡）。decide 入口由 enemyReturnPath + 环境锁点计算一次，
    *  decideWorker 消费（多 worker 共享同一分配，防扎堆/重复锁同一目标）。 */
   private blockadeAssignment = new Map<string, Position>();
+  /** 终点封锁锁手标记（unitId，2026-08-08）：配到"敌核心入口邻格"的锁手——
+   *  锁龄用放宽上限（BLOCKADE_CORE_LOCK_MAX_TICKS=30），防锁手提前到达
+   *  而 10 tick 锁龄先满、敌方回程未到就提前放弃。 */
+  private coreLockHands = new Set<string>();
   /** 锁阵站桩起始 tick（unitId → tick）：站桩超过 blockadeLockMaxTicks 仍未
    *  等到目标 → 放弃回巡逻（预测错误/敌方已绕路，防锁位单位长期闲置）。 */
   private blockadeLockedSince = new Map<string, number>();
@@ -797,12 +806,27 @@ export class SafetyPlanner {
     // 共享同一分配（防扎堆/重复锁同一目标）。目标 = 敌方回程路径预测 + 环境
     // 瓶颈锁点；锁位手 = 巡逻态空 worker（blockadeWorkerCap 上限，保经济）。
     // 防御激活（召回/包围）→ 锁阵停用（锁位 worker 全员回守家圈）。
-    this.blockadeAssignment = new Map();
-    if (
+    // 预测断链保持（2026-08-08 修复）：敌方被锁原地后 prevPosition==position
+    // → 差分消失 → enemyReturnPath 无预测 → 若清空配对锁手散伙、敌方原地
+    // 重试成功突破（A/B 实证 t3 后敌方无 MOVE_FAILED 一路到核心）。断链时
+    // 保留上一 tick 配对，锁手继续守原锁点（敌方原地重试同方向必再撞锁；
+    // 锁龄超限由 decideWorker 的 lockMaxTicks 兜底释放）。
+    const blockadeActive =
       this.config.workerBlockade === true &&
       state.workers.length >= (this.config.blockadeMinWorkers ?? BLOCKADE_MIN_WORKERS) &&
-      !(this.currentThreat?.level === "BREAKOUT")
-    ) {
+      !(this.currentThreat?.level === "BREAKOUT");
+    if (!blockadeActive) {
+      this.blockadeAssignment = new Map();
+    }
+    // 清理已死亡单位的状态残留（spawn-yield-v1）：worker 死亡/重生 id 变化，
+    // 旧 id 的让位计数永远不会再命中——逐 tick 清理防止 Map 无限增长。
+    if (this.spawnYieldStreak.size > 0) {
+      const alive = new Set(state.workers.map((worker) => worker.id));
+      for (const unitId of this.spawnYieldStreak.keys()) {
+        if (!alive.has(unitId)) this.spawnYieldStreak.delete(unitId);
+      }
+    }
+    if (blockadeActive) {
       const hints = this.world.enemyHints();
       const coreTargets = this.world.coreHuntTargets();
       const predictions = enemyReturnPath(hints, coreTargets, obstacles)
@@ -814,8 +838,15 @@ export class SafetyPlanner {
       // 环境锁点（敌核心邻格优先）——没有回程预测时仍可锁环境瓶颈
       const idleWorkers = state.workers.filter((worker) => worker.cargo === 0);
       const assignment = pairBlockadeTargets(predictions, idleWorkers, this.config.blockadeWorkerCap ?? BLOCKADE_WORKER_CAP);
-      // 环境锁点兜底：无回程预测但有敌核心邻格/资源旁/窄通道 → 派最近 worker
-      if (assignment.size === 0 && idleWorkers.length > 0) {
+      // 环境锁点兜底：无回程预测但敌核心已知（CORE 目击）→ 派最近 worker
+      // 锁敌核心邻格（断敌方卸货通道）。仅 CORE 源——WORKER_INFER 锚点
+      // 可能锁错位置（推测核心），且无回程预测时锁空位白站（t1 即触发
+      // 资源旁锁点、锁手被派去空位的 A/B 实证）。
+      if (
+        assignment.size === 0 &&
+        idleWorkers.length > 0 &&
+        coreTargets.some((t) => t.source === "CORE")
+      ) {
         const enemyCore = coreTargets.find((t) => t.source === "CORE")?.position ?? null;
         const occupied = new Set(
           [...state.units].map((unit) => cellKey(unit.position)),
@@ -827,7 +858,24 @@ export class SafetyPlanner {
           if (nearest !== undefined) assignment.set(nearest.id, chokepoint.cell);
         }
       }
-      this.blockadeAssignment = assignment;
+      // 新配对覆盖旧配对；预测断链（assignment 空）→ 保留上一 tick 配对，
+      // 锁手继续守原锁点（敌方原地重试必再撞；锁龄超限兜底释放）。
+      if (assignment.size > 0) {
+        this.blockadeAssignment = assignment;
+        // 标记终点封锁锁手（锁点 = 敌核心入口邻格）：锁龄放宽到
+        // BLOCKADE_CORE_LOCK_MAX_TICKS（锁手提前部署，敌方回程可能还有
+        // 十几格；10 tick 普通锁龄会先满导致提前放弃）。
+        this.coreLockHands = new Set();
+        for (const [unitId, lockPoint] of assignment) {
+          if (
+            coreTargets.some(
+              (target) => target.source === "CORE" && manhattan(target.position, lockPoint) === 1,
+            )
+          ) {
+            this.coreLockHands.add(unitId);
+          }
+        }
+      }
     }
 
     for (const unit of [...state.units].sort((a, b) => a.id.localeCompare(b.id))) {
@@ -1038,23 +1086,6 @@ export class SafetyPlanner {
       }
     }
 
-    // B13 worker 空闲回血（idleHealReturn 候选，竞品 heal priority 对照）：
-    // 空 worker（无 cargo/资源任务/撤离）HP 未满且 Core 资源足够补满时回
-    // Core 补血——在 Core 上由主循环 HEAL 分支结算；治疗成本 1 HP=1 资源，
-    // 资源不足不返航（竞品"远处单位保持原有空闲任务"）。优先级低于撤离/
-    // 回仓（见上），高于采集与巡逻。
-    if (
-      this.config.idleHealReturn === true &&
-      home !== null &&
-      unit.hp < UNIT_MAX_HP[unit.unitType] &&
-      state.resources >= UNIT_MAX_HP[unit.unitType] - unit.hp &&
-      !samePosition(unit.position, home)
-    ) {
-      const direction = stepToward(unit.position, home, movementObstacles);
-      if (direction !== null) set(unit, { type: "MOVE", direction }, "worker_heal_return");
-      return;
-    }
-
     // 锁阵执行（worker-blockade-v1，2026-08-08）：本 tick 配对到锁点的巡逻
     // worker → 走向锁点站桩（敌方目标格被占 → MOVE_DESTINATION_OCCUPIED
     // 敌方失败；脚本对手无反馈无限重试）。锁龄超限（预测错误/敌方已绕路）
@@ -1063,7 +1094,11 @@ export class SafetyPlanner {
     if (this.config.workerBlockade === true) {
       const lockPoint = this.blockadeAssignment.get(unit.id);
       if (lockPoint !== undefined) {
-        const lockMaxTicks = this.config.blockadeLockMaxTicks ?? BLOCKADE_LOCK_MAX_TICKS;
+        // 终点封锁（锁点 = 敌核心入口邻格）→ 放宽锁龄：锁手提前部署，
+        // 敌方回程可能还有十几格；10 tick 普通锁龄会先满而敌方未到。
+        const lockMaxTicks = this.coreLockHands.has(unit.id)
+          ? BLOCKADE_CORE_LOCK_MAX_TICKS
+          : this.config.blockadeLockMaxTicks ?? BLOCKADE_LOCK_MAX_TICKS;
         const lockedSince = this.blockadeLockedSince.get(unit.id);
         const enemyNear = state.visibleEnemies.some(
           (enemy) =>
@@ -1094,6 +1129,24 @@ export class SafetyPlanner {
       } else {
         this.blockadeLockedSince.delete(unit.id);
       }
+    }
+
+    // B13 worker 空闲回血（idleHealReturn 候选，竞品 heal priority 对照）：
+    // 空 worker（无 cargo/资源任务/撤离/锁阵）HP 未满且 Core 资源足够补满时
+    // 回 Core 补血——在 Core 上由主循环 HEAL 分支结算；治疗成本 1 HP=1 资源，
+    // 资源不足不返航（竞品"远处单位保持原有空闲任务"）。优先级低于撤离/
+    // 回仓/锁阵（见上，锁位 worker 回血会放弃锁位 → 锁断，故锁阵优先），
+    // 高于采集与巡逻。
+    if (
+      this.config.idleHealReturn === true &&
+      home !== null &&
+      unit.hp < UNIT_MAX_HP[unit.unitType] &&
+      state.resources >= UNIT_MAX_HP[unit.unitType] - unit.hp &&
+      !samePosition(unit.position, home)
+    ) {
+      const direction = stepToward(unit.position, home, movementObstacles);
+      if (direction !== null) set(unit, { type: "MOVE", direction }, "worker_heal_return");
+      return;
     }
 
     if (state.resourceCells.has(cellKey(unit.position))) {

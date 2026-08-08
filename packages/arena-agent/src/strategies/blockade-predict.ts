@@ -60,12 +60,14 @@ export function enemyReturnPath(
     // 必须是一步卡向移动（|dx|+|dy|==1）；原地/斜跳不算"移动中"
     if (Math.abs(dx) + Math.abs(dy) !== 1) continue;
     const direction: Direction = dy < 0 ? "UP" : dy > 0 ? "DOWN" : dx > 0 ? "RIGHT" : "LEFT";
-    // 目标敌核心：移动方向使投影距离递减的最近敌核心
+    // 目标敌核心：移动方向使投影距离递减的最近敌核心。接受 CORE 目击与
+    // WORKER_INFER 推断锚点（2026-08-08：开局只有 worker 迹象时无 CORE
+    // 目击，终点封锁永不触发——推断核心由 worker 轨迹双向延伸得出，
+    // 方向大致正确，锁错 30 tick 锁龄后放弃，风险可控）。
     let targetCore: Position | null = null;
     let targetDistance = Number.POSITIVE_INFINITY;
     const next = moveCell(hint.position, direction);
     for (const target of coreTargets) {
-      if (target.source !== "CORE") continue;
       const before = manhattan(hint.position, target.position);
       const after = manhattan(next, target.position);
       if (after < before && before < targetDistance) {
@@ -171,12 +173,20 @@ export function suspectedBlocked(
 }
 
 /**
- * 锁位配对（纯函数，2026-08-08）：回程预测目标 × 空闲巡逻 worker → 贪心最近
- * 配对（每目标 1 锁位手，每 worker 至多 1 目标）。确定性：目标按
- * （targetCore 有无，enemyId）排序，worker 按（距离，id）排序——同构
- * vanguard_prey_worker 的"最近配对"哲学，planner 每 tick 重算结果稳定。
- * 返回 unitId → lockPoint（敌方下一步要进的格 nextCells[0]，站桩即挡）。
- */
+ * 锁位配对（纯函数，2026-08-08）：回程预测目标 × 空闲巡逻 worker → 贪心配对
+ * （每目标 1 锁位手，每 worker 至多 1 目标）。确定性：目标按
+ * （targetCore 有无，enemyId）排序，worker 按（距离，id）排序。
+ * 两档锁点策略：
+ * 1. 终点封锁（targetCore 已知，2026-08-08 修复）：锁手直接部署到敌核心
+ *    入口邻格（敌方回程必经）——锁手与敌方同速永远追不上路径（A/B 实证
+ *    敌方一路畅通），堵终点是唯一稳赢的拦截；锁龄由调用方按入口锁放宽
+ *    （BLOCKADE_CORE_LOCK_MAX_TICKS），防"锁手提前 15 tick 到达、10 tick
+ *    锁龄先满而敌方未到"的提前放弃；
+ * 2. 中途拦截（targetCore 未知）：遍历预测路径 nextCells 选"锁手可提前/
+ *    同时到达"的格（margin = 敌方距格 - 锁手距格 最大）——锁手恰好在
+ *    路径前方时提前站桩；全追不上时选 margin 最大的格（敌方被其他格
+ *    挡下后锁手仍有机会）。
+ * 返回 unitId → lockPoint（拦截格，站桩即挡）。 */
 export function pairBlockadeTargets(
   predictions: readonly EnemyReturnPrediction[],
   idleWorkers: readonly { id: string; position: Position }[],
@@ -193,23 +203,65 @@ export function pairBlockadeTargets(
   });
   for (const prediction of ordered) {
     if (assignment.size >= cap) break;
-    const lockPoint = prediction.nextCells[0];
-    if (lockPoint === undefined) continue;
-    // 最近空闲 worker（确定性：距离 → id）
-    let best: { id: string; position: Position } | null = null;
-    let bestDistance = Number.POSITIVE_INFINITY;
+    if (prediction.targetCore !== null) {
+      // 终点封锁：锁核心入口邻格（敌方位置侧四邻之一，选离敌方最近的
+      // 空口——敌方必然从该方向进核心）。离入口最近的空闲 worker 前往
+      // 站桩；同一入口只配 1 人（防两锁手挤一格）。
+      const entry = coreEntryPoint(prediction.targetCore, prediction.position);
+      let best: { id: string; position: Position } | null = null;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const worker of available) {
+        if (assignment.has(worker.id)) continue;
+        // 已被其他预测锁到同一入口 → 换邻格（循环尝试四邻）
+        const distance = manhattan(worker.position, entry);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = worker;
+        }
+      }
+      if (best === null) break;
+      assignment.set(best.id, entry);
+      continue;
+    }
+    // 中途拦截点选择：对每个候选锁手，遍历预测路径格，选"敌方距离 - 锁手
+    // 距离"最大的格（锁手提前量最大 = 最早能站住的路口）；确定性 tie-break。
+    let bestWorker: { id: string; position: Position } | null = null;
+    let bestPoint: Position | null = null;
+    let bestMargin = Number.NEGATIVE_INFINITY;
     for (const worker of available) {
       if (assignment.has(worker.id)) continue;
-      const distance = manhattan(worker.position, lockPoint);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = worker;
+      for (const cell of prediction.nextCells) {
+        const enemyDistance = manhattan(prediction.position, cell);
+        const workerDistance = manhattan(worker.position, cell);
+        const margin = enemyDistance - workerDistance;
+        if (margin > bestMargin) {
+          bestMargin = margin;
+          bestWorker = worker;
+          bestPoint = cell;
+        }
       }
     }
-    if (best === null) break;
-    assignment.set(best.id, lockPoint);
+    if (bestWorker === null || bestPoint === null) break;
+    assignment.set(bestWorker.id, bestPoint);
   }
   return assignment;
+}
+
+/** 核心入口邻格：targetCore 四邻中离敌方当前最近的格（敌方最后一段必然
+ *  从最近的口进核心）。 */
+function coreEntryPoint(targetCore: Position, enemyPosition: Position): Position {
+  const entries: Position[] = [
+    [targetCore[0] + 1, targetCore[1]],
+    [targetCore[0] - 1, targetCore[1]],
+    [targetCore[0], targetCore[1] + 1],
+    [targetCore[0], targetCore[1] - 1],
+  ];
+  return entries.sort(
+    (a, b) =>
+      manhattan(a, enemyPosition) - manhattan(b, enemyPosition) ||
+      a[0] - b[0] ||
+      a[1] - b[1],
+  )[0];
 }
 
 /** 沿卡向移动一格。 */

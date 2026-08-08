@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import {
   chokepointLockPoint,
   enemyReturnPath,
+  pairBlockadeTargets,
   suspectedBlocked,
   type EnemyReturnPrediction,
 } from "../src/strategies/blockade-predict.ts";
@@ -174,4 +175,71 @@ test("suspectedBlocked：连续失败 ≥3 且位置未变 = 被锁", () => {
     suspectedBlocked(new Map([["u1", 5]]), "u1", [0, 0], [0, 0], 6),
     false,
   );
+});
+
+function prediction(
+  enemyId: string,
+  position: [number, number],
+  direction: EnemyReturnPrediction["direction"],
+  nextCells: [number, number][],
+  targetCore: [number, number] | null = null,
+): EnemyReturnPrediction {
+  return { enemyId, position, direction, nextCells, targetCore };
+}
+
+test("pairBlockadeTargets：选拦截点而非下一步格（锁手追不上时选最近接格）", () => {
+  // 敌方沿 x 正方向回程：位置 (0,0)，预测路径 (1,0)(2,0)(3,0)(4,0)。
+  // 锁手在 (0,3)：距 (1,0)=4、(2,0)=5、(3,0)=6、(4,0)=7——全追不上。
+  // margin（敌距-锁手距）全为 -3，取第一个格 (1,0)（确定性）。
+  const result = pairBlockadeTargets(
+    [prediction("e1", [0, 0], "RIGHT", [[1, 0], [2, 0], [3, 0], [4, 0]])],
+    [{ id: "w1", position: [0, 3] }],
+    2,
+  );
+  assert.deepEqual(result.get("w1"), [1, 0]);
+});
+
+test("pairBlockadeTargets：锁手在路径前方 → 选敌方前方格提前站桩", () => {
+  // 锁手 (5,0) 在敌方路径 (1,0)…(4,0) 前方。
+  // margin：(1,0)=1-4=-3、(2,0)=2-3=-1、(3,0)=3-2=1、(4,0)=4-1=3 → 选 (4,0)（最大 margin）。
+  const result = pairBlockadeTargets(
+    [prediction("e1", [0, 0], "RIGHT", [[1, 0], [2, 0], [3, 0], [4, 0]])],
+    [{ id: "w1", position: [5, 0] }],
+    2,
+  );
+  assert.deepEqual(result.get("w1"), [4, 0]);
+});
+
+test("pairBlockadeTargets：cap 限制锁手数量，多目标互不抢人", () => {
+  const predictions = [
+    prediction("e1", [0, 0], "RIGHT", [[1, 0], [2, 0], [3, 0], [4, 0]]),
+    prediction("e2", [0, 10], "RIGHT", [[1, 10], [2, 10], [3, 10], [4, 10]]),
+  ];
+  const workers: { id: string; position: [number, number] }[] = [
+    { id: "w1", position: [5, 0] },
+    { id: "w2", position: [5, 10] },
+    { id: "w3", position: [5, 20] },
+  ];
+  // cap=2 → 两个目标各配 1 人
+  const result = pairBlockadeTargets(predictions, workers, 2);
+  assert.equal(result.size, 2);
+  assert.ok(result.has("w1") || result.has("w2"));
+  // 每个 worker 至多 1 个目标
+  assert.equal(result.size, new Set(result.keys()).size);
+});
+
+test("pairBlockadeTargets：targetCore 目标优先 + 确定性", () => {
+  const withCore = prediction("e1", [0, 0], "RIGHT", [[1, 0], [2, 0], [3, 0], [4, 0]], [10, 0]);
+  const withoutCore = prediction("e2", [0, 5], "RIGHT", [[1, 5], [2, 5], [3, 5], [4, 5]]);
+  const workers: { id: string; position: [number, number] }[] = [
+    { id: "w1", position: [0, 5] },
+    { id: "w2", position: [0, 0] },
+  ];
+  // 有 targetCore 的 e1 优先配对——即使 w2 离 e2 更近也先给 e1
+  const result = pairBlockadeTargets([withoutCore, withCore], workers, 2);
+  assert.ok(result.has("w2"));
+  assert.ok(result.has("w1"));
+  // 同输入重算结果一致（确定性）
+  const rerun = pairBlockadeTargets([withoutCore, withCore], workers, 2);
+  assert.deepEqual([...result.entries()], [...rerun.entries()]);
 });

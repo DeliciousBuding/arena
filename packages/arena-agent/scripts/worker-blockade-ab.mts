@@ -5,6 +5,11 @@
  * （WAIT 占格）→ 敌方 MOVE_DESTINATION_OCCUPIED 进不来，脚本对手无
  * MOVE_FAILED 反馈无限重试（reference farmer 实证）。
  *
+ * 收尾修复（2026-08-08）：拦截点选择（锁手追不上 → 选敌方路径前方格/
+ * 敌核心入口）+ 预测断链保持（敌方被锁原地差分消失 → 保留配对）+ 入口锁
+ * 放宽锁龄（30 tick）——A/B 实证敌方回程 17→48 tick（锁龄上限 30 + 基线
+ * 路径差）。
+ *
  * 场景：p1（我方，10 worker 巡逻）vs p2（敌方，1 worker 朝其核心移动）。
  * KPI：p2 worker 到达其核心格前的延迟（敌方回程被锁 tick 数）、p1 deposit
  * 曲线（锁阵不伤我方经济）、我方 worker 静止时长（锁位手闲置）。
