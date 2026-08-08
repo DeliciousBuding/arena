@@ -430,3 +430,10 @@ mapEngine.ts 对应函数。
 - StreamPane 决策行（非事迹）可点击：clickable 样式 +
   title 提示 + 聚焦定位；EngineHandle 补 focusTenant 类型。
 - 探针实测：点 T1 决策行 solo null→t1 + toast、回归 22/22 全绿。
+
+### 9.25 舰队索引行当前指令标签（2026-08-08）
+- tactRenderAssets 资产行复用 unitCommandLabel：追加 .asset-cmd 小标签
+  （人类指挥白 / 算法决策青，title 完整文案）——每个单位在干什么一目了然，
+  不需逐个 hover。style.css 新增 .asset-cmd（单行截断/mono/语义色）。
+- 探针实测：聚焦 t1 见 30 行决策标签 + 2 行人类指挥标签；回归 22/22 全绿
+  （首次右键菜单 flake 为已知高负载抖动，重跑即绿）。
