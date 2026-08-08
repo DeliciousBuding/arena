@@ -530,6 +530,9 @@ export class DeterministicPlanner implements PlanProvider {
   private spawnReserve: number;
   /** 使命层配置（worker-mission-v1）：值层门槛 + SURVEYOR 角色仲裁。 */
   private missionConfig: MissionConfig;
+  /** 矿刷新预测（Phase 2，G3）：cellKey → predictedNextTick；tenant-runtime
+   *  周期刷新注入，decide() 按当前 tick 折算 dueInTicks。 */
+  private refillPredictedTicks: ReadonlyMap<string, number> = new Map();
   /** 迁移后测绘期截止 tick（核心位置变化时刷新为 tick + surveyBurstTicks）。 */
   private surveyBurstUntilTick = 0;
   private previousCorePosition: Position | null = null;
@@ -599,6 +602,12 @@ export class DeterministicPlanner implements PlanProvider {
     this.patrolPlanner.replaceThreatProfiles(profiles);
   }
 
+  /** 热刷新矿刷新预测（Phase 2，G3 数据管道）：替换式更新（tenant-runtime 周期
+   *  重读 survey-db），decide() 并入快照——死矿剔除 + 即将刷新格加成即时生效。 */
+  replaceRefillPredictions(predictedTicks: ReadonlyMap<string, number>): void {
+    this.refillPredictedTicks = predictedTicks;
+  }
+
   /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
    *  保留 World/巡逻/攻坚记忆（不重建 planner）。调用方先校验变体合法性。 */
   updateConfig(
@@ -657,6 +666,11 @@ export class DeterministicPlanner implements PlanProvider {
       ...rawSnapshot,
       resourceCells,
       obstacleCells: this.fallbackPlanner.world.obstacles(rawSnapshot.obstacleCells),
+      // Phase 2（G3 数据管道）：矿刷新预测并入快照——按当前 tick 折算 dueInTicks
+      // （存 predictedNextTick，随 tick 老化自动衰减）。
+      refillPredictions: new Map(
+        [...this.refillPredictedTicks].map(([key, predictedNextTick]) => [key, predictedNextTick - rawSnapshot.tick]),
+      ),
     };
     const safetyVetoIds = new Set(
       snapshot.units

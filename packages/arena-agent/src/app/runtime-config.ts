@@ -62,6 +62,28 @@ export const RuntimeConfigSchema = Type.Object(
      * 缺省 = 无变体（历史行为零回归）。
      */
     variants: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+    /**
+     * mission 参数化覆盖（2026-08-08，worker-mission-v1 Phase 2）：逐项覆盖
+     * 注册表默认（变体=类别、config=强度）——热加载即可在线调参（floor/cap/
+     * 距离/预测阈值），无需重启。缺省 = 注册表默认（零回归）。
+     */
+    mission: Type.Optional(
+      Type.Object(
+        {
+          collectionValueFloor: Type.Optional(Type.Number()),
+          maxCollectionDistance: Type.Optional(Type.Number({ minimum: 1 })),
+          surveyWorkerCap: Type.Optional(Type.Integer({ minimum: 0 })),
+          surveyBurstTicks: Type.Optional(Type.Integer({ minimum: 0 })),
+          surveyWorkerFloor: Type.Optional(Type.Integer({ minimum: 0 })),
+          visibleBonus: Type.Optional(Type.Number()),
+          seedAgeDecay: Type.Optional(Type.Number({ minimum: 0 })),
+          refillLookahead: Type.Optional(Type.Integer({ minimum: 0 })),
+          refillBonus: Type.Optional(Type.Number({ minimum: 0 })),
+          deadMineOverdueTicks: Type.Optional(Type.Integer({ minimum: 0 })),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     /** 固定策略覆盖（实验框架）：非空时绕过 LLM 决策，恒用该策略
      *  （posture/workerTarget/militaryRatio/focusRegion/attackPriority 全量）。 */
     policyOverride: Type.Optional(

@@ -33,6 +33,8 @@ import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
 import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
 import { knownChunks, knownCoreHunts, knownObstacles, knownResources, openSurveyDb } from "../intel/survey-db.ts";
+import { loadRefillPredictions } from "../intel/refill-predictions.ts";
+import { DEFAULT_MISSION_CONFIG } from "../planning/mission-planner.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
@@ -509,7 +511,14 @@ export async function runTenant(
     // deterministic 侧参数覆盖（2026-08-07）：变体可同时声明 core 生产参数
     // （vanguardRatio/accumulateThreshold/spawnReserve）——"变体启用=配置声明"
     // 在 deterministic 模式同样成立（如 strike-core-v1 爆兵打水晶）。
-    const deterministicVariantConfig = resolveDeterministicVariantsConfig(config.variants);
+    const registryDeterministicConfig = resolveDeterministicVariantsConfig(config.variants);
+    const deterministicVariantConfig =
+      config.mission === undefined
+        ? registryDeterministicConfig
+        : {
+            ...registryDeterministicConfig,
+            mission: { ...DEFAULT_MISSION_CONFIG, ...(registryDeterministicConfig.mission ?? {}), ...config.mission },
+          };
     // 持久敌情测绘（2026-08-07）：启用 militaryHunt 变体时，从本租户历史
     // calibration cases 提取最后已知敌 Core 位置注入 planner——重启后军事仍
     // 记得敌方基地（解决"重启→记忆清零→军队空转"）。只读、有界、失败静默。
@@ -569,7 +578,14 @@ export async function runTenant(
       try {
         const nextConfig = loadRuntimeConfig(configPath);
         const nextVariant = resolveVariantsConfig(nextConfig.variants);
-        const nextDet = resolveDeterministicVariantsConfig(nextConfig.variants);
+        const registryNextDet = resolveDeterministicVariantsConfig(nextConfig.variants);
+        const nextDet =
+          nextConfig.mission === undefined
+            ? registryNextDet
+            : {
+                ...registryNextDet,
+                mission: { ...DEFAULT_MISSION_CONFIG, ...(registryNextDet.mission ?? {}), ...nextConfig.mission },
+              };
         const nextSafety =
           decisionMode === "deterministic"
             ? { ...DEFAULT_SAFETY_CONFIG, ...nextVariant }
@@ -642,6 +658,70 @@ export async function runTenant(
     };
     const threatRefreshTimer = setInterval(refreshThreatProfiles, THREAT_REFRESH_INTERVAL_MS);
     refreshThreatProfiles(); // 启动立即检查一次（避免首次快照缺失导致长空窗）
+
+    // 矿刷新预测（2026-08-08，worker-mission-v1 Phase 2，G3 数据管道）：
+    // per-tenant survey-db 的 resource_seen_history 每 5 分钟重算一次预测（与
+    // 威胁画像同节奏）；survey-sync 每次运行后 history 更新，5min 内生效。
+    // 纯只读 + 降级：db 缺失/无历史 = 空 Map（分配走既有行为零回归）。
+    // 预测随 tick 老化：planner 侧按当前 tick 折算 dueInTicks（存 predictedNextTick）。
+    // 启动前预载一次（与 threatProfiles 同模式）——启动刷新对比相同则跳过，
+    // 不产生额外 telemetry 记录（保持既有记录节奏零回归）。
+    let lastRefillPredictedTicks = new Map<string, number>();
+    const loadPredictedTicks = (): Map<string, number> => {
+      const predictions = loadRefillPredictions(dataRoot, config.tenantId, 0);
+      const predictedTicks = new Map<string, number>();
+      for (const [key, prediction] of predictions) predictedTicks.set(key, prediction.predictedNextTick);
+      return predictedTicks;
+    };
+    const refreshRefillPredictions = (): void => {
+      try {
+        const predictedTicks = loadPredictedTicks();
+        if (predictedTicks.size === lastRefillPredictedTicks.size) {
+          let same = true;
+          for (const [key, value] of predictedTicks) {
+            if (lastRefillPredictedTicks.get(key) !== value) { same = false; break; }
+          }
+          if (same) return;
+        }
+        lastRefillPredictedTicks = predictedTicks;
+        if (planner instanceof DeterministicPlanner) planner.replaceRefillPredictions(predictedTicks);
+        if (predictedTicks.size > 0) {
+          appendJsonlLine(
+            join(dirs.telemetryDir, "runtime.jsonl"),
+            JSON.stringify(sanitizeValue({
+              processRunId,
+              tenantId: config.tenantId,
+              telemetryType: "refill_predictions_refreshed",
+              cells: predictedTicks.size,
+            })),
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        appendJsonlLine(
+          join(dirs.telemetryDir, "runtime.jsonl"),
+          JSON.stringify(sanitizeValue({
+            processRunId,
+            tenantId: config.tenantId,
+            telemetryType: "refill_predictions_refresh_failed",
+            message,
+          })),
+        );
+      }
+    };
+    // 启动预载：与 threatProfiles 同模式——先算好 last-good，启动刷新对比相同即
+    // 跳过（不写 telemetry）；首次加载同时注入 planner（空预测 = 零回归）。
+    try {
+      lastRefillPredictedTicks = loadPredictedTicks();
+      if (planner instanceof DeterministicPlanner) {
+        planner.replaceRefillPredictions(lastRefillPredictedTicks);
+      }
+    } catch {
+      lastRefillPredictedTicks = new Map();
+    }
+    const refillPredictionsTimer = setInterval(refreshRefillPredictions, THREAT_REFRESH_INTERVAL_MS);
+    refreshRefillPredictions(); // 启动立即检查一次（对比预载值，无变化不写日志）
+    cleanupStack.push(() => clearInterval(refillPredictionsTimer));
     cleanupStack.push(() => clearInterval(threatRefreshTimer));
 
     // 联盟 no-fire roster 热刷新（2026-08-08，alliance-no-fire-v1）：supervisor
