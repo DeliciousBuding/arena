@@ -27,6 +27,11 @@ test("alliance shadow CLI wiring: supervisor child args + tenant runtime options
   assert.match(supervisor, /--alliance-shadow-interval-ticks=\$\{allianceShadowInterval\}/);
   assert.match(tenant, /recordAllianceShadow:\s*values\["record-alliance-shadow"\]\s*===\s*true/);
   assert.match(tenant, /allianceShadowIntervalTicks,/);
+  assert.match(tenant, /createTenantAllianceIpcBridge/);
+  assert.match(tenant, /onAllianceShadowFrame:/);
+  assert.match(supervisor, /createCentralAllianceShadowRuntime/);
+  assert.match(supervisor, /allianceDirectorView:/);
+  assert.match(supervisor, /actionOwnership:\s*"none"/);
 });
 
 test("run-tenant: interval without enable flag fails before runtime", async () => {
@@ -57,6 +62,43 @@ test("run-supervisor: env enable + interval passes argument validation", async (
     assert.equal(result.code, 1);
     assert.match(result.output, /EADDRINUSE|address already in use/i);
     assert.doesNotMatch(result.output, /alliance-shadow-interval-ticks.*invalid|requires --record-alliance-shadow/i);
+  } finally {
+    await new Promise<void>((done) => blocker.close(() => done()));
+  }
+});
+
+
+test("run-supervisor: Alliance Director cannot enable without full shadow frames", async () => {
+  const result = await runCli("run-supervisor.ts", [`--repo-root=${REPO_ROOT}`, "--alliance-director-shadow"]);
+  assert.equal(result.code, 1);
+  assert.match(result.output, /requires --record-alliance-shadow/);
+});
+
+test("run-supervisor: Director timing options without Director enable fail fast", async () => {
+  const result = await runCli("run-supervisor.ts", [`--repo-root=${REPO_ROOT}`, "--alliance-director-period-ticks=4"]);
+  assert.equal(result.code, 1);
+  assert.match(result.output, /timing options require --alliance-director-shadow/);
+});
+
+test("run-supervisor: env shadow+Director config passes validation and reaches debug bind", async () => {
+  const blocker = createServer();
+  await new Promise<void>((done) => blocker.listen(0, "127.0.0.1", done));
+  const address = blocker.address();
+  assert.notEqual(typeof address, "string");
+  try {
+    const result = await runCli("run-supervisor.ts", [], {
+      ...process.env,
+      ARENA_REPO_ROOT: REPO_ROOT,
+      ARENA_RECORD_ALLIANCE_SHADOW: "true",
+      ARENA_ALLIANCE_SHADOW_INTERVAL_TICKS: "3",
+      ARENA_ALLIANCE_DIRECTOR_SHADOW: "true",
+      ARENA_ALLIANCE_DIRECTOR_PERIOD_TICKS: "4",
+      ARENA_ALLIANCE_DIRECTOR_MAX_SKEW_TICKS: "2",
+      ARENA_DEBUG_PORT: String((address as { port: number }).port),
+    });
+    assert.equal(result.code, 1);
+    assert.match(result.output, /EADDRINUSE|address already in use/i);
+    assert.doesNotMatch(result.output, /requires --record-alliance-shadow|timing options require|invalid value/i);
   } finally {
     await new Promise<void>((done) => blocker.close(() => done()));
   }

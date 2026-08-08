@@ -13,6 +13,8 @@ const STATE_STREAMS = new Set(["runtime", "decision", "outcome", "pi"]);
 export interface DebugServerOptions {
   readonly repoRoot: string;
   readonly supervisor: TenantSupervisor;
+  /** Optional tokenless Alliance Director shadow view. Read-only observability only. */
+  readonly allianceDirectorView?: () => unknown;
   readonly port?: number;
   readonly host?: string;
 }
@@ -107,6 +109,15 @@ export class DebugServer {
         return;
       }
       this.json(res, 200, { tenant, stream, row });
+      return;
+    }
+    if (path === "/alliance-director") {
+      if (req.method !== undefined && req.method !== "GET") {
+        this.json(res, 405, { error: "method not allowed; use GET /alliance-director" });
+        return;
+      }
+      const view = this.options.allianceDirectorView?.();
+      this.json(res, 200, view ?? { enabled: false, mode: "ASSIST_ONLY", actionOwnership: "none", available: false });
       return;
     }
     if (path === "/events") {
