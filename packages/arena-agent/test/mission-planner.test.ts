@@ -32,6 +32,7 @@ const MISSION: MissionConfig = {
   refillLookahead: 0,
   refillBonus: 0,
   deadMineOverdueTicks: 0,
+  migrationScout: false,
 };
 
 /** 造快照：资源格可带置信元数据（visible/lastSeenTick/seeded）。 */

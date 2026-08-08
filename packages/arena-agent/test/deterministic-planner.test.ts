@@ -16,6 +16,7 @@ import {
   selectDeterministicCoreAction,
   stepToward,
   stepTowardAvoiding,
+  migrationScoutDirection,
 } from "../src/planning/deterministic-planner.ts";
 import { reduceTurn, type TurnLike } from "../src/domain/state-reducer.ts";
 import { validatePlan } from "../src/domain/plan-validator.ts";
@@ -689,4 +690,31 @@ test("热加载：DeterministicPlanner.updateConfig 同步内部 SafetyPlanner +
   const state = makeState(100, [core(), unit("w1", 1, 0)], 40);
   const plan = det.decide({ state });
   assert.equal(typeof plan.coreAction, "object");
+});
+
+
+/** migration-scout（2026-08-08）：核心 MOVING 时 EXPLORE worker 朝迁移方向探路。 */
+test("migrationScoutDirection: 朝核心迁移方向返回下一步", () => {
+  // 核心从 [100,100] 移到 [100,99]（y 减小 = 北移），目标 = [100, 75]；worker [100,95] 在其南 → UP
+  const d = migrationScoutDirection([100, 95], [100, 99], [100, 100], new Set());
+  assert.equal(d, "UP");
+});
+test("migrationScoutDirection: 无迁移记录返回 null（零影响）", () => {
+  const d = migrationScoutDirection([100, 95], [100, 99], null, new Set());
+  assert.equal(d, null);
+});
+test("migrationScoutDirection: 核心未移动返回 null", () => {
+  const d = migrationScoutDirection([100, 95], [100, 99], [100, 99], new Set());
+  assert.equal(d, null);
+});
+test("migrationScoutDirection: 避障绕行", () => {
+  // 核心 [100,99]←[100,100] 向南；worker 正南被障碍挡 → 返回非 null 的可行方向（绕行或停）
+  const obstacles = new Set(["100,94"]);
+  const d = migrationScoutDirection([100, 95], [100, 99], [100, 100], obstacles);
+  assert.ok(d === "LEFT" || d === "RIGHT" || d === "UP" || d === "DOWN");
+});
+test("migrationScoutDirection: 已在目标附近返回 null（fallback 巡逻）", () => {
+  // worker 已在核心前方 24 格目标位
+  const d = migrationScoutDirection([100, 75], [100, 99], [100, 100], new Set());
+  assert.equal(d, null);
 });
