@@ -11,8 +11,10 @@ export function MapHost({ hostRef }: { hostRef: RefObject<HTMLElement | null> })
     if (!el) return;
     const api = createMapEngine(el);
     setEngine(api);
+    // 调试/回归钩子：暴露引擎句柄供测试精确计算相机变换与状态（生产无副作用）
+    (window as unknown as Record<string, unknown>).__arenaEngine = api;
     const off = api.subscribe(() => bump());
-    return () => { off(); };
+    return () => { off(); setEngine(null); delete (window as unknown as Record<string, unknown>).__arenaEngine; };
   }, [hostRef]);
 
   return (
