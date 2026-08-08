@@ -122,8 +122,8 @@ test("production watchdog launcher follows active release worktree and enables D
   assert.match(bat, /%~dp0arena-watchdog-hide\.vbs/);
   assert.match(watchdog, /ensure_command_center/);
   assert.match(watchdog, /command-center-owner\.ps1/);
-  assert.match(watchdog, /node scripts\/start-cc\.mjs --hidden/);
-  const startCc = readFileSync(resolve(REPO_ROOT, "packages", "command-center", "scripts", "start-cc.mjs"), "utf8");
+  assert.match(watchdog, /node scripts\/start-cc\.ts --hidden/);
+  const startCc = readFileSync(resolve(REPO_ROOT, "packages", "command-center", "scripts", "start-cc.ts"), "utf8");
   assert.match(startCc, /--git-common-dir/);
   assert.match(startCc, /ARENA_DATA_ROOT = process\.env\.ARENA_DATA_ROOT \?\? defaultDataRoot/);
 });

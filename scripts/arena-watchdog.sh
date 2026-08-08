@@ -59,7 +59,7 @@ ensure_command_center() {
     ARENA_DATA_ROOT="$DATA_ROOT" \
       ARENA_SUPERVISOR_DEBUG_URL="http://127.0.0.1:8120" \
       COMMAND_CENTER_PORT="$COMMAND_CENTER_PORT" \
-      node scripts/start-cc.mjs --hidden
+      node scripts/start-cc.ts --hidden
   ) >> "$LOG" 2>&1 || true
 }
 
