@@ -47,6 +47,7 @@ import { loadHumanConflict, warmHumanConflict } from "./lib/human-conflict.ts";
 import { loadAllianceMining, warmAllianceMining } from "./lib/alliance-mining.ts";
 import { loadMiningEffectiveness, warmMiningEffectiveness } from "./lib/mining-effectiveness.ts";
 import { loadAuditTrail, warmAuditTrail } from "./lib/audit-trail.ts";
+import { loadConsensusMining, warmConsensusMining } from "./lib/consensus-mining.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 import { loadCoreMovingGuard } from "./lib/human-command-guard.ts";
 
@@ -384,6 +385,12 @@ app.get("/api/audit/trail", (c) => {
   const limit = Number.isFinite(l) ? Math.min(Math.max(Math.round(l), 1), 500) : 200;
   return c.json(loadAuditTrail({ tenant: tenant === "all" ? undefined : tenant, source: src as never, limit }));
 });
+app.get("/api/alliance/survey/mining", (c) => {
+  // 全联盟矿 + 分工兑现标注（2026-08-08，共享测绘设计增强）：共识矿 join
+  // 分工兑现状态（assignedTenant/miningStatus/gapAgeTicks）+ 积压 topStale——
+  // 前端"全联盟矿"地图层一次拿齐，标"已分工未采"。只读组合，30s 缓存 + 预热。
+  return c.json(loadConsensusMining());
+});
 app.get("/api/audit/mining-effectiveness", (c) => {
   // 分工矿兑现校验（2026-08-08，闭环反馈）：alliance/mining 分配 → 实际是否被采。
   // 每分配格状态 harvested/harvestedByOther/open/stale + 首采耗时 + 兑现率；
@@ -652,6 +659,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { warmAllianceMining(); } catch { /* 忽略 */ } }, 100);
   setTimeout(() => { try { warmMiningEffectiveness(); } catch { /* 忽略 */ } }, 105);
   setTimeout(() => { try { warmAuditTrail(); } catch { /* 忽略 */ } }, 108);
+  setTimeout(() => { try { warmConsensusMining(); } catch { /* 忽略 */ } }, 110);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
