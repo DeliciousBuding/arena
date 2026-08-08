@@ -113,4 +113,10 @@ npm run test:regression    # Playwright 回归 22 项（web/scripts/cc-regressio
    发布 goto goal 后 ≤3s（poll 周期）canvas 出现青色 #5fd4e8 完整寻路路径（首步实线/未来步虚线/方向箭头/
    目标旗/行进脉冲）；mine=白、goto=青、agent 规划=绿，命令被服务端对账清理后自然消失。
 
+10. **脚本全 TS 化 ✅（581ffab/045687e，2026-08-08）**：command-center 4 个 mjs（cc-regression/
+    check-alliance-sync/start-cc/survey-server）+ root 2 个（healthcheck/check-shared-schemas）→ .ts。
+    Node 24 type stripping（type:module）或 tsx（root 无 type:module，top-level await 包进 async main）运行；
+    tsconfig include 覆盖 scripts/test/survey-server（strict 0 错误）；cc-regression 为 Playwright e2e 加 @ts-nocheck。
+    **遗留交接**：arena-agent/scripts/check-sim-isolation.mjs（arena-agent 线，check 引用）、
+    arena-hero-ts/scripts/generate-schemas.mjs（待删包，schema:check 引用）——迁移模式同 command-center。
 9. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
