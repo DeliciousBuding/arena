@@ -40,7 +40,7 @@ const near = (d: number | null | undefined, f: number): number => {
   return Math.max(0.62, Math.min(1.6, f * 1.6 / Math.sqrt(d)));
 };
 
-function MemberCard({ t, m, ts }: { t: string; m: Member; ts?: ThreatSummary }) {
+function MemberCard({ t, m, ts, onFocus }: { t: string; m: Member; ts?: ThreatSummary; onFocus?: (t: string) => void }) {
   const hpPct = Math.max(0, Math.min(100, (m.core.hp / 5) * 100));
   const shPct = Math.max(0, Math.min(100, (m.core.shield / 5) * 100));
   const sectors = ts?.sectors ?? [];
@@ -51,6 +51,7 @@ function MemberCard({ t, m, ts }: { t: string; m: Member; ts?: ThreatSummary }) 
         <b>{t.toUpperCase()}</b>
         <span className={`sit-status${m.status === "READY" ? " ok" : ""}`}>{m.status ?? "—"}</span>
         <span className="sit-m-pos mono dim">({fmt(m.core.position?.[0])},{fmt(m.core.position?.[1])})</span>
+        <button type="button" className="sit-focus" title={`地图聚焦 ${t.toUpperCase()} 核心`} onClick={(e) => { e.stopPropagation(); onFocus?.(t); }}>聚焦</button>
       </div>
       <div className="sit-m-stats">
         <div className="sit-stat">
@@ -111,6 +112,8 @@ export function SituationPanel() {
   const [journal, setJournal] = useState<JournalData | null>(null);
   const [err, setErr] = useState("");
   const [at, setAt] = useState("");
+
+  const focusTenant = (t: string) => { if (!engine) return; engine.toggleSolo(t); }; // 完整聚焦：solo 态 + HUD/资产 + 徽章（再点退出，引擎自带返回提示）
 
   const jump = (x: number | null | undefined, y: number | null | undefined, label: string) => {
     if (typeof x !== "number" || typeof y !== "number" || !engine) return;
@@ -193,7 +196,7 @@ export function SituationPanel() {
 
       <div className="sit-members">
         {(["t1", "t2", "t3", "t4"] as const).map((t) => members[t] ? (
-          <MemberCard key={t} t={t} m={members[t]} ts={summaries.find((x) => x.tenantId === t)} />
+          <MemberCard key={t} t={t} m={members[t]} ts={summaries.find((x) => x.tenantId === t)} onFocus={focusTenant} />
         ) : null)}
       </div>
 
