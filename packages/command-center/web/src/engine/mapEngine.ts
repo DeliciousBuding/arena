@@ -80,6 +80,7 @@ interface ArenaState extends Jsonish {
   enemyHeatMax: number;
   threatRose: Jsonish | null;
   threatRoseAt: number;
+  jumpMark: { x: number; y: number; at: number } | null;
   bounds: { minX: number; minY: number; maxX: number; maxY: number } | null;
   lastRefresh: number;
   unitPrev: Map<string, Jsonish>;
@@ -118,6 +119,7 @@ const state: ArenaState = {
   enemyHeatMax: 0,      // 热区桶 count 最大值（归一化强度）
   threatRose: null,     // 威胁扇区玫瑰（/api/alliance/snapshot threatSummaries，全局联盟）
   threatRoseAt: 0,      // 上次拉取时间戳（20s 节流）
+  jumpMark: null,       // 跳转定位标记（目击/扇区/事迹跳图后短暂脉冲圈，防丢失目标）
   surveyHits: new Map(), // 测绘记忆命中（tactSurveyLayer 构建）：cellKey -> {kind,tick,state,seenCount,firstSeen}
   bounds: null,
   lastRefresh: 0,
@@ -602,6 +604,7 @@ function draw() {
   drawBeacons(s);
   if (state.hover && !state.drag) drawHoverCell(state.hover, s);
   tactDrawLayer(s);
+  drawJumpMark(s);
   if (replayActive) replayDrawLayer(s);
   const ztxt = `×${state.view.scale.toFixed(1)}`;
   if (!state.tactical.mode && els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽/方向键平移 · 滚轮缩放 · 双击适应 · G 全局 · ${ztxt}`; }
@@ -1485,6 +1488,36 @@ async function loadThreatRose() {
     const r = await getJSON('/api/alliance/snapshot', 20000);
     if (Array.isArray(r?.threatSummaries)) state.threatRose = r.threatSummaries;
   } catch { /* 端点暂不可用：保留上次玫瑰 */ }
+}
+/** 跳转定位标记：jumpTo 后目标位置画短暂脉冲定位圈（3.2s 淡出+外扩），
+ *  让"点击目击/扇区/事迹跳图"后不丢失目标。数据/状态语义，白描边 + 琥珀脉冲。 */
+function drawJumpMark(s: any) {
+  const jm = state.jumpMark;
+  if (!jm) return;
+  const age = performance.now() - jm.at;
+  const LIFE = 3200;
+  if (age >= LIFE) { state.jumpMark = null; return; }
+  const p = project(jm.x, jm.y);
+  const pr = Math.max(3, s * 0.14);
+  const a = 1 - age / LIFE;
+  const pulse = 0.5 + 0.5 * Math.sin(age / 90);
+  const grow = 1 + (age / LIFE) * 0.7;
+  ctx.save();
+  ctx.globalAlpha = a * (0.5 + 0.4 * pulse);
+  ctx.strokeStyle = 'rgba(211,173,85,.9)';
+  ctx.lineWidth = Math.max(1.2, s * 0.03);
+  ctx.beginPath(); ctx.arc(p.sx, p.sy, pr * grow, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = a * 0.85;
+  ctx.strokeStyle = 'rgba(255,255,255,.9)';
+  ctx.lineWidth = 1.2;
+  const r2 = pr * (0.55 + 0.15 * pulse);
+  ctx.beginPath(); ctx.arc(p.sx, p.sy, r2, 0, Math.PI * 2); ctx.stroke();
+  const cr = pr * 0.22;
+  ctx.beginPath();
+  ctx.moveTo(p.sx - cr, p.sy); ctx.lineTo(p.sx + cr, p.sy);
+  ctx.moveTo(p.sx, p.sy - cr); ctx.lineTo(p.sx, p.sy + cr);
+  ctx.stroke();
+  ctx.restore();
 }
 function drawThreatRose(s: any) {
   const rose = state.threatRose;
@@ -4044,7 +4077,7 @@ export function createMapEngine(host) {
     setLayer: (name, on) => { state.layers[name] = on; invalidateStatic(); draw(); savePrefs(); emit('layers', { ...state.layers }); },
     setTenantOn: (t, on) => { state.tenantsOn[t] = on; invalidateStatic(); draw(); },
     setTab: (tab) => { state.tab = tab; savePrefs(); pollStreams(); },
-    jumpTo: (x, y) => { state.view.cx = x; state.view.cy = y; state.viewAnim = null; state.zoom.active = false; draw(); },
+    jumpTo: (x, y) => { state.view.cx = x; state.view.cy = y; state.viewAnim = null; state.zoom.active = false; state.jumpMark = { x, y, at: performance.now() }; draw(); },
     resize: () => { resizeCanvas(); draw(); },
     getState: () => ({ soloTenant: state.soloTenant, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length }),
     subscribe: (cb) => { _subs.add(cb); return () => _subs.delete(cb); },
