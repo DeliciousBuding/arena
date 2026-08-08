@@ -384,14 +384,27 @@ async function main() {
         if (!eng) return { err: "no engine" };
         const st = eng.getState();
         const tenant = st.soloTenant || "t1";
-                  let w = null;
-          for (let r = 0; r < 5 && !w; r++) { try { w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json(); } catch { await new Promise((s) => setTimeout(s, 800)); } }
-          if (!w || !w.state) return { err: "world fetch failed (service restart?)" };
-        const objs = w?.state?.objects ?? [];
-        const unit = objs.find((o) => (o.kind === "UNIT" || o.kind === "CORE") && o.controlled === true && o.position);
-        if (!unit) return { err: "no controlled obj" };
+        // 所见即所点：优先画布插值绘制位（引擎按 id 实时命中，抗 tick 漂移）；
+        // 与 6f 同源修复——/api/world 实时位与画布位 mid-tick 差数格，右键会脱靶
         const v = st.view;
-        return { sx: boxX + (unit.position[0] - v.cx) * v.scale + boxW / 2, sy: boxY + (unit.position[1] - v.cy) * v.scale + boxH / 2 };
+        const onScreen = (wx: number, wy: number, m = 8) => {
+          const sx = boxX + (wx - v.cx) * v.scale + boxW / 2, sy = boxY + (wy - v.cy) * v.scale + boxH / 2;
+          return sx >= boxX - m && sx <= boxX + boxW + m && sy >= boxY - m && sy <= boxY + boxH + m;
+        };
+        const dpOf = (c: any) => (window as any).__arena && (window as any).__arena.unitDrawPos ? (window as any).__arena.unitDrawPos(c) : { x: c.x, y: c.y };
+        const uc = (st.cells ?? []).filter((c) => (c.type === "unit" || c.type === "core") && c.controlled === true && (!st.soloTenant || c.tenant === tenant));
+        let bx = 0, by = 0, haveDraw = false;
+        for (const u of uc) { const dp = dpOf(u); if (onScreen(dp.x, dp.y)) { bx = dp.x; by = dp.y; haveDraw = true; break; } }
+        let w = null;
+        for (let r = 0; r < 5 && !w; r++) { try { w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json(); } catch { await new Promise((s) => setTimeout(s, 800)); } }
+        if (!w || !w.state) return { err: "world fetch failed (service restart?)" };
+        const objs = w?.state?.objects ?? [];
+        if (!haveDraw) {
+          const unit = objs.find((o) => (o.kind === "UNIT" || o.kind === "CORE") && o.controlled === true && o.position && onScreen(o.position[0], o.position[1]));
+          if (!unit) return { err: "no controlled obj in view" };
+          bx = unit.position[0]; by = unit.position[1];
+        }
+        return { sx: boxX + (bx - v.cx) * v.scale + boxW / 2, sy: boxY + (by - v.cy) * v.scale + boxH / 2 };
       }, { boxX: boxE.x, boxY: boxE.y, boxW: boxE.width, boxH: boxE.height });
       if (tgt.err) { ctxOk = false; }
       else {
@@ -530,11 +543,18 @@ async function main() {
       await page.keyboard.press("f");
       await waitViewStable();
       let rowSelQ = -1;
-      const cntQ = await page.locator("#assetList .asset-row").count();
-      for (let j = 0; j < cntQ && rowSelQ < 0; j++) {
-        await page.click(`#assetList .asset-row:nth-child(${j + 1})`, { timeout: 3000 }).catch(() => {});
-        await sleep(800);
-        if (await page.locator('#actionDialog [data-action="MOVE"]').count() > 0) rowSelQ = j;
+      const rowProbeStartQ = Date.now();
+      while (rowSelQ < 0 && Date.now() - rowProbeStartQ < 20000) {
+        const cntQ = await page.locator("#assetList .asset-row").count();
+        for (let j = 0; j < cntQ && rowSelQ < 0; j++) {
+          await page.click(`#assetList .asset-row:nth-child(${j + 1})`, { timeout: 3000 }).catch(() => {});
+          // 点击后轮询 MOVE 按钮出现（≤2s）——动作框渲染高负载下可能 >800ms
+          for (let mp = 0; mp < 10 && rowSelQ < 0; mp++) {
+            if (await page.locator('#actionDialog [data-action="MOVE"]').count() > 0) rowSelQ = j;
+            else await sleep(200);
+          }
+        }
+        if (rowSelQ < 0) await sleep(1200);
       }
       if (rowSelQ >= 0) {
         await page.click('#actionDialog [data-action="MOVE"]', { timeout: 4000 });
