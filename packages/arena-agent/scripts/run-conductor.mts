@@ -5,10 +5,14 @@
  * 组 ConductorStepInput → conductorStep → 计划原子写/清理。真正的决策逻辑
  * 全部在 src/migration/conductor.ts（纯函数），本文件只做 IO 编排。
  *
- * ⚠️ live 阶梯待用户授权：本脚本只保证编译通过 + 逻辑可读，未在 live 环境
- * 实测（spec §8 live 阶梯 8 → 30 → 100-150 → 555 需逐级授权）。
+ * 初始意图入口（2026-08-08 接线）：`--target x,y [--reason ...]`——无计划文件
+ * 时以此构造初始计划（state=PLAN），路径/走廊审计由 conductor 自行生成。
  *
- * 用法：node scripts/run-conductor.mts --tenant t1 --data-root <path> [--config <json 文件>]
+ * ⚠️ live 阶梯待用户授权：本脚本未在 live 环境实测（spec §8 live 阶梯
+ * 8 → 30 → 100-150 → 555 需逐级授权）。
+ *
+ * 用法：node scripts/run-conductor.mts --tenant t1 --data-root <path>
+ *   [--target x,y --reason "西撤避强敌"] [--config <json 文件>]
  * - data-root：ARENA_DATA_ROOT（runtime 目录在其下：<root>/runtime/<tenant>/...）
  * - config：可选，缺省用 migration/config.ts 默认值
  */
@@ -29,55 +33,51 @@ import {
 } from "../src/migration/io.ts";
 import {
   conductorStep,
+  CONDUCTOR_LEASE_HORIZON_TICKS,
   type ConductorHeldState,
   type ConductorStepInput,
 } from "../src/migration/conductor.ts";
-import { DEFAULT_MIGRATION_RUNTIME_CONFIG } from "../src/migration/config.ts";
-import type { MigrationRuntimeConfig } from "../src/migration/config.ts";
+import {
+  loadMigrationRuntimeConfig,
+  type MigrationRuntimeConfig,
+} from "../src/migration/config.ts";
+import type { MigrationPlanV1 } from "../src/migration/plan.ts";
 import type { ConductorCoreSnapshot } from "../src/migration/conductor.ts";
 
 interface CliOptions {
   readonly tenant: string;
   readonly dataRoot: string;
   readonly configPath: string | null;
+  readonly target: { readonly x: number; readonly y: number; readonly reason: string } | null;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions | null {
   let tenant: string | null = null;
   let dataRoot: string | null = null;
   let configPath: string | null = null;
+  let target: CliOptions["target"] = null;
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index]!;
     const value = argv[index + 1];
     if (flag === "--tenant" && value !== undefined) tenant = value;
     else if (flag === "--data-root" && value !== undefined) dataRoot = value;
     else if (flag === "--config" && value !== undefined) configPath = value;
+    else if (flag === "--target" && value !== undefined) {
+      const match = /^(-?\d+)\s*,\s*(-?\d+)$/.exec(value);
+      if (match === null) {
+        console.error(`--target 格式非法：${value}（应为 "x,y"，如 --target -65,33）`);
+        return null;
+      }
+      target = { x: Number(match[1]), y: Number(match[2]), reason: "" };
+    } else if (flag === "--reason" && value !== undefined) {
+      target = target === null ? target : { ...target, reason: value };
+    }
   }
   if (tenant === null || dataRoot === null) {
-    console.error("用法：run-conductor.mts --tenant <t1|t2|t3|t4> --data-root <path> [--config <json>]");
+    console.error("用法：run-conductor.mts --tenant <t1|t2|t3|t4> --data-root <path> [--target x,y] [--reason <说明>] [--config <json>]");
     return null;
   }
-  return { tenant, dataRoot, configPath };
-}
-
-function loadConfig(configPath: string | null): MigrationRuntimeConfig {
-  if (configPath === null) return DEFAULT_MIGRATION_RUNTIME_CONFIG;
-  try {
-    const raw = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
-    // 只做浅合并（config 文件缺省字段回落默认值），迁移配置节字段名与
-    // config.ts 对齐（pace/corridor/hold/overlay）。
-    return {
-      ...DEFAULT_MIGRATION_RUNTIME_CONFIG,
-      ...raw,
-      pace: { ...DEFAULT_MIGRATION_RUNTIME_CONFIG.pace, ...(raw.pace as object ?? {}) },
-      corridor: { ...DEFAULT_MIGRATION_RUNTIME_CONFIG.corridor, ...(raw.corridor as object ?? {}) },
-      hold: { ...DEFAULT_MIGRATION_RUNTIME_CONFIG.hold, ...(raw.hold as object ?? {}) },
-      overlay: { ...DEFAULT_MIGRATION_RUNTIME_CONFIG.overlay, ...(raw.overlay as object ?? {}) },
-    } as MigrationRuntimeConfig;
-  } catch (error) {
-    console.warn(`config 加载失败，回落默认值：${error instanceof Error ? error.message : String(error)}`);
-    return DEFAULT_MIGRATION_RUNTIME_CONFIG;
-  }
+  return { tenant, dataRoot, configPath, target };
 }
 
 /**
@@ -163,32 +163,89 @@ function parseObservation(raw: unknown): BestEffortObservation | null {
 }
 
 /**
- * 读 <data-root>/runtime/<tenant>/calibration/latest 下最新的 case JSON。
- * latest 可能是目录（取 mtime 最新的 *.json）或单文件。
+ * 读 <data-root>/runtime/<tenant>/calibration 下最新的 case JSON（观测源）。
+ *
+ * 优先 `calibration/latest`（目录取 mtime 最新 *.json，或单文件）；不存在时
+ * 回退扫描 `calibration/<runId>/cases/`（runtime-golden recorder 实写布局，
+ * 2026-08-08 接线）——取 mtime 最新的 run 目录下最新的 case 文件。
  */
 function readLatestObservation(dataRoot: string, tenant: string): BestEffortObservation | null {
-  const latestPath = join(dataRoot, "runtime", tenant, "calibration", "latest");
-  try {
-    if (!existsSync(latestPath)) {
-      console.warn(`[${tenant}] 无 calibration 目录：${latestPath}（跳过本 tick）`);
-      return null;
-    }
-    if (statSync(latestPath).isFile()) {
-      return parseObservation(readJsonFile(latestPath));
-    }
-    const candidates = readdirSync(latestPath)
+  const calibrationRoot = join(dataRoot, "runtime", tenant, "calibration");
+  const newestJsonFile = (directory: string): string | null => {
+    if (!existsSync(directory) || !statSync(directory).isDirectory()) return null;
+    const candidates = readdirSync(directory)
       .filter((name) => name.endsWith(".json"))
-      .map((name) => join(latestPath, name))
+      .map((name) => join(directory, name))
       .sort((first, second) => statSync(second).mtimeMs - statSync(first).mtimeMs);
-    if (candidates.length === 0) {
+    return candidates[0] ?? null;
+  };
+  try {
+    const latestPath = join(calibrationRoot, "latest");
+    if (existsSync(latestPath)) {
+      if (statSync(latestPath).isFile()) {
+        return parseObservation(readJsonFile(latestPath));
+      }
+      const latestFile = newestJsonFile(latestPath);
+      if (latestFile !== null) return parseObservation(readJsonFile(latestFile));
       console.warn(`[${tenant}] calibration/latest 目录为空（跳过本 tick）`);
       return null;
     }
-    return parseObservation(readJsonFile(candidates[0]!));
+    // 回退：最新 run 目录 → cases 目录 → 最新 case 文件
+    const runs = readdirSync(calibrationRoot)
+      .filter((name) => {
+        try { return statSync(join(calibrationRoot, name)).isDirectory(); } catch { return false; }
+      })
+      .sort((first, second) => statSync(join(calibrationRoot, second)).mtimeMs - statSync(join(calibrationRoot, first)).mtimeMs);
+    for (const run of runs) {
+      const caseFile = newestJsonFile(join(calibrationRoot, run, "cases"));
+      if (caseFile !== null) return parseObservation(readJsonFile(caseFile));
+    }
+    console.warn(`[${tenant}] calibration 无可用 case（跳过本 tick）`);
+    return null;
   } catch (error) {
     console.warn(`[${tenant}] calibration 解析失败（跳过本 tick）：${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
+}
+
+/**
+ * 初始意图 → 初始计划（state=PLAN）。路径/legs/走廊审计留待 conductorStep
+ * 的 PLAN 阶段从 survey 生成（planPhaseStep），这里只带 target + 核心身份。
+ */
+function buildInitialPlan(
+  tenant: string,
+  observation: BestEffortObservation,
+  target: { readonly x: number; readonly y: number; readonly reason: string },
+  config: MigrationRuntimeConfig,
+): MigrationPlanV1 {
+  const now = new Date().toISOString();
+  const coreId = observation.core?.id ?? null;
+  return {
+    schema: "migration-plan-v1",
+    operationId: `op-${Date.now()}-${tenant}-intent`,
+    revision: 1,
+    conductorEpoch: 1,
+    tenant,
+    mode: "migrate",
+    state: "PLAN",
+    core: {
+      originCoreId: coreId,
+      currentCoreId: coreId,
+      generation: 1,
+    },
+    lease: {
+      untilTick: observation.tick + CONDUCTOR_LEASE_HORIZON_TICKS,
+      heartbeatAt: now,
+    },
+    target: { x: target.x, y: target.y, reason: target.reason },
+    path: { cells: [], corridorWidth: config.corridor.width, lookahead: config.corridor.lookahead },
+    legs: [],
+    legProgress: { legIndex: 0, cellsThisLeg: 0 },
+    pace: { ...config.pace },
+    roles: { quotas: { escort: 40, sweep: 30, scout: 15, rear: 15 }, seed: 12345 },
+    conductor: { pid: process.pid },
+    updatedAt: now,
+  };
 }
 
 function main(): void {
@@ -196,7 +253,7 @@ function main(): void {
   if (options === null) process.exit(1);
 
   const { tenant, dataRoot } = options;
-  const config = loadConfig(options.configPath);
+  const config = loadMigrationRuntimeConfig(options.configPath);
   const planPath = migrationPlanPath(dataRoot, tenant);
   const lockPath = join(dataRoot, "runtime", "migration", `${tenant}.lock`);
   const pid = process.pid;
@@ -221,9 +278,20 @@ function main(): void {
       if (observation === null) return; // 解析失败跳过本 tick（计划留在磁盘，lease 过期后 runtime fail-closed）
 
       const planResult = readMigrationPlan(planPath);
-      const plan = planResult.ok ? planResult.plan : null;
+      let plan = planResult.ok ? planResult.plan : null;
       if (!planResult.ok && planResult.reason === "malformed") {
         console.warn(`[${tenant}] 计划文件损坏（fail-closed，本 tick 不写盘）`);
+      }
+
+      // 初始意图接线：无计划 + 给了 --target → 构造初始计划（PLAN）并立即推进
+      if (plan === null && options.target !== null) {
+        if (observation.core?.position === null || observation.core === null) {
+          console.error(`[${tenant}] 无法发起迁移：核心位置未知（等待校准）`);
+          return;
+        }
+        plan = buildInitialPlan(tenant, observation, options.target, config);
+        writeMigrationPlanAtomic(planPath, plan);
+        console.log(`[${tenant}] 初始意图 → 计划写入（PLAN，目标 [${options.target.x},${options.target.y}]${options.target.reason !== "" ? `，理由：${options.target.reason}` : ""}）`);
       }
 
       const input: ConductorStepInput = {
