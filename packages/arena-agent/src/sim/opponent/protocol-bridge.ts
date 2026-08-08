@@ -137,6 +137,58 @@ export type ProtoCoreAction =
   | { readonly type: "SELF_DESTRUCT" };
 
 /* ============================================================
+ * 1.5 官方 wire 适配：确定性 UUID + 用户名归一化
+ *
+ * 官方 pydantic 模型是严格模式（extra="forbid"）且 `id` 字段必须合法 UUID。
+ * 模拟器内部：
+ *  - 单位/核心 ID 已是场景 UUID（loaders assertCanonicalUuid），透传即可；
+ *  - 事件 ID 是 "sim:..." 内部格式 → 必须转合法 UUID；
+ *  - owner_username 要求 `^[a-z0-9_]+$` 且长度 >=3 → 归一化（"-" → "_"，
+ *    不足补 "_"），避免官方 pydantic pattern 校验拒绝。
+ * ============================================================ */
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** 把任意内部 ID 确定性映射为合法 UUID（FNV-1a 64 位 → v5 风格布局）。 */
+export function toDeterministicUuid(id: string): string {
+  const FNV_OFFSET = 0xcbf29ce484222325n;
+  const FNV_PRIME = 0x100000001b3n;
+  let hash = FNV_OFFSET;
+  for (const byte of Buffer.from(`arena:${id}`, "utf8")) {
+    hash ^= BigInt(byte);
+    hash = (hash * FNV_PRIME) & 0xffffffffffffffffn;
+  }
+  const bytes = new Uint8Array(16);
+  const high = hash;
+  const low = (hash * FNV_PRIME) & 0xffffffffffffffffn;
+  for (let index = 0; index < 8; index += 1) {
+    bytes[7 - index] = Number((high >> BigInt(index * 8)) & 0xffn);
+    bytes[15 - index] = Number((low >> BigInt(index * 8)) & 0xffn);
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+}
+
+/** 已是合法 UUID 则原样返回，否则确定性转换（事件 ID/actor/target 用）。 */
+function asOfficialUuid(id: string): string {
+  return UUID_RE.test(id) ? id : toDeterministicUuid(id);
+}
+
+/** 归一化 owner_username 以满足官方 `^[a-z0-9_]+$` 且长度 >=3。 */
+export function normalizeOwnerUsername(name: string): string {
+  const cleaned = name.replace(/[^a-z0-9_]/g, "_");
+  if (cleaned.length >= 3) return cleaned;
+  return cleaned.padEnd(3, "_");
+}
+
+/** 归一化 champion_beacon 的 carrier_id（UUID 校验）。 */
+function asOfficialNullableUuid(id: string | null): string | null {
+  return id === null ? null : asOfficialUuid(id);
+}
+
+/* ============================================================
  * 2. 翻译：TickState → ProtoPlayerState
  * ============================================================ */
 
@@ -152,7 +204,7 @@ export function directionToProto(direction: Direction): ProtoDirection {
  *  - controlled=true 的单位/核心 = 本租户拥有的；
  *  - 其他可见实体（visibleEnemies）→ controlled=false；
  *  - 资源/障碍 → TerrainView；
- *  - events 直接透传。
+ *  - events 直接透传（event_id/actor/target 过 UUID 适配）。
  * 注意：official PlayerState 是"单个玩家视角"，所以本函数只产出**当前玩家**的
  * 视图（no cross-view merging here — 由调用方决定该喂哪个玩家视角）。
  */
@@ -165,7 +217,7 @@ export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoP
       kind: "CORE",
       id: state.core.id,
       controlled: state.core.ownerUsername === selfPlayerId,
-      owner_username: state.core.ownerUsername,
+      owner_username: normalizeOwnerUsername(state.core.ownerUsername),
       position: state.core.position,
       hp: state.core.hp,
       shield: state.core.shield,
@@ -197,7 +249,7 @@ export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoP
         kind: "CORE",
         id: enemy.id,
         controlled: false,
-        owner_username: enemy.ownerUsername ?? "unknown",
+        owner_username: normalizeOwnerUsername(enemy.ownerUsername ?? "unknown"),
         position: enemy.position,
         hp: enemy.hp,
         shield: 0,
@@ -234,7 +286,7 @@ export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoP
     champion_beacon: {
       position: state.beacon.position,
       status: state.beacon.status,
-      carrier_id: state.beacon.carrierId,
+      carrier_id: asOfficialNullableUuid(state.beacon.carrierId),
     },
     objects,
     events: state.events.map(eventToProto),
@@ -248,12 +300,12 @@ function parseCell(key: string): readonly [number, number] {
 
 function eventToProto(event: ResolutionEventSnapshot): ProtoResolutionEvent {
   return {
-    event_id: event.eventId,
+    event_id: asOfficialUuid(event.eventId),
     tick: event.tick,
     event_type: event.eventType,
     reason_code: event.reasonCode,
-    actor_id: event.actorId,
-    target_id: event.targetId,
+    actor_id: asOfficialNullableUuid(event.actorId),
+    target_id: asOfficialNullableUuid(event.targetId),
     position: event.position ?? null,
     values: Object.keys(event.values).length === 0 ? null : event.values,
   };
