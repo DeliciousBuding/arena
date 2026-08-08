@@ -20,5 +20,6 @@
   },
   "optionalDependencies": {
     "@typescript/typescript-linux-x64": "7.0.2"
-  }
+  },
+  "packageManager": "pnpm@10.32.1"
 }
