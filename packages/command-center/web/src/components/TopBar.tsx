@@ -30,6 +30,14 @@ export function TopBar() {
   const [encounteredCount, setEncounteredCount] = useState(0);
   const [overview, setOverview] = useState<OverviewTenant[]>([]);
   const [health, setHealth] = useState<HealthPayload | null>(null);
+  // 主题切换（2026-08-09）：深色/浅色，localStorage 持久化；Canvas 地图保持暗色场景不变
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    try { return (localStorage.getItem("arena-cc.theme") as "dark" | "light") || "dark"; } catch { return "dark"; }
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem("arena-cc.theme", theme); } catch { /* 隐私模式忽略 */ }
+  }, [theme]);
 
   useEffect(() => {
     if (!engine) return;
@@ -116,6 +124,12 @@ export function TopBar() {
             ? (health.global.missingTenants?.length ? "测绘缺失" : `测绘滞后 ${health.global.maxLagTicks ?? "?"}t`)
             : "测绘同步"}
         </span>
+        <button id="themeToggle" className="btn ghost" type="button"
+          title={theme === "dark" ? "切换到浅色主题（UI 层；地图保持暗色场景）" : "切换到深色主题"}
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          aria-label="切换主题">
+          {theme === "dark" ? "☀" : "🌙"}
+        </button>
       </div>
     </header>
   );
