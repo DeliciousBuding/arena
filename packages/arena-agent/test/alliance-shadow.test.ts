@@ -147,3 +147,14 @@ test("AllianceShadowWriter：onFrame 返回完整事实帧，callback 抛错仍 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test("Alliance member report: real military units expose deterministic activeFleetIds", async () => {
+  const { memberStateFromState } = await import("../src/alliance/shadow.ts");
+  const state = makeState(200, { units: [
+    { id:"v1", unitType:"VANGUARD" }, { id:"v2", unitType:"VANGUARD" }, { id:"r1", unitType:"RANGER" },
+    { id:"v3", unitType:"VANGUARD" }, { id:"v4", unitType:"VANGUARD" }, { id:"r2", unitType:"RANGER" },
+  ] });
+  const member = memberStateFromState(state, "t2", 200_000);
+  assert.deepEqual(member.activeFleetIds, ["t2:home:0", "t2:strike:0"]);
+});

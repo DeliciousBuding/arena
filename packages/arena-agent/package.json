@@ -9,7 +9,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit && node scripts/check-sim-isolation.mjs",
-    "test": "node --test --test-force-exit \"test/*.test.ts\"",
+    "test": "node scripts/run-tests.mjs",
     "arena:doctor": "tsx src/cli/run-tenant.ts --doctor",
     "arena:shadow": "tsx src/cli/run-tenant.ts",
     "arena:live": "tsx src/cli/run-tenant.ts --live",

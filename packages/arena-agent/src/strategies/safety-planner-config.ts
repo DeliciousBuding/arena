@@ -358,6 +358,14 @@ export interface SafetyPlannerConfig {
    * （只邻接 SWEEP 反击，零回归）。
    */
   readonly vanguardPreyWorker?: boolean;
+  /**
+   * 同 Tick 协同火力（2026-08-08，竞品 projected-damage/overkill 对照）：
+   * SafetyPlanner 按确定性单位顺序维护本 Tick 预计伤害账本；Vanguard SWEEP
+   * 对相邻格全部敌人记 1，Ranger precision SHOOT 对目标记 1。后续 Ranger
+   * 优先转火尚未被预计击杀的敌方 Unit，减少多枪打 1HP 目标的 DPS 浪费。
+   * 敌 Core 因可见模型不含 shield，不做“预计已死”过滤。默认 false 零回归。
+   */
+  readonly coordinatedFire?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
