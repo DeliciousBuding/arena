@@ -58,6 +58,7 @@ import {
   samePosition,
   yieldAnchor,
 } from "./safety-planner-helpers.ts";
+import { EMPTY_ROSTER_ID_SET, type AllianceRosterRef } from "../alliance/roster-file.ts";
 import {
   chokepointLockPoint,
   enemyReturnPath,
@@ -398,15 +399,24 @@ export class SafetyPlanner {
    *  data/leaderboard/ 快照加载注入；缺省空 Map = 无威胁情报（零回归）。
    *  可变 Map（seedThreatProfiles 装配用），消费端只读。 */
   private readonly threatProfiles = new Map<string, ThreatProfile>();
+  /** 联盟 no-fire 花名册（2026-08-08，alliance-no-fire-v1）：可变引用，supervisor
+   *  聚合帧 → roster 文件 → 本进程热刷新（替换引用不丢 World/记忆）。decide 每
+   *  tick 读 current；knownAllianceEntityId => never deliberate target（spec §5.5）。
+   *  null = 未启用（零回归）。 */
+  private rosterRef: AllianceRosterRef | null = null;
+  /** 本 decide 被 no-fire 过滤掉的可见"敌人"数（telemetry/测试可读）。 */
+  alliedFilteredCount = 0;
 
   constructor(
     config: SafetyPlannerConfig = DEFAULT_SAFETY_CONFIG,
     world = new World(),
     threatProfiles: ReadonlyMap<string, ThreatProfile> = new Map(),
+    rosterRef: AllianceRosterRef | null = null,
   ) {
     this.configValue = config;
     this.world = world;
     this.phase = new PhaseMachine(config.phase);
+    this.rosterRef = rosterRef;
     for (const [username, profile] of threatProfiles) {
       this.threatProfiles.set(username, profile);
     }
@@ -898,9 +908,12 @@ export class SafetyPlanner {
       ...(input.sharedObstacles ?? []),
     ]));
     const allies = input.allyUsernames ?? new Set<string>();
+    const allyIds = this.rosterRef?.allyEntityIds ?? EMPTY_ROSTER_ID_SET;
     const enemies = state.visibleEnemies
       .filter((enemy) => !(enemy.kind === "CORE" && enemy.ownerUsername !== undefined && allies.has(enemy.ownerUsername)))
+      .filter((enemy) => !allyIds.has(enemy.id))
       .sort((a, b) => a.id.localeCompare(b.id));
+    this.alliedFilteredCount = state.visibleEnemies.length - enemies.length;
     const workerIndex = new Map(
       [...state.workers]
         .sort((a, b) => a.id.localeCompare(b.id))
