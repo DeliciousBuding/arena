@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { computePredictionAccuracy } from "../lib/mine-patterns.ts";
+import { computePredictionAccuracy, computeRefillPredictions } from "../lib/mine-patterns.ts";
 import type { MineRefillPrediction } from "../lib/mine-patterns.ts";
 
 const pred = (cell: string, next: number | null): MineRefillPrediction => ({
@@ -38,3 +38,29 @@ test("mine-patterns: 命中率空兜底 + 未到期跳过", () => {
   assert.equal(computePredictionAccuracy([], [], 500), null, "空预测 → null");
 });
 
+test("mine-patterns: refill 算法契约与 arena-agent 一致（防止双实现漂移）", async () => {
+  // 2026-08-08：arena-agent/src/intel/refill-predictions.ts 曾用 lastStart+avgGap，
+  // 与 mine-patterns 的 lastEnd+avgAbsent 分叉（实测 95% 格差异、最大 72 tick）。
+  // 契约测试：对同一 rows，两边 predictedNextTick 必须逐格一致。
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { computeRefillPredictions: agentCompute } = await import("../../arena-agent/src/intel/refill-predictions.ts");
+  const rows = [
+    { cell: "1,1", tick: 100 }, { cell: "1,1", tick: 104 },
+    { cell: "1,1", tick: 200 }, { cell: "1,1", tick: 204 },
+    { cell: "1,1", tick: 300 }, { cell: "1,1", tick: 301 },
+    { cell: "2,2", tick: 50 }, { cell: "2,2", tick: 160 },
+    { cell: "3,3", tick: 10 }, { cell: "3,3", tick: 12 }, { cell: "3,3", tick: 90 }, { cell: "3,3", tick: 95 },
+  ];
+  const resources = [
+    { cell: "1,1", x: 1, y: 1 }, { cell: "2,2", x: 2, y: 2 }, { cell: "3,3", x: 3, y: 3 },
+  ];
+  const cc = computeRefillPredictions(rows, resources, 400);
+  const agent = agentCompute(rows, 400);
+  assert.equal(cc.length, agent.size, "两边预测格数一致");
+  for (const p of cc) {
+    const ap = agent.get(p.cell);
+    assert.ok(ap, `agent 应含 ${p.cell}`);
+    assert.equal(ap.predictedNextTick, p.predictedNextTick, `${p.cell} predictedNextTick 契约一致`);
+    assert.equal(ap.dueInTicks, p.dueInTicks, `${p.cell} dueInTicks 契约一致`);
+  }
+});
