@@ -52,6 +52,7 @@ export interface DecisionAuditPayload {
 }
 
 const cache = new TtlCache<Record<string, DecisionAuditPayload> | DecisionAuditPayload>(TTL_MS);
+const trendCache = new TtlCache<DecisionTrendPayload>(TTL_MS);
 
 function num(v: unknown): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -183,6 +184,67 @@ function auditTenant(tenant: string, window: number): DecisionAuditPayload {
   return aggregateAudit(tenant, window, dLines, oLines);
 }
 
+export interface DecisionTrendStep {
+  /** 0=最早，steps-1=最新。 */
+  index: number;
+  window: number;
+  tick: number | null;
+  stallRate: number | null;
+  planChurn: number | null;
+  cargoEff: number | null;
+  coreDelta: number;
+  humanApplied: number;
+  humanRejected: number;
+}
+
+export interface DecisionTrendPayload {
+  generatedAt: string;
+  tenant: string;
+  window: number;
+  steps: number;
+  trend: DecisionTrendStep[];
+  cachedAt: string;
+}
+
+/** 决策-结果趋势（2026-08-08，综合决策）：把尾部 decision/outcome 切成 N 个连续窗口，
+ *  逐窗口聚合 stallRate/planChurn/cargoEff/coreDelta/人类覆盖——看"是否在改善"。
+ *  纯函数可测。 */
+export function aggregateDecisionTrend(
+  tenant: string,
+  window: number,
+  steps: number,
+  dLines: readonly string[],
+  oLines: readonly string[],
+): DecisionTrendPayload {
+  const trend: DecisionTrendStep[] = [];
+  for (let i = 0; i < steps; i += 1) {
+    const start = dLines.length - steps * window + i * window;
+    const end = start + window;
+    const dSlice = dLines.slice(Math.max(0, start), Math.max(0, end));
+    const oSlice = oLines.slice(Math.max(0, start), Math.max(0, end));
+    const a = aggregateAudit(tenant, window, dSlice, oSlice);
+    trend.push({
+      index: i,
+      window: a.decision.records,
+      tick: a.currentTick,
+      stallRate: a.decision.records > 0 ? a.decision.stallTicks / a.decision.records : null,
+      planChurn: a.decision.planChurn?.rate ?? null,
+      cargoEff: a.outcome.cargoEfficiency,
+      coreDelta: a.outcome.coreDeltaSum,
+      humanApplied: a.outcome.humanApplied,
+      humanRejected: a.outcome.humanRejected,
+    });
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    tenant,
+    window,
+    steps,
+    trend,
+    cachedAt: new Date().toISOString(),
+  };
+}
+
 export function loadDecisionAudit(tenant = "all", window = DEFAULT_RECORDS): Record<string, DecisionAuditPayload> | DecisionAuditPayload {
   const key = `${tenant}:${window}`;
   const hit = cache.get(key);
@@ -194,8 +256,28 @@ export function loadDecisionAudit(tenant = "all", window = DEFAULT_RECORDS): Rec
     return perTenant;
   }
   const payload = auditTenant(tenant, window);
-  cache.set(key, payload);
+  cache.set(key, payload as unknown as DecisionAuditPayload);
   return payload;
+}
+
+/** 决策趋势（只读尾部）：单租户 N 窗口切片；缓存 30s + 启动预热。 */
+export function loadDecisionTrend(tenant: string, window = 500, steps = 6): DecisionTrendPayload {
+  const key = `trend:${tenant}:${window}:${steps}`;
+  const hit = trendCache.get(key);
+  if (hit !== undefined) return hit;
+  const base = join(DATA_ROOT, "runtime", tenant, "telemetry");
+  const total = Math.min(Math.max(window * steps, 500), 20_000);
+  const maxBytes = Math.min(8 * 1024 * 1024, total * 1100);
+  const dLines = tailLines(join(base, "decision.jsonl"), maxBytes, total);
+  const oLines = tailLines(join(base, "outcome.jsonl"), maxBytes, total);
+  const payload = aggregateDecisionTrend(tenant, window, steps, dLines, oLines);
+  trendCache.set(key, payload);
+  return payload;
+}
+
+/** 启动预热：四租户决策趋势（只读尾部，一次性）。 */
+export function warmDecisionTrend(): void {
+  for (const t of TENANTS) loadDecisionTrend(t);
 }
 
 /** 启动预热：四租户决策审计（只读尾部，一次性）。 */

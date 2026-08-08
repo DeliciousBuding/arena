@@ -39,7 +39,7 @@ import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverri
 import { shopProducts, shopCookie, shopMe, shopOrders, shopOrder } from "./lib/shop.ts";
 import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/redeem-log.ts";
 import { appendArbitration, clearArbitration, listArbitrations } from "./lib/arbitration.ts";
-import { loadDecisionAudit, warmDecisionAudit } from "./lib/decision-audit.ts";
+import { loadDecisionAudit, warmDecisionAudit, loadDecisionTrend, warmDecisionTrend } from "./lib/decision-audit.ts";
 import { loadLifecycleAudit, warmLifecycleAudit } from "./lib/lifecycle-audit.ts";
 import { loadMineUtilization, warmMineUtilization } from "./lib/mine-utilization.ts";
 import { loadAuditOverview, warmAuditOverview } from "./lib/audit-overview.ts";
@@ -346,6 +346,20 @@ app.get("/api/audit/decisions", (c) => {
   const window = Number.isFinite(w) ? Math.min(Math.max(w, 200), 20_000) : DEFAULT_AUDIT_WINDOW;
   return c.json(loadDecisionAudit(tenant, window));
 });
+app.get("/api/audit/decisions/trend", (c) => {
+  // 决策-结果趋势（2026-08-08，综合决策）：尾部 decision/outcome 切 N 窗口，
+  // 看 stall/planChurn/cargoEff/coreDelta 是否在改善。?tenant=tN&window=500&steps=6。
+  const tenant = c.req.query("tenant") ?? "t1";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  if (tenant === "all") return c.json({ error: "趋势仅支持单租户" }, 400);
+  const w = Number(c.req.query("window") ?? 500);
+  const window = Number.isFinite(w) ? Math.min(Math.max(w, 100), 2000) : 500;
+  const s = Number(c.req.query("steps") ?? 6);
+  const steps = Number.isFinite(s) ? Math.min(Math.max(s, 2), 12) : 6;
+  return c.json(loadDecisionTrend(tenant, window, steps));
+});
 app.get("/api/audit/lifecycle", (c) => {
   // 生命周期审计（2026-08-08）：单位/矿物/核心生命周期标注 + 消费汇总。
   // 读最新 run 的 calibration 事件（只读），30s 缓存 + 启动预热，不进周期循环。
@@ -593,6 +607,8 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { loadAllianceIntel(); } catch { /* 忽略 */ } }, 0);
   // 决策审计（重 I/O 尾部截读）：启动预热一次，不进 30s 周期循环（请求惰性 30s 缓存）。
   setTimeout(() => { try { warmDecisionAudit(); } catch { /* 忽略 */ } }, 50);
+  // 决策趋势（尾部只读）：启动预热一次，不进周期循环。
+  setTimeout(() => { try { warmDecisionTrend(); } catch { /* 忽略 */ } }, 55);
   // 生命周期审计（重 I/O 全 case 解析）：启动预热一次，不进周期循环（请求惰性 30s 缓存）。
   setTimeout(() => { try { warmLifecycleAudit(); } catch { /* 忽略 */ } }, 60);
   // 矿利用审计（survey-db 只读）：启动预热一次，不进周期循环（请求惰性 30s 缓存）。
