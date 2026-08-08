@@ -4305,33 +4305,37 @@ function tactShowFeature(cell: any, px: any, py: any) {
       const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
       const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
       const path = tactFindPath(world, tac.selected.obj.position, [wx, wy], tac.selected.tenant);
-      if (path) {
-        tac.moveGoals[tac.selected.obj.id] = [wx, wy];
-        tac.moveRoute = { path };
-        tac.routePreview = null;
-        tac.mode = null;
-        // 意图式指挥：点矿 = 下达「采矿任务」（到达自动挖、满仓回仓）；点空地 = 移动任务
-        const key = `${tac.selected.tenant}:${wx},${wy}`;
-        const cell = state.cellIndex.get(key);
-        const isResource = (cell && cell.type === 'resource') ||
-          (world.state?.objects ?? []).some((o: any) => o.kind === 'RESOURCE' && (o.positions ?? []).some((p: any) => p[0] === wx && p[1] === wy));
-        const kind = isResource ? 'mine' : 'goto';
-        if (shift) {
-          // Shift+点击 = 追加命令队列（当前段完成后自动执行下一段）
-          queuePush(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy]);
-          tactRenderActionDialog(); draw();
-        } else {
-          submitGoal(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy], kind === 'mine' ? `采矿 → [${wx}, ${wy}]` : `移动 → [${wx}, ${wy}]`);
-          tactRenderActionDialog(); tactRenderInspect(); draw();
-        }
-      } else {
-        // 目标不可达（路径被堵/在障碍中）——官方 routeBlocked/routeUnknown 语义
-        const blockedCell = state.cellIndex.get(`${tac.selected.tenant}:${wx},${wy}`);
-        const onObstacle = blockedCell && blockedCell.type === 'obstacle' || (world.state && world.state.objects || []).some((o: any) => o.kind === 'OBSTACLE' && (o.positions || []).some((p: any) => p[0] === wx && p[1] === wy));
-        var msg = onObstacle ? ('目标 [' + wx + ', ' + wy + '] 是障碍，无法到达') : ('目标 [' + wx + ', ' + wy + '] 不可达（路径被堵）');
-        toast(msg, 'warn');
-        // 保持 MOVE 模式让用户重选
+      const key = `${tac.selected.tenant}:${wx},${wy}`;
+      const cell = state.cellIndex.get(key);
+      const isResource = (cell && cell.type === 'resource') ||
+        (world.state?.objects ?? []).some((o: any) => o.kind === 'RESOURCE' && (o.positions ?? []).some((p: any) => p[0] === wx && p[1] === wy));
+      const kind = isResource ? 'mine' : 'goto';
+      // 意图式指挥：点矿=采矿任务（到达自动挖、满仓回仓）；点空地=移动任务。
+      // 人类指挥最高控制权：目标为实时障碍才拒绝；测绘记忆寻路失败只影响虚线预览，不吞命令（服务端权威导航）。
+      const onObstacle = (world.state?.objects ?? []).some((o: any) => o.kind === 'OBSTACLE' && (o.positions ?? []).some((p: any) => p[0] === wx && p[1] === wy));
+      if (onObstacle) {
+        toast(`目标 [${wx}, ${wy}] 是障碍，无法到达`, 'warn');
         draw();
+        return;
+      }
+      tac.moveGoals[tac.selected.obj.id] = [wx, wy];
+      tac.moveRoute = path ? { path } : null;
+      tac.routePreview = null;
+      tac.mode = null;
+      if (path && !shift) {
+        submitGoal(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy], kind === 'mine' ? `采矿 → [${wx}, ${wy}]` : `移动 → [${wx}, ${wy}]`);
+        tactRenderActionDialog(); tactRenderInspect(); draw();
+      } else if (path && shift) {
+        // Shift+点击 = 追加命令队列（当前段完成后自动执行下一段）
+        queuePush(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy]);
+        tactRenderActionDialog(); draw();
+      } else if (!path && shift) {
+        queuePush(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy]);
+        tactRenderActionDialog(); draw();
+      } else {
+        // 记忆寻路不可达（雾区/旧测绘差异）但目标非实时障碍：仍提交，避免"点了没反应"
+        submitGoal(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy], kind === 'mine' ? `采矿 → [${wx}, ${wy}]（记忆不可达，按目标提交）` : `移动 → [${wx}, ${wy}]（记忆不可达，按目标提交）`);
+        tactRenderActionDialog(); tactRenderInspect(); draw();
       }
     }
     return;
