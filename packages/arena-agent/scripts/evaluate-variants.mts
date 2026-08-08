@@ -10,12 +10,13 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runEpisode } from "../src/sim/harness/episode.ts";
-import type { EpisodeTenant } from "../src/sim/harness/episode.ts";
+import type { EpisodeResult, EpisodeTenant } from "../src/sim/harness/episode.ts";
 import type { PlanProvider } from "../src/runtime/decision-types.ts";
 import { SafetyPlanner } from "../src/strategies/safety-planner.ts";
 import { DEFAULT_SAFETY_CONFIG } from "../src/strategies/safety-planner.ts";
 import type { SafetyPlannerConfig } from "../src/strategies/safety-planner.ts";
 import { makeProceduralMatchScenario, DEFAULT_PROCEDURAL_PARAMS } from "../src/sim/world/procedural.ts";
+import { evaluateMultiSeed } from "../src/offline-learning/eval/fitness.ts";
 
 const MANIFEST_PATH = "src/sim/contracts/rules-v0.14.json";
 const SCENARIO_DIR = "scripts/scenarios";
@@ -48,6 +49,8 @@ interface Outcome {
   p2CoreAlive: boolean;
   p2DestroyedAt: number;
   p1Resources: number;
+  /** W51: 保留 EpisodeResult 供 fitness 评估复用（不重跑 episode）。 */
+  result: EpisodeResult;
 }
 
 function runScenarioObject(
@@ -88,7 +91,7 @@ function runScenarioObject(
     }
   }
   const p1 = result.finalWorld.players.get("p1")!;
-  return { p1CoreAlive, p2CoreAlive, p2DestroyedAt, p1Resources: p1.resources };
+  return { p1CoreAlive, p2CoreAlive, p2DestroyedAt, p1Resources: p1.resources, result };
 }
 
 function runScenario(
@@ -146,4 +149,29 @@ if (USE_PROCEDURAL) {
     procCells.push(`p1${p1Alive}/3 p2${p2Down}/3 t${avgTick.toFixed(0)}`.padEnd(16));
   }
   console.log(["procedural".padEnd(16), ...procCells].join(" | "));
+}
+
+// ---- W51：fitness 多目标评分出口 ----
+// 在第一个双人场景上对每个变体跑 3 seeds，用 evaluateMultiSeed 计算
+// p1 的 fitness（cost ledger 已在 episode 运行时累计，此处只做聚合）。
+// fitness 权重移植自 reference fitness_from_detail（GA 超参，不进搜索空间）。
+const fitnessScenarioFile = scenarioFiles.find((f) => {
+  const scenario = JSON.parse(readFileSync(join(SCENARIO_DIR, f), "utf-8"));
+  return (scenario.players ?? []).length === 2;
+});
+if (fitnessScenarioFile !== undefined) {
+  console.log("-".repeat(120));
+  console.log(`W51 fitness（场景 ${fitnessScenarioFile.replace(".json", "")}，p1 多种子聚合）`);
+  const fitnessCells: string[] = [];
+  for (const variant of VARIANTS) {
+    const outcomes = SEEDS.map((seed) => runScenario(join(SCENARIO_DIR, fitnessScenarioFile), variant, seed));
+    const { fitness, detail } = evaluateMultiSeed(
+      outcomes.map((o) => ({ result: o.result, playerId: "p1" })),
+      TICKS,
+    );
+    const std = detail.fitness_std ?? 0;
+    fitnessCells.push(`f${fitness.toFixed(1)}±${std.toFixed(1)}`.padEnd(16));
+  }
+  console.log(["p1-fitness".padEnd(16), ...fitnessCells].join(" | "));
+  console.log("图例: fN±M = fitness 均值 ± std（3 seeds；权重移植自 reference fitness_from_detail）");
 }

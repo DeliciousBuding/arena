@@ -46,6 +46,46 @@ export interface EpisodeTickPlayerMeasurement {
   readonly population: number;
 }
 
+/**
+ * W51 per-player cost ledger：从 settlement 事件流累计的经济/战斗账本。
+ * 字段对齐 arena-evolve fitness._detail_of / _agg_from 的 key 集合，使
+ * fitness.ts 可直接从 EpisodeResult.metrics.perPlayer 派生 detail dict。
+ *
+ * 累计来源（events + per-tick world 快照）：
+ * - harvested   ← HARVEST_SUCCEEDED.amount + BEACON_HARVEST_BONUS.amount
+ * - deposited   ← DEPOSIT_SUCCEEDED.amount
+ * - damageDealt ← SHOT_HIT.damage（attacker 归属；sweep 不计，baseline 限制）
+ * - beaconTicks ← 每 tick after.beacon.status==CARRIED 且 carrierId 属本玩家
+ * - respawnCount← CORE_RESPAWNED.targetId 属本玩家
+ * - unitsLost   ← UNIT_DAMAGED(hp==0) + UNIT_SELF_DESTRUCTED（targetId/actorId 归属）
+ * - healCost    ← CORE_HEAL_SUCCEEDED.cost + UNIT_HEAL_SUCCEEDED.cost
+ * - repairCost  ← CORE_REPAIR_SUCCEEDED.cost
+ * - spawnCost   ← CORE_SPAWN_SUCCEEDED.cost
+ * - overflowDestroyed ← CORE_RESOURCE_OVERFLOW_DESTROYED.amount
+ * - resourcesLost    ← CORE_RESOURCES_CAPTURED.available + CORE_RESOURCES_DESTROYED.amount
+ * - finalPopulation  ← finalWorld 玩家单位数
+ * - finalResources   ← finalWorld 玩家资源
+ * - aliveTicks  ← 每 tick after.core!==null 计 1（与 reference ticks_alive 同语义）
+ *
+ * 默认追加：不破坏现有 metrics 字段；现有消费者读 ticks/illegalPlans 等不受影响。
+ */
+export interface PlayerCostLedger {
+  readonly harvested: number;
+  readonly deposited: number;
+  readonly damageDealt: number;
+  readonly beaconTicks: number;
+  readonly respawnCount: number;
+  readonly unitsLost: number;
+  readonly healCost: number;
+  readonly repairCost: number;
+  readonly spawnCost: number;
+  readonly overflowDestroyed: number;
+  readonly resourcesLost: number;
+  readonly finalPopulation: number;
+  readonly finalResources: number;
+  readonly aliveTicks: number;
+}
+
 export interface EpisodeTickMeasurement {
   /** Tick that was just settled. */
   readonly tick: number;
@@ -156,6 +196,12 @@ export interface EpisodeResult {
     readonly unsupported: readonly string[];
     readonly totalEvents: number;
     readonly wallMs: number;
+    /**
+     * W51 per-player cost ledger（追加字段，不破坏现有字段）。从 settlement
+     * 事件流 + per-tick world 快照累计，供 fitness.ts 派生 fitness detail。
+     * 现有消费者读 ticks/illegalPlans 等不受影响（默认关 = 仅追加，不改既有语义）。
+     */
+    readonly perPlayer: Readonly<Record<string, PlayerCostLedger>>;
   };
 }
 
@@ -247,6 +293,192 @@ export function rotateTenantsForSlot(
   return Array.from({ length: numPlayers }, (_, index) => tenants[(index - shift + numPlayers) % numPlayers]!);
 }
 
+interface MutableCostLedger {
+  harvested: number;
+  deposited: number;
+  damageDealt: number;
+  beaconTicks: number;
+  respawnCount: number;
+  unitsLost: number;
+  healCost: number;
+  repairCost: number;
+  spawnCost: number;
+  overflowDestroyed: number;
+  resourcesLost: number;
+  finalPopulation: number;
+  finalResources: number;
+  aliveTicks: number;
+}
+
+function createEmptyLedger(): MutableCostLedger {
+  return {
+    harvested: 0,
+    deposited: 0,
+    damageDealt: 0,
+    beaconTicks: 0,
+    respawnCount: 0,
+    unitsLost: 0,
+    healCost: 0,
+    repairCost: 0,
+    spawnCost: 0,
+    overflowDestroyed: 0,
+    resourcesLost: 0,
+    finalPopulation: 0,
+    finalResources: 0,
+    aliveTicks: 0,
+  };
+}
+
+/**
+ * 构造 entityId → playerId 反查表（core.id / unit.id → owner playerId）。
+ * W51 cost ledger 用：把 settlement 事件的 actorId/targetId 归属到玩家。
+ * 同时合并 before + after 两个快照——before 覆盖本 tick 内被摧毁的实体
+ * （victim core/unit），after 覆盖本 tick 内新生的实体（spawned unit /
+ * respawned core）。
+ */
+function buildEntityOwnerMap(...worlds: readonly SimWorld[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const world of worlds) {
+    for (const [playerId, player] of world.players) {
+      if (player.core !== null) map.set(player.core.id, playerId);
+      for (const unit of player.units) map.set(unit.id, playerId);
+    }
+  }
+  return map;
+}
+
+function numberValue(values: Readonly<Record<string, unknown>> | null, key: string): number {
+  if (values === null) return 0;
+  const raw = values[key];
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
+}
+
+/**
+ * 把一个 tick 的 settlement 事件流累计进 per-player cost ledger。
+ * 纯累计函数，无副作用除累加器外。归属解析失败的事件静默跳过
+ * （边缘情况：实体在 before/after 都查不到——理论上不应发生，因
+ * 事件引用的实体必然在某个快照中存在）。
+ */
+function accumulateEventsIntoLedger(
+  ledgers: Map<string, MutableCostLedger>,
+  events: readonly ResolutionEvent[],
+  owners: Map<string, string>,
+): void {
+  for (const event of events) {
+    const actorOwner = event.actorId !== null ? owners.get(event.actorId) ?? null : null;
+    const targetOwner = event.targetId !== null ? owners.get(event.targetId) ?? null : null;
+    switch (event.eventType) {
+      case "HARVEST_SUCCEEDED":
+      case "BEACON_HARVEST_BONUS": {
+        if (actorOwner !== null) {
+          ledgers.get(actorOwner)!.harvested += numberValue(event.values, "amount");
+        }
+        break;
+      }
+      case "DEPOSIT_SUCCEEDED": {
+        if (actorOwner !== null) {
+          ledgers.get(actorOwner)!.deposited += numberValue(event.values, "amount");
+        }
+        break;
+      }
+      case "SHOT_HIT": {
+        if (actorOwner !== null) {
+          ledgers.get(actorOwner)!.damageDealt += numberValue(event.values, "damage");
+        }
+        break;
+      }
+      case "CORE_SPAWN_SUCCEEDED": {
+        if (actorOwner !== null) {
+          ledgers.get(actorOwner)!.spawnCost += numberValue(event.values, "cost");
+        }
+        break;
+      }
+      case "CORE_HEAL_SUCCEEDED":
+      case "UNIT_HEAL_SUCCEEDED": {
+        if (actorOwner !== null) {
+          ledgers.get(actorOwner)!.healCost += numberValue(event.values, "cost");
+        }
+        break;
+      }
+      case "CORE_REPAIR_SUCCEEDED": {
+        if (actorOwner !== null) {
+          ledgers.get(actorOwner)!.repairCost += numberValue(event.values, "cost");
+        }
+        break;
+      }
+      case "CORE_RESOURCE_OVERFLOW_DESTROYED": {
+        if (actorOwner !== null) {
+          ledgers.get(actorOwner)!.overflowDestroyed += numberValue(event.values, "amount");
+        }
+        break;
+      }
+      case "CORE_RESOURCES_CAPTURED": {
+        // victim = targetId owner；victim 损失 values.available（其中 amount 被赢家捕获，
+        // destroyed 浪费——对 victim 而言整笔 available 都是 lost）。
+        if (targetOwner !== null) {
+          ledgers.get(targetOwner)!.resourcesLost += numberValue(event.values, "available");
+        }
+        break;
+      }
+      case "CORE_RESOURCES_DESTROYED": {
+        if (targetOwner !== null) {
+          ledgers.get(targetOwner)!.resourcesLost += numberValue(event.values, "amount");
+        }
+        break;
+      }
+      case "CORE_RESPAWNED": {
+        if (targetOwner !== null) {
+          ledgers.get(targetOwner)!.respawnCount += 1;
+        }
+        break;
+      }
+      case "UNIT_DAMAGED": {
+        // values.hp === 0 → 单位死亡（combat upkeep/attack 共用此事件）。
+        if (targetOwner !== null && numberValue(event.values, "hp") === 0) {
+          ledgers.get(targetOwner)!.unitsLost += 1;
+        }
+        break;
+      }
+      case "UNIT_SELF_DESTRUCTED": {
+        if (actorOwner !== null) {
+          ledgers.get(actorOwner)!.unitsLost += 1;
+        }
+        break;
+      }
+      default:
+        // 其余事件（MOVE/FAILED/SWEEP_RESOLVED 等）与 cost ledger 无关，跳过。
+        break;
+    }
+  }
+}
+
+/** 每 tick 后从 after 世界快照累计 aliveTicks / beaconTicks。 */
+function accumulateTickStateIntoLedger(
+  ledgers: Map<string, MutableCostLedger>,
+  after: SimWorld,
+): void {
+  const beacon = after.beacon;
+  let beaconOwner: string | null = null;
+  if (beacon !== null && beacon.status === "CARRIED" && beacon.carrierId !== null) {
+    for (const [playerId, player] of after.players) {
+      if (player.core !== null && player.core.id === beacon.carrierId) {
+        beaconOwner = playerId;
+        break;
+      }
+      if (player.units.some((unit) => unit.id === beacon.carrierId)) {
+        beaconOwner = playerId;
+        break;
+      }
+    }
+  }
+  for (const [playerId, player] of after.players) {
+    const ledger = ledgers.get(playerId);
+    if (ledger === undefined) continue;
+    if (player.core !== null) ledger.aliveTicks += 1;
+    if (beaconOwner === playerId) ledger.beaconTicks += 1;
+  }
+}
+
 /** 运行一个确定性 episode。wallMs 是唯一非确定字段，不参与 replay 等价。 */
 export function runEpisode(config: EpisodeConfig): EpisodeResult {
   const started = performance.now();
@@ -296,6 +528,10 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
   // policyProvider 形态：每 tick 可能产出新 policy；null = 保持上次（模拟 LLM 低频决策）
   const lastPolicy = new Map<string, MacroPolicy | undefined>(
     tenants.map((tenant) => [tenant.id, tenant.policy]),
+  );
+  // W51 per-player cost ledger 累加器（默认关 = 仅追加，不改既有 metrics 语义）。
+  const costLedgers = new Map<string, MutableCostLedger>(
+    [...world.players.keys()].map((playerId) => [playerId, createEmptyLedger()]),
   );
 
   for (let step = 0; step < config.ticks; step += 1) {
@@ -361,6 +597,10 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
     }
     for (const feature of result.unsupported) seenUnsupported.add(feature);
     totalEvents += result.events.length;
+    // W51: 累计 per-player cost ledger（before+after 合并覆盖被摧毁/新生实体）。
+    const entityOwners = buildEntityOwnerMap(before, world);
+    accumulateEventsIntoLedger(costLedgers, result.events, entityOwners);
+    accumulateTickStateIntoLedger(costLedgers, world);
     records.push({
       tick: before.tick,
       plans,
@@ -396,6 +636,18 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
     }
   }
 
+  // W51: 快照终局 finalPopulation/finalResources 到 ledger。
+  for (const [playerId, player] of world.players) {
+    const ledger = costLedgers.get(playerId);
+    if (ledger === undefined) continue;
+    ledger.finalPopulation = player.units.length;
+    ledger.finalResources = player.resources;
+  }
+  const perPlayer: Record<string, PlayerCostLedger> = {};
+  for (const [playerId, ledger] of costLedgers) {
+    perPlayer[playerId] = Object.freeze({ ...ledger });
+  }
+
   return {
     finalWorld: world,
     finalWorldHash: worldHash(world),
@@ -407,6 +659,7 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
       unsupported: [...seenUnsupported].sort(compareCodeUnit),
       totalEvents,
       wallMs: performance.now() - started,
+      perPlayer: Object.freeze(perPlayer),
     },
   };
 }
