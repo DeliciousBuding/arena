@@ -11,7 +11,8 @@
     "stop:cc": "node scripts/start-cc.mjs --stop",
     "check": "tsc --noEmit",
     "check:all": "npm run check && npm --prefix web run typecheck && npm --prefix web run build",
-    "test:regression": "npm --prefix web run test:regression"
+    "test:regression": "npm --prefix web run test:regression",
+    "test:unit": "node --test --test-force-exit \"test/*.test.ts\""
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",
