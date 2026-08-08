@@ -9,12 +9,12 @@ import { TENANTS } from "./fs-jsonl.ts";
 import { loadTenantSurveyCached } from "./survey-cache.ts";
 import { TtlCache } from "./cache.ts";
 
-/** 租户区分色（前端地图/卡片/树目录共用，t1 绿 / t2 蓝 / t3 琥珀 / t4 粉）。 */
+/** 租户区分色（前端地图/卡片/树目录共用；与 DESIGN.md 统一：t1 蓝 / t2 绿 / t3 紫 / t4 红 muted）。 */
 export const TENANT_COLORS: Record<string, string> = {
-  t1: "#22c55e",
-  t2: "#3b82f6",
-  t3: "#f59e0b",
-  t4: "#ec4899",
+  t1: "#69b3d8",
+  t2: "#57bd84",
+  t3: "#a892d6",
+  t4: "#dd626d",
 };
 
 export interface TenantSummary {
