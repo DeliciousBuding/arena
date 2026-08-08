@@ -2084,6 +2084,29 @@ function bindEvents() {
   els.rbPrev.addEventListener('click', () => replayStep(replay, replayDeps, -1));
   els.rbNext.addEventListener('click', () => replayStep(replay, replayDeps, 1));
   els.rbSpeed.addEventListener('click', () => replayCycleSpeed(replay, replayDeps));
+  // 回放进度条可拖拽 seek（2026-08-09）：mousedown on rb-track → ratio → replayStep。
+  // 拖拽期间 window mousemove 跟随，mouseup 解绑；复用 replayStep（写 frame + updateUI + draw）。
+  {
+    const rbTrack = els.rbFill?.parentElement;
+    if (rbTrack) {
+      const seekTo = (clientX: number) => {
+        if (!replay.data) return;
+        const rect = rbTrack.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+        const targetFrame = Math.round(ratio * (replay.data.ticks.length - 1));
+        if (targetFrame !== replay.frame) replayStep(replay, replayDeps, targetFrame - replay.frame);
+      };
+      rbTrack.addEventListener('mousedown', (e: MouseEvent) => {
+        e.preventDefault();
+        pokeHint();
+        seekTo(e.clientX);
+        const move = (ev: MouseEvent) => seekTo(ev.clientX);
+        const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+        window.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', up);
+      });
+    }
+  }
   // 聚焦徽章可点击：返回全局联盟（悬停 title 提示）
   if (els.soloBadge) {
     els.soloBadge.addEventListener('click', () => { if (state.soloTenant) exitSolo(); });
