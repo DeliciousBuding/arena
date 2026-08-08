@@ -242,3 +242,27 @@ mapEngine.ts 对应函数。
   受控单位行，用 `__arenaEngine` 读相机变换 + 世界障碍，精确点击单位旁可达格；
   玫瑰数据管道改为轮询等待（服务重启/慢请求不再误报）。
 - 验证：回归 15/15 全绿；跳转圈中心 Δ金 23 + Δ白 15 px 出现并 4s 淡出。
+
+
+### 9.10 指挥链「点了没反应」结构性根治（2026-08-08）
+- **背景**：编队多选（Shift 加选）与命令队列（Shift 入队）在完整回归下偶发失败；
+  用户实操时「点单位没反应」「选择目标被卡牌挡住」「指令莫名消失」。
+- **根因（diag 实证，共 4 个）**：
+  1. `handleCanvasClick` 在命令瞄准态下仍先走「单位/核心解释」分支——陈旧单位格
+     （合并地图轮询 3s 落后 tick）命中后 obj 为 null，静默 `tactClear()` 清掉
+     `tac.mode`（移动/入队指令消失）。
+  2. live 校正写回的是**点击坐标**而非单位真实坐标，下游 `tactObjectAt` 精确查仍落空。
+  3. `pending-panel`（待执行命令面板，画布左上角）未设 `pointer-events:none`，
+     实体挡住其下方的单位格点击（`elementFromPoint` 实证 `li.pp-row` 拦截）。
+  4. 回归 6f/6g 目标取自 `/api/world` 快照，与画布插值位置差 1-2 格（高负载 flake）。
+- **修复**（mapEngine.ts / style.css / cc-regression.ts）：
+  - 命令模式优先：瞄准/入队态下点击直接进模式处理（点单位格 = 移动到该格，RTS 惯例）；
+    MOVE 模式 world 缺失时补拉取；Shift 入队必达。
+  - 抽出 `resolveLiveTarget`：live 校正写回 `liveObj.position` 真实坐标；命中半径 2→3
+    （高缩放单位插值移位可达 2-3 格）；陈旧 ghost 明确 toast，不静默吞点击；
+    `openCtxMenu` 同源修复。
+  - `pending-panel` 加入点击穿透组（折叠按钮保留可点）。
+  - 回归 6f/6g 目标改用引擎已渲染 `st.cells`（与画布同源）+ 聚焦租户过滤 + 屏幕内候选
+    + 失败诊断；`getState` 暴露 cells/multi/mode/selected 投影。
+- **验证**：完整 22 项回归全绿（含编队多选、命令队列、右键菜单、人类指挥链、tick 读条）；
+  `check:all`（server tsc + alliance-sync + web typecheck + build）全绿。
