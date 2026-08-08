@@ -6,6 +6,7 @@
  *   arena-ctl migrate <tenant> --target x,y [--phases x,y;x,y] [--force --reason ...]
  *                                                —— 核心分阶段迁移（护栏+审计）
  *   arena-ctl relocate <tenant> --target x,y [--units a,b]  —— worker 疏散
+ *   arena-ctl mine     <tenant> --target x,y --units a,b    —— worker 部署矿带盯守（mine goals）
  *   arena-ctl cancel  <tenant> [--intent id]      —— 取消意图，交还 agent
  *   arena-ctl audit   <tenant> [--limit n]        —— 命令审计流水
  *   arena-ctl band    <tenant> [--center x,y] [--radius n]  —— 矿刷新频率矿带（迁核选点）
@@ -408,6 +409,39 @@ function cmdRelocate(tenant: string, target: [number, number], unitIds: string[]
   console.log(JSON.stringify({ ok: true, accepted: true, relocated: units.map((u) => u.id), target }, null, 2));
 }
 
+function cmdMine(tenant: string, target: [number, number], unitIds: string[], hold: boolean): void {
+  const snap = readSnapshot(tenant);
+  if (snap === null) {
+    console.log(JSON.stringify({ ok: false, error: "calibration 不可读" }));
+    return;
+  }
+  const units = snap.units.filter((u) => u.type === "WORKER" && unitIds.includes(u.id));
+  if (units.length === 0) {
+    console.log(JSON.stringify({ ok: false, error: "指定 worker 不存在（需 WORKER 类型）" }));
+    return;
+  }
+  const goals = units.map((u) => ({
+    id: `goal-${Date.now()}-${u.id.slice(0, 8)}`,
+    unitId: u.id,
+    kind: (hold ? "mine_hold" : "mine") as "mine" | "mine_hold",
+    target: [target[0], target[1]] as [number, number],
+    note: hold ? "arena-ctl mine-hold（AI 矿带盯守）" : "arena-ctl mine（AI 部署矿带盯守）",
+    createdAt: new Date().toISOString(),
+  }));
+  const existing = existsSync(join(DATA_ROOT, "runtime", "human-commands", `${tenant}.json`))
+    ? (() => { try { return JSON.parse(readFileSync(join(DATA_ROOT, "runtime", "human-commands", `${tenant}.json`), "utf-8")) as { version?: number; mode?: string; goals?: unknown[] }; } catch { return {}; } })()
+    : {};
+  writeHumanStore(tenant, {
+    version: existing.version ?? 1,
+    mode: existing.mode ?? "override",
+    commands: [],
+    goals: [...(existing.goals ?? []), ...goals],
+    updatedAt: new Date().toISOString(),
+  });
+  appendAuditEvent(DATA_ROOT, tenant, { tenant, issuer: "codex", sessionId: "arena-ctl", intentId: `intent-${Date.now()}-mine`, kind: "worker_mine", action: "accepted", evidence: { unitIds: units.map((u) => u.id), target } });
+  console.log(JSON.stringify({ ok: true, accepted: true, deployed: units.map((u) => u.id), target }, null, 2));
+}
+
 function cmdCancel(tenant: string, intentId: string | undefined): void {
   clearHumanStore(tenant);
   // 杀残留 migrate driver
@@ -448,6 +482,14 @@ async function main(): Promise<void> {
       if (!t) { console.log(JSON.stringify({ ok: false, error: "--target x,y 必填" })); break; }
       const units = (getArg(rest, "--units") ?? "").split(",").filter(Boolean);
       cmdRelocate(tenant, t, units);
+      break;
+    }
+    case "mine": {
+      const t = parseTarget(getArg(rest, "--target"));
+      if (!t) { console.log(JSON.stringify({ ok: false, error: "--target x,y 必填" })); break; }
+      const units = (getArg(rest, "--units") ?? "").split(",").filter(Boolean);
+      if (units.length === 0) { console.log(JSON.stringify({ ok: false, error: "--units 单位ID必填" })); break; }
+      cmdMine(tenant, t, units, rest.includes("--hold"));
       break;
     }
     case "cancel": cmdCancel(tenant, getArg(rest, "--intent")); break;
