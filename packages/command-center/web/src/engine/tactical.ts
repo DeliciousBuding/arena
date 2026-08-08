@@ -24,6 +24,27 @@ export const EVENT_KIND_CN: Record<string, string> = {
   UNIT_HEAL_SUCCEEDED: "单位治疗", UNIT_HEAL_FAILED: "单位治疗失败", CORE_HEAL_SUCCEEDED: "核心治疗", CORE_HEAL_FAILED: "核心治疗失败",
   WAIT: "等待", NOTHING_TO_DO: "无事可做",
 };
+/** 事件 kind → 图标（事件标签页，几何符号零素材，与 TACT_ACTION_ICON 同风格）。
+ *  EventStreamPane 行首图标列；缺省回退「·」（不显示？——统一显示，缺失即 · 防错位）。 */
+export const EVENT_ICON: Record<string, string> = {
+  UNIT_MOVE_SUCCEEDED: "➤", UNIT_MOVE_FAILED: "➤", CORE_MOVE_SUCCEEDED: "➤", CORE_MOVE_FAILED: "➤",
+  SPAWN_SUCCEEDED: "◈", SPAWN_FAILED: "◈",
+  HARVEST_SUCCEEDED: "⛏", HARVEST_FAILED: "⛏",
+  DEPOSIT_SUCCEEDED: "▣", DEPOSIT_FAILED: "▣",
+  SHOT_HIT: "⚔", SHOT_MISSED: "⚔", SHOT_BLOCKED: "⚔",
+  SWEEP_RESOLVED: "✸", SWEEP_FAILED: "✸",
+  PICKUP_BEACON_SUCCEEDED: "⚑", PICKUP_BEACON_FAILED: "⚑", DROP_BEACON_SUCCEEDED: "⚑", DROP_BEACON_FAILED: "⚑",
+  SELF_DESTRUCT: "✕", HEAL_SUCCEEDED: "✚", HEAL_FAILED: "✚", REPAIR_SHIELD_SUCCEEDED: "✚",
+  UNIT_DESTROYED: "✕", CORE_DESTROYED: "✕", CORE_DAMAGED: "✕", RESPAWN: "↻",
+  CORE_RESOURCES_CAPTURED: "▣", CORE_RESOURCE_OVERFLOW_DESTROYED: "✕", WORKER_CARGO_DROPPED: "▣",
+  UNIT_HEAL_SUCCEEDED: "✚", UNIT_HEAL_FAILED: "✚", CORE_HEAL_SUCCEEDED: "✚", CORE_HEAL_FAILED: "✚",
+  WAIT: "◷", NOTHING_TO_DO: "·",
+};
+/** 事迹类别 → 图标（事迹标签页徽标；类别与 /api/deeds/journal 的 categories 对齐）。 */
+export const DEED_ICON: Record<string, string> = {
+  milestone: "★", harvest: "⛏", deposit: "▣", spawn: "◈",
+  death: "✕", conflict: "⚔", economy: "⬢", other: "·",
+};
 
 export const TACT_UNIT_BASE_COST: Record<string, number> = { WORKER: 5, VANGUARD: 10, RANGER: 12 };
 export const TACT_UNIT_CN: Record<string, string> = { WORKER: "工人", VANGUARD: "先锋", RANGER: "游侠", CORE: "核心" };
