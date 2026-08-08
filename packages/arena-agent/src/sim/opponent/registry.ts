@@ -11,13 +11,18 @@
  *     直接传端点（vs-arena --opponents http://host:port/decide）。
  */
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import type { TournEntry } from "./tournament.ts";
 import { OpponentAdapter, PersistentSubprocessDecider } from "./opponent-adapter.ts";
 import { HttpDecider } from "./http-decider.ts";
+import type { SafetyPlannerConfig } from "../../strategies/safety-planner.ts";
+import { DEFAULT_SAFETY_CONFIG } from "../../strategies/safety-planner.ts";
+import type { AggressionLevel } from "../../strategies/safety-planner-config.ts";
+import type { PlanProvider } from "../../runtime/decision-types.ts";
 
 /** 协调根 = 从本文件向上找到第一个含 reference/arena-hero-python 的目录
  *  （主工作树 6 级、.worktrees/<分支> 深一层——硬编码层级在 worktree 会落空）。 */
@@ -113,4 +118,120 @@ export function opponentEntry(spec: OpponentSpec, seed: number): TournEntry {
       return new OpponentAdapter(decider, opponentId, spec.name);
     },
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * 我的策略版本注册表（strategy-versioning-v1，见根仓 docs/design/）
+ * 注册名 → 版本源：config（当前代码+配置档）/ worktree-path（开发中）/
+ * git-tag（已发布不可变，git archive 解包到缓存后 import）。
+ * ------------------------------------------------------------------ */
+
+/** 注册表条目（my-versions.json schema）。 */
+export interface MyVersionEntry {
+  readonly name: string;
+  readonly desc: string;
+  readonly kind: "config" | "git-tag" | "worktree-path";
+  readonly gitTag?: string;
+  readonly worktreePath?: string;
+  /** 相对 arena-agent 根（config/worktree-path 类型）或 arena-agent 根相对仓内路径（git-tag 解包后）。 */
+  readonly module: string;
+  readonly config?: Readonly<Partial<SafetyPlannerConfig>>;
+  readonly meta?: { readonly created?: string; readonly baseline?: boolean; readonly wip?: boolean };
+}
+
+const MY_VERSIONS_JSON = fileURLToPath(
+  new URL("../../../scripts/my-versions.json", import.meta.url),
+);
+
+/** arena-ts 仓根（registry.ts 位于 packages/arena-agent/src/sim/opponent/）。 */
+const ARENA_TS_ROOT = join(COORDINATION_ROOT, "arena-ts");
+/** arena-agent 包根（当前 worktree 的，config 档在此解析模块）。 */
+const ARENA_AGENT_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+
+function loadMyVersions(): Readonly<Record<string, MyVersionEntry>> {
+  const raw = JSON.parse(readFileSync(MY_VERSIONS_JSON, "utf8")) as {
+    versions: Readonly<Record<string, Omit<MyVersionEntry, "name">>>;
+  };
+  const out: Record<string, MyVersionEntry> = {};
+  for (const [name, entry] of Object.entries(raw.versions)) {
+    out[name] = { name, ...entry };
+  }
+  return out;
+}
+
+/** 列出注册表全部版本（vs-arena --list-versions 用）。 */
+export function listMyVersions(): readonly MyVersionEntry[] {
+  return Object.values(loadMyVersions());
+}
+
+/** 材料化一个 git tag 到缓存目录（git archive + tar 解包，缓存命中即跳过）。 */
+function materializeTag(tag: string): string {
+  const cacheDir = join(tmpdir(), `arena-versions/${tag}`);
+  const marker = join(cacheDir, ".ready");
+  if (existsSync(marker)) return cacheDir;
+  mkdirSync(cacheDir, { recursive: true });
+  const tarOut = execFileSync("git", ["-C", ARENA_TS_ROOT, "archive", "--format=tar", tag,
+    "packages/arena-agent/src", "packages/arena-agent/scripts"], { encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
+  execFileSync("tar", ["-x", "-C", cacheDir], { input: tarOut, stdio: "pipe", maxBuffer: 256 * 1024 * 1024 });
+  writeFileSync(marker, new Date().toISOString());
+  return cacheDir;
+}
+
+/** 从模块文件构造"我的版本"条目（动态 import，版本完全隔离）。 */
+async function buildVersionEntry(
+  modulePath: string,
+  version: MyVersionEntry,
+  id: string,
+  aggression: "aggressive" | "defensive" | "balanced",
+): Promise<TournEntry> {
+  const modUrl = pathToFileURL(modulePath).href;
+  let mod: { SafetyPlanner?: new (config?: SafetyPlannerConfig) => PlanProvider; DEFAULT_SAFETY_CONFIG?: SafetyPlannerConfig };
+  try {
+    mod = (await import(modUrl)) as { SafetyPlanner: new (config?: SafetyPlannerConfig) => PlanProvider; DEFAULT_SAFETY_CONFIG?: SafetyPlannerConfig };
+  } catch (error) {
+    throw new Error(`版本加载失败 ${modUrl}: ${String(error)}`);
+  }
+  const Pl = mod.SafetyPlanner;
+  if (Pl === undefined) {
+    throw new Error(`版本模块无 SafetyPlanner 导出：${modUrl}`);
+  }
+  // "balanced" 是运行时尚（AggressionLevel 仅 defensive/aggressive；balanced =
+  // 保持默认攻击性 + attackForce 1 的折中档，与 vs-arena 语义一致）。
+  const base: SafetyPlannerConfig = {
+    ...(mod.DEFAULT_SAFETY_CONFIG ?? DEFAULT_SAFETY_CONFIG),
+    ...(version.config ?? {}),
+  };
+  const finalAggression: AggressionLevel =
+    aggression === "balanced" ? (base.aggression ?? "aggressive") : aggression;
+  const frozen: SafetyPlannerConfig = {
+    ...base,
+    aggression: finalAggression,
+    attackForce: aggression === "defensive" ? 0 : aggression === "balanced" ? 1 : 2,
+  };
+  return { id, desc: version.desc, build: () => new Pl(frozen) };
+}
+
+/** 解析注册表名 → 我的版本条目（config 档 = 当前代码库）。 */
+export async function resolveVersion(
+  name: string,
+  aggression: "aggressive" | "defensive" | "balanced" = "aggressive",
+): Promise<TournEntry> {
+  const version = loadMyVersions()[name];
+  if (version === undefined) {
+    throw new Error(`unknown my-version ${name}（注册表：${Object.keys(loadMyVersions()).join(", ")}）`);
+  }
+  if (version.kind === "git-tag") {
+    const cacheDir = materializeTag(version.gitTag!);
+    return buildVersionEntry(
+      join(cacheDir, "packages/arena-agent", version.module),
+      version, `mine-${name}`, aggression,
+    );
+  }
+  if (version.kind === "worktree-path") {
+    return buildVersionEntry(
+      join(version.worktreePath!, version.module),
+      version, `mine-${name}`, aggression,
+    );
+  }
+  return buildVersionEntry(join(ARENA_AGENT_ROOT, version.module), version, `mine-${name}`, aggression);
 }
