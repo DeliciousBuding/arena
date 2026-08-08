@@ -183,7 +183,7 @@ export function loadCoreTrails(tenant: string): Array<{ username: string; trail:
  *  = 轨迹序列。跨 run 积累比 case 扫描（最近 N run）完整——敌核
  *  目击稀疏时轨迹不再空（近 500+ tick 无敌核但历史轨迹完整）。
  *  注：轨迹包含已摧毁的敌核（历史轨迹层）；对每租户独立计算，联盟层合并任主。 */
-export function loadCoreTrailsFromSurveyDb(tenant: string, maxPoints = 48): Array<{ username: string; trail: TrailPoint[] }> {
+export function loadCoreTrailsFromSurveyDb(tenant: string, maxPoints = 48, minPoints = 2): Array<{ username: string; trail: TrailPoint[] }> {
   const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
   if (!existsSync(file)) return [];
   let db: DatabaseSync;
@@ -206,7 +206,8 @@ export function loadCoreTrailsFromSurveyDb(tenant: string, maxPoints = 48): Arra
     }
     const out: Array<{ username: string; trail: TrailPoint[] }> = [];
     for (const [username, pts] of byUser) {
-      if (pts.length >= 2) out.push({ username, trail: pts.length > maxPoints ? pts.slice(-maxPoints) : pts });
+      // minPoints 可调：画轨迹线需 ≥2 点；近距威胁兜底传 1 保留单点目击（2026-08-08）。
+      if (pts.length >= minPoints) out.push({ username, trail: pts.length > maxPoints ? pts.slice(-maxPoints) : pts });
     }
     return out.sort((a, b) => b.trail.length - a.trail.length);
   } catch {
@@ -214,4 +215,42 @@ export function loadCoreTrailsFromSurveyDb(tenant: string, maxPoints = 48): Arra
   } finally {
     db.close();
   }
+}
+
+/** 敌核移动方向（2026-08-08，算法适配·raid-defense 输入）：从敌核轨迹最近两点判断
+ *  相对友方核心是逼近/远离/静止——联盟防御可据此决定防守兵力部署方向。
+ *  纯函数，入参即测。
+ *  - approaching：距友核距离变小（≥APPROACH_EPS 格）；
+ *  - retreating：距离变大；
+ *  - stationary：最近两点同格（或轨迹 <2 点 → unknown）；
+ *  - speedCellsPerTick：最近两点位移 / tick 差（敌核移动速度，指挥防御节奏）。 */
+export const APPROACH_EPS_CELLS = 0.5;
+export interface CoreMovement {
+  direction: "approaching" | "retreating" | "stationary" | "unknown";
+  distToCoreCells: number | null;
+  /** 最近两点位移 / tick 差（格/tick，0 表示静止）。 */
+  speedCellsPerTick: number | null;
+}
+/** 切比雪夫距离（游戏移动按 8 方向，用 Chebyshev 更贴近路径代价）。 */
+function cheb(a: readonly number[], b: readonly number[]): number {
+  return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
+}
+export function computeCoreMovement(
+  trail: readonly TrailPoint[],
+  friendlyCore: readonly number[] | null,
+): CoreMovement {
+  if (!trail || trail.length < 2 || !friendlyCore || friendlyCore.length < 2) {
+    return { direction: "unknown", distToCoreCells: null, speedCellsPerTick: null };
+  }
+  const a = trail[trail.length - 2];
+  const b = trail[trail.length - 1];
+  const distA = cheb([a.x, a.y], [friendlyCore[0], friendlyCore[1]]);
+  const distB = cheb([b.x, b.y], [friendlyCore[0], friendlyCore[1]]);
+  const dTick = b.tick - a.tick;
+  const speed = dTick > 0 ? Math.abs(b.x - a.x) / dTick : 0;
+  const delta = distB - distA;
+  const direction = delta < -APPROACH_EPS_CELLS ? "approaching" as const
+    : delta > APPROACH_EPS_CELLS ? "retreating" as const
+    : "stationary" as const;
+  return { direction, distToCoreCells: distB, speedCellsPerTick: speed };
 }

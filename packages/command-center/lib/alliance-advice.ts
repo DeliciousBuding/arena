@@ -19,6 +19,7 @@ import { loadMineUtilization } from "./mine-utilization.ts";
 import { loadDecisionTrend } from "./decision-audit.ts";
 import { loadHumanConflict } from "./human-conflict.ts";
 import { loadAllianceExploration, type ResurveyTarget } from "./exploration-coverage.ts";
+import { loadCoreTrailsFromSurveyDb, computeCoreMovement } from "./trails.ts";
 import { loadMiningEffectiveness } from "./mining-effectiveness.ts";
 import { TtlCache } from "./cache.ts";
 
@@ -470,6 +471,72 @@ export function loadAllianceAdvice(): AllianceAdvicePayload {
     const mu2 = loadMineUtilization("all");
     out.push(...buildGoldMineAdvice(mu2.tenants));
   } catch { /* 矿利用数据不可用不阻断 */ }
+
+  // 11) 敌核逼近/近距目击（2026-08-08，算法适配·raid-defense 输入）：core_hunts 历史
+  //     轨迹——(a) ≥2点可判方向时，approaching 且进入 60 格 = 正在逼近的入侵者；
+  //     (b) 方向未知（敌核目击稀疏，多为单点）但最近目击 ≤40 格 = 近距威胁兕底
+  //     （标注目击新旧度，防陈旧噪音）。读 survey-db 只读 + 世界快照，无触网。
+  try {
+    const CORE_APPROACH_RADIUS = 60; // approaching 且进入此半径 → 预警
+    const CORE_PROXIMITY_RADIUS = 40; // 方向未知但近距目击（≤40 格）→ 兕底预警
+    const PER_TENANT_THREAT_CAP = 3; // 每租户最多 3 条，防刷屏
+    const cheb = (a: readonly number[], b: readonly number[]) =>
+      Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
+    for (const [t, m] of Object.entries(snap.members)) {
+      const friendlyCore = m.core?.position ?? null;
+      if (!friendlyCore) continue;
+      const curTick = m.tick;
+      const threats: AllianceAdvice[] = [];
+      // minPoints=1：单点目击也保留（近距威胁主体恰是单点，方向未知走兜底）
+      for (const tr of loadCoreTrailsFromSurveyDb(t, 48, 1)) {
+        const mv = computeCoreMovement(tr.trail, friendlyCore);
+        const last = tr.trail[tr.trail.length - 1];
+        const dist = mv.distToCoreCells ?? cheb([last.x, last.y], friendlyCore);
+        if (!Number.isFinite(dist)) continue;
+        const age = curTick > 0 ? Math.max(0, curTick - last.tick) : null;
+        if (mv.direction === "approaching") {
+          if (dist > CORE_APPROACH_RADIUS) continue;
+          threats.push({
+            severity: dist < 30 ? "HIGH" : "MEDIUM",
+            category: "THREAT",
+            tenant: t,
+            title: t + " 敌核逼近（" + tr.username + " 距 " + dist + " 格）",
+            detail: "敌核 " + tr.username + " 正朝友核移动：距 " + dist + " 格，速度 "
+              + (mv.speedCellsPerTick ?? 0).toFixed(2) + " 格/tick，最近目击 " + last.x + "," + last.y,
+            action: dist < 30
+              ? "高威胁：立即预备拦截/转移核心，别让敌核贴近"
+              : "提高警觉，向逼近方向预部署防守兵力",
+            weight: -dist,
+            confidence: 0.7,
+            evidence: [{ type: "sighting", tenant: t, ref: "core_hunts " + tr.username + " @" + last.x + "," + last.y + " tick=" + last.tick }],
+            at: new Date().toISOString(),
+          });
+        } else {
+          // 方向未知（多数敌核仅单点目击）→ 仅近距兕底
+          if (dist > CORE_PROXIMITY_RADIUS) continue;
+          const stale = age !== null && age > 5000;
+          threats.push({
+            severity: dist < 15 ? "HIGH" : dist < 25 ? "MEDIUM" : "INFO",
+            category: "THREAT",
+            tenant: t,
+            title: t + " 敌核近距目击（" + tr.username + " 距 " + dist + " 格）",
+            detail: "敌核 " + tr.username + " 最近目击距友核 " + dist + " 格"
+              + (stale ? "（" + age + " tick 前，可能已离开）" : "（方向待确认，建议侦察）")
+              + " @" + last.x + "," + last.y,
+            action: stale
+              ? "派侦察确认该方向敌核是否仍在；若已离开则移出威胁清单"
+              : "就近侦察 + 预备防御；若再次目击确认逼近则升级拦截",
+            weight: -dist,
+            confidence: stale ? 0.4 : 0.6,
+            evidence: [{ type: "sighting", tenant: t, ref: "core_hunts " + tr.username + " @" + last.x + "," + last.y + " tick=" + last.tick }],
+            at: new Date().toISOString(),
+          });
+        }
+      }
+      threats.sort((a, b) => ORDER[a.severity] - ORDER[b.severity] || a.weight - b.weight);
+      out.push(...threats.slice(0, PER_TENANT_THREAT_CAP));
+    }
+  } catch { /* 敌核轨迹不可用不阻断 */ }
 
   out.sort((a, b) => ORDER[a.severity] - ORDER[b.severity] || a.weight - b.weight);
   // 2026-08-08 建议去重：同一 (category, tenant, title) 只保留一条（跨租户目击
