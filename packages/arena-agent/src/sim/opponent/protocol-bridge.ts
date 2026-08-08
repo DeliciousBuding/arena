@@ -28,7 +28,7 @@ import type {
   UnitAction,
   UnitType,
   VisibleEntity,
-} from "../domain/model.ts";
+} from "../../domain/model.ts";
 
 /* ============================================================
  * 1. 中立协议模型（对齐官方 wire 结构，仅取模拟器需要的最小集）
