@@ -341,12 +341,19 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
         // 迁移方向勘探（2026-08-08）：核心 MOVING 时 EXPLORE worker 朝核心迁移方向
         // 探路（为落点测绘），核心 NORMAL 零影响。t1 不迁移=零回归；t3 迁移中生效。
         migrationScout: true,
-        // 全量外出（2026-08-08，用户导向"矿工不许原地守家"）：剩余空闲 worker 全部
-        // EXPLORE 外出测绘/打探，永不守家 WAIT——守家是军事单位职责，矿工只负责
-        // 采/探/寻矿；特殊卡位（worker-blockade）与核心迁移持货保持显式例外。
-        // 注：main 侧曾用旧名 surveyOnSupplyGap 表达同一行为（v3 合并统一为
-        // alwaysSurvey，config 字段名以本文件为准）。
+        // 全量外出（2026-08-08，用户导向"矿工不许原地守家"，v3 生产行为）：剩余空闲
+        // worker 全部 EXPLORE 外出测绘/打探，永不守家 WAIT——守家是军事单位职责，
+        // 矿工只负责采/探/寻矿；特殊卡位（worker-blockade）与核心迁移持货保持显式
+        // 例外。注：v3 合并统一命名为 alwaysSurvey（main 侧旧名 surveyOnSupplyGap
+        // 语义略有不同 = 仅供给缺口转出，两者独立可组合，字段均保留）。
         alwaysSurvey: true,
+        // 分配滞回（2026-08-08，t2 生产实证 planChurn=1.0 根治）：上一 tick 目标
+        // 仍可采时保持（sticky 0.5 基础上再加 1.5 = 2.0 加成），只有新目标净收益
+        // 显著更高才切换——worker 路程不浪费、分配跨 tick 稳定。
+        switchThreshold: 1.5,
+        // 供给缺口勘探（2026-08-08，t2 生产实证 12 空 worker 抢 1-8 可见矿）：
+        // 候选可采格 < 空 worker 时缺口全部转 SURVEYOR 测绘新矿源，不守家 WAIT。
+        surveyOnSupplyGap: true,
       },
     }),
     /**

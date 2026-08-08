@@ -194,10 +194,14 @@ function loadMergedMapInner(): MergedMap {
     let beacon: MergedMap["tenants"][number]["beacon"] = null;
     if (caseFiles.length > 0) {
       const cb = lastCaseRaw?.after?.state?.champion_beacon ?? lastCaseRaw?.before?.state?.champion_beacon;
-      // 无信标占位（2026-08-08 数据质量 A10）：官方无信标时返回
-      // {position:[0,0], status:null, carrier_id:null}——status 为空即无信标，
-      // 此前误报为 (0,0) GROUND 假信标。
-      if (cb?.position && cb.status) beacon = { x: cb.position[0], y: cb.position[1], status: cb.status, carrier_id: cb.carrier_id ?? null, trail: loadBeaconTrail(tenant) };
+      // 信标判据（2026-08-08 修正 A10 过度修复）：游戏规则"信标永远存在且坐标
+      // 永远公开"——position 有效即建 beacon；status 只在信标格可见时下发
+      // （null = 不在视野内，非无信标）。A10 曾以 status 非空为判据，把
+      // [0,0] 初始信标误当"无信标"过滤（官方 web 渲染为 !CARRIED 即画）。
+      // status 为 null 时前端按"未知"渲染（GROUND 尺寸）。
+      if (Array.isArray(cb?.position) && cb.position.length === 2) {
+        beacon = { x: cb.position[0], y: cb.position[1], status: cb.status ?? null, carrier_id: cb.carrier_id ?? null, trail: loadBeaconTrail(tenant) };
+      }
     }
     perTenant.push({ tenant, runId: runDir, caseCount: caseFiles.length, latestTick: latestTick === 0 ? null : latestTick, beacon });
   }

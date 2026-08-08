@@ -29,6 +29,7 @@ function makeState(opts: {
   rangers?: UnitSnapshot[];
   resourceSpace?: number;
   obstacleCells?: Position[];
+  visibleEnemies?: VisibleEntity[];
   events?: { eventType: string; actorId: string | null; reasonCode: string | null; position: Position }[];
   visibleEnemies?: VisibleEntity[];
 }): TickState {
@@ -90,7 +91,95 @@ test("核心通道清障：满载 worker 在核心格卸不了（核心满）→
   const intents = intentsOf(plan);
   assert.ok(
     intents.includes("worker_clear_core"),
-    `满载 worker 卸不了应离开核心格，实际 intents=${JSON.stringify(intents)}`,
+    `满载 worker 应让位，实际 intents=${JSON.stringify(intents)}`,
+  );
+});
+
+test("核心通道清障：空 worker 占核心格（无资源任务 idle）→ 疏散 worker_clear_core_empty", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  const w = worker("w00", [0, 0], 0);
+  const plan = planner.decide({
+    state: makeState({ units: [w], vanguards: [], workers: [w], resourceSpace: 10 }),
+    policy: undefined,
+  });
+  const intents = intentsOf(plan);
+  assert.ok(
+    intents.includes("worker_clear_core_empty"),
+    `空 worker 应疏散让位（t2 实证：空 worker 占核心格 130+ tick、挡 SPAWN），
+     实际 intents=${JSON.stringify(intents)}`,
+  );
+});
+
+test("核心通道清障：空 worker 疏散优先物理空邻格（occ=0，不 MOVE_CONTESTED）", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  // 核心 [0,0]；LEFT [-1,0] 被另一个 worker 占（occ=1），RIGHT [1,0] 空
+  const idle = worker("w00", [0, 0], 0);
+  const occupant = worker("w01", [-1, 0], 0);
+  const plan = planner.decide({
+    state: makeState({ units: [idle, occupant], vanguards: [], workers: [idle, occupant], resourceSpace: 10 }),
+    policy: undefined,
+  });
+  const action = plan.unitActions["w00"];
+  const intents = intentsOf(plan);
+  assert.ok(intents.includes("worker_clear_core_empty"), `空 worker 应疏散，实际 ${JSON.stringify(intents)}`);
+  assert.ok(action?.type === "MOVE", "疏散应为 MOVE");
+  if (action?.type === "MOVE") {
+    // RIGHT 物理空 → 移动方向必须指向 RIGHT（不进 occupied 的 LEFT → MOVE_CONTESTED）
+    assert.equal(action.direction, "RIGHT", "空邻格优先：应移向空 RIGHT 而非被占 LEFT");
+  }
+});
+
+test("核心通道清障：空 worker 疏散避开敌占邻格（不朝敌疏散送死）", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  // 核心 [0,0]；RIGHT [1,0] 是空邻格但被敌方 Vanguard 占据（occupancyCounts
+  // 不含敌人 → 旧实现 occ=0 会朝敌疏散），LEFT [-1,0] 物理空
+  const idle = worker("w00", [0, 0], 0);
+  const plan = planner.decide({
+    state: makeState({
+      units: [idle],
+      vanguards: [],
+      workers: [idle],
+      resourceSpace: 10,
+      visibleEnemies: [{
+        id: "e1",
+        position: [1, 0] as Position,
+        hp: 2,
+        unitType: "VANGUARD",
+        kind: "UNIT" as const,
+      }],
+    }),
+    policy: undefined,
+  });
+  const action = plan.unitActions["w00"];
+  const intents = intentsOf(plan);
+  assert.ok(intents.includes("worker_clear_core_empty"), `空 worker 应疏散，实际 ${JSON.stringify(intents)}`);
+  if (action?.type === "MOVE") {
+    assert.equal(action.direction, "LEFT", "敌占格视为不可疏散目标：应移向空 LEFT 而非敌占 RIGHT");
+  }
+});
+
+test("核心通道清障：四邻全被占（occ=2）→ 仍疏散到外圈守位（不死等）", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  const idle = worker("w00", [0, 0], 0);
+  // 四邻各站 2 个单位（occ=2 全满）→ yieldAnchor 无空位 → coreGuardFallback 外圈
+  const units = [idle];
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    units.push(worker(`occ-${dx}-${dy}-1`, [dx, dy], 0));
+    units.push(worker(`occ-${dx}-${dy}-2`, [dx, dy], 0));
+  }
+  const plan = planner.decide({
+    state: makeState({
+      units,
+      vanguards: [],
+      workers: units,
+      resourceSpace: 10,
+    }),
+    policy: undefined,
+  });
+  const intents = intentsOf(plan);
+  assert.ok(
+    intents.includes("worker_clear_core_empty") || intents.includes("worker_clear_core"),
+    `四邻全堵也应尝试疏散（回退外圈），实际 intents=${JSON.stringify(intents)}`,
   );
 });
 

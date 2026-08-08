@@ -5,8 +5,15 @@
  * 测绘累积：矿/障碍/敌核心基地/单位目击，从 calibration case 增量同步写入。
  *
  * 位置：<data-root>/runtime/survey/<tenant>.db（runtime 不提交）。
- * 数据源 = calibration case before.state.objects（服务端全量投影）——
- * 比 agent 视野权威：资源存在即标注，跨 run 不丢。
+ * 数据源 = calibration case before.state.objects——官方语义是"自有实体 +
+ * 当前可见地形与敌人"（arena-hero-doc state-model.md：Owned entities plus
+ * currently visible terrain and enemies），即**单玩家视野投影**，不是服务端
+ * 全量地图。因此：
+ *  - resources 表 = 我方视野跨 run 累积的已知矿（可见过即标注），不是全图；
+ *  - resource_absences 表补足负观测：视野覆盖内确认无矿（collectResourceAbsences
+ *    用我方观察者位置 + supercover 视线判定），是真实缺席而非观测中断——
+ *    refill 周期实证的正确数据源（resource_seen_history 只是观测记录，
+ *    观测间隔 ≠ 缺席，refill 预测 0/401 实证证伪的原因）。
  *
  * 只读约定：本模块只写 survey 库，不碰 telemetry/calibration/生产数据。
  */
@@ -656,6 +663,52 @@ export function knownCoreHunts(db: DatabaseSync): readonly SurveyCoreHuntRow[] {
     firstSeenTick: Number(r.first_seen_tick),
     lastSeenTick: Number(r.last_seen_tick),
   }));
+}
+
+/** 已知矿格的缺席统计（2026-08-08，seed 死格过滤）：返回近 absentWindowTicks 内
+ *  每个已知矿格的缺席次数——缺席是"我方视野覆盖内确认无矿"的负观测（A15），
+ *  高频缺席 = 长期死格（矿补充在 chunk 内别处生成，官方规则：Replenishment
+ *  may later create a natural replacement elsewhere in the chunk；t2 实证
+ *  缺席→恢复中位 133 tick，多数格缺席后长期不恢复）。 */
+export function knownResourceAbsenceCounts(
+  db: DatabaseSync,
+  sinceTick: number,
+): ReadonlyMap<string, number> {
+  const rows = db.prepare(
+    "SELECT cell, COUNT(*) AS absent FROM resource_absences WHERE tick > ? GROUP BY cell",
+  ).all(sinceTick) as Array<Record<string, unknown>>;
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    counts.set(String(row.cell), Number(row.absent));
+  }
+  return counts;
+}
+
+/** 缺席分级冷却（2026-08-08，动态冷却分级）：缺席计数 → 失败冷却时长分级。
+ *  分级依据（t2 实证，absentWindowTicks=20000 内）：p50=246 / p90=1378 次——
+ *  缺席 256+ 次 ≈ 持续 1000+ tick 视野确认无矿（采样每 4 tick 一次），长期死格
+ *  信号；缺席 < 64 次可能是活跃矿的短暂采空，保持默认 32 tick。分档保守：
+ *  只升级"确认死"的格，不拦 refill 后重新可见（visible 优先于冷却）。 */
+export function cooldownTierForAbsenceCount(absenceCount: number): number {
+  if (absenceCount >= 2048) return 384;
+  if (absenceCount >= 512) return 192;
+  if (absenceCount >= 128) return 96;
+  return 32;
+}
+
+/** 已知矿格的分级冷却表（cell → cooldownTicks；仅含缺席 ≥ 128 次的升级格）。
+ *  seed/运行期注入 World.seedFailedCooldownTiers 用。空表 = 零回归。 */
+export function knownResourceCooldownTiers(
+  db: DatabaseSync,
+  sinceTick: number,
+): ReadonlyMap<string, number> {
+  const counts = knownResourceAbsenceCounts(db, sinceTick);
+  const tiers = new Map<string, number>();
+  for (const [cell, absent] of counts) {
+    const cooldown = cooldownTierForAbsenceCount(absent);
+    if (cooldown > 32) tiers.set(cell, cooldown);
+  }
+  return tiers;
 }
 
 /** 读某 run 的同步水位（无记录 = 未同步）。 */

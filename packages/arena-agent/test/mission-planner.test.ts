@@ -34,6 +34,8 @@ const MISSION: MissionConfig = {
   deadMineOverdueTicks: 0,
   migrationScout: false,
   alwaysSurvey: false,
+  switchThreshold: 0,
+  surveyOnSupplyGap: false,
 };
 
 /** 造快照：资源格可带置信元数据（visible/lastSeenTick/seeded）。 */

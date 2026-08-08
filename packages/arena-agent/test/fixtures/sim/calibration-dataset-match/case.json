@@ -22,8 +22,8 @@
       "upkeep_next_tick": 0,
       "champion_beacon": {
         "position": [
-          20,
-          20
+          3,
+          1
         ],
         "status": "GROUND",
         "carrier_id": null
@@ -86,8 +86,8 @@
       "upkeep_next_tick": 0,
       "champion_beacon": {
         "position": [
-          20,
-          20
+          3,
+          1
         ],
         "status": "GROUND",
         "carrier_id": null

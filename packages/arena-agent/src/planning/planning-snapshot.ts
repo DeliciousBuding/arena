@@ -39,6 +39,7 @@ export interface ResourceCellInfo {
 
 export interface BeaconInfo {
   readonly position: Position;
+  /** null = Beacon 格不在本玩家视野内（官方：坐标恒知，状态仅格子可见时可知）。 */
   readonly status: "GROUND" | "CARRIED" | null;
   readonly carrierId: string | null;
 }

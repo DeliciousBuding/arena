@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openSurveyDb, upsertResources, upsertResourceAbsences } from "../src/intel/survey-db.ts";
+import { cooldownTierForAbsenceCount, knownResourceAbsenceCounts, knownResourceCooldownTiers, openSurveyDb, upsertResources, upsertResourceAbsences } from "../src/intel/survey-db.ts";
 import { collectResourceAbsences } from "../src/intel/survey-sync.ts";
 import type { DatabaseSync } from "node:sqlite";
 
@@ -69,6 +69,84 @@ test("survey-absences: Core 视野覆盖内无矿 → 缺席（Core 是观察者
     assert.ok(cells.has("14,10"), "Core 视野 5 内无矿缺席");
     assert.ok(cells.has("10,10"), "Core 脚下格被覆盖且本 case 无矿 → 缺席");
     assert.ok(!cells.has("20,20"), "Core 视野外不缺席");
+    db.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("knownResourceAbsenceCounts: 窗口过滤 + 计数正确", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-abs-count-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    upsertResourceAbsences(db, [
+      { cell: "1,1", tick: 100 },
+      { cell: "1,1", tick: 150 },
+      { cell: "1,1", tick: 250 },
+      { cell: "2,2", tick: 200 },
+      { cell: "2,2", tick: 260 },
+    ]);
+    const counts = knownResourceAbsenceCounts(db, 200);
+    assert.equal(counts.get("1,1"), 1, "tick>200 窗口内 1,1 仅 250 一次");
+    assert.equal(counts.get("2,2"), 1, "tick>200 窗口内 2,2 仅 260 一次（200 不计数）");
+    const wide = knownResourceAbsenceCounts(db, 0);
+    assert.equal(wide.get("1,1"), 3, "全窗口 1,1 缺席 3 次");
+    assert.equal(wide.get("2,2"), 2, "全窗口 2,2 缺席 2 次");
+    assert.equal(wide.get("3,3"), undefined, "无缺席记录 = undefined（调用方按 0 处理）");
+    db.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("knownResourceAbsenceCounts: 空表 = 空 Map（seed 过滤零回归）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-abs-empty-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    const counts = knownResourceAbsenceCounts(db, 0);
+    assert.equal(counts.size, 0);
+    db.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("cooldownTierForAbsenceCount: 缺席次数分级", () => {
+  assert.equal(cooldownTierForAbsenceCount(0), 32, "无缺席 = 默认 32");
+  assert.equal(cooldownTierForAbsenceCount(127), 32, "<128 = 默认 32");
+  assert.equal(cooldownTierForAbsenceCount(128), 96, "≥128 → 96");
+  assert.equal(cooldownTierForAbsenceCount(511), 96, "512 前保持 96");
+  assert.equal(cooldownTierForAbsenceCount(512), 192, "≥512 → 192");
+  assert.equal(cooldownTierForAbsenceCount(2047), 192, "2048 前保持 192");
+  assert.equal(cooldownTierForAbsenceCount(2048), 384, "≥2048 → 384");
+  assert.equal(cooldownTierForAbsenceCount(10_000), 384, "上限封顶 384");
+});
+
+test("knownResourceCooldownTiers: 只返回升级格（≥128 缺席）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-tiers-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    upsertResourceAbsences(db, [
+      { cell: "1,1", tick: 100 },   // 缺席 1 次 → 默认
+      { cell: "2,2", tick: 100 },
+      { cell: "2,2", tick: 200 },
+      { cell: "2,2", tick: 300 },
+      { cell: "2,2", tick: 400 },   // 4 次仍 <128 → 不入表
+    ]);
+    // 128 次缺席需要大量行；用循环构造高频格。
+    const many: { cell: string; tick: number }[] = [];
+    for (let i = 0; i < 200; i += 1) many.push({ cell: "3,3", tick: 1000 + i });
+    upsertResourceAbsences(db, many); // 200 次 → 96 档
+    const tiers = knownResourceCooldownTiers(db, 0);
+    assert.equal(tiers.get("1,1"), undefined, "缺席 1 次不升级");
+    assert.equal(tiers.get("2,2"), undefined, "缺席 4 次不升级");
+    assert.equal(tiers.get("3,3"), 96, "缺席 200 次 → 96 tick 冷却");
+    // 600 次 → 192 档（跨档验证）
+    const many2: { cell: string; tick: number }[] = [];
+    for (let i = 0; i < 600; i += 1) many2.push({ cell: "4,4", tick: 2000 + i });
+    upsertResourceAbsences(db, many2);
+    const tiers2 = knownResourceCooldownTiers(db, 0);
+    assert.equal(tiers2.get("4,4"), 192, "缺席 600 次 → 192 tick 冷却");
     db.close();
   } finally {
     cleanup(dir);
