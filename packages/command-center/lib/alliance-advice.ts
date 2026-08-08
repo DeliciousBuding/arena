@@ -18,6 +18,7 @@ import { loadMinePatterns } from "./mine-patterns.ts";
 import { loadMineUtilization } from "./mine-utilization.ts";
 import { loadDecisionTrend } from "./decision-audit.ts";
 import { loadHumanConflict } from "./human-conflict.ts";
+import { loadAllianceExploration, type ResurveyTarget } from "./exploration-coverage.ts";
 import { loadMiningEffectiveness } from "./mining-effectiveness.ts";
 import { TtlCache } from "./cache.ts";
 
@@ -80,6 +81,40 @@ const adviceCache = new TtlCache<AllianceAdvicePayload>(ADVICE_TTL_MS);
 const LOW_RESOURCE_WARN = 10;
 const NO_COMBAT_CORE_RADIUS = 24;
 const clamp = (v: number, lo = 0, hi = 1): number => Math.min(hi, Math.max(lo, v));
+
+/** 补测目标建议（2026-08-08，探索线输入）：已探索但观测过旧的 chunk 按陈旧度
+ *  排序（refill 模型证伪后的替代勘探信号）——把"哪块旧观测区最该补测"提升为可执行
+ *  建议（决策线可据此派 EXPLORE worker 定向补测）。纯函数，入参即测。 */
+export function buildResurveyAdvice(resurveyTargets: readonly ResurveyTarget[]): AllianceAdvice[] {
+  const out: AllianceAdvice[] = [];
+  const byTenant = new Map<string, ResurveyTarget[]>();
+  // 每租户先按陈旧度降序排（函数自洽，不依赖入参顺序），取最旧 3 块
+  for (const t of resurveyTargets) {
+    const list = byTenant.get(t.nearCoreOf) ?? [];
+    list.push(t);
+    byTenant.set(t.nearCoreOf, list);
+  }
+  for (const [t, all] of byTenant) {
+    const list = all.slice().sort((a, b) => b.stalenessTicks - a.stalenessTicks).slice(0, 3);
+    const top = list[0];
+    const staleMax = list[0].stalenessTicks;
+    // 陈旧度 ≥ 5000 tick 的旧观测区是数据新鲜度实质风险（资源可能已变/已采空），
+    // 升 MEDIUM 避免被 15 条上限挤出面板；低陈旧 INFO 提示。
+    out.push({
+      severity: staleMax >= 5000 ? "MEDIUM" : "INFO",
+      category: "INTEL",
+      tenant: t,
+      title: `${t} ${list.length} 块旧观测区待补测（陈旧 ${staleMax} tick）`,
+      detail: `最旧 ${top.key}（距核 ${top.distChunks} chunk，t${top.lastSeenTick}）——refill 模型证伪后按陈旧度重测`,
+      action: "派 EXPLORE worker 定向补测旧观测区（地图记忆刷新，资源可能已变）",
+      weight: -staleMax,
+      confidence: 0.7,
+      evidence: [{ type: "survey", tenant: t, ref: `resurvey=${top.key} stale=${staleMax}` }],
+      at: new Date().toISOString(),
+    });
+  }
+  return out;
+}
 
 export function loadAllianceAdvice(): AllianceAdvicePayload {
   const hit = adviceCache.get("latest");
@@ -390,6 +425,13 @@ export function loadAllianceAdvice(): AllianceAdvicePayload {
       }
     }
   } catch { /* 审计数据不可用不阻断建议 */ }
+
+  // 9) 补测目标（2026-08-08，探索线输入）：已探索但观测过旧的 chunk 按陈旧度
+  //    排序（refill 模型证伪后的替代勘探信号）——把"哪块旧观测区最该补测"提升为
+  //    可执行建议（决策线可据此派 EXPLORE worker 定向补测）。读 exploration 30s 缓存。
+  try {
+    out.push(...buildResurveyAdvice(loadAllianceExploration().resurveyTargets));
+  } catch { /* 探索数据缺失不阻断 */ }
 
   out.sort((a, b) => ORDER[a.severity] - ORDER[b.severity] || a.weight - b.weight);
   // 2026-08-08 建议去重：同一 (category, tenant, title) 只保留一条（跨租户目击
