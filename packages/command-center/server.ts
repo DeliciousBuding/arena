@@ -42,6 +42,7 @@ import { appendArbitration, clearArbitration, listArbitrations } from "./lib/arb
 import { loadDecisionAudit, warmDecisionAudit } from "./lib/decision-audit.ts";
 import { loadLifecycleAudit, warmLifecycleAudit } from "./lib/lifecycle-audit.ts";
 import { loadMineUtilization, warmMineUtilization } from "./lib/mine-utilization.ts";
+import { loadAuditOverview, warmAuditOverview } from "./lib/audit-overview.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -338,6 +339,11 @@ app.get("/api/audit/lifecycle", (c) => {
   }
   return c.json(loadLifecycleAudit(tenant));
 });
+app.get("/api/audit/overview", (c) => {
+  // 综合审计总览（2026-08-08）：决策-结果 + 生命周期 + 矿利用 + 联盟探索 + 管线健康
+  // 单调用合成——前端"综合态势"面板一次拉取。纯组合（复用各 30s 缓存），只读。
+  return c.json(loadAuditOverview());
+});
 app.get("/api/audit/mines", (c) => {
   // 矿发现-利用缺口审计（2026-08-08）：survey-db 只读——已发现未开采矿
   // （visibleNever 立即分配候选 / staleNever 历史遗留）+ 利用率 + 发现→首采耗时。
@@ -547,6 +553,8 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { warmLifecycleAudit(); } catch { /* 忽略 */ } }, 60);
   // 矿利用审计（survey-db 只读）：启动预热一次，不进周期循环（请求惰性 30s 缓存）。
   setTimeout(() => { try { warmMineUtilization(); } catch { /* 忽略 */ } }, 70);
+  // 综合审计总览（复用子审计缓存）：启动预热一次，不进周期循环。
+  setTimeout(() => { try { warmAuditOverview(); } catch { /* 忽略 */ } }, 80);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
