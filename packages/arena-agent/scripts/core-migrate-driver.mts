@@ -334,6 +334,9 @@ for (let step = 0; step < args.maxSteps; step += 1) {
   const ownBlockers = blockers.filter((u) => u.type !== "?" && u.type !== "CORE");
   const cmds: WireCommand[] = [];
   if (ownBlockers.length > 0) {
+    // freeExit(ox, oy)：让位 worker（在 core+delta）的 1 格偏移目标。MOVE 只走
+    // 1 格——2026-08-08 t1 卡 (-602,-146) 实证：旧版用 2 格偏移导致方向分量
+    // 变 2、dirName 映射错乱（dy=2 → UP），worker 往核心方向挪，让位永不生效。
     const freeExit = (ox: number, oy: number): string | null => {
       const nx = core[0] + delta[0] + ox;
       const ny = core[1] + delta[1] + oy;
@@ -344,11 +347,11 @@ for (let step = 0; step < args.maxSteps; step += 1) {
       return key;
     };
     for (const b of ownBlockers) {
-      // 2 格外前方优先，其次垂直 2 格外，再后方 2 格外
-      const ex = freeExit(delta[0] * 2, delta[1] * 2)
-        ?? freeExit(0, 2)
-        ?? freeExit(0, -2)
-        ?? freeExit(-delta[0] * 2, -delta[1] * 2);
+      // 沿 delta 继续 1 格优先（远离核心），其次垂直/反方向 1 格
+      const ex = freeExit(delta[0], delta[1])
+        ?? freeExit(0, 1)
+        ?? freeExit(0, -1)
+        ?? freeExit(-delta[0], -delta[1]);
       if (ex === null) continue;
       const [exx, exy] = ex.split(",").map(Number);
       const dx = exx - core[0] - delta[0];
