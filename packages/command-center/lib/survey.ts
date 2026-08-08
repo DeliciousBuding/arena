@@ -22,6 +22,10 @@ export interface SurveyData {
   chunks?: Array<Record<string, unknown>>;
 }
 
+/** 矿新鲜度窗口（2026-08-08，数据质量 A6）：last_seen 超过该 tick 数视为历史残留（state=stale）。
+ *  游戏矿 2-6 tick 就消失但会刷新；跨 run 积累的矿多数为早期记忆，前端默认只应看活跃矿。 */
+export const RESOURCE_FRESH_WINDOW_TICKS = 2000;
+
 /** 测绘库（survey-db）：优先于 calibration 扫描——calibration case 只覆盖
  *  "最新 run 已同步 tick"，测绘库累积全部历史 run 的资源/障碍/敌核心
  *  （node:sqlite 只读）。返回形状与 loadSurvey 兼容（前端 tactSurveyLayer
@@ -36,7 +40,7 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
     return null;
   }
   try {
-    const resources = db.prepare(
+    const resourcesRaw = db.prepare(
       "SELECT x, y, last_seen_tick AS tick, first_seen_tick AS firstSeenTick, state, seen_count AS seenCount FROM resources ORDER BY last_seen_tick DESC",
     ).all() as Array<Record<string, unknown>>;
     const obstacles = db.prepare(
@@ -59,6 +63,16 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
       cores.push(r);
     }
     const meta = db.prepare("SELECT MAX(last_tick) AS m, SUM(cases_synced) AS c FROM sync_meta").get() as { m: number | null; c: number | null };
+    // 矿新鲜度动态分级（2026-08-08，数据质量 A6）：跨 run 积累的矿按最后目击计算
+    // ageTicks/fresh，state 动态修正（超窗口→stale）——此前全部 visible
+    // 导致地图绿色残留。前端默认应只看 visible（?states=visible）。
+    const tickMax = Number(meta?.m ?? 0);
+    const resources: Array<Record<string, unknown>> = (resourcesRaw as Array<Record<string, unknown>>).map((r) => {
+      const lastSeen = Number(r.tick ?? 0);
+      const ageTicks = tickMax > 0 && Number.isFinite(lastSeen) ? Math.max(0, tickMax - lastSeen) : 0;
+      const fresh = ageTicks <= RESOURCE_FRESH_WINDOW_TICKS;
+      return { ...r, ageTicks, fresh, state: fresh ? "visible" : "stale" };
+    });
     const chunks = (db.prepare(
       "SELECT chunk_key AS key, last_seen_tick AS lastSeenTick FROM chunks ORDER BY last_seen_tick DESC",
     ).all() as Array<Record<string, unknown>>).map((r) => {
