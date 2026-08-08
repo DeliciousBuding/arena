@@ -613,6 +613,10 @@ export class DeterministicPlanner implements PlanProvider {
     }
     fallbackPlanner.seedThreatProfiles(threatProfiles);
     patrolPlanner.seedThreatProfiles(threatProfiles);
+    // patrol planner 只用于“资源格已被其他 Worker 占用时继续探索”——永远看不到
+    // resourceCells，因此不得拥有第二套 memory-mine 分配权（生产回流 99b4ba2：
+    // 否则未分配 worker 会经 patrol 基线的 go_harvest_mem 绕过 Hungarian 唯一性）。
+    patrolPlanner.updateConfig({ ...patrolPlanner.config, harvestMemoryMine: false });
     this.planner.updateConfig({ mission: missionConfig });
   }
 
@@ -645,7 +649,8 @@ export class DeterministicPlanner implements PlanProvider {
     },
   ): void {
     this.fallbackPlanner.updateConfig(safetyConfig);
-    this.patrolPlanner.updateConfig(safetyConfig);
+    // patrol 永远不消费 World 记忆矿（单一分配权威在 Hungarian，生产回流 99b4ba2）。
+    this.patrolPlanner.updateConfig({ ...safetyConfig, harvestMemoryMine: false });
     this.vanguardRatio = deterministicConfig.vanguardRatio;
     this.accumulateThreshold = deterministicConfig.accumulateThreshold ?? 0;
     this.spawnReserve = deterministicConfig.spawnReserve ?? WORKER_SPAWN_RESERVE;
@@ -684,8 +689,39 @@ export class DeterministicPlanner implements PlanProvider {
       }
     }
     const rawSnapshot = extractPlanningSnapshot(input.state);
+    const resourceCells = new Map(rawSnapshot.resourceCells);
+    // 记忆矿合并（生产回流 99b4ba2，harvest-memory-mine-v1 联动）：deterministic
+    // 模式下该配置只负责"允许消费 World 记忆"；实际 worker→资源分配统一交给
+    // WorkerTaskPlanner/Hungarian，不再由 Safety 自己做第二套最近矿分配。
+    // 本 Tick 可见事实优先于 memory 元数据（visible 键不覆盖）；stale/seeded
+    // 元数据（visible=false + lastSeenTick + seeded）由 planner 的随龄惩罚、
+    // seed 惩罚与 40 格边界消费。World 侧 timestamp/data-quality 修复
+    // （tick 回滚清空、TTL 64、vision 失效、失败冷却）保持原样不动。
+    if (this.fallbackPlanner.config.harvestMemoryMine === true) {
+      for (const candidate of this.fallbackPlanner.world.resourceCandidates()) {
+        const key = cellKey(candidate.cell);
+        if (resourceCells.has(key)) continue;
+        resourceCells.set(key, {
+          position: candidate.cell,
+          visible: false,
+          lastSeenTick: candidate.lastSeenTick,
+          seeded: candidate.seeded,
+        });
+      }
+    }
+    // threat recall / raid defense / breakout 激活时资源分配收缩到守家圈
+    // （生产回流 99b4ba2）：召回期不派 worker 长途奔矿，超距候选从矩阵剔除。
+    const maxResourceDistanceFromCore = this.fallbackPlanner.resourceAssignmentMaxDistanceFromCore(input.state);
+    if (Number.isFinite(maxResourceDistanceFromCore) && rawSnapshot.corePosition !== null) {
+      for (const [key, resource] of resourceCells) {
+        if (manhattan(resource.position, rawSnapshot.corePosition) > maxResourceDistanceFromCore) {
+          resourceCells.delete(key);
+        }
+      }
+    }
     const snapshot: PlanningSnapshot = {
       ...rawSnapshot,
+      resourceCells,
       obstacleCells: this.fallbackPlanner.world.obstacles(rawSnapshot.obstacleCells),
       // Phase 2（G3 数据管道）：矿刷新预测并入快照——死矿剔除 + 即将刷新加成。
       refillPredictions: this.refillPredictions,
