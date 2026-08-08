@@ -20,6 +20,7 @@ import { DatabaseSync } from "node:sqlite";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createNavState, notePosition, planDirection, chebyshev, mergeObstacleSets, DIRECTIONS, type Dir, type Pos } from "../src/app/core-migrate-nav.ts";
+import { auditMigrationTarget } from "../src/domain/migration-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = process.env.ARENA_DATA_ROOT ?? "ARENA_REPO_ROOT/data";
@@ -46,6 +47,7 @@ function parseArgs(argv: readonly string[]): Args {
     intervalMs: Number(get("interval-ms") ?? 15000),
     maxSteps: Number(get("max-steps") ?? 400),
     beaconSafe: Number(get("beacon-safe") ?? 60),
+    force: argv.includes("--force"),
     dataRoot: get("data-root") ?? DATA_ROOT,
   };
 }
@@ -124,6 +126,70 @@ function loadSurveyObstacles(tenant: string): ReadonlySet<string> {
     log(`survey 障碍读取失败: ${e instanceof Error ? e.message : String(e)}`);
     return new Set();
   }
+}
+
+/** 读 survey 已知资源（<data-root>/runtime/survey/<tenant>.db，只读，军事审计用）。 */
+function loadSurveyResources(tenant: string): { x: number; y: number; lastSeenTick: number }[] {
+  const dbPath = join(args.dataRoot, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(dbPath)) return [];
+  try {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    const rows = db.prepare("SELECT x, y, last_seen_tick AS lastSeenTick FROM resources").all() as { x: number; y: number; lastSeenTick: number }[];
+    db.close();
+    return rows;
+  } catch (e) {
+    log(`survey 资源读取失败: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
+  }
+}
+
+/** 读 survey 敌核记忆（<data-root>/runtime/survey/<tenant>.db，只读，军事审计用）。 */
+function loadSurveyEnemyCores(tenant: string): { x: number; y: number; lastSeenTick: number }[] {
+  const dbPath = join(args.dataRoot, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(dbPath)) return [];
+  try {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    const rows = db.prepare("SELECT x, y, last_seen_tick AS lastSeenTick FROM core_hunts").all() as { x: number; y: number; lastSeenTick: number }[];
+    db.close();
+    return rows;
+  } catch (e) {
+    log(`survey 敌核读取失败: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
+  }
+}
+
+/** 军事审计预检（2026-08-08，migration-audit-v1）：资源贫瘠/活跃敌核贴脸目标
+ *  默认拒绝——t1 生产实证 [-619,-154]→[-565,-95]（227 资源→1 资源 + 21 敌核）。
+ *  --force 显式绕过（有意识的战略迁移）。数据不可读时 fail-open 放行。 */
+function auditPreflight(tenant: string): void {
+  const live = readLatestCore(tenant);
+  if (live === null) {
+    log("军事审计：calibration 不可读，跳过预检（fail-open）");
+    return;
+  }
+  const resources = loadSurveyResources(tenant);
+  const enemyCores = loadSurveyEnemyCores(tenant);
+  if (resources.length === 0 && enemyCores.length === 0) {
+    log("军事审计：survey 无数据，跳过预检（fail-open）");
+    return;
+  }
+  const audit = auditMigrationTarget(
+    live.core.position,
+    [args.targetX, args.targetY],
+    resources,
+    enemyCores,
+    live.tick,
+  );
+  if (audit.ok) {
+    log(`军事审计通过：目标区新鲜资源 ${audit.freshResourceCount}/${audit.resourceCount}，敌核 ${audit.activeEnemyCoreCount}/${audit.enemyCoreCount} 活跃，迁移距离 ${audit.distance} 格`);
+    return;
+  }
+  if (args.force) {
+    log(`军事审计【--force 强制放行】：${audit.reasons.join("；")}`);
+    return;
+  }
+  log(`军事审计【拒绝迁移】：${audit.reasons.join("；")}。若确认有意迁移请加 --force`);
+  process.exit(2);
 }
 
 function storePath(tenant: string): string {
