@@ -429,17 +429,23 @@ async function poll() {
   }
 }
 
+let pollStreamsTick = 0;
 async function pollStreams() {
+  pollStreamsTick++;
+  // events 降频（2026-08-09）：事件非实时决策数据，3s→15s（5 次跳 4 次）；
+  // stream 仍 3s（决策流实时性要求高）。all tab 预取 events 同步降频。
+  const shouldPollEvents = pollStreamsTick % 5 === 1;
   const active = state.tab === 'all' ? TENANTS : state.tab === 'events' ? [] : [state.tab];
   if (state.tab === 'events') {
+    if (!shouldPollEvents) return;
     const results = await Promise.allSettled(TENANTS.map((t) => getJSON(`/api/events?tenant=${t}&n=80`)));
     state.events = {};
     results.forEach((r, i) => { if (r.status === 'fulfilled') state.events[TENANTS[i]] = r.value.events ?? []; });
   } else {
     const results = await Promise.allSettled(active.map((t) => getJSON(`/api/stream?tenant=${t}&n=80`)));
     results.forEach((r, i) => { if (r.status === 'fulfilled') state.streams[active[i]] = r.value.rows ?? []; });
-    // 统一决策页预取事件：事件页徽标即时显示 + 切页秒开（本地文件读取，开销可忽略）
-    if (state.tab === 'all') {
+    // 统一决策页预取事件：事件页徽标即时显示 + 切页秒开（降频 15s，本地文件读取开销可忽略）
+    if (state.tab === 'all' && shouldPollEvents) {
       const evResults = await Promise.allSettled(TENANTS.map((t) => getJSON(`/api/events?tenant=${t}&n=80`)));
       state.events = {};
       evResults.forEach((r, i) => { if (r.status === 'fulfilled') state.events[TENANTS[i]] = r.value.events ?? []; });
@@ -2212,6 +2218,20 @@ async function boot() {
     if (e.key === 'f' || e.key === 'F') { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); return; }
     if (e.key === 'g' || e.key === 'G') {
       exitSolo();
+      return;
+    }
+    // 快捷键补齐（2026-08-09）：数字 1-4 切租户 / 0 全局 / E 事件 / Space 回放暂停 / ? 帮助
+    if (e.key >= '1' && e.key <= '4') {
+      state.tab = `t${e.key}`; savePrefs(); pollStreams(); pokeHint(); e.preventDefault();
+      toast(`切换到 ${e.key} 号租户视图`, 'info');
+      return;
+    }
+    if (e.key === '0') { state.tab = 'all'; savePrefs(); pollStreams(); pokeHint(); e.preventDefault(); toast('切换到全局联盟视图', 'info'); return; }
+    if (e.key === 'e' || e.key === 'E') { state.tab = 'events'; savePrefs(); pollStreams(); pokeHint(); e.preventDefault(); toast('切换到事件流', 'info'); return; }
+    if (e.key === ' ') { replayToggle(replay, replayDeps); e.preventDefault(); return; }
+    if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+      toast('快捷键：1-4 租户 / 0 全局 / E 事件 / Space 回放 / F 居中 / G 返回 / T 信标 / +/- 缩放 / 方向键 平移', 'info');
+      e.preventDefault();
       return;
     }
     if (e.key === 't' || e.key === 'T') {
