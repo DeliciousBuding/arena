@@ -32,6 +32,8 @@ export interface EngineState {
 }
 export interface EngineHandle {
   toggleSolo(t: string): void;
+  /** 聚焦租户并定位（已聚焦则重置视野到该租户全貌）——决策流点击联动。 */
+  focusTenant(t: string): void;
   exitSolo(): void;
   fitView(): void;
   fitSolo(t: string): void;
