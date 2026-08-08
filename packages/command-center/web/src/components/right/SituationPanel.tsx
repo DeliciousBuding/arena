@@ -123,19 +123,19 @@ export function SituationPanel() {
       ? (data?.sightings ?? []).find((sg) => keys.includes(sg.ownerUsername) && Array.isArray(sg.position) && sg.position.length >= 2)
       : undefined;
     if (sight) {
-      engine.jumpTo(sight.position[0], sight.position[1]);
+      engine.jumpTo(sight.position[0], sight.position[1], `${t.toUpperCase()} ${sec.direction} 敌核「${sight.ownerUsername}」`);
       engine.toast(`定位 ${t.toUpperCase()} ${sec.direction} 方向敌核「${sight.ownerUsername}」`);
       return;
     }
     const dir = DIR_VEC[sec.direction] ?? [0, 0];
     const dist = sec.nearestDistance ?? 20;
-    engine.jumpTo((corePos?.[0] ?? 0) + dir[0] * dist, (corePos?.[1] ?? 0) + dir[1] * dist);
+    engine.jumpTo((corePos?.[0] ?? 0) + dir[0] * dist, (corePos?.[1] ?? 0) + dir[1] * dist, `${t.toUpperCase()} ${sec.direction} 最近敌情`);
     engine.toast(`${t.toUpperCase()} ${sec.direction} 方向最近敌情约 ${dist} 格（估算）`);
   };
 
   const jump = (x: number | null | undefined, y: number | null | undefined, label: string) => {
     if (typeof x !== "number" || typeof y !== "number" || !engine) return;
-    engine.jumpTo(x, y);
+    engine.jumpTo(x, y, label);
     engine.toast(`定位 ${label}（${x}, ${y}）`);
   };
 

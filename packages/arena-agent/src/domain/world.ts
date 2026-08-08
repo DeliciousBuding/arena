@@ -169,6 +169,32 @@ export interface EnemyMemory {
  *  "old Core coordinate 标为待确认并按区域彻查"）。来源：
  *  - CORE：直接目击敌 Core（最高置信，sticky）；
  *  - WORKER_INFER：由敌 Worker 轨迹/单次目击推断的基地候选（较短窗口）。 */
+/** 近核入侵观察半径（Chebyshev，2026-08-08）：敌单位进入该距离即入"近核观察"
+ *  ——与 raidWatchRadius（Manhattan 18）同量级威胁边界，保证侦察/回援/清剿
+ *  共享同一"家边敌情"口径。 */
+export const CORE_WATCH_RADIUS = 18;
+/** 近核入侵观察记忆 TTL（tick）：近核敌情短暂失明不失忆——短 TTL 战术记忆
+ *  （enemyHints 6 / stationary 12）会漏掉"盘踞/间歇可见"的近核敌情（t2 实证：
+ *  敌 WORKER 在离核心 2 格处盘踞 600+ tick，记忆过期后威胁归零）。60 tick ≈
+ *  1 分钟窗口，足够触发威胁 ALERT + 回援 + Vanguard 回访清剿。 */
+export const CORE_WATCH_TTL = 60;
+
+/** 近核入侵观察记忆（2026-08-08）：距我方 Core ≤ CORE_WATCH_RADIUS 的敌单位
+ *  长 TTL 记忆。静止标记 = 连续两次目击同格（盘踞 camp / 挂机单位，白赚目标）；
+ *  coreDistance 为目击时距 Core 的 Chebyshev 快照（Core 迁移后旧观察自然失效，
+ *  新目击重建）。供威胁 ALERT（战斗单位）与 Vanguard 回访清剿消费。 */
+export interface CoreWatchMemory {
+  readonly id: string;
+  position: Position;
+  kind: "UNIT" | "CORE";
+  unitType?: UnitType;
+  /** 连续两次目击同位置 = 静止（盘踞 camp / 挂机单位）。 */
+  stationary: boolean;
+  /** 最近一次目击时距 Core 的 Chebyshev 距离（快照，不随 Core 迁移漂移）。 */
+  coreDistance: number;
+  lastSeenTick: number;
+}
+
 export interface CoreHuntTarget {
   readonly position: Position;
   readonly lastSeenTick: number;
@@ -249,6 +275,8 @@ export class World {
   private readonly obstacleMemory = new Set<string>();
   private readonly resourceMemory = new Map<string, ResourceMemory>();
   private readonly enemyMemory = new Map<string, EnemyMemory>();
+  /** 近核入侵观察（2026-08-08，core-threat-watch-v1）。 */
+  private readonly coreWatch = new Map<string, CoreWatchMemory>();
   private readonly failedCells = new Map<string, number>();
   private readonly unitMoveFailures = new Map<string, Map<string, number>>();
   private readonly unitMemories = new Map<string, UnitMemory>();
@@ -295,9 +323,10 @@ export class World {
    * 返回被清条目数（telemetry/测试可读）。
    */
   clearBattlefieldMemory(): number {
-    const cleared = this.enemyMemory.size + this.unitMemories.size;
+    const cleared = this.enemyMemory.size + this.unitMemories.size + this.coreWatch.size;
     this.enemyMemory.clear();
     this.unitMemories.clear();
+    this.coreWatch.clear();
     return cleared;
   }
 
@@ -468,6 +497,25 @@ export class World {
         unitType: enemy.unitType,
         lastSeenTick: state.tick,
       });
+      // 近核入侵观察（2026-08-08，core-threat-watch-v1）：敌单位距我方 Core
+      // ≤ CORE_WATCH_RADIUS 即入长 TTL 观察（enemyHints 6 tick 会漏盘踞/间歇
+      // 可见的近核敌情——t2 实证敌 WORKER 离核 2 格盘踞 600+ tick）。静止 =
+      // 连续目击同格。供威胁 ALERT（战斗单位）与 Vanguard 回访清剿消费。
+      if (core !== undefined && coreDistance !== undefined && coreDistance <= CORE_WATCH_RADIUS) {
+        const prevWatch = this.coreWatch.get(enemy.id);
+        this.coreWatch.set(enemy.id, {
+          id: enemy.id,
+          position: enemy.position,
+          kind: enemy.kind,
+          unitType: enemy.unitType,
+          stationary:
+            prevWatch !== undefined &&
+            prevWatch.position[0] === enemy.position[0] &&
+            prevWatch.position[1] === enemy.position[1],
+          coreDistance,
+          lastSeenTick: state.tick,
+        });
+      }
       // 敌情狩猎（2026-08-07）：CORE 目击 → sticky 基地目标；WORKER 目击 →
       // 推断基地候选（轨迹双向延伸 / 单次目击远离我方猜测——竞品 worker
       // trajectory 推断 Core 方向）。同一格保留更新鲜的目击。
@@ -734,6 +782,15 @@ export class World {
       )
       .sort((a, b) => b.lastSeenTick - a.lastSeenTick || a.id.localeCompare(b.id))
       .map((memory) => ({ id: memory.id, position: memory.position, lastSeenTick: memory.lastSeenTick }));
+  }
+
+  /** 近核入侵观察目标（2026-08-08，core-threat-watch-v1）：长 TTL 内目击过、
+   *  目击时距 Core ≤ CORE_WATCH_RADIUS 的敌单位。coreDistance 用目击时快照
+   *  （不随 Core 迁移重算——迁移后由新目击重建观察）。排序：最近目击优先。 */
+  coreWatchTargets(maxAge = CORE_WATCH_TTL): readonly CoreWatchMemory[] {
+    return [...this.coreWatch.values()]
+      .filter((memory) => this.tick - memory.lastSeenTick <= maxAge)
+      .sort((a, b) => b.lastSeenTick - a.lastSeenTick || a.id.localeCompare(b.id));
   }
 
   /** 敌情狩猎目标（排序：CORE 目击优先 → 新鲜度 → 坐标 tie-break）。
