@@ -753,7 +753,6 @@ export async function runTenant(
     };
     const threatRefreshTimer = setInterval(refreshThreatProfiles, THREAT_REFRESH_INTERVAL_MS);
     refreshThreatProfiles(); // 启动立即检查一次（避免首次快照缺失导致长空窗）
-    cleanupStack.push(() => clearInterval(threatRefreshTimer));
 
     // 矿刷新预测（2026-08-08，worker-mission-v1 Phase 2，G3 数据管道）：
     // per-tenant survey-db 的 resource_seen_history 每 5 分钟重算一次预测（与
@@ -781,7 +780,6 @@ export async function runTenant(
         }
         lastRefillPredictedTicks = predictedTicks;
         if (planner instanceof DeterministicPlanner) planner.replaceRefillPredictions(predictedTicks);
-        // 空预测（无历史/db 缺失）不写 telemetry——保持既有记录节奏零回归。
         if (predictedTicks.size > 0) {
           appendJsonlLine(
             join(dirs.telemetryDir, "runtime.jsonl"),
@@ -819,6 +817,7 @@ export async function runTenant(
     const refillPredictionsTimer = setInterval(refreshRefillPredictions, THREAT_REFRESH_INTERVAL_MS);
     refreshRefillPredictions(); // 启动立即检查一次（对比预载值，无变化不写日志）
     cleanupStack.push(() => clearInterval(refillPredictionsTimer));
+    cleanupStack.push(() => clearInterval(threatRefreshTimer));
 
     // 联盟 no-fire roster 热刷新（2026-08-08，alliance-no-fire-v1）：supervisor
     // 每周期把聚合 roster 原子写入 data/runtime/alliance/roster.json，本进程每

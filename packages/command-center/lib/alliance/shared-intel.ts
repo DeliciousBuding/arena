@@ -234,4 +234,3 @@ export function aggregateAllianceIntel(input: AggregateAllianceIntelInput): Shar
     },
   };
 }
-

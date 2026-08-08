@@ -87,8 +87,10 @@ test("敌情狩猎：播种最后已知敌 Core → 定向回访并拆毁（vang
   assert.ok(huntIntents > 0, `应产生 vanguard_hunt 意图，实际 hunt=${huntIntents}`);
 });
 
-test("敌情狩猎：无播种对照组 → 同预算内不产生 vanguard_hunt（环搜盲区）", () => {
-  const { p2Down, huntIntents } = run(false, 7);
-  assert.equal(huntIntents, 0, "无播种不触发 vanguard_hunt");
+test("敌情狩猎：无播种对照组 → 环搜慢、不定向（vs 有播种 <150）", () => {
+  // 并行 WIP（vanguard-blockade 侦察增强）后，无播种时 vanguard 巡逻也能发现敌核并
+  // 触发 hunt（huntIntents>0）——但拆核仍慢（环搜而非定向回访）。保留 p2Down 差异验证：
+  // 有播种快速拆（<150）vs 无播种慢（>150），不再断言 huntIntents=0。
+  const { p2Down } = run(false, 7);
   assert.ok(p2Down > 150, `无播种环搜慢（>150），实际 p2Down=${p2Down}`);
 });

@@ -152,4 +152,3 @@ export function buildAllianceSnapshot(input: BuildSnapshotInput): AllianceSnapsh
     treasuryTenant: input.treasuryTenant,
   });
 }
-

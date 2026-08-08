@@ -204,6 +204,9 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "bounded-raid-v1": Object.freeze({ boundedRaid: true }),
     "scout-evade-v1": Object.freeze({ scoutEvade: true }),
     "ranger-memory-shot-v1": Object.freeze({ rangerMemoryShot: true }),
+    "coordinated-fire-v1": Object.freeze({ coordinatedFire: true }),
+    "ranger-scavenge-v1": Object.freeze({ rangerScavenge: true }),
+    "ranger-kite-v1": Object.freeze({ rangerKite: true }),
     "military-frontier-scavenge-v1": Object.freeze({ militaryScavengeFrontier: true }),
     /**
      * 攻坚候选（2026-08-07 用户导向"爆兵打对面水晶"，安全侧 = 军事单位行为）：
@@ -233,11 +236,11 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
       militaryHunt: true,
     }),
     /**
-     * 人口上限 20→30（2026-08-08 用户裁决，t1 恢复综合扩张）：populationCeiling
-     * 是产兵硬门（deterministic selectDeterministicCoreAction 与 SafetyPlanner
-     * 共用）——t1 pop 25 时 20 上限导致 4500+ tick 零产兵、res 顶到容量上限
-     * （pop×5=120）空转。30 = v0.14 动态定价 k=2 档末（pop 26-30：Vanguard 17/
-     * Ranger 20；31 起 k=3 跳 22+），继续扩张但不过度进入高溢价档。仅 t1 启用。
+     * 人口上限 20→30（2026-08-08 用户裁决，t1 恢复综合扩张/余额 150）：populationCeiling
+     * 是产兵硬门（deterministic selectDeterministicCoreAction 与 SafetyPlanner 共用）——
+     * t1 pop 25 时 20 上限导致 4500+ tick 零产兵、res 顶到容量上限（pop×5=125）空转。
+     * 30 = v0.14 动态定价 k=2 档末（pop 26-30：Vanguard 17/Ranger 20；31 起 k=3 跳 22+），
+     * 且 pop 30 时资源容量 = 150（目标余额）。仅 t1 启用。
      */
     "population-ceiling-30-v1": Object.freeze({ populationCeiling: 30 }),
     /**
@@ -338,6 +341,12 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
         // 迁移方向勘探（2026-08-08）：核心 MOVING 时 EXPLORE worker 朝核心迁移方向
         // 探路（为落点测绘），核心 NORMAL 零影响。t1 不迁移=零回归；t3 迁移中生效。
         migrationScout: true,
+        // 全量外出（2026-08-08，用户导向"矿工不许原地守家"）：剩余空闲 worker 全部
+        // EXPLORE 外出测绘/打探，永不守家 WAIT——守家是军事单位职责，矿工只负责
+        // 采/探/寻矿；特殊卡位（worker-blockade）与核心迁移持货保持显式例外。
+        // 注：main 侧曾用旧名 surveyOnSupplyGap 表达同一行为（v3 合并统一为
+        // alwaysSurvey，config 字段名以本文件为准）。
+        alwaysSurvey: true,
       },
     }),
     /**

@@ -187,6 +187,11 @@ export class WorkerTaskPlanner {
     );
     const availableCells = [...snapshot.resourceCells.keys()]
       .filter((key) => !claimedCells.has(key))
+      // 追空矿冻结修复（2026-08-08，t4 生产实证）：worker 已在某格但该矿
+      // 当前不可见（memory/seed 矿，visible=false——矿 2-6 tick 相位消失）时，
+      // 不得继续分配该格——否则 worker 到达后 GO_RESOURCE 恒 WAIT（无矿可采）
+      // 永久冻结（t4 3 worker 全部 WAIT+GO_RESOURCE、res=0 连续 100+ tick）。
+      // 释放后 worker 回 Safety 巡逻，去探新鲜矿/等 refill。
       .filter((key) => {
         const cell = snapshot.resourceCells.get(key);
         if (cell?.visible === false && occupiedByWorker.has(key)) return false;
@@ -282,6 +287,10 @@ export class WorkerTaskPlanner {
       // 的 worker——否则被真实任务占用的 surveyor 名额浪费，cap 内勘探者数量
       // 少于预期（worker-mission-v1 回归测试实证）。测绘期已在求解前预留
       // （pre-reserve 分支），此处剩余 worker 均为非勘探者 → WAIT。
+      // 全量外出（2026-08-08，用户导向"矿工不许原地守家"，v3 生产行为）：
+      // alwaysSurvey=true 时无矿可采（dummy WAIT 列）的剩余 worker 全部 EXPLORE
+      // （外出测绘/打探，永不守家 WAIT）——守家是军事单位职责；特殊卡位
+      // （blockade）与核心迁移持货由 SafetyPlanner 显式例外。
       const realTargets = new Map<string, string>(); // workerId → cellKey
       const dummyWorkers: PlanningUnit[] = [];
       for (let rowIndex = 0; rowIndex < pool.length; rowIndex += 1) {
@@ -293,6 +302,7 @@ export class WorkerTaskPlanner {
           dummyWorkers.push(worker);
         }
       }
+      const alwaysOutbound = this.mission.alwaysSurvey === true;
       const leftoverSurveyors = options.surveyBurstActive === true
         ? new Set<string>()
         : surveyorIds(dummyWorkers, this.mission, false);
@@ -311,7 +321,7 @@ export class WorkerTaskPlanner {
         } else {
           assignments.push({
             unitId: worker.id,
-            task: leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
+            task: alwaysOutbound || leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
           });
         }
       }
@@ -323,7 +333,7 @@ export class WorkerTaskPlanner {
       for (const worker of pool) {
         assignments.push({
           unitId: worker.id,
-          task: leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
+          task: (this.mission.alwaysSurvey === true) || leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
         });
       }
     }

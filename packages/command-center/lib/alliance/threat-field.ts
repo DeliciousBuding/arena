@@ -124,4 +124,3 @@ export function adjustWithLeaderboardPrior(
   }
   return { ...field, cells };
 }
-

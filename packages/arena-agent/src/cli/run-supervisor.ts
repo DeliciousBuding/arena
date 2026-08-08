@@ -6,6 +6,7 @@ import { DebugServer } from "../app/debug-server.ts";
 import { loadDotEnv } from "../app/dotenv.ts";
 import { resolveArenaDataRoot } from "../app/data-root.ts";
 import { createCentralAllianceShadowRuntime, type CentralAllianceShadowRuntime } from "../alliance/runtime/central-shadow-runtime.ts";
+import { ALLIANCE_ROSTER_SCHEMA, writeAllianceRosterFile } from "../alliance/roster-file.ts";
 
 const ENV_DEFAULTS = {
   "repo-root": "ARENA_REPO_ROOT",
@@ -179,6 +180,29 @@ async function main(): Promise<void> {
     });
     console.log(`[supervisor] Alliance Director shadow enabled: tenants=${expectedTenants.join(",")} period=${allianceDirectorPeriodTicks} skew<=${allianceDirectorMaxSkewTicks} strategy=${allianceStrategyProfile ?? "balanced"} actionOwnership=none`);
   }
+
+  // 联盟 no-fire roster 落盘（2026-08-08，alliance-no-fire-v1）：每次 director
+  // 快照 revision 变化即原子写 <dataRoot>/runtime/alliance/roster.json，供各
+  // 租户进程读取做 no-fire 过滤。ASSIST_ONLY（actionOwnership=none）不改变任何
+  // 租户动作，只是把"已知联盟受控实体 id"共享给执行面。5s 轮询足够（director
+  // 周期 4 tick ≈ 40-60s；轮询仅比较 revision，零 I/O 压力）。
+  let lastWrittenRosterRevision = -1;
+  const rosterWriteTimer = setInterval(() => {
+    const snap = centralAlliance?.view().snapshot ?? null;
+    if (snap === null || snap.revision === lastWrittenRosterRevision) return;
+    lastWrittenRosterRevision = snap.revision;
+    try {
+      writeAllianceRosterFile(dataRoot, {
+        schema: ALLIANCE_ROSTER_SCHEMA,
+        revision: snap.revision,
+        updatedAtMs: Date.now(),
+        allyEntityIds: snap.allyEntityIds,
+      });
+      console.log(`[supervisor] alliance roster written revision=${snap.revision} ids=${snap.allyEntityIds.length}`);
+    } catch (error) {
+      console.error(`[supervisor] alliance roster write failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, 5000);
 
   let signalResolve: ((signal: string) => void) | null = null;
   const signalPromise = new Promise<string>((resolve) => { signalResolve = resolve; });

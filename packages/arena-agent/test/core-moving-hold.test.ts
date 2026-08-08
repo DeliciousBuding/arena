@@ -38,12 +38,12 @@ function holdConfig() {
   return { ...DEFAULT_SAFETY_CONFIG, coreMovingHold: true };
 }
 
-test("core-moving-hold：Core MOVING + cargo → worker WAIT 持货（不追交）", () => {
+test("core-moving-hold：Core MOVING + cargo 在核心格 → 先移出核心格（worker_hold_cargo_off_core）", () => {
   const planner = new SafetyPlanner(holdConfig());
   const plan = planner.decide({ state: makeState(1, "MOVING", [0, 0], 1) });
   const action = plan.unitActions["w01"];
-  assert.equal(action.type, "WAIT", `MOVING 中 cargo worker 应 WAIT，实际 ${JSON.stringify(action)}`);
-  assert.equal(plan.intents?.["w01"], "worker_hold_cargo_moving");
+  assert.equal(action.type, "MOVE", `MOVING 中站核心格的 cargo worker 应先移出核心格，实际 ${JSON.stringify(action)}`);
+  assert.equal(plan.intents?.["w01"], "worker_hold_cargo_off_core");
 });
 
 test("core-moving-hold：Core NORMAL + cargo → 正常交仓（DEPOSIT）", () => {

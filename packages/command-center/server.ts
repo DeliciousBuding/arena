@@ -18,7 +18,7 @@ import { existsSync, statSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DATA_ROOT, TENANTS } from "./lib/fs-jsonl.ts";
-import { supervisorState } from "./lib/supervisor.ts";
+import { supervisorState, supervisorAllianceDirectorState } from "./lib/supervisor.ts";
 import { loadMergedMap } from "./lib/map.ts";
 import { loadOverview, loadStream, loadReplay, loadPlan, loadWorld, loadEvents } from "./lib/streams.ts";
 import { loadSurveyDb, loadLifecycleDb, loadSurvey, loadResourceTimeline, loadSpendTrend, loadUnitLifecycleDb, loadChunksDb } from "./lib/survey.ts";
@@ -361,6 +361,11 @@ app.get("/api/alliance/defense", (c) => {
       (a, b) => (sevOrder[a.severity] - sevOrder[b.severity]) || a.id.localeCompare(b.id),
     ),
   });
+});
+app.get("/api/alliance/director", async (c) => {
+  // 中央 Alliance Director v3：只读代理 supervisor Debug API。永远 ASSIST_ONLY，
+  // actionOwnership=none；8120 不可用时 fail-open 返回 available=false。
+  return c.json(await supervisorAllianceDirectorState());
 });
 
 app.get("/api/alliance/exploration", (c) => {
