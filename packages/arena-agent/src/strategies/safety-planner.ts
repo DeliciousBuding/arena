@@ -154,6 +154,10 @@ const HEAL_ROTATION_ENGAGE_RANGE: Record<UnitType, number> = { WORKER: 1, VANGUA
 /** B8 守卫轮换 one-at-a-time（竞品 "one wounded defender at a time"）：
  *  触发回修后该守卫占用回修名额的 tick 窗口（路上 + 补血）。 */
 const HEAL_ROTATION_HOLD_TICKS = 12;
+/** W57 relief 相默认冷却 tick（双相 FSM）：前伤员脱离危险血量后槽冷却的最短
+ *  时间——给前伤员在 Core 格继续补满/让位移动的时间，阻止下一个伤员立即冲入
+ *  仍被占用的 Core 格造成 capacity 互堵。4 覆盖常见 HEAL 1-2 tick + 让位 1-2 tick。 */
+const HEAL_ROTATION_RELIEF_TICKS = 4;
 /** B5 远端突击组局部响应（竞品 detached squad）：敌非目标单位进入 5 格 = 被拦截。 */
 const DETACHED_RESPONSE_RADIUS = 5;
 /** 被拦截后回 Core 守位的最少 tick（竞品 "at least eight Ticks"）。 */
@@ -379,6 +383,23 @@ interface SortieRecord {
   rangerIds: Set<string>;
 }
 
+/** W57 双相轮换治疗槽（guardHealRotationTwoPhase）：按 UnitType 各自一个槽，
+ *  替代 v1 的单相 hold-timer。patient 相 = 伤员占用治疗槽向 Core 回修；
+ *  relief 相 = 前伤员脱离危险血量后槽进入冷却（阻止下一个伤员立即冲入仍被
+ *  占用的 Core 格造成 capacity 互堵）。 */
+interface HealRotationSlot {
+  /** 当前相：patient（伤员占用中）/ relief（冷却中，不接受新伤员）。 */
+  phase: "patient" | "relief";
+  /** 占用/刚释放槽的单位 id（patient 相 = 当前伤员；relief 相 = 刚脱离危险
+   *  血量的前伤员，仍在 Core 格补满/让位移动中）。 */
+  occupantId: string;
+  /** 当前相开始 tick（telemetry/调试）。 */
+  phaseStartTick: number;
+  /** 当前相截止 tick（patient = patientPhaseTicks 超时；relief = reliefPhaseTicks
+   *  冷却到期，到期后槽释放可被新伤员认领）。 */
+  phaseEndTick: number;
+}
+
 export class SafetyPlanner {
   readonly world: World;
   readonly phase: PhaseMachine;
@@ -533,6 +554,10 @@ export class SafetyPlanner {
   private scoutEvadeState = new Map<string, { returnUntil: number; cooldownUntil: number }>();
   /** B8 守卫轮换 one-at-a-time：回修流程中的守卫（unitId → 名额占用截止 tick）。 */
   private healRotationActive = new Map<string, number>();
+  /** W57 双相轮换治疗槽（guardHealRotationTwoPhase）：按 UnitType 各自一个槽，
+   *  patient 相 = 伤员占用治疗槽向 Core 回修；relief 相 = 前伤员脱离危险血量后
+   *  槽进入冷却（防下一个伤员立即冲入仍被占用的 Core 格）。未启用时 Map 永空。 */
+  private readonly healRotationSlots = new Map<UnitType, HealRotationSlot>();
   /** cargo-rescue-v1（W6，2026-08-09）：满载 worker 的 cargo 快照（unitId →
    *  {cargo, tick}），用于检测"cargo 长时间不变 = 被堵"。每 tick decide 入口
    *  刷新——比较当前 cargo 与上 tick 快照，不变则推进 stuckSince，变化则重置。 */
@@ -832,6 +857,73 @@ export class SafetyPlanner {
         this.sortiePruneCount += 1;
       }
     }
+  }
+
+  /** W57 双相轮换治疗槽状态推进（guardHealRotationTwoPhase）：decide 入口每
+   *  tick 调一次，在消费侧（Vanguard/Ranger heal-rotation 分支）之前推进 FSM——
+   *  patient 相伤员脱离危险血量（HP > HEAL_ROTATION_HP）或 patientPhaseTicks
+   *  超时 → 转 relief 相；relief 相 reliefPhaseTicks 冷却到期 → 释放槽。未启用
+   *  时 Map 永空，直接 return（零回归）。 */
+  private advanceHealRotationSlots(state: TickState): void {
+    if (this.config.guardHealRotationTwoPhase !== true) return;
+    const patientTicks = this.config.patientPhaseTicks ?? HEAL_ROTATION_HOLD_TICKS;
+    const reliefTicks = this.config.reliefPhaseTicks ?? HEAL_ROTATION_RELIEF_TICKS;
+    const liveUnits = new Map(state.units.map((unit) => [unit.id, unit] as const));
+    for (const [unitType, slot] of this.healRotationSlots) {
+      const occupant = liveUnits.get(slot.occupantId);
+      // 占用者已阵亡/不存在 → 释放槽（无单位需要继续补满）
+      if (occupant === undefined) {
+        this.healRotationSlots.delete(unitType);
+        continue;
+      }
+      if (slot.phase === "patient") {
+        // 伤员脱离危险血量（HP > 触发阈值）→ 转 relief 冷却（给前伤员继续补满/
+        // 让出 Core 格的时间，阻止下一个伤员立即冲入仍被占用的 Core 格）
+        const healedAboveTrigger = occupant.hp > HEAL_ROTATION_HP[occupant.unitType];
+        const patientTimedOut = state.tick >= slot.phaseEndTick;
+        if (healedAboveTrigger || patientTimedOut) {
+          this.healRotationSlots.set(unitType, {
+            phase: "relief",
+            occupantId: slot.occupantId,
+            phaseStartTick: state.tick,
+            phaseEndTick: state.tick + reliefTicks,
+          });
+        }
+      } else {
+        // relief 冷却到期 → 释放槽（下一个伤员可认领）
+        if (state.tick >= slot.phaseEndTick) {
+          this.healRotationSlots.delete(unitType);
+        }
+      }
+    }
+  }
+
+  /** W57 双相轮换治疗槽认领判定（guardHealRotationTwoPhase）：消费侧（Vanguard/
+   *  Ranger heal-rotation 分支）调用——返回 true 表示该伤员应走 heal-return（占用
+   *  槽或已是当前 patient）；返回 false 表示槽被占用中（另一伤员 patient 相 或
+   *  relief 冷却中），本伤员应守位不入槽（one-at-a-time + relief 冷却门控）。
+   *  认领副作用：槽空时新建 patient 相，phaseEndTick = tick + patientPhaseTicks。
+   *  注意：relief 冷却中即使前占用者本身也不认领——冷却期内槽对所有人关闭，
+   *  给前伤员在 Core 格补满/让位移动的时间（防下一个伤员冲入仍被占用的 Core 格）。 */
+  private claimHealRotationSlot(unit: UnitSnapshot, state: TickState): boolean {
+    const slot = this.healRotationSlots.get(unit.unitType);
+    // 槽空 → 认领为 patient 相
+    if (slot === undefined) {
+      const patientTicks = this.config.patientPhaseTicks ?? HEAL_ROTATION_HOLD_TICKS;
+      this.healRotationSlots.set(unit.unitType, {
+        phase: "patient",
+        occupantId: unit.id,
+        phaseStartTick: state.tick,
+        phaseEndTick: state.tick + patientTicks,
+      });
+      return true;
+    }
+    // patient 相 + 本单位是占用者 → 继续占用（伤员仍在回修路上，advance 未转 relief）
+    if (slot.phase === "patient" && slot.occupantId === unit.id) {
+      return true;
+    }
+    // 槽被其他伤员占用（patient 相）或 relief 冷却中（含前占用者）→ 不入槽
+    return false;
   }
 
   /** 斩首配额 sortie 目标选择（W10，sortie-quota-v1）：weakCoreOrderedTargets 全
@@ -1346,6 +1438,11 @@ export class SafetyPlanner {
     if (this.config.sortieQuota === true) {
       this.pruneSorties(state);
     }
+    // W57 双相轮换治疗槽状态推进（guardHealRotationTwoPhase）：decide 入口每
+    //   tick 调一次，在消费侧（Vanguard/Ranger heal-rotation 分支）之前推进
+    //   FSM——patient 相伤员脱离危险血量/超时 → 转 relief；relief 冷却到期 →
+    //   释放槽。未启用时 Map 永空，直接 return（零回归）。
+    this.advanceHealRotationSlots(state);
     // MOVE_FAILED 反馈（moveFailedAvoidance / W37 conflictBackoff）：
     // 上 tick 结算拒绝的单位计连续失败，其余清零——连续失败 ≥2 时单位改走
     // 垂直绕行格探路（见 detourDirection），连续 ≥3 且绕行无路时 W37 短停
@@ -2927,7 +3024,11 @@ export class SafetyPlanner {
     // B8 one-at-a-time（竞品 "one wounded defender at a time"）：同类型守卫
     // 已有回修流程中的（名额占用未过期）→ 本守卫不触发——防多守卫同时离位
     // /同占 Core 格（防线真空）；满血即释放名额。
-    if (unit.hp > HEAL_ROTATION_HP[unit.unitType]) {
+    // W57 双相 FSM（guardHealRotationTwoPhase）：v1 单相 hold-timer 升级为
+    //  patient + relief 两相状态机——claimHealRotationSlot 替代 one-at-a-time
+    //  名额检查，advanceHealRotationSlots（decide 入口已调）推进 patient→relief
+    //  转换与 relief 冷却到期释放槽。满血释放由 advance 接管（不在此 delete）。
+    if (unit.hp > HEAL_ROTATION_HP[unit.unitType] && this.config.guardHealRotationTwoPhase !== true) {
       this.healRotationActive.delete(unit.id);
     }
     if (
@@ -2935,10 +3036,6 @@ export class SafetyPlanner {
       this.effectiveAggression === "defensive" &&
       state.core !== null &&
       unit.hp <= HEAL_ROTATION_HP[unit.unitType] &&
-      !state.vanguards.some(
-        (other) =>
-          other.id !== unit.id && (this.healRotationActive.get(other.id) ?? 0) > state.tick,
-      ) &&
       !enemies.some(
         (enemy) =>
           enemy.kind !== "CORE" &&
@@ -2946,10 +3043,21 @@ export class SafetyPlanner {
       ) &&
       !samePosition(unit.position, state.core.position)
     ) {
-      this.healRotationActive.set(unit.id, state.tick + HEAL_ROTATION_HOLD_TICKS);
-      const direction = stepToward(unit.position, approachTarget ?? state.core.position, militaryObstacles);
-      if (direction !== null) set(unit, { type: "MOVE", direction }, "guard_heal_return");
-      return;
+      const slotClaimed =
+        this.config.guardHealRotationTwoPhase === true
+          ? this.claimHealRotationSlot(unit, state)
+          : !state.vanguards.some(
+              (other) =>
+                other.id !== unit.id && (this.healRotationActive.get(other.id) ?? 0) > state.tick,
+            );
+      if (slotClaimed) {
+        if (this.config.guardHealRotationTwoPhase !== true) {
+          this.healRotationActive.set(unit.id, state.tick + HEAL_ROTATION_HOLD_TICKS);
+        }
+        const direction = stepToward(unit.position, approachTarget ?? state.core.position, militaryObstacles);
+        if (direction !== null) set(unit, { type: "MOVE", direction }, "guard_heal_return");
+        return;
+      }
     }
 
     const nearby = enemies.filter((enemy) => manhattan(unit.position, enemy.position) <= 4);
@@ -3222,7 +3330,10 @@ export class SafetyPlanner {
     // 治疗完满血由守位锚点逻辑移出回守位（闭环）。one-at-a-time（竞品
     // "one wounded defender at a time"）：同类型守卫已有回修流程中的 →
     // 本守卫不触发（防多守卫同时离位/同占 Core 格 → 防线真空）。
-    if (unit.hp > HEAL_ROTATION_HP[unit.unitType]) {
+    // W57 双相 FSM（guardHealRotationTwoPhase）：v1 单相 hold-timer 升级为
+    //  patient + relief 两相状态机——claimHealRotationSlot 替代 one-at-a-time
+    //  名额检查，advanceHealRotationSlots（decide 入口已调）推进转换与释放。
+    if (unit.hp > HEAL_ROTATION_HP[unit.unitType] && this.config.guardHealRotationTwoPhase !== true) {
       this.healRotationActive.delete(unit.id);
     }
     if (
@@ -3230,10 +3341,6 @@ export class SafetyPlanner {
       this.effectiveAggression === "defensive" &&
       state.core !== null &&
       unit.hp <= HEAL_ROTATION_HP[unit.unitType] &&
-      !state.rangers.some(
-        (other) =>
-          other.id !== unit.id && (this.healRotationActive.get(other.id) ?? 0) > state.tick,
-      ) &&
       !enemies.some(
         (enemy) =>
           enemy.kind !== "CORE" &&
@@ -3241,10 +3348,21 @@ export class SafetyPlanner {
       ) &&
       !samePosition(unit.position, state.core.position)
     ) {
-      this.healRotationActive.set(unit.id, state.tick + HEAL_ROTATION_HOLD_TICKS);
-      const direction = stepToward(unit.position, approachTarget ?? state.core.position, militaryObstacles);
-      if (direction !== null) set(unit, { type: "MOVE", direction }, "guard_heal_return");
-      return;
+      const slotClaimed =
+        this.config.guardHealRotationTwoPhase === true
+          ? this.claimHealRotationSlot(unit, state)
+          : !state.rangers.some(
+              (other) =>
+                other.id !== unit.id && (this.healRotationActive.get(other.id) ?? 0) > state.tick,
+            );
+      if (slotClaimed) {
+        if (this.config.guardHealRotationTwoPhase !== true) {
+          this.healRotationActive.set(unit.id, state.tick + HEAL_ROTATION_HOLD_TICKS);
+        }
+        const direction = stepToward(unit.position, approachTarget ?? state.core.position, militaryObstacles);
+        if (direction !== null) set(unit, { type: "MOVE", direction }, "guard_heal_return");
+        return;
+      }
     }
 
     // guardAxes（B4 候选）：defensive + 有可见敌人时 Ranger 守内层屏

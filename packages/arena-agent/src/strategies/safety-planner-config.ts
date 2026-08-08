@@ -205,6 +205,29 @@ export interface SafetyPlannerConfig {
    */
   readonly guardHealRotation?: boolean;
   /**
+   * W57 双相轮换治疗（2026-08-09，竞品 arena_hero_strategy.py 两相 heal
+   * rotation 对照）：将 guardHealRotation 的单相 hold-timer 升级为两相状态机——
+   * patient 相（受伤单位 HP ≤ 触发阈值，占用治疗槽向 Core 回修）+ relief 相
+   * （治疗单位 HP 已过触发阈值，槽进入冷却让前一个伤员继续补满/让出 Core 格，
+   * 阻止下一个伤员立即冲入仍被占用的 Core 格造成 capacity 互堵）。需配合
+   * guardHealRotation=true（v2 复用 v1 的回修触发条件，仅替换 one-at-a-time
+   * 槽管理为两相 FSM）。默认 false = v1 单相 hold-timer（零回归）。
+   */
+  readonly guardHealRotationTwoPhase?: boolean;
+  /**
+   * W57 patient 相上限 tick（伤员占用治疗槽的最长时间）：超时仍未脱离危险
+   * 血量 → 强制释放槽进入 relief 相（防伤员卡在 Core 格长期占用通道）。
+   * 默认 12（与 v1 HEAL_ROTATION_HOLD_TICKS 同值，语义对齐）。
+   */
+  readonly patientPhaseTicks?: number;
+  /**
+   * W57 relief 相冷却 tick（前一个伤员脱离危险血量后，槽冷却的最短时间）：
+   * 冷却期内不接受新 patient——给前伤员时间在 Core 格继续补满或由 yieldAnchor
+   * 让位移出，避免下一个伤员立即冲入仍被占用的 Core 格。默认 4（覆盖常见
+   * "HEAL 1-2 tick 满血 + 让位移动 1-2 tick"窗口，不过度阻塞下个伤员）。
+   */
+  readonly reliefPhaseTicks?: number;
+  /**
    * 远端突击组局部响应（v0.3，实验，B5 竞品 detached squad response 对照）：
    * aggressive 突击单位前压时，敌**非目标**战斗单位进入 5 格局部响应半径
    * = 突击组被拦截——释放旧任务、回 Core 守位至少 8 tick（防抖动记忆），

@@ -200,6 +200,19 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "core-evade-ttr-v1": Object.freeze({ coreEvade: true, coreEvadeTtr: true, coreEvadePersist: true }),
     "guard-axes-v1": Object.freeze({ guardAxes: true }),
     "guard-heal-rotation-v1": Object.freeze({ guardHealRotation: true }),
+    /**
+     * W57 双相轮换治疗（2026-08-09，竞品 arena_hero_strategy.py 两相 heal
+     * rotation 对照）：将 v1 单相 hold-timer 升级为 patient + relief 两相
+     * FSM——patient 相（伤员 HP ≤ 触发阈值占用治疗槽向 Core 回修）→ relief
+     * 相（前伤员脱离危险血量后槽冷却，阻止下一个伤员立即冲入仍被占用的 Core
+     * 格造成 capacity 互堵）→ 冷却到期释放槽接受新伤员。复用 v1 的回修触发
+     * 条件（HP 阈值/无反击压力/不在 Core 格），仅替换 one-at-a-time 槽管理。
+     * 默认参数 patientPhaseTicks=12 / reliefPhaseTicks=4（config 可调）。
+     */
+    "guard-heal-rotation-v2": Object.freeze({
+      guardHealRotation: true,
+      guardHealRotationTwoPhase: true,
+    }),
     "detached-squad-v1": Object.freeze({ detachedSquadResponse: true }),
     "bounded-raid-v1": Object.freeze({ boundedRaid: true }),
     "scout-evade-v1": Object.freeze({ scoutEvade: true }),
