@@ -3078,6 +3078,8 @@ function tactRenderAssets(tenant: any) {
       const artPath = art === 'CORE' ? SPRITE.core : unitSpritePath(art);
       const selected = T().selected?.obj?.id === o.id;
       const human = unitHumanCommandOf(tenant, o.id);
+      const plan = state.soloTenant === tenant ? T().plan?.plan : T().plans?.[tenant];
+      const cmdLine = cmdLabel(T(), tenant, o.id, plan); // 当前指令标签（人类指挥/算法决策）
       // 核心无标准 HP 上限：以 hp/shield 当前最大值为基准（满状态=满条，受损即缩短）
       const hpMax = art === 'CORE' ? Math.max(o.hp ?? 0, o.shield ?? 0, 1) : maxUnitHp(art);
       const hpVal = art === 'CORE' ? Math.max(o.hp ?? 0, o.shield ?? 0) : (o.hp ?? 0);
@@ -3086,6 +3088,7 @@ function tactRenderAssets(tenant: any) {
         <span class="asset-icon"><img src="${artPath}" alt="" /></span>
         ${human ? '<span class="asset-h" title="人类指挥中">H</span>' : ''}
         <span class="asset-name">${o.kind === 'CORE' ? '核心' : (TACT_UNIT_CN[o.unit_type] ?? o.unit_type)}</span>
+        ${cmdLine ? `<span class="asset-cmd${human ? ' human' : ''}" title="${cmdLine}">${cmdLine}</span>` : ''}
         <span class="asset-hpbar" title="${o.hp}/${hpMax} HP"><span class="asset-hpfill ${hpPct <= 35 ? 'low' : ''}" style="width:${hpPct}%"></span></span>
         <span class="mono asset-pos">[${o.position[0]}, ${o.position[1]}]</span>
       </button>`;
