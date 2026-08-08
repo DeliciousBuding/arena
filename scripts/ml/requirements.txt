@@ -1,0 +1,6 @@
+# M1 训练环境（2026-08-08 实测版本，零补装）
+# M1c 只需 sklearn 表格基线；torch 到 M3 再补（cu124）。
+numpy>=2.4.3
+pandas>=3.0.2
+scipy>=1.17.1
+scikit-learn>=1.8.0
