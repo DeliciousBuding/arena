@@ -41,8 +41,14 @@ import { DEFAULT_SAFETY_CONFIG, SafetyPlanner, type SafetyPlannerConfig } from "
 import { World, type CoreHuntTarget } from "../domain/world.ts";
 import type { ThreatProfile } from "../strategies/safety-planner-config.ts";
 import { unitSpawnCosts } from "../domain/pricing.ts";
+import {
+  applyReplacementQueueDelta,
+  consumeReplacementQueue,
+  EMPTY_REPLACEMENT_QUEUE,
+  type ReplacementQueue,
+} from "../domain/state-reducer.ts";
 import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snapshot.ts";
-import { WorkerTaskPlanner, type Assignment } from "./worker-task-planner.ts";
+import { WorkerTaskPlanner, type Assignment, type CellBlocker } from "./worker-task-planner.ts";
 import { DEFAULT_MISSION_CONFIG, type MissionConfig } from "./mission-planner.ts";
 import type { WorkerProgressExpectation, WorkerProgressExpectations } from "./progress-contract.ts";
 import { directionToNextPathCell } from "../migration/overlay.ts";
@@ -453,6 +459,13 @@ export function selectDeterministicCoreAction(
    *  语义）；不受 workerTarget=12 前置门限制（EARLY_MILITARY_WORKER_FLOOR=4
    *  起步）。默认关（零回归），变体显式开启。 */
   homeDefenseBottom = false,
+  /** W12 按类型替补队列（replacement-queue-v1，2026-08-09）：阵亡军事单位
+   *  按类型计数（VANGUARD/RANGER 各一计数器），产兵优先补缺口——缺口兵种
+   *  买不起时价格窗口等待（不产低档替代品），队列空 / 变体关 = 历史产兵顺序
+   *  不变（零回归）。队列由 DeterministicPlanner 实例持有，从 state-reducer
+   *  纯函数（applyReplacementQueueDelta / consumeReplacementQueue）转移而来。 */
+  replacementQueue: ReplacementQueue = EMPTY_REPLACEMENT_QUEUE,
+  replacementQueueEnabled = false,
 ): { readonly action: CoreAction | null; readonly intent: string | null; readonly surgeActive: boolean } {
   if (fallbackAction?.type === "HEAL") {
     return { action: fallbackAction, intent: "core_heal", surgeActive };
@@ -575,6 +588,38 @@ export function selectDeterministicCoreAction(
             surgeActive: active,
           };
         }
+      } else if (replacementQueueEnabled &&
+                 (replacementQueue.VANGUARD > 0 || replacementQueue.RANGER > 0) &&
+                 militaryRatio > 0 &&
+                 state.workers.length >= WORKER_RECOVERY_FLOOR) {
+        // W12 按类型替补队列（replacement-queue-v1）：阵亡军事单位按类型计数，
+        // 产兵优先补缺口（reference _select_spawn :9605-9665 MODE_AGGRESS）。
+        // 队列有缺口 → 优先补该类型，覆盖 militaryRatio 配比与 worker 扩编
+        // （经济地板 WORKER_RECOVERY_FLOOR=2 满足后即触发——base workers first
+        //  reference 语义）。豁免 spawnReserve（生存行为只看纯成本，与
+        //  recoveryEarlyMilitary / homeDefenseBottom 同语义）。
+        const gapType: "VANGUARD" | "RANGER" =
+          replacementQueue.VANGUARD > 0 ? "VANGUARD" : "RANGER";
+        const gapCost = spawnCosts[gapType];
+        if (state.resources >= gapCost) {
+          return {
+            action: { type: "SPAWN", unitType: gapType },
+            intent: `spawn_${gapType.toLowerCase()}_replacement`,
+            surgeActive: active,
+          };
+        }
+        // 价格窗口等待（reference "Do not spend 10 resources on a Vanguard at
+        // population 19; waiting for the 12-resource Ranger avoids the 20+ price
+        // tier"）：资源不足缺口兵种 → 等待，不产低档替代品（Worker / 次选
+        // 军事）——产 Worker 会推迟缺口兵种到更贵的人口档，产次选军事会偏
+        // 离"按类型补员"语义。返回 null action + price_window intent（遥测
+        // 可见，core 本 tick 不行动等资源）。出队仍是产后确认式（下 tick
+        // 新单位出现才扣减），SPAWN 失败时队列保留、下 tick 自动重试。
+        return {
+          action: null,
+          intent: `replacement_price_window_${gapType.toLowerCase()}`,
+          surgeActive: active,
+        };
       } else if (state.workers.length < workerTarget && !needMilitary) {
         // 冷启动扩编（2026-08-07）：worker < BOOTSTRAP_WORKER_TARGET 时豁免
         // spawnReserve——资源刚够成本就产 worker，打破"res < cost+reserve
@@ -620,6 +665,15 @@ export interface DeterministicPlannerInput {
   readonly policy?: MacroPolicy;
 }
 
+/** 打转封锁（W5）消费端 sink：DeterministicPlanner 注入后，在 plan() 候选排序
+ *  与 GO_RESOURCE 分配登记处消费 WorkerLivenessTracker 的封锁视图。接口隔离
+ *  避免 planner 反向依赖 runtime 层——WorkerLivenessTracker 结构化满足此接口。
+ *  recordPlannedMove 让 W5 检测器知道"上次计划的目的地"，MOVE_FAILED 后据此
+ *  blockCell；isCellBlocked 供 Hungarian 候选排序把死目标格排后。 */
+export interface BlockadeSink extends CellBlocker {
+  recordPlannedMove(unitId: string, target: Position, currentTick?: number): void;
+}
+
 export class DeterministicPlanner implements PlanProvider {
   private readonly planner: WorkerTaskPlanner;
   private readonly fallbackPlanner: SafetyPlanner;
@@ -637,6 +691,17 @@ export class DeterministicPlanner implements PlanProvider {
    *  渐进补编（1V → 1V+2R → 3V+3R），豁免 reserve、不受 workerTarget 前置门。
    *  默认关（零回归），变体显式开启。 */
   private homeDefenseBottom = false;
+  /** W12 按类型替补队列开关（replacement-queue-v1）：阵亡军事单位按类型计数，
+   *  产兵优先补缺口。默认关（零回归），变体显式开启。 */
+  private replacementQueueEnabled = false;
+  /** W12 替补队列状态（跨 tick 持有，与 surgeActive / previousCorePosition 同
+   *  语义）：UNIT_DESTROYED 入队 + 新单位出现出队（产后确认式）。不可变对象，
+   *  每次转移返回新冻结实例。 */
+  private replacementQueue: ReplacementQueue = EMPTY_REPLACEMENT_QUEUE;
+  /** W12 上一 tick 单位 id→类型映射（阵亡单位已从 turn.units 消失，事件
+   *  actor_id 是其 id；UNIT_DESTROYED values 实测恒 null 无 unit_type——
+   *  只能靠上一 tick 标签解析类型）。 */
+  private readonly previousUnitTypes = new Map<string, import("../domain/model.ts").UnitType>();
   /** 爆兵阈值（2026-08-06）：resources 达标前只产 Worker 积累、达标后持续爆兵。 */
   private accumulateThreshold: number;
   /** 爆兵状态（跨 tick 保持：达标后持续爆兵直到资源耗尽回积累期）。 */
@@ -663,6 +728,10 @@ export class DeterministicPlanner implements PlanProvider {
   /** Worker 局部活性恢复冷却：冷却内从 economicSnapshot 排除，强制沿 Safety patrol
    *  探索一段时间，防 reset 后下一 Tick 又被 Hungarian 分回同一 stale mine。 */
   private readonly workerRecoveryUntilTick = new Map<string, number>();
+  /** 打转封锁（W5）消费端：tenant-runtime 注入 WorkerLivenessTracker（结构化满足
+   *  BlockadeSink）。spinBlockadeEnabled=false 时不消费任何封锁状态（零回归）。 */
+  private blockadeSink: BlockadeSink | null = null;
+  private spinBlockadeEnabled = false;
 
   constructor(
     planner: WorkerTaskPlanner = new WorkerTaskPlanner(),
@@ -702,6 +771,8 @@ export class DeterministicPlanner implements PlanProvider {
     recoveryEarlyMilitary = false,
     /** 家防底线渐进补编开关（home-defense-bottom-v1，W3b，默认关零回归）。 */
     homeDefenseBottom = false,
+    /** W12 按类型替补队列开关（replacement-queue-v1，默认关零回归）。 */
+    replacementQueue = false,
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
@@ -715,6 +786,7 @@ export class DeterministicPlanner implements PlanProvider {
     this.missionConfig = missionConfig;
     this.recoveryEarlyMilitary = recoveryEarlyMilitary;
     this.homeDefenseBottom = homeDefenseBottom;
+    this.replacementQueueEnabled = replacementQueue;
     this.threatProfiles = threatProfiles;
     if (initialCoreHuntTargets.length > 0) {
       fallbackPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
@@ -750,6 +822,14 @@ export class DeterministicPlanner implements PlanProvider {
     this.refillPredictions = predictions;
   }
 
+  /** 打转封锁（W5）消费端注入：tenant-runtime 构造时注入 WorkerLivenessTracker
+   *  （结构化满足 BlockadeSink）。sink=null 清除引用（零回归）。实际是否消费
+   *  封锁状态由 spinBlockadeEnabled（updateConfig 从 safetyConfig.spinBlockade
+   *  读）控制——sink 总是注入但变体关时不消费，保证热加载开关即生效。 */
+  setBlockadeSink(sink: BlockadeSink | null): void {
+    this.blockadeSink = sink;
+  }
+
   /** 分级冷却播种（2026-08-08，缺席实证）：透传内部 fallback/patrol 两个 World
    *  ——缺席统计高频格升级失败冷却，worker 不每 32 tick 白试长期死格。 */
   seedFailedCooldownTiers(entries: readonly { position: Position; cooldownTicks: number }[]): void {
@@ -777,6 +857,7 @@ export class DeterministicPlanner implements PlanProvider {
       readonly spawnReserve?: number;
       readonly recoveryEarlyMilitary?: boolean;
       readonly homeDefenseBottom?: boolean;
+      readonly replacementQueue?: boolean;
       readonly mission?: MissionConfig;
     },
   ): void {
@@ -788,6 +869,11 @@ export class DeterministicPlanner implements PlanProvider {
     this.spawnReserve = deterministicConfig.spawnReserve ?? WORKER_SPAWN_RESERVE;
     this.recoveryEarlyMilitary = deterministicConfig.recoveryEarlyMilitary ?? false;
     this.homeDefenseBottom = deterministicConfig.homeDefenseBottom ?? false;
+    this.replacementQueueEnabled = deterministicConfig.replacementQueue ?? false;
+    // 打转封锁（W5）：变体开关经 SafetyPlannerConfig.spinBlockade 传递（变体注册表
+    // 把 spin-blockade-v1 映射为 { spinBlockade: true }）。热加载时原子替换——
+    // 变体关后下一 tick plan() 不再传 cellBlocker、不 recordPlannedMove（零回归）。
+    this.spinBlockadeEnabled = safetyConfig.spinBlockade === true;
     if (deterministicConfig.mission !== undefined) {
       this.missionConfig = { ...DEFAULT_MISSION_CONFIG, ...deterministicConfig.mission };
       this.planner.updateConfig({ mission: this.missionConfig });
@@ -914,8 +1000,24 @@ export class DeterministicPlanner implements PlanProvider {
     }
     const { assignments } = this.planner.plan(economicSnapshot, this.previousAssignments, {
       surveyBurstActive: input.state.tick <= this.surveyBurstUntilTick,
+      // 打转封锁（W5）：变体启用时把 WorkerLivenessTracker 的封锁视图传给
+      // Hungarian——isCellBlocked 的死目标格在候选代价上加 BLOCKADE_PENALTY
+      // 排后（不剔除，防饥饿）。变体关时 cellBlocker=undefined = 零回归。
+      cellBlocker: this.spinBlockadeEnabled ? this.blockadeSink ?? undefined : undefined,
     });
     this.previousAssignments = assignments;
+    // 打转封锁（W5）登记：GO_RESOURCE 分配确定后把目标格写入 plannedMoves，
+    // 让 WorkerLivenessTracker 在 MOVE_FAILED 时知道封哪个格（computeBlockedTarget
+    // 读 plannedMoves）。变体关时不登记（plannedMoves 永空 → blockedTarget
+    // 永为 undefined → blockCell 不触发，零回归）。tick 用 economicSnapshot 的
+    // 视图 tick（与 onObservation 的 outcome.tick 一致）。
+    if (this.spinBlockadeEnabled && this.blockadeSink !== null) {
+      for (const assignment of assignments) {
+        if (assignment.task.type === "GO_RESOURCE" && assignment.task.target !== undefined) {
+          this.blockadeSink.recordPlannedMove(assignment.unitId, assignment.task.target, snapshot.tick);
+        }
+      }
+    }
 
     const unitActions: Record<string, UnitAction> = { ...fallback.unitActions };
     const intents: Record<string, string> = { ...(fallback.intents ?? {}) };
@@ -1019,6 +1121,31 @@ export class DeterministicPlanner implements PlanProvider {
     // fallback 可能提出被 deterministic 故意压制的普通 spawn；不要留下“有 intent
     // 但 coreAction=null”的误导遥测。只有实际执行的恢复/生存动作才记录 core intent。
     delete finalIntents.core;
+    // W12 按类型替补队列（replacement-queue-v1）：每 tick 决策前更新队列——
+    // UNIT_DESTROYED 入队（类型靠上一 tick 的 previousUnitTypes 解析），新单位
+    // 出队（产后确认式：SPAWN 被服务端拒时下 tick 自动重试，队列保留）。
+    // 变体关 → 队列恒空、previousUnitTypes 不更新（零回归）。
+    if (this.replacementQueueEnabled) {
+      const previousTypesSnapshot = new Map(this.previousUnitTypes);
+      this.replacementQueue = applyReplacementQueueDelta(
+        this.replacementQueue,
+        input.state.events,
+        previousTypesSnapshot,
+        true,
+      );
+      this.replacementQueue = consumeReplacementQueue(
+        this.replacementQueue,
+        input.state.units,
+        new Set(previousTypesSnapshot.keys()),
+        true,
+      );
+    }
+    // previousUnitTypes 始终刷新（即使变体关也保持——热加载启用时即有上一 tick
+    // 标签可用，无需预热；O(units) 可忽略）。
+    this.previousUnitTypes.clear();
+    for (const unit of input.state.units) {
+      this.previousUnitTypes.set(unit.id, unit.unitType);
+    }
     const coreDecision = selectDeterministicCoreAction(
       input.state,
       fallback.coreAction,
@@ -1032,6 +1159,13 @@ export class DeterministicPlanner implements PlanProvider {
       this.fallbackPlanner.config.populationCeiling,
       this.recoveryEarlyMilitary,
       this.homeDefenseBottom,
+      // NOTE: threatDefenseSpawn（pos 9）与 recoveryEarlyMilitary/homeDefenseBottom
+      // 的位置映射沿用历史调用约定（不改既有行为——零回归）。pos 11 显式传
+      // false 保持 homeDefenseBottom 形参的历史默认值。replacement-queue-v1 的
+      // 两个新形参落在 pos 12-13。
+      false,
+      this.replacementQueue,
+      this.replacementQueueEnabled,
     );
     this.surgeActive = coreDecision.surgeActive;
     if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;

@@ -10,10 +10,10 @@ packages/arena-hero-ts/
   test/              ← TS 测试
   contracts/         ← 契约产物（generated/ JSON Schema + fixtures/ 真实样本）
   scripts/           ← 契约产物生成
-../../../reference/arena-hero-python/  ← 协调仓中的官方 Python SDK 源码镜像
+../../../reference/arena-hero-python/  ← 协调仓中的官方 Python SDK 上游 checkout（src/arena_hero/ 布局）
 ```
 
-- 追上游：`../../../reference/arena-hero-python/sync-log.md`（官方仓库更新 → 对照镜像 → 手动同步协议变更到本包）
+- 追上游：`docs/reference/arena-hero-python/sync-log.md`（官方仓库更新 → fetch origin → 对照 checkout → 手动同步协议变更到本包；同步日志随协调根文档管理）
 - 协议事实来源：官方 src/arena_hero/ 源码 + 官方 changelog
 
 ## 设计基线

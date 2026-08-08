@@ -97,11 +97,20 @@ export function validateWorld(world: SimWorld): string[] {
     }
     if (cellKey(pile.cell) !== key) problems.push(`resource pile key mismatch: ${key}`);
   }
+  // 2b. 主干路径不变量（world-and-ticks.md:35-37）：[0,0] 恒 EMPTY（非障碍）。
+  //     Core 主城与主干路径不得被障碍围死；[0,0] 是所有 chunk backbone 交集。
+  if (world.terrain.obstacles.has(cellKey([0, 0]))) {
+    problems.push("terrain obstacle at [0,0] violates backbone invariant (must be EMPTY)");
+  }
   if (world.beacon !== null) {
     try {
       assertSafeCoordinate(world.beacon.position);
     } catch (error) {
       problems.push((error as Error).message);
+    }
+    // 信标格非障碍（Beacon 不被围死；落地信标须可通行）。
+    if (world.terrain.obstacles.has(cellKey(world.beacon.position))) {
+      problems.push(`beacon position ${cellKey(world.beacon.position)} must not be an obstacle`);
     }
     if (world.beacon.status === "CARRIED" && world.beacon.carrierId === null) {
       problems.push("carried beacon requires carrierId");

@@ -54,7 +54,13 @@ import { serializeMacroPolicy } from "../runtime/macro-policy.ts";
 import type { MacroDecisionPointV1 } from "../offline-learning/runtime/macro-decision-point.ts";
 import { StallDetector, type StallEvent } from "../runtime/stall-detector.ts";
 import { StallRecovery } from "../runtime/stall-recovery.ts";
-import { WorkerLivenessTracker } from "../runtime/worker-liveness.ts";
+import {
+  WorkerLivenessTracker,
+  MOVE_CONTESTED_BLOCK_PENALTY,
+  OTHER_MOVE_FAIL_BLOCK_PENALTY,
+  type WorkerLivenessEvent,
+  type WorkerLivenessKind,
+} from "../runtime/worker-liveness.ts";
 import { PolicyDiscipline } from "../runtime/policy-discipline.ts";
 import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
@@ -93,6 +99,59 @@ const THREAT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
  *  聚合帧写入 <dataRoot>/runtime/alliance/roster.json，租户每 30s 重读——
  *  比威胁画像更实时（roster 影响 no-fire 安全边界）。 */
 const ALLIANCE_ROSTER_REFRESH_INTERVAL_MS = 30 * 1000;
+
+/** 打转封锁（W5）penalty 映射：WorkerLivenessEvent.blockedTarget 存在时，按
+ *  kind 选 penaltyTicks 调 workerLiveness.blockCell。oscillation 用 16（与
+ *  STUCK_TICKS 同量级，打转需更长冷却让 worker 转向新区域）；moveNoEffect 用
+ *  MOVE_CONTESTED_BLOCK_PENALTY(12)（MOVE_CONTESTED/DESTINATION_OCCUPIED 等
+ *  强竞争类，目标实际被占）；其他 movement-failure 类兜底 4
+ *  （=OTHER_MOVE_FAIL_BLOCK_PENALTY，路径瞬时拥堵）。blockedTarget 仅对
+ *  oscillation/move_no_effect 填充（见 worker-liveness.computeBlockedTarget），
+ *  其他 kind 字段缺省 undefined → 不调 blockCell。 */
+const OSCILLATION_BLOCK_PENALTY_TICKS = 16;
+
+/** 打转封锁（W5）penalty 选择（纯函数，便于单测）：oscillation=16、
+ *  move_no_effect=12（MOVE_CONTESTED 强竞争类）、其他=4。调用方在
+ *  event.blockedTarget 存在时据此调 blockCell。 */
+export function blockadePenaltyTicksFor(kind: WorkerLivenessKind): number {
+  if (kind === "oscillation") return OSCILLATION_BLOCK_PENALTY_TICKS;
+  if (kind === "move_no_effect") return MOVE_CONTESTED_BLOCK_PENALTY;
+  return OTHER_MOVE_FAIL_BLOCK_PENALTY;
+}
+
+/** 打转封锁（W5）UNIT_MOVE_SUCCEEDED 清账：遍历 resolution events，对
+ *  UNIT_MOVE_SUCCEEDED 的 actorId 调 sink.clearPlannedMove。spinBlockadeEnabled
+ *  =false 时 no-op（零回归）。纯函数便于单测——sink 是最小接口
+ *  （clearPlannedMove），生产传 WorkerLivenessTracker，测试传 fake。 */
+export function applyBlockadeClearPlannedMoves(
+  events: readonly { readonly eventType: string; readonly actorId: string | null }[],
+  sink: { clearPlannedMove(unitId: string): void },
+  spinBlockadeEnabled: boolean,
+): void {
+  if (!spinBlockadeEnabled) return;
+  for (const event of events) {
+    if (event.eventType !== "UNIT_MOVE_SUCCEEDED") continue;
+    if (event.actorId === null) continue;
+    sink.clearPlannedMove(event.actorId);
+  }
+}
+
+/** 打转封锁（W5）recoverWorker 后 blockCell：遍历 liveness events，对
+ *  blockedTarget 存在的 event 调 sink.blockCell(target, tick, penalty)。
+ *  spinBlockadeEnabled=false 时 no-op（零回归）。penalty 经
+ *  blockadePenaltyTicksFor(kind) 选择。纯函数便于单测——sink 是最小接口
+ *  （blockCell），生产传 WorkerLivenessTracker，测试传 fake。 */
+export function applyBlockadeBlocks(
+  events: readonly WorkerLivenessEvent[],
+  sink: { blockCell(target: Position, currentTick: number, penaltyTicks: number): void },
+  spinBlockadeEnabled: boolean,
+): void {
+  if (!spinBlockadeEnabled) return;
+  for (const event of events) {
+    if (event.blockedTarget === undefined) continue;
+    sink.blockCell(event.blockedTarget, event.tick, blockadePenaltyTicksFor(event.kind));
+  }
+}
 
 /** 威胁评估诊断字段（v0.3-lite，2026-08-06）：从 outcome state 计算 tick 级威胁
  *  （可见敌/受击基础版；enemyHints 记忆增强——moving/pursuit——待 planner 侧
@@ -627,6 +686,16 @@ export async function runTenant(
       // deterministic 模式：fallback（经济分配）与 patrol（勘探基线）各持独立
       // World，两个都注入——死格冷却对"分配候选"与"巡逻重试"同时生效。
       planner.seedFailedCooldownTiers(surveyCooldownTiers);
+    }
+    // 打转封锁（W5）消费端注入：deterministic 模式下把 WorkerLivenessTracker
+    // 作为 BlockadeSink 注入 DeterministicPlanner。sink 总是注入（结构化满足
+    // 接口——isCellBlocked + recordPlannedMove），实际消费由 spinBlockadeEnabled
+    // 控制（updateConfig 从 safetyConfig.spinBlockade 读，变体关=零回归）。
+    // baseSafetyConfig 已含变体合并（{...DEFAULT_SAFETY_CONFIG, ...variantConfig}），
+    // 构造后立即同步一次初始 spinBlockadeEnabled 状态（updateConfig 在热加载时
+    // 再刷新）。SafetyPlanner 模式跳过（safety 模式不跑 WorkerTaskPlanner.plan）。
+    if (planner instanceof DeterministicPlanner) {
+      planner.setBlockadeSink(workerLiveness);
     }
 
     // Runtime config is split into a small hot surface (`variants`) and an explicit restart surface.
@@ -1185,6 +1254,15 @@ export async function runTenant(
             : undefined,
           humanControlledUnitIds,
         });
+        // 打转封锁（W5）UNIT_MOVE_SUCCEEDED 清账：目标已到达不再是封锁候选，
+        // 在 onObservation 之后、recoverWorker 之前清 plannedMove，避免刚成功的
+        // worker 因残留 plannedMove 在后续 MOVE_FAILED 时被误封锁。变体关时
+        // applyBlockadeClearPlannedMoves no-op（零回归）。
+        applyBlockadeClearPlannedMoves(
+          outcome.state.events,
+          workerLiveness,
+          activeStrategy.safetyOverrides.spinBlockade === true,
+        );
         for (const event of workerLivenessEvents) {
           let recovery: ReturnType<typeof planner.recoverWorker> | null = null;
           let recoveryError: string | null = null;
@@ -1193,6 +1271,17 @@ export async function runTenant(
           } catch (error) {
             recoveryError = error instanceof Error ? error.message : String(error);
           }
+          // 打转封锁（W5）blockCell：recoverWorker 后把死目标格写入封锁冷却，
+          // Hungarian 下一 tick 重派时 isCellBlocked 排后——根治"检测→恢复→
+          // 重派→再打转"循环。penalty 按 kind（blockadePenaltyTicksFor）：
+          // oscillation=16、moveNoEffect=12、其他=4。blockedTarget 缺省
+          // （非 movement-failure 类或新鲜目标保护）= 不调。变体关时
+          // applyBlockadeBlocks no-op（零回归）。
+          applyBlockadeBlocks(
+            workerLivenessEvents,
+            workerLiveness,
+            activeStrategy.safetyOverrides.spinBlockade === true,
+          );
           appendHealthEvent(
             `worker=${event.unitId.slice(0, 8)} kind=${event.kind}@tick=${event.tick}(streak=${event.streak})`,
           );

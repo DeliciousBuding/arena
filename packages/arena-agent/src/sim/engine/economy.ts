@@ -162,10 +162,11 @@ const selfDestructPhase: Phase = {
  *  combat this tick (core === null here) already granted participation/loot
  *  to the attacker; only a surviving Core destroys its fleet before heal/spawn.
  *  The doomed fleet already paid upkeep (P04) and acted in movement/combat
- *  (P05/P09) earlier in the tick. */
+ *  (P05/P09) earlier in the tick. officialPhase 9 = core-self-destruct in the
+ *  v0.14 15-step order (upkeep at step 8 is the v0.14 no-op slot). */
 const coreSelfDestructPhase: Phase = {
   id: "P10-core-self-destruct",
-  officialPhase: 10,
+  officialPhase: 9,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
     const coreRequests = [...draft.players.keys()]
@@ -207,9 +208,12 @@ const coreSelfDestructPhase: Phase = {
 
 const capacityShrinkPhase: Phase = {
   id: "P03-capacity-shrink-after-removal",
-  officialPhase: 2,
+  officialPhase: 7,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
+    // 官方 15 步中 capacity adjustment 并入 combat 结算（officialPhase 7）；
+    // 本仓库把 self-destruct 后的 capacity overflow 显式化提前到 P03，
+    // combat（P09）内还有一次 capacity 检查（combat 结算后人口下降）。
     for (const playerId of sortedPlayerIds(draft)) {
       const player = draft.players.get(playerId)!;
       const capacity = capacityOf(ctx, player.units.length);
@@ -232,10 +236,12 @@ const capacityShrinkPhase: Phase = {
 
 const upkeepPhase: Phase = {
   id: "P04-upkeep-and-deficit",
-  officialPhase: 3,
+  officialPhase: 8,
   run: (draft, ctx) => {
     // v0.14 整体移除维护机制（population_tier/upkeep_next_tick/UPKEEP_PAID/
-    // UPKEEP_DEFICIT），phase 保持注册顺序但不再计费/判伤。
+    // UPKEEP_DEFICIT），phase 保持注册顺序但不再计费/判伤。officialPhase 8
+    // 在官方 15 步中位于 combat 之后、core-self-destruct 之前；v0.14 为 no-op
+    // 槽位（granularityNote 标注 P04 v0.14 no-op）。
     if (ctx.rules.rulesVersion === "v0.14") {
       return EMPTY_OUTCOME;
     }
@@ -319,7 +325,7 @@ function applyDeficitDamage(
 
 const harvestDepositPhase: Phase = {
   id: "P08-harvest-and-deposit",
-  officialPhase: 8,
+  officialPhase: 6,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
     resolveHarvestRequests(draft, ctx, events);
@@ -501,7 +507,7 @@ function resolveDeposit(
 }
 
 const unitHealPhase: Phase = {
-  id: "P10-unit-heal",
+  id: "P11-unit-heal",
   officialPhase: 10,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];
@@ -549,7 +555,7 @@ function resolveUnitHeal(
 }
 
 const coreActionPhase: Phase = {
-  id: "P11-stationary-core-action",
+  id: "P12-stationary-core-action",
   officialPhase: 11,
   run: (draft, ctx) => {
     const events: ResolutionEvent[] = [];

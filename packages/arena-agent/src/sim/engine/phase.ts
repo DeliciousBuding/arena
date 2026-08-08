@@ -1,9 +1,10 @@
 /**
  * Settlement phase contracts：phase 注册、事件类型、unknown/unsupported 语义。
  *
- * 15 个内部 phase（architecture §6），每个 phase 映射官方结算阶段。
- * 结算只允许在 draft（settlement 内部可变副本）上操作；
- * settleTick 返回新 world 快照，失败时不返回半更新 world。
+ * 16 个内部 phase（architecture §6），每个 phase 映射官方结算阶段（官方 15
+ * 步；本仓库把 capacity-shrink 与 upkeep 显式化为独立 phase）。结算只允许
+ * 在 draft（settlement 内部可变副本）上操作；settleTick 返回新 world 快照，
+ * 失败时不返回半更新 world。
  */
 
 import type { Plan, Position } from "../../domain/model.ts";

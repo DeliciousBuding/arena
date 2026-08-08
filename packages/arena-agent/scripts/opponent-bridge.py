@@ -73,8 +73,13 @@ def _load_agent_registry() -> dict:
 
 
 def _load_repos(repo: Path, sdk_repo: Path) -> None:
-    """注入对手仓库与官方 SDK 镜像路径到 sys.path（sdk 优先，防同名模块遮蔽）。"""
-    for repo_path in (sdk_repo, repo):
+    """注入对手仓库与官方 SDK 源码路径到 sys.path（sdk 优先，防同名模块遮蔽）。
+
+    SDK 仓库为 src 布局（`src/arena_hero`），故注入 `sdk_repo/src`；
+    旧根级布局（`arena_hero` 平铺在仓库根）时注入仓库根。
+    """
+    sdk_source = sdk_repo / "src" if (sdk_repo / "src").is_dir() else sdk_repo
+    for repo_path in (sdk_source, repo):
         resolved = repo_path.resolve()
         if not resolved.exists():
             raise FileNotFoundError(f"repo not found: {resolved}")

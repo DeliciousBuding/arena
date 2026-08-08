@@ -632,7 +632,7 @@ test("X6: 摧毁携带 Beacon 的迁移 Core → Beacon 落地于 Core 最终实
 
 /* ---------------- 结算顺序：集成测试依赖的 phase 顺序快照 ---------------- */
 
-test("X0: 结算顺序 P05 global movement → P06 core-migration actions → P07 beacon → P08 harvest → P09 combat → P12 respawn", () => {
+test("X0: 结算顺序 P05 global movement → P06 core-migration actions → P07 beacon → P08 harvest → P09 combat → P13 respawn", () => {
   const order = phaseOrder();
   const indexOf = (id: string): number => order.findIndex((phaseId) => phaseId === id);
   assert.ok(indexOf("P05-global-movement") >= 0);
@@ -640,5 +640,5 @@ test("X0: 结算顺序 P05 global movement → P06 core-migration actions → P0
   assert.ok(indexOf("P07-beacon") > indexOf("P06-core-migration-actions"));
   assert.ok(indexOf("P08-harvest-and-deposit") > indexOf("P07-beacon"));
   assert.ok(indexOf("P09-combat") > indexOf("P08-harvest-and-deposit"));
-  assert.ok(indexOf("P12-respawn") > indexOf("P09-combat"));
+  assert.ok(indexOf("P13-respawn") > indexOf("P09-combat"));
 });
