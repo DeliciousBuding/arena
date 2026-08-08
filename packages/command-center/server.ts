@@ -46,6 +46,7 @@ import { loadAuditOverview, warmAuditOverview } from "./lib/audit-overview.ts";
 import { loadHumanConflict, warmHumanConflict } from "./lib/human-conflict.ts";
 import { loadAllianceMining, warmAllianceMining } from "./lib/alliance-mining.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
+import { loadCoreMovingGuard } from "./lib/human-command-guard.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
@@ -315,17 +316,7 @@ const validTenant = (t: string | undefined): t is string => !!t && TENANTS.inclu
 /** 核心移动中守卫（2026-08-08）：手操目标是本租户核心且核心正在移动 → 立即拒绝并给
  *  明确原因（否则 agent 端静默拒绝——t3 404 次 "Core is already moving" 实证）。 */
 function coreMovingGuard(tenant: string, unitId: string): { blocked: boolean; coreId: string | null } {
-  try {
-    const snap = loadAllianceSnapshot();
-    const member = snap.members?.[tenant];
-    const core = member?.core;
-    if (!core || !core.id) return { blocked: false, coreId: null };
-    if (unitId !== core.id) return { blocked: false, coreId: core.id };
-    if (core.moving === true) return { blocked: true, coreId: core.id };
-    return { blocked: false, coreId: core.id };
-  } catch {
-    return { blocked: false, coreId: null }; // 快照不可用不阻断
-  }
+  return loadCoreMovingGuard(tenant, unitId);
 }
 
 app.get("/api/commands", (c) => {
