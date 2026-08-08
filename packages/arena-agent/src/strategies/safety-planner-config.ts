@@ -439,6 +439,15 @@ export interface SafetyPlannerConfig {
   readonly outnumberedRetreat?: boolean;
   /** 寡不敌众判定半径（Chebyshev，默认 aggressive 10 / defensive 6）。 */
   readonly outnumberedRetreatRadius?: number;
+  /**
+   * 弱核优先攻坚（2026-08-08，weak-core-first-v1，guide "已知核心优先选无护卫"
+   * 对照）：多敌核时攻坚/狩猎优先打守军少的（击杀概率高，防攻坚守军堆叠送死）；
+   * 无兵力记忆的核视为无护卫（弱目标优先）。tie-break：新鲜度 → 距我方 Core 近。
+   * 默认 false = 历史行为（CORE 优先→最新→坐标，零回归）。
+   */
+  readonly weakCoreFirst?: boolean;
+  /** 弱核优先的守军记忆窗口（默认 20 tick，enemyCoreForces maxAge）。 */
+  readonly weakCoreFirstForceTicks?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

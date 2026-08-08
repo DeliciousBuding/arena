@@ -536,6 +536,34 @@ export class SafetyPlanner {
       : localAllies <= combatEnemies.length;
   }
 
+  /** 弱核优先排序（weak-core-first-v1，2026-08-08，guide "已知核心优先选无护卫"
+   *  对照）：多敌核时按守军估计升序（无兵力记忆 = 无护卫弱目标优先）→ 新鲜度 →
+   *  距我方 Core 近 → 坐标。供狩猎/前压目标选择；默认关闭返回历史顺序（CORE
+   *  优先→最新→坐标，零回归）。守军记忆窗口 weakCoreFirstForceTicks（默认 20）。 */
+  private weakCoreOrderedTargets(state: TickState): readonly CoreHuntTarget[] {
+    const candidates = this.world.coreHuntTargets().filter((t) => t.source === "CORE");
+    if (candidates.length <= 1 || this.config.weakCoreFirst !== true) return candidates;
+    const forceTicks = this.config.weakCoreFirstForceTicks ?? 20;
+    const forces = this.world.enemyCoreForces(forceTicks);
+    const guardOf = (pos: Position): number => {
+      const f = forces.find((x) => cellKey(x.position) === cellKey(pos));
+      return f === undefined ? 0 : f.vanguards.size + f.rangers.size;
+    };
+    const home = state.core?.position;
+    return [...candidates].sort((a, b) => {
+      const ga = guardOf(a.position);
+      const gb = guardOf(b.position);
+      if (ga !== gb) return ga - gb;
+      if (b.lastSeenTick !== a.lastSeenTick) return b.lastSeenTick - a.lastSeenTick;
+      if (home !== undefined) {
+        const da = manhattan(a.position, home);
+        const db = manhattan(b.position, home);
+        if (da !== db) return da - db;
+      }
+      return a.position[0] - b.position[0] || a.position[1] - b.position[1];
+    });
+  }
+
   /** 攻坚集结位（rally-assault-v1）：敌核外圈 Chebyshev RALLY_DISTANCE 的 8 方位
    *  点，按"距我方 Core 最近"排序（从我方一侧接近，不绕敌后），第一个非障碍/非
    *  资源点作为集结位；全堵回退敌核格（兜底直接攻坚）。确定性（同输入同输出）。 */
@@ -1747,7 +1775,10 @@ export class SafetyPlanner {
         // 盲目环搜。清扫语义：进入清扫圈停留 HUNT_SWEEP_TICKS 仍未发现敌 Core
         // → 记清扫旋转下一目标；目标被重新目击（lastSeenTick 更新）→ 恢复狩猎。
         if (this.config.militaryHunt === true) {
-          const hunt = this.world.coreHuntTargets();
+          const hunt =
+            this.config.weakCoreFirst === true
+              ? this.weakCoreOrderedTargets(state)
+              : this.world.coreHuntTargets();
           const target = hunt.find((t) => {
             const sweptAt = this.huntSweptAt.get(cellKey(t.position));
             return sweptAt === undefined || t.lastSeenTick > sweptAt;
@@ -2208,7 +2239,10 @@ export class SafetyPlanner {
       const forceGate = force > 0 && military < force;
       const enemyCoreMemory = forceGate
         ? undefined
-        : this.world.coreHuntTargets().find(
+        : (this.config.weakCoreFirst === true
+            ? this.weakCoreOrderedTargets(state)
+            : this.world.coreHuntTargets()
+          ).find(
             (target) =>
               target.source === "CORE" &&
               chebyshev(state.core!.position, target.position) <= BOUNDED_RAID_DISTANCE,

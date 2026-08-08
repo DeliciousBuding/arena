@@ -73,6 +73,12 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "outnumbered-retreat-v1": Object.freeze({ outnumberedRetreat: true }),
     /**
+     * 弱核优先攻坚（2026-08-08，guide "已知核心优先选无护卫"对照）：多敌核时优先
+     * 打守军少的（击杀概率高）；无兵力记忆 = 无护卫（弱目标优先）。与 overmatch/
+     * rally 互补：选对目标 + 兵力够 + 到齐再上。默认关闭零回归。
+     */
+    "weak-core-first-v1": Object.freeze({ weakCoreFirst: true }),
+    /**
      * 威胁方向侦察（2026-08-07，t2 生产实证）：worker 巡逻方位向已知敌核心
      * 方向（coreHuntTargets 首个 CORE）加权——前 4 worker 覆盖威胁扇区 ±1，
      * 保证威胁来路（如 t2 NE=jerkman）始终有 ≥3 worker 侦察，小股进攻更早
