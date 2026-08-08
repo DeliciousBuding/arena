@@ -280,12 +280,18 @@ export function collectResourceAbsences(
   db: DatabaseSync,
   objects: CaseObjects,
   tick: number,
+  knownCells?: ReadonlySet<string>,
 ): Array<{ cell: string; tick: number }> {
   if (objects.unitSeen.length === 0 && objects.ourCores.length === 0) return [];
-  const knownRows = db.prepare("SELECT x, y FROM resources").all() as Array<{ x: number; y: number }>;
-  if (knownRows.length === 0) return [];
-  const known = new Set<string>();
-  for (const r of knownRows) known.add(`${r.x},${r.y}`);
+  // knownCells 可选：批量回填场景由调用方缓存已知矿格集合（每 case 查库极慢——
+  // 全量 1.3 万 case × SELECT resources 实测 9 分钟未完成）；不传则查库（单 case 场景）。
+  const known = knownCells ?? (() => {
+    const knownRows = db.prepare("SELECT x, y FROM resources").all() as Array<{ x: number; y: number }>;
+    const k = new Set<string>();
+    for (const r of knownRows) k.add(`${r.x},${r.y}`);
+    return k;
+  })();
+  if (known.size === 0) return [];
   const nowRes = new Set(objects.resources.map((p) => `${p.x},${p.y}`));
   const obstacles = new Set(objects.obstacles.map((p) => `${p.x},${p.y}`));
   const observers: Array<{ x: number; y: number; radius: number }> = [];
