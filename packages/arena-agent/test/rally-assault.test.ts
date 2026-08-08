@@ -17,14 +17,21 @@ function enemyCore(position: Position, owner?: string): VisibleEntity {
 }
 
 /** 构造战斗状态：militaryPositions 决定 Vanguard 出发点（默认家侧 [5,*]）。 */
-function makeState(tick: number, enemies: VisibleEntity[], militaryPositions: readonly Position[]): TickState {
+function makeState(tick: number, enemies: VisibleEntity[], militaryPositions: readonly Position[], rangerPositions: readonly Position[] = []): TickState {
   const units = [];
   const vanguards = [];
+  const rangers = [];
   for (let i = 0; i < militaryPositions.length; i++) {
     const id = `v${String(i).padStart(2, "0")}`;
     const u = { id, position: [...militaryPositions[i]] as Position, hp: 4, unitType: "VANGUARD" as const, cargo: 0 };
     units.push(u);
     vanguards.push(u);
+  }
+  for (let i = 0; i < rangerPositions.length; i++) {
+    const id = `r${String(i).padStart(2, "0")}`;
+    const u = { id, position: [...rangerPositions[i]] as Position, hp: 4, unitType: "RANGER" as const, cargo: 0 };
+    units.push(u);
+    rangers.push(u);
   }
   return {
     tick,
@@ -37,7 +44,7 @@ function makeState(tick: number, enemies: VisibleEntity[], militaryPositions: re
     units,
     workers: [],
     vanguards,
-    rangers: [],
+    rangers,
     visibleEnemies: enemies,
     resourceCells: new Set(),
     obstacleCells: new Set(),
@@ -138,4 +145,52 @@ test("rally：默认关闭 → 直接前压（vanguard_pressure_memory 零回归
     intents.length === 6 && intents.every((i) => i === "vanguard_pressure_memory"),
     `变体关闭应保持历史逐个前压，实际 intents=${JSON.stringify(intents)}`,
   );
+});
+
+test("rally Ranger：组未齐 → Ranger 也到集结位（ranger_rally，不再单独前压）", () => {
+  const planner = new SafetyPlanner(rallyConfig());
+  seedCore(planner);
+  // 仅 2 Ranger（military=2 过 attackForce=2 gate）；组未齐 → 同 Vanguard 集结。
+  const plan = planner.decide({ state: makeState(2, [], [], [[5, 0], [5, 1]]), policy: PRESSURE_POLICY });
+  const rangerIntents = Object.entries(plan.intents ?? {})
+    .filter(([id]) => id.startsWith("r"))
+    .map(([, intent]) => intent);
+  assert.ok(
+    rangerIntents.length === 2 && rangerIntents.every((i) => i === "ranger_rally"),
+    `Ranger 组未齐应同集结，实际 intents=${JSON.stringify(rangerIntents)}`,
+  );
+});
+
+test("rally Ranger：首个到集结位者等待（ranger_rally_hold）", () => {
+  const planner = new SafetyPlanner(rallyConfig());
+  seedCore(planner);
+  // r0 已在集结位 [44,0]，r1 仍在赶路——r0 等待，r1 继续赶路。
+  const plan = planner.decide({ state: makeState(2, [], [], [[44, 0], [5, 0]]), policy: PRESSURE_POLICY });
+  const byId = Object.fromEntries(Object.entries(plan.intents ?? {}).filter(([id]) => id.startsWith("r")));
+  assert.equal(byId["r00"], "ranger_rally_hold", `首到者应等待，实际=${byId["r00"]}`);
+  assert.equal(byId["r01"], "ranger_rally", `其余应继续赶路，实际=${byId["r01"]}`);
+});
+
+test("rally Ranger：默认关闭 → 直接前压（ranger_move 零回归）", () => {
+  const config = { ...rallyConfig(), rallyAssault: false };
+  const planner = new SafetyPlanner(config);
+  seedCore(planner);
+  const plan = planner.decide({ state: makeState(2, [], [], [[5, 0], [5, 1]]), policy: PRESSURE_POLICY });
+  const rangerIntents = Object.entries(plan.intents ?? {})
+    .filter(([id]) => id.startsWith("r"))
+    .map(([, intent]) => intent);
+  assert.ok(
+    rangerIntents.length === 2 && rangerIntents.every((i) => i === "ranger_move"),
+    `变体关闭应保持历史单独前压，实际 intents=${JSON.stringify(rangerIntents)}`,
+  );
+});
+
+test("rally：Vanguard+Ranger 共享集结——先到的等、后到的赶路，同点位汇合", () => {
+  const planner = new SafetyPlanner(rallyConfig());
+  seedCore(planner);
+  // v00 已在集结位 [44,0]，r00 在赶路：v00 等待（vanguard_rally_hold），r00 赶路（ranger_rally）。
+  const plan = planner.decide({ state: makeState(2, [], [[44, 0]], [[5, 0]]), policy: PRESSURE_POLICY });
+  const byId = Object.fromEntries(Object.entries(plan.intents ?? {}).filter(([id]) => id.startsWith("v") || id.startsWith("r")));
+  assert.equal(byId["v00"], "vanguard_rally_hold", `Vanguard 首到应等待，实际=${byId["v00"]}`);
+  assert.equal(byId["r00"], "ranger_rally", `Ranger 应赶路集结，实际=${byId["r00"]}`);
 });
