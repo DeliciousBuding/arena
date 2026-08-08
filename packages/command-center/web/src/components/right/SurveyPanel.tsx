@@ -58,7 +58,7 @@ function TenantCard({ t, d }: { t: string; d: SurveyData }) {
           {spendBar.length ? (
             <div className="sv-bar">
               {spendBar.map((x) => (
-                <span key={x.kind} className="sv-bar-seg" style={{ width: `${x.pct}%`, background: x.kind === "spawn" ? "#7ee0a0" : x.kind === "repair" ? "#5fd4e8" : "#e0b94f" }} title={`${KIND_CN[x.kind] ?? x.kind} ${x.total}`} />
+                <span key={x.kind} className="sv-bar-seg" style={{ width: `${x.pct}%`, background: x.kind === "spawn" ? "#7fc99a" : x.kind === "repair" ? "#5fd4e8" : "#f0883e" }} title={`${KIND_CN[x.kind] ?? x.kind} ${x.total}`} />
               ))}
             </div>
           ) : null}

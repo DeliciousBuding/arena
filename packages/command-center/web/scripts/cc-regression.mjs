@@ -251,6 +251,25 @@ async function main() {
     else if (pinOk === false) bad("跳图定位标记（jumpPins）", "点目击后未生成 pin 或 Esc 未清空");
     else results.push("  ⚠ 跳图定位标记（jumpPins）— 无目击数据，跳过");
 
+
+    // 6c) 手操审计 UI：HUMAN AUDIT 区块存在且有记录（手操链刚写过 goal，应有记录；无记录则跳过不误报）
+    let auditOk = null; // true | false | null(跳过)
+    try {
+      await page.click('.rp-tab[data-rp-tab="situation"]', { timeout: 4000 }).catch(() => {});
+      await sleep(2500);
+      const auditState = await page.evaluate(() => {
+        const blocks = [...document.querySelectorAll(".sit-sight")];
+        const b = blocks.find((x) => (x.querySelector(".sit-sight-head")?.innerText ?? "").includes("HUMAN AUDIT"));
+        if (!b) return { exists: false, rows: 0, empty: false };
+        return { exists: true, rows: b.querySelectorAll(".sit-sight-list .sit-sight-row").length, empty: !!b.querySelector(".sv-empty") };
+      });
+      if (auditState.exists && auditState.rows > 0) auditOk = true;
+      else if (auditState.exists && auditState.empty) auditOk = null;
+      else auditOk = false;
+    } catch (e) { auditOk = false; }
+    if (auditOk === true) ok("手操审计 UI", "HUMAN AUDIT 记录可见");
+    else if (auditOk === false) bad("手操审计 UI", "手操记录区块缺失/异常");
+    else results.push("  ⚠ 手操审计 UI — 暂无手操记录，跳过");
     // 7) API 健康
     for (const path of ["/api/overview", "/api/stream?tenant=t1&n=5", "/api/survey?tenant=t1"]) {
       const t0 = Date.now();
