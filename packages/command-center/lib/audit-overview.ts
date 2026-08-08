@@ -15,6 +15,8 @@ import { loadAllianceExploration, type AllianceExplorationPayload } from "./expl
 import { loadPipelineHealth, type PipelineHealthPayload } from "./pipeline-health.ts";
 import { loadHumanConflict, type HumanConflictPayload } from "./human-conflict.ts";
 import { loadAllianceMining, type AllianceMiningPayload } from "./alliance-mining.ts";
+import { loadDecisionTrend } from "./decision-audit.ts";
+import { loadMineUtilizationTrend } from "./mine-utilization.ts";
 
 const TTL_MS = 30_000;
 
@@ -58,6 +60,14 @@ export interface TenantAuditOverview {
     assigned: number;
     avgDistance: number | null;
   } | null;
+  /** 趋势方向（2026-08-08）：最新窗口 vs 前一窗口——改善/恶化一眼可见。 */
+  trend: {
+    coreDelta: number;
+    coreDeltaPrev: number;
+    visibleNever: number;
+    visibleNeverPrev: number;
+    stallRate: number | null;
+  } | null;
 }
 
 export interface AuditOverviewPayload {
@@ -92,6 +102,7 @@ export function aggregateAuditOverview(
   pipeline: PipelineHealthPayload | null,
   conflicts: Record<string, HumanConflictPayload> = {},
   mining: AllianceMiningPayload | null = null,
+  trends: Record<string, { coreDelta: number; coreDeltaPrev: number; visibleNever: number; visibleNeverPrev: number; stallRate: number | null }> = {},
 ): AuditOverviewPayload {
   const tenants: Record<string, TenantAuditOverview> = {};
   let maxLag: number | null = null;
@@ -160,6 +171,7 @@ export function aggregateAuditOverview(
         assigned: num(mining.perTenant[t].assigned),
         avgDistance: mining.perTenant[t].avgDistance,
       } : null,
+      trend: trends[t] ?? null,
     };
   }
 
@@ -189,7 +201,26 @@ export function loadAuditOverview(): AuditOverviewPayload {
   const pipeline = loadPipelineHealth();
   const conflicts = loadHumanConflict("all") as Record<string, HumanConflictPayload>;
   const mining = loadAllianceMining();
-  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts, mining);
+  const trends: Record<string, { coreDelta: number; coreDeltaPrev: number; visibleNever: number; visibleNeverPrev: number; stallRate: number | null }> = {};
+  for (const t of TENANTS) {
+    try {
+      const dt = loadDecisionTrend(t, 500, 3);
+      const mt = loadMineUtilizationTrend(t, 2000, 3);
+      const dLast = dt.trend[dt.trend.length - 1];
+      const dPrev = dt.trend[dt.trend.length - 2];
+      const mLast = mt.trend[mt.trend.length - 1];
+      const mPrev = mt.trend[mt.trend.length - 2];
+      if (!dLast || !mLast) continue;
+      trends[t] = {
+        coreDelta: num(dLast.coreDelta),
+        coreDeltaPrev: num(dPrev?.coreDelta),
+        visibleNever: num(mLast.visibleNever),
+        visibleNeverPrev: num(mPrev?.visibleNever),
+        stallRate: dLast.stallRate,
+      };
+    } catch { /* 趋势不可用跳过 */ }
+  }
+  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts, mining, trends);
   cache.set("overview", payload);
   return payload;
 }
