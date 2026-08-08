@@ -15,6 +15,9 @@ import { loadEnemyHeat } from "./enemy-heat.ts";
 import { loadAllianceSurvey } from "./alliance-survey.ts";
 import { loadLeaderboardIntel } from "./leaderboard.ts";
 import { loadMinePatterns } from "./mine-patterns.ts";
+import { loadMineUtilization } from "./mine-utilization.ts";
+import { loadDecisionTrend } from "./decision-audit.ts";
+import { loadHumanConflict } from "./human-conflict.ts";
 import { TtlCache } from "./cache.ts";
 
 export type AdviceSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "INFO";
@@ -23,7 +26,7 @@ export type AdviceCategory = "ECONOMY" | "MILITARY" | "THREAT" | "CONFLICT" | "I
 /** 建议证据链条目（2026-08-08）：支撑建议的数据引用，前端可展示"依据"。 */
 export interface AdviceEvidence {
   /** 证据类型：world（世界状态）/ sighting（目击）/ heat（热区）/ survey（共享测绘）/ leaderboard（排行榜）。 */
-  type: "world" | "sighting" | "heat" | "survey" | "leaderboard";
+  type: "world" | "sighting" | "heat" | "survey" | "leaderboard" | "audit";
   tenant?: string;
   /** 引用标识（如矿格 / 玩家名 / chunk）。 */
   ref?: string;
@@ -265,6 +268,86 @@ export function loadAllianceAdvice(): AllianceAdvicePayload {
       at: new Date().toISOString(),
     });
   }
+
+  // 8) 数据层审计建议（2026-08-08，综合决策到参谋建议）：把审计端点的量化信号
+  //    （发现-利用缺口 / 核心负增长趋势 / 决策空转 / 手操冲突）提升为可执行建议——
+  //    与 mine-patterns #7 互补（#7 是机会，这里是问题/差距）。证据 type=audit。
+  try {
+    const mu = loadMineUtilization("all");
+    for (const m of Object.values(snap.members)) {
+      const t = m.tenantId;
+      const visNever = mu.tenants[t]?.visibleNever ?? 0;
+      if (visNever >= 10) {
+        out.push({
+          severity: "HIGH",
+          category: "ECONOMY",
+          tenant: t,
+          title: `${t} ${visNever} 个可见矿从未开采`,
+          detail: `已发现未开采（分配缺口）——联盟分工已就近分配，见 audit/mines`,
+          action: "优先派 worker 采可见未开采矿（alliance/mining 候选格）",
+          weight: -visNever,
+          confidence: 0.85,
+          evidence: [{ type: "audit", tenant: t, ref: `visibleNever=${visNever}` }],
+          at: new Date().toISOString(),
+        });
+      }
+    }
+    // 决策趋势（最新窗口）：负增长 / 高空转
+    for (const m of Object.values(snap.members)) {
+      const t = m.tenantId;
+      const trend = loadDecisionTrend(t, 500, 4);
+      const last = trend.trend[trend.trend.length - 1];
+      if (!last) continue;
+      if (last.coreDelta < 0) {
+        out.push({
+          severity: "HIGH",
+          category: "ECONOMY",
+          tenant: t,
+          title: `${t} 最近窗口核心负增长 ${last.coreDelta}`,
+          detail: `t${last.tick} 窗口 coreDelta ${last.coreDelta}（cargo ${last.cargoEff === null ? "-" : (last.cargoEff * 100).toFixed(0)}%）`,
+          action: "检查满载率/交付失败/手操干扰；按 audit/decisions 归因",
+          weight: -last.coreDelta,
+          confidence: 0.8,
+          evidence: [{ type: "audit", tenant: t, ref: `coreDelta=${last.coreDelta} tick=${last.tick}` }],
+          at: new Date().toISOString(),
+        });
+      }
+      if (last.stallRate !== null && last.stallRate >= 0.9) {
+        out.push({
+          severity: "MEDIUM",
+          category: "ECONOMY",
+          tenant: t,
+          title: `${t} 决策空转 ${Math.round(last.stallRate * 100)}%`,
+          detail: `最近窗口 wait 主导（停摆 tick 占比）——目标链/搬运需优化`,
+          action: "commit 目标到矿格（修 planChurn）；校验障碍挡路",
+          weight: Math.round(last.stallRate * 100),
+          confidence: 0.75,
+          evidence: [{ type: "audit", tenant: t, ref: `stallRate=${last.stallRate}` }],
+          at: new Date().toISOString(),
+        });
+      }
+    }
+    // 手操冲突（拒绝率）
+    const hc = loadHumanConflict("all") as Record<string, { rejectedRate: number | null }>;
+    for (const m of Object.values(snap.members)) {
+      const t = m.tenantId;
+      const rate = hc[t]?.rejectedRate ?? 0;
+      if (rate >= 0.3) {
+        out.push({
+          severity: "MEDIUM",
+          category: "CONFLICT",
+          tenant: t,
+          title: `${t} 手操拒绝率 ${Math.round(rate * 100)}%`,
+          detail: "手操指令被 agent 端拒绝（常见：核心移动中）——UI 应即时反馈",
+          action: "核心移动中指令已被 guard 拦截（409）；UI 显示拒绝原因",
+          weight: Math.round(rate * 100),
+          confidence: 0.7,
+          evidence: [{ type: "audit", tenant: t, ref: `rejectedRate=${rate}` }],
+          at: new Date().toISOString(),
+        });
+      }
+    }
+  } catch { /* 审计数据不可用不阻断建议 */ }
 
   out.sort((a, b) => ORDER[a.severity] - ORDER[b.severity] || a.weight - b.weight);
   // 2026-08-08 建议去重：同一 (category, tenant, title) 只保留一条（跨租户目击
