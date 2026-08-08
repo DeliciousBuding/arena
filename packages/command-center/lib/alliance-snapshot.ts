@@ -24,20 +24,20 @@ import {
   observationsToSightings,
   buildAllianceSnapshotFromSightings,
   type AllianceObservation,
-} from "../../arena-agent/src/alliance/snapshot.ts";
-import { aggregateAllianceIntel, type SharedIntelView } from "../../arena-agent/src/alliance/shared-intel.ts";
-import { currentConfidence } from "../../arena-agent/src/alliance/sightings.ts";
+} from "./alliance/snapshot.ts";
+import { aggregateAllianceIntel, type SharedIntelView } from "./alliance/shared-intel.ts";
+import { currentConfidence } from "./alliance/sightings.ts";
 import {
   buildAllianceThreatSummariesFromSnapshot,
   type TenantThreatSummary,
-} from "../../arena-agent/src/alliance/threat-summary.ts";
+} from "./alliance/threat-summary.ts";
 import type {
   AllianceMemberState,
   AllianceSnapshot,
   EntitySighting,
   ThreatCell,
   UnitType,
-} from "../../arena-agent/src/alliance/types.ts";
+} from "./alliance/types.ts";
 
 function num(v: unknown): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
