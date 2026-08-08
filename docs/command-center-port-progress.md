@@ -311,3 +311,22 @@ mapEngine.ts 对应函数。
   记忆障碍/不可达）。
 - **验证**：回归 **22/22 连跑两轮全绿** + verify（server tsc + alliance + web typecheck +
   build + 单测 61+16）全绿。
+
+### 9.14 点击命中视觉瞄准 + MOVE 新鲜校验 + 回归加固（2026-08-08）
+- **① 屏幕空间单位命中（unitAtScreen）**：`resolveLiveTarget` 增加画布插值绘制位命中
+  （半径 3.6~4.2 格，低缩放用世界格数上限兜底），命中后按 **id** 去 live world 精确定位，
+  不再只靠位置半径搜索——tick 插值/测绘轮询滞后使画布位与 live 位最多差数格，纯位置搜索
+  漂移 >3 格即脱靶（"点了没反应"、回归 6f 第二击 toast 为空根因，2026-08-08 实证）。
+  画布有单位但 live 无 → 明确 ghost 反馈，不静默吞点击。
+- **② MOVE 模式强制刷新世界**：动态地形（周期交替障碍）下，人类指令目标校验改用最新
+  /api/world，避免 3s 轮询缓存误拒（"目标 X 是障碍，无法到达"但新世界该格畅通，脱靶实证）。
+  人类指挥最高控制权：不因陈旧缓存拒绝有效指令。
+- **③ 回归 6/6f/6g 加固**：目标优先取引擎绘制位（所见即所点）+ 屏内候选 + 双障碍源
+  （live world + engine cells）+ **elementFromPoint 校验**（避开小地图/资产列/面板遮挡，
+  实证点击被 UI 覆盖层拦截时 /api/commands 无落盘）+ MOVE 模式以引擎 state.mode 为准
+  （.act-targeting 视觉元素可能被重渲染延迟掩盖）。
+- **④ 战术层扩展**：`tactRangerRange / tactRangerTargets / tactVisibility / tactAvailability`
+  从 mapEngine 抽到 tactical.ts（4821→4794 行），新增 `test/tactical.test.ts` 5 项
+  （游侠射程/目标切比雪夫/视野半径/工人采集回仓/核心信标移动受限）。
+- **验证**：完整回归 **22/22 全绿**（含人类指挥链 goal 落盘、编队多选、命令队列、右键菜单、
+  tick 读条）+ web 单测 21/21 + web typecheck/build + root tsc 全绿。

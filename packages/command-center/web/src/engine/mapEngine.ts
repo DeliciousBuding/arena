@@ -4,7 +4,7 @@
  * 地图/战术/回放/覆盖层保持原生 Canvas + DOM。入口 createMapEngine(host)。 */
 import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos } from './utils.js';
 import { getJSON } from './api.js';
-import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets } from './tactical.js';
+import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets, tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability } from './tactical.js';
 import { findPath } from './pathfind.ts';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
@@ -2625,86 +2625,6 @@ function tactFindPath(world: any, from: any, to: any, tenant: any) {
   }
   return findPath(world, from, to, extra);
 }
-function tactRangerRange(world: any, obj: any) {
-  const obstacles = tactTerrain(world, 'OBSTACLE');
-  const out = [];
-  for (const [dx, dy] of TACT_RANGER_RAYS) {
-    for (let d = 1; d <= 3; d++) {
-      const p = [obj.position[0] + dx * d, obj.position[1] + dy * d] as [number, number];
-      if (obstacles.has(pKey(p))) break;
-      out.push(p);
-    }
-  }
-  return out;
-}
-function tactRangerTargets(world: any, obj: any) {
-  const out = [];
-  for (const o of world.state.objects) {
-    if (!o.id || o.controlled !== false || !o.position) continue;
-    const dx = o.position[0] - obj.position[0], dy = o.position[1] - obj.position[1];
-    const dist = Math.max(Math.abs(dx), Math.abs(dy));
-    if (dist < 1 || dist > 3) continue;
-    if (dx !== 0 && dy !== 0 && Math.abs(dx) !== Math.abs(dy)) continue;
-    out.push(o);
-  }
-  return out;
-}
-function tactVisibility(world: any) {
-  const radiusFor = (o: any) => o.kind === 'CORE' ? 5 : o.unit_type === 'WORKER' ? 3 : o.unit_type === 'VANGUARD' ? 4 : 5;
-  const out = [];
-  for (const o of world.state.objects) {
-    if (o.controlled !== true || !o.position) continue;
-    if (o.kind !== 'CORE' && o.kind !== 'UNIT') continue;
-    out.push({ x: o.position[0], y: o.position[1], r: radiusFor(o) });
-  }
-  return out;
-}
-function tactAvailability(world: any, obj: any) {
-  const actions: Record<string, boolean> = { SELF_DESTRUCT: true, WAIT: true }, spawns: Record<string, any> = {}, reasons: Record<string, any> = {};
-  if (!obj || obj.controlled !== true || !obj.position) return { actions, spawns, reasons };
-  const beacon = world.state.champion_beacon ?? {};
-  const carries = beacon.status === 'CARRIED' && beacon.carrier_id === obj.id;
-  const atGround = beacon.status === 'GROUND' && samePos(beacon.position, obj.position);
-  if (obj.kind === 'CORE') {
-    const normal = obj.state !== 'MOVING';
-    actions.HEAL = normal; actions.REPAIR_SHIELD = normal;
-    actions.START_MOVE = normal && tactMoveTargets(world, obj).length > 0;
-    actions.CANCEL_MOVE = !normal;
-    actions.PICKUP_BEACON = normal && atGround;
-    actions.DROP_BEACON = normal && carries;
-    if (!normal) { reasons.HEAL = '核心移动中，无法维修'; reasons.REPAIR_SHIELD = '核心移动中，无法修盾'; }
-    if (!actions.START_MOVE) reasons.START_MOVE = '核心移动不可用（无可行路径）';
-    if (!actions.PICKUP_BEACON) reasons.PICKUP_BEACON = '信标不在核心所在格';
-    if (!actions.DROP_BEACON) reasons.DROP_BEACON = '核心未携带信标';
-    spawns.WORKER = normal; spawns.VANGUARD = normal; spawns.RANGER = normal;
-    return { actions, spawns, reasons };
-  }
-  const canMove = tactMoveTargets(world, obj).length > 0;
-  const atOwnCore = world.state.objects.some((o: any) => o.kind === 'CORE' && o.controlled === true && o.position && samePos(o.position, obj.position));
-  const atResource = world.state.objects.some((o: any) => o.kind === 'RESOURCE' && (o.positions ?? []).some((p: any) => samePos(p, obj.position)));
-  actions.MOVE = canMove;
-  if (!canMove) reasons.MOVE = '无可达移动目标（周围被障碍堵死）';
-  if (obj.unit_type === 'WORKER') {
-    actions.HARVEST = (obj.cargo ?? 0) === 0 && atResource;
-    actions.DEPOSIT = (obj.cargo ?? 0) > 0 && atOwnCore;
-    actions.HEAL = atOwnCore;
-    if ((obj.cargo ?? 0) > 0) reasons.HARVEST = '载货已满，先回仓交付';
-    else if (!atResource) reasons.HARVEST = '需站在资源格上才能采集';
-    if ((obj.cargo ?? 0) === 0) reasons.DEPOSIT = '无载货可交付';
-    else if (!atOwnCore) reasons.DEPOSIT = '需回到己方核心旁';
-  } else if (obj.unit_type === 'VANGUARD') {
-    actions.SWEEP = true; actions.HEAL = atOwnCore;
-  } else if (obj.unit_type === 'RANGER') {
-    actions.SHOOT = true; actions.HEAL = atOwnCore;
-  }
-  if (!atOwnCore) reasons.HEAL = '需在己方核心旁才能维修';
-  actions.PICKUP_BEACON = atGround;
-  actions.DROP_BEACON = carries;
-  if (!atGround) reasons.PICKUP_BEACON = '信标不在脚下（当前格）';
-  if (!carries) reasons.DROP_BEACON = '未携带信标';
-  return { actions, spawns, reasons };
-}
-
 /* ============ 多选 + 批量命令 + 命令队列（群星式编队指挥，2026-08-08） ============ */
 const QUEUES_KEY = 'arena-cc.queues';
 function multiObjects(tenant: any): any[] {
@@ -4407,16 +4327,48 @@ function tactShowFeature(cell: any, px: any, py: any) {
  *  命中单位/核心格时以 live world 最近邻（≤2 格，贴近视觉瞄准）重定位，并写回 liveObj 真实坐标
  *  （旧实现写点击坐标，下游 tactObjectAt 仍落空）；完全无命中时用聚焦租户 live world 兜底
  *  （覆盖刚出生/刚移位尚未进 cells 的单位）。返回 { cell, world, obj, ghost }。 */
+/** 屏幕空间单位命中（视觉瞄准，2026-08-08）：按「画布上看到的插值位置」找最近的单位/核心。
+ *  命中后由 resolveLiveTarget 按 id 去 live world 精确定位——tick 插值/测绘轮询滞后导致画布位与
+ *  live 位最多差数格，纯位置半径搜索在漂移 >3 格时脱靶（"点了没反应"、回归 6f 第二击 toast 为空根因）。 */
+function unitAtScreen(px: number, py: number, maxPx: number) {
+  let best: any = null, bestD = Infinity;
+  for (const c of visibleCells()) {
+    if (c.type !== 'unit' && c.type !== 'core') continue;
+    const pos = unitDrawPos(c);
+    const p = project(pos.x, pos.y);
+    const d = Math.hypot(px - p.sx, py - p.sy);
+    if (d <= maxPx && d < bestD) { bestD = d; best = c; }
+  }
+  return best;
+}
 async function resolveLiveTarget(px: any, py: any, tenantHint?: any) {
   const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
   const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
   const cell = nearestCell(px, py);
   const isUnitCell = !!(cell && (cell.type === 'unit' || cell.type === 'core'));
-  // 单位优先于地形（RTS 语义）：单位站在资源/障碍格上时，点单位=选中单位——
-  // "点工人没反应"（nearestCell 命中资源格弹资源卡）根因，2026-08-08 诊断实证
-  // hit=resource 且 /api/map 存在 unit+resource 同格。命中半径：
-  //   单位格 3（插值移位可达 2-3 格）；地形格 0（仅单位恰在该格才抢，不误吞空白/邻格）；
-  //   空白 1（保留 solo 兜底：刚出生/移位未进 cells 的单位）。
+  // 1) 屏幕空间视觉瞄准：先按画布插值位命中（抗 tick/轮询漂移），再按 id 精确定位 live 单位。
+  //    半径：约 3.6~4.2 格（画布位与 live 位最大漂移），低缩放用世界格数上限兜底避免误吞。
+  const hitPx = Math.min(Math.max(26, state.view.scale * 3.6), state.view.scale * 4.2);
+  const drawn = unitAtScreen(px, py, hitPx);
+  if (drawn) {
+    const t = drawn.tenant;
+    let world: any = T().worlds[t];
+    if (!world) world = await tactLoadWorld(t, true);
+    if (world) {
+      const liveObj = (world.state?.objects ?? []).find((o: any) =>
+        (o.kind === 'UNIT' || o.kind === 'CORE') && String(o.id) === String(drawn.id));
+      if (liveObj && Array.isArray(liveObj.position)) {
+        return {
+          cell: { ...drawn, tenant: t, type: liveObj.kind === 'CORE' ? 'core' : 'unit', x: liveObj.position[0], y: liveObj.position[1], fresh: true, id: liveObj.id, controlled: liveObj.controlled },
+          world, obj: liveObj, ghost: false,
+        };
+      }
+    }
+    // 画布上有但 live 无 → 陈旧 ghost（明确反馈，不静默吞点击）
+    return { cell: { ...drawn, fresh: false }, world: null, obj: null, ghost: true };
+  }
+  // 2) 位置半径兜底（无画布单位命中时）：单位格 3（插值移位可达 2-3 格）；地形格 0；
+  //    空白 1（保留 solo 兜底：刚出生/移位未进 cells 的单位）。
   const radius = isUnitCell ? 3 : (cell ? 0 : 1);
   const tenantSet = new Set<string>();
   if (cell?.tenant) tenantSet.add(cell.tenant);
@@ -4463,8 +4415,9 @@ async function handleCanvasClick(px: any, py: any, shift = false) {
       return;
     }
     if (tac.mode === 'MOVE' && tac.selected) {
-      let world: any = tac.worlds[tac.selected.tenant];
-      if (!world) world = await tactLoadWorld(tac.selected.tenant, true);
+      // 动态地形（周期交替障碍）：人类指令目标校验用最新世界，避免 3s 轮询缓存误拒
+      // （"目标 X 是障碍，无法到达"且 /api/world 显示该格畅通的脱靶根因，2026-08-08 实证）。
+      let world: any = await tactLoadWorld(tac.selected.tenant, true);
       if (world) {
         // 移动目标可为任意格（世界坐标反算），不需要命中已测绘 cell
         const path = tactFindPath(world, tac.selected.obj.position, [wx, wy], tac.selected.tenant);

@@ -7,9 +7,10 @@ import { test } from "node:test";
 import {
   tactUnitCost, tactCoreCapacity, intentLabelCn,
   tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets,
+  tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability,
 } from "../src/engine/tactical.ts";
 
-const mkWorld = (objects: any[]) => ({ state: { objects } });
+const mkWorld = (objects: any[]): any => ({ state: { objects } });
 
 test("tact-unit-cost: 人口阶梯 1.3 指数（pop<20 基准价）", () => {
   assert.equal(tactUnitCost("WORKER", 5), 5);
@@ -82,4 +83,94 @@ test("tact-move-targets: 障碍/敌格排除 + 四方向可达", () => {
   assert.deepEqual(targets, ["4,5", "5,6"]); // LEFT + DOWN
   // 非受控单位/无位置 → 空
   assert.deepEqual(tactMoveTargets(w, w.state.objects[1]), []);
+});
+
+test("tact-ranger-range: 八向射线 3 格，障碍截断", () => {
+  const w = mkWorld([{ kind: "OBSTACLE", positions: [[2, 0]] }]);
+  const ranger = { kind: "UNIT", unit_type: "RANGER", position: [0, 0], controlled: true };
+  const range = tactRangerRange(w, ranger).map((p: any) => p.join(",")).sort();
+  // 右向 (1,0) 有，(2,0) 被障碍截断
+  assert.ok(range.includes("1,0"));
+  assert.ok(!range.includes("2,0"));
+  // 上向应有 (0,-1),(0,-2),(0,-3)
+  assert.ok(range.includes("0,-1") && range.includes("0,-2") && range.includes("0,-3"));
+});
+
+test("tact-ranger-targets: 切比雪夫 1-3 格敌方（正交/对角），排除友方与超距", () => {
+  const w = mkWorld([
+    { kind: "UNIT", id: "e1", position: [1, 0], controlled: false },
+    { kind: "UNIT", id: "e2", position: [3, 3], controlled: false },
+    { kind: "UNIT", id: "e3", position: [4, 0], controlled: false }, // dist 4
+    { kind: "UNIT", id: "f", position: [1, 1], controlled: true },
+  ]);
+  const ranger = { kind: "UNIT", position: [0, 0] };
+  const ids = tactRangerTargets(w, ranger).map((o: any) => o.id).sort();
+  assert.deepEqual(ids, ["e1", "e2"]);
+});
+
+test("tact-visibility: 受控单位视野半径（CORE 5 / WORKER 3 / VANGUARD 4 / RANGER 5）", () => {
+  const w = mkWorld([
+    { kind: "CORE", position: [0, 0], controlled: true },
+    { kind: "UNIT", unit_type: "WORKER", position: [1, 0], controlled: true },
+    { kind: "UNIT", unit_type: "VANGUARD", position: [2, 0], controlled: true },
+    { kind: "UNIT", unit_type: "RANGER", position: [3, 0], controlled: true },
+    { kind: "UNIT", unit_type: "WORKER", position: [4, 0], controlled: false }, // 敌方不计
+  ]);
+  const vis = tactVisibility(w);
+  assert.equal(vis.length, 4);
+  assert.deepEqual(vis.map((v: any) => v.r).sort(), [3, 4, 5, 5]);
+});
+
+test("tact-availability: 工人采集/回仓 + 先锋清扫 + 游侠射击 + 敌方受限", () => {
+  const core = { kind: "CORE", position: [5, 5], controlled: true };
+  const w = mkWorld([
+    core,
+    { kind: "RESOURCE", positions: [[1, 1]] },
+    { kind: "UNIT", id: "worker", unit_type: "WORKER", position: [1, 1], controlled: true, cargo: 0 },
+    { kind: "UNIT", id: "worker2", unit_type: "WORKER", position: [5, 5], controlled: true, cargo: 3 },
+    { kind: "UNIT", id: "v", unit_type: "VANGUARD", position: [0, 0], controlled: true },
+    { kind: "UNIT", id: "r", unit_type: "RANGER", position: [0, 1], controlled: true },
+    { kind: "UNIT", id: "enemy", unit_type: "WORKER", position: [9, 9], controlled: false },
+  ]);
+  const onMine = w.state.objects[2];
+  const atCore = w.state.objects[3];
+  const av = tactAvailability(w, onMine);
+  assert.equal(av.actions.HARVEST, true);
+  assert.equal(av.actions.DEPOSIT, false);
+  assert.ok(av.reasons.DEPOSIT);
+  const av2 = tactAvailability(w, atCore);
+  assert.equal(av2.actions.DEPOSIT, true);
+  assert.equal(av2.actions.HARVEST, false);
+  assert.ok(av2.reasons.HARVEST);
+  assert.equal(tactAvailability(w, w.state.objects[4]).actions.SWEEP, true); // 先锋
+  assert.equal(tactAvailability(w, w.state.objects[5]).actions.SHOOT, true); // 游侠
+  const enemy = tactAvailability(w, w.state.objects[6]);
+  assert.deepEqual(Object.keys(enemy.actions).sort(), ["SELF_DESTRUCT", "WAIT"]);
+});
+
+test("tact-availability: 核心信标拾取/放置 + 移动中受限", () => {
+  const wGround = mkWorld([
+    { kind: "CORE", id: "c", position: [0, 0], controlled: true },
+    { kind: "OBSTACLE", positions: [] },
+  ]);
+  wGround.state.champion_beacon = { status: "GROUND", position: [0, 0] };
+  const core = wGround.state.objects[0];
+  const av = tactAvailability(wGround, core);
+  assert.equal(av.actions.PICKUP_BEACON, true);
+  assert.equal(av.actions.START_MOVE, true);
+  // 正常核心携带信标：可放置、不可拾取
+  const wCarry = mkWorld([{ ...core }]);
+  wCarry.state.champion_beacon = { status: "CARRIED", carrier_id: "c" };
+  const av2 = tactAvailability(wCarry, wCarry.state.objects[0]);
+  assert.equal(av2.actions.PICKUP_BEACON, false);
+  assert.equal(av2.actions.DROP_BEACON, true);
+  // 移动中的核心：可取消移动，生产/维修/信标动作全部受限
+  const wMoving = mkWorld([{ ...core, state: "MOVING" }]);
+  wMoving.state.champion_beacon = { status: "CARRIED", carrier_id: "c" };
+  const av3 = tactAvailability(wMoving, wMoving.state.objects[0]);
+  assert.equal(av3.actions.CANCEL_MOVE, true);
+  assert.equal(av3.actions.START_MOVE, false);
+  assert.equal(av3.actions.PICKUP_BEACON, false);
+  assert.equal(av3.actions.DROP_BEACON, false);
+  assert.equal(av3.spawns.WORKER, false);
 });
