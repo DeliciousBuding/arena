@@ -57,12 +57,13 @@ graph LR
 ## 4. 质量门（生产级稳定基线）
 
 ```bash
-npm run check:all          # server tsc → web typecheck → web build 一键全绿
-npm run test:regression    # Playwright 回归 16 项（web/scripts/cc-regression.mjs）
+npm run check:all          # server tsc → 联盟同步护栏 → web typecheck → web build 一键全绿
+npm run test:regression    # Playwright 回归 19 项（web/scripts/cc-regression.mjs）
 ```
 
 - 回归覆盖：页面零错误 / 六 tab / 威胁玫瑰 / 决策流 / 聚焦 HUD / 计划层像素 /
-  人类指挥链（goal 落盘）/ 跳图定位标记 jumpPins / API 健康。
+  人类指挥链（goal 落盘）/ 跳图定位标记 jumpPins / 手操审计 UI / 15s tick 读条 / API 健康。
+- 联盟同步护栏 `check:alliance-sync`：diff lib/alliance 与 arena-agent/src/alliance，漂移即失败。
 - 2026-08-08 实测：console 全量审计零 warning/error；压力交互（快速切 tab/缩放/跳图）零 JS 错误。
 - 临时 build 验证（不部署）：`vite build --outDir <tmp>`，确认新代码 + 新 token 打包正确。
 
