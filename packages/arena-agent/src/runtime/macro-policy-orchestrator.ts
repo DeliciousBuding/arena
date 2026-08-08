@@ -6,11 +6,20 @@
  *   异步执行（60s 宽松超时），完成前 current 保持上次策略（sticky）；
  * - 失败/超时 → sticky 沿用上次策略，不降级为每 tick 重试轰炸；
  * - 输出仅限结构化 MacroPolicy（数值/枚举），执行层直接消费；
- * - telemetry：每次策略更新回调 onPolicyUpdate（tenant-runtime 落盘）。
+ * - telemetry：每次策略更新回调 onPolicyUpdate（tenant-runtime 落盘）；
+ * - M2b：每个决策点生成 bounded candidate set（M2a.1 契约），决策完成后
+ *   回调 onDecisionPoint（shadow telemetry，生产行为零变化——LLM 仍唯一
+ *   选择者，事件只记录候选宇宙与选定候选）。
  */
 
 import { type MacroPolicy, DEFAULT_MACRO_POLICY, isValidMacroPolicy, normalizeMacroPolicy } from "./macro-policy.ts";
 import type { TickState } from "../domain/model.ts";
+import { generateCandidateSet } from "../offline-learning/candidate/candidate-generator.ts";
+import { computeCandidateSetHash } from "../offline-learning/candidate/decision-candidate-v1.ts";
+import {
+  resolveChosenCandidate,
+  type MacroDecisionPointV1,
+} from "../offline-learning/runtime/macro-decision-point.ts";
 
 export interface MacroPolicyOrchestratorOptions {
   /** 策略决策周期（ticks，缺省 32）。 */
@@ -23,6 +32,13 @@ export interface MacroPolicyOrchestratorOptions {
   readonly onPolicyUpdate?: (policy: MacroPolicy, tick: number) => void;
   /** 策略决策失败回调（telemetry 落盘用；参数 = 失败原因与 tick）。 */
   readonly onPolicyError?: (message: string, tick: number) => void;
+  /**
+   * M2b：决策点 shadow 回调（候选宇宙 + 选定候选；决策点 identity 用）。
+   * 生产语义不变——LLM 仍唯一选择者；事件仅记录。
+   */
+  readonly onDecisionPoint?: (event: MacroDecisionPointV1) => void;
+  /** 决策点 identity 前缀（processRunId；tenant-runtime 注入）。 */
+  readonly processRunId?: string;
   /** 决策超时（ms，缺省 60000）。 */
   readonly timeoutMs?: number;
   /** 时钟注入（测试用；缺省 performance.now）。 */
@@ -54,6 +70,8 @@ export class MacroPolicyOrchestrator {
   private readonly requestPolicy: (prompt: string) => Promise<string>;
   private readonly onPolicyUpdate?: (policy: MacroPolicy, tick: number) => void;
   private readonly onPolicyError?: (message: string, tick: number) => void;
+  private readonly onDecisionPoint?: (event: MacroDecisionPointV1) => void;
+  private readonly decisionPointPrefix: string;
   private readonly timeoutMs: number;
   /** 固定策略覆盖（实验框架）：非 null 时恒返回该策略，不触发 LLM 决策。 */
   private readonly override: MacroPolicy | null;
@@ -72,10 +90,47 @@ export class MacroPolicyOrchestrator {
     this.requestPolicy = options.requestPolicy;
     this.onPolicyUpdate = options.onPolicyUpdate;
     this.onPolicyError = options.onPolicyError;
+    this.onDecisionPoint = options.onDecisionPoint;
+    this.decisionPointPrefix = options.processRunId ?? "no-process";
     this.timeoutMs = options.timeoutMs ?? 60000;
     this.override = options.override ?? null;
     if (this.override !== null) {
       this.current = this.override;
+    }
+  }
+
+  /**
+   * M2b shadow: emit a decision-point event AFTER the decision completes
+   * (success → chosenBy=policy-llm; sticky failure → chosenBy=policy-sticky).
+   * Candidate generation must never influence production: any failure here
+   * only skips the shadow record.
+   */
+  private emitDecisionPoint(
+    state: TickState,
+    previousPolicy: MacroPolicy,
+    newPolicy: MacroPolicy,
+    chosenBy: "policy-llm" | "policy-sticky",
+  ): void {
+    if (this.onDecisionPoint === undefined) return;
+    try {
+      const candidates = generateCandidateSet(state, previousPolicy);
+      const chosen = resolveChosenCandidate(candidates, newPolicy);
+      this.onDecisionPoint({
+        schema: "macro-decision-point-v1",
+        decisionPointId: `${this.decisionPointPrefix}:${state.tick}`,
+        processRunId: this.decisionPointPrefix,
+        tick: state.tick,
+        intervalTicks: this.intervalTicks,
+        previousPolicy,
+        newPolicy,
+        chosenBy,
+        candidates,
+        candidateSetHash: computeCandidateSetHash(candidates),
+        chosenCandidateHash: chosen.candidate.deterministicHash,
+      });
+    } catch (error) {
+      // Shadow must never break production decision flow.
+      this.lastError = error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -101,12 +156,15 @@ export class MacroPolicyOrchestrator {
     }
     if (!this.inFlight && state.tick - this.lastPolicyTick >= this.intervalTicks) {
       this.inFlight = true;
+      const previousPolicy = this.current;
       void this.runPolicyDecision(state)
         .catch((error: unknown) => {
           // 决策失败：sticky 上次策略；记录失败原因；推进周期（下一个 intervalTicks 再试，不轰炸）
           this.lastError = error instanceof Error ? error.message : String(error);
           this.lastPolicyTick = state.tick;
           this.onPolicyError?.(this.lastError, state.tick);
+          // M2b shadow: the decision point still happened (sticky outcome).
+          this.emitDecisionPoint(state, previousPolicy, this.current, "policy-sticky");
         })
         .finally(() => {
           this.inFlight = false;
@@ -122,15 +180,24 @@ export class MacroPolicyOrchestrator {
 
   private async runPolicyDecision(state: TickState): Promise<void> {
     this.lastError = null;
+    const previousPolicy = this.current;
     const prompt = this.promptBuilder(state);
-    const timer = new Promise<string>((_, reject) => {
-      setTimeout(() => reject(new Error("macro policy decision timeout")), this.timeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<string>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("macro policy decision timeout")), this.timeoutMs);
     });
-    const text = await Promise.race([this.requestPolicy(prompt), timer]);
-    const policy = parsePolicyText(text);
-    this.current = policy;
-    this.lastPolicyTick = state.tick;
-    this.onPolicyUpdate?.(policy, state.tick);
+    try {
+      const text = await Promise.race([this.requestPolicy(prompt), timeoutPromise]);
+      const policy = parsePolicyText(text);
+      this.current = policy;
+      this.lastPolicyTick = state.tick;
+      this.onPolicyUpdate?.(policy, state.tick);
+      // M2b shadow: candidate universe + the LLM-selected candidate.
+      this.emitDecisionPoint(state, previousPolicy, policy, "policy-llm");
+    } finally {
+      // The race timer must not outlive the decision (event-loop hygiene).
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 }
 
