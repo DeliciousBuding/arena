@@ -29,6 +29,7 @@ function makeState(opts: {
   resourceSpace?: number;
   obstacleCells?: Position[];
   events?: { eventType: string; actorId: string | null; reasonCode: string | null; position: Position }[];
+  visibleEnemies?: VisibleEntity[];
 }): TickState {
   return {
     tick: opts.tick ?? 1,
@@ -42,7 +43,7 @@ function makeState(opts: {
     workers: opts.workers,
     vanguards: opts.vanguards,
     rangers: [],
-    visibleEnemies: [],
+    visibleEnemies: opts.visibleEnemies ?? [],
     resourceCells: new Set(),
     obstacleCells: new Set((opts.obstacleCells ?? []).map((c) => `${c[0]},${c[1]}`)),
     beacon: { position: [100, 100], status: "GROUND", carrierId: null },
@@ -162,4 +163,64 @@ test("核心通道清障扩展：空载 worker 需回血（hp<满）留在核心
     intents.includes("heal"),
     `受伤空 worker 在核心格应 HEAL 而非疏散，实际 intents=${JSON.stringify(intents)}`,
   );
+});
+
+
+test("核心通道清障 follow-up：瞬时 MOVE_FAILED 不得遮住唯一物理空邻格", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  const w = worker("w-empty", [0, 0], 0);
+  const blocked: Position[] = [[-1, 0], [0, 1], [0, -1]];
+  // tick1 把唯一物理空格 [1,0] 记录成 MOVE_DESTINATION_OCCUPIED 瞬时失败。
+  planner.decide({
+    state: makeState({
+      tick: 1, units: [w], vanguards: [], workers: [w], obstacleCells: blocked,
+      events: [{ eventType: "UNIT_MOVE_FAILED", actorId: w.id, reasonCode: "MOVE_DESTINATION_OCCUPIED", position: [1, 0] }],
+    }),
+    policy: undefined,
+  });
+  // tick2 地形仍只有另外三格真障碍；[1,0] 物理空，应无视瞬时失败记忆疏散 RIGHT。
+  const plan = planner.decide({
+    state: makeState({ tick: 2, units: [w], vanguards: [], workers: [w], obstacleCells: blocked }),
+    policy: undefined,
+  });
+  assert.equal(plan.intents?.[w.id], "worker_clear_core_empty");
+  assert.deepEqual(plan.unitActions[w.id], { type: "MOVE", direction: "RIGHT" });
+});
+
+test("核心通道清障 follow-up：核心格 worker 永不被巡逻错峰 worker_hold_crowded 卡住", () => {
+  // 故意关闭 coreClearance，单独验证 patrol-stagger 的独立不变量：占 Core 格必须离开，
+  // 不能因为附近有 5+ worker 且有人更靠外就 WAIT。
+  const planner = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, coreClearance: false });
+  const coreWorker = worker("w-core", [0, 0], 0);
+  const others = [
+    worker("w1", [1, 0], 0), worker("w2", [-1, 0], 0), worker("w3", [0, 1], 0),
+    worker("w4", [0, -1], 0), worker("w5", [1, 1], 0), worker("w6", [2, 0], 0),
+  ];
+  const workers = [coreWorker, ...others];
+  const plan = planner.decide({
+    state: makeState({ units: workers, vanguards: [], workers }),
+    policy: undefined,
+  });
+  assert.notEqual(plan.intents?.[coreWorker.id], "worker_hold_crowded");
+  assert.equal(plan.intents?.[coreWorker.id], "patrol");
+  assert.equal(plan.unitActions[coreWorker.id]?.type, "MOVE");
+});
+
+test("核心通道清障 follow-up：Core 被 worker 占用时远端回援先占外圈，不挤卸货 ring", () => {
+  const planner = new SafetyPlanner({ ...clearConfig(), remoteReinforce: true });
+  const occupant = worker("w-core", [0, 0], 0);
+  const guard = vanguard("v-remote", [-6, -8]);
+  const enemy: VisibleEntity = {
+    id: "e-near", kind: "UNIT", position: [0, 5], hp: 3, unitType: "VANGUARD",
+  };
+  const plan = planner.decide({
+    state: makeState({
+      tick: 10,
+      units: [occupant, guard], vanguards: [guard], workers: [occupant], visibleEnemies: [enemy],
+    }),
+    policy: undefined,
+  });
+  assert.equal(plan.intents?.[guard.id], "vanguard_reinforce");
+  // index=0 的外圈 coreGuardFallback=[2,0]，从 [-6,-8] 首步 RIGHT；旧邻圈 [1,0] 首步 DOWN。
+  assert.deepEqual(plan.unitActions[guard.id], { type: "MOVE", direction: "RIGHT" });
 });
