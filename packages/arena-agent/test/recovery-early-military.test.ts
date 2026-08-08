@@ -51,6 +51,12 @@ test("RECOVERY 早期防御：worker 4 + 军事 0 → 产 VANGUARD 自卫（不�
   assert.equal(decision.intent, "spawn_vanguard_recovery");
 });
 
+test("RECOVERY 早期防御：res 刚够纯成本（10）但不够 10+reserve(2) → 仍产 VANGUARD（豁免储备）", () => {
+  const decision = selectDeterministicCoreAction(makeState(10, 4, 0), null, AGGRESSIVE, undefined, 0, false, 2, undefined, false, true);
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(decision.intent, "spawn_vanguard_recovery");
+});
+
 test("RECOVERY 早期防御：worker 3（<floor 4）+ 军事 0 → 继续冷启动产 worker", () => {
   const decision = selectDeterministicCoreAction(makeState(20, 3, 0), null, AGGRESSIVE, undefined, 0, false, 2, undefined, false, true);
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" });
