@@ -207,6 +207,7 @@ test("actionFromWire: SHOOT null/缺省 targetId 保持 null", () => {
   });
 });
 
+
 /* ---- 核心迁移 / 核心动作（2026-08-08 端到端控制补齐） ---- */
 function coreActionOf(result: ReturnType<typeof applyHumanOverrides>): CoreAction | null {
   return result.plan.coreAction;
@@ -303,4 +304,41 @@ test("actionFromWire: 核心/方向/生产动作 wire 形状解析", () => {
   assert.equal(actionFromWire({ type: "START_MOVE", direction: "NOPE" }), null);
   assert.equal(actionFromWire({ type: "SPAWN", unitType: "DRONE" }), null);
   assert.equal(actionFromWire({ type: "MOVE" }), null); // 缺 direction
+});
+
+
+test("陈旧 override（writer 崩溃残留）整份忽略交还 agent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    const state = makeState();
+    // updatedAt 为 20 分钟前（超过 STALE_OVERRIDE_MAX_AGE_MS=10min），goal 指向远点
+    const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    const src = makeSource(dir, "t1", {
+      version: 1, mode: "override", updatedAt: stale,
+      commands: [],
+      goals: [{ id: "g-stale", unitId: WORKER, kind: "goto", target: [50, 50], createdAt: stale }],
+    });
+    const r = applyHumanOverrides(state, basePlan(), src);
+    assert.equal(r.active, false);
+    assert.equal(r.applied.length, 0);
+    assert.equal(r.plan.unitActions[WORKER], undefined); // 未覆盖 → 交还 agent
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("陈旧判定：updatedAt 非法/缺失不判超龄（旧格式兼容）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    const state = makeState();
+    // 非法时间 "x" 与缺失 updatedAt 均不触发过期（沿用历史行为）
+    for (const updatedAt of ["x", null]) {
+      const src = makeSource(dir, "t1", {
+        version: 1, mode: "override", updatedAt,
+        commands: [],
+        goals: [{ id: "g1", unitId: WORKER, kind: "goto", target: [5, 1], createdAt: "x" }],
+      });
+      const r = applyHumanOverrides(state, basePlan(), src);
+      assert.equal(r.active, true, `updatedAt=${updatedAt} 应仍生效`);
+      assert.equal(r.plan.unitActions[WORKER]?.type, "MOVE");
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -80,6 +80,23 @@ export interface HumanOverrideResult {
   readonly updatedAt: string | null;
 }
 
+/** 陈旧 override 自动失效（2026-08-08，t2 经济冻结根因修复）：
+ *  worker-recall-driver 等外部 writer 若在写入后崩溃，遗留的 mode=override +
+ *  goals 会被每个 tick 无脑应用（goto 核心目标压制 DEPOSIT/GO_RESOURCE，
+ *  depositCount=0，经济冻结）。写入方每次更新都会刷新 updatedAt；若 store
+ *  的 updatedAt 距今超过本阈值（缺省 10 分钟）则视为陈旧，整份忽略交还 agent。
+ *  仅当 updatedAt 是合法 ISO 时间才启用过期（旧格式/手写 store 缺省不判超龄）。
+ */
+export const STALE_OVERRIDE_MAX_AGE_MS = 10 * 60 * 1000;
+
+/** 陈旧判定：updatedAt 合法且距今超阈值 → true（调用方整份忽略）。 */
+export function isStaleOverride(store: Pick<HumanCommandStore, "mode" | "updatedAt">): boolean {
+  if (store.mode !== "override" || typeof store.updatedAt !== "string") return false;
+  const t = Date.parse(store.updatedAt);
+  if (!Number.isFinite(t)) return false;
+  return Date.now() - t > STALE_OVERRIDE_MAX_AGE_MS;
+}
+
 const DIRECTIONS: readonly Direction[] = ["UP", "DOWN", "LEFT", "RIGHT"];
 
 /** 领域动作从 wire/store 形状转换；非法形状返回 null（逐条拒绝）。 */
@@ -228,6 +245,12 @@ export function applyHumanOverrides(
   source: HumanCommandSource,
 ): HumanOverrideResult {
   const store = loadHumanCommands(source);
+  if (store !== null && isStaleOverride(store)) {
+    // 陈旧覆盖整份忽略：writer 崩溃残留，继续应用会让经济冻结（t2 2026-08-08 实证）。
+    console.warn(`[human-override:${source.tenantId}] store updatedAt=${store.updatedAt} is stale (>${STALE_OVERRIDE_MAX_AGE_MS}ms) - ignoring override`);
+    return { plan: basePlan, active: false, applied: [], rejected: [], satisfied: [], updatedAt: store.updatedAt ?? null };
+  }
+
   if (store === null || store.mode !== "override" || (store.commands.length === 0 && store.goals.length === 0)) {
     return { plan: basePlan, active: false, applied: [], rejected: [], satisfied: [], updatedAt: null };
   }
