@@ -37,6 +37,8 @@ import { knownChunks, knownCoreHunts, knownObstacles, knownResources, openSurvey
 import { loadRefillPredictions } from "../intel/refill-predictions.ts";
 import { migrationOverlay as applyMigrationOverlay } from "../migration/overlay.ts";
 import { migrationPlanPath, readMigrationPlan } from "../migration/io.ts";
+import { appendMigrationReport, migrationReportPath } from "../migration/report.ts";
+import { coreReceptiveRatio, idealEtaTicks } from "../migration/pacing.ts";
 import { DEFAULT_MIGRATION_RUNTIME_CONFIG, type MigrationRuntimeConfig } from "../migration/config.ts";
 import { checkAndMirrorOfficialManual, type OfficialManualMirror, type ReceiptLike } from "../command-plane/official-bridge.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
@@ -1258,6 +1260,8 @@ export async function runTenant(
 
     // 8) 主循环（signal/maxTicks → 终止 turns → 当前 Tick 提交完成后自然停止）
     const migrationConfig: MigrationRuntimeConfig = DEFAULT_MIGRATION_RUNTIME_CONFIG;
+    let lastReportTick = 0;
+    let lastReportPhase: string | null = null;
     const loopPromise = runTenantLoop({
       client,
       coordinator,
@@ -1271,10 +1275,16 @@ export async function runTenant(
       humanCommands: { tenantId: config.tenantId, storeDir: join(baseDir, "human-commands") },
       // 迁移 overlay（migration-system-v1 §1/§6.2）：plan → overlay → override → submit。
       // 模块默认关；无计划文件 = 零影响。lease/epoch/coreId 任一不满足 → fail-closed。
-      migrationOverlay: ({ state, plan, nowMs }) => {
+      migrationOverlay: ({ state, plan, nowMs, phase }) => {
         if (!migrationConfig.enabled) return null;
         const read = readMigrationPlan(migrationPlanPath(dataRoot, config.tenantId));
         if (!read.ok) return null;
+        if (phase === "pre-decision") {
+          // 勘探前向约束（migration-system-v1 §3.3，评审 P1）：决策前把计划注入
+          // planner——EXPLORE worker 朝计划路径前向探路（替代 core 坐标差分触发）。
+          if (planner instanceof DeterministicPlanner) planner.setMigrationPlan(read.plan);
+          return null; // 预决策钩子不产订单
+        }
         const result = applyMigrationOverlay({
           state: { tick: state.tick, core: state.core ?? null },
           plan,
@@ -1296,6 +1306,42 @@ export async function runTenant(
             ...planner.config,
             migrationWorkerBand: result.workerBand ?? undefined,
           });
+        }
+        // KPI 报告（migration-system-v1 §8）：活跃期相位变化或每 60 tick 落一条
+        // JSONL（报告失败不阻断决策——遥测侧兜底）。
+        if (result.active) {
+          const currentPhase = read.plan.state;
+          if (currentPhase !== lastReportPhase || state.tick - lastReportTick >= 60) {
+            lastReportPhase = currentPhase;
+            lastReportTick = state.tick;
+            try {
+              const cellsRemaining = Math.max(
+                0,
+                read.plan.path.cells.length - read.plan.legProgress.cellsThisLeg - read.plan.legProgress.legIndex,
+              );
+              appendMigrationReport(migrationReportPath(dataRoot, config.tenantId), {
+                schema: "migration-report-v1",
+                tick: state.tick,
+                tenant: config.tenantId,
+                operationId: read.plan.operationId,
+                phase: currentPhase,
+                burstCells: read.plan.pace.burstCells,
+                settleTicks: read.plan.pace.settleTarget,
+                coreReceptiveRatio: coreReceptiveRatio(read.plan.pace.burstCells, read.plan.pace.settleTarget),
+                grossDeposit: null, // 经济真值由遥测统计接入（conductor 落线后补）
+                harvest: null,
+                net: null,
+                cellsRemaining,
+                idealEtaTicks: idealEtaTicks(cellsRemaining, read.plan.legs.length - read.plan.legProgress.legIndex - 1, read.plan.pace.settleTarget),
+                observedEtaTicks: null,
+                observedCellsPerTick: null,
+                reasons: [...result.reasons],
+                updatedAt: new Date().toISOString(),
+              });
+            } catch {
+              // 报告落盘失败不阻断决策
+            }
+          }
         }
         return { plan: result.plan, active: result.active, failClosed: result.failClosed };
       },
