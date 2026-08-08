@@ -1057,6 +1057,14 @@ export async function runTenant(
           waitCount: actionCounts.waitCount,
           intentCounts,
           planHash: planHashOf(outcome.plan),
+          // 信标遥测（2026-08-08）：官方坐标全员公开——每 tick 落盘真实位置/
+          // 状态/携带者，指挥面板可实时核实信标动向（不再依赖 case 投影的
+          // [0,0] 占位与历史 trail 推断）。
+          beacon: {
+            position: outcome.state.beacon.position,
+            status: outcome.state.beacon.status,
+            carrierId: outcome.state.beacon.carrierId,
+          },
           // 威胁评估诊断（v0.3-lite）：outcome.state 可见敌/受击 + 近核入侵观察
           // （core-threat-watch-v1）长 TTL 记忆——威胁遥测持续显示入侵（ALERT
           // invasion_watch），指挥面板可实时看到"敌贴脸但当前不可见"。
