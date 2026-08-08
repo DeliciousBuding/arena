@@ -17,6 +17,7 @@ import { loadHumanConflict, type HumanConflictPayload } from "./human-conflict.t
 import { loadAllianceMining, type AllianceMiningPayload } from "./alliance-mining.ts";
 import { loadDecisionTrend } from "./decision-audit.ts";
 import { loadMineUtilizationTrend } from "./mine-utilization.ts";
+import { loadMiningEffectiveness, type MiningEffectivenessPayload } from "./mining-effectiveness.ts";
 
 const TTL_MS = 30_000;
 
@@ -83,6 +84,8 @@ export interface AuditOverviewPayload {
     totalCoreDelta: number;
     coveragePct: number | null;
     currentTick: number | null;
+    /** 分工兑现汇总（2026-08-08）：全局分配/采到/在途/失效 + effectiveRate。 */
+    miningFulfillment: { assigned: number; harvested: number; harvestedByOther: number; open: number; stale: number; effectiveRate: number | null } | null;
   };
   cachedAt: string;
 }
@@ -104,6 +107,7 @@ export function aggregateAuditOverview(
   pipeline: PipelineHealthPayload | null,
   conflicts: Record<string, HumanConflictPayload> = {},
   mining: AllianceMiningPayload | null = null,
+  miningEff: MiningEffectivenessPayload | null = null,
   trends: Record<string, { coreDelta: number; coreDeltaPrev: number; visibleNever: number; visibleNeverPrev: number; stallRate: number | null }> = {},
 ): AuditOverviewPayload {
   const tenants: Record<string, TenantAuditOverview> = {};
@@ -189,6 +193,14 @@ export function aggregateAuditOverview(
       totalCoreDelta,
       coveragePct: exploration?.world?.coveragePct ?? null,
       currentTick: Object.values(tenants).map((t) => t.tick).reduce<number | null>((a, b) => (b === null ? a : Math.max(a ?? 0, b)), null),
+      miningFulfillment: miningEff ? {
+        assigned: num(miningEff.global?.assigned),
+        harvested: num(miningEff.global?.harvested),
+        harvestedByOther: num(miningEff.global?.harvestedByOther),
+        open: num(miningEff.global?.open),
+        stale: num(miningEff.global?.stale),
+        effectiveRate: miningEff.global?.effectiveRate ?? null,
+      } : null,
     },
     cachedAt: new Date().toISOString(),
   };
@@ -204,6 +216,7 @@ export function loadAuditOverview(): AuditOverviewPayload {
   const pipeline = loadPipelineHealth();
   const conflicts = loadHumanConflict("all") as Record<string, HumanConflictPayload>;
   const mining = loadAllianceMining();
+  const miningEff = loadMiningEffectiveness();
   const trends: Record<string, { coreDelta: number; coreDeltaPrev: number; visibleNever: number; visibleNeverPrev: number; stallRate: number | null }> = {};
   for (const t of TENANTS) {
     try {
@@ -223,7 +236,7 @@ export function loadAuditOverview(): AuditOverviewPayload {
       };
     } catch { /* 趋势不可用跳过 */ }
   }
-  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts, mining, trends);
+  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts, mining, miningEff, trends);
   cache.set("overview", payload);
   return payload;
 }
