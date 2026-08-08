@@ -144,7 +144,10 @@ function loadMergedMapInner(): MergedMap {
     let beacon: MergedMap["tenants"][number]["beacon"] = null;
     if (caseFiles.length > 0) {
       const cb = lastCaseRaw?.after?.state?.champion_beacon ?? lastCaseRaw?.before?.state?.champion_beacon;
-      if (cb?.position) beacon = { x: cb.position[0], y: cb.position[1], status: cb.status ?? "GROUND", carrier_id: cb.carrier_id ?? null, trail: loadBeaconTrail(tenant) };
+      // 无信标占位（2026-08-08 数据质量 A10）：官方无信标时返回
+      // {position:[0,0], status:null, carrier_id:null}——status 为空即无信标，
+      // 此前误报为 (0,0) GROUND 假信标。
+      if (cb?.position && cb.status) beacon = { x: cb.position[0], y: cb.position[1], status: cb.status, carrier_id: cb.carrier_id ?? null, trail: loadBeaconTrail(tenant) };
     }
     perTenant.push({ tenant, runId: runDir, caseCount: caseFiles.length, latestTick: latestTick === 0 ? null : latestTick, beacon });
   }
