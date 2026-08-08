@@ -20,6 +20,7 @@ import { TtlCache } from "./cache.ts";
 import { loadAllianceSnapshot, type AllianceSnapshotPayload } from "./alliance-snapshot.ts";
 import { loadAllianceSurvey, type AllianceSurveyPayload } from "./alliance-survey.ts";
 import { loadMineUtilization, type MineUtilizationPayload } from "./mine-utilization.ts";
+import { loadMinePatterns } from "./mine-patterns.ts";
 
 const TTL_MS = 30_000;
 
@@ -33,6 +34,11 @@ export interface MiningAssignment {
   shared: boolean;
   conflict: boolean;
   lastSeenTick: number | null;
+  /** 发现后仍未采时长（tick，2026-08-08 积压优先排序）。 */
+  gapAgeTicks: number | null;
+  /** 矿刷新预测（mine-patterns）：预测下次出现 tick / 还有多久（tick）。 */
+  predictedNextTick: number | null;
+  dueInTicks: number | null;
 }
 
 export interface AllianceMiningPayload {
@@ -57,6 +63,7 @@ export function assignAllianceMining(
   candidatesByTenant: Record<string, Array<{ cell: string; x: number; y: number; lastSeenTick: number | null }>>,
   observersByCell: Record<string, string[]>,
   conflictCells: Set<string>,
+  metaByCell: Record<string, { gapAgeTicks: number | null; predictedNextTick: number | null; dueInTicks: number | null }> = {},
 ): AllianceMiningPayload {
   const seen = new Set<string>();
   const assignments: MiningAssignment[] = [];
@@ -109,6 +116,11 @@ export function assignAllianceMining(
     if (isShared) shared += 1;
     if (isConflict) conflict += 1;
     assigned += 1;
+    perTenant[best].assigned += 1;
+    distanceSums[best] = (distanceSums[best] ?? 0) + bestDist;
+    distanceCounts[best] = (distanceCounts[best] ?? 0) + 1;
+
+    const meta = metaByCell[c.cell] ?? { gapAgeTicks: null, predictedNextTick: null, dueInTicks: null };
     assignments.push({
       cell: c.cell, x: c.x, y: c.y,
       assignedTenant: best,
@@ -117,10 +129,10 @@ export function assignAllianceMining(
       shared: isShared,
       conflict: isConflict,
       lastSeenTick: c.lastSeenTick,
+      gapAgeTicks: meta.gapAgeTicks ?? null,
+      predictedNextTick: meta.predictedNextTick ?? null,
+      dueInTicks: meta.dueInTicks ?? null,
     });
-    perTenant[best].assigned += 1;
-    distanceSums[best] = (distanceSums[best] ?? 0) + bestDist;
-    distanceCounts[best] = (distanceCounts[best] ?? 0) + 1;
   }
 
   for (const t of TENANTS) {
@@ -128,7 +140,9 @@ export function assignAllianceMining(
       perTenant[t].avgDistance = Math.round((distanceSums[t] / distanceCounts[t]) * 10) / 10;
     }
   }
-  assignments.sort((a, b) => (a.distanceToCore ?? 1e9) - (b.distanceToCore ?? 1e9));
+  // 2026-08-08 积压优先：gapAge 大（发现久未采）排前，平手按就近。
+  assignments.sort((a, b) =>
+    ((b.gapAgeTicks ?? 0) - (a.gapAgeTicks ?? 0)) || ((a.distanceToCore ?? 1e9) - (b.distanceToCore ?? 1e9)));
 
   return {
     generatedAt: new Date().toISOString(),
@@ -189,7 +203,30 @@ export function loadAllianceMining(): AllianceMiningPayload {
     if (cell) conflictCells.add(cell);
   }
 
-  const payload = assignAllianceMining(cores, workers, candidatesByTenant, observersByCell, conflictCells);
+  // 2026-08-08 候选优先级：gapAge（发现后仍未采，积压优先）+ 矿刷新预测（dueInTicks）
+  const metaByCell: Record<string, { gapAgeTicks: number | null; predictedNextTick: number | null; dueInTicks: number | null }> = {};
+  for (const t of TENANTS) {
+    for (const c of mines.tenants[t]?.candidates ?? []) {
+      const cell = c.cell;
+      const cur = metaByCell[cell] ?? { gapAgeTicks: null, predictedNextTick: null, dueInTicks: null };
+      const g = Number(c.gapAgeTicks) || 0;
+      if (g > (cur.gapAgeTicks ?? 0)) cur.gapAgeTicks = g;
+      metaByCell[cell] = cur;
+    }
+  }
+  try {
+    const patterns = loadMinePatterns("all");
+    for (const t of TENANTS) {
+      for (const p of patterns.tenants[t]?.predictions ?? []) {
+        const cell = p.cell;
+        const cur = metaByCell[cell] ?? { gapAgeTicks: null, predictedNextTick: null, dueInTicks: null };
+        if (p.predictedNextTick !== null && p.predictedNextTick !== undefined) cur.predictedNextTick = p.predictedNextTick;
+        if (p.dueInTicks !== null && p.dueInTicks !== undefined) cur.dueInTicks = p.dueInTicks;
+        metaByCell[cell] = cur;
+      }
+    }
+  } catch { /* 预测不可用不阻断分配 */ }
+  const payload = assignAllianceMining(cores, workers, candidatesByTenant, observersByCell, conflictCells, metaByCell);
   payload.currentTick = typeof snap.currentTick === "number" ? snap.currentTick : null;
   cache.set("mining", payload);
   return payload;

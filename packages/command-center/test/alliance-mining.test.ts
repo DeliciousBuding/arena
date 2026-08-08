@@ -62,6 +62,30 @@ test("alliance-mining: 就近分配 + shared/conflict + 去重", () => {
   assert.equal(a.unassigned[0]?.cell, "9,9");
 });
 
+test("alliance-mining: gapAge 积压优先排序 + 刷新预测字段", () => {
+  const cores: Partial<Record<string, [number, number] | null>> = { t1: [0, 0], t2: [50, 0] };
+  const workers: Partial<Record<string, number | null>> = { t1: 3, t2: 3 };
+  // 两个候选都离 t1 近；但 (9,0) 积压更久（gapAge 9000）应排前
+  const candidatesByTenant: Record<string, Array<{ cell: string; x: number; y: number; lastSeenTick: number | null }>> = {
+    t1: [
+      { cell: "9,0", x: 9, y: 0, lastSeenTick: 1000 },   // gapAge 9000
+      { cell: "3,0", x: 3, y: 0, lastSeenTick: 9000 },   // gapAge 1000
+    ],
+  };
+  const metaByCell: Record<string, { gapAgeTicks: number | null; predictedNextTick: number | null; dueInTicks: number | null }> = {
+    "9,0": { gapAgeTicks: 9000, predictedNextTick: 12000, dueInTicks: 3000 },
+    "3,0": { gapAgeTicks: 1000, predictedNextTick: null, dueInTicks: null },
+  };
+  const a = assignAllianceMining(cores, workers, candidatesByTenant, { "9,0": ["t1"], "3,0": ["t1"] }, new Set(), metaByCell);
+  assert.equal(a.assignments.length, 2);
+  assert.equal(a.assignments[0].cell, "9,0", "gapAge 大者排前（积压优先）");
+  assert.equal(a.assignments[0].gapAgeTicks, 9000);
+  assert.equal(a.assignments[0].predictedNextTick, 12000);
+  assert.equal(a.assignments[0].dueInTicks, 3000);
+  assert.equal(a.assignments[1].cell, "3,0");
+  assert.equal(a.assignments[1].dueInTicks, null);
+});
+
 test("alliance-mining: buildObserversByCell 分组 + 空输入", () => {
   const m = buildObserversByCell([
     { tenant: "t1", x: 1, y: 2 },
