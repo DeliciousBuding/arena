@@ -691,13 +691,6 @@ export class DeterministicPlanner implements PlanProvider {
     return this.lastWorkerProgressExpectations;
   }
 
-  /** 分级冷却播种（2026-08-08，缺席实证）：透传内部 fallback/patrol 两个 World
-   *  ——缺席统计高频格升级失败冷却，worker 不每 32 tick 白试长期死格。 */
-  seedFailedCooldownTiers(entries: readonly { position: Position; cooldownTicks: number }[]): void {
-    this.fallbackPlanner.world.seedFailedCooldownTiers(entries);
-    this.patrolPlanner.world.seedFailedCooldownTiers(entries);
-  }
-
   /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
    *  保留 World/巡逻/攻坚记忆（不重建 planner）。调用方先校验变体合法性。 */
   updateConfig(
