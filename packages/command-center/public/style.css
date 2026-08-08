@@ -642,6 +642,10 @@ body::after {
 .st-badge.rejected, .st-badge.timeout, .st-badge.missed { color: var(--danger); border-color: rgba(221,98,109,.45); background: rgba(221,98,109,.08); }
 .st-badge.aborted { color: var(--warn); border-color: rgba(211,173,85,.45); background: rgba(211,173,85,.07); }
 .st-badge.warn { color: var(--warn); border-color: rgba(211,173,85,.4); }
+.st-badge.deed { color: var(--warn); border-color: rgba(211,173,85,.4); }
+.st-badge.deed-hot { color: var(--danger); border-color: rgba(221,98,109,.45); background: rgba(221,98,109,.08); }
+.stream-line.clickable { cursor: pointer; }
+.stream-line.clickable:hover { background: rgba(255,255,255,.05); }
 .stream-empty { color: var(--text-faint); font-family: var(--font-mono); font-size: 12px; padding: 18px; text-align: center; }
 
 /* ---------- 滚动条 ---------- */
