@@ -8,6 +8,7 @@
  *   arena-ctl relocate <tenant> --target x,y [--units a,b]  —— worker 疏散
  *   arena-ctl cancel  <tenant> [--intent id]      —— 取消意图，交还 agent
  *   arena-ctl audit   <tenant> [--limit n]        —— 命令审计流水
+ *   arena-ctl band    <tenant> [--center x,y] [--radius n]  —— 矿刷新频率矿带（迁核选点）
  *
  * 全部输出 JSON（AI 可解析）。护栏数据不可读 → fail-closed 拒绝。
  * 用法：cd packages/arena-agent && npx tsx scripts/arena-ctl.mts <cmd> ...
@@ -119,6 +120,62 @@ function readResources(tenant: string): { x: number; y: number; lastSeenTick: nu
     db.close();
     return rows;
   } catch { try { db.close(); } catch {} return []; }
+}
+
+/** 矿刷新频率分析（resource_seen_history）：找高刷新矿带（迁核目标决策）。
+ *  矿生命周期短（2-6 tick 消失）但同一格会反复刷新——resource_seen_history
+ *  记录每次目击。刷新频率 = 目击次数 / 时间跨度，是"该区域矿源活度"的更好
+ *  度量（比 last_seen 新鲜度更准，2026-08-08 t1/t3 全 stale 实证）。 */
+function analyzeResourceBands(
+  tenant: string,
+  center: [number, number],
+  radius: number,
+  minSeen: number,
+): Record<string, unknown> {
+  const db = surveyDb(tenant);
+  if (!db) return { ok: false, error: "survey 库不可读" };
+  try {
+    const hist = db.prepare(
+      "SELECT cell, tick FROM resource_seen_history ORDER BY tick",
+    ).all() as { cell: string; tick: number }[];
+    db.close();
+    if (hist.length === 0) return { ok: false, error: "resource_seen_history 空" };
+    const byCell = new Map<string, number[]>();
+    for (const h of hist) {
+      const arr = byCell.get(h.cell) ?? [];
+      arr.push(Number(h.tick));
+      byCell.set(h.cell, arr);
+    }
+    const minTick = Math.min(...hist.map((h) => h.tick));
+    const maxTick = Math.max(...hist.map((h) => h.tick));
+    const span = Math.max(1, maxTick - minTick);
+    const bands = new Map<string, { x: number; y: number; seen: number; freq: number; lastTick: number }>();
+    for (const [cell, ticks] of byCell) {
+      const [x, y] = cell.split(",").map(Number);
+      if (Math.max(Math.abs(x - center[0]), Math.abs(y - center[1])) > radius) continue;
+      const seen = ticks.length;
+      if (seen < minSeen) continue;
+      bands.set(cell, {
+        x, y, seen,
+        freq: Number((seen / span).toFixed(4)),
+        lastTick: ticks[ticks.length - 1],
+      });
+    }
+    const sorted = [...bands.values()].sort((a, b) => b.freq - a.freq || b.seen - a.seen);
+    return {
+      ok: true,
+      tenant,
+      center,
+      radius,
+      spanTicks: span,
+      totalCells: byCell.size,
+      bandCells: sorted.length,
+      top: sorted.slice(0, 25),
+    };
+  } catch (e) {
+    try { db.close(); } catch {}
+    return { ok: false, error: String(e) };
+  }
 }
 
 function readActiveIntents(tenant: string): { activeCount: number; activeIntentIds: string[] } {
@@ -333,6 +390,13 @@ async function main(): Promise<void> {
       break;
     }
     case "cancel": cmdCancel(tenant, getArg(rest, "--intent")); break;
+    case "band": {
+      const center = parseTarget(getArg(rest, "--center")) ?? [0, 0];
+      const radius = Number(getArg(rest, "--radius") ?? 150);
+      const minSeen = Number(getArg(rest, "--min-seen") ?? 5);
+      console.log(JSON.stringify(analyzeResourceBands(tenant, center, radius, minSeen), null, 2));
+      break;
+    }
     case "audit": cmdAudit(tenant, Number(getArg(rest, "--limit") ?? 50)); break;
     default: console.log(JSON.stringify({ ok: false, error: `未知命令 ${cmd}` }));
   }
