@@ -92,7 +92,28 @@ function loadTenantEnemyHeat(tenant: string, windowTicks: number): {
       `SELECT x, y, unit_type AS type, COUNT(*) AS n, MAX(tick) AS last_tick, MIN(tick) AS first_tick
        FROM units_seen WHERE controlled = 0 AND x IS NOT NULL${where} GROUP BY x, y, type`;
     const recentRows = db.prepare(sql(" AND tick > ?")).all(cutoff) as Array<{ x: number; y: number; type: string; n: number; last_tick: number; first_tick: number }>;
-    const fullRows = db.prepare(sql("")).all() as Array<{ x: number; y: number; type: string; n: number; last_tick: number; first_tick: number }>;
+    // 共享记忆分层 A13：full = heat_archive（历史聚合，survey-sync 归档）∪ units_seen
+    // 近期（窗口内原始目击）——语义不变（全历史格×类型计数），不再扫全表原始行
+    // （t1 45 万行 → archive 小表 + 索引近期）。旧库无 heat_archive 表时回退全表。
+    let fullRows: Array<{ x: number; y: number; type: string; n: number; last_tick: number; first_tick: number }>;
+    try {
+      const hasArchive = (db.prepare(
+        "SELECT COUNT(*) AS c FROM sqlite_master WHERE type = 'table' AND name = 'heat_archive'",
+      ).get() as { c: number }).c > 0;
+      fullRows = hasArchive
+        ? db.prepare(`
+            SELECT x, y, unit_type AS type, COUNT(*) AS n, MAX(tick) AS last_tick, MIN(tick) AS first_tick
+            FROM (
+              SELECT x, y, unit_type, last_tick AS tick FROM heat_archive
+              UNION ALL
+              SELECT x, y, unit_type, tick FROM units_seen WHERE controlled = 0 AND x IS NOT NULL AND tick > ?
+            )
+            GROUP BY x, y, type
+          `).all(cutoff) as Array<{ x: number; y: number; type: string; n: number; last_tick: number; first_tick: number }>
+        : db.prepare(sql("")).all() as Array<{ x: number; y: number; type: string; n: number; last_tick: number; first_tick: number }>;
+    } catch {
+      fullRows = db.prepare(sql("")).all() as Array<{ x: number; y: number; type: string; n: number; last_tick: number; first_tick: number }>;
+    }
     const agg = (m: Map<string, HeatAgg>, rows: Array<{ x: number; y: number; type: string; n: number; last_tick: number; first_tick: number }>): void => {
       for (const r of rows) {
         const bx = Math.floor(num(r.x) / BUCKET);

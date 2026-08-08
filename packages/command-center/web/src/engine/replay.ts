@@ -5,6 +5,11 @@
  * 设计：状态由 mapEngine 持有（createReplayState），控制/推进/UI 为纯函数——
  * 动画循环推进与手动步进共享同一语义，避免"回放越界/提前到位"类状态分歧。 */
 
+import { replayInterp, SPRITE, unitSpritePath } from './utils.ts';
+import { TENANT_COLORS } from './tactical.ts';
+import { ring } from './canvas.ts';
+import { unitHumanCommandOf } from './commands.ts';
+
 export const TICK_MS = 15000;
 
 export interface ReplayState {
@@ -118,4 +123,78 @@ export function replayCycleSpeed(st: ReplayState, deps: ReplayDeps): void {
   st.tickStart = performance.now();
   st.progress = 0;
   updateReplayUI(st, deps.getEls());
+}
+
+/** 回放渲染层（从 mapEngine.ts 归位，2026-08-08）：单位/核心按当前帧插值位绘制
+ *  （含敌我区分/血条/载货/人类指挥标记）。依赖经 deps 注入（ctx/project/",
+ *  images/sprite/drawHumanMarker/soloTenant/tac/spawnFx），无 mapEngine 循环依赖。 */
+export interface ReplayRenderDeps {
+  getCtx(): any;
+  project(x: number, y: number): { sx: number; sy: number };
+  images: Record<string, HTMLImageElement>;
+  sprite(img: HTMLImageElement, sx: number, sy: number, size: number): void;
+  drawHumanMarker(s: number, sx: number, sy: number, size: number, id: any): void;
+  soloTenant(): string | null;
+  tac(): any;
+  spawnFx(tac: any, data: any, tick: any, now: number): void;
+}
+
+export function replayDrawLayer(st: ReplayState, deps: ReplayRenderDeps, s: number): void {
+  const { getCtx, project, images, sprite, drawHumanMarker, soloTenant, tac, spawnFx } = deps;
+  const ctx = getCtx();
+  const f = st.frame;
+  const prog = st.playing ? st.progress : 1;
+  spawnFx(tac(), st.data, st.data.ticks[f], performance.now());
+  const solo = soloTenant();
+  // 核心（含敌我区分）
+  for (const c of st.data.cores) {
+    const p = replayInterp(c, f, prog);
+    if (!p) continue;
+    const color = c.controlled ? (TENANT_COLORS[solo ?? ""] ?? '#69b3d8') : '#e0625d';
+    const size = Math.max(8, s * 0.72);
+    const pr = project(p.x, p.y);
+    if (c.controlled) { ctx.shadowColor = color; ctx.shadowBlur = 10; }
+    if (images[SPRITE.core]) sprite(images[SPRITE.core], pr.sx, pr.sy, size);
+    else { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(3, size * 0.3), 0, Math.PI * 2); ctx.fill(); }
+    ctx.shadowBlur = 0;
+    ring(pr.sx, pr.sy, size * 0.62, color, c.controlled ? 2 : 1.6, c.controlled ? [] : [3, 3]);
+    if (!c.controlled) {
+      ctx.strokeStyle = 'rgba(198,99,112,.85)'; ctx.lineWidth = 2;
+      const d = Math.max(4, size * 0.2);
+      ctx.beginPath();
+      ctx.moveTo(pr.sx - d, pr.sy - d); ctx.lineTo(pr.sx + d, pr.sy + d);
+      ctx.moveTo(pr.sx + d, pr.sy - d); ctx.lineTo(pr.sx - d, pr.sy + d);
+      ctx.stroke();
+    }
+    if (typeof p.hp === 'number') {
+      const bw = Math.max(14, size * 1.1), bh = 3;
+      const bx = pr.sx - bw / 2, by = pr.sy + size * 0.62 + 4;
+      ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = p.hp > 3 ? '#8fce9f' : p.hp > 1 ? '#ffffff' : '#e0625d';
+      ctx.fillRect(bx, by, bw * Math.max(0, Math.min(1, p.hp / 5)), bh);
+    }
+    if (c.controlled && unitHumanCommandOf(tac(), solo ?? "", c.id)) drawHumanMarker(s, pr.sx, pr.sy, size, c.id);
+  }
+  // 单位
+  for (const u of st.data.units) {
+    const p = replayInterp(u, f, prog);
+    if (!p) continue;
+    const color = u.controlled ? (TENANT_COLORS[solo ?? ""] ?? '#69b3d8') : '#e0625d';
+    const size = Math.max(6, s * (u.type === 'RANGER' ? 0.68 : 0.62));
+    const pr = project(p.x, p.y);
+    if (s >= 6) {
+      ring(pr.sx, pr.sy, size * 0.72, u.controlled ? color : 'rgba(198,99,112,.55)', u.controlled ? 1.6 : 1.1, u.controlled ? [] : [3, 3]);
+      const path = unitSpritePath(u.type);
+      if (images[path]) sprite(images[path], pr.sx, pr.sy, size);
+      else { ctx.fillStyle = u.controlled ? color : '#e0625d'; ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(2, size * 0.25), 0, Math.PI * 2); ctx.fill(); }
+    } else {
+      ctx.fillStyle = u.controlled ? color : 'rgba(198,99,112,.7)';
+      ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(1.8, s * 0.42), 0, Math.PI * 2); ctx.fill();
+    }
+    if ((p.cargo ?? 0) > 0 && s >= 8) {
+      ctx.fillStyle = '#8fce9f';
+      ctx.beginPath(); ctx.arc(pr.sx, pr.sy - size * 0.62, Math.max(1.6, s * 0.14), 0, Math.PI * 2); ctx.fill();
+    }
+    if (u.controlled && unitHumanCommandOf(tac(), solo ?? "", u.id)) drawHumanMarker(s, pr.sx, pr.sy, size, u.id);
+  }
 }

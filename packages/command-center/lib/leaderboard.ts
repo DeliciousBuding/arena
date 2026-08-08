@@ -9,7 +9,7 @@
  *    拉取 ≥10min → 后台异步 fetch 官方一次（不阻塞请求，stale-while-revalidate）。
  *  - 也可手动跑 docs/progress/leaderboard-intel.py，或 POST /api/leaderboard/refresh。
  */
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_ROOT, TENANTS, calibrationDir, latestRunDir, listCases, parseTick } from "./fs-jsonl.ts";
 import { TtlCache } from "./cache.ts";
@@ -39,6 +39,9 @@ type LeaderboardIntelCached = LeaderboardIntel & { snapshotAtMs: number };
 const leaderboardCache = new TtlCache<LeaderboardIntelCached>(30_000); // 快照 15 分钟更新一次，30s 缓存足够
 /** 快照陈旧阈值（秒）：官方排行榜 ~15min 一档，超过视为需要刷新。 */
 const SNAPSHOT_STALE_SECONDS = 15 * 60;
+/** 快照文件保留上限（防 data/leaderboard 无限膨胀）：保留最近 96 个 ≈ 1 天
+ *  （官方 15min 一档）。history.jsonl 不裁剪（趋势分析完整保留）。 */
+const SNAPSHOT_KEEP_MAX = 96;
 /** 两次惰性拉取最小间隔（毫秒）：官方 15min 一档，10min 足够且不频繁打扰官方 API。 */
 const FETCH_MIN_INTERVAL_MS = 10 * 60_000;
 
@@ -144,6 +147,7 @@ export async function refreshLeaderboardFromOfficial(): Promise<{ ok: boolean; e
     const snapName = "leaderboard-" + ts.getUTCFullYear() + "-" + pad(ts.getUTCMonth() + 1) + "-" + pad(ts.getUTCDate()) + "-" +
       pad(ts.getUTCHours()) + "-" + pad(ts.getUTCMinutes()) + "-" + pad(ts.getUTCSeconds()) + ".json";
     writeFileSync(join(dir, snapName), JSON.stringify(raw, null, 2), "utf8");
+    pruneLeaderboardSnapshots(dir);
     const tsUTC = ts.toISOString().replace(/\.\d{3}Z$/, "Z");
     const row: Record<string, unknown> = { ts: tsUTC, epoch_s: Math.floor(ts.getTime() / 1000) };
     for (const cat of CATEGORIES) row[cat] = raw[cat];
@@ -154,6 +158,23 @@ export async function refreshLeaderboardFromOfficial(): Promise<{ ok: boolean; e
   } catch (e) {
     return { ok: false, error: String((e as Error)?.message ?? e) };
   }
+}
+
+/** 排行榜快照保留策略（2026-08-08，防膨胀）：只保留最近 SNAPSHOT_KEEP_MAX 个
+ *  leaderboard-*.json 快照（按文件名 UTC 时间序），删除更旧的。幂等容错——
+ *  读目录失败/删失败都不抛（下次刷新重试）。history.jsonl 不受影响。 */
+export function pruneLeaderboardSnapshots(dir: string): void {
+  try {
+    const snaps = readdirSync(dir)
+      .filter((f) => /^leaderboard-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.json$/.test(f))
+      .sort();
+    for (let i = 0; i < snaps.length - SNAPSHOT_KEEP_MAX; i++) {
+      const f = join(dir, snaps[i]);
+      try {
+        unlinkSync(f);
+      } catch { /* 单个删除失败不阻塞 */ }
+    }
+  } catch { /* 目录不可读/异常态跳过 */ }
 }
 
 /** 我方 4 租户的官方账号名：从各租户最新 calibration 的受控 CORE（controlled=true）

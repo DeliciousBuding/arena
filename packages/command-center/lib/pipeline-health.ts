@@ -67,6 +67,8 @@ export interface PipelineHealthPayload {
     lagTrend: { direction: "narrowing" | "widening" | "stable"; delta: number; samples: number } | null;
     /** 数据源新鲜度表（2026-08-08）。 */
     sources: readonly SourceFreshness[];
+    /** 决策数据新鲜度：survey-db 同步水位是 planner/advice 的真实数据龄，而不仅是文件 mtime。 */
+    decisionFreshness: { lagTicks: number; lagSeconds: number; healthy: boolean } | null;
     /** 矿生命周期闭环状态（2026-08-08）：OK=负态在流动（采集事件正确回写）/
      *  STALLED=有采集事件但负态为 0（survey-sync 静默空跑——如 --data-root 缺失
      *  时全 visible 回归的根因类）/ NO_DATA=无采集事件（数据不足，不算故障）。 */
@@ -75,8 +77,11 @@ export interface PipelineHealthPayload {
   cachedAt: string;
 }
 
-/** 滞后阈值：超过视为 STALE（约 8 分钟，tick≈0.8s 量级）。 */
+/** 滞后阈值：超过视为 STALE。 */
 const STALE_LAG_TICKS = 600;
+/** Command Center 的 survey/decision freshness 换算口径；与主线 UI 契约保持一致。 */
+export const TICK_SECONDS = 15;
+export const DECISION_FRESH_TICKS = 60;
 
 const HEALTH_TTL_MS = 15_000;
 const healthCache = new TtlCache<PipelineHealthPayload>(HEALTH_TTL_MS);
@@ -208,8 +213,8 @@ function latestCaseAgeSeconds(dataRoot: string, tenant: string): number | null {
   }
 }
 
-/** 数据源新鲜度（2026-08-08）：取各源最新文件 mtime → 年龄 + 陈旧标记。纯文件读取。 */
-export function computeSourceFreshness(dataRoot: string = DATA_ROOT): SourceFreshness[] {
+/** 数据源新鲜度：mtime 是写入年龄；surveyLagTicks 是同步水位的真实决策滞后。 */
+export function computeSourceFreshness(dataRoot: string = DATA_ROOT, surveyLagTicks?: number | null): SourceFreshness[] {
   // live world：严格使用调用方传入的数据根；不同 release/worktree 可独立 preflight。
   let worldAge: number | null = null;
   for (const t of TENANTS) {
@@ -232,11 +237,20 @@ export function computeSourceFreshness(dataRoot: string = DATA_ROOT): SourceFres
   } catch { /* 忽略 */ }
   const shopAge = fileAgeSeconds(join(dataRoot, "runtime", "shop-history.jsonl"));
   const auditAge = fileAgeSeconds(join(dataRoot, "runtime", "human-command-audit.jsonl"));
-  const mk = (name: SourceFreshness["name"], age: number | null): SourceFreshness => ({
-    name, ageSeconds: age, stale: age !== null && age > SOURCE_STALE_SECONDS[name],
-    detail: age === null ? "缺失" : age + "s",
-  });
-  return [mk("world", worldAge), mk("surveyDb", dbAge), mk("leaderboard", lbAge), mk("shop", shopAge), mk("humanAudit", auditAge)];
+  const mk = (name: SourceFreshness["name"], age: number | null, lagTicks?: number | null): SourceFreshness => {
+    let detail = age === null ? "缺失" : age + "s";
+    if (name === "surveyDb" && age !== null && lagTicks !== null && lagTicks !== undefined) {
+      detail = `lag ${lagTicks} tick / ${age}s 前同步`;
+    }
+    return { name, ageSeconds: age, stale: age !== null && age > SOURCE_STALE_SECONDS[name], detail };
+  };
+  return [
+    mk("world", worldAge),
+    mk("surveyDb", dbAge, surveyLagTicks),
+    mk("leaderboard", lbAge),
+    mk("shop", shopAge),
+    mk("humanAudit", auditAge),
+  ];
 }
 
 /** 矿生命周期闭环守卫（2026-08-08）：有采集事件但负态为 0 → survey-sync 事件
@@ -271,17 +285,24 @@ export function loadPipelineHealth(): PipelineHealthPayload {
       })()
     : null;
   const lifecycleFlow = computeLifecycleFlow(tenants);
+  const avgLagTicks = Math.round(avgLag);
+  const decisionFreshness = {
+    lagTicks: avgLagTicks,
+    lagSeconds: avgLagTicks * TICK_SECONDS,
+    healthy: avgLagTicks <= DECISION_FRESH_TICKS,
+  };
   const payload: PipelineHealthPayload = {
     generatedAt: new Date().toISOString(),
     tenants,
     global: {
       maxLagTicks: maxLag,
-      avgLagTicks: Math.round(avgLag),
+      avgLagTicks,
       staleTenants,
       missingTenants,
       healthy: staleTenants.length === 0 && missingTenants.length === 0 && lifecycleFlow !== "STALLED",
       lagTrend,
-      sources: computeSourceFreshness(),
+      sources: computeSourceFreshness(undefined, avgLagTicks),
+      decisionFreshness,
       lifecycleFlow,
     },
     cachedAt: new Date().toISOString(),

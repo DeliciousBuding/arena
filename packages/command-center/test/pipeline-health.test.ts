@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { computeSourceFreshness, computeLifecycleFlow, type PipelineTenantHealth } from "../lib/pipeline-health.ts";
+import { computeSourceFreshness, computeLifecycleFlow, TICK_SECONDS, type PipelineTenantHealth } from "../lib/pipeline-health.ts";
 
 test("pipeline-health: 数据源新鲜度（world/surveyDb/leaderboard/shop/humanAudit）", () => {
   const root = mkdtempSync(join(tmpdir(), "arena-ph-"));
@@ -50,4 +50,24 @@ test("pipeline-health: 矿生命周期闭环守卫——采集事件 + 负态 �
   assert.equal(computeLifecycleFlow([t(10, 0)]), "STALLED", "有采集事件但负态=0 → 静默空跑（--data-root 类回归）");
   assert.equal(computeLifecycleFlow([t(0, 0)]), "NO_DATA", "无采集事件 → 数据不足不算故障");
   assert.equal(computeLifecycleFlow([]), "NO_DATA", "空租户 → NO_DATA");
+});
+
+test("pipeline-health: surveyDb detail 双指标（lag tick + 距上次同步秒）", () => {
+  const root = mkdtempSync(join(tmpdir(), "arena-ph-lag-"));
+  try {
+    mkdirSync(join(root, "runtime", "survey"), { recursive: true });
+    writeFileSync(join(root, "runtime", "survey", "t1.db"), "db");
+    // 带 lag：detail 显示「lag N tick / Ns 前同步」
+    const withLag = new Map(computeSourceFreshness(root, 16).map((x) => [x.name, x]));
+    assert.match(withLag.get("surveyDb")?.detail ?? "", /^lag 16 tick \/ \d+s 前同步$/, "双指标格式");
+    // 不带 lag：兼容旧调用，detail 仍是「Ns」
+    const noLag = new Map(computeSourceFreshness(root).map((x) => [x.name, x]));
+    assert.match(noLag.get("surveyDb")?.detail ?? "", /^\d+s$/, "无 lag 参数保持旧格式");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pipeline-health: TICK_SECONDS 15s 换算决策数据滞后", () => {
+  assert.equal(TICK_SECONDS, 15, "生产 tick 间隔 15s（与 world stale 90s/6 tick 同口径）");
 });

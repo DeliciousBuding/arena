@@ -2,26 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useEngine, getEngine } from "../lib/bridge";
 
 const TENANTS = ["t1", "t2", "t3", "t4"];
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
-const DECISION_KIND_CN: Record<string, string> = {
-  accepted: "已接受", rejected: "已拒绝", timeout: "超时", missed: "错过", aborted: "中止",
-  not_applicable: "无需决策", in_progress: "进行中", unknown: "未知",
-};
-const EVENT_KIND_CN: Record<string, string> = {
-  UNIT_MOVE_SUCCEEDED: "移动", UNIT_MOVE_FAILED: "移动失败", CORE_MOVE_SUCCEEDED: "核心移动", CORE_MOVE_FAILED: "核心移动失败",
-  SPAWN_SUCCEEDED: "生产成功", SPAWN_FAILED: "生产失败",
-  HARVEST_SUCCEEDED: "采集成功", HARVEST_FAILED: "采集失败",
-  DEPOSIT_SUCCEEDED: "交付成功", DEPOSIT_FAILED: "交付失败",
-  SHOT_HIT: "射击命中", SHOT_MISSED: "射击未中", SHOT_BLOCKED: "射击被挡",
-  SWEEP_RESOLVED: "清扫解除", SWEEP_FAILED: "清扫失败",
-  PICKUP_BEACON_SUCCEEDED: "拾取信标", PICKUP_BEACON_FAILED: "拾取信标失败",
-  DROP_BEACON_SUCCEEDED: "放置信标", DROP_BEACON_FAILED: "放置信标失败",
-  SELF_DESTRUCT: "自毁", HEAL_SUCCEEDED: "治疗成功", HEAL_FAILED: "治疗失败", REPAIR_SHIELD_SUCCEEDED: "护盾修复",
-  UNIT_DESTROYED: "单位被摧毁", CORE_DESTROYED: "核心被摧毁", CORE_DAMAGED: "核心受损", RESPAWN: "重生",
-  CORE_RESOURCES_CAPTURED: "夺取敌方资源", CORE_RESOURCE_OVERFLOW_DESTROYED: "溢出资源销毁", WORKER_CARGO_DROPPED: "掉落载货",
-  UNIT_HEAL_SUCCEEDED: "单位治疗", UNIT_HEAL_FAILED: "单位治疗失败", CORE_HEAL_SUCCEEDED: "核心治疗", CORE_HEAL_FAILED: "核心治疗失败",
-  WAIT: "等待", NOTHING_TO_DO: "无事可做",
-};
+// 常量单一事实源：租户色/决策中文/事件中文/事件与事迹图标统一走 tactical.ts（防漂移）
+import { TENANT_COLORS, DECISION_KIND_CN, EVENT_KIND_CN, EVENT_ICON, DEED_ICON } from "../engine/tactical.ts";
 const fmt = (n: number | null | undefined): string => {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   return Math.abs(n) >= 1000 ? n.toLocaleString("en-US") : String(n);
@@ -250,6 +232,7 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
                 <div key={`${e.tenant}:${e.tick}:${e.kind}:${e.actor ?? ""}:${e.target ?? ""}`} className="stream-line" style={{ ["--tc" as string]: color }}>
                   <span className="st-tenant">{e.tenant.toUpperCase()}</span>
                   <span className="st-tick">{fmt(e.tick)}</span>
+                  <span className="st-ico" style={{ color: evColor }} title={EVENT_KIND_CN[e.kind] ?? e.kind}>{EVENT_ICON[e.kind] ?? "·"}</span>
                   <span className="st-kind" style={{ color: evColor }}>{EVENT_KIND_CN[e.kind] ?? e.kind}</span>
                   <span className="st-detail">{detail}</span>
                 </div>
@@ -281,6 +264,7 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
                   onClick={pos ? () => { const e = getEngine(); if (e) { e.jumpTo(pos[0], pos[1]); e.toast(`定位事迹「${d.title ?? ""}」`); } } : undefined}>
                   <span className="st-tenant">{d.tenant ? d.tenant.toUpperCase() : "盟"}</span>
                   <span className="st-tick">{fmt(d.tick)}</span>
+                  <span className="st-ico" title={d.title ?? d.kind ?? "事迹"}>{DEED_ICON[d.kind ?? ""] ?? "·"}</span>
                   <span className="st-kind">{d.title ?? d.kind ?? "事迹"}</span>
                   <span className="st-detail">{d.detail ?? ""}</span>
                   <span className={`st-badge${star >= 3 ? " deed-hot" : " deed"}`}>★{star}</span>
@@ -309,7 +293,7 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
             const detail = [lat.join(" · "), extra.join(" · ")].filter(Boolean).join(" · ");
             return (
               <div key={`${r.tenant}:${r.tick}:${outcome}:${submit}`} className={`stream-line${quiet ? " st-quiet" : ""} clickable`} style={{ ["--tc" as string]: color }}
-                title={`点击聚焦 ${r.tenant.toUpperCase()} · 定位该租户决策动线`}
+                title={`${r.tenant.toUpperCase()} · tick ${fmt(r.tick)}\n决策 ${kindCn}${submit ? ` · 提交 ${DECISION_KIND_CN[submit] ?? submit}` : ""}${lat.length ? `\n延迟 ${lat.join(" · ")}` : ""}${extra.length ? `\n${extra.join(" · ")}` : ""}\n点击聚焦该租户决策动线`}
                 onClick={() => { const e = getEngine(); if (e) e.focusTenant(r.tenant); }}>
                 <span className="st-tenant">{r.tenant.toUpperCase()}</span>
                 <span className="st-tick">{fmt(r.tick)}</span>

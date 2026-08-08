@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useEngine } from "../lib/bridge";
 import { useShell } from "../lib/shell";
 
-interface TickPayload { clock: string; tick: number; period: number; frac: number }
+interface TickPayload { clock: string; tick: number; period: number; frac: number; remain?: number | null }
 interface HealthPayload {
   global?: { healthy?: boolean; maxLagTicks?: number; avgLagTicks?: number; staleTenants?: string[]; missingTenants?: string[] };
 }
@@ -94,7 +94,7 @@ export function TopBar() {
         <span id="dataRoot" className="mono dim" title="数据根（只读）">{dataRoot}</span>
         <span id="refreshBadge" className={`badge ${refreshOk ? "ok" : "err"}`}>{refreshOk ? "实时" : "离线"}</span>
         <span className="tick-meter mono" title="世界 tick 周期（估计）：游戏每 ~15s 一个 tick，进度条表示距下一 tick">
-          <span id="tickLabel" className={`dim${urgent ? " warn" : ""}`}>tick {tick ? `${tick.tick} · ${Math.round((tick.period ?? 15000) / 1000)}s` : "—"}</span>
+          <span id="tickLabel" className={`dim${urgent ? " warn" : ""}`}>tick {tick ? `${tick.tick} · ${Math.round((tick.period ?? 15000) / 1000)}s${tick.remain != null ? ` · 剩 ${Math.max(0, Math.round(tick.remain))}s` : ""}` : "—"}</span>
           <span className={`tick-bar${urgent ? " warn" : ""}`}><i id="tickFill" style={{ transform: `scaleX(${frac.toFixed(3)})` }} /></span>
         </span>
         <button id="intelBtn" className="btn" type="button" title="官方排行榜威胁画像（谁在打我们）" onClick={() => openRight("intel")}>
