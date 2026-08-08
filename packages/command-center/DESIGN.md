@@ -65,6 +65,40 @@
 | `--shadow-float` | `0 24px 64px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.06)` | 悬浮层/弹窗 |
 | 间距 | 4/8/12/16 节奏 | 面板 padding 12、卡片 11×13、卡片间距 10 |
 
+### 4.1 Design Token 扩展（2026-08-09）：spacing / font-size / line-height scale
+
+| Token | 值 | 用途 |
+|---|---|---|
+| `--space-1..6` | 4/8/12/16/24/32px | 4px 基线网格，垂直对齐规范（组件 padding/gap 取 scale 值） |
+| `--fs-xs/sm/base/md/lg/xl/2xl` | 10/11/13/14/16/20/26px | 字号层级（xs=标签/badge，sm=辅助，base=正文，md=卡片数据，lg=小标题，xl/2xl=大标题） |
+| `--lh-tight/base/relaxed` | 1.2/1.5/1.65 | 行高（tight=标题/数据，base=正文，relaxed=长文） |
+
+设计规范：新增组件 padding/gap 优先取 `--space-*`（4px 倍数对齐）；
+字号取 `--fs-*`（层级分明，可读性）；行高取 `--lh-*`。杜绝随意 px 值。
+
+### 4.2 双主题（2026-08-09）：深色（默认）/ 浅色
+
+- **深色**（默认）：纯黑灰底 `#030303/#060606`，白色强调（primary 白底黑字）。
+- **浅色**（`[data-theme="light"]`）：暖灰白底 `#f7f7f5/#ffffff`（非纯白，减视觉疲劳），
+  深色强调（primary 深底浅字，反相）；语义色更深饱和保 WCAG AA；阴影更淡。
+- **Canvas 地图不变**：地图是太空暗色场景，主题切换只影响 React UI 层
+  （顶栏/侧栏/面板/按钮/文字）。地图渲染保持暗色（太空主题）。
+- 切换：TopBar 按钮（☀/🌙）+ localStorage `arena-cc.theme` 持久化 +
+  index.html 内联脚本首载读 localStorage 设 `data-theme`（避免闪烁）。
+- 过渡：UI 层 color/bg/border 0.3s `cubic-bezier(.16,1,.3,1)` 缓动；Canvas 不参与。
+
+| Token | 深色 | 浅色 | 说明 |
+|---|---|---|---|
+| `--bg` / `--bg-deep` | `#060606` / `#030303` | `#f7f7f5` / `#ffffff` | 页面底（暖灰白减疲劳） |
+| `--text` / `--text-dim` / `--text-faint` | `#fafafa` / `#a8a8ae` / `#8a8a92` | `#1a1a1c` / `#5c5c64` / `#8e8e96` | 文字（浅底更深，保 AA 4.5:1） |
+| `--accent` | `#ffffff` | `#1a1a1c` | 强调（反相：深底浅字 / 浅底深字） |
+| `--border` / `--border-strong` | `rgba(255,255,255,.08/.15)` | `rgba(0,0,0,.09/.16)` | 边框（黑线替代白线） |
+| `--success` / `--warn` / `--danger` | `#8fce9f` / `#f0883e` / `#e0625d` | `#2d8a4f` / `#c2671a` / `#b8423d` | 语义色（浅底更深饱和） |
+| `--shadow-card` | `0 8px 24px rgba(0,0,0,.5)` | `0 6px 18px rgba(0,0,0,.10)` | 阴影（浅色更淡） |
+| `--t1..--t4` | 蓝/绿/紫/红 muted | 同深色 | 租户身份色（双主题不变，身份语义） |
+
+
+
 ## 5. 动效
 
 | 场景 | 时长/曲线 |
