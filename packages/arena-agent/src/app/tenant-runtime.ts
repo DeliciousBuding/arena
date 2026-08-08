@@ -59,6 +59,7 @@ import { planHashOf } from "../telemetry/decision-trace.ts";
 import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
 import { sha256Canonical } from "../domain/integrity.ts";
 import { AllianceShadowWriter } from "../alliance/shadow.ts";
+import type { AllianceShadowFrameV1 } from "../alliance/shadow-frame.ts";
 import {
   RuntimeGoldenRecorder,
   type RuntimeGoldenRecorderResult,
@@ -181,6 +182,8 @@ export interface TenantRunOptions {
    *  构建联盟快照写 telemetry/alliance-shadow.jsonl（只读影子，零决策影响）。 */
   readonly recordAllianceShadow?: boolean;
   readonly allianceShadowIntervalTicks?: number;
+  /** 完整 shadow frame 的只读内存出口（Supervisor IPC 用）；callback 异常 fail-open。 */
+  readonly onAllianceShadowFrame?: (frame: AllianceShadowFrameV1) => void;
   /** 测试注入；生产由 recordCalibration 创建。 */
   readonly calibrationRecorder?: RuntimeGoldenRecorder;
 }
@@ -303,6 +306,7 @@ export async function runTenant(
           processRunId,
           path: join(dirs.telemetryDir, "alliance-shadow.jsonl"),
           intervalTicks: options.allianceShadowIntervalTicks,
+          onFrame: options.onAllianceShadowFrame,
         })
       : null;
 
