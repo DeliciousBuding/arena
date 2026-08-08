@@ -333,7 +333,7 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * M3 逐格预测消费接线（双轨/单轨审计）+ safety-planner 复察消费由收口后续
      * 处理。默认关零回归（纯函数不接线不影响生产行为）。
      */
-    "chunk-resurvey-v1": Object.freeze({}),
+    "chunk-resurvey-v1": Object.freeze({ chunkResurvey: true }),
     /**
      * 探索半径模式化 + wide 合并（2026-08-09，explore-radius-wide-v1，W8）：
      * exploreRadius 8→16 + harvestMemoryMaxDist 40→80 + maxCollectionDistance
