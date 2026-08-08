@@ -35,6 +35,20 @@ if [ -n "$ACTIVE" ]; then
   echo "OK:$TENANT"
   exit 0
 fi
+# 低人口发育期豁免（2026-08-08，t4 贫矿 2-worker 实证）：worker<3 且持续 0 动作
+# = 发育期爬坡（贫矿/远矿，执行受阻），不是"决策停摆"——watchdog 重启不解决
+# 贫矿/慢发育，反而每分钟循环杀全租户（13:15-13:21 实证 7 连重启，t1 迁移被打断）。
+# 满载卸货死锁由 check-economy-stall.sh 独立捕获（不受本豁免影响）。
+OUTCOME="$DATA_ROOT/runtime/$TENANT/telemetry/outcome.jsonl"
+if [ -f "$OUTCOME" ]; then
+  WORKERS=$(tail -n 5 "$OUTCOME" | grep -oE '"workerCount":[0-9]+' | tail -1 | sed 's/.*://')
+  WORKERS="${WORKERS:-99}"
+  if [ "$WORKERS" -lt 3 ]; then
+    echo "OK:$TENANT"  # 低人口发育期（<3 worker）：重启无效，豁免决策停摆
+    exit 0
+  fi
+fi
+
 # 0 人口豁免（2026-08-08，t4 死经济实证）：全租户无单位时 intentCounts 为空
 # （{}）——0 动作是合法的（没有单位可命令），不是"决策停摆"（停摆指有单位
 # 却全 WAIT）。否则看护把 t4 死经济当 STALL → 恢复重启 → 仍 0 单位 → 无限
