@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from "react";
 
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
+const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#7fd8a5", t3: "#a892d6", t4: "#fc5646" };
 const KIND_CN: Record<string, string> = { spawn: "产兵", core_heal: "核心治疗", repair: "修复", unit_heal: "单位治疗" };
 
 interface SpendRow { kind?: string; count?: number; total?: number }
