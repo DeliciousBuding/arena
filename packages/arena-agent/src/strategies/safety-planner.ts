@@ -122,6 +122,8 @@ const THREAT_RECALL_DISTANCE = 12;
 const RECALL_PATROL_RADIUS = 4;
 /** 记忆矿开采距离上限（Manhattan，默认 40 = 探索最外环）：防追 70+ 格远矿。 */
 const HARVEST_MEMORY_MAX_DIST = 40;
+/** 记忆矿追猎新鲜度窗口（魂）：见 harvestMemoryFreshTicks。 */
+const HARVEST_MEMORY_FRESH_TICKS = 64;
 /** 记忆矿采集槽（2026-08-08 生产吞吐修复）：自然资源节点每 tick 只允许一个
  *  HARVEST winner；格子实体容量=2 只是移动容量，不代表采集吞吐=2。记忆矿因此
  *  必须一矿一 Worker，避免第二个 Worker 长期 capacity_wait/到点后必败。 */
@@ -1503,7 +1505,18 @@ export class SafetyPlanner {
       return;
     }
 
-    const hints = this.world.resourceHints();
+    // 幽灵矿过滤（2026-08-08，t4 生产实证）：resourceHints 含跨 run seeded 陈旧矿
+    // （world.resourceCandidates 对 seeded 不设 maxAge 上限），worker 反复追早已消失的矿格→ 走到 WAIT → 换下一个 → 无限空跑
+    // （生产实证 worker 在 (51,298)/(50,303) 等 seed 矿间循环 70+ tick）。只在“当前可见”或“近期见过
+    // （≤ freshTicks）”时追；更旧的交给巡逻重新发现。
+    const hints = this.world
+      .resourceCandidates()
+      .filter(
+        (candidate) =>
+          candidate.state === "visible" ||
+          state.tick - candidate.lastSeenTick <= (this.config.harvestMemoryFreshTicks ?? HARVEST_MEMORY_FRESH_TICKS),
+      )
+      .map((candidate) => candidate.cell);
     if (
       memory.workerMode === "go_harvest" &&
       memory.harvestTarget !== null &&
@@ -1732,7 +1745,15 @@ export class SafetyPlanner {
           ? new Set(movementObstacles).add(cellKey(home))
           : movementObstacles;
       const direction = stepToward(unit.position, target, patrolObstacles);
-      if (direction !== null) set(unit, { type: "MOVE", direction }, "patrol");
+      if (direction !== null) {
+        set(unit, { type: "MOVE", direction }, "patrol");
+      } else {
+        // 巡逻目标不可达（2026-08-08，t4 生产实证：worker 停在岩缝/墙侧 70+ tick）：
+        // ring 推进依赖 chebyshev ≥ radius，worker 到不了就永远锁死单点 WAIT。
+        // 主动旋转方位（+1），下一 tick 换一个目标点；可走方向自然推进。
+        const dirCount = this.config.workerDenseScan === true ? 16 : EXPLORE_DIRECTION_COUNT;
+        memory.patrolDirection = (memory.patrolDirection + 1) % dirCount;
+      }
     }
   }
 

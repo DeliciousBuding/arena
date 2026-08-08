@@ -37,7 +37,7 @@ function core(x = 0, y = 0): PlayerState["objects"][number] {
 
 test("记忆矿：自然节点按采集吞吐 1 slot 分配，不按实体格容量 2 分配", () => {
   const planner = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, harvestMemoryMine: true });
-  planner.world.seedResourceMemory([[8, 0]], 0);
+  planner.world.seedResourceMemory([[8, 0]], 100); // nowTick 对齐 state.tick=100：新鲜记忆矿（2026-08-08 幽灵矿过滤后，陈旧 seed 不再被追）
   const state = makeState(100, [core(), worker("w1", 0, 0), worker("w2", 0, 1), worker("w3", 1, 0)]);
   const plan = planner.decide({ state });
   const memoryMiners = Object.entries(plan.intents ?? {}).filter(([, intent]) => intent === "go_harvest_mem");
@@ -46,7 +46,7 @@ test("记忆矿：自然节点按采集吞吐 1 slot 分配，不按实体格容
 
 test("记忆矿：跨 tick 已污染的重复 sticky target 会重新抢槽并自动分流", () => {
   const planner = new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, harvestMemoryMine: true });
-  planner.world.seedResourceMemory([[8, 0]], 0);
+  planner.world.seedResourceMemory([[8, 0]], 100); // nowTick 对齐 state.tick=100：新鲜记忆矿（2026-08-08 幽灵矿过滤后，陈旧 seed 不再被追）
   for (const id of ["w1", "w2", "w3"]) {
     const memory = planner.world.unitMemory(id);
     memory.workerMode = "go_harvest";
