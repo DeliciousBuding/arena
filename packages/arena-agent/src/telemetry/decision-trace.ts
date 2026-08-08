@@ -87,6 +87,16 @@ export interface DecisionTraceRecord {
   readonly threatClosingEnemies?: number;
   readonly threatMovingEnemies?: number;
   readonly threatAxes?: number;
+  /** 信标遥测（2026-08-08）：官方协议坐标全员公开——每 tick 记录真实位置/
+   *  状态/携带者，面板与审计可实时核实信标动向（"信标逼近"真伪即刻可查）。 */
+  readonly beacon?: BeaconTrace;
+}
+
+/** 信标逐 tick 快照（position 永远公开；status/carrierId 仅信标格可见时非空）。 */
+export interface BeaconTrace {
+  readonly position: readonly [number, number];
+  readonly status: "GROUND" | "CARRIED" | null;
+  readonly carrierId: string | null;
 }
 
 /** 人类指令合并结果（遥测精简版；完整结果在 TickOutcome.humanOverride）。 */
