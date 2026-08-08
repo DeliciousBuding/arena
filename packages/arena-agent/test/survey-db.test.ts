@@ -472,6 +472,34 @@ test("survey-db: migrateNotableSanity——CORE_DESTROYED 重复行去重 + 表�
   }
 });
 
+test("survey-db: recordUnitDeath 死亡 tick 只进不退 + 语义单调（审计 A12）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-death-mono-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    recordUnitBirth(db, "u1", "WORKER", 100, { x: 1, y: 1 });
+    recordUnitDeath(db, "u1", 200, { x: 5, y: 5 });
+    let r = db.prepare("SELECT death_tick, current_state FROM unit_lifecycle WHERE unit_id='u1'").get() as Record<string, unknown>;
+    assert.equal(r.death_tick, 200);
+    assert.equal(r.current_state, "dead");
+    // 更早 tick 死亡不回退（防 force 重跑/run 顺序不一致覆盖）
+    recordUnitDeath(db, "u1", 90, { x: 0, y: 0 });
+    r = db.prepare("SELECT death_tick FROM unit_lifecycle WHERE unit_id='u1'").get() as Record<string, unknown>;
+    assert.equal(r.death_tick, 200, "更早死亡忽略，保持 200");
+    // 更晚死亡正常更新
+    recordUnitDeath(db, "u1", 250, { x: 6, y: 6 });
+    r = db.prepare("SELECT death_tick FROM unit_lifecycle WHERE unit_id='u1'").get() as Record<string, unknown>;
+    assert.equal(r.death_tick, 250, "更晚死亡覆盖");
+    // birth ≤ last_seen ≤ death 语义
+    const bad = db.prepare(
+      "SELECT COUNT(*) AS c FROM unit_lifecycle WHERE death_tick IS NOT NULL AND (birth_tick > death_tick OR last_seen_tick < birth_tick)",
+    ).get() as { c: number };
+    assert.equal(bad.c, 0, "语义单调：birth ≤ last_seen ≤ death");
+    db.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("World: seedObstacleMemory 注入障碍记忆（重启后导航直接准确）", () => {
   const world = new World();
   const n = world.seedObstacleMemory([[1, 1], [2, 2], [1, 1]]);
