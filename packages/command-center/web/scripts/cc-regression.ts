@@ -385,8 +385,10 @@ async function main() {
     else if (ctxOk === false) bad("右键指挥菜单", "菜单未打开或 Esc 未关闭");
 
     // 6f) 编队多选：Shift 点击两个不同受控单位 → toast 计数（编队 +1 共 N）→ Esc 清理
-    let multiOk = null; // true | false
-    try {
+    //     目标取自引擎已渲染的 st.cells（与画布同源，位置即所见）——避免 /api/world 快照与
+    //     画布插值位置错位导致点击落空（高负载下偶发 flake，2026-08-08 实证）。
+    //     封装重试 2 次 + 两次点击间 150ms 间隔。
+    const multiSelectOnce = async () => {
       await page.keyboard.press("f");
       await waitViewStable();
       const cvF = await page.$("#map");
@@ -395,33 +397,69 @@ async function main() {
         const eng = window.__arenaEngine;
         if (!eng) return { err: "no engine" };
         const st = eng.getState();
-        const tenant = st.soloTenant || "t1";
-                  let w = null;
-          for (let r = 0; r < 5 && !w; r++) { try { w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json(); } catch { await new Promise((s) => setTimeout(s, 800)); } }
-          if (!w || !w.state) return { err: "world fetch failed (service restart?)" };
-        // 优先 VANGUARD（非 worker 无 cargo toast 干扰）；不足则任意 UNIT
-        let us = (w?.state?.objects ?? []).filter((o) => o.kind === "UNIT" && o.unit_type === "VANGUARD" && o.controlled === true && o.position);
-        if (us.length < 2) us = (w?.state?.objects ?? []).filter((o) => o.kind === "UNIT" && o.controlled === true && o.position);
-        if (us.length < 2) return { err: "units<2" };
-        // 选两个不同位置的单位（同格则找下一个不同格）
-        const a = us[0], b = us.find((u) => u.id !== a.id && (u.position[0] !== a.position[0] || u.position[1] !== a.position[1])) ?? us[1];
+        // 用引擎已渲染格（与画布同源，位置即所见）——不依赖 /api/world 快照
+        // 聚焦租户时只取该租户单位 + 屏幕内候选（跨租户/越界单位点击会脱靶）
+        const solo = st.soloTenant || null;
+        const inTenant = (o) => !solo || o.tenant === solo;
+        let us = (st.cells ?? []).filter((o) => inTenant(o) && o.type === "unit" && o.unitType === "VANGUARD" && o.controlled === true);
+        if (us.length < 2) us = (st.cells ?? []).filter((o) => inTenant(o) && o.type === "unit" && o.controlled === true);
+        if (us.length < 2) { const cnt: Record<string, number> = {}; for (const c of (st.cells ?? [])) cnt[c.type] = (cnt[c.type] || 0) + 1; return { err: "units<2: " + us.length + " cells=" + (st.cells || []).length + " types=" + JSON.stringify(cnt) + " solo=" + st.soloTenant + " mapCells=" + (st.map ? (st.map.cells || []).length : "none") }; }
+        // 选两个不同位置的单位（同格则找下一个不同格）；越界候选跳过（相机可能已移走）
         const v = st.view;
-        const pt = (u) => ({ sx: boxX + (u.position[0] - v.cx) * v.scale + boxW / 2, sy: boxY + (u.position[1] - v.cy) * v.scale + boxH / 2 });
+        const pt = (u) => ({ sx: boxX + (u.x - v.cx) * v.scale + boxW / 2, sy: boxY + (u.y - v.cy) * v.scale + boxH / 2 });
+        const onScreen = (p) => p.sx >= boxX - 4 && p.sx <= boxX + boxW + 4 && p.sy >= boxY - 4 && p.sy <= boxY + boxH + 4;
+        const cands = us.filter((u) => onScreen(pt(u)));
+        if (cands.length < 2) return { err: "onscreen<2: " + cands.length + "/" + us.length + " solo=" + solo };
+        const a = cands[0], b = cands.find((u) => u.id !== a.id && (u.x !== a.x || u.y !== a.y)) ?? cands[1];
         return { a: pt(a), b: pt(b), ids: [a.id, b.id] };
       }, { boxX: boxF.x, boxY: boxF.y, boxW: boxF.width, boxH: boxF.height });
-      if (picks.err) { multiOk = false; }
-      else {
-        await page.keyboard.down("Shift");
-        await page.mouse.click(picks.a.sx, picks.a.sy);
-        const t1 = await waitToast(page, "编队 +1", 2000);
-        await page.mouse.click(picks.b.sx, picks.b.sy);
-        const t2 = await waitToast(page, "共 2", 2000);
-        await page.keyboard.up("Shift");
-        multiOk = t1.includes("编队 +1") && t2.includes("共 2");
+      if (picks.err) return { ok: false, why: picks.err };
+      await page.keyboard.down("Shift");
+      await page.mouse.click(picks.a.sx, picks.a.sy);
+      const t1 = await waitToast(page, "编队 +1", 3000);
+      await sleep(150);
+      await page.mouse.click(picks.b.sx, picks.b.sy);
+      const t2 = await waitToast(page, "共 2", 3000);
+      await page.keyboard.up("Shift");
+      let diag = "";
+      if (!(t1.includes("编队 +1") && t2.includes("共 2"))) {
+        diag = await page.evaluate(({ bx, by }) => {
+          const eng = window.__arenaEngine;
+          const st = eng ? eng.getState() : null;
+          const d = document.getElementById("actionDialog");
+          const dr = d && !d.hidden ? d.getBoundingClientRect() : null;
+          const hit = (() => {
+            if (!st) return null;
+            const wx = Math.round(st.view.cx + (bx - window.innerWidth / 2) / st.view.scale);
+            const wy = Math.round(st.view.cy + (by - window.innerHeight / 2) / st.view.scale);
+            const cell = (st.cells ?? []).find((cc) => cc.x === wx && cc.y === wy);
+            return cell ? { x: wx, y: wy, type: cell.type, unitType: cell.unitType, tenant: cell.tenant } : { x: wx, y: wy, type: "none" };
+          })();
+          const cv = document.getElementById("map");
+          const cvr = cv ? cv.getBoundingClientRect() : null;
+          const elAt = document.elementFromPoint(bx, by);
+          return { solo: st ? st.soloTenant : null, cells: st ? (st.cells || []).length : 0, scale: st ? st.view.scale : 0,
+            canvas: cvr ? { x: Math.round(cvr.x), y: Math.round(cvr.y), w: Math.round(cvr.width), h: Math.round(cvr.height) } : null,
+            elAtClickB: elAt ? (elAt.id || elAt.className || elAt.tagName) : null,
+            dialog: dr ? { x: Math.round(dr.x), y: Math.round(dr.y), w: Math.round(dr.width), h: Math.round(dr.height) } : null,
+            clickB: { x: Math.round(bx), y: Math.round(by) }, hit,
+            clickLog: ((window as any).__clickLog || []).slice(-4).map((e: any) => ({ px: Math.round(e.px), py: Math.round(e.py), cell: e.hit && e.hit.cell ? e.hit.cell : null, obj: e.hit ? e.hit.obj : null, ghost: e.hit ? e.hit.ghost : null })) };
+        }, { bx: picks.b.sx, by: picks.b.sy });
       }
-      await page.keyboard.press("Escape").catch(() => {});
-      await sleep(300);
-    } catch (e) { multiOk = false; }
+      return { ok: t1.includes("编队 +1") && t2.includes("共 2"), t1, t2, diag };
+    };
+    let multiOk = null;
+    for (let attempt = 0; attempt < 2 && multiOk === null; attempt++) {
+      const r = await multiSelectOnce().catch((e) => ({ ok: false, why: e.message }));
+      if (r.ok) multiOk = true;
+      else {
+        console.log(`  ↻ 编队多选重试 ${attempt + 1}/2：${r.why ?? "t1=\"" + (r.t1 ?? "") + "\" t2=\"" + (r.t2 ?? "") + "\"" + (r.diag ? " diag=" + JSON.stringify(r.diag) : "")}`);
+        if (attempt === 0) { await page.keyboard.up("Shift").catch(() => {}); await sleep(800); }
+        else multiOk = false;
+      }
+    }
+    await page.keyboard.press("Escape").catch(() => {});
+    await sleep(300);
     if (multiOk === true) ok("编队多选（Shift 加选）", "两次 Shift 点击 toast 计数正确");
     else if (multiOk === false) bad("编队多选（Shift 加选）", "toast 未出现或计数错误");
 
@@ -513,3 +551,4 @@ async function main() {
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
+

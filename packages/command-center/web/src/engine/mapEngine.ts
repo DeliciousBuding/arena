@@ -73,6 +73,7 @@ interface ArenaState extends Jsonish {
   tab: string;
   cellIndex: Map<string, MapCell>;
   cells: MapCell[];
+  chunks: Jsonish[];
   beacons: Jsonish[];
   coreTrails: Jsonish[];
   intel: Jsonish | null;
@@ -114,6 +115,7 @@ const state: ArenaState = {
   tab: 'all',           // all | t1 | t2 | t3 | t4 | events
   cellIndex: new Map(),
   cells: [],
+  chunks: [],
   beacons: [],
   coreTrails: [],
   intel: null,
@@ -287,11 +289,18 @@ function renderStaticCache(bs: any) {
   try {
     const s = bs;
     if (!state.soloTenant) drawTenantRegions(s);
+    drawGlobalChunks(s); // 全局探索分区底纹（/api/map chunks，跨租户合并）
     drawGrid(W(), H()); // 网格线并入静态缓存：平移/缩放重建一次，不再每帧画
     if (!LQ) tactSurveyLayer(s); else surveySkipped = true; // 动画期间跳过最贵的测绘记忆层，结束补建
     const cells = visibleCells();
     const buckets: Record<string, any[]> = { obstacle: [], resource: [] };
-    for (const c of cells) if (buckets[c.type]) buckets[c.type].push(c);
+    for (const c of cells) {
+      if (!buckets[c.type]) continue;
+      // solo 视图：记忆层由 tactSurveyLayer 负责（chunks 底纹 + 状态着色），
+      // 全局层只画当前帧（fresh），避免同源数据双画重叠（2026-08-08 链路打通）
+      if (state.soloTenant && !c.fresh) continue;
+      buckets[c.type].push(c);
+    }
     drawObstacles(buckets.obstacle, s);
     drawResources(buckets.resource, s);
   } finally {
@@ -366,13 +375,19 @@ async function poll() {
     }
     state.map = map;
     state.cells = map.cells ?? [];
+    state.chunks = map.chunks ?? [];
     state.beacons = map.beacons ?? [];
     state.coreTrails = map.coreTrails ?? [];
     state.bounds = map.bounds ?? null;
     state.cellIndex = new Map();
     // 索引键 = `tenant:x,y`（与后端 loadMergedMap 对齐，2026-08-08）：
     // 多租户同格各自保留，查目标格时带上当前租户，避免误判他租户的地形/单位。
-    for (const c of state.cells) state.cellIndex.set(`${c.tenant}:${c.x},${c.y}`, c);
+    // 地形按共享世界全局去重后（后端合并键 `type:x,y`），额外注册全局 `x,y` 键
+    // 供 hover/命令模式回退（solo 租户未必是地形最后观测租户）。
+    for (const c of state.cells) {
+      state.cellIndex.set(`${c.tenant}:${c.x},${c.y}`, c);
+      if (c.type === 'obstacle' || c.type === 'resource') state.cellIndex.set(`${c.x},${c.y}`, c);
+    }
     // 静态层脏检查：仅当障碍/资源测绘变化才重建底图缓存（单位移动不触发重建）
     let sig = 0, n = 0;
     for (const c of state.cells) {
@@ -652,6 +667,25 @@ function draw() {
 }
 
 /** 全局联盟地图：每租户疆域色晕 + 核心标签（大联盟地图"完全设计"：一眼区分 4 租户领地）。 */
+/** 全局探索分区底纹（/api/map chunks，跨租户合并）：已探索 16×16 分区淡蓝底——
+ *  全局视图也能一眼看出"探索过的范围"（solo 视图由 tactSurveyLayer 画同款底纹）。
+ *  只画视口内 chunk（性能）；无数据（survey-db 未同步）时静默跳过。 */
+function drawGlobalChunks(s: any) {
+  if (!state.chunks || !state.chunks.length) return;
+  ctx.save();
+  const chunkPx = 16 * s;
+  const cap = Math.min(state.chunks.length, 500);
+  for (let i = 0; i < cap; i++) {
+    const ch = state.chunks[i];
+    const cx = Number(ch.cx), cy = Number(ch.cy);
+    if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+    const p = project(cx * 16, cy * 16);
+    if (p.sx + chunkPx < 0 || p.sy + chunkPx < 0 || p.sx > W() || p.sy > H()) continue;
+    ctx.fillStyle = 'rgba(64,110,160,.09)';
+    ctx.fillRect(p.sx, p.sy, chunkPx, chunkPx);
+  }
+  ctx.restore();
+}
 function drawTenantRegions(s: any) {
   const groups: Record<string, any[]> = {};
   for (const c of state.cells) {
@@ -952,14 +986,14 @@ function drawSelectionRipple(s: any, x: any, y: any, cell: any, size: any, id: a
   ctx.restore();
 }
 /** 石头：低缩放批量实心格（一次 path，性能好、看得清）；高缩放用官方 asteroid 素材。
- *  探测记忆：非最新 tick 的障碍格按新鲜度淡出（交替地形留痕但不喧宾夺主）。 */
+ *  障碍是永久地形（官方 web 探索记忆永不淡出）：全局视图全亮，不做新鲜度淡出。 */
 function drawObstacles(cells: any, s: any) {
   if (!cells.length) return;
   if (s >= 8) {
     for (const c of cells) {
       const p = project(c.x, c.y);
       ctx.save();
-      ctx.globalAlpha = cellAlpha(c, 0.5);
+      ctx.globalAlpha = 1;
       const path = SPRITE.obstacle[hash2(c.x, c.y, 7) % SPRITE.obstacle.length];
       if (images[path]) sprite(images[path], p.sx, p.sy, s * 0.86);
       else { ctx.fillStyle = '#4a525a'; roundRect(p.sx - s / 2, p.sy - s / 2, s, s, 3); }
@@ -973,7 +1007,7 @@ function drawObstacles(cells: any, s: any) {
   ctx.beginPath();
   for (const c of cells) {
     const p = project(c.x, c.y);
-    ctx.globalAlpha = cellAlpha(c, 0.42);
+    ctx.globalAlpha = 1;
     ctx.rect(p.sx - cell / 2, p.sy - cell / 2, cell, cell);
   }
   ctx.fill();
@@ -982,19 +1016,38 @@ function drawObstacles(cells: any, s: any) {
   ctx.lineWidth = 1;
   ctx.stroke();
 }
-/** 矿物：始终可见；高缩放 crystal 素材 + 绿色发光，低缩放亮点。
- *  探测记忆：被采完（非最新 tick 出现）的资源淡出，避免"绿色区域"堆积。 */
+/** 矿物：高缩放 crystal 素材 + 绿色发光，低缩放亮点。
+ *  矿状态着色（对齐测绘记忆层 tactSurveyLayer）：
+ *  visible=亮绿活跃 / stale=暗绿待确认 / harvested=空心（采过）/ empty=暗块（确认空）。 */
 function drawResources(cells: any, s: any) {
   if (!cells.length) return;
+  const visible = cells.filter((c: any) => (c.state ?? 'visible') !== 'empty');
+  if (!visible.length) return;
   if (s >= 6) {
-    for (const c of cells) {
+    for (const c of visible) {
+      const st = c.state ?? 'visible';
       const p = project(c.x, c.y);
       ctx.save();
-      ctx.globalAlpha = cellAlpha(c, 0.55);
-      if (!LQ) { ctx.shadowColor = 'rgba(87,189,132,.35)'; ctx.shadowBlur = 3; }
+      if (st === 'harvested') {
+        // 采过：空心菱形（弱轮廓，表示已采空/记忆负态）
+        const r = Math.max(4, s * 0.35);
+        ctx.strokeStyle = 'rgba(140,150,160,.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(p.sx, p.sy - r);
+        ctx.lineTo(p.sx + r * 0.72, p.sy);
+        ctx.lineTo(p.sx, p.sy + r);
+        ctx.lineTo(p.sx - r * 0.72, p.sy);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+        continue;
+      }
+      ctx.globalAlpha = st === 'visible' ? 1 : 0.4;
+      if (!LQ && st === 'visible') { ctx.shadowColor = 'rgba(87,189,132,.35)'; ctx.shadowBlur = 3; }
       const path = SPRITE.crystal[hash2(c.x, c.y, 13) % SPRITE.crystal.length];
       if (images[path]) sprite(images[path], p.sx, p.sy, Math.max(7, s * 0.92));
-      else { ctx.fillStyle = '#8fce9f'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.3), 0, Math.PI * 2); ctx.fill(); }
+      else { ctx.fillStyle = st === 'visible' ? '#8fce9f' : 'rgba(118,184,137,.5)'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.3), 0, Math.PI * 2); ctx.fill(); }
       ctx.restore();
     }
     return;
@@ -1002,9 +1055,11 @@ function drawResources(cells: any, s: any) {
   ctx.save();
   ctx.fillStyle = 'rgba(87,189,132,.7)';
   ctx.beginPath();
-  for (const c of cells) {
+  for (const c of visible) {
+    const st = c.state ?? 'visible';
+    if (st === 'harvested' || st === 'empty') continue;
     const p = project(c.x, c.y);
-    ctx.globalAlpha = cellAlpha(c, 0.5);
+    ctx.globalAlpha = st === 'visible' ? 0.75 : 0.3;
     const r = Math.max(1.6, s * 0.3);
     ctx.moveTo(p.sx + r, p.sy); // 断连，避免批量 arc 连线
     ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
@@ -1210,8 +1265,9 @@ function drawLiveTrails(s: any) {
     if (!trail || trail.length < 2) continue;
     const pts = trail.slice(-TRAIL_POINTS);
     const last = pts[pts.length - 1];
-    // 与当前 live 位置一致才画（避免回放旧 run 轨迹错位）
-    const liveCell = state.cellIndex.get(`${state.soloTenant}:${last.x},${last.y}`);
+    // 与当前 live 位置一致才画（避免回放旧 run 轨迹错位）；地形全局去重后租户键
+    // 可能 miss，回退全局 `x,y` 键（2026-08-08 数据链路打通）
+    const liveCell = state.cellIndex.get(`${state.soloTenant}:${last.x},${last.y}`) ?? state.cellIndex.get(`${last.x},${last.y}`);
     if (!liveCell) continue;
     const scr = pts.map((t: any) => project(t.x, t.y));
     ctx.save();
@@ -2876,19 +2932,28 @@ function tactClear() {
 }
 /** 全局轻提示：每次点击/操作都有反馈（解决"点了没反应"）。 */
 let toastTimer: number | null = null;
-function toast(msg: any, tone = 'info') {
+let toastState: { priority: number; expiresAt: number } | null = null;
+/** 全局轻提示：每次点击/操作都有反馈（解决"点了没反应"）。
+ *  优先级（priority，越大越重要）：交互反馈 0 / 后台通知 -1。
+ *  正在展示的高优先级 toast 不被低优先级覆盖（防卡死提示刷屏顶掉用户反馈）。 */
+function toast(msg: any, tone = 'info', priority = 0) {
   let el = document.getElementById('uiToast');
   if (!el) {
     el = document.createElement('div');
     el.id = 'uiToast';
     document.body.appendChild(el);
   }
+  const now = Date.now();
+  const showing = el.classList.contains('show') && toastState && toastState.expiresAt > now;
+  if (showing && (toastState?.priority ?? 0) > priority) return; // 低优先级不顶高优先级
   el.textContent = msg;
   el.className = `ui-toast ${tone}`;
   void el.offsetWidth;
   el.classList.add('show');
+  const life = priority < 0 ? 1600 : 2400;
+  toastState = { priority, expiresAt: now + life };
   clearTimeout(toastTimer ?? undefined);
-  toastTimer = window.setTimeout(() => el.classList.remove('show'), 2400);
+  toastTimer = window.setTimeout(() => el.classList.remove('show'), life);
 }
 /** 信标边缘指示由图层开关 state.layers.beaconEdge 控制（持久化见 savePrefs）。 */
 /** 重新触发面板入场动画（租户切换时内容已变，让面板丝滑重现）。 */
@@ -3178,7 +3243,7 @@ async function openCtxMenu(px: any, py: any) {
     let liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
     if (!liveObj) { world = await tactLoadWorld(cell.tenant, true); liveObj = world ? tactObjectNear(world, wx, wy, 1) : null; }
     if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
-      cell = { ...cell, x: wx, y: wy, fresh: true, id: liveObj.id };
+      cell = { ...cell, x: liveObj.position[0], y: liveObj.position[1], fresh: true, id: liveObj.id };
     }
   }
   if (cell && (cell.type === 'unit' || cell.type === 'core')) {
@@ -4321,7 +4386,44 @@ function tactShowFeature(cell: any, px: any, py: any) {
       })
       .catch(() => { const elLc = el.querySelector('.fp-lc'); if (elLc) elLc.textContent = '—'; });
   }
-}async function handleCanvasClick(px: any, py: any, shift = false) {
+}
+/** 实时命中（2026-08-08 结构性修复）：nearestCell + live world 校正。
+ *  合并地图轮询 3s，tick 边界单位已移位——陈旧 cellIndex 点击落空且静默 tactClear（"点了没反应"根因）。
+ *  命中单位/核心格时以 live world 最近邻（≤2 格，贴近视觉瞄准）重定位，并写回 liveObj 真实坐标
+ *  （旧实现写点击坐标，下游 tactObjectAt 仍落空）；完全无命中时用聚焦租户 live world 兜底
+ *  （覆盖刚出生/刚移位尚未进 cells 的单位）。返回 { cell, world, obj, ghost }。 */
+async function resolveLiveTarget(px: any, py: any, tenantHint?: any) {
+  const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+  const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+  let cell = nearestCell(px, py);
+  if (cell && (cell.type === 'unit' || cell.type === 'core')) {
+    let world: any = T().worlds[cell.tenant];
+    // 半径 3（2026-08-08）：高缩放下单位插值移位可达 2-3 格，2 格仍会脱靶（scale>20 实证）。
+    let liveObj = world ? tactObjectNear(world, wx, wy, 3) : null;
+    if (!liveObj) { world = await tactLoadWorld(cell.tenant, true); liveObj = world ? tactObjectNear(world, wx, wy, 3) : null; }
+    if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
+      cell = { ...cell, x: liveObj.position[0], y: liveObj.position[1], fresh: true, id: liveObj.id };
+      return { cell, world, obj: liveObj, ghost: false };
+    }
+    // 渲染位有单位但 live 无：陈旧 ghost —— 标记 fresh=false，下游给明确反馈而非静默吞点击
+    return { cell: { ...cell, fresh: false }, world, obj: null, ghost: true };
+  }
+  const t = tenantHint ?? state.soloTenant;
+  if (!cell && t) {
+    let world: any = T().worlds[t];
+    let liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
+    if (!liveObj) { world = await tactLoadWorld(t, true); liveObj = world ? tactObjectNear(world, wx, wy, 1) : null; }
+    if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
+      return {
+        cell: { tenant: t, type: liveObj.kind === 'CORE' ? 'core' : 'unit', x: liveObj.position[0], y: liveObj.position[1], fresh: true, id: liveObj.id, controlled: liveObj.controlled },
+        world, obj: liveObj, ghost: false,
+      };
+    }
+    return { cell, world, obj: null, ghost: false };
+  }
+  return { cell, world: null, obj: null, ghost: false };
+}
+async function handleCanvasClick(px: any, py: any, shift = false) {
   const tac = T();
   // 定位标记命中：非命令模式下点击 pin 清除单个（看到即清除，不再卡住关不掉）
   if (!tac.mode && !shift && state.jumpPins.length) {
@@ -4336,83 +4438,65 @@ function tactShowFeature(cell: any, px: any, py: any) {
       return;
     }
   }
-  let cell = nearestCell(px, py);
-  // 单位/核心实时命中（2026-08-08）：合并地图轮询 3s，tick 边界单位已移位——
-  // 陈旧 cellIndex 点击落空且静默 tactClear（"点了没反应"根因）。以 live world 校正：
-  // 命中单位/核心格时按点击世界坐标重定位；完全无命中时用聚焦租户 live world 兜底
-  //（覆盖刚出生/刚移位尚未进 cells 的单位）。
-  if (cell && (cell.type === 'unit' || cell.type === 'core')) {
-    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
-    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
-    let world: any = T().worlds[cell.tenant];
-    let liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
-    if (!liveObj) { world = await tactLoadWorld(cell.tenant, true); liveObj = world ? tactObjectNear(world, wx, wy, 1) : null; }
-    if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
-      cell = { ...cell, x: wx, y: wy, fresh: true, id: liveObj.id };
+  const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+  const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+  // 命令模式优先（2026-08-08 结构性修复）：瞄准/入队态下点击直接进模式处理——
+  // 陈旧单位格（合并地图轮询 3s 落后 tick）不再误走"单位解释"分支而清掉 tac.mode
+  // （"点了没反应/指令莫名消失"根因之一）。点单位格 = 移动到该格（RTS 惯例）。
+  if (tac.mode) {
+    if ((tac.mode === 'BATCH_MOVE' || tac.mode === 'BATCH_SHOOT') && tac.multi.size) {
+      batchSubmitTarget(wx, wy, shift);
+      return;
     }
-  } else if (!cell && state.soloTenant) {
-    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
-    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
-    let world: any = T().worlds[state.soloTenant];
-    let liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
-    if (!liveObj) { world = await tactLoadWorld(state.soloTenant, true); liveObj = world ? tactObjectNear(world, wx, wy, 1) : null; }
-    if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
-      cell = { tenant: state.soloTenant, type: liveObj.kind === 'CORE' ? 'core' : 'unit', x: wx, y: wy, fresh: true, id: liveObj.id, controlled: liveObj.controlled };
-    }
-  }
-  // 批量目标模式：点目标整组前往/开火；Shift 点击 = 入队（批量移动）
-  if ((tac.mode === 'BATCH_MOVE' || tac.mode === 'BATCH_SHOOT') && tac.multi.size) {
-    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
-    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
-    batchSubmitTarget(wx, wy, shift);
-    return;
-  }
-  if (tac.mode === 'MOVE' && tac.selected) {
-    const world = tac.worlds[tac.selected.tenant];
-    if (world) {
-      // 移动目标可为任意格（世界坐标反算），不需要命中已测绘 cell
-      const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
-      const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
-      const path = tactFindPath(world, tac.selected.obj.position, [wx, wy], tac.selected.tenant);
-      const key = `${tac.selected.tenant}:${wx},${wy}`;
-      const cell = state.cellIndex.get(key);
-      const isResource = (cell && cell.type === 'resource') ||
-        (world.state?.objects ?? []).some((o: any) => o.kind === 'RESOURCE' && (o.positions ?? []).some((p: any) => p[0] === wx && p[1] === wy));
-      const kind = isResource ? 'mine' : 'goto';
-      // 意图式指挥：点矿=采矿任务（到达自动挖、满仓回仓）；点空地=移动任务。
-      // 人类指挥最高控制权：目标为实时障碍才拒绝；测绘记忆寻路失败只影响虚线预览，不吞命令（服务端权威导航）。
-      const onObstacle = (world.state?.objects ?? []).some((o: any) => o.kind === 'OBSTACLE' && (o.positions ?? []).some((p: any) => p[0] === wx && p[1] === wy));
-      if (onObstacle) {
-        toast(`目标 [${wx}, ${wy}] 是障碍，无法到达`, 'warn');
-        draw();
-        return;
-      }
-      tac.moveGoals[tac.selected.obj.id] = [wx, wy];
-      tac.moveRoute = path ? { path } : null;
-      tac.routePreview = null;
-      tac.mode = null;
-      if (path && !shift) {
-        submitGoal(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy], kind === 'mine' ? `采矿 → [${wx}, ${wy}]` : `移动 → [${wx}, ${wy}]`);
-        tactRenderActionDialog(); tactRenderInspect(); draw();
-      } else if (path && shift) {
-        // Shift+点击 = 追加命令队列（当前段完成后自动执行下一段）
-        queuePush(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy]);
-        tactRenderActionDialog(); draw();
-      } else if (!path && shift) {
-        queuePush(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy]);
-        tactRenderActionDialog(); draw();
+    if (tac.mode === 'MOVE' && tac.selected) {
+      let world: any = tac.worlds[tac.selected.tenant];
+      if (!world) world = await tactLoadWorld(tac.selected.tenant, true);
+      if (world) {
+        // 移动目标可为任意格（世界坐标反算），不需要命中已测绘 cell
+        const path = tactFindPath(world, tac.selected.obj.position, [wx, wy], tac.selected.tenant);
+        // 地形全局去重后租户键可能 miss：回退全局 `x,y` 键（共享世界地形）
+        const key = `${tac.selected.tenant}:${wx},${wy}`;
+        const cell = state.cellIndex.get(key) ?? state.cellIndex.get(`${wx},${wy}`);
+        const isResource = (cell && cell.type === 'resource') ||
+          (world.state?.objects ?? []).some((o: any) => o.kind === 'RESOURCE' && (o.positions ?? []).some((p: any) => p[0] === wx && p[1] === wy));
+        const kind = isResource ? 'mine' : 'goto';
+        // 意图式指挥：点矿=采矿任务（到达自动挖、满仓回仓）；点空地=移动任务。
+        // 人类指挥最高控制权：目标为实时障碍才拒绝；测绘记忆寻路失败只影响虚线预览，不吞命令（服务端权威导航）。
+        const onObstacle = (world.state?.objects ?? []).some((o: any) => o.kind === 'OBSTACLE' && (o.positions ?? []).some((p: any) => p[0] === wx && p[1] === wy));
+        if (onObstacle) {
+          toast(`目标 [${wx}, ${wy}] 是障碍，无法到达`, 'warn');
+          draw();
+          return;
+        }
+        tac.moveGoals[tac.selected.obj.id] = [wx, wy];
+        tac.moveRoute = path ? { path } : null;
+        tac.routePreview = null;
+        tac.mode = null;
+        if (path && !shift) {
+          submitGoal(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy], kind === 'mine' ? `采矿 → [${wx}, ${wy}]` : `移动 → [${wx}, ${wy}]`);
+          tactRenderActionDialog(); tactRenderInspect(); draw();
+        } else if (path && shift) {
+          // Shift+点击 = 追加命令队列（当前段完成后自动执行下一段）
+          queuePush(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy]);
+          tactRenderActionDialog(); draw();
+        } else if (!path && shift) {
+          queuePush(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy]);
+          tactRenderActionDialog(); draw();
+        } else {
+          // 记忆寻路不可达（雾区/旧测绘差异）但目标非实时障碍：仍提交，避免"点了没反应"
+          submitGoal(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy], kind === 'mine' ? `采矿 → [${wx}, ${wy}]（记忆不可达，按目标提交）` : `移动 → [${wx}, ${wy}]（记忆不可达，按目标提交）`);
+          tactRenderActionDialog(); tactRenderInspect(); draw();
+        }
       } else {
-        // 记忆寻路不可达（雾区/旧测绘差异）但目标非实时障碍：仍提交，避免"点了没反应"
-        submitGoal(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy], kind === 'mine' ? `采矿 → [${wx}, ${wy}]（记忆不可达，按目标提交）` : `移动 → [${wx}, ${wy}]（记忆不可达，按目标提交）`);
-        tactRenderActionDialog(); tactRenderInspect(); draw();
+        toast('世界数据加载失败，请重试', 'warn');
       }
+      return;
     }
-    return;
-  }
-  if (tac.mode === 'SHOOT' && tac.selected) {
-    const world = tac.worlds[tac.selected.tenant];
-    if (world) {
-      const target = cell ? tactObjectAt(world, cell.x, cell.y) : null;
+    if (tac.mode === 'SHOOT' && tac.selected) {
+      const hit = await resolveLiveTarget(px, py, tac.selected.tenant);
+      const world = hit?.world ?? tac.worlds[tac.selected.tenant];
+      const target = hit?.obj && hit.obj.controlled === false ? hit.obj
+        : (hit?.cell && (hit.cell.type === 'unit' || hit.cell.type === 'core') ? tactObjectAt(world, hit.cell.x, hit.cell.y) : null);
       if (target && target.controlled === false) {
         tac.attackTarget = { obj: target };
         tac.mode = null;
@@ -4424,8 +4508,6 @@ function tactShowFeature(cell: any, px: any, py: any) {
         toast('只能攻击敌方单位/核心（已探索记忆中的目标已不存在）', 'warn');
       } else {
         // 空格射击：无目标格也提交（官方 cell-fire 语义，targetId=null 合法）
-        const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
-        const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
         tac.attackTarget = null;
         tac.mode = null;
         tactRenderActionDialog(); tactRenderInspect(); draw();
@@ -4433,63 +4515,66 @@ function tactShowFeature(cell: any, px: any, py: any) {
           { type: 'SHOOT', targetId: null, expectedCell: [wx, wy] },
           `朝 [${wx}, ${wy}] 开火（空格射击）`);
       }
+      return;
     }
-    return;
-  }
-  if (tac.mode === 'START_MOVE' && tac.selected) {
-    // 核心迁移：点相邻格选方向，一次性提交 START_MOVE（官方 start-move 语义）
-    const obj = tac.selected.obj;
-    if (obj && obj.kind === 'CORE' && obj.position) {
-      const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
-      const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+    if (tac.mode === 'START_MOVE' && tac.selected) {
+      // 核心迁移：点相邻格选方向，一次性提交 START_MOVE（官方 start-move 语义）
+      const obj = tac.selected.obj;
+      if (obj && obj.kind === 'CORE' && obj.position) {
+        const dx = wx - obj.position[0], dy = wy - obj.position[1];
+        const direction = dx === 1 && dy === 0 ? 'RIGHT' : dx === -1 && dy === 0 ? 'LEFT' : dy === 1 && dx === 0 ? 'DOWN' : dy === -1 && dx === 0 ? 'UP' : null;
+        if (direction) {
+          tac.mode = null;
+          submitCommand(tac.selected.tenant, obj.id, { type: 'START_MOVE', direction }, `核心迁移 ${direction}`);
+          tactRenderActionDialog(); tactRenderInspect(); draw();
+        } else {
+          toast('请点击核心相邻格选择迁移方向', 'warn');
+        }
+      } else {
+        tac.mode = null;
+      }
+      return;
+    }
+    if (tac.mode === 'SWEEP' && tac.selected) {
+      const obj = tac.selected.obj;
       const dx = wx - obj.position[0], dy = wy - obj.position[1];
       const direction = dx === 1 && dy === 0 ? 'RIGHT' : dx === -1 && dy === 0 ? 'LEFT' : dy === 1 && dx === 0 ? 'DOWN' : dy === -1 && dx === 0 ? 'UP' : null;
-      if (direction) {
-        tac.mode = null;
-        submitCommand(tac.selected.tenant, obj.id, { type: 'START_MOVE', direction }, `核心迁移 ${direction}`);
-        tactRenderActionDialog(); tactRenderInspect(); draw();
-      } else {
-        toast('请点击核心相邻格选择迁移方向', 'warn');
-      }
-    } else {
       tac.mode = null;
+      if (direction) {
+        submitCommand(tac.selected.tenant, tac.selected.obj.id, { type: 'SWEEP', direction }, `清扫 ${direction}`);
+      } else {
+        toast('请点击单位相邻格选择清扫方向', 'warn');
+      }
+      if (T().multi.size) {
+        els.actionDialog.hidden = true; // 多选时隐藏单单位对话框——不挡后续选点（批量命令走右键菜单）
+      } else {
+        tactRenderActionDialog(); // 单选：命令已提交，刷新对话框（模式徽章消失）
+      }
+      tactRenderInspect();
+      draw();
+      return;
     }
+    // 其他模式：回落到空闲态解释（清模式防悬空）
+    tactClear();
     return;
   }
-  if (tac.mode === 'SWEEP' && tac.selected && cell) {
-    const obj = tac.selected.obj;
-    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
-    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
-    const dx = wx - obj.position[0], dy = wy - obj.position[1];
-    const direction = dx === 1 && dy === 0 ? 'RIGHT' : dx === -1 && dy === 0 ? 'LEFT' : dy === 1 && dx === 0 ? 'DOWN' : dy === -1 && dx === 0 ? 'UP' : null;
-    tac.mode = null;
-    if (direction) {
-      submitCommand(tac.selected.tenant, tac.selected.obj.id, { type: 'SWEEP', direction }, `清扫 ${direction}`);
-    } else {
-      toast('请点击单位相邻格选择清扫方向', 'warn');
-    }
-    if (T().multi.size) {
-      els.actionDialog.hidden = true; // 多选时隐藏单单位对话框——不挡后续选点（批量命令走右键菜单）
-    } else {
-      tactRenderActionDialog(); // 单选：命令已提交，刷新对话框（模式徽章消失）
-    }
-    tactRenderInspect();
-    draw();
-    return;
-  }
+  // 空闲态：单位/核心实时命中（2026-08-08 结构性修复）——live 校正写入真实坐标，
+  // 下游 tactObjectAt 精确命中；陈旧 ghost 明确反馈，不静默吞点击。
+  const hit = await resolveLiveTarget(px, py);
+  const cell = hit?.cell ?? null;
   if (cell && (cell.type === 'unit' || cell.type === 'core')) {
-    const world = await tactLoadWorld(cell.tenant);
-    const obj = world ? tactObjectAt(world, cell.x, cell.y) : null;
+    const world = hit?.world ?? null;
+    const obj = hit?.obj ?? (world ? tactObjectAt(world, cell.x, cell.y) : null);
     if (obj) {
       if (shift && obj.kind !== 'CORE') {
         // Shift 点击 = 加选/减选（编队多选）；主选中跟随
-        const tac = T();
-        if (tac.multi.has(obj.id)) { tac.multi.delete(obj.id); toast('已从编队移除', 'info'); }
-        else { tac.multi.add(obj.id); toast(`编队 +1（共 ${tac.multi.size}）`, 'info'); }
-        if (tac.multi.size) {
-          tac.selected = { tenant: cell.tenant, obj };
+        const tac2 = T();
+        if (tac2.multi.has(obj.id)) { tac2.multi.delete(obj.id); toast('已从编队移除', 'info'); }
+        else { tac2.multi.add(obj.id); toast(`编队 +1（共 ${tac2.multi.size}）`, 'info'); }
+        if (tac2.multi.size) {
+          tac2.selected = { tenant: cell.tenant, obj };
           tactRenderActionDialog(); tactRenderInspect();
-        } else if (!tac.selected || tac.selected.obj.id === obj.id) {
+        } else if (!tac2.selected || tac2.selected.obj.id === obj.id) {
           tactClear();
           return;
         }
@@ -4500,6 +4585,7 @@ function tactShowFeature(cell: any, px: any, py: any) {
       if (T().multi.size) { T().multi = new Set([obj.id]); multiSync(cell.tenant); }
       await tactSelect(cell.tenant, obj); return;
     }
+    if (hit?.ghost) { toast('该单位/核心已移位（渲染位陈旧），实时命中失败', 'warn'); return; }
     if (!cell.fresh) { toast('该单位/核心为已探索记忆，已不在当前 tick', 'warn'); return; }
   }
   // 地图要素信息卡（官方 MapFeatureInfo 移植）：点击资源/障碍/信标弹卡，不再"点了没反应"
@@ -4509,8 +4595,6 @@ function tactShowFeature(cell: any, px: any, py: any) {
     return;
   }
   const beaconHit = (() => {
-    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
-    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
     return state.beacons.some((b) => b.x === wx && b.y === wy);
   })();
   if (beaconHit) {
@@ -4625,10 +4709,13 @@ async function tactRefreshCommands(tenant: any) {
     // 卡死跳出回报：目标长期无推进被服务端自动取消时 toast 说明（防"指令莫名消失"）
     const stuck = r && Array.isArray(r.stuck) && r.stuck.length ? r.stuck : [];
     if (stuck.length) {
-      const seenKey = tenant + ':' + stuck.map((x: any) => x.unitId).join(',');
-      if (tac.stuckSeen !== seenKey) {
-        tac.stuckSeen = seenKey;
-        stuck.forEach((x: any) => toast(`指令自动取消（卡死跳出）：${shortId(x.unitId)} · ${x.reason}`, 'warn'));
+      // 卡死跳出：低优先级 toast（-1，不顶用户交互反馈）+ 每单位 90s 冷却去重
+      const now = Date.now();
+      tac.stuckToastAt = tac.stuckToastAt || {};
+      const fresh = stuck.filter((x: any) => (tac.stuckToastAt[x.unitId] ?? 0) + 90000 <= now);
+      fresh.forEach((x: any) => { tac.stuckToastAt[x.unitId] = now; });
+      if (fresh.length) {
+        toast(`指令自动取消（卡死跳出）：${fresh.length === 1 ? shortId(fresh[0].unitId) + ' · ' + fresh[0].reason : fresh.length + ' 个单位被服务端自动取消'}`, 'warn', -1);
       }
     }
     const prev = tac.commandsByTenant[tenant];
@@ -4750,7 +4837,10 @@ export function createMapEngine(host: any) {
       draw();
     },
     resize: () => { resizeCanvas(); draw(); },
-    getState: () => ({ soloTenant: state.soloTenant, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length, jumpPins: state.jumpPins.map((p: any) => ({ x: p.x, y: p.y, at: p.at, label: p.label ?? null })) }),
+    getState: () => ({ soloTenant: state.soloTenant, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length, jumpPins: state.jumpPins.map((p: any) => ({ x: p.x, y: p.y, at: p.at, label: p.label ?? null })),
+      cells: state.cells.map((c: any) => ({ id: c.id ?? null, x: c.x, y: c.y, type: c.type, unitType: c.unitType ?? null, controlled: c.controlled ?? null, tenant: c.tenant, fresh: c.fresh ?? true })),
+      multi: [...T().multi], mode: T().mode ?? null,
+      selected: (() => { const s = T().selected; return s && s.obj ? { id: s.obj.id ?? null, tenant: s.tenant ?? null, pos: s.obj.position ?? null } : null; })() }),
     subscribe: (cb: any) => { _subs.add(cb); return () => _subs.delete(cb); },
     toast: (msg: any, tone: any) => toast(msg, tone),
   };
