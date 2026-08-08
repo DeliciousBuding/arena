@@ -24,6 +24,10 @@ export interface PipelineTenantCounts {
   harvestEvents: number;
   spends: number;
   lifecycleUnits: number;
+  /** 矿生命周期负态（harvested+empty，2026-08-08）：>0 说明 survey-sync 事件回写生效。 */
+  lifecycleNegative: number;
+  /** 各生命周期状态矿数（2026-08-08）：visible/stale/harvested/empty——数据质量守卫。 */
+  lifecycleStates: { visible: number; stale: number; harvested: number; empty: number } | null;
 }
 
 export interface PipelineTenantHealth {
@@ -63,6 +67,10 @@ export interface PipelineHealthPayload {
     lagTrend: { direction: "narrowing" | "widening" | "stable"; delta: number; samples: number } | null;
     /** 数据源新鲜度表（2026-08-08）。 */
     sources: readonly SourceFreshness[];
+    /** 矿生命周期闭环状态（2026-08-08）：OK=负态在流动（采集事件正确回写）/
+     *  STALLED=有采集事件但负态为 0（survey-sync 静默空跑——如 --data-root 缺失
+     *  时全 visible 回归的根因类）/ NO_DATA=无采集事件（数据不足，不算故障）。 */
+    lifecycleFlow: "OK" | "STALLED" | "NO_DATA";
   };
   cachedAt: string;
 }
@@ -103,7 +111,7 @@ function tenantHealth(tenant: string): PipelineTenantHealth {
     liveTick: 0,
     lagTicks: 0,
     syncedCases: 0,
-    counts: { resources: 0, obstacles: 0, cores: 0, unitsSeen: 0, chunks: 0, harvestEvents: 0, spends: 0, lifecycleUnits: 0 },
+    counts: { resources: 0, obstacles: 0, cores: 0, unitsSeen: 0, chunks: 0, harvestEvents: 0, spends: 0, lifecycleUnits: 0, lifecycleNegative: 0, lifecycleStates: null },
     surveyCachedAt: null,
     health: dbExists ? "OK" : "MISSING",
   };
@@ -131,7 +139,21 @@ function tenantHealth(tenant: string): PipelineTenantHealth {
       harvestEvents: countOf(db, "resource_events"),
       spends: countOf(db, "core_spends"),
       lifecycleUnits: countOf(db, "unit_lifecycle"),
+      lifecycleNegative: 0,
+      lifecycleStates: null,
     };
+    // 矿生命周期状态分布（2026-08-08 数据质量守卫）：survey-sync 事件回写产生的
+    // 负态（harvested/empty）是"过时矿"根因已修的实证——若采集事件在涨但负态恒 0，
+    // 说明 survey-sync 静默空跑（如 --data-root 缺失类回归），综合调试一屏可判。
+    try {
+      const states = db.prepare("SELECT state, COUNT(*) AS c FROM resources GROUP BY state").all() as Array<{ state: string; c: number }>;
+      const st: Record<string, number> = {};
+      for (const s of states) st[s.state] = num(s.c);
+      base.counts.lifecycleStates = {
+        visible: st.visible ?? 0, stale: st.stale ?? 0, harvested: st.harvested ?? 0, empty: st.empty ?? 0,
+      };
+      base.counts.lifecycleNegative = (st.harvested ?? 0) + (st.empty ?? 0);
+    } catch { /* 表结构缺失忽略 */ }
     base.surveyCachedAt = loadTenantSurveyCached(tenant).cachedAt;
     base.health = base.lagTicks > STALE_LAG_TICKS ? "STALE" : "OK";
   } catch {
@@ -192,6 +214,16 @@ export function computeSourceFreshness(dataRoot: string = DATA_ROOT): SourceFres
   return [mk("world", worldAge), mk("surveyDb", dbAge), mk("leaderboard", lbAge), mk("shop", shopAge), mk("humanAudit", auditAge)];
 }
 
+/** 矿生命周期闭环守卫（2026-08-08）：有采集事件但负态为 0 → survey-sync 事件
+ *  回写未生效（静默空跑类回归，如 --data-root 缺失导致全 visible）；无采集事件
+ *  = NO_DATA（数据不足，不算故障）。纯函数，入参即测。 */
+export function computeLifecycleFlow(tenants: readonly Pick<PipelineTenantHealth, "counts">[]): "OK" | "STALLED" | "NO_DATA" {
+  const harvestEventsTotal = tenants.reduce((a, t) => a + t.counts.harvestEvents, 0);
+  const negativeTotal = tenants.reduce((a, t) => a + t.counts.lifecycleNegative, 0);
+  if (harvestEventsTotal === 0) return "NO_DATA";
+  return negativeTotal > 0 ? "OK" : "STALLED";
+}
+
 export function loadPipelineHealth(): PipelineHealthPayload {
   const hit = healthCache.get("latest");
   if (hit !== undefined) return hit;
@@ -213,6 +245,7 @@ export function loadPipelineHealth(): PipelineHealthPayload {
         return { direction, delta, samples: lagHistory.length };
       })()
     : null;
+  const lifecycleFlow = computeLifecycleFlow(tenants);
   const payload: PipelineHealthPayload = {
     generatedAt: new Date().toISOString(),
     tenants,
@@ -221,9 +254,10 @@ export function loadPipelineHealth(): PipelineHealthPayload {
       avgLagTicks: Math.round(avgLag),
       staleTenants,
       missingTenants,
-      healthy: staleTenants.length === 0 && missingTenants.length === 0,
+      healthy: staleTenants.length === 0 && missingTenants.length === 0 && lifecycleFlow !== "STALLED",
       lagTrend,
       sources: computeSourceFreshness(),
+      lifecycleFlow,
     },
     cachedAt: new Date().toISOString(),
   };
