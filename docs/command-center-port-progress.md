@@ -422,3 +422,11 @@ mapEngine.ts 对应函数。
 - **渲染性能基线（实测）**：headless 1680×1000 下 draw() 均值全局 2.2ms / 聚焦 4.3ms
   （p95 2.9/6.7ms），远低于 16.6ms 帧预算；LOD静态缓存 + LQ 动画降级
   （跳过测绘记忆/阴影/血条/载货）+ DPR cap + idle 降频已覆盖，无需激进优化。
+
+### 9.24 决策流点击联动（2026-08-08）
+- engine 新增 focusTenant API：点击决策日志行→未聚焦则
+  solo+fitSolo 定位该租户（决策动线 tactPlanLayer 随之可见）+
+  toast 反馈；已聚焦则重置视野到该租户全貌。
+- StreamPane 决策行（非事迹）可点击：clickable 样式 +
+  title 提示 + 聚焦定位；EngineHandle 补 focusTenant 类型。
+- 探针实测：点 T1 决策行 solo null→t1 + toast、回归 22/22 全绿。
