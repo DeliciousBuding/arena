@@ -298,6 +298,9 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
         refillLookahead: 0,
         refillBonus: 0,
         deadMineOverdueTicks: Number.POSITIVE_INFINITY,
+        // 迁移方向勘探（2026-08-08）：核心 MOVING 时 EXPLORE worker 朝核心迁移方向
+        // 探路（为落点测绘），核心 NORMAL 零影响。t1 不迁移=零回归；t3 迁移中生效。
+        migrationScout: true,
       },
     }),
   });

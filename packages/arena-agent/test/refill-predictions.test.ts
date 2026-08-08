@@ -22,6 +22,7 @@ const MISSION: MissionConfig = {
   refillLookahead: 16,
   refillBonus: 0.5,
   deadMineOverdueTicks: 100,
+  migrationScout: false,
 };
 
 function worker(id: string, x: number, y: number) {
