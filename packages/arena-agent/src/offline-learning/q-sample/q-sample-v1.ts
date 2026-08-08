@@ -54,6 +54,16 @@ export type QLabelSource = (typeof Q_LABEL_SOURCES)[number];
 
 export const INITIAL_STATE_SCOPES = ["full-sim-world", "private-observation-completed"] as const;
 export type InitialStateScope = (typeof INITIAL_STATE_SCOPES)[number];
+export const SIM_CONTINUATION_POLICIES = ["hold-candidate", "revert-baseline"] as const;
+export type SimContinuationPolicy = (typeof SIM_CONTINUATION_POLICIES)[number];
+export const SIM_UNKNOWN_EFFECT_KINDS = [
+  "refill",
+  "opponent-action",
+  "fog-of-war",
+  "rule-assumption",
+  "server-generated-id",
+] as const;
+export type SimUnknownEffectKind = (typeof SIM_UNKNOWN_EFFECT_KINDS)[number];
 
 /**
  * Suggested label horizons (ticks). The schema accepts any positive
@@ -104,8 +114,16 @@ export interface QSampleSimProvenance {
   readonly completionPolicy: string;
   /** Completion randomness if the belief completion is stochastic. */
   readonly completionSeed: number | null;
+  /** Explicit assumptions made while completing hidden state; empty for a full SimWorld. */
+  readonly completionAssumptions: readonly string[];
+  /** Number of ticks for which the candidate intervention is held. */
+  readonly interventionTicks: number;
+  /** What policy is used after interventionTicks when horizon is longer. */
+  readonly continuationPolicy: SimContinuationPolicy;
   readonly rolloutHorizon: number;
   readonly unknownEffectCount: number;
+  /** Kind-preserving counts; sum must equal unknownEffectCount. */
+  readonly unknownEffectCounts: Readonly<Record<SimUnknownEffectKind, number>>;
   readonly firstUnknownTick: number | null;
   readonly terminatedByUnknown: boolean;
 }
@@ -450,20 +468,55 @@ function validateSimProvenance(sim: Record<string, unknown>, path: string): read
   if (!INITIAL_STATE_SCOPES.includes(sim.initialStateScope as InitialStateScope)) {
     problems.push(`${path}.initialStateScope must be one of ${INITIAL_STATE_SCOPES.join(", ")}`);
   }
-  for (const field of ["scenarioSeed", "rolloutHorizon", "unknownEffectCount"] as const) {
+  if (!SIM_CONTINUATION_POLICIES.includes(sim.continuationPolicy as SimContinuationPolicy)) {
+    problems.push(`${path}.continuationPolicy must be one of ${SIM_CONTINUATION_POLICIES.join(", ")}`);
+  }
+  for (const field of ["scenarioSeed", "interventionTicks", "rolloutHorizon", "unknownEffectCount"] as const) {
     if (!isFiniteNumber(sim[field]) || !Number.isInteger(sim[field])) {
       problems.push(`${path}.${field} must be an integer`);
+    }
+  }
+  if (isFiniteNumber(sim.interventionTicks) && sim.interventionTicks <= 0) {
+    problems.push(`${path}.interventionTicks must be > 0`);
+  }
+  if (!isRecord(sim.unknownEffectCounts)) {
+    problems.push(`${path}.unknownEffectCounts must be an object`);
+  } else {
+    let total = 0;
+    for (const key of Object.keys(sim.unknownEffectCounts)) {
+      if (!SIM_UNKNOWN_EFFECT_KINDS.includes(key as SimUnknownEffectKind)) {
+        problems.push(`${path}.unknownEffectCounts.${key} is not allowed`);
+      }
+    }
+    for (const kind of SIM_UNKNOWN_EFFECT_KINDS) {
+      const count = sim.unknownEffectCounts[kind];
+      if (!isFiniteNumber(count) || !Number.isInteger(count) || count < 0) {
+        problems.push(`${path}.unknownEffectCounts.${kind} must be a non-negative integer`);
+      } else {
+        total += count;
+      }
+    }
+    if (isFiniteNumber(sim.unknownEffectCount) && total !== sim.unknownEffectCount) {
+      problems.push(`${path}.unknownEffectCounts sum ${total} != unknownEffectCount ${sim.unknownEffectCount}`);
     }
   }
   if (sim.completionSeed !== null &&
       (!isFiniteNumber(sim.completionSeed) || !Number.isInteger(sim.completionSeed))) {
     problems.push(`${path}.completionSeed must be an integer or null`);
   }
+  if (!Array.isArray(sim.completionAssumptions) ||
+      sim.completionAssumptions.some((assumption) => typeof assumption !== "string" || assumption.length === 0)) {
+    problems.push(`${path}.completionAssumptions must be an array of non-empty strings`);
+  }
   if (sim.initialStateScope === "full-sim-world" && sim.completionPolicy !== "none") {
     problems.push(`${path}.completionPolicy must be "none" for full-sim-world`);
   }
   if (sim.initialStateScope === "full-sim-world" && sim.completionSeed !== null) {
     problems.push(`${path}.completionSeed must be null for full-sim-world`);
+  }
+  if (sim.initialStateScope === "full-sim-world" &&
+      Array.isArray(sim.completionAssumptions) && sim.completionAssumptions.length !== 0) {
+    problems.push(`${path}.completionAssumptions must be empty for full-sim-world`);
   }
   if (sim.firstUnknownTick !== null &&
       (!isFiniteNumber(sim.firstUnknownTick) || !Number.isInteger(sim.firstUnknownTick))) {

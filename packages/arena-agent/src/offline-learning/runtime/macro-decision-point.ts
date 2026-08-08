@@ -15,8 +15,12 @@
  * mislabeled as a candidate that was not actually executed.
  */
 
-import { type MacroPolicy } from "../../runtime/macro-policy.ts";
-import { computeCandidateSetHash, type DecisionCandidateV1 } from "../candidate/decision-candidate-v1.ts";
+import { isValidMacroPolicy, type MacroPolicy } from "../../runtime/macro-policy.ts";
+import {
+  computeCandidateSetHash,
+  validateDecisionCandidateV1,
+  type DecisionCandidateV1,
+} from "../candidate/decision-candidate-v1.ts";
 import { resolveExactPolicyCandidate } from "../candidate/candidate-policy.ts";
 
 export const MACRO_DECISION_POINT_SCHEMA_VERSION = "macro-decision-point-v1";
@@ -73,6 +77,27 @@ export function validateMacroDecisionPointV1(value: unknown): readonly string[] 
     return ["must be an object"];
   }
   const record = value as Record<string, unknown>;
+  const expectedKeys = new Set([
+    "schema",
+    "decisionPointId",
+    "processRunId",
+    "tick",
+    "intervalTicks",
+    "previousPolicy",
+    "newPolicy",
+    "chosenBy",
+    "candidates",
+    "candidateSetHash",
+    "chosenCandidateHash",
+    "selectionRepresentable",
+    "behaviorPropensity",
+  ]);
+  for (const key of Object.keys(record)) {
+    if (!expectedKeys.has(key)) problems.push(`${key} is not allowed`);
+  }
+  for (const key of expectedKeys) {
+    if (!(key in record)) problems.push(`${key} is required`);
+  }
   if (record.schema !== MACRO_DECISION_POINT_SCHEMA_VERSION) {
     problems.push(`schema must be ${MACRO_DECISION_POINT_SCHEMA_VERSION}`);
   }
@@ -85,8 +110,49 @@ export function validateMacroDecisionPointV1(value: unknown): readonly string[] 
   if (typeof record.tick !== "number" || !Number.isInteger(record.tick) || record.tick < 0) {
     problems.push("tick must be a non-negative integer");
   }
+  if (typeof record.intervalTicks !== "number" || !Number.isInteger(record.intervalTicks) || record.intervalTicks < 1) {
+    problems.push("intervalTicks must be a positive integer");
+  }
+  if (
+    typeof record.processRunId === "string" &&
+    typeof record.tick === "number" &&
+    record.decisionPointId !== `${record.processRunId}:${record.tick}`
+  ) {
+    problems.push("decisionPointId must equal `${processRunId}:${tick}`");
+  }
+  if (!isValidMacroPolicy(record.previousPolicy)) {
+    problems.push("previousPolicy must be a valid MacroPolicy");
+  }
+  if (!isValidMacroPolicy(record.newPolicy)) {
+    problems.push("newPolicy must be a valid MacroPolicy");
+  }
   if (!DECISION_CHOOSERS.includes(record.chosenBy as DecisionChooser)) {
     problems.push(`chosenBy must be one of ${DECISION_CHOOSERS.join(", ")}`);
+  }
+  let candidates: readonly DecisionCandidateV1[] = [];
+  if (!Array.isArray(record.candidates) || record.candidates.length < 1 || record.candidates.length > 20) {
+    problems.push("candidates must be a non-empty array of at most 20 candidates");
+  } else {
+    candidates = record.candidates as readonly DecisionCandidateV1[];
+    const hashes = new Set<string>();
+    for (const [index, candidate] of candidates.entries()) {
+      const candidateProblems = validateDecisionCandidateV1(candidate);
+      if (candidateProblems.length > 0) {
+        problems.push(`candidates[${index}]: ${candidateProblems.join("; ")}`);
+        continue;
+      }
+      if (hashes.has(candidate.deterministicHash)) {
+        problems.push(`candidates[${index}] duplicates candidate hash ${candidate.deterministicHash}`);
+      }
+      hashes.add(candidate.deterministicHash);
+    }
+    const expectedSetHash = computeCandidateSetHash(candidates);
+    if (record.candidateSetHash !== expectedSetHash) {
+      problems.push(`candidateSetHash mismatch: expected ${expectedSetHash}`);
+    }
+  }
+  if (typeof record.candidateSetHash !== "string" || !/^[0-9a-f]{64}$/u.test(record.candidateSetHash)) {
+    problems.push("candidateSetHash must be sha256 hex");
   }
   if (record.chosenCandidateHash !== null &&
       (typeof record.chosenCandidateHash !== "string" || !/^[0-9a-f]{64}$/u.test(record.chosenCandidateHash))) {
@@ -105,6 +171,20 @@ export function validateMacroDecisionPointV1(value: unknown): readonly string[] 
   }
   if (record.selectionRepresentable === false && record.chosenCandidateHash !== null) {
     problems.push("selectionRepresentable=false requires chosenCandidateHash=null");
+  }
+  if (record.chosenCandidateHash !== null &&
+      !candidates.some((candidate) => candidate.deterministicHash === record.chosenCandidateHash)) {
+    problems.push("chosenCandidateHash must reference a candidate in candidates");
+  }
+  if (isValidMacroPolicy(record.previousPolicy) && isValidMacroPolicy(record.newPolicy) && candidates.length > 0) {
+    const resolved = resolveChosenCandidate(candidates, record.previousPolicy, record.newPolicy);
+    const expectedHash = resolved?.deterministicHash ?? null;
+    if (record.chosenCandidateHash !== expectedHash) {
+      problems.push(`chosenCandidateHash does not exactly explain newPolicy (expected ${expectedHash ?? "null"})`);
+    }
+    if (record.selectionRepresentable !== (resolved !== null)) {
+      problems.push(`selectionRepresentable inconsistent with exact candidate resolution`);
+    }
   }
   return problems;
 }

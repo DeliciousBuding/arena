@@ -156,6 +156,8 @@ export {
   PAIRWISE_PREFERENCE_SCHEMA_VERSION,
   Q_LABEL_SOURCES,
   INITIAL_STATE_SCOPES,
+  SIM_CONTINUATION_POLICIES,
+  SIM_UNKNOWN_EFFECT_KINDS,
   SUGGESTED_LABEL_HORIZONS,
   canonicalFeatures,
   computeFeatureHash,
@@ -166,6 +168,8 @@ export {
 export type {
   QLabelSource,
   InitialStateScope,
+  SimContinuationPolicy,
+  SimUnknownEffectKind,
   BehaviorPolicySnapshot,
   QSampleLabel,
   QSampleSimProvenance,
@@ -185,6 +189,34 @@ export type {
   DecisionChooser,
   MacroDecisionPointV1,
 } from "./runtime/macro-decision-point.ts";
+
+// ── Counterfactual rollout (M2c.1) ──
+export { runCounterfactualRollouts } from "./counterfactual/counterfactual-rollout.ts";
+export type {
+  CounterfactualRolloutOptions,
+  CounterfactualRolloutStats,
+  CounterfactualRolloutResult,
+} from "./counterfactual/counterfactual-rollout.ts";
+export {
+  createVisibleOnlyCompletionProvider,
+  completeVisibleOnlyDecisionWorld,
+} from "./counterfactual/world-completion.ts";
+export type {
+  DecisionWorldCompletion,
+  DecisionWorldCompletionInput,
+  DecisionWorldCompletionProvider,
+  VisibleOnlyCompletionOptions,
+} from "./counterfactual/world-completion.ts";
+export {
+  exportCounterfactualDataset,
+  parseMacroDecisionPointTelemetryJsonl,
+  counterfactualExportIdentityJson,
+} from "./counterfactual/counterfactual-exporter.ts";
+export type {
+  CounterfactualDatasetExportOptions,
+  CounterfactualDatasetExportStats,
+  CounterfactualDatasetExportResult,
+} from "./counterfactual/counterfactual-exporter.ts";
 
 // ── Runtime (M1d-lite) ──
 export {
