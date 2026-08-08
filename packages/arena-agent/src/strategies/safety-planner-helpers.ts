@@ -357,16 +357,22 @@ export function canShoot(from: Position, target: Position, obstacles: ReadonlySe
     !lineBlocked(from, target, obstacles);
 }
 
-/** 预测敌人下一 Tick 位置：朝攻击者逼近一格（八方向切比雪夫步进）。
- *  仅当敌人当前不在射程内（4-5 格）时用于 cell fire 预判；已在射程内
- *  由 precision shoot 覆盖。返回 null 表示无法预测（已在身边）。 */
+/** 预测敌人下一 Tick 位置：朝攻击者沿主导轴逼近一格（四方向卡向步进，
+ *  与官方移动规则一致——移动只有 UP/DOWN/LEFT/RIGHT，无斜向，敌人每 tick
+ *  最多走一格）。仅当敌人当前不在射程内时用于 cell fire 预判；已在射程内
+ *  由 precision shoot 覆盖。返回 null 表示无法预测（与攻击者同格）。
+ *  斜向（|dx|==|dy|）时确定性选 x 轴；调用方 canShoot 会过滤非射击线
+ *  预测格——斜向敌人一步无法进入可射击格（其四方向步进的落点都在线外），
+ *  于是不预判开火，杜绝"射空气"空枪。 */
 export function predictedEnemyCell(actor: Position, enemy: Position): Position | null {
   const dx = enemy[0] - actor[0];
   const dy = enemy[1] - actor[1];
-  const stepX = dx === 0 ? 0 : Math.sign(dx);
-  const stepY = dy === 0 ? 0 : Math.sign(dy);
-  const next = [enemy[0] - stepX, enemy[1] - stepY] as Position;
-  return samePosition(next, enemy) ? null : next;
+  if (dx === 0 && dy === 0) return null;
+  // 敌人只沿主轴走一步（|dx|>=|dy| 走 x，否则走 y——与 axisOfDelta 同口径）。
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return [enemy[0] - Math.sign(dx), enemy[1]];
+  }
+  return [enemy[0], enemy[1] - Math.sign(dy)];
 }
 
 export function parseCell(value: string): Position {

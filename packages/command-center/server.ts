@@ -28,6 +28,7 @@ import { loadAllianceSurvey, refreshAllianceSurvey, TENANT_COLORS } from "./lib/
 import { loadAllianceSnapshot, refreshAllianceSnapshot } from "./lib/alliance-snapshot.ts";
 import { loadAllianceCluster, refreshAllianceCluster } from "./lib/alliance-cluster.ts";
 import { loadAllianceAdvice, refreshAllianceAdvice } from "./lib/alliance-advice.ts";
+import { buildDefenseCoordination } from "./lib/alliance-defense.ts";
 import { loadEnemyHeat, refreshEnemyHeat } from "./lib/enemy-heat.ts";
 import { loadAllianceExploration, refreshAllianceExploration } from "./lib/exploration-coverage.ts";
 import { loadPipelineHealth, refreshPipelineHealth } from "./lib/pipeline-health.ts";
@@ -278,6 +279,21 @@ app.get("/api/alliance/advice", (c) => {
   // 建议（经济/军事/威胁/抢矿/高威胁玩家），按严重度排序——人机协同决策
   // 支持。纯快照数据（不触发 intel 扫描），30s 缓存。
   return c.json(loadAllianceAdvice());
+});
+app.get("/api/alliance/defense", (c) => {
+  // 联盟联防建议（2026-08-08，抱团 Phase 2 决策支持层）：濒危识别（重生/
+  // 薄弱+威胁）、驰援推荐（最近军事冗余邻居）、阵型紧凑度——数据来自快照
+  // 缓存（members/threatSummaries），构建轻量无独立缓存（30s 快照 TTL 即上限）。
+  const snap = loadAllianceSnapshot();
+  const byTenant = new Map(snap.threatSummaries.map((s) => [s.tenantId, s.totalScore]));
+  const members = Object.values(snap.members).map((m) => ({
+    tenantId: m.tenantId,
+    core: m.core?.position ?? null,
+    military: m.vanguards + m.rangers,
+    status: m.status,
+    threatScore: byTenant.get(m.tenantId) ?? 0,
+  }));
+  return c.json(buildDefenseCoordination(members));
 });
 
 app.get("/api/alliance/exploration", (c) => {

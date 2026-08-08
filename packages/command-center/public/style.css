@@ -1674,3 +1674,12 @@ body {
 .tenant-card .ds-row .ds-v.neg b { color: var(--danger); }
 .tenant-card .ds-row .ds-sep { flex: none; width: 1px; height: 10px; background: rgba(255,255,255,.1); margin: 0 2px; }
 .tenant-card .ds-row .warn { color: var(--warn); }
+
+/* 资产行当前指令标签（2026-08-08）：人类指挥白 / 算法决策青；一行截断不换行 */
+.asset-cmd {
+  flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-mono); font-weight: 600; font-size: 9px; letter-spacing: .02em;
+  color: var(--cyan-signal, #5fd4e8); border: 1px solid rgba(95,212,232,.18); border-radius: 4px;
+  padding: 1px 5px; background: rgba(95,212,232,.06);
+}
+.asset-cmd.human { color: #fff; border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.08); }

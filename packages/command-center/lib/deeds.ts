@@ -59,7 +59,7 @@ const unitTypeName = (t: unknown): string => (typeof t === "string" && t.trim() 
 
 interface RawCase {
   after?: { state?: { events?: unknown; resources?: unknown } };
-  before?: { state?: { events?: unknown } };
+  before?: { state?: { events?: unknown; objects?: unknown } };
 }
 
 interface RawEvent {
@@ -73,8 +73,10 @@ interface RawEvent {
   values?: unknown;
 }
 
-/** 原始事件 -> 叙事 Deed（★1-4）。不识别的噪声事件返回 null。 */
-function deedFromEvent(ev: RawEvent, tenant: string, fileTick: number): Deed | null {
+/** 原始事件 -> 叙事 Deed（★1-4）。不识别的噪声事件返回 null。
+ *  ourCoreIds：本租户受控核心集合（CORE_DESTROYED 敌我判定用；扫描路径每 case
+ *  传 before.state 受控核心，缺失时按未知处理——旧库/旧 run 兜底叙事）。 */
+export function deedFromEvent(ev: RawEvent, tenant: string, fileTick: number, ourCoreIds?: ReadonlySet<string> | null): Deed | null {
   const kind = String(ev.event_type ?? "").toUpperCase();
   const tick = num(ev.tick) ?? fileTick;
   const values = (ev.values ?? {}) as Record<string, unknown>;
@@ -86,8 +88,26 @@ function deedFromEvent(ev: RawEvent, tenant: string, fileTick: number): Deed | n
   const amount = num(values.amount) ?? num(values.damage);
   switch (kind) {
     case "CORE_DESTROYED": {
-      const by = typeof values.destroyed_by === "string" ? values.destroyed_by : null;
-      return { ...base, id: `${idBase}:core_destroyed`, star: 4, kind, title: "敌方核心被摧毁", detail: by ? `核心被 ${by} 摧毁` : "敌方核心被摧毁", target: by };
+      // 叙事 A11（2026-08-08）：区分 我方被打爆(⚠ HIGH) / 敌方被摧毁(战果) / 自爆。
+      // destroyed_by 真实值是数组（combat.ts ATTACK），兼容 string 旧数据。
+      const reason = typeof ev.reason_code === "string" ? ev.reason_code : null;
+      const rawBy = values.destroyed_by;
+      const byList = Array.isArray(rawBy)
+        ? rawBy.filter((u): u is string => typeof u === "string")
+        : typeof rawBy === "string" && rawBy.trim() !== ""
+          ? [rawBy]
+          : [];
+      const isSelfDestruct = reason === "SELF_DESTRUCT";
+      const isOur = !isSelfDestruct && typeof ev.target_id === "string" && !!ourCoreIds?.has(ev.target_id);
+      const tag = typeof ev.target_id === "string" ? ev.target_id.slice(0, 8) : null;
+      const byText = byList.length > 0 ? byList.join("、") : null;
+      if (isSelfDestruct) {
+        return { ...base, id: `${idBase}:core_destroyed`, star: 3, kind, title: "核心自爆", detail: p ? `核心在 (${p[0]},${p[1]}) 自爆放弃` : "核心自爆放弃" };
+      }
+      if (isOur) {
+        return { ...base, id: `${idBase}:core_destroyed`, star: 4, kind, title: "我方核心被摧毁 ⚠", detail: byText ? `我方核心 ${tag} 被 ${byText} 摧毁` : (p ? `我方核心 ${tag} 在 (${p[0]},${p[1]}) 被摧毁` : `我方核心 ${tag} 被摧毁`), target: typeof ev.target_id === "string" ? ev.target_id : null };
+      }
+      return { ...base, id: `${idBase}:core_destroyed`, star: 4, kind, title: "敌方核心被摧毁", detail: byText ? `敌方核心 ${tag} 被 ${byText} 摧毁` : (tag ? `敌方核心 ${tag} 被摧毁` : "敌方核心被摧毁"), target: typeof ev.target_id === "string" ? ev.target_id : null };
     }
     case "CORE_RESOURCES_CAPTURED":
       return { ...base, id: `${idBase}:captured`, star: 3, kind, title: "夺取核心资源", detail: `夺取敌方核心资源 ${amount ?? "?"}（可用 ${num(values.available) ?? "?"}/${num(values.capacity) ?? "?"}）` };
@@ -173,11 +193,23 @@ async function collectEventDeeds(tenant: string): Promise<Deed[]> {
       }
       const res = num(raw?.after?.state?.resources);
       if (res !== null) resSamples.push({ tick: fileTick, res });
+      // 叙事 A11：本 case 受控核心集合（CORE_DESTROYED 敌我判定；与 survey-sync /
+      // builder.coreRiskAt 同判据——before.state.objects controlled CORE）。
+      const ourCoreIds = new Set<string>();
+      const objects = raw?.before?.state?.objects;
+      if (Array.isArray(objects)) {
+        for (const o of objects) {
+          if (o && typeof o === "object") {
+            const obj = o as { kind?: unknown; controlled?: unknown; id?: unknown };
+            if (obj.kind === "CORE" && obj.controlled && typeof obj.id === "string") ourCoreIds.add(obj.id);
+          }
+        }
+      }
       const evs = (raw?.after?.state?.events ?? raw?.before?.state?.events) as unknown;
       if (!Array.isArray(evs)) continue;
       for (const ev of evs) {
         if (!ev || typeof ev !== "object") continue;
-        const d = deedFromEvent(ev as RawEvent, tenant, fileTick);
+        const d = deedFromEvent(ev as RawEvent, tenant, fileTick, ourCoreIds);
         if (d) out.push(d);
       }
     }
@@ -280,10 +312,13 @@ const NOTABLE_KINDS = new Set([
   "UNIT_DESTROYED",
 ]);
 
-/** survey-db notable_events 行 -> 叙事 Deed（★2-4）。 */
-function deedFromNotableRow(r: {
+/** survey-db notable_events 行 -> 叙事 Deed（★2-4）。
+ *  reason_code / destroyed_by(JSON 数组) / is_our_core 为叙事 A11 新增列
+ *  （旧库缺列时 collectNotableDeeds 走旧 SELECT，字段为 null）。 */
+export function deedFromNotableRow(r: {
   tick: number; event_type: string; actor_id: string | null; target_id: string | null;
   x: number | null; y: number | null; amount: number | null; unit_type: string | null;
+  reason_code: string | null; destroyed_by: string | null; is_our_core: number | null;
 }, tenant: string): Deed | null {
   const kind = r.event_type;
   if (!NOTABLE_KINDS.has(kind)) return null;
@@ -292,8 +327,26 @@ function deedFromNotableRow(r: {
   const base = { id, tick: r.tick, tenant, position, actor: r.actor_id, target: r.target_id };
   switch (kind) {
     case "CORE_DESTROYED": {
+      // 叙事 A11：敌我 + 摧毁者 + 自爆三态（与 deedFromEvent 同口径）。
+      const reason = r.reason_code;
+      let byList: string[] = [];
+      if (r.destroyed_by) {
+        try {
+          const v = JSON.parse(r.destroyed_by) as unknown;
+          if (Array.isArray(v)) byList = v.filter((u): u is string => typeof u === "string");
+        } catch { /* 旧脏数据按无摧毁者处理 */ }
+      }
+      const isSelfDestruct = reason === "SELF_DESTRUCT";
+      const isOur = !isSelfDestruct && r.is_our_core === 1;
       const tag = r.target_id ? r.target_id.slice(0, 8) : null;
-      return { ...base, star: 4, kind, title: "敌方核心被摧毁", detail: tag ? `敌方核心 ${tag} 被摧毁` : "敌方核心被摧毁", target: tag };
+      const byText = byList.length > 0 ? byList.join("、") : null;
+      if (isSelfDestruct) {
+        return { ...base, star: 3, kind, title: "核心自爆", detail: position ? `核心在 (${position[0]},${position[1]}) 自爆放弃` : "核心自爆放弃" };
+      }
+      if (isOur) {
+        return { ...base, star: 4, kind, title: "我方核心被摧毁 ⚠", detail: byText ? `我方核心 ${tag} 被 ${byText} 摧毁` : (position ? `我方核心 ${tag} 在 (${position[0]},${position[1]}) 被摧毁` : `我方核心 ${tag} 被摧毁`) };
+      }
+      return { ...base, star: 4, kind, title: "敌方核心被摧毁", detail: byText ? `敌方核心 ${tag} 被 ${byText} 摧毁` : (tag ? `敌方核心 ${tag} 被摧毁` : "敌方核心被摧毁") };
     }
     case "CORE_RESOURCES_CAPTURED":
       return { ...base, star: 3, kind, title: "夺取核心资源", detail: `夺取敌方核心资源 ${r.amount ?? "?"}` };
@@ -325,9 +378,18 @@ function collectNotableDeeds(tenant: string): Deed[] {
   }
   const out: Deed[] = [];
   try {
+    // 叙事 A11：新库带 reason_code/destroyed_by/is_our_core；旧库（未跑 sync
+    // 迁移）缺列则走旧 SELECT（字段 null，deeds 按未知敌我兜底叙事）。
+    const hasA11 = (db.prepare("PRAGMA table_info(notable_events)").all() as Array<{ name: string }>)
+      .some((c) => c.name === "reason_code");
     const rows = db.prepare(
-      "SELECT tick, event_type, actor_id, target_id, x, y, amount, unit_type FROM notable_events ORDER BY tick DESC LIMIT 300",
+      hasA11
+        ? "SELECT tick, event_type, actor_id, target_id, x, y, amount, unit_type, reason_code, destroyed_by, is_our_core FROM notable_events ORDER BY tick DESC LIMIT 300"
+        : "SELECT tick, event_type, actor_id, target_id, x, y, amount, unit_type FROM notable_events ORDER BY tick DESC LIMIT 300",
     ).all() as Array<Record<string, unknown>>;
+    // 显示层去重兜底（叙事 A11b）：库内历史重复行（旧库 UNIQUE 约束 NULL 语义
+    // 不去重）即使未迁移清理，面板也不重复显示——按 dedupeKey 只保留首条。
+    const seenRows = new Set<string>();
     for (const row of rows) {
       const d = deedFromNotableRow({
         tick: Number(row.tick),
@@ -338,8 +400,17 @@ function collectNotableDeeds(tenant: string): Deed[] {
         y: num(row.y),
         amount: num(row.amount),
         unit_type: typeof row.unit_type === "string" ? row.unit_type : null,
+        reason_code: typeof row.reason_code === "string" ? row.reason_code : null,
+        destroyed_by: typeof row.destroyed_by === "string" ? row.destroyed_by : null,
+        is_our_core: typeof row.is_our_core === "number" ? row.is_our_core : null,
       }, tenant);
-      if (d) out.push(d);
+      if (!d) continue;
+      const k = dedupeKey(d);
+      if (k !== null) {
+        if (seenRows.has(k)) continue;
+        seenRows.add(k);
+      }
+      out.push(d);
     }
   } catch {
     // 旧库无 notable_events 表：扫描兜底（loadDeeds 仍走 collectEventDeeds）

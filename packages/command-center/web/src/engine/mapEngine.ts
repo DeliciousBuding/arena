@@ -11,7 +11,7 @@ import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT
 import { findPath } from './pathfind.ts';
 import { createReplayState, replayAdvance, replayLoad, replayStep, replayToggle, replayCycleSpeed, updateReplayUI } from './replay.js';
 import { spawnEventFx, drawEventFx } from './fx.js';
-import { commandTelemetryDeltas as teleDeltas, commandGoalOf as cmdGoalOf, commandActionOf as cmdActionOf, unitHumanCommandOf as cmdHumanOf, commandStatusText as cmdStatusText, unitTelemetryOf as cmdUnitTelemetry, unitCommandLabel as cmdLabel } from './commands.js';
+import { commandTelemetryDeltas as teleDeltas, commandGoalOf as cmdGoalOf, commandActionOf as cmdActionOf, unitHumanCommandOf as cmdHumanOf, commandStatusText as cmdStatusText, unitTelemetryOf as cmdUnitTelemetry, unitCommandLabel as cmdLabel, squadSummary as cmdSquad } from './commands.js';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
 const POLL_MS = 3000;
@@ -3078,6 +3078,8 @@ function tactRenderAssets(tenant: any) {
       const artPath = art === 'CORE' ? SPRITE.core : unitSpritePath(art);
       const selected = T().selected?.obj?.id === o.id;
       const human = unitHumanCommandOf(tenant, o.id);
+      const plan = state.soloTenant === tenant ? T().plan?.plan : T().plans?.[tenant];
+      const cmdLine = cmdLabel(T(), tenant, o.id, plan); // 当前指令标签（人类指挥/算法决策）
       // 核心无标准 HP 上限：以 hp/shield 当前最大值为基准（满状态=满条，受损即缩短）
       const hpMax = art === 'CORE' ? Math.max(o.hp ?? 0, o.shield ?? 0, 1) : maxUnitHp(art);
       const hpVal = art === 'CORE' ? Math.max(o.hp ?? 0, o.shield ?? 0) : (o.hp ?? 0);
@@ -3086,6 +3088,7 @@ function tactRenderAssets(tenant: any) {
         <span class="asset-icon"><img src="${artPath}" alt="" /></span>
         ${human ? '<span class="asset-h" title="人类指挥中">H</span>' : ''}
         <span class="asset-name">${o.kind === 'CORE' ? '核心' : (TACT_UNIT_CN[o.unit_type] ?? o.unit_type)}</span>
+        ${cmdLine ? `<span class="asset-cmd${human ? ' human' : ''}" title="${cmdLine}">${cmdLine}</span>` : ''}
         <span class="asset-hpbar" title="${o.hp}/${hpMax} HP"><span class="asset-hpfill ${hpPct <= 35 ? 'low' : ''}" style="width:${hpPct}%"></span></span>
         <span class="mono asset-pos">[${o.position[0]}, ${o.position[1]}]</span>
       </button>`;
@@ -3170,12 +3173,17 @@ function tactRenderHud(tenant: any) {
         tele && (tele.rejected ?? []).length ? `<span class="hud-val" style="color:var(--danger)" title="被拒指令">${tele.rejected.length}✗</span>` : ''
       }</div>`
     : '';
+  // 编队多选 HUD（2026-08-08）：Shift 多选 ≥2 时显示编队构成 + 平均/最低 HP
+  const sq = cmdSquad(T(), world);
+  const squadRow = sq
+    ? `<div class="hud-row hud-survey"><span class="hud-label" style="color:var(--warn)">编队 ${sq.count}</span><span class="hud-val">${sq.parts}</span><span class="hud-val" style="color:${sq.hpMin <= 2 ? 'var(--danger)' : 'var(--success)'}" title="平均/最低 HP">HP ${sq.hpAvg}/${sq.hpMin}</span></div>`
+    : '';
   els.fleetHud.innerHTML = `<div class="hud-row">
     <span class="hud-label">${tenant.toUpperCase()} · HUD</span>
     <span class="hud-val"><img src="${UNIT_ICONS.resource}" alt="" /> ${st.resources ?? 0} <i>/ ${cap}</i></span>
     <span class="hud-val"><img src="${UNIT_ICONS.population}" alt="" /> ${st.population ?? 0}</span>
     <span class="hud-val mono">tick ${world.tick ?? st.tick ?? '—'}</span>
-  </div>${surveyRow}${lcRow}${hudCmd}`;
+  </div>${surveyRow}${lcRow}${hudCmd}${squadRow}`;
 }
 /* ============ 回放引擎（连续 tick 快照 → 单位移动动画 + 15s 读条） ============ */
 function replayDrawLayer(s: any) {
@@ -4338,6 +4346,22 @@ export function createMapEngine(host: any) {
   minimap.init();
   const api = {
     toggleSolo: (t: any) => toggleSolo(t),
+    focusTenant: (t: any) => {
+      // 决策流点击联动（2026-08-08）：聚焦该租户并 fitSolo 定位；已聚焦则重置视野到全貌。
+      if (state.soloTenant !== t) {
+        state.soloTenant = t;
+        invalidateStatic();
+        fitSolo(t);
+        tactShowTenant(t);
+        syncSoloBadge();
+        emit('solo', state.soloTenant);
+        els.respawnOverlay.hidden = true;
+        toast(`已定位 ${t.toUpperCase()} · 决策流聚焦（Esc/G 返回全局）`, 'info');
+      } else {
+        fitSolo(t);
+        draw();
+      }
+    },
     exitSolo: () => exitSolo(),
     fitView: () => fitView(),
     fitSolo: (t: any) => fitSolo(t),

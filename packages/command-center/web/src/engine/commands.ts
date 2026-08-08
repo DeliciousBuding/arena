@@ -95,3 +95,24 @@ export function unitCommandLabel(tac: any, tenant: string, unitId: any, plan: an
   return null;
 }
 
+/** 编队多选摘要（Shift 框选/加选 HUD）：受控 UNIT ≥2 时返回
+ *  { count, parts(工/锋/射 构成), hpAvg, hpMin }；否则 null。纯派生可单测。 */
+export function squadSummary(tac: any, world: any): { count: number; parts: string; hpAvg: number; hpMin: number } | null {
+  if (!tac || !world?.state?.objects) return null;
+  const members = world.state.objects.filter((o: any) => tac.multi?.has?.(o.id) && o.kind === "UNIT");
+  if (members.length < 2) return null;
+  const cnt: Record<string, number> = {};
+  let hpSum = 0, hpMin = Infinity;
+  for (const o of members) {
+    const t = o.unit_type ?? "?";
+    cnt[t] = (cnt[t] ?? 0) + 1;
+    const hp = Number(o.hp ?? o.health ?? 0);
+    hpSum += hp;
+    if (hp < hpMin) hpMin = hp;
+  }
+  const parts = ["WORKER", "VANGUARD", "RANGER"]
+    .map((t) => cnt[t] ? cnt[t] + (t === "WORKER" ? "工" : t === "VANGUARD" ? "锋" : "射") : "")
+    .filter(Boolean).join("/");
+  return { count: members.length, parts: parts || "—", hpAvg: Math.round(hpSum / members.length), hpMin: hpMin === Infinity ? 0 : hpMin };
+}
+
