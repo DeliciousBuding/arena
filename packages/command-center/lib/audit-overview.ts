@@ -18,6 +18,7 @@ import { loadAllianceMining, type AllianceMiningPayload } from "./alliance-minin
 import { loadDecisionTrend } from "./decision-audit.ts";
 import { loadMineUtilizationTrend } from "./mine-utilization.ts";
 import { loadMiningEffectiveness, type MiningEffectivenessPayload } from "./mining-effectiveness.ts";
+import { loadAlignmentAudit, type AlignmentPayload } from "./alignment-audit.ts";
 
 const TTL_MS = 30_000;
 
@@ -86,6 +87,8 @@ export interface AuditOverviewPayload {
     currentTick: number | null;
     /** 分工兑现汇总（2026-08-08）：全局分配/采到/在途/失效 + effectiveRate。 */
     miningFulfillment: { assigned: number; harvested: number; harvestedByOther: number; open: number; stale: number; effectiveRate: number | null } | null;
+    /** 决策-分配对齐汇总（2026-08-08）：misaligned/aligned/dataGap + 未兑现分工数。 */
+    alignment: { aligned: number; misaligned: number; dataGap: number; unfulfilledAssignments: number } | null;
   };
   cachedAt: string;
 }
@@ -108,6 +111,7 @@ export function aggregateAuditOverview(
   conflicts: Record<string, HumanConflictPayload> = {},
   mining: AllianceMiningPayload | null = null,
   miningEff: MiningEffectivenessPayload | null = null,
+  alignment: AlignmentPayload | null = null,
   trends: Record<string, { coreDelta: number; coreDeltaPrev: number; visibleNever: number; visibleNeverPrev: number; stallRate: number | null }> = {},
 ): AuditOverviewPayload {
   const tenants: Record<string, TenantAuditOverview> = {};
@@ -201,6 +205,12 @@ export function aggregateAuditOverview(
         stale: num(miningEff.global?.stale),
         effectiveRate: miningEff.global?.effectiveRate ?? null,
       } : null,
+      alignment: alignment ? {
+        aligned: num(alignment.global?.aligned),
+        misaligned: num(alignment.global?.misaligned),
+        dataGap: num(alignment.global?.dataGap),
+        unfulfilledAssignments: num(alignment.global?.unfulfilledAssignments),
+      } : null,
     },
     cachedAt: new Date().toISOString(),
   };
@@ -236,7 +246,7 @@ export function loadAuditOverview(): AuditOverviewPayload {
       };
     } catch { /* 趋势不可用跳过 */ }
   }
-  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts, mining, miningEff, trends);
+  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts, mining, miningEff, loadAlignmentAudit(), trends);
   cache.set("overview", payload);
   return payload;
 }

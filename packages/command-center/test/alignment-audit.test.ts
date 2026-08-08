@@ -10,22 +10,20 @@ import { aggregateAlignment } from "../lib/alignment-audit.ts";
 
 const dec = (harvest: number, move = 10, wait = 5) => ({
   decision: { records: harvest + move + wait, actionMix: { move, harvest, deposit: 0, wait, repair: 0 }, intentTop: [], planChurn: null, stallTicks: 0 },
-}) as import("../lib/decision-audit.ts").DecisionAuditPayload;
+}) as unknown as import("../lib/decision-audit.ts").DecisionAuditPayload;
 
 test("alignment: 分工未兑现 + 缺口扩大分级", () => {
   const decisions = { t1: dec(5), t2: dec(1) };
-  const mines = { t1: { visibleNever: 3 }, t2: { visibleNever: 55 } } as import("../lib/mine-utilization.ts").MineUtilizationPayload["tenants"];
+  const mines = { t1: { visibleNever: 3 }, t2: { visibleNever: 55 } } as unknown as import("../lib/mine-utilization.ts").MineUtilizationPayload["tenants"];
   const effectiveness = {
     perTenant: {
       t1: { assigned: 3, open: 0, stale: 0, harvested: 3 },
       t2: { assigned: 53, open: 53, stale: 0, harvested: 0 },
     },
-  } as import("../lib/mining-effectiveness.ts").MiningEffectivenessPayload;
-  const overview = {
-    tenants: { t2: { trend: { visibleNever: 55, visibleNeverPrev: 13 } } },
-  } as import("../lib/audit-overview.ts").AuditOverviewPayload;
+  } as unknown as import("../lib/mining-effectiveness.ts").MiningEffectivenessPayload;
+  const trends = { t2: { visibleNever: 55, visibleNeverPrev: 13 } };
 
-  const p = aggregateAlignment(decisions, mines, effectiveness, overview);
+  const p = aggregateAlignment(decisions, mines, effectiveness, trends);
   const t1 = p.tenants.t1;
   assert.equal(t1.grade, "aligned", "已兑现 + 缺口小 → aligned");
   assert.ok(t1.reasons.some((r) => r.includes("采集占比")));
@@ -39,7 +37,7 @@ test("alignment: 分工未兑现 + 缺口扩大分级", () => {
 });
 
 test("alignment: data_gap 兜底", () => {
-  const p = aggregateAlignment({}, {}, null, null);
+  const p = aggregateAlignment({}, {}, null);
   assert.equal(p.tenants.t1.grade, "data_gap");
   assert.equal(p.global.dataGap, 4);
   assert.equal(p.global.misaligned, 0);
