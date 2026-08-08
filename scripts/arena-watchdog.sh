@@ -159,7 +159,9 @@ echo "$(now) supervisor restarted (pid $!, alliance-shadow=3 director=ASSIST_ONL
 # 测绘库增量同步（2026-08-08，survey-db 联动）：重启后同步最新 run 的
 # calibration case → 测绘库（幂等；供下次启动 seed + 面板 /api/survey）。
 # 只读 calibration + 写 survey 库，与 supervisor 无 writer 冲突。
-(cd "$REPO" && npm run survey:sync --silent -- --tenants=t1,t2,t3,t4 --latest-only) >> "$LOG" 2>&1 || true
+# 2026-08-08 修复：必须显式 --data-root（CLI 默认解析到 worktree 内 data，
+# 不存在 → 同步静默空跑，矿生命周期状态不更新——"过时矿"数据链根因之一）。
+(cd "$REPO" && npm run survey:sync --silent -- --data-root="$DATA_ROOT" --tenants=t1,t2,t3,t4 --latest-only) >> "$LOG" 2>&1 || true
 
 
 

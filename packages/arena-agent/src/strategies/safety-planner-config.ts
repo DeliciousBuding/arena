@@ -409,9 +409,19 @@ export interface SafetyPlannerConfig {
   readonly outnumberedRetreat?: boolean;
   /** 寡不敌众判定半径（Chebyshev，默认 aggressive 10 / defensive 6）。 */
   readonly outnumberedRetreatRadius?: number;
-  /** 寡不敌众判定半径（Chebyshev，默认 aggressive 10 / defensive 6）。 */
   /**
-   * 弱核优先攻坚（2026-08-08，weak-core-first-v1，guide "已知核心优先选无护卫"
+   * VANGUARD 预判拦截（2026-08-08，vanguard-blockade-v1，手操实战实证见
+   * docs/progress/evidence/vanguard-intercept-20260808.md）：VANGUARD 复用
+   * 回程预测（enemyReturnPath）预判可见敌方 WORKER 的前进路径，去拦截点
+   * 站桩——敌方撞上（MOVE_DESTINATION_OCCUPIED）被卡，邻接 SWEEP 白打
+   * （锁+收割一体，对比 worker-blockade 只能挡不能打）。默认 false。
+   */
+  readonly vanguardBlockade?: boolean;
+  /** VANGUARD 锁位数量上限（默认 1）。 */
+  readonly vanguardBlockadeCap?: number;
+  /** 拦截站桩锁龄上限（默认 20）。 */
+  readonly vanguardBlockadeMaxTicks?: number;
+  /** 弱核优先攻坚（2026-08-08，weak-core-first-v1，guide "已知核心优先选无护卫"
    * 对照）：多敌核时攻坚/狩猎优先打守军少的（击杀概率高，防攻坚守军堆叠送死）；
    * 无兵力记忆的核视为无护卫（弱目标优先）。tie-break：新鲜度 → 距我方 Core 近。
    * 默认 false = 历史行为（CORE 优先→最新→坐标，零回归）。
