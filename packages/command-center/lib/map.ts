@@ -99,9 +99,18 @@ function loadMergedMapInner(): MergedMap {
       if (afterTick > latestTick) latestTick = afterTick;
       const after = lastCaseRaw?.after?.state;
       if (after?.objects) {
-        unitById.clear(); coreById.clear();
+        // 地形重建（2026-08-08，数据质量 A7）：after 是全量世界状态（含
+        // OBSTACLE/RESOURCE，资源点动态 2-6 tick 消失）——此前只清单位/核心，
+        // terrain 是 before 循环累积（run 内出现过即保留），已消失的矿/障碍仍
+        // 显示在地图上（"绿色残留"地图层根因）。after 存在时重建地形为当前态。
+        terrain.clear(); unitById.clear(); coreById.clear();
         for (const obj of after.objects) {
-          if (obj.kind === "UNIT" && obj.id) {
+          if (obj.kind === "OBSTACLE" || obj.kind === "RESOURCE") {
+            const type = obj.kind === "OBSTACLE" ? "obstacle" : "resource";
+            for (const [x, y] of (obj.positions as number[][] | undefined) ?? []) {
+              terrain.set(cellKey(x, y), { x, y, type, tick: latestTick });
+            }
+          } else if (obj.kind === "UNIT" && obj.id) {
             const [x, y] = (obj.position as number[] | undefined) ?? [0, 0];
             unitById.set(obj.id as string, { x, y, type: "unit", tick: latestTick, hp: obj.hp as number, unitType: (obj.unit_type as string | undefined) ?? "WORKER", cargo: (obj.cargo as number | undefined) ?? 0, controlled: obj.controlled as boolean, id: obj.id as string });
           } else if (obj.kind === "CORE") {
