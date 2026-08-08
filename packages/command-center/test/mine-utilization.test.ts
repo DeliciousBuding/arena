@@ -12,7 +12,7 @@ import { aggregateMineUtilization } from "../lib/mine-utilization.ts";
 test("mine-utilization: 缺口汇总 + 候选排序 + 首采耗时", () => {
   const resources = [
     { cell: "1,1", x: 1, y: 1, firstSeenTick: 100, lastSeenTick: 4800, seenCount: 40 }, // visible, harvested
-    { cell: "2,2", x: 2, y: 2, firstSeenTick: 200, lastSeenTick: 4700, seenCount: 20 }, // visible, never
+    { cell: "2,2", x: 2, y: 2, firstSeenTick: 200, lastSeenTick: 4850, seenCount: 20 }, // visible, never
     { cell: "3,3", x: 3, y: 3, firstSeenTick: 50, lastSeenTick: 2500, seenCount: 10 },  // stale, never
     { cell: "4,4", x: 4, y: 4, firstSeenTick: 60, lastSeenTick: 2200, seenCount: 5 },   // stale, harvested
   ];
@@ -22,7 +22,7 @@ test("mine-utilization: 缺口汇总 + 候选排序 + 首采耗时", () => {
     { cell: "4,4", tick: 90, eventType: "HARVEST_SUCCEEDED", amount: 1 },
     { cell: "4,4", tick: 95, eventType: "HARVEST_FAILED", amount: null },
   ];
-  // currentTick=5000 → 新鲜窗口 cutoff=3000：1,1/2,2 visible，3,3/4,4 stale
+  // currentTick=5000 → 新鲜窗口 cutoff=4800（RESOURCE_FRESH_WINDOW_TICKS=200 统一）：1,1/2,2 visible，3,3/4,4 stale
   const a = aggregateMineUtilization("t1", 5000, resources, events);
   assert.equal(a.total, 4);
   assert.equal(a.harvested, 2);
@@ -39,10 +39,10 @@ test("mine-utilization: 缺口汇总 + 候选排序 + 首采耗时", () => {
 });
 
 test("mine-utilization: gapAge 发现后仍未采时长", () => {
-  // currentTick=5000：可见未开采 2,2（firstSeen 200）→ gapAge 4800；已采 1,1 → null
+  // currentTick=5000：可见未开采 2,2（firstSeen 200）→ gapAge 4800；已采 1,1 → null（2,2 lastSeen 4850 ≥ cutoff 4800 保持 visible）
   const resources = [
     { cell: "1,1", x: 1, y: 1, firstSeenTick: 100, lastSeenTick: 4800, seenCount: 40 },
-    { cell: "2,2", x: 2, y: 2, firstSeenTick: 200, lastSeenTick: 4700, seenCount: 20 },
+    { cell: "2,2", x: 2, y: 2, firstSeenTick: 200, lastSeenTick: 4850, seenCount: 20 },
     { cell: "3,3", x: 3, y: 3, firstSeenTick: 1000, lastSeenTick: 4600, seenCount: 5 },
   ];
   const events = [

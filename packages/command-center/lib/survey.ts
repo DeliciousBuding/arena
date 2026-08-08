@@ -22,6 +22,9 @@ export interface SurveyData {
   chunks?: Array<Record<string, unknown>>;
 }
 
+/** 矿格级新鲜度窗口（全库共享，2026-08-08 数据质量一致性）：
+ *  mine-patterns / mine-utilization / survey 三处统一引用此常量，避免“同一矿地图显示 stale 但审计显示 visible”的状态分歧。
+ *  注：chunk 级探索覆盖窗口（exploration-coverage FRESH_WINDOW_TICKS=2000）是区域探索频率，与矿格级不同类。 */
 /**
  * 矿新鲜度窗口（2026-08-08，数据质量 A6）：last_seen 超过该 tick 数视为历史残留（state=stale）。
  * 窗口按 refill 周期实证（同格 re-appear gap：最短 2 tick、均值 ~37 tick）取 200：

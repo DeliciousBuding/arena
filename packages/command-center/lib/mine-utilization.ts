@@ -17,10 +17,11 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { DATA_ROOT, TENANTS } from "./fs-jsonl.ts";
 import { TtlCache } from "./cache.ts";
+import { RESOURCE_FRESH_WINDOW_TICKS } from "./survey.ts";
 
 const TTL_MS = 30_000;
 /** 新鲜度窗口与 survey.ts A6 / mine-patterns 一致。 */
-const FRESH_TICKS = 2000;
+// 矿格级新鲜窗口与 survey.ts 统一（200 tick，避免与地图层状态分歧）。
 
 export interface MineResourceRow {
   cell: string;
@@ -117,7 +118,7 @@ export function aggregateMineUtilization(
     byCell.set(ev.cell, a);
   }
 
-  const cutoff = currentTick === null ? 0 : currentTick - FRESH_TICKS;
+  const cutoff = currentTick === null ? 0 : currentTick - RESOURCE_FRESH_WINDOW_TICKS;
   const entries: MineUtilEntry[] = [];
   let total = 0, harvested = 0, neverHarvested = 0, visibleNever = 0, staleNever = 0;
   const firstHarvestTimes: number[] = [];
@@ -241,7 +242,7 @@ export function aggregateMineUtilizationTrend(
   for (let i = 0; i < steps; i += 1) {
     const endTick = base - (steps - 1 - i) * window;
     let total = 0, visible = 0, visibleNever = 0;
-    const cutoff = endTick - FRESH_TICKS;
+    const cutoff = endTick - RESOURCE_FRESH_WINDOW_TICKS;
     for (const r of resources) {
       total += 1;
       if (num(r.firstSeenTick) <= endTick && num(r.lastSeenTick) >= cutoff) {
