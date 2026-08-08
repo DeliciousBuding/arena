@@ -37,6 +37,12 @@ export interface WorkerLivenessEvent {
   readonly explorationChunk: string;
   readonly knownExplorationChunks: number;
   readonly recoveryCount: number;
+  /** 打转封锁闭环（W5）：恢复时把上次的 plannedMove 目标格作为封锁候选上报。
+   *  safety-planner.recoverWorker 读取此字段后调 blockCell 把死目标冷却。
+   *  仅对 movement-failure 类（oscillation / move_no_effect）填充，且目标龄
+   *  >= FRESH_TARGET_TICKS 才填（新鲜目标保护：age<8 不封锁，避免误杀刚指派的
+   *  合理新目标——参考 arena_hero_strategy.py:5932）。缺省 = undefined = 不封锁。 */
+  readonly blockedTarget?: Position;
 }
 
 export interface WorkerLivenessOptions {
@@ -70,6 +76,21 @@ export const DEFAULT_WORKER_LIVENESS_OPTIONS: Required<WorkerLivenessOptions> = 
   graceTicks: 2,
   cooldownTicks: 8,
 };
+
+/** 打转封锁（W5）——参考 arena_hero_strategy.py:1292-1293。
+ *  MOVE_FAILED 目标格冷却：把死目标写入 temporary_blocks，penalty=12 对
+ *  MOVE_CONTESTED/MOVE_DESTINATION_OCCUPIED/MOVE_SWAP_BLOCKED（强竞争类，目标
+ *  实际被占），penalty=4 其他失败（路径瞬时拥堵）。 */
+export const MOVE_CONTESTED_BLOCK_PENALTY = 12;
+export const OTHER_MOVE_FAIL_BLOCK_PENALTY = 4;
+/** 新鲜目标保护（参考 :5932）：plannedMove 目标龄 <此 tick 时不作为
+ *  blockedTarget 上报，避免刚指派的合理新目标被 MOVE_FAILED 误封锁。 */
+export const FRESH_TARGET_TICKS = 8;
+
+/** 格子键（与 worker-task-planner.cellKey 同格式 "x,y"）。 */
+function blockadeKey(target: Position): string {
+  return `${target[0]},${target[1]}`;
+}
 
 interface Sample {
   readonly position: Position;
@@ -143,6 +164,18 @@ export class WorkerLivenessTracker {
   private readonly tracks = new Map<string, WorkerTrack>();
   /** Global coverage known to this runtime (seeded from survey-db + newly visited worker chunks). */
   private readonly knownExplorationChunks = new Set<string>();
+  /** 打转封锁（W5）：死目标格冷却。key=`${x},${y}`，value=到期 tick（exclusive，
+   *  currentTick >= expiry 即过期释放）。MOVE_FAILED 目标格写入，WorkerTaskPlanner
+   *  在 Hungarian 候选排序时 isCellBlocked 排后——防 Hungarian 把打转 worker 重派
+   *  回同一死目标（"检测→恢复→重派→再打转"循环）。参考 :1292-1293。 */
+  private readonly temporaryBlocks = new Map<string, number>();
+  /** workerId → 上次计划的目的地（plannedMove）。MOVE_FAILED 时据此知道封哪个格；
+   *  UNIT_MOVE_SUCCEEDED 时由 clearPlannedMove 清除。调用方（planner/tenant-runtime）
+   *  在生成 GO_RESOURCE 计划时 recordPlannedMove 登记。 */
+  private readonly plannedMoves = new Map<string, Position>();
+  /** workerId → plannedMove 登记时的 tick。新鲜目标（age<FRESH_TARGET_TICKS）
+   *  不作为 blockedTarget 上报（误封锁保护）。 */
+  private readonly plannedMoveSinceTick = new Map<string, number>();
 
   constructor(options: WorkerLivenessOptions = {}) {
     this.options = { ...DEFAULT_WORKER_LIVENESS_OPTIONS, ...options };
@@ -155,9 +188,58 @@ export class WorkerLivenessTracker {
     for (const key of chunks) this.knownExplorationChunks.add(key);
   }
 
+  /** 登记该 worker 本 tick 计划的目的地（GO_RESOURCE target 等）。MOVE_FAILED
+   *  时 WorkerLivenessTracker 据此把目标格写入 temporaryBlocks。currentTick 缺省
+   *  = 不记龄（视为非新鲜，可被封锁——保留与旧调用方兼容的零回归回退）。 */
+  recordPlannedMove(unitId: string, target: Position, currentTick?: number): void {
+    this.plannedMoves.set(unitId, copyPosition(target));
+    if (currentTick !== undefined) this.plannedMoveSinceTick.set(unitId, currentTick);
+  }
+
+  /** UNIT_MOVE_SUCCEEDED 时清该 worker 的 plannedMove 记账（目标已到达，不再
+   *  是封锁候选）。参考 :1292 UNIT_MOVE_SUCCEEDED 时清 planned_moves。 */
+  clearPlannedMove(unitId: string): void {
+    this.plannedMoves.delete(unitId);
+    this.plannedMoveSinceTick.delete(unitId);
+  }
+
+  /** 把目标格写入封锁冷却至 currentTick + penaltyTicks。penaltyTicks 用
+   *  MOVE_CONTESTED_BLOCK_PENALTY（12）或 OTHER_MOVE_FAIL_BLOCK_PENALTY（4）。
+   *  重复封锁取较晚到期（max），避免短 penalty 覆盖长 penalty 提前释放。 */
+  blockCell(target: Position, currentTick: number, penaltyTicks: number): void {
+    if (penaltyTicks < 0) return;
+    const key = blockadeKey(target);
+    const expiry = currentTick + penaltyTicks;
+    const previous = this.temporaryBlocks.get(key);
+    if (previous === undefined || expiry > previous) {
+      this.temporaryBlocks.set(key, expiry);
+    }
+  }
+
+  /** 目标格是否处于封锁冷却。到期自动清理（lazy：读时删过期项），过期返回 false。
+   *  WorkerTaskPlanner 在 Hungarian 候选排序时调用——封锁格排后（不剔除，保证
+   *  全部候选都被封锁时仍能分配）。 */
+  isCellBlocked(target: Position, currentTick: number): boolean {
+    const key = blockadeKey(target);
+    const expiry = this.temporaryBlocks.get(key);
+    if (expiry === undefined) return false;
+    if (currentTick >= expiry) {
+      this.temporaryBlocks.delete(key);
+      return false;
+    }
+    return true;
+  }
+
   onObservation(obs: WorkerLivenessObservation): readonly WorkerLivenessEvent[] {
     const live = new Set(obs.workers.map((worker) => worker.id));
-    for (const id of this.tracks.keys()) if (!live.has(id)) this.tracks.delete(id);
+    for (const id of this.tracks.keys()) {
+      if (!live.has(id)) {
+        this.tracks.delete(id);
+        // worker 消失同步清记账，防 id 复用时残留旧 plannedMove 干扰新鲜目标判定。
+        this.plannedMoves.delete(id);
+        this.plannedMoveSinceTick.delete(id);
+      }
+    }
 
     const human = obs.humanControlledUnitIds ?? new Set<string>();
     const events: WorkerLivenessEvent[] = [];
@@ -256,6 +338,7 @@ export class WorkerLivenessTracker {
             explorationChunk: workerChunks.get(worker.id)!,
             knownExplorationChunks: this.knownExplorationChunks.size,
             recoveryCount: previous.recoveryCount,
+            blockedTarget: this.computeBlockedTarget(candidate.kind, worker.id, obs.tick),
           });
           previous.cooldownUntilTick = obs.tick + this.options.cooldownTicks;
           previous.recent = [{ position: copyPosition(worker.position), cargo: worker.cargo, actionType: action.type, intent }];
@@ -302,6 +385,25 @@ export class WorkerLivenessTracker {
       return { kind: "idle_wait", streak: track.idleWait };
     }
     return null;
+  }
+
+  /** 计算事件应上报的 blockedTarget。仅 oscillation / move_no_effect（movement-
+   *  failure 类）才上报——这两类的恢复才会把死目标格封锁。新鲜目标（age<
+   *  FRESH_TARGET_TICKS，:5932）返回 undefined：刚指派的合理新目标不应被 MOVE_FAILED
+   *  误封锁。plannedMove 未登记（调用方未 record）也返回 undefined（零回归）。 */
+  private computeBlockedTarget(
+    kind: WorkerLivenessKind,
+    unitId: string,
+    currentTick: number,
+  ): Position | undefined {
+    if (kind !== "oscillation" && kind !== "move_no_effect") return undefined;
+    const target = this.plannedMoves.get(unitId);
+    if (target === undefined) return undefined;
+    const sinceTick = this.plannedMoveSinceTick.get(unitId);
+    if (sinceTick === undefined) return copyPosition(target); // 无龄信息：视为非新鲜，可封锁
+    const age = currentTick - sinceTick;
+    if (age < FRESH_TARGET_TICKS) return undefined; // 新鲜目标保护
+    return copyPosition(target);
   }
 
   private resetStreaks(track: WorkerTrack): void {

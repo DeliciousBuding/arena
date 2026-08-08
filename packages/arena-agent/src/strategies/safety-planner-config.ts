@@ -398,6 +398,53 @@ export interface SafetyPlannerConfig {
    */
   readonly coordinatedFire?: boolean;
   /**
+   * 打转封锁闭环（2026-08-09，spin-blockade-v1，W5）：WorkerLivenessTracker
+   * 检测 oscillation/moveNoEffect 后把目标格写入 temporary_blocks（penalty
+   * 12/4 tick），Hungarian 重派绕开——根治"检测→恢复→重派→再打转"循环
+   * （A1 缺陷 1）。封锁状态由 WorkerLivenessTracker 管理（blockCell/
+   * isCellBlocked/clearPlannedMove），safety-planner.recoverWorker 在变体启用
+   * 时调 blockCell 把上次计划目的地写入封锁、decideWorker 候选排序时
+   * isCellBlocked 的格排后。默认 false = 历史行为（恢复不封锁，零回归）。
+   * 目标龄 <8 tick 不被误清（新鲜目标保护）。
+   */
+  readonly spinBlockade?: boolean;
+  /**
+   * beacon-hold-v1（2026-08-09，W9，持标反馈）：持标时官方规则盾上限 5→10
+   * （maxShieldWithBeacon，sim 层已正确，策略层 safety-planner.ts:2921/3066
+   * + plan-validator.ts:179 硬编码 5 待接线）。持标判定 = state.beacon.status
+   * === "CARRIED" 且 carrierId 是我方单位（与 W 源码 _owns_beacon :2172 一致）。
+   * 默认 false = 盾上限 5（非持标零回归）；true 时持标盾上限 10，repair 优先
+   * 到 10。产兵储备/economic leash（_choose_beacon :3550 P2 反馈）留后续。
+   */
+  readonly beaconHold?: boolean;
+  /**
+   * cargo 三件套（2026-08-09，cargo-rescue-v1，W6）：满载 worker 清旧目标
+   * （不追空矿冻结）+ 入口满排队 hold（距 Core ≤2 且容量满 → 原地 WAIT）+
+   * cargoBlockedSelfHeal（Core 靠拢救援，P2 待接线）。A2 缺陷：载货 worker
+   * 不清旧目标/无入口排队/cargo 被堵无救援（6 tick 无限循环）。默认 false =
+   * 历史行为（零回归）。参考：arena_hero_strategy.py cargo_blocked :9934 /
+   * cargo_queue_hold :3707 / clear_worker_goal :1563。
+   */
+  readonly cargoRescue?: boolean;
+  /**
+   * 探索半径模式化 + wide 合并（2026-08-09，explore-radius-wide-v1，W8）：
+   * 启用后消费侧（safety-planner.ts/worker-task-planner.ts，由收口统一接线）
+   * 按 {@link WIDE_EXPLORE_DEFAULTS} 覆盖窄模式常量——exploreRadius 8→16、
+   * harvestMemoryMaxDist 40→80、maxCollectionDistance 24→64，让矿带中位 139 格
+   * 的远矿进入候选集（t3 事故根因：四重夹击 exploreRadius=8 + MEMORY_MAX_DIRECT=40
+   * + HARVEST_MEMORY_MAX=40 + maxCollection=24）。默认 false/undefined = 窄模式
+   * （历史行为，零回归）。参考：arena_hero_strategy.py :109-130 半径常量区。
+   */
+  readonly exploreRadiusWide?: boolean;
+  /** wide 模式采集候选上限（默认 64，窄模式沿用 maxCollectionDistance=24）。 */
+  readonly maxCollectionDistanceWide?: number;
+  /** develop 模式 leash 距离（默认 38，对齐 DEVELOP_RESOURCE_TARGET_CORE_LEASH :109）。 */
+  readonly developLeashDist?: number;
+  /** aggress sweep 最大半径（默认 28，对齐 AGGRESS_RESOURCE_SWEEP_MAX :115）。 */
+  readonly aggressSweepMax?: number;
+  /** beacon sweep 最大半径（默认 36，对齐 BEACON_RESOURCE_SWEEP_MAX :121）。 */
+  readonly beaconSweepMax?: number;
+  /**
    * 近核入侵观察（2026-08-08，core-threat-watch-v1）：敌单位距我方 Core
    * ≤ coreThreatWatchRadius（Chebyshev 默认 18）即入长 TTL 观察记忆
    * （coreThreatWatchTicks，默认 60）——短 TTL（enemyHints 6 / stationary 12）
@@ -501,6 +548,19 @@ export interface SafetyPlannerConfig {
   /** 拦截站桩锁龄上限（默认 20）：到达拦截点后 N tick 目标未到 → 放弃
    *  （预测错误/目标转向，防 Vanguard 长期闲置）。 */
   readonly vanguardBlockadeMaxTicks?: number;
+  /** cargoBlockedSelfHeal 冷却（tick，默认 30）：靠拢触发后 N tick 内不重触发
+   *  ——避免每 tick 都迁移（迁移中不产兵，频繁靠拢 = 经济停滞）。 */
+  readonly cargoBlockedSelfHealCooldownTicks?: number;
+  /** cargoBlockedSelfHeal 靠拢卡死超时（tick，默认 10）：靠拢路径被堵 N tick 仍
+   *  未到最近满载 worker 邻格 → 放弃靠拢（恢复 NORMAL/产兵），防永久迁移空跑。 */
+  readonly cargoBlockedSelfHealStallTicks?: number;
+  /** cargoBlockedSelfHeal 触发的满载 worker 数量下限（默认 2）：同时 ≥N 个
+   *  满载 worker 长时间 cargo 不变才触发靠拢（单个卡顿可能是正常排队，不应惊动
+   *  Core 移动）。 */
+  readonly cargoBlockedSelfHealMinWorkers?: number;
+  /** cargoBlockedSelfHeal 的"cargo 不变"持续 tick 阈值（默认 6）：满载 worker
+   *  连续 N tick cargo 不变视为"被堵"（与 liveness 6 tick 无限循环同口径）。 */
+  readonly cargoBlockedSelfHealStallCargoTicks?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
@@ -521,6 +581,41 @@ export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
 export const AGGRESSIVE_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
   ...DEFAULT_SAFETY_CONFIG,
   aggression: "aggressive",
+});
+
+/**
+ * W8 wide 模式默认值（探索半径模式化 + wide 合并，2026-08-09）。
+ *
+ * 当 {@link SafetyPlannerConfig.exploreRadiusWide} = true 时，消费侧（safety-
+ * planner.ts / worker-task-planner.ts，由收口统一接线）按下表覆盖窄模式常量，
+ * 让矿带中位 139 格的远矿进入候选集（t3 事故根因）：
+ *
+ * | 维度 | 窄模式（现状） | wide 默认 | 对齐 reference |
+ * |------|--------------|----------|----------------|
+ * | exploreRadius | 8（5 环 40 封顶） | 16 | 半径放大一档 |
+ * | harvestMemoryMaxDist | 40 | 80 | 记忆矿追猎上限翻倍 |
+ * | maxCollectionDistanceWide | — | 64 | 采集候选上限（窄 24→wide 64）|
+ * | developLeashDist | — | 38 | DEVELOP_RESOURCE_TARGET_CORE_LEASH_DISTANCE :109 |
+ * | aggressSweepMax | — | 28 | AGGRESS_RESOURCE_SWEEP_MAX :115 |
+ * | beaconSweepMax | — | 36 | BEACON_RESOURCE_SWEEP_MAX :121 |
+ *
+ * 兜底：80 格无差别扫图风险由 leash + 并发上限 + netValue 门槛（netValue 接线
+ * 由收口处理）共同约束；未启用 exploreRadiusWide 时本常量不被消费（零回归）。
+ */
+export const WIDE_EXPLORE_DEFAULTS: Readonly<{
+  readonly exploreRadius: number;
+  readonly harvestMemoryMaxDist: number;
+  readonly maxCollectionDistanceWide: number;
+  readonly developLeashDist: number;
+  readonly aggressSweepMax: number;
+  readonly beaconSweepMax: number;
+}> = Object.freeze({
+  exploreRadius: 16,
+  harvestMemoryMaxDist: 80,
+  maxCollectionDistanceWide: 64,
+  developLeashDist: 38,
+  aggressSweepMax: 28,
+  beaconSweepMax: 36,
 });
 
 

@@ -277,6 +277,48 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * （缺注册 = 生产重启 fail-fast）。
      */
     "lean-spend-v1": Object.freeze({}),
+    /**
+     * 打转封锁闭环（2026-08-09，spin-blockade-v1，W5）：WorkerLivenessTracker
+     * 检测 oscillation/moveNoEffect 后把目标格写入 temporary_blocks（penalty
+     * 12/4 tick），Hungarian 重派绕开——根治"检测→恢复→重派→再打转"循环
+     * （A1 缺陷 1）。封锁能力由 WorkerLivenessTracker（blockCell/isCellBlocked
+     * /clearPlannedMove）提供、worker-task-planner 候选排序消费；safety-planner
+     * recoverWorker 调 blockCell 的接线由收口后续处理。默认关零回归。
+     */
+    "spin-blockade-v1": Object.freeze({ spinBlockade: true }),
+    /**
+     * cargo 三件套（2026-08-09，cargo-rescue-v1，W6）：满载 worker 清旧目标
+     * + 入口满排队 hold + cargoBlockedSelfHeal（Core 靠拢救援，P2 待接线）。
+     * A2 缺陷：载货 worker 追空矿冻结/无入口排队/cargo 被堵无救援。config 开关
+     * + CARGO_* 常量已就绪，decideWorker/decideCore 消费接线由收口后续处理。
+     * 默认关零回归。
+     */
+    "cargo-rescue-v1": Object.freeze({ cargoRescue: true }),
+    /**
+     * chunk 配额复察队（2026-08-09，chunk-resurvey-v1，W7）：采集成功 → 4-tick
+     * 推算 → 配额定向复察（chunkKey/refillTickAtOrAfter/chunkQuota/
+     * refillProbeAllowed/planChunkResurvey 纯函数已就绪，intel/refill-predictions.ts）。
+     * M3 逐格预测消费接线（双轨/单轨审计）+ safety-planner 复察消费由收口后续
+     * 处理。默认关零回归（纯函数不接线不影响生产行为）。
+     */
+    "chunk-resurvey-v1": Object.freeze({}),
+    /**
+     * 探索半径模式化 + wide 合并（2026-08-09，explore-radius-wide-v1，W8）：
+     * exploreRadius 8→16 + harvestMemoryMaxDist 40→80 + maxCollectionDistance
+     * 24→64 + 模式化 leash（develop 38/aggress 28/beacon 36），让矿带中位 139
+     * 格的远矿进入候选集（t3 事故根因：四重夹击）。nav.ts 纯函数 +
+     * WIDE_EXPLORE_DEFAULTS + config 字段已就绪；safety-planner/worker-task-
+     * planner 消费接线 + netValue 门槛由收口后续处理。默认关零回归。
+     */
+    "explore-radius-wide-v1": Object.freeze({ exploreRadiusWide: true }),
+    /**
+     * beacon-hold 持标反馈（2026-08-09，beacon-hold-v1，W9）：持标时官方规则
+     * 盾上限 5→10（maxShieldWithBeacon）。sim 层已正确；策略层 plan-validator
+     * + safety-planner.shieldCap 已接线（持标 = CARRIED + carrier 我方单位，
+     * 与 W 源码 _owns_beacon :2172 一致）。产兵储备/economic leash（P2 反馈，
+     * _choose_beacon :3550）留后续。默认关零回归（非持标 shieldCap=5）。
+     */
+    "beacon-hold-v1": Object.freeze({ beaconHold: true }),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要
