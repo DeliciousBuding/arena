@@ -84,14 +84,36 @@ export function loadAllianceSurvey(): AllianceSurveyPayload {
     list.push(r);
     resByCell.set(k, list);
   }
+  // 仲裁规则（2026-08-08，蓝图 §2 同口径）：同格矿，lastSeenTick 最新者胜
+  // （记忆新鲜=占矿）；同 tick 平局按租户序 t1<t2<t3<t4。败者该格应写入负记忆
+  // （HARVEST_FAILED NOT_RESOURCE_CELL 同类机制），worker 不再追。
   const resourceOverlaps = [...resByCell.entries()]
     .filter(([, rows]) => rows.length > 1)
-    .map(([cell, rows]) => ({
-      cell,
-      tenants: rows.map((r) => r.tenant),
-      states: rows.map((r) => r.state),
-      lastSeenTicks: rows.map((r) => r.tick),
-    }))
+    .map(([cell, rows]) => {
+      const winner = [...rows].sort((a, b) => {
+        const ta = Number(a.tick ?? 0);
+        const tb = Number(b.tick ?? 0);
+        if (ta !== tb) return tb - ta;
+        return String(a.tenant).localeCompare(String(b.tenant));
+      })[0];
+      const losers = rows.filter((r) => r !== winner).map((r) => r.tenant);
+      const tieBroken = rows.every((r) => Number(r.tick) === Number(winner.tick));
+      return {
+        cell,
+        tenants: rows.map((r) => r.tenant),
+        states: rows.map((r) => r.state),
+        lastSeenTicks: rows.map((r) => r.tick),
+        // 共享测绘仲裁建议：winner 占矿，losers 该格作负记忆
+        arbitration: {
+          winner: String(winner.tenant),
+          losers,
+          tieBroken,
+          reason: tieBroken
+            ? `同 tick 平局，租户序 ${String(winner.tenant)} 胜`
+            : `lastSeen ${String(winner.tick)} 最新，${String(winner.tenant)} 占矿`,
+        },
+      };
+    })
     .sort((a, b) => String(a.cell).localeCompare(String(b.cell)));
   const obstacleCells = new Map<string, string[]>();
   for (const o of obstacles) {
