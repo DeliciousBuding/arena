@@ -270,7 +270,7 @@ export class TenantSupervisor {
    * 延迟 IPC/error/exit 通过 child identity guard 丢弃，绝不能污染新进程状态。 */
   private spawnTenant(spec: TenantSpec, previous: TenantChild | null): TenantChild {
     const args = this.buildTenantArgs(spec);
-    const child = (this.options.spawnChild ?? ((argv) => spawnChildProcess(this.repoRoot, argv)))(args, spec);
+    const child = (this.options.spawnChild ?? ((argv, spec) => spawnChildProcess(this.repoRoot, argv, spec)))(args, spec);
     if (!Number.isInteger(child.pid) || (child.pid ?? 0) <= 0) {
       throw new Error(`spawned child has no valid pid for tenant ${spec.tenantId}`);
     }
@@ -730,13 +730,20 @@ function readLock(path: string): LockContent | null {
   }
 }
 
-function spawnChildProcess(repoRoot: string, args: readonly string[]): ChildProcess {
+function spawnChildProcess(repoRoot: string, args: readonly string[], spec: TenantSpec): ChildProcess {
   const cliPath = join(repoRoot, "packages", "arena-agent", "src", "cli", "run-tenant.ts");
+  // 迁移配置按租户透传（2026-08-09）：ARENA_MIGRATION_CONFIG_<TENANT_ID 大写>
+  // 优先，其次全局 ARENA_MIGRATION_CONFIG；未设置 = runtime 默认全关（零影响）。
+  const tenantEnvKey = `ARENA_MIGRATION_CONFIG_${spec.tenantId.toUpperCase()}`;
+  const migrationConfigPath = process.env[tenantEnvKey] ?? process.env.ARENA_MIGRATION_CONFIG;
   return spawn(process.execPath, ["--import", "tsx", cliPath, ...args], {
     cwd: join(repoRoot, "packages", "arena-agent"),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     windowsHide: true,
     detached: process.platform !== "win32",
+    env: migrationConfigPath === undefined
+      ? undefined
+      : { ...process.env, ARENA_MIGRATION_CONFIG: migrationConfigPath },
   });
 }
 
