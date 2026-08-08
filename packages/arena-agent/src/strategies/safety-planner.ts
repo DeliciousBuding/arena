@@ -1836,7 +1836,15 @@ export class SafetyPlanner {
           ? new Set(movementObstacles).add(cellKey(home))
           : movementObstacles;
       const direction = stepToward(unit.position, target, patrolObstacles);
-      if (direction !== null) set(unit, { type: "MOVE", direction }, "patrol");
+      if (direction !== null) {
+        set(unit, { type: "MOVE", direction }, "patrol");
+      } else {
+        // 巡逻目标不可达（2026-08-08，t4 生产实证：worker 停墙边/墙角 70+ tick）：
+        // ring 推进让 chebyshev 已到 radius，worker 保持静止却永远到不了精确点 → WAIT。
+        // 修复：转方位 +1，下一 tick 试新目标点；敌方在途时依然推进。
+        const dirCount = this.config.workerDenseScan === true ? 16 : EXPLORE_DIRECTION_COUNT;
+        memory.patrolDirection = (memory.patrolDirection + 1) % dirCount;
+      }
     }
   }
 
