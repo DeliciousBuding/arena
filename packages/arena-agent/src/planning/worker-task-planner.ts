@@ -16,6 +16,13 @@ import { manhattan } from "../domain/nav.ts";
 import { type Position } from "../domain/model.ts";
 import { forcedTaskFor, type Task } from "./task.ts";
 import type { PlanningSnapshot, PlanningUnit } from "./planning-snapshot.ts";
+import {
+  DEFAULT_MISSION_CONFIG,
+  isCollectable,
+  surveyorIds,
+  targetConfidence,
+  type MissionConfig,
+} from "./mission-planner.ts";
 
 /** 格子键："x,y"（与 domain model.ts 的 cellKey 同格式）。 */
 export function cellKey(x: number, y: number): string {
@@ -36,6 +43,14 @@ export interface WorkerTaskPlannerConfig {
   readonly stickyBonus?: number;
   /** 目标格已被分配数的拥挤惩罚，默认 1.0（唯一性硬约束下恒为 0；若后续匹配算法允许多分配则启用）。 */
   readonly congestionPenalty?: number;
+  /** 使命层配置（worker-mission-v1）：缺省 = 关闭（现行为零回归）。 */
+  readonly mission?: MissionConfig;
+}
+
+/** plan() 每次调用级选项（核心迁移状态由调用方追踪）。 */
+export interface PlanOptions {
+  /** 迁移后测绘期激活（DeterministicPlanner 依据核心位置变化判定）。 */
+  readonly surveyBurstActive?: boolean;
 }
 
 export const DEFAULT_STICKY_BONUS = 0.5;
@@ -75,14 +90,26 @@ function sameCell(a: Position, b: Position): boolean {
 export class WorkerTaskPlanner {
   readonly stickyBonus: number;
   readonly congestionPenalty: number;
+  private mission: MissionConfig;
 
   constructor(config: WorkerTaskPlannerConfig = {}) {
     this.stickyBonus = config.stickyBonus ?? DEFAULT_STICKY_BONUS;
     this.congestionPenalty = config.congestionPenalty ?? DEFAULT_CONGESTION_PENALTY;
+    this.mission = { ...DEFAULT_MISSION_CONFIG, ...(config.mission ?? {}) };
   }
 
-  /** 全局任务分配。previousAssignments：上一 Tick 分配结果（sticky 用）。 */
-  plan(snapshot: PlanningSnapshot, previousAssignments: readonly Assignment[] = []): WorkerTaskPlan {
+  /** 热加载使命层配置（DeterministicPlanner.updateConfig 转发）。 */
+  updateConfig(config: WorkerTaskPlannerConfig = {}): void {
+    this.mission = { ...DEFAULT_MISSION_CONFIG, ...(config.mission ?? {}) };
+  }
+
+  /** 全局任务分配。previousAssignments：上一 Tick 分配结果（sticky 用）。
+   *  options.surveyBurstActive：迁移后测绘期（调用方按核心位置变化判定）。 */
+  plan(
+    snapshot: PlanningSnapshot,
+    previousAssignments: readonly Assignment[] = [],
+    options: PlanOptions = {},
+  ): WorkerTaskPlan {
     const workers = snapshot.units.filter((unit) => unit.unitType === "WORKER");
     const assignments: Assignment[] = [];
 
@@ -109,22 +136,42 @@ export class WorkerTaskPlanner {
       .filter((key) => !claimedCells.has(key))
       .sort(); // 字典序：确定性迭代顺序
 
+    const pool = [...unassigned].sort((a, b) => a.id.localeCompare(b.id));
+    // 使命层角色仲裁（G2）：迁移后测绘期（surveyBurstActive）保证 ≥ surveyWorkerFloor
+    // 个勘探者——在贪心采集之前预留（否则好矿多时 floor 保证失效：worker 全去采集、
+    // 无人测绘新家园）。
+    const surveyors = surveyorIds(pool, this.mission, options.surveyBurstActive === true);
+    if (options.surveyBurstActive === true && surveyors.size > 0) {
+      for (const worker of [...pool]) {
+        if (!surveyors.has(worker.id)) continue;
+        assignments.push({ unitId: worker.id, task: { type: "EXPLORE" } });
+        pool.splice(pool.indexOf(worker), 1);
+      }
+    }
+
     // 确定性贪心：每轮取净收益最大的 (Worker, 资源格) 对；并列时取先出现的
     // （Worker 按 id 升序、资源格按键字典序，均确定）。已选 Worker 与资源格
     // 从候选移除。匈牙利算法替换点：把 netValue 矩阵交给匹配器即可。
-    const pool = [...unassigned].sort((a, b) => a.id.localeCompare(b.id));
+    // 使命层（worker-mission-v1）：候选格按 score ≥ 门槛 && 距离 ≤ 上限过滤
+    // （陈旧种子/超距目标不入池 → worker 转勘探而非长途空跑，t1 实证）。
     while (pool.length > 0 && availableCells.length > 0) {
       let best: { worker: PlanningUnit; cellKey: string; net: number } | null = null;
       for (const worker of pool) {
         for (const key of availableCells) {
           const net = this.netValue(worker, key, snapshot, previousAssignments, claimedCells);
+          const cell = snapshot.resourceCells.get(key);
+          // 使命层（worker-mission-v1）：门槛/距离过滤——该 worker 对此格不值得
+          // （陈旧种子/超距）则跳过；无任何可采格时 worker 自然留在 pool → 转勘探。
+          if (cell !== undefined && !isCollectable(net, worker, cell.position, this.mission)) {
+            continue;
+          }
           if (best === null || net > best.net) {
             best = { worker, cellKey: key, net };
           }
         }
       }
       if (best === null) {
-        break; // 不可达：pool 与 availableCells 均非空
+        break; // 无可采 (worker, 格) 对：剩余 pool 转勘探/守家
       }
       const cell = snapshot.resourceCells.get(best.cellKey);
       assignments.push({
@@ -139,15 +186,24 @@ export class WorkerTaskPlanner {
       availableCells.splice(availableCells.indexOf(best.cellKey), 1);
     }
 
-    // 无任务可做的剩余 Worker → WAIT
+    // 使命层角色仲裁（G2，非测绘期）：剩余 worker 前 surveyWorkerCap 个 → EXPLORE
+    // （SURVEYOR，由 deterministic-planner 落 patrolFallback 勘探基线）；超出部分
+    // 守家 WAIT 不空跑。测绘期已在采集前预留（上面的 pre-reserve 分支），此处
+    // 剩余 worker 均为非勘探者 → WAIT。
+    const leftoverSurveyors = options.surveyBurstActive === true
+      ? new Set<string>()
+      : surveyorIds(pool, this.mission, false);
     for (const worker of pool) {
-      assignments.push({ unitId: worker.id, task: { type: "WAIT" } });
+      assignments.push({
+        unitId: worker.id,
+        task: leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
+      });
     }
 
     return { assignments };
   }
 
-  /** 净收益（总裁决 RP2 代价模型）：越大越优先。 */
+  /** 净收益（总裁决 RP2 代价模型 + 使命层置信项）：越大越优先。 */
   private netValue(
     worker: PlanningUnit,
     key: string,
@@ -172,8 +228,18 @@ export class WorkerTaskPlanner {
         ? BEACON_BONUS
         : 0;
     const sticky = applyStickyBonus(worker.id, key, previousAssignments, this.stickyBonus);
+    // 使命层值层（G1）：目标置信项（可见加成 / seeded 随龄衰减）。
+    const confidence = targetConfidence(cell, snapshot.tick, this.mission);
     return (
-      RESOURCE_VALUE - travelTime - returnTime - threatRisk - congestion + explorationGain + beaconBonus + sticky
+      RESOURCE_VALUE +
+      confidence -
+      travelTime -
+      returnTime -
+      threatRisk -
+      congestion +
+      explorationGain +
+      beaconBonus +
+      sticky
     );
   }
 }
