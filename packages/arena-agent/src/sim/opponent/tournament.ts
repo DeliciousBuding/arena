@@ -96,17 +96,19 @@ const RESOURCE_LAYOUTS: readonly (readonly (readonly [number, number])[])[] = [
   [[4, 2], [-2, 4], [-4, -2], [2, -4], [33, 2], [27, 4]],
 ];
 
-/** 为一方玩家生成 3 个初始 worker（id 确定性派生，跨 seed 稳定，满足 canonical UUID）。 */
+/** 为一方玩家生成 3 个初始 worker（id 确定性派生，跨 seed 稳定，满足 canonical UUID）。
+ *  playerIndex 参与 id 尾部派生——多玩家场景下同前缀组（worker 前缀仅 5 个）也不会撞。 */
 function initialWorkers(
   ownerId: string,
   idPrefix: string,
+  playerIndex: number,
   ...positions: readonly (readonly [number, number])[]
 ): readonly { id: string; position: [number, number]; hp: number; unitType: "WORKER"; cargo: number }[] {
   const base = idPrefix.slice(0, 8);
-  return positions.map((position, index) => {
-    const marker = `${index}${ownerId.length % 10}`.padStart(2, "0");
+  return positions.map((position, workerIndex) => {
+    const tail = `${String(playerIndex).padStart(6, "0")}${String(workerIndex).padStart(6, "0")}`;
     return {
-      id: `${base}-0000-0000-0000-${"0".repeat(10)}${marker}`,
+      id: `${base}-0000-0000-0000-${tail}`,
       position: [position[0], position[1]] as [number, number],
       hp: 2,
       unitType: "WORKER" as const,
@@ -131,6 +133,19 @@ export function makeArenaScenario(
     beacon: { position: [100, 100], status: "GROUND", carrierId: null },
   };
 }
+
+/** 各参与者的核心 id 前缀（第 i 家）——与 runMatch 的 mine/对手 id 保持同族。 */
+const CORE_ID_PREFIXES = [
+  "491977e4-d3db-417b-8d82-2f5f3b5c8000",
+  "9fe0ca6d-53cb-4dd5-a8f8-2e6925f19e70",
+  "1c8a4b2e-7f6d-4a3e-9c1b-5d2e8f4a6b7c",
+  "6a3f9c1e-2b4d-4e8a-9f3c-7d1e5a8b2c4d",
+];
+
+/** 第 i 家初始 worker 的 id 前缀（8 位 hex，跨玩家唯一）。 */
+const WORKER_ID_PREFIXES = [
+  "22222222", "33333333", "44444444", "55555555",
+];
 
 /** 造一个极简我方案略条目（方便单独把它作为"我参与"）。 */
 export function makeSafetyEntry(id: string): TournEntry {
@@ -161,9 +176,10 @@ export function decideWinner(
   let winner: string | null = null;
   if (alive.length === 1) {
     winner = alive[0];
-  } else if (alive.length === players.length) {
-    // 都活：资源多优先；平 → 人口多；平 → null
-    const sorted = [...players].sort(
+  } else if (alive.length > 1) {
+    // 多存活（含全员存活）：存活者内资源多优先；平 → 人口多；平 → null。
+    // FFA 中间态（部分核心被拆、未到唯一存活）同样按存活阵营资源定胜。
+    const sorted = [...alive].sort(
       (a, b) => finalResources[b] - finalResources[a] || finalPopulation[b] - finalPopulation[a],
     );
     const top = sorted[0];
@@ -192,7 +208,7 @@ export function runMatch(
   opts?: {
     validatePlans?: boolean;
     recordTo?: string;
-    /** refill 节奏（近似再生，见 episode.ts）：undefined=65（现状默认，向后兼容）；
+    /** refill 节奏（近似再生，见 episode.ts）：undefined=4（官方节奏，用户裁决）；
      *  null=关闭；N=每 N tick 补回采空原格。 */
     refillEveryTicks?: number | null;
     /** 自定义场景（真实测绘窗口等）；缺省用 makeArenaScenario 合成布局。
@@ -202,13 +218,13 @@ export function runMatch(
 ): MatchResult {
   const refillConfig =
     opts?.refillEveryTicks === undefined
-      ? { everyTicks: 65 }
+      ? { everyTicks: 4 }
       : opts.refillEveryTicks === null
         ? null
         : { everyTicks: opts.refillEveryTicks };
   const scenario = opts?.scenario ?? makeArenaScenario(
-    { id: a.id, username: a.id, resources: 25, core: { id: "491977e4-d3db-417b-8d82-2f5f3b5c8006", position: [0, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(a.id, "22222222-2222-2222-2222-2222222222", [1, 0], [0, 1], [-1, 0]) },
-    { id: b.id, username: b.id, resources: 25, core: { id: "9fe0ca6d-53cb-4dd5-a8f8-2e6925f19e72", position: [30, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(b.id, "33333333-3333-3333-3333-3333333333", [29, 0], [30, 1], [31, 0]) },
+    { id: a.id, username: a.id, resources: 25, core: { id: "491977e4-d3db-417b-8d82-2f5f3b5c8006", position: [0, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(a.id, "22222222-2222-2222-2222-2222222222", 0, [1, 0], [0, 1], [-1, 0]) },
+    { id: b.id, username: b.id, resources: 25, core: { id: "9fe0ca6d-53cb-4dd5-a8f8-2e6925f19e72", position: [30, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(b.id, "33333333-3333-3333-3333-3333333333", 1, [29, 0], [30, 1], [31, 0]) },
     seed,
   );
   const providerA = a.build();
@@ -257,6 +273,140 @@ export function runMatch(
     // 对局结束必须释放对手资源（常驻子进程桥：close worker + 清 state-slot），
     // 否则 worker 线程泄漏导致进程无法退出（鸭子类型：非子进程 provider 无 close）。
     for (const provider of [providerA, providerB]) {
+      const closer = (provider as { close?: () => void }).close;
+      if (typeof closer === "function") {
+        closer.call(provider);
+      }
+    }
+  }
+}
+
+/** N 玩家混战场景：核心均匀分布在圆周（半径 18），各自 3 worker + 近距资源盘。
+ *  每核资源盘取 RESOURCE_LAYOUTS 前 4 个近距点（±7 内），圆周间距（3 人 ~31、
+ *  4 人 ~25）远大于盘半径，无跨核重叠；id 按参与序派生（CORE/WORKER 前缀表）。 */
+export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): unknown {
+  const n = Math.max(2, entries.length);
+  const radius = 18;
+  const layout = RESOURCE_LAYOUTS[Math.abs(seed) % RESOURCE_LAYOUTS.length].slice(0, 4);
+  const players = entries.map((entry, index) => {
+    const angle = (2 * Math.PI * index) / n - Math.PI / 2;
+    const cx = Math.round(radius * Math.cos(angle));
+    const cy = Math.round(radius * Math.sin(angle));
+    const workers = initialWorkers(
+      entry.id,
+      `${WORKER_ID_PREFIXES[index % WORKER_ID_PREFIXES.length]}-0000-0000-0000-000000000000`,
+      index,
+      [cx + 1, cy], [cx, cy + 1], [cx - 1, cy],
+    );
+    return {
+      id: entry.id,
+      username: entry.id,
+      resources: 25,
+      core: {
+        // 前缀表仅 4 项——尾部按参与序派生，n≥5 时也保证全图唯一（防静默覆盖）
+        id: `${CORE_ID_PREFIXES[index % CORE_ID_PREFIXES.length].slice(0, 23)}-${String(index).padStart(12, "0")}`,
+        position: [cx, cy],
+        hp: 5,
+        shield: 5,
+        state: "NORMAL" as const,
+        moveDirection: null,
+        moveProgress: null,
+        moveRequiredTicks: null,
+        destination: null,
+      },
+      units: workers,
+    };
+  });
+  const resources = players.flatMap((player) => {
+    const corePosition = player.core.position as [number, number];
+    return layout.map(([dx, dy]) => [corePosition[0] + dx, corePosition[1] + dy] as [number, number]);
+  });
+  return {
+    rulesVersion: "v0.14",
+    tick: 1,
+    seed,
+    players,
+    terrain: { obstacles: [], resources },
+    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+  };
+}
+
+/**
+ * 跑一场 N 玩家混战（N≥2），返回规范化结果。同一场次内所有 entry 共享世界，
+ * 多计划同时结算（引擎原生支持）；胜负判定复用 decideWinner（最后存活核心
+ * 胜；都存活 → 资源/人口排序）。
+ */
+export function runFreeForAll(
+  entries: readonly TournEntry[],
+  seed: number,
+  ticks: number,
+  rulesPath: string,
+  opts?: {
+    validatePlans?: boolean;
+    recordTo?: string;
+    /** refill 节奏（同 runMatch）：undefined=65；null=关闭；N=每 N tick。 */
+    refillEveryTicks?: number | null;
+    /** 自定义场景；缺省用 makeArenaScenarioN 圆周布局。场景 players 必须与 entries id 一致。 */
+    scenario?: unknown;
+  },
+): MatchResult {
+  const refillConfig =
+    opts?.refillEveryTicks === undefined
+      ? { everyTicks: 65 }
+      : opts.refillEveryTicks === null
+        ? null
+        : { everyTicks: opts.refillEveryTicks };
+  const scenario = opts?.scenario ?? makeArenaScenarioN(entries, seed);
+  const ids = entries.map((entry) => entry.id);
+  const providers = entries.map((entry) => entry.build());
+  const recorder =
+    opts?.recordTo === undefined
+      ? null
+      : createEpisodeRecorder(opts.recordTo, {
+          seed,
+          rulesVersion: "v0.14",
+          rulesPath,
+          ticks,
+          players: ids,
+          descs: Object.fromEntries(entries.map((entry) => [entry.id, entry.desc])),
+          refill: refillConfig ?? undefined,
+        });
+  try {
+    const result = runEpisode({
+      scenario,
+      rulesPath,
+      seed,
+      ticks,
+      ...(refillConfig === null ? {} : { refill: refillConfig }),
+      tenants: ids.map((id) => ({
+        id,
+        planner: "safety" as const,
+        plannerConfig: {},
+        policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" },
+      })),
+      // 注入各条目的 provider（按参与序对齐 id）
+      plannerFactory: (tenant: EpisodeTenant): PlanProvider => providers[ids.indexOf(tenant.id)],
+      validatePlans: opts?.validatePlans ?? true,
+      onTickRecorded: recorder?.onTickRecorded,
+    } as never);
+    const { winner, coreAlive, finalResources, finalPopulation } = decideWinner(
+      ids,
+      undefined as never,
+      result.finalWorld,
+    );
+    return {
+      players: ids,
+      winner,
+      tick: 0,
+      tickCount: ticks,
+      coreAlive,
+      finalResources,
+      finalPopulation,
+      eventCount: result.records.reduce((n, r) => n + r.events.length, 0),
+    };
+  } finally {
+    recorder?.close();
+    for (const provider of providers) {
       const closer = (provider as { close?: () => void }).close;
       if (typeof closer === "function") {
         closer.call(provider);

@@ -26,6 +26,18 @@
       "state_paths": ["STATE_PATH", "STATE_TEMP_PATH"],
       "decide_kwargs": ["target", "mode"],
       "desc": "官方完整参考 agent（arena_core_agent.py，5895 行，搜索/战斗小队/核心推演）"
+    },
+    "waaiging": {
+      "repo": "arena-hero-clone-waaiging",
+      "module": "arena_hero_strategy",
+      "construct": {
+        "fn": "SmartTactic",
+        "kwargs": []
+      },
+      "decide": "choose_actions",
+      "slot": "pickle",
+      "slotEvery": 25,
+      "desc": "Waaiging/ArenaHero 社区战术 agent（410KB 策略：自适应经济/动态产兵/编队推进/Core 斩首/信标控制，GitHub 开源玩家）"
     }
   }
 }
