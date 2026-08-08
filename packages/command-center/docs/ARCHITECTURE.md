@@ -74,15 +74,16 @@ npm run test:regression    # Playwright 回归 16 项（web/scripts/cc-regressio
 
 ## 6. 接力清单（并行重构提交后）
 
-1. **build + 回归**：`npm run check:all`（含 build 覆盖 dist）→ `npm run test:regression`，
-   确认 achromatic 新视觉不破坏 16 项。
-2. **引擎颜色对齐**：`mapEngine.ts` 残留旧板 `#7fd8a5`(success ×11) `#d9a62e`/`#e0b94f`(amber)
-   `#1fe0ca`(cyanSignal) —— 对齐 CSS 新 token（success `#8fce9f`、amber `#f0883e` 等），
-   或改为读 CSS 变量（单一源）。
+1. **build + 回归（进行中 2026-08-08）**：`npm run check:all` 全绿（server tsc + web typecheck + build）；
+   `npm run test:regression` 在面板重启后补跑。
+2. **引擎颜色对齐 ✅（2026-08-08，本轮提交）**：`mapEngine.ts` 语义色已对齐新 token——
+   success `#7fd8a5→#8fce9f`、warn/信标 `#e0b94f→#f0883e`（含 rgba 环）、cyanSignal `#1fe0ca→#5fd4e8`。
 3. **回归脚本适配**：组件重构若改选择器/类名，回归需跟随（data-rp-tab/tenant-card 等通用选择器优先）。
-4. **jumpPins 命中排除 shift**：handleCanvasClick 已加 shift 参数（框选），jumpPins 点击命中需补 `!shift`（Shift+点 pin 不应清 pin 而应多选）。
-5. **手操审计 UI 上线**：SituationPanel「HUMAN AUDIT」区块复用 .sit-sight 结构，build 后随 dist 生效；回归可加断言。
-6. **arena-agent 迁移观察（2026-08-08）**：并行 agent 全量删除 arena-agent/arena-hero-ts 包并正在把联盟逻辑迁入
-   command-center（alliance-survey.ts 已改租户色统一 muted）。迁移完成需验证：
-   `lib/alliance-snapshot.ts` 的 `../../arena-agent/src/alliance/*` import 是否已内联/改路径，server tsc 恢复。
+4. **jumpPins 命中排除 shift ✅（2026-08-08）**：`handleCanvasClick` 已补 `!shift`——Shift+点 pin 不进清除，走框选。
+5. **手操审计 UI 上线 ✅（`1cbc5ef`）**：SituationPanel「HUMAN AUDIT」区块已随 dist 生效。
+6. **arena-agent 迁移收尾 ✅（2026-08-08，`3f3290c`）**：联盟纯函数从 git HEAD 复制进
+   `lib/alliance/`（snapshot/shared-intel/sightings/threat-summary/types/counts/roster/threat-field/control-types 共 9 文件），
+   `lib/alliance-snapshot.ts` 5 处 import 改 `./alliance/*`，server tsc 恢复、面板已重启（pid 44952）。
+   **遗留（并行 agent 收尾）**：arena-agent/arena-hero-ts 包删除 + 根 `package.json` workspaces/CI 同步未提交——
+   root workspaces 仍引用这两个包，删除未提交前勿动。
 4. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
