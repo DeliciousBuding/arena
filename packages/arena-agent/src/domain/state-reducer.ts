@@ -1,6 +1,7 @@
 import {
   type BeaconSnapshot,
   type CoreSnapshot,
+  type Direction,
   type Position,
   type ResolutionEventSnapshot,
   type TickState,
@@ -23,6 +24,10 @@ interface CoreControllerLike {
   readonly hp: number;
   readonly shield: number;
   readonly ownerUsername: string;
+  readonly moveDirection?: Direction | null;
+  readonly moveProgress?: number | null;
+  readonly moveRequiredTicks?: number | null;
+  readonly destination?: Position | null;
 }
 
 interface EnemyLike {
@@ -32,6 +37,10 @@ interface EnemyLike {
   readonly hp: number;
   readonly unit_type?: UnitType;
   readonly owner_username?: string;
+  readonly move_direction?: Direction | null;
+  readonly move_progress?: number | null;
+  readonly move_required_ticks?: number | null;
+  readonly destination?: Position | null;
 }
 
 interface EventLike {
@@ -60,7 +69,8 @@ export interface TurnLike {
   readonly resourceCells: ReadonlySet<string>;
   readonly beacon: {
     readonly position: Position;
-    readonly status: "GROUND" | "CARRIED";
+    /** null = Beacon 格不在本玩家视野内（官方：坐标恒知，状态仅格子可见时可知）。 */
+    readonly status: "GROUND" | "CARRIED" | null;
     readonly carrier_id: string | null;
   };
   readonly events: readonly EventLike[];
@@ -137,6 +147,11 @@ function reduceCore(turn: TurnLike): CoreSnapshot | null {
     shield: turn.core.shield,
     state,
     ownerUsername: turn.core.ownerUsername,
+    moveDirection: turn.core.moveDirection ?? null,
+    moveProgress: turn.core.moveProgress ?? null,
+    moveRequiredTicks: turn.core.moveRequiredTicks ?? null,
+    destination:
+      turn.core.destination == null ? null : freezePosition(turn.core.destination),
   });
 }
 
@@ -148,6 +163,10 @@ function toVisibleEntity(enemy: EnemyLike): VisibleEntity {
     hp: enemy.hp,
     unitType: enemy.unit_type,
     ownerUsername: enemy.owner_username,
+    moveDirection: enemy.move_direction ?? null,
+    moveProgress: enemy.move_progress ?? null,
+    moveRequiredTicks: enemy.move_required_ticks ?? null,
+    destination: enemy.destination == null ? null : freezePosition(enemy.destination),
   });
 }
 

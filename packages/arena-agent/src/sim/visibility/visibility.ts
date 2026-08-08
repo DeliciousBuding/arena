@@ -237,6 +237,9 @@ export function projectPlayerState(
   enemies.sort((a, b) => compareCodeUnit("id" in a ? a.id : "", "id" in b ? b.id : ""));
   objects.push(...enemies);
 
+  // Beacon：坐标恒可见（官方规则），但 GROUND/CARRIED 状态与 carrier_id 仅当
+  // Beacon 格在本玩家视野内时才知道——不可见时 status=null、carrier_id=null。
+  const beaconCellVisible = visible.has(cellKey(world.beacon.position));
   return {
     status: player.status,
     respawn_at_tick: player.respawnAtTick,
@@ -246,8 +249,8 @@ export function projectPlayerState(
     upkeep_next_tick: upkeepNext,
     champion_beacon: {
       position: world.beacon.position,
-      status: world.beacon.status,
-      carrier_id: world.beacon.carrierId,
+      status: beaconCellVisible ? world.beacon.status : null,
+      carrier_id: beaconCellVisible ? world.beacon.carrierId : null,
     },
     objects,
     events: toWireEvents(events),
@@ -294,14 +297,29 @@ export function simTurnLike(
     visibleEnemies: state.objects
       .filter((object) => object.kind === "UNIT" || object.kind === "CORE")
       .filter((object) => object.controlled === false)
-      .map((object) => ({
-        id: object.id,
-        kind: object.kind,
-        position: object.position,
-        hp: object.hp,
-        unit_type: object.kind === "UNIT" ? object.unit_type : undefined,
-        owner_username: object.kind === "CORE" ? object.owner_username : undefined,
-      })),
+      .map((object) => {
+        if (object.kind === "UNIT") {
+          return {
+            id: object.id,
+            kind: object.kind,
+            position: object.position,
+            hp: object.hp,
+            unit_type: object.unit_type,
+          };
+        }
+        // 敌方核心：透传迁移字段（官方 wire 要求 MOVING Core 全字段，不折叠）
+        return {
+          id: object.id,
+          kind: object.kind,
+          position: object.position,
+          hp: object.hp,
+          owner_username: object.owner_username,
+          move_direction: object.move_direction,
+          move_progress: object.move_progress,
+          move_required_ticks: object.move_required_ticks,
+          destination: object.destination,
+        };
+      }),
     obstacleCells: new Set(
       state.objects.flatMap((object) =>
         object.kind === "OBSTACLE"
@@ -317,9 +335,9 @@ export function simTurnLike(
       ),
     ),
     beacon: {
-      position: world.beacon!.position,
-      status: world.beacon!.status,
-      carrier_id: world.beacon!.carrierId,
+      position: state.champion_beacon.position,
+      status: state.champion_beacon.status,
+      carrier_id: state.champion_beacon.carrier_id,
     },
     events: state.events.map((event) => ({
       ...event,

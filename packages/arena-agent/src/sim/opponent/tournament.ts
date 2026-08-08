@@ -17,6 +17,7 @@ import { runEpisode, type EpisodeTenant } from "../../sim/harness/episode.ts";
 import type { SimWorld } from "../../sim/world/types.ts";
 import type { PlanProvider } from "../../runtime/decision-types.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../../strategies/safety-planner.ts";
+import { createEpisodeRecorder } from "./recorder.ts";
 
 /** 比赛结果（规范化，供横向对比）。 */
 export interface MatchResult {
@@ -188,22 +189,49 @@ export function runMatch(
   seed: number,
   ticks: number,
   rulesPath: string,
-  opts?: { validatePlans?: boolean },
+  opts?: {
+    validatePlans?: boolean;
+    recordTo?: string;
+    /** refill 节奏（近似再生，见 episode.ts）：undefined=65（现状默认，向后兼容）；
+     *  null=关闭；N=每 N tick 补回采空原格。 */
+    refillEveryTicks?: number | null;
+    /** 自定义场景（真实测绘窗口等）；缺省用 makeArenaScenario 合成布局。
+     *  场景 players 必须与 a/b 的 id 一致。 */
+    scenario?: unknown;
+  },
 ): MatchResult {
-  const scenario = makeArenaScenario(
+  const refillConfig =
+    opts?.refillEveryTicks === undefined
+      ? { everyTicks: 65 }
+      : opts.refillEveryTicks === null
+        ? null
+        : { everyTicks: opts.refillEveryTicks };
+  const scenario = opts?.scenario ?? makeArenaScenario(
     { id: a.id, username: a.id, resources: 25, core: { id: "491977e4-d3db-417b-8d82-2f5f3b5c8006", position: [0, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(a.id, "22222222-2222-2222-2222-2222222222", [1, 0], [0, 1], [-1, 0]) },
     { id: b.id, username: b.id, resources: 25, core: { id: "9fe0ca6d-53cb-4dd5-a8f8-2e6925f19e72", position: [30, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(b.id, "33333333-3333-3333-3333-3333333333", [29, 0], [30, 1], [31, 0]) },
     seed,
   );
   const providerA = a.build();
   const providerB = b.build();
+  const recorder =
+    opts?.recordTo === undefined
+      ? null
+      : createEpisodeRecorder(opts.recordTo, {
+          seed,
+          rulesVersion: "v0.14",
+          rulesPath,
+          ticks,
+          players: [a.id, b.id],
+          descs: { [a.id]: a.desc, [b.id]: b.desc },
+          refill: refillConfig ?? undefined,
+        });
   try {
     const result = runEpisode({
       scenario,
       rulesPath,
       seed,
       ticks,
-      refill: { everyTicks: 65 },
+      ...(refillConfig === null ? {} : { refill: refillConfig }),
       tenants: [
         { id: a.id, planner: "safety", plannerConfig: {}, policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" } },
         { id: b.id, planner: "safety", plannerConfig: {}, policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" } },
@@ -211,6 +239,7 @@ export function runMatch(
       // 关键：注入我们两个条目的 provider，而不是用内置 deterministic/safety
       plannerFactory: (tenant: EpisodeTenant): PlanProvider => (tenant.id === a.id ? providerA : providerB),
       validatePlans: opts?.validatePlans ?? true,
+      onTickRecorded: recorder?.onTickRecorded,
     } as never);
     const { winner: w, coreAlive, finalResources, finalPopulation } = decideWinner([a.id, b.id], undefined as never, result.finalWorld);
     return {
@@ -224,6 +253,7 @@ export function runMatch(
       eventCount: result.records.reduce((n, r) => n + r.events.length, 0),
     };
   } finally {
+    recorder?.close();
     // 对局结束必须释放对手资源（常驻子进程桥：close worker + 清 state-slot），
     // 否则 worker 线程泄漏导致进程无法退出（鸭子类型：非子进程 provider 无 close）。
     for (const provider of [providerA, providerB]) {

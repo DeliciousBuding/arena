@@ -224,10 +224,10 @@ export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoP
       hp: state.core.hp,
       shield: state.core.shield,
       state: state.core.state,
-      move_direction: null,
-      move_progress: null,
-      move_required_ticks: null,
-      destination: null,
+      move_direction: state.core.moveDirection ?? null,
+      move_progress: state.core.moveProgress ?? null,
+      move_required_ticks: state.core.moveRequiredTicks ?? null,
+      destination: state.core.destination ?? null,
     });
   }
 
@@ -247,6 +247,7 @@ export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoP
   // 可见敌方实体（非控）
   for (const enemy of state.visibleEnemies) {
     if (enemy.kind === "CORE") {
+      const moving = enemy.moveDirection !== null && enemy.moveDirection !== undefined;
       objects.push({
         kind: "CORE",
         id: enemy.id,
@@ -255,11 +256,12 @@ export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoP
         position: enemy.position,
         hp: enemy.hp,
         shield: 0,
-        state: "NORMAL",
-        move_direction: null,
-        move_progress: null,
-        move_required_ticks: null,
-        destination: null,
+        // 敌方核心迁移状态如实投影（MOVING 时带全迁移字段——官方 wire 校验要求）
+        state: moving ? "MOVING" : "NORMAL",
+        move_direction: enemy.moveDirection ?? null,
+        move_progress: enemy.moveProgress ?? null,
+        move_required_ticks: enemy.moveRequiredTicks ?? null,
+        destination: enemy.destination ?? null,
       });
     } else {
       objects.push({

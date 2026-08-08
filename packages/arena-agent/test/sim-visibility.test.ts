@@ -332,3 +332,39 @@ test("S6: simTurnLike → reduceTurn → TickState 可被 Planner 消费", () =>
   assert.equal(tickState.resourceCapacity, 10);
   assert.equal(tickState.population, 2);
 });
+
+test("S6: Beacon 坐标恒可见，但状态仅格子可见时给出（fog 补强）", () => {
+  // Beacon 在 [100,100]，p1 核心 [0,0]（视野 5）——格子不可见
+  const hidden = makeWorld({
+    units: [{ id: uuid(1), position: [1, 0] }],
+  });
+  const hiddenState = projectPlayerState(hidden, "p1", rules);
+  assert.equal(hiddenState.champion_beacon.status, null);
+  assert.equal(hiddenState.champion_beacon.carrier_id, null);
+  // 坐标恒知
+  assert.deepEqual(hiddenState.champion_beacon.position, [100, 100]);
+  // TickState 链路同样过滤
+  const hiddenTick = reduceTurn(simTurnLike(hidden, "p1", rules));
+  assert.equal(hiddenTick.beacon.status, null);
+  assert.equal(hiddenTick.beacon.carrierId, null);
+
+  // Beacon 移到 p1 核心格 [0,0]——格子可见，状态如实给出
+  const visibleWorld = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 5,
+        core: { id: "11111111-1111-1111-1111-111111111111", position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [{ id: uuid(1), owner: "p1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 }],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: { position: [0, 0], status: "CARRIED", carrierId: uuid(1) },
+  });
+  const visibleState = projectPlayerState(visibleWorld, "p1", rules);
+  assert.equal(visibleState.champion_beacon.status, "CARRIED");
+  assert.equal(visibleState.champion_beacon.carrier_id, uuid(1));
+});
