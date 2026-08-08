@@ -77,11 +77,33 @@ async function main() {
   const exec = resolveChrome();
   if (!exec) { console.error("未找到 Playwright chromium，先 npx playwright-core install chromium"); process.exit(2); }
   const browser = await chromium.launch({ headless: true, executablePath: exec, args: ["--no-sandbox", "--disable-gpu"] });
+  // 全局硬超时（240s）：服务重启/并行高负载时不无限卡，强制打印部分结果退出
+  const hardTimer = setTimeout(() => {
+    console.log("\n== 指挥面板回归（超时中止）==");
+    console.log(results.join("\n"));
+    console.log(`\n通过 ${pass} / ${pass + fail}（超时中止）`);
+    process.exit(2);
+  }, 240000);
   const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
   const page = await ctx.newPage();
   const errs = [];
   page.on("pageerror", (e) => errs.push("PAGEERROR: " + e.message));
   page.on("console", (m) => { if (m.type() === "error") errs.push(m.text()); });
+
+  /** 等待相机动画稳定（F 适应/跳图后 view 仍在动画中，坐标会脱靶——轮询两次采样一致再继续） */
+  const waitViewStable = async () => {
+    let prev = null;
+    for (let i = 0; i < 12; i++) {
+      const v = await page.evaluate(() => {
+        const g = window.__arenaEngine && window.__arenaEngine.getState ? window.__arenaEngine.getState() : null;
+        return g && g.view ? { cx: g.view.cx, cy: g.view.cy, scale: g.view.scale } : null;
+      });
+      if (v && prev && prev.cx === v.cx && prev.cy === v.cy && prev.scale === v.scale) return true;
+      prev = v;
+      await sleep(400);
+    }
+    return false;
+  };
 
   try {
     // 0) 前置健康：8787 可达性快速诊断（node:http 直连绕代理；失败关浏览器后打印退出，避免 return 吞掉结果）
@@ -291,6 +313,153 @@ async function main() {
     if (tickOk === true) ok("15s tick 读条", tickDetail);
     else if (tickOk === false) bad("15s tick 读条", "tickFill 缺失");
     else results.push("  ⚠ 15s tick 读条 — 采样窗口内未推进，跳过");
+
+    // 6e) 右键指挥菜单：左键选中受控单位 → 右键 → ctx-menu 打开（有命令项）→ Esc 关闭
+    let ctxOk = null; // true | false
+    try {
+      // 相机可能被 6b 跳图移走（如跳到 T4 区域）→ 按 F 适应回聚焦租户视口，坐标才不脱靶
+      await page.keyboard.press("f");
+      await waitViewStable();
+      const cvE = await page.$("#map");
+      const boxE = await cvE.boundingBox();
+      const tgt = await page.evaluate(async ({ boxX, boxY, boxW, boxH }) => {
+        const eng = window.__arenaEngine;
+        if (!eng) return { err: "no engine" };
+        const st = eng.getState();
+        const tenant = st.soloTenant || "t1";
+        const w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json();
+        const objs = w?.state?.objects ?? [];
+        const unit = objs.find((o) => (o.kind === "UNIT" || o.kind === "CORE") && o.controlled === true && o.position);
+        if (!unit) return { err: "no controlled obj" };
+        const v = st.view;
+        return { sx: boxX + (unit.position[0] - v.cx) * v.scale + boxW / 2, sy: boxY + (unit.position[1] - v.cy) * v.scale + boxH / 2 };
+      }, { boxX: boxE.x, boxY: boxE.y, boxW: boxE.width, boxH: boxE.height });
+      if (tgt.err) { ctxOk = false; }
+      else {
+        await page.mouse.click(tgt.sx, tgt.sy);
+        await sleep(700);
+        await page.mouse.click(tgt.sx, tgt.sy, { button: "right" });
+        await sleep(1200);
+        const m1 = await page.evaluate(() => {
+          const el = document.querySelector(".ctx-menu");
+          return { hidden: el ? el.hidden : "no-el", items: document.querySelectorAll(".ctx-item").length };
+        });
+        if (m1.hidden === false && m1.items > 0) {
+          await page.keyboard.press("Escape");
+          await sleep(400);
+          const m2 = await page.evaluate(() => { const el = document.querySelector(".ctx-menu"); return el ? el.hidden : "no-el"; });
+          ctxOk = m2 === true;
+        } else ctxOk = false;
+      }
+    } catch (e) { ctxOk = false; }
+    if (ctxOk === true) ok("右键指挥菜单", "选中→右键打开→Esc 关闭");
+    else if (ctxOk === false) bad("右键指挥菜单", "菜单未打开或 Esc 未关闭");
+
+    // 6f) 编队多选：Shift 点击两个不同受控单位 → toast 计数（编队 +1 共 N）→ Esc 清理
+    let multiOk = null; // true | false
+    try {
+      await page.keyboard.press("f");
+      await waitViewStable();
+      const cvF = await page.$("#map");
+      const boxF = await cvF.boundingBox();
+      const picks = await page.evaluate(async ({ boxX, boxY, boxW, boxH }) => {
+        const eng = window.__arenaEngine;
+        if (!eng) return { err: "no engine" };
+        const st = eng.getState();
+        const tenant = st.soloTenant || "t1";
+        const w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json();
+        // 优先 VANGUARD（非 worker 无 cargo toast 干扰）；不足则任意 UNIT
+        let us = (w?.state?.objects ?? []).filter((o) => o.kind === "UNIT" && o.unit_type === "VANGUARD" && o.controlled === true && o.position);
+        if (us.length < 2) us = (w?.state?.objects ?? []).filter((o) => o.kind === "UNIT" && o.controlled === true && o.position);
+        if (us.length < 2) return { err: "units<2" };
+        // 选两个不同位置的单位（同格则找下一个不同格）
+        const a = us[0], b = us.find((u) => u.id !== a.id && (u.position[0] !== a.position[0] || u.position[1] !== a.position[1])) ?? us[1];
+        const v = st.view;
+        const pt = (u) => ({ sx: boxX + (u.position[0] - v.cx) * v.scale + boxW / 2, sy: boxY + (u.position[1] - v.cy) * v.scale + boxH / 2 });
+        return { a: pt(a), b: pt(b), ids: [a.id, b.id] };
+      }, { boxX: boxF.x, boxY: boxF.y, boxW: boxF.width, boxH: boxF.height });
+      if (picks.err) { multiOk = false; }
+      else {
+        const readToast = async () => {
+          const el = await page.$("#uiToast");
+          if (!el) return "";
+          const cls = await el.getAttribute("class").catch(() => "");
+          return (cls || "").includes("show") ? (await el.innerText().catch(() => "")) || "" : "";
+        };
+        await page.keyboard.down("Shift");
+        await page.mouse.click(picks.a.sx, picks.a.sy);
+        await sleep(350);
+        const t1 = await readToast();
+        await page.mouse.click(picks.b.sx, picks.b.sy);
+        await sleep(350);
+        const t2 = await readToast();
+        await page.keyboard.up("Shift");
+        multiOk = t1.includes("编队 +1") && t2.includes("共 2");
+      }
+      await page.keyboard.press("Escape").catch(() => {});
+      await sleep(300);
+    } catch (e) { multiOk = false; }
+    if (multiOk === true) ok("编队多选（Shift 加选）", "两次 Shift 点击 toast 计数正确");
+    else if (multiOk === false) bad("编队多选（Shift 加选）", "toast 未出现或计数错误");
+
+    // 6g) 命令队列：选中单位 → MOVE → Shift+点击目标格 → toast「已加入队列」+ 动作面板队列段
+    let queueOk = null; // true | false
+    try {
+      await page.keyboard.press("f");
+      await waitViewStable();
+      let rowSelQ = -1;
+      const cntQ = await page.locator("#assetList .asset-row").count();
+      for (let j = 0; j < cntQ && rowSelQ < 0; j++) {
+        await page.click(`#assetList .asset-row:nth-child(${j + 1})`, { timeout: 3000 }).catch(() => {});
+        await sleep(500);
+        if (await page.locator('#actionDialog [data-action="MOVE"]').count() > 0) rowSelQ = j;
+      }
+      if (rowSelQ >= 0) {
+        await page.click('#actionDialog [data-action="MOVE"]', { timeout: 4000 });
+        await page.waitForSelector('.act-targeting', { timeout: 4000 }).catch(() => {});
+        await sleep(300);
+        const cvG = await page.$("#map");
+        const boxG = await cvG.boundingBox();
+        const hitG = await page.evaluate(async ({ boxX, boxY, boxW, boxH }) => {
+          const eng = window.__arenaEngine;
+          if (!eng) return { err: "no engine" };
+          const st = eng.getState();
+          const tenant = st.soloTenant || "t1";
+          const w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json();
+          const objs = w?.state?.objects ?? [];
+          const unit = objs.find((o) => o.kind === "UNIT" && o.controlled === true && o.position);
+          if (!unit) return { err: "no unit" };
+          const [ux, uy] = unit.position;
+          const blocked = new Set();
+          for (const o of objs) if (o.kind === "OBSTACLE" && Array.isArray(o.positions)) for (const pp of o.positions) blocked.add(pp[0] + "," + pp[1]);
+          let tx = ux + 2, ty = uy;
+          for (const [dx, dy] of [[2,0],[-2,0],[0,2],[0,-2],[2,1],[-2,-1],[1,2],[-1,-2]]) {
+            if (!blocked.has((ux + dx) + "," + (uy + dy))) { tx = ux + dx; ty = uy + dy; break; }
+          }
+          const v = st.view;
+          return { sx: boxX + (tx - v.cx) * v.scale + boxW / 2, sy: boxY + (ty - v.cy) * v.scale + boxH / 2 };
+        }, { boxX: boxG.x, boxY: boxG.y, boxW: boxG.width, boxH: boxG.height });
+        if (hitG.err) { queueOk = false; }
+        else {
+          await page.keyboard.down("Shift");
+          await page.mouse.click(hitG.sx, hitG.sy);
+          await page.keyboard.up("Shift");
+          await sleep(700);
+          const qInfo = await page.evaluate(() => {
+            const el = document.getElementById("uiToast");
+            const toastTxt = el && (el.className || "").includes("show") ? el.textContent || "" : "";
+            const qTitle = document.querySelector(".act-queue .q-title")?.textContent || "";
+            return { toastTxt, qTitle, qSegs: document.querySelectorAll(".act-queue .q-seg").length };
+          });
+          queueOk = qInfo.toastTxt.includes("已加入队列") || (qInfo.qTitle.includes("命令队列") && qInfo.qSegs > 0);
+        }
+      } else { queueOk = false; }
+      await page.evaluate(async () => { await fetch("/api/command/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenant: "t1" }) }); }).catch(() => {});
+      await page.keyboard.press("Escape").catch(() => {});
+      await sleep(300);
+    } catch (e) { queueOk = false; }
+    if (queueOk === true) ok("命令队列（Shift 入队）", "MOVE 模式 Shift 点击入队成功");
+    else if (queueOk === false) bad("命令队列（Shift 入队）", "队列未创建");
     // 7) API 健康
     for (const path of ["/api/overview", "/api/stream?tenant=t1&n=5", "/api/survey?tenant=t1"]) {
       const t0 = Date.now();
@@ -309,6 +478,7 @@ async function main() {
   console.log("\n== 指挥面板回归 ==");
   console.log(results.join("\n"));
   console.log(`\n通过 ${pass} / ${pass + fail}`);
+  clearTimeout(hardTimer);
   process.exit(fail ? 1 : 0);
 }
 

@@ -54,15 +54,33 @@ graph LR
 | WorldCanvas | mapEngine canvas | ✅ |
 | account/（API keys/GitHub） | 不需要（本地只读 + 兑换码 Cookie） | ⏭ |
 
+官方 `lib/` 逻辑映射（2026-08-08 核对）：
+
+| 官方 lib | 本面板对应 | 状态 |
+|---|---|---|
+| combatAnimation / combatPreview | tactDrawEventFx + drawResolvedShotFx/SweepFx + debris 碎片（SHOT_HIT/MISSED/SWEEP_RESOLVED/CORE_DESTROYED） | ✅ |
+| movementAnimation / movementPreview | drawMovementDashes（起点/终点/虚线/箭头）+ routePreview 悬停预览 | ✅ |
+| pathfinding | tactFindPath（BFS + 测绘记忆障碍合并） | ✅ |
+| commandPlans | plan 层（tactPlanLayer + 意图标签 + drawHumanGoalPaths） | ✅ |
+| exploration / visibility | tactSurveyLayer（测绘记忆 + 新鲜度淡出）+ 敌情记忆（drawEnemyMemory） | ✅ |
+| destruction | CORE_DESTROYED 扩散环 + 碎片外抛物理 | ✅ |
+| resourceActivity / statArt | 资源活动面板 + 消费条形图 | ✅ |
+| beaconArt / obstacleArt / unitArt / worldArt | SPRITE 精灵映射 + 画布绘制 | ✅ |
+| gameRules / actionAvailability | tactActionTypes + tactAvailability（动作可用性） | ✅ |
+
 ## 4. 质量门（生产级稳定基线）
 
 ```bash
-npm run check:all          # server tsc → web typecheck → web build 一键全绿
-npm run test:regression    # Playwright 回归 16 项（web/scripts/cc-regression.mjs）
+npm run check:all          # server tsc → 联盟同步护栏 → web typecheck → web build 一键全绿
+npm run test:regression    # Playwright 回归 22 项（web/scripts/cc-regression.mjs）
 ```
 
 - 回归覆盖：页面零错误 / 六 tab / 威胁玫瑰 / 决策流 / 聚焦 HUD / 计划层像素 /
-  人类指挥链（goal 落盘）/ 跳图定位标记 jumpPins / API 健康。
+  人类指挥链（goal 落盘）/ 跳图定位标记 jumpPins / 手操审计 UI / 15s tick 读条 / 右键指挥菜单 /
+  编队多选（Shift 加选）/ 命令队列（MOVE 模式 Shift 入队）/ API 健康。
+- 相机稳定辅助 waitViewStable：F 适应/跳图后轮询 view 两次采样一致再算坐标（消 flaky）。
+- 全局 240s 硬超时：服务重启/高负载时不无限卡，强制打印部分结果退出。
+- 联盟同步护栏 `check:alliance-sync`：diff lib/alliance 与 arena-agent/src/alliance，漂移即失败。
 - 2026-08-08 实测：console 全量审计零 warning/error；压力交互（快速切 tab/缩放/跳图）零 JS 错误。
 - 临时 build 验证（不部署）：`vite build --outDir <tmp>`，确认新代码 + 新 token 打包正确。
 
@@ -91,5 +109,8 @@ npm run test:regression    # Playwright 回归 16 项（web/scripts/cc-regressio
 7. **人类指挥链修复 ✅（1004faa）**：MOVE 点击目标非实时障碍必提交——测绘记忆寻路失败不再吞命令
    （服务端权威导航）；实时障碍才 toast 拒绝。修复"点了没反应"类交互。
 8. **全局旧色残留清理 ✅（7055b22）**：`public/style.css` 信标渐变/HP 条/tick 信号青统一到 DESIGN token。
+9. **人类指挥意图线验证 ✅（2026-08-08）**：`drawHumanGoalPaths` + `tactDrawRoute` 已实现且实测通过——
+   发布 goto goal 后 ≤3s（poll 周期）canvas 出现青色 #5fd4e8 完整寻路路径（首步实线/未来步虚线/方向箭头/
+   目标旗/行进脉冲）；mine=白、goto=青、agent 规划=绿，命令被服务端对账清理后自然消失。
 
 9. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。

@@ -408,6 +408,27 @@ export interface SafetyPlannerConfig {
   readonly blockadeLockMaxTicks?: number;
   /** 经济保底（默认 6）：worker 数 < 该值时锁阵停用（保采集优先）。 */
   readonly blockadeMinWorkers?: number;
+  /**
+   * 威胁优先产兵（2026-08-08，military-priority-v1）：活跃敌核贴脸
+   * （raid-defense nearbyEnemyCore ≤ raidCoreRadius 24 格）且军事规模未达
+   * 地板（threatMilitaryFloor，默认 4）→ 跳过 worker 积累直接产兵，并用
+   * 低储备（reserveEarly=1）尽早成型——reference guide"敌方进入 Core 防区 →
+   * 守家队优先补齐"（t3 实证：3 活跃敌核 ≤20 格但仅 1 Vanguard，res 11 被
+   * 财富储备 3 卡到 13 才产兵）。默认 false = 历史行为（worker→军事顺序，
+   * 零回归）。
+   */
+  readonly threatMilitaryPriority?: boolean;
+  /** 威胁优先产兵的军事地板（默认 4）：军事规模 < 该值才触发优先产兵。 */
+  readonly threatMilitaryFloor?: number;
+  /**
+   * 攻坚集结（2026-08-08，rally-assault-v1，reference guide"有护卫 Core 先退
+   * 到安全集结点、全员到齐再共同出击"对照）：aggressive 无可见敌人时对已知敌
+   * Core 记忆攻坚，军事单位先到敌核外圈安全集结位（Chebyshev RALLY_DISTANCE，
+   * 敌守军 Vanguard 1/Ranger 3 射程外）汇合，≥RALLY_READY_COUNT 或超时后再
+   * 成建制压上——防逐个送死（t2 第二轮 jerkman 攻坚实证：5 Ranger 全灭核心
+   * 未破）。默认 false = 历史行为（直接逐个前压，零回归）。
+   */
+  readonly rallyAssault?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
