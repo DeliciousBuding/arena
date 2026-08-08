@@ -5,7 +5,7 @@
  * 消费者（BC/DAgger/Decision Transformer/MAPPO/QMIX）按需取用子模块。
  *
  * 模块：
- * - schema/    数据契约（trajectory-v1、feature-vector-v1）
+ * - schema/    数据契约（trajectory-v1、feature-vector-v1/v2）
  * - export/    轨迹/特征导出器（JSONL，Arrow 契约声明）
  * - eval/      策略评估基准（benchmark-result-v1 + 标准指标）
  * - split/     Episode 级 train/val/test 分割（防泄漏）
@@ -45,6 +45,47 @@ export {
   validateFeatureVector,
 } from "./schema/feature-vector.ts";
 export type { FeatureGroup, FeatureSpec } from "./schema/feature-vector.ts";
+
+export {
+  FEATURE_VECTOR_V2_SCHEMA_VERSION,
+  FEATURE_V2_DISTANCE_CLIP,
+  FEATURE_V2_RESOURCE_INNER_RADIUS,
+  FEATURE_V2_RESOURCE_OUTER_RADIUS,
+  FEATURE_V2_OBSTACLE_RADIUS,
+  FEATURE_V2_THREAT_MEMORY_TICKS,
+  FEATURE_V2_SPECS,
+  FEATURE_V2_NAMES,
+  FEATURE_V2_DIM,
+  extractFeatureVectorV2,
+  featureVectorV2ToRecord,
+  validateFeatureVectorV2,
+} from "./schema/feature-vector-v2.ts";
+export type {
+  FeatureV2Group,
+  FeatureV2Spec,
+  FeatureV2ThreatLevel,
+  FeatureV2Posture,
+  FeatureV2Context,
+} from "./schema/feature-vector-v2.ts";
+
+export {
+  decisionJoinKey,
+  parseDecisionJsonl,
+  loadDecisionJoinIndex,
+  lookupDecisionRecord,
+} from "./real/decision-join.ts";
+export type {
+  DecisionJoinRecord,
+  DecisionJoinStats,
+  DecisionJoinIndex,
+} from "./real/decision-join.ts";
+
+export { projectMlSampleToFeatureV2 } from "./real/ml-sample-feature-v2.ts";
+export type {
+  MlSampleV1ForFeatures,
+  FeatureV2Record,
+  ProjectMlSampleOptions,
+} from "./real/ml-sample-feature-v2.ts";
 
 export {
   TRAJECTORY_V1_SCHEMA,
