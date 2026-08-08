@@ -43,6 +43,13 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
     const resourcesRaw = db.prepare(
       "SELECT x, y, last_seen_tick AS tick, first_seen_tick AS firstSeenTick, state, seen_count AS seenCount FROM resources ORDER BY last_seen_tick DESC",
     ).all() as Array<Record<string, unknown>>;
+    // 矿采集状态（2026-08-08，数据质量 A8）：每格矿聚合 resource_events
+    // 的采集次数/最近采集 tick——“哪些矿在被采/已被采过”供 agent
+    // 分配与前端矿生命周期可视化。
+    const harvestAgg = db.prepare(
+      "SELECT cell, COUNT(*) AS n, MAX(tick) AS lastTick FROM resource_events WHERE event_type = 'HARVEST_SUCCEEDED' GROUP BY cell",
+    ).all() as Array<{ cell: string; n: number; lastTick: number }>;
+    const harvestByCell = new Map(harvestAgg.map((h) => [h.cell, h]));
     const obstacles = db.prepare(
       "SELECT x, y, last_seen_tick AS tick FROM obstacles ORDER BY last_seen_tick DESC",
     ).all() as Array<Record<string, unknown>>;
@@ -71,7 +78,12 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
       const lastSeen = Number(r.tick ?? 0);
       const ageTicks = tickMax > 0 && Number.isFinite(lastSeen) ? Math.max(0, tickMax - lastSeen) : 0;
       const fresh = ageTicks <= RESOURCE_FRESH_WINDOW_TICKS;
-      return { ...r, ageTicks, fresh, state: fresh ? "visible" : "stale" };
+      const harvest = harvestByCell.get(`${String(r.x)},${String(r.y)}`);
+      return {
+        ...r, ageTicks, fresh, state: fresh ? "visible" : "stale",
+        harvestCount: harvest?.n ?? 0,
+        lastHarvestTick: harvest?.lastTick ?? null,
+      };
     });
     const chunks = (db.prepare(
       "SELECT chunk_key AS key, last_seen_tick AS lastSeenTick FROM chunks ORDER BY last_seen_tick DESC",
