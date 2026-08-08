@@ -43,6 +43,7 @@ import { appendArbitration, clearArbitration, listArbitrations } from "./lib/arb
 import { loadDecisionAudit, warmDecisionAudit, loadDecisionTrend, warmDecisionTrend } from "./lib/decision-audit.ts";
 import { loadLifecycleAudit, warmLifecycleAudit } from "./lib/lifecycle-audit.ts";
 import { loadMineUtilization, warmMineUtilization, loadMineUtilizationTrend, warmMineUtilizationTrend } from "./lib/mine-utilization.ts";
+import { loadMapLod, warmMapLod } from "./lib/map-lod.ts";
 import { loadAuditOverview, warmAuditOverview } from "./lib/audit-overview.ts";
 import { loadHumanConflict, warmHumanConflict } from "./lib/human-conflict.ts";
 import { loadAllianceMining, warmAllianceMining } from "./lib/alliance-mining.ts";
@@ -82,6 +83,16 @@ app.get("/api/overview", async (c) => {
   return c.json(loadOverview(sup));
 });
 app.get("/api/map", (c) => c.json(loadMergedMap()));
+// 地图 LOD 聚合视图（2026-08-08，缩放优化数据支撑）：全局缩放用 chunk 级聚合
+// （16×16 chunk 的矿/障碍/核心计数 + 最新 tick，~12KB vs 全量 642KB），
+// 放大到局部再请求 /api/map 全量。?tenant=all|tN。30s 缓存 + 启动预热。
+app.get("/api/map/lod", (c) => {
+  const tenant = c.req.query("tenant") ?? "all";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  return c.json(loadMapLod(tenant));
+});
 app.get("/api/stream", (c) => {
   const tenant = c.req.query("tenant") ?? "t1";
   const n = Number(c.req.query("n") ?? 60);
@@ -706,6 +717,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { warmConsensusMining(); } catch { /* 忽略 */ } }, 110);
   setTimeout(() => { try { warmAlignmentAudit(); } catch { /* 忽略 */ } }, 115);
   setTimeout(() => { try { warmDecisionInput(); } catch { /* 忽略 */ } }, 120);
+  setTimeout(() => { try { warmMapLod(); } catch { /* 忽略 */ } }, 125);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
