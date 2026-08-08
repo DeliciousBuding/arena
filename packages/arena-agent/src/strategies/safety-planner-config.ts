@@ -378,6 +378,18 @@ export interface SafetyPlannerConfig {
   readonly coreThreatWatchRadius?: number;
   /** 入侵观察记忆 TTL（tick，默认 60，与 World.CORE_WATCH_TTL 同值）。 */
   readonly coreThreatWatchTicks?: number;
+  /**
+   * 威胁优先产兵（2026-08-08，military-priority-v1）：活跃敌核贴脸
+   * （raid-defense nearbyEnemyCore ≤ raidCoreRadius 24 格）且军事规模未达
+   * 地板（threatMilitaryFloor，默认 4）→ 跳过 worker 积累直接产兵，并用
+   * 低储备（reserveEarly=1）尽早成型——reference guide"敌方进入 Core 防区 →
+   * 守家队优先补齐"（t3 实证：3 活跃敌核 ≤20 格但仅 1 Vanguard，res 11 被
+   * 财富储备 3 卡到 13 才产兵）。默认 false = 历史行为（worker→军事顺序，
+   * 零回归）。
+   */
+  readonly threatMilitaryPriority?: boolean;
+  /** 威胁优先产兵的军事地板（默认 4）：军事规模 < 该值才触发优先产兵。 */
+  readonly threatMilitaryFloor?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
