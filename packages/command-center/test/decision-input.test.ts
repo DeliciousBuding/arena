@@ -52,3 +52,18 @@ test("decision-input: 威胁表 join（threatLevel/threatCombat）", () => {
   assert.equal(q?.threatLevel, 0, "无威胁数据默认 0");
   assert.equal(q?.threatCombat, 0);
 });
+
+test("decision-input: 补测目标（resurveyTargets）——按陈旧度降序 + key 推导", () => {
+  const resurvey = [
+    { key: "3,3", cx: 3, cy: 3, lastSeenTick: 70000, stalenessTicks: 3000, distChunks: 2 },
+    { key: "1,1", cx: 1, cy: 1, lastSeenTick: 65000, stalenessTicks: 8000, distChunks: 1 },
+  ];
+  const p = buildDecisionInput("t1", 73000, [], [], undefined, resurvey);
+  assert.equal(p.resurveyTargets.length, 2);
+  assert.equal(p.resurveyTargets[0].key, "1,1", "最旧（陈旧 8000）优先");
+  assert.equal(p.resurveyTargets[0].stalenessTicks, 8000);
+  assert.equal(p.resurveyTargets[1].distChunks, 2);
+  // 空输入兜底
+  const q = buildDecisionInput("t2", 73000, [], []);
+  assert.equal(q.resurveyTargets.length, 0);
+});
