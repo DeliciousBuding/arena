@@ -190,6 +190,10 @@ const PREY_CORE_SAFE = 8;
 /** 挂机 WORKER 记忆回访窗口（tick，2026-08-08）："确认静止"目击后仍可追的时限——
  *  短窗口防追已经移动/消失的幽灵目标。 */
 const PREY_STATIONARY_TTL = 12;
+/** 近核入侵观察默认参数（2026-08-08，core-threat-watch-v1）：与
+ *  World.CORE_WATCH_RADIUS / CORE_WATCH_TTL 同值；配置可覆盖。 */
+const CORE_THREAT_WATCH_RADIUS = 18;
+const CORE_THREAT_WATCH_TICKS = 60;
 /** 挂机 WORKER 记忆回访半径（Manhattan）：无敌核清扫目标时 Vanguard 对静止敌
  *  WORKER 的追击上限——有界不跨图远征（白赚但不过度绕路）。 */
 const PREY_STATIONARY_RADIUS = 25;
@@ -503,6 +507,17 @@ export class SafetyPlanner {
         min = Math.min(min, manhattan(hint.position, core));
       }
     }
+    // 入侵观察（2026-08-08，core-threat-watch-v1）：盘踞/间歇可见的敌战斗单位
+    // 在长 TTL 观察内（当前不可见）——短记忆（RAID_SIGHTING_FRESH_TICKS）会漏，
+    // 回援必须覆盖"敌贴脸 camp 但 6-12 tick 未目击"的情况（官方 guide：敌方
+    // 战斗单位进入 Core 防区 → 非守家单位立即回援）。
+    if (this.config.coreThreatWatch === true) {
+      const watchTicks = this.config.coreThreatWatchTicks ?? CORE_THREAT_WATCH_TICKS;
+      for (const watch of this.world.coreWatchTargets(watchTicks)) {
+        if (watch.kind !== "UNIT" || watch.unitType === undefined || watch.unitType === "WORKER") continue;
+        min = Math.min(min, manhattan(watch.position, core));
+      }
+    }
     return min;
   }
 
@@ -697,6 +712,7 @@ export class SafetyPlanner {
         coreDamagedThisTick: coreDamagedThisTick(state.events),
         obstacles: this.world.obstacles(state.obstacleCells),
         resourceCells: state.resourceCells,
+        coreWatch: this.world.coreWatchTargets(this.config.coreThreatWatchTicks ?? CORE_THREAT_WATCH_TICKS),
       });
     }
     // MOVE_FAILED 反馈（moveFailedAvoidance）：上 tick 结算拒绝的单位计连续失败，
@@ -1293,6 +1309,46 @@ export class SafetyPlanner {
             if (nearest !== undefined && nearest.id === unit.id) {
               const direction = stepToward(unit.position, prey.position, militaryObstacles);
               if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_prey_worker");
+              return;
+            }
+          }
+        }
+      }
+      // 近核入侵回访（2026-08-08，core-threat-watch-v1）：观察内敌单位（战斗
+      // 单位 camp 或超出短窗口的静止 WORKER camp）距我方 Core ≤ 观察半径——
+      // 派最近 1 个 Vanguard 回访确认并清剿。**近核威胁属防御，绕过远征
+      // attackForce gate**（strike-core-v1 attackForce=6 会让 t2 5 个 Vanguard
+      // 全部 vanguard_hold 蓄势，贴脸 600+ tick 的敌 WORKER camp 无人清——
+      // 用户裁决"挂机单位赶紧打掉，不赚白不赚"）。短窗口静止 WORKER
+      // （≤PREY_STATIONARY_TTL）由 vanguard_prey_worker_stationary 处理，这里
+      // 只接超出短窗口的盘踞目标（TTL 60）与战斗单位 camp，避免重复扎堆。
+      if (this.config.coreThreatWatch === true && enemies.length === 0 && state.core !== null) {
+        const watchTicks = this.config.coreThreatWatchTicks ?? CORE_THREAT_WATCH_TICKS;
+        const watchRadius = this.config.coreThreatWatchRadius ?? CORE_THREAT_WATCH_RADIUS;
+        const watch = this.world
+          .coreWatchTargets(watchTicks)
+          .filter((w) => w.kind === "UNIT")
+          .filter((w) => {
+            if (w.unitType === "WORKER") {
+              return w.stationary && state.tick - w.lastSeenTick > PREY_STATIONARY_TTL;
+            }
+            return w.unitType !== undefined;
+          })
+          .filter((w) => !enemies.some((e) => e.id === w.id))
+          .filter((w) => manhattan(w.position, state.core!.position) <= watchRadius);
+        const candidate = watch
+          .map((w) => ({ w, d: manhattan(unit.position, w.position) }))
+          .sort((a, b) => a.d - b.d || a.w.id.localeCompare(b.w.id))[0];
+        if (candidate !== undefined && candidate.d <= PREY_STATIONARY_RADIUS) {
+          const nearEnemyCore = this.world.coreHuntTargets().some(
+            (t) => t.source === "CORE" && chebyshev(t.position, candidate.w.position) <= PREY_CORE_SAFE,
+          );
+          if (!nearEnemyCore) {
+            const nearest = [...state.vanguards]
+              .sort((a, b) => manhattan(a.position, candidate.w.position) - manhattan(b.position, candidate.w.position))[0];
+            if (nearest !== undefined && nearest.id === unit.id) {
+              const direction = stepToward(unit.position, candidate.w.position, militaryObstacles);
+              if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_watch_clear");
               return;
             }
           }
@@ -1912,6 +1968,10 @@ export class SafetyPlanner {
       // 4) preemptiveEvadeUntilTick：敌人消失后 2 tick 持续（竞品 2-tick
       //    preemptive_evade_until 对照——防止"敌人闪失 → 立刻取消"抖动）。
       const enemyHints = this.world.enemyHints();
+      // 注意：decideCore 的威胁评估**不喂 coreWatch**（入侵观察长 TTL）——否则
+      // 敌情记忆会让 Core 因一次短暂目击持续迁移 60 tick 不恢复（core-evade-persist
+      // 回归实证：approach 记忆 6 tick 过期后核心应恢复生产）。入侵观察的响应走
+      // 军事层（raidUnitDistance 回援 + vanguard_watch_clear 清剿），不动 Core 迁移。
       const threat = assessThreat({
         core: core.position,
         visibleEnemies: state.visibleEnemies,

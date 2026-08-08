@@ -16,7 +16,7 @@
  */
 import { type Position, type VisibleEntity } from "./model.ts";
 import { lineBlocked } from "./nav.ts";
-import type { EnemyMemory } from "./world.ts";
+import type { CoreWatchMemory, EnemyMemory } from "./world.ts";
 
 export type ThreatLevel = "NORMAL" | "ALERT" | "ENGAGED" | "BREAKOUT";
 
@@ -128,6 +128,11 @@ export function assessThreat(options: {
   readonly obstacles?: ReadonlySet<string>;
   /** 资源格（Core 不可入的逃逸硬块——默认空 = 无硬块）。 */
   readonly resourceCells?: ReadonlySet<string>;
+  /** 近核入侵观察（2026-08-08，core-threat-watch-v1）：World.coreWatchTargets()
+   *  长 TTL 近核敌情——当前不可见但曾在观察半径内目击的敌单位。用于把
+   *  "盘踞/间歇可见"的近核敌情提升为 ALERT（短记忆 6 tick 会漏——t2 实证
+   *  敌 WORKER 离核 2 格盘踞 600+ tick）。仅当本 tick 无可见敌时消费。 */
+  readonly coreWatch?: readonly CoreWatchMemory[];
 }): ThreatAssessment {
   const {
     core,
@@ -136,6 +141,7 @@ export function assessThreat(options: {
     coreDamagedThisTick,
     obstacles = new Set<string>(),
     resourceCells = new Set<string>(),
+    coreWatch = [],
   } = options;
 
   if (core === null) {
@@ -187,6 +193,25 @@ export function assessThreat(options: {
       closingEnemies,
       movingEnemies,
       axes: axes.size,
+      confirmedPursuit,
+    };
+  }
+  // 入侵观察（2026-08-08，core-threat-watch-v1）：长 TTL 近核观察内有敌战斗
+  // 单位（Vanguard/Ranger，WORKER 无攻击不升级 Core 级威胁——由 Vanguard
+  // 回访清剿处理）且当前不可见（按 id 排除——可见的走上方 closing/moving 路径，
+  // 避免重复计数）——盘踞/间歇可见的敌方战斗单位威胁不随 6 tick 短记忆过期而
+  // 消失（官方 guide：敌方战斗单位进入防区即回援）。
+  const visibleIds = new Set(visibleEnemies.map((enemy) => enemy.id));
+  const combatWatch = coreWatch.filter(
+    (w) => w.kind === "UNIT" && w.unitType !== undefined && w.unitType !== "WORKER" && !visibleIds.has(w.id),
+  );
+  if (combatWatch.length > 0) {
+    return {
+      level: "ALERT",
+      reason: "invasion_watch",
+      closingEnemies: combatWatch.length,
+      movingEnemies: 0,
+      axes: 0,
       confirmedPursuit,
     };
   }
