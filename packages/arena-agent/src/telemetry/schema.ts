@@ -49,6 +49,8 @@ export const RuntimeTraceSchema = Type.Object({
   rotationGeneration: Type.Integer(),
   /** 配置热加载代数（2026-08-08）：每次 config 热替换 +1，tick 归属当前配置代。 */
   configGeneration: Type.Optional(Type.Integer()),
+  configHash: Type.Optional(Type.String()),
+  strategyHash: Type.Optional(Type.String()),
   submitResult: SubmitResultSchema,
   submitError: Type.Optional(Type.String()),
   notSubmittedReason: Type.Optional(Type.Union([

@@ -21,6 +21,7 @@ import { TenantSupervisor, type SupervisorEvent, type TenantSpec } from "../src/
 import { DebugServer } from "../src/app/debug-server.ts";
 import { registerShutdownRequest } from "../src/app/process-shutdown.ts";
 import { resolveArenaDataRoot } from "../src/app/data-root.ts";
+import { compileRuntimeStrategyFile } from "../src/app/strategy-config.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..");
@@ -42,10 +43,12 @@ class FakeChild extends EventEmitter {
   readonly sent: unknown[] = [];
   readonly killed: string[] = [];
   autoExitOnSend = false;
+  onSend: ((message: unknown) => void) | null = null;
 
   send(message: unknown, callback?: (error: Error | null) => void): boolean {
     this.sent.push(message);
     callback?.(null);
+    if (this.onSend !== null) queueMicrotask(() => this.onSend?.(message));
     if (this.autoExitOnSend) queueMicrotask(() => this.emitExit(0, null));
     return true;
   }
@@ -164,6 +167,139 @@ test("complete preflight happens before the first spawn", async () => {
 });
 
 
+test("preflight compiles variant registry before first spawn", async () => {
+  const repo = makeTempRepo();
+  const path = join(repo.runtimeRoot, "configs", "t1.json");
+  const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  raw.variants = ["not-a-real-variant-v1"];
+  writeFileSync(path, JSON.stringify(raw));
+  let spawnCount = 0;
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      configs: ["t1.json"],
+      spawnChild: () => { spawnCount += 1; return new FakeChild() as unknown as ChildProcess; },
+    });
+    await assert.rejects(supervisor.start(), /unknown safety variant/);
+    assert.equal(spawnCount, 0);
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("config status is independent from writer readiness", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  try {
+    const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"], spawnChild: fakeSpawn(children) });
+    await supervisor.start();
+    const spec = supervisor.preflight()[0];
+    const child = children.get("t1")!;
+    writeLock(spec, child.pid);
+    assert.equal(supervisor.status()[0].ready, true);
+    assert.equal(supervisor.status()[0].configReady, false, "lock readiness must not imply config attestation");
+    child.emit("message", {
+      type: "arena.config_status",
+      tenantId: "t1",
+      configGeneration: 1,
+      activeConfigHash: spec.configHash,
+      activeStrategyHash: spec.strategyHash,
+    });
+    const status = supervisor.status()[0];
+    assert.equal(status.ready, true);
+    assert.equal(status.configReady, true);
+    assert.equal(status.configGeneration, 1);
+    child.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("variant-only reload waits for exact child ACK before applied", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      configs: ["t1.json"],
+      spawnChild: fakeSpawn(children),
+      configReloadTimeoutMs: 200,
+    });
+    await supervisor.start();
+    const spec = supervisor.preflight()[0];
+    const child = children.get("t1")!;
+    child.emit("message", {
+      type: "arena.config_status",
+      tenantId: "t1",
+      configGeneration: 1,
+      activeConfigHash: spec.configHash,
+      activeStrategyHash: spec.strategyHash,
+    });
+
+    const path = spec.configPath;
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    raw.variants = ["worker-mission-v1"];
+    writeFileSync(path, JSON.stringify(raw));
+    const candidate = compileRuntimeStrategyFile(path);
+    child.onSend = (message) => {
+      const request = message as { type?: string; requestId?: string; expectedConfigHash?: string };
+      if (request.type !== "arena.config_reload") return;
+      assert.equal(request.expectedConfigHash, candidate.configHash);
+      child.emit("message", {
+        type: "arena.config_reload_result",
+        requestId: request.requestId,
+        tenantId: "t1",
+        applied: true,
+        configGeneration: 2,
+        activeConfigHash: candidate.configHash,
+        activeStrategyHash: candidate.strategyHash,
+      });
+    };
+    const result = (await supervisor.reloadConfigs("t1")).t1!;
+    assert.equal(result.sent, true);
+    assert.equal(result.applied, true);
+    assert.equal(result.configGeneration, 2);
+    assert.equal(supervisor.status()[0].configReady, true);
+    child.onSend = null;
+    child.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test("non-hot config changes return restart_required without sending IPC", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  try {
+    const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"], spawnChild: fakeSpawn(children) });
+    await supervisor.start();
+    const spec = supervisor.preflight()[0];
+    const child = children.get("t1")!;
+    child.emit("message", {
+      type: "arena.config_status",
+      tenantId: "t1",
+      configGeneration: 1,
+      activeConfigHash: spec.configHash,
+      activeStrategyHash: spec.strategyHash,
+    });
+    const raw = JSON.parse(readFileSync(spec.configPath, "utf8")) as Record<string, unknown>;
+    raw.submitEnabled = true;
+    writeFileSync(spec.configPath, JSON.stringify(raw));
+    const result = (await supervisor.reloadConfigs("t1")).t1!;
+    assert.equal(result.sent, false);
+    assert.equal(result.applied, false);
+    assert.equal(result.errorCode, "restart_required");
+    assert.ok(result.restartRequiredFields?.includes("submitEnabled"));
+    assert.equal(child.sent.length, 0, "restart-required candidate must never reach child planner");
+    assert.equal(supervisor.status()[0].configReady, false);
+    child.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    repo.cleanup();
+  }
+});
 
 test("external config/runtime roots support immutable releases", async () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "arena-code-"));
@@ -416,10 +552,24 @@ test("DebugServer separates health from lock-backed readiness", async () => {
     const port = debug.address()!.port;
     assert.equal((await requestJson(port, "/health")).status, 200);
     assert.equal((await requestJson(port, "/ready")).status, 503);
-    writeLock(supervisor.preflight()[0], children.get("t1")!.pid);
+    assert.equal((await requestJson(port, "/config-ready")).status, 503);
+    const spec = supervisor.preflight()[0];
+    const child = children.get("t1")!;
+    writeLock(spec, child.pid);
     const ready = await requestJson(port, "/ready");
     assert.equal(ready.status, 200);
     assert.equal(ready.body.ready, true);
+    assert.equal((await requestJson(port, "/config-ready")).status, 503, "writer lock cannot attest config");
+    child.emit("message", {
+      type: "arena.config_status",
+      tenantId: "t1",
+      configGeneration: 1,
+      activeConfigHash: spec.configHash,
+      activeStrategyHash: spec.strategyHash,
+    });
+    const configReady = await requestJson(port, "/config-ready");
+    assert.equal(configReady.status, 200);
+    assert.equal(configReady.body.configReady, true);
     children.get("t1")!.autoExitOnSend = true;
     await supervisor.shutdown();
   } finally {

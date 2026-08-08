@@ -31,11 +31,11 @@ import { DecisionCoordinator } from "../runtime/decision-coordinator.ts";
 import { LeaseRegistry } from "../runtime/lease-registry.ts";
 import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
 import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
-import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
+import { compileRuntimeStrategy, compileRuntimeStrategyFile, hotReloadCompatibility } from "./strategy-config.ts";
+import { isConfigReloadRequest, type ConfigReloadResult, type RuntimeConfigStatus } from "./config-reload-protocol.ts";
 import { knownChunks, knownCoreHunts, knownObstacles, knownResources, openSurveyDb } from "../intel/survey-db.ts";
 import { loadRefillPredictions } from "../intel/refill-predictions.ts";
 import { checkAndMirrorOfficialManual, type OfficialManualMirror, type ReceiptLike } from "../command-plane/official-bridge.ts";
-import { DEFAULT_MISSION_CONFIG } from "../planning/mission-planner.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
@@ -61,7 +61,6 @@ import {
 } from "../telemetry/jsonl-writer.ts";
 import { planHashOf } from "../telemetry/decision-trace.ts";
 import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
-import { sha256Canonical } from "../domain/integrity.ts";
 import { AllianceShadowWriter } from "../alliance/shadow.ts";
 import { EMPTY_ROSTER_ID_SET, loadAllianceRosterFile, type AllianceRosterRef } from "../alliance/roster-file.ts";
 import {
@@ -243,6 +242,9 @@ export async function runTenant(
     throw new Error(`startupSyncTurns 必须是非负整数，实际=${String(options.startupSyncTurns)}`);
   }
   const config = loadRuntimeConfig(configPath);
+  // Compile the complete registered strategy before acquiring the writer lock. Unknown/duplicate
+  // variants therefore fail before production ownership changes hands.
+  const startupStrategy = compileRuntimeStrategy(config);
   const decisionMode = options.decisionMode ?? config.decisionMode;
   const submissionMode = submissionModeOf(options, config);
   if (options.recordCalibration === true && submissionMode !== "live") {
@@ -285,7 +287,7 @@ export async function runTenant(
 
   try {
     // 2) run manifest（绝不含密钥；config 只含 env 名，不含 env 值）
-    const configHash = `sha256:${sha256Canonical(config)}`;
+    const configHash = startupStrategy.configHash;
     const manifest: RunManifest = {
       processRunId,
       gitSha: readGitSha(repoRoot),
@@ -511,20 +513,14 @@ export async function runTenant(
     // 6) coordinator（P0-1：decisionMode 传递；deterministic = planner 注入 DeterministicPlanner，
     //    coordinator 短路语义同 safety——不启动 Agent）
     // 候选变体（config.variants）经注册表解析合并进 SafetyPlanner 配置（2026-08-06 架构整理）。
-    const variantConfig = resolveVariantsConfig(config.variants);
+    let activeStrategy = startupStrategy;
+    const variantConfig = activeStrategy.safetyOverrides;
     // deterministic 侧参数覆盖（2026-08-07）：变体可同时声明 core 生产参数
     // （vanguardRatio/accumulateThreshold/spawnReserve）——"变体启用=配置声明"
     // 在 deterministic 模式同样成立（如 strike-core-v1 爆兵打水晶）。
-    // mission 参数化覆盖（2026-08-08，Phase 2）：config.mission 逐项覆盖注册表
-    // 默认（变体=类别、config=强度，热加载即可调参）。
-    const registryDeterministicConfig = resolveDeterministicVariantsConfig(config.variants);
-    const deterministicVariantConfig =
-      config.mission === undefined
-        ? registryDeterministicConfig
-        : {
-            ...registryDeterministicConfig,
-            mission: { ...DEFAULT_MISSION_CONFIG, ...(registryDeterministicConfig.mission ?? {}), ...config.mission },
-          };
+    // Strategy compiler owns both variant defaults and mission parameter overrides, so startup,
+    // hot reload and release preflight consume one identical effective configuration.
+    const deterministicVariantConfig = activeStrategy.deterministicOverrides;
     // 持久敌情测绘（2026-08-07）：启用 militaryHunt 变体时，从本租户历史
     // calibration cases 提取最后已知敌 Core 位置注入 planner——重启后军事仍
     // 记得敌方基地（解决"重启→记忆清零→军队空转"）。只读、有界、失败静默。
@@ -548,27 +544,31 @@ export async function runTenant(
     const surveyResourceCells = loadSurveyResourceSeed(dataRoot, config.tenantId);
     const surveyObstacleCells = loadSurveyObstacleSeed(dataRoot, config.tenantId);
     const surveyChunks = loadSurveyChunkSeed(dataRoot, config.tenantId);
+    // Worker coverage liveness shares the same persisted survey SSOT as frontier planning. Historical
+    // chunks are evidence, not automatic progress: a survey worker must still expand spatially.
+    workerLiveness.seedKnownChunks(surveyChunks.map((chunk) => chunk.key));
     // 联盟 no-fire 花名册（2026-08-08，alliance-no-fire-v1）：可变引用对象——
     // 构造时注入 SafetyPlanner，刷新时原子替换引用（World/巡逻/攻坚记忆不丢）。
     // 变体关闭或文件缺失 = 空集合（零回归）；只加载受信 supervisor 聚合产物。
     const allianceRosterRef: AllianceRosterRef = { allyEntityIds: new Set(EMPTY_ROSTER_ID_SET) };
+    // Stable component graph: instantiate the same planner bundle regardless of which registered
+    // variants are currently enabled. Hot reload only swaps immutable config values; it never needs
+    // to rebuild World/SafetyPlanner/WorkerTaskPlanner or retrofit dependencies such as no-fire.
     const planner: DeterministicPlanner | SafetyPlanner =
       decisionMode === "deterministic"
-        ? Object.keys(variantConfig).length === 0
-          ? new DeterministicPlanner(undefined, undefined, undefined, undefined, undefined, undefined, [], new Map(), surveyResourceCells, surveyObstacleCells)
-          : new DeterministicPlanner(
-              new WorkerTaskPlanner(),
-              new SafetyPlanner(baseSafetyConfig, undefined, undefined, allianceRosterRef),
-              new SafetyPlanner(baseSafetyConfig, undefined, undefined, allianceRosterRef),
-              deterministicVariantConfig.vanguardRatio,
-              deterministicVariantConfig.accumulateThreshold ?? 0,
-              deterministicVariantConfig.spawnReserve,
-              initialCoreHuntTargets,
-              threatProfiles,
-              surveyResourceCells,
-              surveyObstacleCells,
-              deterministicVariantConfig.mission,
-            )
+        ? new DeterministicPlanner(
+            new WorkerTaskPlanner(),
+            new SafetyPlanner(baseSafetyConfig, undefined, threatProfiles, allianceRosterRef),
+            new SafetyPlanner(baseSafetyConfig, undefined, threatProfiles, allianceRosterRef),
+            deterministicVariantConfig.vanguardRatio,
+            deterministicVariantConfig.accumulateThreshold ?? 0,
+            deterministicVariantConfig.spawnReserve,
+            initialCoreHuntTargets,
+            threatProfiles,
+            surveyResourceCells,
+            surveyObstacleCells,
+            deterministicVariantConfig.mission,
+          )
         : new SafetyPlanner(baseSafetyConfig, undefined, threatProfiles, allianceRosterRef);
     if (planner instanceof SafetyPlanner) {
       if (surveyResourceCells.length > 0) planner.world.seedResourceMemory(surveyResourceCells, 0);
@@ -577,54 +577,139 @@ export async function runTenant(
       if (surveyChunks.length > 0) planner.world.seedChunkMemory(surveyChunks);
     }
 
-    // 配置热加载（2026-08-08）：重读 config 文件 → schema/变体校验 → 原子替换
-    // planner 配置快照（保留 World/巡逻/攻坚记忆）→ configGeneration+1 → telemetry。
-    // 非法配置保持 last-good（返回错误，绝不让 live loop 崩溃）。
-    const reloadConfig = (): { applied: boolean; error?: string } => {
+    // Runtime config is split into a small hot surface (`variants`) and an explicit restart surface.
+    // Candidate compilation happens before touching the planner; last-good stays active on every
+    // failure. The coordinator hash callback is installed after coordinator construction below.
+    type ReloadAttempt = Omit<ConfigReloadResult, "type" | "requestId" | "tenantId">;
+    let onConfigHashApplied: (configHash: string) => void = () => {};
+    const sendConfigStatus = (): void => {
+      if (typeof process.send !== "function") return;
+      const status: RuntimeConfigStatus = {
+        type: "arena.config_status",
+        tenantId: config.tenantId,
+        configGeneration,
+        activeConfigHash: activeStrategy.configHash,
+        activeStrategyHash: activeStrategy.strategyHash,
+      };
+      process.send(status);
+    };
+    const configTelemetry = (telemetryType: string, payload: Readonly<Record<string, unknown>>): void => {
+      appendJsonlLine(
+        join(dirs.telemetryDir, "runtime.jsonl"),
+        JSON.stringify(sanitizeValue({
+          processRunId,
+          tenantId: config.tenantId,
+          telemetryType,
+          configGeneration,
+          activeConfigHash: activeStrategy.configHash,
+          activeStrategyHash: activeStrategy.strategyHash,
+          ...payload,
+        })),
+      );
+    };
+    const reloadConfig = (expectedConfigHash?: string): ReloadAttempt => {
+      let candidate;
       try {
-        const nextConfig = loadRuntimeConfig(configPath);
-        const nextVariant = resolveVariantsConfig(nextConfig.variants);
-        const registryNextDet = resolveDeterministicVariantsConfig(nextConfig.variants);
-        const nextDet =
-          nextConfig.mission === undefined
-            ? registryNextDet
-            : {
-                ...registryNextDet,
-                mission: { ...DEFAULT_MISSION_CONFIG, ...(registryNextDet.mission ?? {}), ...nextConfig.mission },
-              };
-        const nextSafety =
-          decisionMode === "deterministic"
-            ? { ...DEFAULT_SAFETY_CONFIG, ...nextVariant }
-            : { ...AGGRESSIVE_SAFETY_CONFIG, ...nextVariant };
+        candidate = compileRuntimeStrategyFile(configPath);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        configTelemetry("config_reload_failed", { errorCode: "invalid_config", message });
+        return {
+          applied: false,
+          configGeneration,
+          activeConfigHash: activeStrategy.configHash,
+          activeStrategyHash: activeStrategy.strategyHash,
+          errorCode: "invalid_config",
+          error: message,
+        };
+      }
+
+      if (expectedConfigHash !== undefined && candidate.configHash !== expectedConfigHash) {
+        const message = `candidate changed after supervisor preflight: expected=${expectedConfigHash} actual=${candidate.configHash}`;
+        configTelemetry("config_reload_failed", {
+          errorCode: "candidate_changed",
+          desiredConfigHash: candidate.configHash,
+          message,
+        });
+        return {
+          applied: false,
+          configGeneration,
+          activeConfigHash: activeStrategy.configHash,
+          activeStrategyHash: activeStrategy.strategyHash,
+          errorCode: "candidate_changed",
+          error: message,
+        };
+      }
+
+      const compatibility = hotReloadCompatibility(activeStrategy.config, candidate.config);
+      if (!compatibility.compatible) {
+        const message = `restart required for config fields: ${compatibility.restartRequiredFields.join(", ")}`;
+        configTelemetry("config_reload_failed", {
+          errorCode: "restart_required",
+          desiredConfigHash: candidate.configHash,
+          restartRequiredFields: compatibility.restartRequiredFields,
+          message,
+        });
+        return {
+          applied: false,
+          configGeneration,
+          activeConfigHash: activeStrategy.configHash,
+          activeStrategyHash: activeStrategy.strategyHash,
+          errorCode: "restart_required",
+          error: message,
+          restartRequiredFields: compatibility.restartRequiredFields,
+        };
+      }
+
+      if (candidate.configHash === activeStrategy.configHash) {
+        sendConfigStatus();
+        return {
+          applied: true,
+          configGeneration,
+          activeConfigHash: activeStrategy.configHash,
+          activeStrategyHash: activeStrategy.strategyHash,
+        };
+      }
+
+      try {
+        const nextSafety = decisionMode === "deterministic"
+          ? { ...DEFAULT_SAFETY_CONFIG, ...candidate.safetyOverrides }
+          : { ...AGGRESSIVE_SAFETY_CONFIG, ...candidate.safetyOverrides };
         if (planner instanceof DeterministicPlanner) {
-          planner.updateConfig(nextSafety, nextDet);
+          planner.updateConfig(nextSafety, candidate.deterministicOverrides);
         } else {
           planner.updateConfig(nextSafety);
         }
+        activeStrategy = candidate;
         configGeneration += 1;
-        appendJsonlLine(
-          join(dirs.telemetryDir, "runtime.jsonl"),
-          JSON.stringify(sanitizeValue({
-            processRunId,
-            tenantId: config.tenantId,
-            telemetryType: "config_reload",
-            configGeneration,
-            variants: nextConfig.variants ?? [],
-          })),
-        );
-        return { applied: true };
+        onConfigHashApplied(candidate.configHash);
+        configTelemetry("config_reload", {
+          variants: candidate.variants,
+          configHash: candidate.configHash,
+          strategyHash: candidate.strategyHash,
+        });
+        sendConfigStatus();
+        return {
+          applied: true,
+          configGeneration,
+          activeConfigHash: candidate.configHash,
+          activeStrategyHash: candidate.strategyHash,
+        };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        appendJsonlLine(
-          join(dirs.telemetryDir, "runtime.jsonl"),
-          JSON.stringify(sanitizeValue({
-            processRunId,
-            tenantId: config.tenantId,
-            telemetryType: "config_reload_failed",
-            message,
-          })),
-        );
-        return { applied: false, error: message };
+        configTelemetry("config_reload_failed", {
+          errorCode: "apply_failed",
+          desiredConfigHash: candidate.configHash,
+          message,
+        });
+        return {
+          applied: false,
+          configGeneration,
+          activeConfigHash: activeStrategy.configHash,
+          activeStrategyHash: activeStrategy.strategyHash,
+          errorCode: "apply_failed",
+          error: message,
+        };
       }
     };
 
@@ -737,7 +822,7 @@ export async function runTenant(
     // （SafetyPlanner 保持空集合零回归）；文件缺失/损坏 = 保持 last-good 或空。
     let lastRosterRevision = -1;
     const refreshAllianceRoster = (): void => {
-      if (variantConfig.allianceNoFire !== true) return;
+      if (activeStrategy.safetyOverrides.allianceNoFire !== true) return;
       try {
         const next = loadAllianceRosterFile(dataRoot);
         const revision = next?.revision ?? -1;
@@ -790,11 +875,20 @@ export async function runTenant(
     } catch {
       // 文件监听失败不阻断 live（仍可用 Supervisor API 触发）。
     }
-    // 触发源 2：Supervisor IPC（POST /config-reload 转发）。
+    // 触发源 2：Supervisor IPC。Supervisor sends the hash it preflighted; the child reads the
+    // candidate again and must ACK the exact same hash, closing the file-change race between the
+    // two processes. File-watch reloads still use the same compiler/compatibility boundary.
     const onIpcMessage = (msg: unknown): void => {
-      if (typeof msg === "object" && msg !== null && (msg as { type?: string }).type === "arena.config_reload") {
-        reloadConfig();
-      }
+      if (!isConfigReloadRequest(msg)) return;
+      const attempt = reloadConfig(msg.expectedConfigHash);
+      if (typeof process.send !== "function") return;
+      const result: ConfigReloadResult = {
+        type: "arena.config_reload_result",
+        requestId: msg.requestId,
+        tenantId: config.tenantId,
+        ...attempt,
+      };
+      process.send(result);
     };
     process.on("message", onIpcMessage);
     cleanupStack.push(() => {
@@ -835,6 +929,10 @@ export async function runTenant(
         void info;
       },
     });
+    onConfigHashApplied = (nextHash) => coordinator.updateConfigHash(nextHash);
+    // Initial child→supervisor config attestation. `/ready` remains writer-lock readiness;
+    // config readiness is tracked separately from this hash/generation signal.
+    sendConfigStatus();
 
     // 7) outcome trace 的资源对比基准（t-1 → t）；holder 包装防 CFA 闭包窄化
     const holder: {
@@ -907,6 +1005,8 @@ export async function runTenant(
           abortRequested: decision.abortRequested,
           rotationGeneration: runtimeGeneration,
           configGeneration,
+          configHash: activeStrategy.configHash,
+          strategyHash: activeStrategy.strategyHash,
           submitResult: outcome.submitAttempted
             ? outcome.accepted
               ? "accepted"
@@ -1021,6 +1121,9 @@ export async function runTenant(
           workers: outcome.state.workers,
           unitActions: outcome.plan.unitActions,
           intents: outcome.plan.intents,
+          progressExpectations: planner instanceof DeterministicPlanner
+            ? planner.workerProgressExpectations()
+            : undefined,
           humanControlledUnitIds,
         });
         for (const event of workerLivenessEvents) {
@@ -1050,6 +1153,8 @@ export async function runTenant(
               priorIntent: event.priorIntent,
               recentPositions: event.recentPositions,
               uniqueRecentPositions: event.uniqueRecentPositions,
+              explorationChunk: event.explorationChunk,
+              knownExplorationChunks: event.knownExplorationChunks,
               recoveryCount: event.recoveryCount,
               recoveryApplied: recovery !== null,
               recovery,
