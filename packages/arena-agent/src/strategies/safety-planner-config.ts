@@ -454,6 +454,22 @@ export interface SafetyPlannerConfig {
    *  防抱团联防时误伤自家账号单位（UNIT 视图无 owner_username，只能按 id）。
    *  默认 false；true 时 tenant-runtime 才会加载 roster 文件。 */
   readonly allianceNoFire?: boolean;
+  /**
+   * VANGUARD 预判拦截（2026-08-08，vanguard-blockade-v1，手操实战实证见
+   * docs/progress/evidence/vanguard-intercept-20260808.md）：VANGUARD 复用
+   * 回程预测（enemyReturnPath）预判可见敌方 WORKER 的前进路径，去拦截点
+   * 站桩——敌方撞上（MOVE_DESTINATION_OCCUPIED）被卡，邻接 SWEEP 白打
+   * （锁+收割一体，对比 worker-blockade 只能挡不能打）。t1 手操实证：
+   * VANGUARD 提前 1 格站桩，敌方 worker 被卡 2 tick + 掉血击杀。默认
+   * false = 历史行为（只有 prey 追击，零回归）。
+   */
+  readonly vanguardBlockade?: boolean;
+  /** VANGUARD 锁位数量上限（默认 1）：最多派 1 个 Vanguard 当拦截手
+   *  （Vanguard 数量有限，t1 7 个，抽 1 个不影响守家）。 */
+  readonly vanguardBlockadeCap?: number;
+  /** 拦截站桩锁龄上限（默认 20）：到达拦截点后 N tick 目标未到 → 放弃
+   *  （预测错误/目标转向，防 Vanguard 长期闲置）。 */
+  readonly vanguardBlockadeMaxTicks?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

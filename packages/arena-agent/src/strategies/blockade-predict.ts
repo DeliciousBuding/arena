@@ -31,6 +31,8 @@ const DIRECTION_DELTA: Readonly<Record<Direction, readonly [number, number]>> = 
 /** 回程预测：敌方单位当前移动方向 + 预测接下来 N 个目标格。 */
 export interface EnemyReturnPrediction {
   readonly enemyId: string;
+  /** 敌方单位类型（vanguard-blockade 只锁 WORKER——军事单位由战斗逻辑处理）。 */
+  readonly enemyType: "WORKER" | "VANGUARD" | "RANGER";
   readonly position: Position;
   /** 当前移动方向（由 prevPosition → position 差分，须是纯卡向一步）。 */
   readonly direction: Direction;
@@ -85,7 +87,14 @@ export function enemyReturnPath(
       cursor = candidate;
     }
     if (nextCells.length === 0) continue;
-    predictions.push({ enemyId: hint.id, position: hint.position, direction, nextCells, targetCore });
+    predictions.push({
+      enemyId: hint.id,
+      enemyType: hint.unitType as "WORKER" | "VANGUARD" | "RANGER",
+      position: hint.position,
+      direction,
+      nextCells,
+      targetCore,
+    });
   }
   return predictions;
 }
