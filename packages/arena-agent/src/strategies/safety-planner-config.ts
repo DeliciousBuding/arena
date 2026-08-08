@@ -261,6 +261,19 @@ export interface SafetyPlannerConfig {
    */
   readonly militaryHunt?: boolean;
   /**
+   * 游侠打野（2026-08-08，用户导向"游侠出去乱逛、打野、获取信息、打了就跑"）：
+   * aggressive Ranger 无可见敌人且无攻坚目标（无敌 Core 记忆前压/无 focusRegion）时，
+   * 不再守家发呆——沿巡逻环外出打野（测绘 + 敌情 + 寻敌），遇敌即射、寡不敌众即撤。
+   * 默认 false = 历史行为（回 Core 守位，零回归）。ranger-scavenge-v1 启用。
+   */
+  readonly rangerScavenge?: boolean;
+  /**
+   * 游侠风筝（2026-08-08，用户导向"打了就跑"）：aggressive Ranger 近身（Chebyshev 1）
+   * 遇 VANGUARD 近战威胁时，优先退到射程 2-3 的可射击格再打——保射程不被 SWEEP 换血；
+   * 无合法风筝位才原地射击。默认 false = 历史行为（原地射，零回归）。ranger-kite-v1 启用。
+   */
+  readonly rangerKite?: boolean;
+  /**
    * worker 空闲回血（2026-08-07，B13 候选，竞品 heal priority 对照）：
    * 空 worker（无 cargo、无资源任务、未撤离）HP 未满且 Core 资源足够
    * 补满时回 Core 补血——在 Core 上由主循环 HEAL 分支结算（1 HP=1 资源，

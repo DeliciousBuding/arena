@@ -223,11 +223,19 @@ export class WorkerTaskPlanner {
         ...Array.from({ length: pool.length }, () => waitCost),
       ]);
       const columns = minimumCostAssignment(matrix);
+      // 全量外出（2026-08-08，用户导向“矿工不许原地守家”）：alwaysSurvey=true 时
+      // 无矿可采（dummy WAIT 列）的剩余 worker 全部 EXPLORE（外出测绘/打探，永不守家
+      // WAIT）——矿工不守家，守家是军事单位职责；特殊卡位（blockade）与核心迁移持货
+      // 由 SafetyPlanner 显式例外。
+      const alwaysOutbound = this.mission.alwaysSurvey === true;
       for (let rowIndex = 0; rowIndex < pool.length; rowIndex += 1) {
         const worker = pool[rowIndex]!;
         const column = columns[rowIndex]!;
         if (column >= availableCells.length) {
-          assignments.push({ unitId: worker.id, task: { type: "WAIT" } });
+          assignments.push({
+            unitId: worker.id,
+            task: alwaysOutbound ? { type: "EXPLORE" } : { type: "WAIT" },
+          });
           continue;
         }
         const key = availableCells[column]!;
@@ -237,6 +245,7 @@ export class WorkerTaskPlanner {
           task: { type: "GO_RESOURCE", target: cell?.position, targetCellKey: key },
         });
       }
+    }
     }
 
     return { assignments };

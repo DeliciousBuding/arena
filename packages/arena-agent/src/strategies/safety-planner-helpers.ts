@@ -381,3 +381,47 @@ export function samePosition(a: Position, b: Position): boolean {
 export function directionName(direction: Direction): Direction {
   return direction;
 }
+
+/** 游侠风筝位（ranger-kite-v1，2026-08-08，用户导向"打了就跑"）：aggressive Ranger
+ *  近身（Chebyshev 1）遇 VANGUARD 近战威胁时，从 8 方向候选格中选一个"距威胁
+ *  Chebyshev 2-3、可射击威胁（下 tick 能开火）、非障碍/非敌占/容量 <2"的格子；
+ *  多个候选取"距最近敌最远 + 坐标字典序"（确定性）。返回 null = 无合法风筝位
+ *  （调用方原地射击）。纯函数可测。 */
+export function kiteCell(
+  from: Position,
+  threat: Position,
+  obstacles: ReadonlySet<string>,
+  occupancy: ReadonlyMap<string, number>,
+  enemies: readonly VisibleEntity[],
+): Position | null {
+  const deltas: readonly Position[] = [
+    [1, 0], [1, 1], [0, 1], [-1, 1],
+    [-1, 0], [-1, -1], [0, -1], [1, -1],
+  ];
+  let best: Position | null = null;
+  let bestMinDist = Number.NEGATIVE_INFINITY;
+  for (const [dx, dy] of deltas) {
+    const cand: Position = [from[0] + dx, from[1] + dy];
+    if (obstacles.has(cellKey(cand))) continue;
+    if (enemies.some((enemy) => samePosition(enemy.position, cand))) continue;
+    if ((occupancy.get(cellKey(cand)) ?? 0) >= 2) continue;
+    const distToThreat = chebyshev(cand, threat);
+    if (distToThreat < 2 || distToThreat > 3) continue;
+    if (!canShoot(cand, threat, obstacles)) continue;
+    const minEnemyDist = Math.min(
+      distToThreat,
+      ...enemies.map((enemy) => manhattan(cand, enemy.position)),
+    );
+    const better =
+      minEnemyDist > bestMinDist ||
+      (minEnemyDist === bestMinDist &&
+        (best === null ||
+          cand[0] < best[0] ||
+          (cand[0] === best[0] && cand[1] < best[1])));
+    if (better) {
+      bestMinDist = minEnemyDist;
+      best = cand;
+    }
+  }
+  return best;
+}

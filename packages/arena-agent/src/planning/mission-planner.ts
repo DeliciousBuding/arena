@@ -48,6 +48,10 @@ export interface MissionConfig {
   /** 迁移方向勘探（2026-08-08，migration-scout）：核心 MOVING 时 EXPLORE worker 朝
    *  核心迁移方向探路（为落点测绘），而非随机老分区。核心 NORMAL 时零影响。 */
   readonly migrationScout: boolean;
+  /** 全量外出（2026-08-08，用户导向"矿工不许原地守家"）：true 时剩余空闲 worker
+   *  全部转 SURVEYOR（EXPLORE 外出测绘/打探），不再守家 WAIT——矿工不守家，
+   *  守家是军事单位职责。surveyWorkerCap 仅限制"非全量外出"模式的勘探名额。 */
+  readonly alwaysSurvey: boolean;
 }
 
 /** 缺省 = 关闭（全部保守值，逐字节复现现行为）。 */
@@ -63,6 +67,7 @@ export const DEFAULT_MISSION_CONFIG: MissionConfig = Object.freeze({
   refillBonus: 0,
   deadMineOverdueTicks: 0,
   migrationScout: false,
+  alwaysSurvey: false,
 });
 
 /** 目标置信项（G1）：可见加成 + seeded 随龄衰减。独立于距离/威胁，便于单测。 */
