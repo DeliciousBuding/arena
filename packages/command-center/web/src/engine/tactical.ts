@@ -24,6 +24,27 @@ export const EVENT_KIND_CN: Record<string, string> = {
   UNIT_HEAL_SUCCEEDED: "单位治疗", UNIT_HEAL_FAILED: "单位治疗失败", CORE_HEAL_SUCCEEDED: "核心治疗", CORE_HEAL_FAILED: "核心治疗失败",
   WAIT: "等待", NOTHING_TO_DO: "无事可做",
 };
+/** 事件 kind → 图标（事件标签页，几何符号零素材，与 TACT_ACTION_ICON 同风格）。
+ *  EventStreamPane 行首图标列；缺省回退「·」（不显示？——统一显示，缺失即 · 防错位）。 */
+export const EVENT_ICON: Record<string, string> = {
+  UNIT_MOVE_SUCCEEDED: "➤", UNIT_MOVE_FAILED: "➤", CORE_MOVE_SUCCEEDED: "➤", CORE_MOVE_FAILED: "➤",
+  SPAWN_SUCCEEDED: "◈", SPAWN_FAILED: "◈",
+  HARVEST_SUCCEEDED: "⛏", HARVEST_FAILED: "⛏",
+  DEPOSIT_SUCCEEDED: "▣", DEPOSIT_FAILED: "▣",
+  SHOT_HIT: "⚔", SHOT_MISSED: "⚔", SHOT_BLOCKED: "⚔",
+  SWEEP_RESOLVED: "✸", SWEEP_FAILED: "✸",
+  PICKUP_BEACON_SUCCEEDED: "⚑", PICKUP_BEACON_FAILED: "⚑", DROP_BEACON_SUCCEEDED: "⚑", DROP_BEACON_FAILED: "⚑",
+  SELF_DESTRUCT: "✕", HEAL_SUCCEEDED: "✚", HEAL_FAILED: "✚", REPAIR_SHIELD_SUCCEEDED: "✚",
+  UNIT_DESTROYED: "✕", CORE_DESTROYED: "✕", CORE_DAMAGED: "✕", RESPAWN: "↻",
+  CORE_RESOURCES_CAPTURED: "▣", CORE_RESOURCE_OVERFLOW_DESTROYED: "✕", WORKER_CARGO_DROPPED: "▣",
+  UNIT_HEAL_SUCCEEDED: "✚", UNIT_HEAL_FAILED: "✚", CORE_HEAL_SUCCEEDED: "✚", CORE_HEAL_FAILED: "✚",
+  WAIT: "◷", NOTHING_TO_DO: "·",
+};
+/** 事迹类别 → 图标（事迹标签页徽标；类别与 /api/deeds/journal 的 categories 对齐）。 */
+export const DEED_ICON: Record<string, string> = {
+  milestone: "★", harvest: "⛏", deposit: "▣", spawn: "◈",
+  death: "✕", conflict: "⚔", economy: "⬢", other: "·",
+};
 
 export const TACT_UNIT_BASE_COST: Record<string, number> = { WORKER: 5, VANGUARD: 10, RANGER: 12 };
 export const TACT_UNIT_CN: Record<string, string> = { WORKER: "工人", VANGUARD: "先锋", RANGER: "游侠", CORE: "核心" };
@@ -33,6 +54,12 @@ export const TACT_ACTION_CN: Record<string, string> = {
   PICKUP_BEACON: "拾取信标", DROP_BEACON: "放置信标", SELF_DESTRUCT: "自毁",
   HEAL: "维修", WAIT: "等待", REPAIR_SHIELD: "修复护盾",
   START_MOVE: "开始移动", CANCEL_MOVE: "取消移动",
+};
+/** 动作图标（右键菜单/批量菜单，几何符号，无需素材）。 */
+export const TACT_ACTION_ICON: Record<string, string> = {
+  MOVE: "➤", HARVEST: "⛏", DEPOSIT: "▣", SWEEP: "✸", SHOOT: "⚔",
+  PICKUP_BEACON: "⚑", DROP_BEACON: "⚑", SELF_DESTRUCT: "✕", HEAL: "✚",
+  WAIT: "◷", REPAIR_SHIELD: "◈", START_MOVE: "➤", CANCEL_MOVE: "✕",
 };
 /** 提交时需要方向参数的动作（点地图选方向），其余为一键动作直接提交。 */
 export const TACT_DIRECTION_ACTIONS = new Set(["MOVE", "SWEEP", "START_MOVE"]);

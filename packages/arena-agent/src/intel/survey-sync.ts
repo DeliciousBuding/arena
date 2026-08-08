@@ -317,9 +317,10 @@ export function syncTenantSurvey(
       for (const hunt of objects.coreHunts) {
         summary.coreHunts += upsertCoreHunt(db, hunt, hunt.owner, hunt.source, tick);
       }
-      // 单位目击：只记受控单位到生命周期（敌方单位无稳定身份追踪价值，记 units_seen 即可）
+      // 单位目击：units_seen 只记敌方（热区记忆，受控单位生命周期走 unit_lifecycle，
+      // 我方目击行无消费方且膨胀 99% 行数——A14 收敛：仅敌方写 units_seen）。
       for (const u of objects.unitSeen) {
-        upsertUnitSeen(db, u, u.unitType, u.controlled, tick);
+        if (!u.controlled) upsertUnitSeen(db, u, u.unitType, u.controlled, tick);
         if (u.controlled && u.id !== null) touchUnitSeen(db, u.id, u.unitType, tick, u);
       }
       // 探索分区（2026-08-08）：case 内所有物体位置 → 16×16 chunk 最后探索 tick

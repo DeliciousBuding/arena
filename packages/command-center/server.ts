@@ -11,6 +11,7 @@
  *  - supervisor Debug API（127.0.0.1:8120 /ready，探测在线状态）；
  *  - 官方商店代理（linuxdoshop.arenahero.io，需登录 Cookie）。
  */
+import { DatabaseSync } from "node:sqlite";
 import { Hono, type Context } from "hono";
 import { serve } from "@hono/node-server";
 import { existsSync, statSync, readFileSync } from "node:fs";
@@ -28,7 +29,8 @@ import { loadAllianceSurvey, refreshAllianceSurvey, TENANT_COLORS } from "./lib/
 import { loadAllianceSnapshot, refreshAllianceSnapshot } from "./lib/alliance-snapshot.ts";
 import { loadAllianceCluster, refreshAllianceCluster } from "./lib/alliance-cluster.ts";
 import { loadAllianceAdvice, refreshAllianceAdvice } from "./lib/alliance-advice.ts";
-import { buildDefenseCoordination } from "./lib/alliance-defense.ts";
+import { buildDefenseCoordination, buildDefensePocketAdvice, buildDefensePockets } from "./lib/alliance-defense.ts";
+import { buildEnemyCoreStates, type EnemyCoreHuntRow } from "./lib/enemy-core-state.ts";
 import { loadEnemyHeat, refreshEnemyHeat } from "./lib/enemy-heat.ts";
 import { loadAllianceExploration, refreshAllianceExploration } from "./lib/exploration-coverage.ts";
 import { loadPipelineHealth, refreshPipelineHealth } from "./lib/pipeline-health.ts";
@@ -167,6 +169,53 @@ app.get("/api/survey/mine", (c) => {
   const cell = `${mine.x},${mine.y}`;
   return c.json({ tenant, mine, cell, timeline: loadResourceTimeline(tenant, cell) });
 });
+app.get("/api/survey/enemy-cores", (c) => {
+  // 敌核状态视图（2026-08-08，共享测绘深化）：core_hunts（共享测绘敌核记忆）
+  // 聚合每敌核生命周期状态 ACTIVE/RELOCATED/STALE + 威胁级别——回答"敌方核心
+  // 还活着吗 / 在哪 / 迁哪了"；活跃且距友核近 → high（打核候选）。只读。
+  const hunts: EnemyCoreHuntRow[] = [];
+  let maxTick = 0;
+  for (const t of TENANTS) {
+    const file = join(DATA_ROOT, "runtime", "survey", `${t}.db`);
+    if (!existsSync(file)) continue;
+    let db: DatabaseSync;
+    try {
+      db = new DatabaseSync(file, { readOnly: true });
+    } catch {
+      continue;
+    }
+    try {
+      const rows = db.prepare(
+        "SELECT owner, x, y, first_seen_tick, last_seen_tick, source FROM core_hunts WHERE owner IS NOT NULL",
+      ).all() as Array<Record<string, unknown>>;
+      for (const r of rows) {
+        const last = Number(r.last_seen_tick);
+        if (last > maxTick) maxTick = last;
+        hunts.push({
+          owner: String(r.owner),
+          x: Number(r.x),
+          y: Number(r.y),
+          firstSeenTick: Number(r.first_seen_tick),
+          lastSeenTick: last,
+          source: r.source === "WORKER_INFER" ? "WORKER_INFER" : "CORE",
+        });
+      }
+    } catch {
+      // 旧库无 core_hunts：跳过
+    } finally {
+      db.close();
+    }
+  }
+  const snap = loadAllianceSnapshot();
+  const friendlyCores = Object.values(snap.members)
+    .map((m) => (m.core ? m.core.position : null))
+    .filter((p): p is readonly [number, number] => p !== null);
+  return c.json({
+    generatedAt: new Date().toISOString(),
+    currentTick: maxTick,
+    cores: buildEnemyCoreStates(hunts, maxTick, friendlyCores),
+  });
+});
 app.get("/api/survey/decision-input", (c) => {
   // 决策输入管道（2026-08-08，G3 断层补全）：矿刷新预测（dueInTicks）+ chunk 覆盖
   // → mission 层 Phase 2 直接消费形状。?tenant=tN。只读组合，30s 缓存 + 预热。
@@ -286,14 +335,32 @@ app.get("/api/alliance/defense", (c) => {
   // 缓存（members/threatSummaries），构建轻量无独立缓存（30s 快照 TTL 即上限）。
   const snap = loadAllianceSnapshot();
   const byTenant = new Map(snap.threatSummaries.map((s) => [s.tenantId, s.totalScore]));
+  const dirsByTenant = new Map(snap.threatSummaries.map((s) => [s.tenantId, s.highDirections]));
+  const countByTenant = new Map(snap.threatSummaries.map((s) => [s.tenantId, s.sectors.reduce((n, x) => n + (x.entityCount ?? 0), 0)]));
   const members = Object.values(snap.members).map((m) => ({
     tenantId: m.tenantId,
     core: m.core?.position ?? null,
     military: m.vanguards + m.rangers,
     status: m.status,
     threatScore: byTenant.get(m.tenantId) ?? 0,
+    threatDirections: dirsByTenant.get(m.tenantId) ?? [],
+    threatCount: countByTenant.get(m.tenantId) ?? 0,
   }));
-  return c.json(buildDefenseCoordination(members));
+  // POCKET 联防圈：消费共享测绘敌核目击（快照 CORE sightings），敌核群威胁
+  // ≥2 租户 → 协同设防/收缩建议。
+  const pocketEnemyCores = snap.sightings
+    .filter((s) => s.kind === "CORE" && typeof s.ownerUsername === "string")
+    .map((s) => ({ key: s.key, owner: s.ownerUsername, position: s.position, lastSeenTick: s.lastSeenTick }));
+  const coordination = buildDefenseCoordination(members);
+  const pocketAdvice = buildDefensePocketAdvice(members, pocketEnemyCores);
+  const sevOrder: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, INFO: 3 };
+  return c.json({
+    ...coordination,
+    pockets: buildDefensePockets(members, pocketEnemyCores),
+    advice: [...coordination.advice, ...pocketAdvice].sort(
+      (a, b) => (sevOrder[a.severity] - sevOrder[b.severity]) || a.id.localeCompare(b.id),
+    ),
+  });
 });
 
 app.get("/api/alliance/exploration", (c) => {
