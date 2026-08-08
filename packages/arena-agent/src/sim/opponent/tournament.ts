@@ -12,11 +12,11 @@
  *  - 这里不 import reference 内部——只依赖 ProtocolBridge + 对手 adapter。
  */
 
-import type { Plan } from "../domain/model.ts";
-import { runEpisode, type EpisodeTenant } from "../sim/harness/episode.ts";
-import type { SimWorld } from "../sim/world/types.ts";
-import type { PlanProvider } from "../runtime/decision-types.ts";
-import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "./safety-planner.ts";
+import type { Plan } from "../../domain/model.ts";
+import { runEpisode, type EpisodeTenant } from "../../sim/harness/episode.ts";
+import type { SimWorld } from "../../sim/world/types.ts";
+import type { PlanProvider } from "../../runtime/decision-types.ts";
+import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../../strategies/safety-planner.ts";
 
 /** 比赛结果（规范化，供横向对比）。 */
 export interface MatchResult {

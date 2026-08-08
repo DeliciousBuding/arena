@@ -12,7 +12,7 @@ import {
   unitActionToProto,
   coreActionToProto,
   type ProtoCommandPlan,
-} from "../src/strategies/protocol-bridge.ts";
+} from "../src/sim/opponent/protocol-bridge.ts";
 import type { TickState } from "../src/domain/model.ts";
 
 const SELF = "player-a";

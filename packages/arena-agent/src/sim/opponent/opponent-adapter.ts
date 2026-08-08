@@ -18,9 +18,9 @@
  *  - 本层不确定"决策用子进程还是 HTTP"——由调用方注入 `ExternalDecider`；
  *    本文件只提供"子进程桥"这一个实现，HTTP 桥留在平台层扩展（见 tournament）。
  */
-import type { Plan, TickState } from "../domain/model.ts";
-import { cellKey } from "../domain/model.ts";
-import type { PlanProvider } from "../runtime/decision-types.ts";
+import type { Plan, TickState } from "../../domain/model.ts";
+import { cellKey } from "../../domain/model.ts";
+import type { PlanProvider } from "../../runtime/decision-types.ts";
 import {
   protoPlanToPlan,
   tickStateToProto,
@@ -49,7 +49,7 @@ export class OpponentAdapter implements PlanProvider {
     this.label = label;
   }
 
-  decide(input: { readonly state: TickState; readonly policy?: import("../runtime/macro-policy.ts").MacroPolicy }): Plan {
+  decide(input: { readonly state: TickState; readonly policy?: import("../../runtime/macro-policy.ts").MacroPolicy }): Plan {
     const proto = tickStateToProto(input.state, this.selfPlayerId);
     if (!this.decider.ready) return emptyPlanForTick(input.state.tick);
     const command = this.decider.decide(proto, input.state.tick);
