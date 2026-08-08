@@ -51,6 +51,7 @@ import { loadAuditTrail, warmAuditTrail } from "./lib/audit-trail.ts";
 import { loadConsensusMining, warmConsensusMining } from "./lib/consensus-mining.ts";
 import { loadShopHistory, refreshShopHistory } from "./lib/shop-history.ts";
 import { loadAlignmentAudit, warmAlignmentAudit } from "./lib/alignment-audit.ts";
+import { loadDecisionInput, warmDecisionInput } from "./lib/decision-input.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 import { loadCoreMovingGuard } from "./lib/human-command-guard.ts";
 
@@ -151,6 +152,15 @@ app.get("/api/survey/mine", (c) => {
   if (!mine) return c.json({ tenant, mine: null, timeline: [] });
   const cell = `${mine.x},${mine.y}`;
   return c.json({ tenant, mine, cell, timeline: loadResourceTimeline(tenant, cell) });
+});
+app.get("/api/survey/decision-input", (c) => {
+  // 决策输入管道（2026-08-08，G3 断层补全）：矿刷新预测（dueInTicks）+ chunk 覆盖
+  // → mission 层 Phase 2 直接消费形状。?tenant=tN。只读组合，30s 缓存 + 预热。
+  const tenant = c.req.query("tenant") ?? "t1";
+  if (!TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  return c.json(loadDecisionInput(tenant));
 });
 app.get("/api/survey/mine-patterns", (c) => {
   // 矿生命周期模式（2026-08-08，共享记忆算法深化）：每租户矿格活性/刷新规律/
@@ -689,6 +699,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { warmAuditTrail(); } catch { /* 忽略 */ } }, 108);
   setTimeout(() => { try { warmConsensusMining(); } catch { /* 忽略 */ } }, 110);
   setTimeout(() => { try { warmAlignmentAudit(); } catch { /* 忽略 */ } }, 115);
+  setTimeout(() => { try { warmDecisionInput(); } catch { /* 忽略 */ } }, 120);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
