@@ -178,7 +178,19 @@ CREATE TABLE IF NOT EXISTS notable_events (
   unit_type TEXT,
   UNIQUE(tenant, tick, event_type, actor_id, target_id)
 );
-CREATE INDEX IF NOT EXISTS idx_notable_events_tick ON notable_events(tick);`;
+CREATE INDEX IF NOT EXISTS idx_notable_events_tick ON notable_events(tick);
+
+-- 矿格出现-消失历史（2026-08-08，共享记忆算法深化）：每 case 可见矿的
+-- (cell × tick) 序列——resources 表是每格一行（只留最后状态），refill 周期/
+-- 出现窗口需历史序列。增量写入（upsertResources 内嵌），幂等
+-- (cell, tick) 唯一；历史深度随运行累积，refill 统计消费见 mine-patterns。
+CREATE TABLE IF NOT EXISTS resource_seen_history (
+  cell TEXT NOT NULL,
+  tick INTEGER NOT NULL,
+  PRIMARY KEY (cell, tick)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_seen_history_cell ON resource_seen_history(cell, tick);
+CREATE INDEX IF NOT EXISTS idx_resource_seen_history_tick ON resource_seen_history(tick);`;
 
 /** 打开（或创建）某租户的测绘库。write=true 时确保目录存在。 */
 export function openSurveyDb(dataRoot: string, tenant: string, write = false): DatabaseSync {
@@ -244,10 +256,14 @@ export function upsertResources(
       last_state_tick = excluded.last_state_tick,
       seen_count = resources.seen_count + 1
   `);
+  // 出现-消失历史（2026-08-08）：同 tick 同格只记一次（INSERT OR IGNORE），
+  // 随 sync 增量累积——refill 周期/出现窗口统计的数据源（mine-patterns）。
+  const histStmt = db.prepare("INSERT OR IGNORE INTO resource_seen_history (cell, tick) VALUES (?, ?)");
   let n = 0;
   for (const cell of cells) {
     const key = `${cell.x},${cell.y}`;
     n += Number(stmt.run(key, cell.x, cell.y, tick, tick, tick).changes);
+    histStmt.run(key, tick);
   }
   return n;
 }
