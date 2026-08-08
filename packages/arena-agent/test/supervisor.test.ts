@@ -634,6 +634,47 @@ test("DebugServer separates health from lock-backed readiness", async () => {
   }
 });
 
+test("DebugServer publishes token only after successful bind; failed contender cannot clobber live token", async () => {
+  const repo = makeTempRepo();
+  const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"] });
+  const blocker = createNetServer();
+  await new Promise<void>((resolvePromise, reject) => {
+    blocker.once("error", reject);
+    blocker.listen(0, "127.0.0.1", () => resolvePromise());
+  });
+  const address = blocker.address();
+  assert.ok(address !== null && typeof address === "object");
+  const tokenFile = join(supervisor.runtimeRoot, "debug-token");
+  writeFileSync(tokenFile, "live-token\n", "utf8");
+  const debug = new DebugServer({ repoRoot: repo.root, supervisor, port: address.port, tokenFile });
+  try {
+    assert.equal(readFileSync(tokenFile, "utf8"), "live-token\n", "constructor must not publish token");
+    await assert.rejects(debug.listen(), /EADDRINUSE/u);
+    assert.equal(readFileSync(tokenFile, "utf8"), "live-token\n", "failed bind must preserve live token");
+  } finally {
+    await debug.close();
+    await new Promise<void>((resolvePromise) => blocker.close(() => resolvePromise()));
+    repo.cleanup();
+  }
+});
+
+test("DebugServer non-production ports use isolated token files", async () => {
+  const repo = makeTempRepo();
+  const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"] });
+  const debug = new DebugServer({ repoRoot: repo.root, supervisor, port: 0 });
+  const productionTokenFile = join(supervisor.runtimeRoot, "debug-token");
+  try {
+    assert.equal(debug.tokenFile, join(supervisor.runtimeRoot, "debug-token-0"));
+    assert.equal(existsSync(productionTokenFile), false);
+    await debug.listen();
+    assert.equal(existsSync(debug.tokenFile), true);
+    assert.equal(existsSync(productionTokenFile), false, "port 0 test server must not touch production token path");
+  } finally {
+    await debug.close();
+    repo.cleanup();
+  }
+});
+
 test("DebugServer POST /shutdown triggers graceful IPC cleanup; GET rejected", async () => {
   const repo = makeTempRepo();
   const children = new Map<string, FakeChild>();

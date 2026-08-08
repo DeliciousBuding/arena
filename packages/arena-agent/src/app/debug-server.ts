@@ -47,8 +47,11 @@ export class DebugServer {
   constructor(options: DebugServerOptions) {
     this.options = options;
     this.token = options.token ?? randomBytes(32).toString("hex");
-    this.tokenFile = options.tokenFile ?? join(options.supervisor.runtimeRoot, DEFAULT_TOKEN_FILE);
-    writeDebugToken(this.tokenFile, this.token);
+    const configuredPort = options.port ?? 8120;
+    this.tokenFile = options.tokenFile ?? join(
+      options.supervisor.runtimeRoot,
+      configuredPort === 8120 ? DEFAULT_TOKEN_FILE : `${DEFAULT_TOKEN_FILE}-${configuredPort}`,
+    );
     this.server = createServer((req, res) => {
       this.route(req, res).catch((error) => {
         this.json(res, 500, { error: error instanceof Error ? error.message : String(error) });
@@ -65,7 +68,14 @@ export class DebugServer {
       this.server.once("error", onError);
       this.server.listen(port, host, () => {
         this.server.off("error", onError);
-        resolvePromise();
+        // Publish credentials only after this server actually owns the socket.
+        // A failed second supervisor must never overwrite the live server token.
+        try {
+          writeDebugToken(this.tokenFile, this.token);
+          resolvePromise();
+        } catch (error) {
+          this.server.close(() => reject(error));
+        }
       });
     });
   }
