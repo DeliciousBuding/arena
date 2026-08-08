@@ -14,6 +14,8 @@ import { loadMiningEffectiveness } from "./mining-effectiveness.ts";
 import { loadShopHistoryEntries, buildShopJournalLine } from "./shop-history.ts";
 import { TtlCache } from "./cache.ts";
 import { TENANTS } from "./fs-jsonl.ts";
+import { loadLeaderboardIntel, type LeaderboardIntel } from "./leaderboard.ts";
+import { buildEncounteredIndex, type EncounterEntry } from "./intel.ts";
 
 export interface DeedsJournalPayload {
   generatedAt: string;
@@ -121,6 +123,10 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
       // 决策健康（2026-08-08，综合决策日记）：逐租户质量分 + 联盟平均 + 最差归因。
       const healthLine = buildDecisionHealthLine(loadAuditOverview());
       if (healthLine) narrative = narrative ? narrative + " " + healthLine : healthLine;
+      // 敌情威胁（2026-08-08，日记层第 5 层）：高威胁遭遇 + 猛攻蛆——读 leaderboard
+      // 30s 缓存 + 遭遇索引 30s 缓存，无触网/无定时任务。
+      const threatLine = buildThreatJournalLine(loadLeaderboardIntel(), buildEncounteredIndex());
+      if (threatLine) narrative = narrative ? narrative + " " + threatLine : threatLine;
     } catch { /* 商店数据不可用不阻断 */ }
   }
   const windowDelta = buildWindowDelta(windowed, prevWindowed);
@@ -161,6 +167,34 @@ export function buildDecisionHealthLine(ov: AuditOverviewPayload | null): string
   return `决策健康：${parts.join("·")}${suffix}${worst ? "——" + worst : ""}。`;
 }
 
+
+/** 敌情威胁摘要（2026-08-08，日记层 · 第 5 层）：高威胁遭遇（CRITICAL/HIGH + 距核距离）
+ *  + 排行榜猛攻蛆（ELITE_AGGRESSOR = 伤害 top10）——联盟日记叙事追加一行，让"谁在
+ *  附近/谁有威胁"一眼可读。纯读 leaderboard（30s 缓存）+ 遭遇索引（30s 缓存），无触网。 */
+export function buildThreatJournalLine(
+  lb: LeaderboardIntel | null,
+  encountered: ReadonlyMap<string, readonly EncounterEntry[]>,
+): string | null {
+  const RISK_ORDER: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+  // 高威胁遭遇：raidRisk CRITICAL/HIGH，按风险 + 距核距离升序取前 3
+  const hot: Array<{ username: string; tenant: string; dist: number | null; risk: string }> = [];
+  for (const [username, entries] of encountered) {
+    for (const e of entries) {
+      if (!e.raidRisk || !(e.raidRisk in RISK_ORDER) || RISK_ORDER[e.raidRisk] > 1) continue;
+      hot.push({ username, tenant: e.tenant, dist: e.distanceToFriendlyCore, risk: e.raidRisk });
+    }
+  }
+  hot.sort((a, b) => (RISK_ORDER[a.risk] - RISK_ORDER[b.risk]) || ((a.dist ?? 9999) - (b.dist ?? 9999)));
+  const hotPart = hot.slice(0, 3).map((h) => `${h.username}@${h.tenant.toUpperCase()}${h.dist != null ? `距核${h.dist}` : ""}`).join("·");
+  // 猛攻蛆：排行榜伤害 top10 = ELITE_AGGRESSOR
+  const elites = (lb?.profiles ?? []).filter((p) => p.tier === "ELITE_AGGRESSOR");
+  const eliteNames = elites.slice(0, 5).map((p) => p.username).filter(Boolean).join("/");
+  if (!hotPart && eliteNames.length === 0) return null;
+  const parts: string[] = [];
+  if (hotPart) parts.push(`高威胁遭遇 ${hotPart}`);
+  if (eliteNames.length > 0) parts.push(`排行榜猛攻蛆 ${elites.length} 人（${eliteNames}…）`);
+  return `敌情：${parts.join("；")}。`;
+}
 /** 联盟测绘覆盖摘要（2026-08-08，日记层）：共享测绘覆盖%（区块数）+ 各租户探索区块 +
  *  核心旁盲区。供联盟日记叙事追加一行（只读，读 exploration 30s 缓存，无触网）。 */
 export function buildAllianceCoverageLine(exp: AllianceExplorationPayload | null): string | null {
