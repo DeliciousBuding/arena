@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "description": "我的策略版本注册表（多版本平台，见 docs/design/strategy-versioning-v1.md）。注册名 → 版本源（config/worktree-path/git-tag）；TS 侧 resolveVersion 读取，零代码改动。",
+  "versions": {
+    "v1.0-safety": {
+      "desc": "safety planner v1.0（aggressive）——基线",
+      "kind": "git-tag",
+      "gitTag": "safety/v1.0",
+      "module": "src/strategies/safety-planner.ts",
+      "config": { "aggression": "aggressive", "attackForce": 2 },
+      "meta": { "created": "2026-08-09", "baseline": true }
+    },
+    "main-wip": {
+      "desc": "主工作树当前实现（WIP 演示条目）",
+      "kind": "worktree-path",
+      "worktreePath": "D:/Code/Projects/arena/arena-ts",
+      "module": "packages/arena-agent/src/strategies/safety-planner.ts",
+      "config": { "aggression": "aggressive", "attackForce": 2 },
+      "meta": { "created": "2026-08-09", "wip": true }
+    }
+  }
+}

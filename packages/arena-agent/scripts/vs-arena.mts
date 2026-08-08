@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkdirSync } from "node:fs";
 import { runFreeForAll, runMatch, type TournEntry } from "../src/sim/opponent/tournament.ts";
-import { COORDINATION_ROOT, opponentEntry, resolveOpponent } from "../src/sim/opponent/registry.ts";
+import { COORDINATION_ROOT, opponentEntry, resolveOpponent, listMyVersions, resolveVersion } from "../src/sim/opponent/registry.ts";
 import {
   inWindow,
   makeSurveyScenario,
@@ -71,6 +71,18 @@ const SEEDS: number[] = (() => {
   return out;
 })();
 
+/** --list-versions：列出注册表全部版本后退出。 */
+if (hasFlag("--list-versions")) {
+  console.log("我的策略版本注册表（my-versions.json，strategy-versioning-v1）：");
+  for (const v of listMyVersions()) {
+    const tag = v.kind === "git-tag" ? ` tag=${v.gitTag}` : "";
+    const wip = v.meta?.wip === true ? " [WIP]" : "";
+    const baseline = v.meta?.baseline === true ? " [baseline]" : "";
+    console.log(`  ${v.name.padEnd(20)} ${v.kind.padEnd(13)}${tag}${baseline}${wip}  ${v.desc}`);
+  }
+  process.exit(0);
+}
+
 /** 我方一个版本条目的构造参数（id/描述 + 版本源）。 */
 interface MineSpec {
   readonly id: string;
@@ -79,9 +91,15 @@ interface MineSpec {
   readonly source: string;
 }
 
-/** 构造一个"我"的版本条目：path: 动态 import 跨 worktree 版本；否则当前代码库配置档。 */
+/** 构造一个"我"的版本条目：注册表名（my-versions.json）> path: 跨 worktree > 配置档。 */
 async function mineEntry(spec: MineSpec): Promise<TournEntry> {
   const aggression = ME === "defensive" ? "defensive" : ME === "balanced" ? "balanced" : "aggressive";
+  // 1) 注册表名（strategy-versioning-v1 平台）
+  if (listMyVersions().some((v) => v.name === spec.source)) {
+    const resolved = await resolveVersion(spec.source, aggression);
+    return { id: spec.id, desc: resolved.desc, build: resolved.build };
+  }
+  // 2) path: 跨 worktree 动态加载
   if (spec.source.startsWith("path:")) {
     const agentRoot = spec.source.slice("path:".length).replaceAll("\\", "/");
     const modUrl = pathToFileURL(
@@ -113,6 +131,7 @@ async function mineEntry(spec: MineSpec): Promise<TournEntry> {
     const Pl = mod.SafetyPlanner as new (config?: SafetyPlannerConfig) => { decide: unknown };
     return { id: spec.id, desc: spec.desc, build: () => new Pl(base) };
   }
+  // 3) 配置档（aggressive/defensive/balanced）
   const base: SafetyPlannerConfig = { ...DEFAULT_SAFETY_CONFIG };
   if (aggression === "defensive") {
     base.aggression = "defensive";
