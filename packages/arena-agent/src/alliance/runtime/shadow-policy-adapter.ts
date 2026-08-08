@@ -86,7 +86,7 @@ export function createShadowPolicyAdapter(): ShadowPolicyAdapter {
           tickWindow: latestSnapshot.tickWindow,
           memberCount: latestSnapshot.members.size,
           sightingCount: latestSnapshot.sightings.length,
-          treasuryTenant: latestSnapshot.treasuryTenant,
+          treasuryTenant: latestDecision?.treasuryTenant ?? latestSnapshot.treasuryTenant,
         },
         policy: latestDecision === null ? null : {
           treasuryTenant: latestDecision.treasuryTenant,

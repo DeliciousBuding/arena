@@ -15,6 +15,8 @@ REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 DATA_ROOT="/d/Code/Projects/arena/data"
 RUNTIME_ROOT="$DATA_ROOT/runtime"
 READY_URL="http://127.0.0.1:8120/ready"
+COMMAND_CENTER_PORT="8787"
+COMMAND_CENTER_URL="http://127.0.0.1:${COMMAND_CENTER_PORT}/api/alliance/director"
 MAINTENANCE_LEASE="$RUNTIME_ROOT/maintenance.lease"
 
 now() { date '+%Y-%m-%d %H:%M:%S'; }
@@ -32,6 +34,36 @@ if [ -f "$MAINTENANCE_LEASE" ]; then
   echo "$(now) maintenance lease expired/invalid (${LEASE_REASON:-unknown}) -> auto-resume" >> "$LOG"
   rm -f "$MAINTENANCE_LEASE"
 fi
+
+# Command Center ownership（2026-08-08）：8787 必须由当前 release worktree 持有。
+# 旧 main/临时 Agent 启动的实例即使占着端口也不能冒充生产；这里只替换 8787，
+# 不触碰 supervisor/tenant writer。健康判断同时要求 v3 只读 Director 边界。
+ensure_command_center() {
+  local CC_PID EXPECTED_ROOT_WIN CC_BODY
+  CC_PID=$(netstat -ano 2>/dev/null | grep ":${COMMAND_CENTER_PORT}" | grep -i LISTEN | head -1 | awk '{print $NF}')
+  if [ -n "$CC_PID" ]; then
+    EXPECTED_ROOT_WIN=$(cygpath -w "$REPO")
+    if powershell -NoProfile -ExecutionPolicy Bypass -File "$REPO/scripts/command-center-owner.ps1" \
+        -ProcessId "$CC_PID" -ExpectedRoot "$EXPECTED_ROOT_WIN" >/dev/null 2>&1; then
+      CC_BODY=$(curl -sS -m 3 "$COMMAND_CENTER_URL" 2>/dev/null || true)
+      if printf '%s' "$CC_BODY" | grep -q '"actionOwnership":"none"'; then
+        return 0
+      fi
+    fi
+    echo "$(now) Command Center wrong/stale owner pid=$CC_PID -> replacing with current release" >> "$LOG"
+    taskkill //PID "$CC_PID" //T //F >> "$LOG" 2>&1 || true
+    sleep 1
+  fi
+  (
+    cd "$REPO/packages/command-center" || exit 1
+    ARENA_DATA_ROOT="$DATA_ROOT" \
+      ARENA_SUPERVISOR_DEBUG_URL="http://127.0.0.1:8120" \
+      COMMAND_CENTER_PORT="$COMMAND_CENTER_PORT" \
+      node scripts/start-cc.mjs --hidden
+  ) >> "$LOG" 2>&1 || true
+}
+
+ensure_command_center
 
 # 健康则无事。注意：grep 必须取第一个 "ready" 字段（JSON 顶层），
 # 否则 tenants 数组内其他租户的 "ready":true 会让子串匹配误判健康

@@ -6,7 +6,7 @@
  *   node scripts/start-cc.mjs --hidden   后台启动：无终端窗口，日志落 logs/cc-server.log（写 pid）
  *   node scripts/start-cc.mjs --stop     停止上次 --hidden 启动的实例（读 pid 文件）
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, writeFileSync, appendFileSync, existsSync, rmSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,9 +51,22 @@ if (stop) {
 }
 
 const env = { ...process.env, COMMAND_CENTER_PORT: PORT };
-// 显式注入共享数据根：command-center/.. = packages, /.. = arena-ts, /.. = 协调根，
-// + data —— 在 main 工作树与 .worktrees 下均解析到同一份协调根 data/。
-env.ARENA_DATA_ROOT = process.env.ARENA_DATA_ROOT ?? resolve(join(CC, "..", "..", "..", "data"));
+function defaultDataRoot() {
+  try {
+    // Worktree-safe: git common-dir always points at the owning arena-ts/.git, even when
+    // this launcher lives under arena-ts/.worktrees/<release>/packages/command-center.
+    const commonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      cwd: CC, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return resolve(dirname(commonDir), "..", "data");
+  } catch {
+    // Source-archive fallback keeps historical main-tree behavior; production watchdog
+    // always injects ARENA_DATA_ROOT explicitly.
+    return resolve(join(CC, "..", "..", "..", "data"));
+  }
+}
+// Explicit env wins; otherwise resolve through Git common-dir so main/worktree use one data root.
+env.ARENA_DATA_ROOT = process.env.ARENA_DATA_ROOT ?? defaultDataRoot();
 
 if (hidden) {
   if (await portBusy(PORT)) {

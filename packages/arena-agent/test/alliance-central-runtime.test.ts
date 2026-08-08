@@ -114,6 +114,7 @@ test("central shadow: all expected frames must be coherent before replan; period
   let view = central.view() as any;
   assert.equal(view.mode, "ASSIST_ONLY");
   assert.equal(view.actionOwnership, "none");
+  assert.equal(view.snapshot?.treasuryTenant, view.policy?.treasuryTenant);
   assert.equal(view.revision, 1);
   assert.equal(view.runtime.directiveSentCount, 4);
 
