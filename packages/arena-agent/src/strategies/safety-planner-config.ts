@@ -390,6 +390,15 @@ export interface SafetyPlannerConfig {
   readonly threatMilitaryPriority?: boolean;
   /** 威胁优先产兵的军事地板（默认 4）：军事规模 < 该值才触发优先产兵。 */
   readonly threatMilitaryFloor?: number;
+  /**
+   * 攻坚集结（2026-08-08，rally-assault-v1，reference guide"有护卫 Core 先退
+   * 到安全集结点、全员到齐再共同出击"对照）：aggressive 无可见敌人时对已知敌
+   * Core 记忆攻坚，军事单位先到敌核外圈安全集结位（Chebyshev RALLY_DISTANCE，
+   * 敌守军 Vanguard 1/Ranger 3 射程外）汇合，≥RALLY_READY_COUNT 或超时后再
+   * 成建制压上——防逐个送死（t2 第二轮 jerkman 攻坚实证：5 Ranger 全灭核心
+   * 未破）。默认 false = 历史行为（直接逐个前压，零回归）。
+   */
+  readonly rallyAssault?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
