@@ -445,6 +445,16 @@ export interface SafetyPlannerConfig {
   /** beacon sweep 最大半径（默认 36，对齐 BEACON_RESOURCE_SWEEP_MAX :121）。 */
   readonly beaconSweepMax?: number;
   /**
+   * chunk 配额复察队（2026-08-09，chunk-resurvey-v1，W7）：worker 无可见资源
+   *  且无活跃采集目标时，调用 planChunkResurvey（intel/refill-predictions.ts）
+   *  按"刷新预测 dueInTicks 升序 + chunk 配额"分配 worker 去即将刷新的空矿
+   *  提前占位（与 harvest-memory-mine 正交——后者走"已知矿记忆可见/fresh
+   *  hint"，W7 走"刷新预测 due"）。需要 refill-predictions Map 注入（SafetyPlanner
+   *  .setRefillPredictions）；无注入/空预测 = 不执行（零回归）。默认 false =
+   *  历史行为（worker 直接进入 patrol，零回归）。
+   */
+  readonly chunkResurvey?: boolean;
+  /**
    * 近核入侵观察（2026-08-08，core-threat-watch-v1）：敌单位距我方 Core
    * ≤ coreThreatWatchRadius（Chebyshev 默认 18）即入长 TTL 观察记忆
    * （coreThreatWatchTicks，默认 60）——短 TTL（enemyHints 6 / stationary 12）
