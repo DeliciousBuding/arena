@@ -138,6 +138,7 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
 | `GET /api/overview` | 4 租户 outcome 最新快照 + 60 tick 均值 |
 | `GET /api/map` | 全局联盟测绘地图：survey-db 累积地形为主源（障碍全量永久 + 矿带状态 visible/stale/harvested/empty）＋最新 case 当前帧动态层（单位/核心）＋跨租户探索分区 chunks/bounds/beacons（2026-08-08 数据链路打通） |
 | `GET /api/stream?tenant=&n=` | runtime.jsonl 尾部（决策流） |
+| `GET /api/audit/workers?tenant=all&window=4000` | Worker 局部活性审计：假活/无效 MOVE/振荡/拥挤饥饿 + targeted recovery 证据 |
 | `GET /api/events?tenant=&n=` | calibration case 结构化事件聚合（`after.state.events`，2026-08-08 修复） |
 | `GET /api/survey?tenant=all&states=` | 跨 run 测绘库：矿/障碍/敌核/探索分区 chunks + 生命周期 + 消费趋势（30s 内存缓存） |
 | `GET /api/exploration?tenant=` | 单租户测绘 + 生命周期 + 当前帧（fog 记忆层数据源） |

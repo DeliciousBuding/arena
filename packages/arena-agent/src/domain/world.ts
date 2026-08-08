@@ -342,6 +342,19 @@ export class World {
     return count;
   }
 
+  /**
+   * Worker 局部活性恢复时清掉该单位的短期 MOVE 失败避让缓存。
+   * 这些缓存本来只有数 Tick TTL，但若正好与旧 patrol/矿目标形成反馈环，恢复后继续
+   * 携带会把单位再次推回同一小环；局部恢复只清该 unit，不影响全局障碍事实。
+   */
+  clearUnitMoveFailures(unitId: string): number {
+    const failures = this.unitMoveFailures.get(unitId);
+    if (failures === undefined) return 0;
+    const count = failures.size;
+    this.unitMoveFailures.delete(unitId);
+    return count;
+  }
+
   observe(state: TickState): void {
     // 世界重置检测：tick 回退（服务器世界重置/异常）→ 全清本地记忆，避免幽灵障碍/资源
     if (this.tick > state.tick) {
