@@ -1320,6 +1320,31 @@ export class SafetyPlanner {
       }
     }
 
+    // ring 疏散（core-clearance-v1 补强，2026-08-08，t2 卸货通道死锁实证）：核心格
+    // 被 worker 占用（空载 idle 或满载待卸）= 卸货通道被占死。cheb-1 ring 上的
+    // 军事单位退到 Chebyshev 2（coreGuardFallback）让出核心邻格——否则 Vanguard
+    // 守位锚点 homeCell 就是 cheb-1（四邻轮转把自己钉在 ring 上），被困空 worker
+    // 4 邻全堵永远走不出核心格 → deposit=0 经济冻结（生产 t2 实证 130+ tick）。
+    // 邻接敌由上方 SWEEP 分支优先反击（战斗不丢）；仅核心格被 worker 占用时
+    // 触发，正常守位零回归。
+    if (
+      this.config.coreClearance === true &&
+      state.core !== null &&
+      coreOccupiedByWorker &&
+      chebyshev(unit.position, state.core.position) === 1 &&
+      !samePosition(unit.position, state.core.position)
+    ) {
+      const post = this.coreGuardFallback(state.core.position, militaryObstacles, index);
+      if (
+        post !== null &&
+        !samePosition(post, state.core.position) &&
+        !samePosition(unit.position, post)
+      ) {
+        const direction = stepToward(unit.position, post, militaryObstacles);
+        if (direction !== null) { set(unit, { type: "MOVE", direction }, "vanguard_ring_clear"); return; }
+      }
+    }
+
     // 远端军事回援（remoteReinforce 候选，竞品 "敌方战斗单位已经进入 Core
     // 防区时，所有非守家单位跳过集结等待并立即回援"）：可见敌方战斗单位进入
     // Core 防区（12 = THREAT_FALLBACK_RADIUS）→ 远端 Vanguard 立即回 Core
@@ -1787,6 +1812,11 @@ export class SafetyPlanner {
         ?? (this.config.coreClearance === true
           ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
           : state.core.position);
+    // ring 疏散（与 Vanguard 同，2026-08-08）：核心格被 worker 占用 = 卸货通道占死，
+    // cheb-1 Ranger 退到 Chebyshev 2 让位（射击分支优先在上方已处理——有敌就打）。
+    const rangerCoreOccupiedByWorker = state.core !== null && state.units.some(
+      (u) => u.unitType === "WORKER" && samePosition(u.position, state.core!.position),
+    );
 
     // 核心通道清障（core-clearance-v1，2026-08-07）：本 Ranger 站在核心格上
     // → 疏散到最近空邻格/外圈（与 Vanguard 同，核心格只留给卸货 worker）。
@@ -1868,6 +1898,28 @@ export class SafetyPlanner {
           "ranger_memory_shot",
         );
         return;
+      }
+    }
+
+    // ring 疏散（core-clearance-v1 补强，2026-08-08，与 Vanguard 同）：核心格被
+    // worker 占用 = 卸货通道占死，cheb-1 Ranger 退到 Chebyshev 2 让出核心邻格
+    // （守位锚点 homeCell 即 cheb-1，会把自己钉在 ring 上堵死被困空 worker 的
+    // 出口）。射击分支在上方已优先（射程内有敌就开火）；仅核心格被占时触发。
+    if (
+      this.config.coreClearance === true &&
+      state.core !== null &&
+      rangerCoreOccupiedByWorker &&
+      chebyshev(unit.position, state.core.position) === 1 &&
+      !samePosition(unit.position, state.core.position)
+    ) {
+      const post = this.coreGuardFallback(state.core.position, militaryObstacles, index);
+      if (
+        post !== null &&
+        !samePosition(post, state.core.position) &&
+        !samePosition(unit.position, post)
+      ) {
+        const direction = stepToward(unit.position, post, militaryObstacles);
+        if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_ring_clear"); return; }
       }
     }
 
