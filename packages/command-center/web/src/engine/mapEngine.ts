@@ -2816,9 +2816,9 @@ function tactRenderActionDialog() {
       const available = av.actions[t2] === true;
       const danger = t2 === 'SELF_DESTRUCT';
       const reason = av.reasons?.[t2];
-      if (!available && !reason) return `<button class="act-btn ${danger ? 'danger' : ''}" data-action="${t2}" disabled title="当前不可用">${TACT_ACTION_CN[t2] ?? t2}</button>`;
-      if (!available) return `<button class="act-btn blocked" data-blocked="${t2}" data-reason="${escapeHtml(reason)}" title="${escapeHtml(reason)}">${TACT_ACTION_CN[t2] ?? t2}</button>`;
-      return `<button class="act-btn ${danger ? 'danger' : ''}" data-action="${t2}" title="提交：${TACT_ACTION_CN[t2]}（人类指挥）">${TACT_ACTION_CN[t2] ?? t2}</button>`;
+      if (!available && !reason) return `<button class="act-btn ${danger ? 'danger' : ''}" data-action="${t2}" disabled title="当前不可用"><span class="act-ico">${TACT_ACTION_ICON[t2] ?? ''}</span>${TACT_ACTION_CN[t2] ?? t2}</button>`;
+      if (!available) return `<button class="act-btn blocked" data-blocked="${t2}" data-reason="${escapeHtml(reason)}" title="${escapeHtml(reason)}"><span class="act-ico">${TACT_ACTION_ICON[t2] ?? ''}</span>${TACT_ACTION_CN[t2] ?? t2}</button>`;
+      return `<button class="act-btn ${danger ? 'danger' : ''}" data-action="${t2}" title="提交：${TACT_ACTION_CN[t2]}（人类指挥）"><span class="act-ico">${TACT_ACTION_ICON[t2] ?? ''}</span>${TACT_ACTION_CN[t2] ?? t2}</button>`;
     }).join('')}</div>
     ${costHtml}
     ${goalRow}

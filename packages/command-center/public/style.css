@@ -1054,7 +1054,9 @@ body {
   min-height: 38px; border-radius: var(--radius-md); border: 1px solid rgba(255,255,255,.22);
   background: rgba(255,255,255,.05); color: var(--text); font-size: 12px; cursor: pointer;
   transition: all .2s var(--ease);
+  display: flex; align-items: center; justify-content: center; gap: 6px; /* 图标+文本对齐（2026-08-08） */
 }
+.act-btn .act-ico { flex: none; font-size: 11px; line-height: 1; opacity: .85; }
 .act-btn:hover:not(:disabled) { border-color: rgba(255,255,255,.55); background: rgba(255,255,255,.09); color: #fff; transform: translateY(-1px); box-shadow: 0 0 10px rgba(255,255,255,.16); }
 .act-btn:active:not(:disabled) { transform: scale(.96); }
 .act-btn:disabled { opacity: .38; cursor: not-allowed; color: var(--text-faint); }
