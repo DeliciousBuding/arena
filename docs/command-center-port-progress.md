@@ -403,3 +403,13 @@ mapEngine.ts 对应函数。
   钳位/播放暂停重播/倍速 1→2→4→1/UI 同步 at-end/加载成功与异常），
   web 单测 34→43 全绿。
 - **验证**：typecheck/build + 完整回归 **22/22 全绿**（含 15s tick 读条）。
+
+### 9.22 选中即定位 + hover 当前指令（2026-08-08）
+- **revealUnit 选中即定位**：tactSelect（画布点击/卡片/右键选中）统一接入——单位屏幕坐标
+  超出画布可见区（含边距，避开左/右面板与顶/底栏）时用 animateView 指数缓动平移进入视野；
+  已在视野内则不平移（不打扰观察上下文）。selectFromAssetList 由硬跳改走统一平滑定位。
+- **hover 当前指令**：commands.ts 新增纯函数 unitCommandLabel（人类 goal 优先/算法决策
+  unitActions 兜底），showTooltip 受控单位追加「当前」行——人类指挥白色、算法决策青色
+  （对齐动线语义：mine=白 / goto=青 / agent 规划=绿），hover 即见“单位正在干什么”。
+- **测试/验证**：commands.test.ts +1 项，web 单测 43→44 全绿；探针实测 hover 受控先锋
+  显示「决策 · 移动 DOWN」；typecheck/build + 完整回归 **22/22 全绿**。

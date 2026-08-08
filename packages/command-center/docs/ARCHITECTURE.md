@@ -93,6 +93,7 @@ npm run test:regression    # Playwright 回归 22 项（web/scripts/cc-regressio
 - 选中单位 → 动作卡：移动（点矿=采矿任务/点空地=移动任务）、清扫、攻击、采集、回仓、拾取/放置信标、自毁、等待。
 - 提交经 `/api/command*` → `data/runtime/human-commands/<tenant>.json`，tenant 主循环合并前覆盖 agent 决策。
 - 地图动线：人类指令 mine=琥珀 / goto=青，agent 规划=绿；jumpPins 跳图定位标记（点击/Esc 清除）。
+- 选中即定位 revealUnit（屏外单位平滑移入视野）；hover 单位 tooltip 显示「当前指令」（人类指挥白 / 算法决策青）。
 
 ## 6. 接力清单（并行重构提交后）
 
