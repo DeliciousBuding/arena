@@ -47,6 +47,24 @@ export interface MigrationRuntimeConfig {
   readonly corridor: MigrationCorridorConfig;
   readonly hold: MigrationHoldConfig;
   readonly overlay: MigrationOverlayConfig;
+  /** M7（migration-long-march-v1 §5）：目标评分参数。 */
+  readonly targetScore?: {
+    readonly radius: number;
+    readonly minFreshResources: number;
+    readonly enemySafeRadius: number;
+    readonly unknownPenalty: number;
+  };
+  /** M7：武装押送参数（警戒圈/探路深度）。 */
+  readonly convoy?: {
+    readonly picketCount: number;
+    readonly reconDepth: number;
+    readonly reconPriority: "enemy-first" | "resource-first";
+  };
+  /** M7：长征参数（SETTLE 目标/重评估阈值）。 */
+  readonly longMarch?: {
+    readonly settleTarget: number;
+    readonly replanOnTargetScoreDelta: number;
+  };
 }
 
 export const DEFAULT_MIGRATION_RUNTIME_CONFIG: MigrationRuntimeConfig = {
@@ -63,6 +81,9 @@ export const DEFAULT_MIGRATION_RUNTIME_CONFIG: MigrationRuntimeConfig = {
   corridor: { width: 8, lookahead: 30 },
   hold: { enterRadius: 12, exitRadius: 18, repeatWindowTicks: 600 },
   overlay: { enableCoreOrders: false, recheckEpochEachTick: true },
+  targetScore: { radius: 30, minFreshResources: 12, enemySafeRadius: 30, unknownPenalty: 0.5 },
+  convoy: { picketCount: 2, reconDepth: 30, reconPriority: "enemy-first" },
+  longMarch: { settleTarget: 90, replanOnTargetScoreDelta: 0.2 },
 };
 
 /**

@@ -101,6 +101,18 @@ export type { TrajectoryExporterOptions, ExportStats } from "./export/trajectory
 export { FeatureExporter } from "./export/feature-exporter.ts";
 export type { FeatureExportOptions, FeatureExportStats } from "./export/feature-exporter.ts";
 
+export { exportRealSamples } from "./export/real-sample-export.ts";
+export type {
+  MlSplitName,
+  RealSampleExportOptions,
+  RealSampleExportResult,
+  RunTimeInfo,
+  FeatureQualityEntry,
+  FeatureQualityReport,
+  MlSplitRunAssignment,
+  MlSplitReport,
+} from "./export/real-sample-export.ts";
+
 // ── Eval ──
 export {
   BENCHMARK_RESULT_SCHEMA_VERSION,
