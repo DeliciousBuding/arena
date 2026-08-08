@@ -251,7 +251,7 @@ test("清路订单：clearRequests 格占用单位 → 让位 MOVE（远离核�
   });
   const orders = buildClearOrders(
     plan,
-    [{ id: "v1", unitType: "VANGUARD", position: [1, 0] }],
+    [{ id: "v1", unitType: "VANGUARD", position: [1, 0], cargo: 0 }],
     { position: [0, 0], state: "NORMAL", destination: null, moveProgress: null, moveRequiredTicks: null },
   );
   assert.equal(orders.length, 1);
@@ -262,9 +262,9 @@ test("清路订单：clearRequests 格占用单位 → 让位 MOVE（远离核�
 
 test("清路订单：无 clearRequests / 无占用单位 → 空数组", () => {
   const plan = makeMovingPlan();
-  assert.deepEqual(buildClearOrders(plan, [{ id: "v1", unitType: "VANGUARD", position: [1, 0] }], null), []);
+  assert.deepEqual(buildClearOrders(plan, [{ id: "v1", unitType: "VANGUARD", position: [1, 0], cargo: 0 }], null), []);
   const plan2 = makeMovingPlan({ clearRequests: [{ x: 1, y: 0, reason: "destination" }] });
-  assert.deepEqual(buildClearOrders(plan2, [{ id: "v1", unitType: "VANGUARD", position: [5, 0] }], null), []);
+  assert.deepEqual(buildClearOrders(plan2, [{ id: "v1", unitType: "VANGUARD", position: [5, 0], cargo: 0 }], null), []);
 });
 
 // ---------------------------------------------------------------------------

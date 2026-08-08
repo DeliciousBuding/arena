@@ -92,6 +92,16 @@ export interface MigrationPlanV1 {
     readonly clearAheadCells: number;
     readonly clearAheadReason: "initial" | "blocked-retry" | "replan";
   };
+  /**
+   * M8（migration-survival-v1 §4）：战损编成缺口请求（SETTLE 期检测）。
+   * 缺口持续 ≥ minGapTicks 才写入；缺口恢复 → 字段清除。缺失 = 无缺口。
+   */
+  readonly replenish?: {
+    readonly gap: number;
+    /** 缺口角色（退化表在 militaryCount+1 与 militaryCount 间新增的槽位）。 */
+    readonly missingRole: "SC" | "SW" | "ES" | "RG";
+    readonly sinceTick: number;
+  };
 }
 
 export type MigrationPlanParseResult =
@@ -198,6 +208,20 @@ export function parseMigrationPlan(raw: unknown): MigrationPlanParseResult {
         raw.assist.clearAheadReason !== "replan")
     )
       return { ok: false, reason: "assist 段非法" };
+  }
+
+  // M8 可选字段（migration-survival-v1 §4）：缺失 = 无缺口；存在则严格校验。
+  if (raw.replenish !== undefined) {
+    if (
+      !isRecord(raw.replenish) ||
+      !isNumber(raw.replenish.gap) || raw.replenish.gap < 1 ||
+      !isNumber(raw.replenish.sinceTick) ||
+      (raw.replenish.missingRole !== "SC" &&
+        raw.replenish.missingRole !== "SW" &&
+        raw.replenish.missingRole !== "ES" &&
+        raw.replenish.missingRole !== "RG")
+    )
+      return { ok: false, reason: "replenish 段非法" };
   }
 
   return { ok: true, plan: raw as unknown as MigrationPlanV1 };

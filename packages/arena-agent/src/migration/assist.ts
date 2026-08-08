@@ -26,6 +26,8 @@ export interface AssistUnitSnapshot {
   readonly id: string;
   readonly unitType: string;
   readonly position: readonly [number, number] | null;
+  /** M8（migration-survival-v1 §5）：货物量（>0 = 满载 worker，卸货排队判定）。 */
+  readonly cargo: number;
 }
 
 export interface AssistContext {
@@ -49,6 +51,12 @@ export interface AssistResult {
   readonly clearOrders: readonly {
     readonly unitId: string;
     readonly direction: "UP" | "DOWN" | "LEFT" | "RIGHT";
+    readonly from: readonly [number, number];
+    readonly reason: string;
+  }[];
+  /** M8（migration-survival-v1 §5）：卸货等待订单（核心格容量已满时满载 worker 停在邻格）。 */
+  readonly waitOrders: readonly {
+    readonly unitId: string;
     readonly from: readonly [number, number];
     readonly reason: string;
   }[];
@@ -114,9 +122,55 @@ export function buildClearOrders(
 }
 
 /**
+ * M8 卸货等待订单（migration-survival-v1 §5，M6 §4-B 落地）：
+ * 核心格容量纪律 ≤1 我方单位（=核心 + 至多 1 卸货位）。满载 worker 靠近核心
+ * （≤2 格）且核心格已有其他我方单位驻留 → 停在核心 1 格邻域等待（wait-ring），
+ * 不挤入核心格（防 R1 溢出导致核心迁移被自己人挡死——L1 实测：核心格被
+ * VANGUARD 集群占满，满载 worker 挤不进卸货，SETTLE 拖满 maxSettle 强制退出）。
+ *
+ * - 核心 MOVING：持货 WAIT（既有 coreMovingHold），本函数不介入；
+ * - 空载 worker：不受影响（照常采矿/勘探）；
+ * - 调用方把 waitOrders 对应单位的动作覆盖为"原地等待"（不发起向核心格的移动）。
+ */
+export function buildWaitRingOrders(
+  units: readonly AssistUnitSnapshot[],
+  core: AssistCoreSnapshot | null,
+): AssistResult["waitOrders"] {
+  const corePosition = core?.position ?? null;
+  if (corePosition === null) return [];
+  const orders: {
+    readonly unitId: string;
+    readonly from: readonly [number, number];
+    readonly reason: string;
+  }[] = [];
+  // 核心格驻留单位数（核心本体不计入 units；≥1 即容量满——核心 + 1 单位 = 2 占用）。
+  const coreCellOccupants = units.filter(
+    (unit) => unit.position !== null && unit.position[0] === corePosition[0] && unit.position[1] === corePosition[1],
+  ).length;
+  if (coreCellOccupants < 1) return [];
+  for (const unit of units) {
+    if (unit.cargo <= 0) continue; // 空载不受影响
+    if (unit.position === null) continue;
+    const distance = Math.max(
+      Math.abs(unit.position[0] - corePosition[0]),
+      Math.abs(unit.position[1] - corePosition[1]),
+    );
+    if (distance > 2) continue; // 只在核心邻域拦截（远距满载 worker 照常行进）
+    if (unit.position[0] === corePosition[0] && unit.position[1] === corePosition[1]) continue; // 已在核心格 = 正在卸货，放行
+    orders.push({
+      unitId: unit.id,
+      from: [unit.position[0], unit.position[1]],
+      reason: `wait-ring:核心格容量满（${coreCellOccupants} 驻留单位），等待卸货位`,
+    });
+  }
+  return orders;
+}
+
+/**
  * 迁移助手主入口（纯函数）。调用方在 overlay pre-submit 阶段调用：
  * - suppressCoreOrder → 过滤 plan.coreAction 的 START_MOVE；
  * - clearOrders → 覆盖 unitActions 中对应单位的动作为让位 MOVE；
+ * - waitOrders → 覆盖 unitActions 中对应单位的动作为原地等待（卸货排队）；
  * - manualMigration/migrationFailed → 遥测事件。
  */
 export function migrationAssist(context: AssistContext): AssistResult {
@@ -130,5 +184,6 @@ export function migrationAssist(context: AssistContext): AssistResult {
     suppressCoreOrder,
     migrationFailed: false, // 需 prev 对比，由调用方经 detectMigrationFailure 判定
     clearOrders: context.planActive ? buildClearOrders(context.plan!, context.units, context.core) : [],
+    waitOrders: buildWaitRingOrders(context.units, context.core),
   };
 }

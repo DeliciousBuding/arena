@@ -100,6 +100,10 @@ export function transition(phase: MigrationPhase, event: MigrationEvent): Migrat
       if (event.type === "LEG_SETTLE_DONE")
         return { phase: event.lastLeg ? "ARRIVED" : "LEG_MOVE", applied: true };
       if (event.type === "CORE_DAMAGED") return { phase: "DEFENSIVE_HOLD", applied: true };
+      // M8（migration-survival-v1 §3）：SETTLE 中敌核贴脸持续 → 升级。
+      // 前两次 = REPLAN（换目的地重审，非放弃长征）；第三次 = ABORT（安全落）。
+      if (event.type === "REPLAN_REQUESTED") return { phase: "PLAN", applied: true };
+      if (event.type === "THREAT_ESCALATED") return { phase: "ABORT", applied: true };
       return noop();
     case "DEFENSIVE_HOLD":
       if (event.type === "THREAT_CLEARED") return { phase: "LEG_SETTLE", applied: true };

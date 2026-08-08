@@ -1405,6 +1405,7 @@ export async function runTenant(
             id: unit.id,
             unitType: unit.unitType,
             position: unit.position,
+            cargo: unit.cargo ?? 0,
           })),
           plan: read.plan,
           planActive: result.active,
@@ -1419,6 +1420,15 @@ export async function runTenant(
           const unitActions = { ...assistPlan.unitActions };
           for (const order of assist.clearOrders) {
             unitActions[order.unitId] = { type: "MOVE", direction: order.direction };
+          }
+          assistPlan = { ...assistPlan, unitActions };
+        }
+        // M8 卸货等待订单（migration-survival-v1 §5）：核心格容量已满 → 满载 worker
+        // 停在邻格（WAIT，不挤入核心格），空出卸货位后自然放行。
+        if (assist.waitOrders.length > 0) {
+          const unitActions = { ...assistPlan.unitActions };
+          for (const order of assist.waitOrders) {
+            unitActions[order.unitId] = { type: "WAIT" };
           }
           assistPlan = { ...assistPlan, unitActions };
         }

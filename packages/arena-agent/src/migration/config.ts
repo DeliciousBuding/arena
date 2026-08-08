@@ -65,6 +65,17 @@ export interface MigrationRuntimeConfig {
     readonly settleTarget: number;
     readonly replanOnTargetScoreDelta: number;
   };
+  /** M8（migration-survival-v1 §3）：威胁升级（敌核贴脸持续 → REPLAN/ABORT）。 */
+  readonly threat?: {
+    readonly escalateRadius: number;
+    readonly escalateTicks: number;
+    readonly replanWindowTicks: number;
+  };
+  /** M8（migration-survival-v1 §4）：战损编成缺口（SETTLE 检测 → 补员请求）。 */
+  readonly replenish?: {
+    readonly minMilitaryCount: number;
+    readonly minGapTicks: number;
+  };
 }
 
 export const DEFAULT_MIGRATION_RUNTIME_CONFIG: MigrationRuntimeConfig = {
@@ -84,6 +95,8 @@ export const DEFAULT_MIGRATION_RUNTIME_CONFIG: MigrationRuntimeConfig = {
   targetScore: { radius: 30, minFreshResources: 12, enemySafeRadius: 30, unknownPenalty: 0.5 },
   convoy: { picketCount: 2, reconDepth: 30, reconPriority: "enemy-first" },
   longMarch: { settleTarget: 90, replanOnTargetScoreDelta: 0.2 },
+  threat: { escalateRadius: 12, escalateTicks: 10, replanWindowTicks: 600 },
+  replenish: { minMilitaryCount: 6, minGapTicks: 5 },
 };
 
 /**
