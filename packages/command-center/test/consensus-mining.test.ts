@@ -52,6 +52,28 @@ test("consensus-mining: 共识矿 join 分工兑现 + 积压 topStale", () => {
   assert.equal(p.summary.topStale.length, 2);
 });
 
+test("consensus-mining: 敌情威胁并入标注", () => {
+  const survey = {
+    consensusResources: [
+      { x: 1, y: 1, tick: 100, tenant: "t1" },    // bucket (0,0) combat 0 → 0
+      { x: 17, y: 17, tick: 200, tenant: "t2" },  // bucket (1,1) combat 12 → 3
+    ],
+  } as unknown as import("../lib/alliance-survey.ts").AllianceSurveyPayload;
+  const effectiveness = {
+    items: [{ cell: "1,1", assignedTenant: "t1", status: "open" }, { cell: "17,17", assignedTenant: "t2", status: "open" }],
+  } as unknown as import("../lib/mining-effectiveness.ts").MiningEffectivenessPayload;
+  const heatByBucket: Record<string, { combatCount: number; count: number; lastTick: number }> = {
+    "0,0": { combatCount: 0, count: 5, lastTick: 90 },
+    "1,1": { combatCount: 12, count: 20, lastTick: 95 },
+  };
+  const p = enrichConsensusMining(survey, effectiveness, null, heatByBucket);
+  const byCell = Object.fromEntries(p.resources.map((r) => [r.cell, r]));
+  assert.equal(byCell["1,1"].threatLevel, 0);
+  assert.equal(byCell["17,17"].threatLevel, 3);
+  assert.equal(byCell["17,17"].threatCombat, 12);
+  assert.equal(p.summary.highThreat, 1, "threatLevel>=2 计数");
+});
+
 test("consensus-mining: 空数据兜底", () => {
   const p = enrichConsensusMining(null, null, null);
   assert.equal(p.resources.length, 0);
