@@ -114,6 +114,17 @@ export interface EpisodeConfig {
     readonly plans: Readonly<Record<string, Plan>>;
     readonly events: readonly ResolutionEvent[];
   }) => void;
+  /** Slot 轮换（W54，2026-08-09）：缺省 false = 历史行为零回归。true 时
+   *  按 rotatedSlot = (mySlot + seed) % numPlayers 循环移位 id-sorted tenants，
+   *  使被测者（mySlot 指向 id-sorted tenants 中被测者的 index）移到 array
+   *  index rotatedSlot，对齐 scenario players[] 的站点序（site 0..n-1）。
+   *  不变量保持：id 集合不变（validateConfig 仍过）；privateEventsForPlayer
+   *  按 playerId 过滤（与 array 顺序无关）。调用方需把 scenario players[]
+   *  按站点序构造（被测者在 site rotatedSlot）。 */
+  readonly rotateSlot?: boolean;
+  /** 被测者在 id-sorted tenants 中的 index（slot 轮换用）。缺省 0。
+   *  仅当 rotateSlot=true 时读取。 */
+  readonly mySlot?: number;
 }
 
 export interface ValidationSummary {
@@ -204,12 +215,44 @@ function validateConfig(config: EpisodeConfig, world: SimWorld, rules: RulesMani
   return tenants;
 }
 
+/**
+ * Slot 轮换（W54，2026-08-09）：把 id-sorted tenants 循环移位，使被测者
+ * （位于 id-sorted index `mySlot`）移到 array index `rotatedSlot`。
+ * rotatedSlot = (mySlot + seed) % numPlayers（reference P0#16 公式）。
+ *
+ * 不变量：返回数组的 id 集合与输入相同（仅顺序变化）→ validateConfig 的
+ * id-sorted 比较仍过；privateEventsForPlayer 按 playerId 过滤（与顺序无关）。
+ * 调用方需把 scenario players[] 按站点序构造（被测者在 site rotatedSlot），
+ * 这样 scenario players[] 顺序与 tenants 循环后顺序对齐，settlement 内
+ * plans.values() 与 world.players.values() 的迭代顺序一致。
+ *
+ * rotateSlot=false 或 numPlayers<2 时原样返回（零回归）。
+ */
+export function rotateTenantsForSlot(
+  tenants: readonly EpisodeTenant[],
+  mySlot: number,
+  seed: number,
+  rotate: boolean,
+): EpisodeTenant[] {
+  if (!rotate || tenants.length < 2) return [...tenants];
+  const numPlayers = tenants.length;
+  if (!Number.isInteger(mySlot) || mySlot < 0 || mySlot >= numPlayers) {
+    throw new Error(`episode: mySlot out of range [0,${numPlayers}): ${mySlot}`);
+  }
+  const rotatedSlot = ((mySlot + seed) % numPlayers + numPlayers) % numPlayers;
+  if (rotatedSlot === mySlot) return [...tenants];
+  const shift = (rotatedSlot - mySlot + numPlayers) % numPlayers;
+  // ordered[i] = tenants[(i - shift + numPlayers) % numPlayers]
+  // 验证：ordered[rotatedSlot] = tenants[(rotatedSlot - shift) % numPlayers] = tenants[mySlot] ✓
+  return Array.from({ length: numPlayers }, (_, index) => tenants[(index - shift + numPlayers) % numPlayers]!);
+}
+
 /** 运行一个确定性 episode。wallMs 是唯一非确定字段，不参与 replay 等价。 */
 export function runEpisode(config: EpisodeConfig): EpisodeResult {
   const started = performance.now();
   const rules = loadRulesManifest(config.rulesPath);
   const loaded = worldFromScenario(config.scenario);
-  const tenants = validateConfig(config, loaded, rules);
+  const sortedTenants = validateConfig(config, loaded, rules);
   let world: SimWorld = { ...loaded, seed: config.seed };
   assertWorldInvariants(world);
 
@@ -229,6 +272,15 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
         }),
   };
   const validate = config.validatePlans ?? true;
+  // Slot 轮换（W54）：id-sorted tenants → 按站点序循环移位。id 集合不变，
+  // validateConfig 已过；privateEventsForPlayer 按 playerId 过滤（顺序无关）。
+  // 调用方需把 scenario players[] 按站点序构造（被测者在 site rotatedSlot）。
+  const tenants = rotateTenantsForSlot(
+    sortedTenants,
+    config.mySlot ?? 0,
+    config.seed,
+    config.rotateSlot === true,
+  );
   const planners = new Map(
     tenants.map((tenant) => [
       tenant.id,

@@ -4002,7 +4002,24 @@ export class SafetyPlanner {
           military < this.config.guardForce
         ? nextMilitary(state, this.config)
         : nextSpawn(state, this.effectiveWorkerTarget, this.config);
-    const cost = unitType === "WORKER" ? 5 : unitType === "VANGUARD" ? 10 : 12;
+    // militaryRatio 接线（W52 GA 前置，2026-08-09）：militaryRatioEnabled 开关
+    // 默认关——历史 nextSpawn/nextMilitary 的 V/R 选择逻辑完整保留（零回归）。
+    // 开启后：workers 已达 effectiveWorkerTarget 且 policy.militaryRatio > 0
+    // 时，按 militaryRatio 决定 VANGUARD vs RANGER（augment 而非替换——是否
+    // 产兵/产 Worker 仍由上面的历史门控决定，仅 V/R 选择读 policy）。ratio
+    // 接近 1 多 Vanguard、接近 0 多 Ranger、0.5 交替（与 nextMilitary 的
+    // vanguardRatio 同 ceil((military+1)*ratio) 公式）。GA 搜出来的 MacroPolicy
+    // 5 维参数在生产 SafetyPlanner 此前 0 维生效——本接线让第 5 维 militaryRatio
+    // 进入生产消费。
+    const policyMilitaryRatio = this.effectivePolicy?.militaryRatio ?? 0;
+    const militaryRatioActive =
+      this.config.militaryRatioEnabled === true &&
+      state.workers.length >= this.effectiveWorkerTarget &&
+      policyMilitaryRatio > 0;
+    const spawnType: UnitType = militaryRatioActive && unitType !== "WORKER"
+      ? this.chooseMilitaryByRatio(state, policyMilitaryRatio)
+      : unitType;
+    const cost = spawnType === "WORKER" ? 5 : spawnType === "VANGUARD" ? 10 : 12;
     const reserve = threatened
       ? this.config.reserveEarly
       : state.resources >= this.config.wealthyThreshold
@@ -4012,8 +4029,21 @@ export class SafetyPlanner {
       if (threshold > 0 && this.surgeActive) this.surgeActive = false;
       return null;
     }
-    intents.core = `spawn_${unitType.toLowerCase()}`;
-    return { type: "SPAWN", unitType };
+    intents.core = `spawn_${spawnType.toLowerCase()}`;
+    return { type: "SPAWN", unitType: spawnType };
+  }
+
+  /**
+   * militaryRatio 驱动的 VANGUARD vs RANGER 选择（W52 GA 前置，2026-08-09）。
+   * 与 nextMilitary 的 vanguardRatio 分支同公式：targetVanguards =
+   * ceil((military+1)*ratio)——新兵计入后 VANGUARD 占比不超过 ratio 才产
+   * VANGUARD，否则产 RANGER。ratio=1 全 Vanguard、0 全 Ranger、0.5 交替。
+   * 纯函数（无副作用），便于 GA 仿真与单测复用。
+   */
+  private chooseMilitaryByRatio(state: TickState, ratio: number): "VANGUARD" | "RANGER" {
+    const militaryCount = state.vanguards.length + state.rangers.length;
+    const targetVanguards = Math.ceil((militaryCount + 1) * ratio);
+    return state.vanguards.length < targetVanguards ? "VANGUARD" : "RANGER";
   }
 }
 

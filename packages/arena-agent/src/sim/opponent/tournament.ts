@@ -15,9 +15,19 @@
 import type { Plan } from "../../domain/model.ts";
 import { runEpisode, type EpisodeTenant } from "../../sim/harness/episode.ts";
 import type { SimWorld } from "../../sim/world/types.ts";
+import {
+  DEFAULT_PROCEDURAL_PARAMS,
+  makeProceduralMatchScenario,
+  makeProceduralScenarioN,
+  type ProceduralWorldParams,
+} from "../world/procedural.ts";
 import type { PlanProvider } from "../../runtime/decision-types.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../../strategies/safety-planner.ts";
 import { createEpisodeRecorder } from "./recorder.ts";
+
+/** Re-export 程序化生成旋钮（调用方无需直接 import world/procedural）。 */
+export { DEFAULT_PROCEDURAL_PARAMS } from "../world/procedural.ts";
+export type { ProceduralWorldParams } from "../world/procedural.ts";
 
 /** 比赛结果（规范化，供横向对比）。 */
 export interface MatchResult {
@@ -296,6 +306,10 @@ export function runMatch(
     /** 自定义场景（真实测绘窗口等）；缺省用 makeArenaScenario 合成布局。
      *  场景 players 必须与 a/b 的 id 一致。 */
     scenario?: unknown;
+    /** 程序化场景（W53）：提供即启用——用 makeProceduralMatchScenario 替换
+     *  默认手写布局。true = 用 DEFAULT_PROCEDURAL_PARAMS；传入 params 覆盖。
+     *  默认关（不改变现有场景行为）；与 scenario 互斥（scenario 优先）。 */
+    procedural?: boolean | ProceduralWorldParams;
   },
 ): MatchResult {
   const refillConfig =
@@ -304,7 +318,17 @@ export function runMatch(
       : opts.refillEveryTicks === null
         ? null
         : { everyTicks: opts.refillEveryTicks };
-  const scenario = opts?.scenario ?? makeArenaMatchScenario(a, b, seed);
+  // scenario 优先；否则按 procedural 启用程序化场景；缺省 makeArenaMatchScenario。
+  const scenario =
+    opts?.scenario ??
+    (opts?.procedural !== undefined
+      ? makeProceduralMatchScenario(
+          a.id,
+          b.id,
+          seed,
+          typeof opts.procedural === "boolean" ? DEFAULT_PROCEDURAL_PARAMS : opts.procedural,
+        )
+      : makeArenaMatchScenario(a, b, seed));
   // build 移入 try：中途抛错时已建 provider 也走 finally close（卫生项，
   // 防 worker/state-slot 泄漏导致进程无法退出）。
   const providers: PlanProvider[] = [];
@@ -433,6 +457,10 @@ export function runFreeForAll(
     refillEveryTicks?: number | null;
     /** 自定义场景；缺省用 makeArenaScenarioN 圆周布局。场景 players 必须与 entries id 一致。 */
     scenario?: unknown;
+    /** 程序化场景（W53）：提供即启用——用 makeProceduralScenarioN 替换
+     *  默认圆周布局。true = 用 DEFAULT_PROCEDURAL_PARAMS；传入 params 覆盖。
+     *  默认关；与 scenario 互斥（scenario 优先）。 */
+    procedural?: boolean | ProceduralWorldParams;
   },
 ): MatchResult {
   const refillConfig =
@@ -441,7 +469,16 @@ export function runFreeForAll(
       : opts.refillEveryTicks === null
         ? null
         : { everyTicks: opts.refillEveryTicks };
-  const scenario = opts?.scenario ?? makeArenaScenarioN(entries, seed);
+  // scenario 优先；否则按 procedural 启用程序化场景；缺省 makeArenaScenarioN。
+  const scenario =
+    opts?.scenario ??
+    (opts?.procedural !== undefined
+      ? makeProceduralScenarioN(
+          entries.map((entry) => entry.id),
+          seed,
+          typeof opts.procedural === "boolean" ? DEFAULT_PROCEDURAL_PARAMS : opts.procedural,
+        )
+      : makeArenaScenarioN(entries, seed));
   const ids = entries.map((entry) => entry.id);
   // build 移入 try：中途抛错时已建 provider 也走 finally close（卫生项同 runMatch）。
   const providers: PlanProvider[] = [];
