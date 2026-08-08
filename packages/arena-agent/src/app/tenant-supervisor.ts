@@ -1,11 +1,17 @@
 /** Native multi-tenant process supervisor. One child process owns one tenant writer. */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import { loadRuntimeConfig, type TenantRuntimeConfig } from "./runtime-config.ts";
-import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
+import type { TenantRuntimeConfig } from "./runtime-config.ts";
+import { compileRuntimeStrategyFile, hotReloadCompatibility } from "./strategy-config.ts";
+import {
+  isTenantRuntimeIpcMessage,
+  type ConfigReloadRequest,
+  type ConfigReloadResult,
+} from "./config-reload-protocol.ts";
 import {
   resolveArenaDataRoot,
   resolveArenaRuntimeRoot,
@@ -48,6 +54,8 @@ export interface TenantSpec {
   readonly configName: string;
   readonly configPath: string;
   readonly config: TenantRuntimeConfig;
+  readonly configHash: string;
+  readonly strategyHash: string;
   readonly tenantId: string;
   readonly lockPath: string;
 }
@@ -56,12 +64,32 @@ export interface TenantStatus {
   readonly tenantId: string;
   readonly pid: number | null;
   readonly alive: boolean;
+  /** Backward-compatible writer-lock readiness. */
   readonly ready: boolean;
   readonly lifecycle: TenantLifecycle;
   readonly exitCode: number | null;
   readonly exitSignal: string | null;
   readonly terminating: boolean;
   readonly lastError: string | null;
+  /** Independent config attestation: process can be writer-ready while running stale config. */
+  readonly configReady: boolean;
+  readonly configGeneration: number;
+  readonly activeConfigHash: string | null;
+  readonly desiredConfigHash: string | null;
+  readonly activeStrategyHash: string | null;
+  readonly lastConfigError: string | null;
+}
+
+export interface SupervisorReloadResult {
+  readonly sent: boolean;
+  readonly applied: boolean;
+  readonly configGeneration: number;
+  readonly activeConfigHash: string | null;
+  readonly desiredConfigHash: string | null;
+  readonly activeStrategyHash: string | null;
+  readonly errorCode?: ConfigReloadResult["errorCode"] | "ipc_unavailable" | "ack_timeout";
+  readonly error: string | null;
+  readonly restartRequiredFields?: readonly string[];
 }
 
 export interface TenantSupervisorOptions {
@@ -78,6 +106,8 @@ export interface TenantSupervisorOptions {
   readonly forceKillTree?: (child: ChildProcess) => Promise<void>;
   readonly onEvent?: (event: SupervisorEvent) => void;
   readonly shutdownTimeoutMs?: number;
+  /** Config reload request→ACK timeout. Kept short because live planner remains on last-good. */
+  readonly configReloadTimeoutMs?: number;
   readonly eventLogPath?: string;
 }
 
@@ -92,6 +122,12 @@ interface TenantChild {
   lifecycle: TenantLifecycle;
   everReady: boolean;
   lastError: string | null;
+  activeConfig: TenantRuntimeConfig;
+  configGeneration: number;
+  activeConfigHash: string | null;
+  desiredConfigHash: string | null;
+  activeStrategyHash: string | null;
+  lastConfigError: string | null;
 }
 
 interface LockContent {
@@ -155,7 +191,8 @@ export class TenantSupervisor {
         throw new Error(`config not found: ${configPath}`);
       }
 
-      const config = loadRuntimeConfig(configPath);
+      const compiled = compileRuntimeStrategyFile(configPath);
+      const config = compiled.config;
       if (seenTenants.has(config.tenantId)) throw new Error(`duplicate tenantId: ${config.tenantId}`);
       seenTenants.add(config.tenantId);
       const secret = process.env[config.arenaTokenEnv];
@@ -173,6 +210,8 @@ export class TenantSupervisor {
         configName,
         configPath,
         config,
+        configHash: compiled.configHash,
+        strategyHash: compiled.strategyHash,
         tenantId: config.tenantId,
         lockPath: join(baseDir, config.tenantId, "locks", `${config.tenantId}.lock`),
       });
@@ -214,10 +253,32 @@ export class TenantSupervisor {
           lifecycle: "starting",
           everReady: false,
           lastError: null,
+          activeConfig: spec.config,
+          configGeneration: 0,
+          activeConfigHash: null,
+          desiredConfigHash: spec.configHash,
+          activeStrategyHash: null,
+          lastConfigError: null,
         };
         this.children.set(spec.tenantId, entry);
         child.stdout?.on("data", (chunk) => process.stdout.write(`[${spec.tenantId}] ${chunk}`));
         child.stderr?.on("data", (chunk) => process.stderr.write(`[${spec.tenantId}] ${chunk}`));
+        child.on("message", (message: unknown) => {
+          if (!isTenantRuntimeIpcMessage(message) || message.tenantId !== spec.tenantId) return;
+          entry.configGeneration = message.configGeneration;
+          entry.activeConfigHash = message.activeConfigHash;
+          entry.activeStrategyHash = message.activeStrategyHash;
+          try {
+            const current = compileRuntimeStrategyFile(entry.spec.configPath);
+            entry.desiredConfigHash = current.configHash;
+            if (current.configHash === message.activeConfigHash) entry.activeConfig = current.config;
+          } catch {
+            // status() exposes invalid desired config separately; never distrust the child's active attestation.
+          }
+          if (message.type === "arena.config_reload_result") {
+            entry.lastConfigError = message.applied ? null : (message.error ?? message.errorCode ?? "config reload failed");
+          }
+        });
         child.on("error", (error) => {
           entry.lastError = error.message;
           if (!entry.terminating) entry.lifecycle = "failed";
@@ -256,6 +317,7 @@ export class TenantSupervisor {
     const statuses: TenantStatus[] = [];
     for (const entry of this.children.values()) {
       this.refreshReadiness(entry);
+      this.refreshDesiredConfig(entry);
       statuses.push({
         tenantId: entry.spec.tenantId,
         pid: entry.pid,
@@ -266,6 +328,12 @@ export class TenantSupervisor {
         exitSignal: entry.exitSignal,
         terminating: entry.terminating,
         lastError: entry.lastError,
+        configReady: entry.activeConfigHash !== null && entry.activeConfigHash === entry.desiredConfigHash,
+        configGeneration: entry.configGeneration,
+        activeConfigHash: entry.activeConfigHash,
+        desiredConfigHash: entry.desiredConfigHash,
+        activeStrategyHash: entry.activeStrategyHash,
+        lastConfigError: entry.lastConfigError,
       });
     }
     return statuses;
@@ -298,28 +366,137 @@ export class TenantSupervisor {
     return this.shutdownPromise;
   }
 
-  /** 配置热加载（2026-08-08）：按租户重读 config → schema/变体 preflight →
-   *  IPC 通知 child 应用（child 内部 last-good，非法配置不应用）。
-   *  tenantId 缺省 = 全部。返回每租户 sent/error。 */
-  reloadConfigs(tenantId?: string): Readonly<Record<string, { sent: boolean; error: string | null }>> {
-    const result: Record<string, { sent: boolean; error: string | null }> = {};
-    for (const [id, entry] of this.children) {
-      if (tenantId !== undefined && id !== tenantId) continue;
-      try {
-        const nextConfig = loadRuntimeConfig(entry.spec.configPath);
-        resolveVariantsConfig(nextConfig.variants);
-        resolveDeterministicVariantsConfig(nextConfig.variants);
-        if (entry.child.connected && typeof entry.child.send === "function") {
-          entry.child.send({ type: "arena.config_reload" }, () => {});
-          result[id] = { sent: true, error: null };
-        } else {
-          result[id] = { sent: false, error: "child IPC not connected" };
-        }
-      } catch (error) {
-        result[id] = { sent: false, error: error instanceof Error ? error.message : String(error) };
-      }
+  /**
+   * Two-phase strategy reload: supervisor compiles the candidate, rejects restart-required changes,
+   * sends the exact candidate hash, and waits for a matching child ACK. A successful send is never
+   * reported as an applied reload by itself.
+   */
+  async reloadConfigs(tenantId?: string): Promise<Readonly<Record<string, SupervisorReloadResult>>> {
+    if (tenantId !== undefined && !this.children.has(tenantId)) {
+      throw new Error(`unknown tenant: ${tenantId}`);
     }
-    return result;
+    const selected = [...this.children.entries()].filter(([id]) => tenantId === undefined || id === tenantId);
+    const pairs = await Promise.all(selected.map(async ([id, entry]) => [id, await this.reloadOne(entry)] as const));
+    return Object.freeze(Object.fromEntries(pairs));
+  }
+
+  private async reloadOne(entry: TenantChild): Promise<SupervisorReloadResult> {
+    let candidate;
+    try {
+      candidate = compileRuntimeStrategyFile(entry.spec.configPath);
+      entry.desiredConfigHash = candidate.configHash;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      entry.desiredConfigHash = null;
+      entry.lastConfigError = message;
+      return this.reloadResult(entry, false, false, "invalid_config", message);
+    }
+
+    const compatibility = hotReloadCompatibility(entry.activeConfig, candidate.config);
+    if (!compatibility.compatible) {
+      const message = `restart required for config fields: ${compatibility.restartRequiredFields.join(", ")}`;
+      entry.lastConfigError = message;
+      return this.reloadResult(
+        entry,
+        false,
+        false,
+        "restart_required",
+        message,
+        compatibility.restartRequiredFields,
+      );
+    }
+
+    if (entry.activeConfigHash === candidate.configHash) {
+      entry.activeConfig = candidate.config;
+      entry.lastConfigError = null;
+      return this.reloadResult(entry, false, true, undefined, null);
+    }
+    if (!entry.child.connected || typeof entry.child.send !== "function") {
+      const message = "child IPC not connected";
+      entry.lastConfigError = message;
+      return this.reloadResult(entry, false, false, "ipc_unavailable", message);
+    }
+
+    const requestId = randomUUID();
+    const request: ConfigReloadRequest = {
+      type: "arena.config_reload",
+      requestId,
+      expectedConfigHash: candidate.configHash,
+    };
+    const timeoutMs = this.options.configReloadTimeoutMs ?? 3000;
+
+    return new Promise<SupervisorReloadResult>((resolvePromise) => {
+      let settled = false;
+      const finish = (result: SupervisorReloadResult): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        entry.child.off("message", onMessage);
+        resolvePromise(result);
+      };
+      const onMessage = (message: unknown): void => {
+        if (!isTenantRuntimeIpcMessage(message)) return;
+        if (message.type !== "arena.config_reload_result" || message.requestId !== requestId) return;
+        if (message.tenantId !== entry.spec.tenantId) return;
+        if (message.applied && message.activeConfigHash === candidate.configHash) {
+          entry.activeConfig = candidate.config;
+          entry.lastConfigError = null;
+        } else if (!message.applied) {
+          entry.lastConfigError = message.error ?? message.errorCode ?? "config reload failed";
+        }
+        finish({
+          sent: true,
+          applied: message.applied && message.activeConfigHash === candidate.configHash,
+          configGeneration: message.configGeneration,
+          activeConfigHash: message.activeConfigHash,
+          desiredConfigHash: candidate.configHash,
+          activeStrategyHash: message.activeStrategyHash,
+          errorCode: message.errorCode,
+          error: message.error ?? null,
+          restartRequiredFields: message.restartRequiredFields,
+        });
+      };
+      const timer = setTimeout(() => {
+        const message = `config reload ACK timeout after ${timeoutMs}ms`;
+        entry.lastConfigError = message;
+        finish(this.reloadResult(entry, true, false, "ack_timeout", message));
+      }, timeoutMs);
+      timer.unref?.();
+      entry.child.on("message", onMessage);
+      try {
+        entry.child.send(request, (error) => {
+          if (error === null) return;
+          const message = error.message;
+          entry.lastConfigError = message;
+          finish(this.reloadResult(entry, false, false, "ipc_unavailable", message));
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        entry.lastConfigError = message;
+        finish(this.reloadResult(entry, false, false, "ipc_unavailable", message));
+      }
+    });
+  }
+
+  private reloadResult(
+    entry: TenantChild,
+    sent: boolean,
+    applied: boolean,
+    errorCode: SupervisorReloadResult["errorCode"],
+    error: string | null,
+    restartRequiredFields?: readonly string[],
+  ): SupervisorReloadResult {
+    return {
+      sent,
+      applied,
+      configGeneration: entry.configGeneration,
+      activeConfigHash: entry.activeConfigHash,
+      desiredConfigHash: entry.desiredConfigHash,
+      activeStrategyHash: entry.activeStrategyHash,
+      errorCode,
+      error,
+      restartRequiredFields,
+    };
   }
 
   private async shutdownInternal(): Promise<void> {
@@ -362,6 +539,23 @@ export class TenantSupervisor {
       this.closeTimer = null;
     }
     this.emit("all_exited", "all");
+  }
+
+  private refreshDesiredConfig(entry: TenantChild): void {
+    try {
+      const desired = compileRuntimeStrategyFile(entry.spec.configPath);
+      entry.desiredConfigHash = desired.configHash;
+      const compatibility = hotReloadCompatibility(entry.activeConfig, desired.config);
+      if (!compatibility.compatible) {
+        entry.lastConfigError = `restart required for config fields: ${compatibility.restartRequiredFields.join(", ")}`;
+      } else if (entry.activeConfigHash === desired.configHash) {
+        entry.activeConfig = desired.config;
+        entry.lastConfigError = null;
+      }
+    } catch (error) {
+      entry.desiredConfigHash = null;
+      entry.lastConfigError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   private refreshReadiness(entry: TenantChild): void {

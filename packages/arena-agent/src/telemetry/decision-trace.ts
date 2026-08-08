@@ -38,6 +38,9 @@ export interface RuntimeTraceRecord {
   readonly rotationGeneration: number;
   /** 配置热加载代数（2026-08-08）：每次 config 热替换 +1，tick 归属当前配置代。 */
   readonly configGeneration?: number;
+  /** Tick 实际使用的完整 config / strategy hash；热加载后立即切到新值。 */
+  readonly configHash?: string;
+  readonly strategyHash?: string;
   readonly submitResult: SubmitResult;
   /** turn.submit() 抛出的脱敏错误；成功/disabled 路径缺省。 */
   readonly submitError?: string;

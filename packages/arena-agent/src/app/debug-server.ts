@@ -77,6 +77,16 @@ export class DebugServer {
       this.json(res, 200, { tenants: this.options.supervisor.tenantIds() });
       return;
     }
+    if (path === "/config") {
+      this.json(res, 200, { tenants: this.options.supervisor.status() });
+      return;
+    }
+    if (path === "/config-ready") {
+      const tenants = this.options.supervisor.status();
+      const configReady = tenants.length > 0 && tenants.every((tenant) => tenant.configReady);
+      this.json(res, configReady ? 200 : 503, { configReady, tenants });
+      return;
+    }
     if (path === "/state") {
       const tenantIds = this.options.supervisor.tenantIds();
       const tenant = urlObj.searchParams.get("tenant");
@@ -112,12 +122,18 @@ export class DebugServer {
       return;
     }
     if (path === "/config-reload" && req.method === "POST") {
-      // 配置热加载（2026-08-08）：supervisor preflight 校验（schema+变体）后 IPC
-      // 通知 tenant 应用（child 内部 last-good，非法配置不应用、不崩溃）。
-      // ?tenant=t1 只热更该租户；缺省 = 全部。仅 127.0.0.1 可及。
+      // Two-phase hot reload: compile/preflight → exact-hash IPC → child apply ACK. Non-hot fields
+      // return restart_required instead of silently creating a half-old/half-new runtime.
       const tenantParam = urlObj.searchParams.get("tenant");
-      const results = this.options.supervisor.reloadConfigs(tenantParam ?? undefined);
-      this.json(res, 200, { reloaded: results });
+      try {
+        const results = await this.options.supervisor.reloadConfigs(tenantParam ?? undefined);
+        const values = Object.values(results);
+        const applied = values.length > 0 && values.every((result) => result.applied);
+        const restartRequired = values.some((result) => result.errorCode === "restart_required");
+        this.json(res, applied ? 200 : restartRequired ? 409 : 503, { applied, reloaded: results });
+      } catch (error) {
+        this.json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
       return;
     }
     if (path === "/config-reload") {

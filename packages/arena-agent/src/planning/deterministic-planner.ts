@@ -493,6 +493,18 @@ export function selectDeterministicCoreAction(
   return { action: null, intent: null, surgeActive: active };
 }
 
+/** Safety owns survival/evacuation/core-clearance decisions; economic/mission overlays must not
+ * replace these intents. This is the explicit veto boundary between Safety and Worker missions. */
+function isSafetyVetoIntent(intent: string | undefined): boolean {
+  return (
+    intent === "heal" ||
+    intent === "worker_heal_return" ||
+    intent === "worker_clear_core" ||
+    intent === "worker_clear_core_empty" ||
+    intent?.startsWith("worker_evade_") === true
+  );
+}
+
 export interface DeterministicPlannerInput {
   readonly state: TickState;
   readonly policy?: MacroPolicy;
