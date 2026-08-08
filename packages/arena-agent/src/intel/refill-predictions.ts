@@ -21,6 +21,14 @@ const REFILL_GAP_TICKS = 5;
 /** 出现窗口 ≥2 才可预测（与 mine-patterns 一致）。 */
 const MIN_WINDOWS = 2;
 
+/**
+ * P0 修复：refill 预测 SQL 查询的 tick 回溯窗口。
+ * resource_seen_history 跨 run 无限累积——SELECT 全表会导致 O(n) RAM + O(n log n)
+ * 排序每调用。refill 周期最多 ~32 tick（4 个 refill 周期 × 8 tick），3000 tick
+ * 窗口约 94 个周期——足够统计 avgGap/avgAbsent。
+ */
+export const REFILL_PREDICTION_WINDOW_TICKS = 3000;
+
 export interface SeenRow {
   readonly cell: string;
   readonly tick: number;
@@ -103,9 +111,12 @@ export function loadRefillPredictions(
     return new Map();
   }
   try {
+    // P0 修复：WHERE tick > ? 窗口防 resource_seen_history 跨 run 无限累积
+    // 导致全表加载 O(n) RAM + O(n log n) 排序。
+    const horizonTick = Math.max(0, currentTick - REFILL_PREDICTION_WINDOW_TICKS);
     const rows = db
-      .prepare("SELECT cell, tick FROM resource_seen_history ORDER BY tick ASC")
-      .all() as unknown as SeenRow[];
+      .prepare("SELECT cell, tick FROM resource_seen_history WHERE tick > ? ORDER BY tick ASC")
+      .all(horizonTick) as unknown as SeenRow[];
     return computeRefillPredictions(rows, currentTick);
   } catch {
     return new Map();
