@@ -330,3 +330,20 @@ mapEngine.ts 对应函数。
   （游侠射程/目标切比雪夫/视野半径/工人采集回仓/核心信标移动受限）。
 - **验证**：完整回归 **22/22 全绿**（含人类指挥链 goal 落盘、编队多选、命令队列、右键菜单、
   tick 读条）+ web 单测 21/21 + web typecheck/build + root tsc 全绿。
+
+### 9.15 重生横幅仅聚焦租户显示（2026-08-08）
+- **根因**：`tactRenderRespawn` 按任意租户世界 status=RESPAWNING 直接显隐单一横幅；
+  聚焦某重生租户后退出到全局视图，横幅无人再隐藏而常显（"一打开就是一直核心被摧毁"）。
+- **修复**：横幅仅 `state.soloTenant === tenant && respawning` 时显示；toggleSolo/exitSolo
+  退出聚焦时显式隐藏。
+- **验证**：typecheck/build/单测 21/21 全绿；全局+聚焦+退出三态横幅均隐藏。
+
+### 9.16 事件特效层抽取 fx.ts（2026-08-08）
+- **抽取** `web/src/engine/fx.ts`（187 行）：FX_KIND_CN/FX_LIFE_MS 常量 + spawnEventFx
+  （事件帧 → 浮字/弹道/剑光/碎片）+ shotCurveFx（弹道抛物线纯几何）+ drawEventFx
+  （注入 ctx/project/ring/font 的绘制层）。mapEngine 4589→4401 行。
+- **顺手修复潜伏 bug**：销毁碎片生成原在 FX_KIND_CN spec 检查之后——`UNIT_DESTROYED`
+  不在表中，`continue` 导致单位销毁碎片**永不生成**（测试实证）。挪到 spec 检查前。
+- **测试**：新增 `test/fx.test.ts` 5 项（弹道曲线控制点/侧偏方向/事件帧浮字+碎片/
+  上限裁剪/未知事件跳过），web 单测 21→26 全绿。
+- **验证**：typecheck/build + 完整回归 **22/22 全绿**。
