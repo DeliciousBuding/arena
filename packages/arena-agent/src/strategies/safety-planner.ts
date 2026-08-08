@@ -2316,8 +2316,12 @@ export class SafetyPlanner {
     }
 
     // Upstream v0.12 cell fire: fire at the predicted next cell of the nearest
-    // visible enemy that is out of range. A unit in range 4-5 can be hit next
-    // tick if it keeps advancing toward us along the same line.
+    // visible enemy that is out of range. Movement is cardinal-only
+    // (UP/DOWN/LEFT/RIGHT), so we predict a single cardinal step along the
+    // dominant axis toward us. A unit 4-5 cells away on a straight line can be
+    // hit next tick if it keeps advancing toward us; a diagonal enemy's
+    // cardinal step lands off the firing line and is filtered out by canShoot
+    // (no wasted "shooting air" shots).
     const nearest = nearestEnemy(enemies, unit.position);
     if (nearest !== null) {
       const predicted = predictedEnemyCell(unit.position, nearest.position);

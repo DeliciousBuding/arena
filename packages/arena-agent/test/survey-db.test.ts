@@ -10,7 +10,8 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import {
@@ -21,6 +22,7 @@ import {
   markResourceState,
   openSurveyDb,
   recordCoreSpend,
+  recordNotableEvent,
   recordResourceEvent,
   recordUnitBirth,
   recordUnitDeath,
@@ -310,6 +312,192 @@ test("survey-sync: parseCaseLifecycle 提取出生/死亡/采集/消费", () => 
   assert.equal(lc.harvestFails[0].reason, "RESOURCE_DEPLETED");
   assert.equal(lc.spends.length, 2, "spawn + core_heal 记账");
   assert.equal(lc.spends.find((s) => s.kind === "spawn")!.amount, 5);
+});
+
+test("survey-sync: parseCaseLifecycle CORE_DESTROYED 敌我/摧毁者提取（叙事 A11）", () => {
+  const ourCore = "ee9f1034-5261-450c-ad8a-5daaede58fb5";
+  const enemyCore = "13382cfd-6bb7-4fd5-89fe-b82b7a45e16f";
+  const lc = parseCaseLifecycle({
+    before: {
+      state: {
+        objects: [
+          { kind: "CORE", id: ourCore, controlled: true, x: 118, y: 461 },
+          { kind: "CORE", id: enemyCore, controlled: false, x: 120, y: 461 },
+        ],
+      },
+    },
+    after: {
+      state: {
+        events: [
+          { event_type: "CORE_DESTROYED", target_id: ourCore, position: [118, 461], reason_code: "ATTACK", values: { destroyed_by: ["feiwu"] } },
+          { event_type: "CORE_DESTROYED", target_id: enemyCore, position: [120, 461], reason_code: "ATTACK", values: { destroyed_by: ["t3"] } },
+        ],
+      },
+    },
+  }, 73094);
+  const ours = lc.notables.find((n) => n.targetId === ourCore)!;
+  assert.equal(ours.reasonCode, "ATTACK");
+  assert.deepEqual(ours.destroyedBy, ["feiwu"], "destroyed_by 数组保留");
+  assert.equal(ours.isOurCore, true, "target ∈ 受控核心 → 我方被打爆");
+  const theirs = lc.notables.find((n) => n.targetId === enemyCore)!;
+  assert.equal(theirs.isOurCore, false, "target ∉ 受控核心 → 敌方被摧毁");
+});
+
+test("survey-sync: parseCaseLifecycle CORE_DESTROYED 自爆（SELF_DESTRUCT）", () => {
+  const core = "core-self";
+  const lc = parseCaseLifecycle({
+    before: { state: { objects: [{ kind: "CORE", id: core, controlled: true }] } },
+    after: { state: { events: [{ event_type: "CORE_DESTROYED", actor_id: core, position: [1, 1], reason_code: "SELF_DESTRUCT", values: null }] } },
+  }, 100);
+  assert.equal(lc.notables.length, 1);
+  assert.equal(lc.notables[0].reasonCode, "SELF_DESTRUCT");
+  assert.equal(lc.notables[0].destroyedBy, null, "自爆无摧毁者");
+  assert.equal(lc.notables[0].isOurCore, null, "自爆不判敌我");
+});
+
+test("survey-sync: recordNotableEvent 落库 A11 三列（reason_code/destroyed_by/is_our_core）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-notable-a11-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    const n = recordNotableEvent(db, {
+      tenant: "t1", tick: 73094, eventType: "CORE_DESTROYED", actorId: null,
+      targetId: "ee9f1034-5261-450c-ad8a-5daaede58fb5", x: 118, y: 461, amount: null, unitType: null,
+      reasonCode: "ATTACK", destroyedBy: ["feiwu"], isOurCore: true,
+    });
+    assert.equal(n, 1, "新行写入");
+    const row = db.prepare("SELECT reason_code, destroyed_by, is_our_core FROM notable_events").get() as Record<string, unknown>;
+    assert.equal(row.reason_code, "ATTACK");
+    assert.equal(row.destroyed_by, JSON.stringify(["feiwu"]));
+    assert.equal(row.is_our_core, 1);
+    db.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("survey-db: migrateNotableSanity——旧库 CORE_DESTROYED 回填敌我/摧毁者（叙事 A11）", () => {
+  const root = mkdtempSync(join(tmpdir(), "arena-notable-migrate-"));
+  try {
+    // 造旧版库（无 reason_code/destroyed_by/is_our_core 三列）
+    const dbPath = join(root, "runtime", "survey", "t3.db");
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const oldDb = new DatabaseSync(dbPath);
+    oldDb.exec(`CREATE TABLE notable_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant TEXT NOT NULL, tick INTEGER NOT NULL, event_type TEXT NOT NULL,
+      actor_id TEXT, target_id TEXT, x INTEGER, y INTEGER, amount INTEGER, unit_type TEXT,
+      UNIQUE(tenant, tick, event_type, actor_id, target_id)
+    );`);
+    oldDb.prepare(`INSERT INTO notable_events (tenant, tick, event_type, actor_id, target_id, x, y, amount, unit_type)
+      VALUES ('t3', 73094, 'CORE_DESTROYED', NULL, 'ee9f1034-5261-450c-ad8a-5daaede58fb5', 118, 461, NULL, NULL)`).run();
+    oldDb.close();
+    // 造 calibration case（与生产 0000073094.json 同形）
+    const casesDir = join(root, "runtime", "t3", "calibration", "run1", "cases");
+    mkdirSync(casesDir, { recursive: true });
+    writeFileSync(join(casesDir, "0000073094.json"), JSON.stringify({
+      before: {
+        state: {
+          objects: [
+            { kind: "CORE", id: "ee9f1034-5261-450c-ad8a-5daaede58fb5", controlled: true },
+            { kind: "CORE", id: "13382cfd-6bb7-4fd5-89fe-b82b7a45e16f", controlled: false },
+          ],
+        },
+      },
+      after: {
+        state: {
+          events: [
+            { event_type: "CORE_DESTROYED", tick: 73094, target_id: "ee9f1034-5261-450c-ad8a-5daaede58fb5", position: [118, 461], reason_code: "ATTACK", values: { destroyed_by: ["feiwu"] } },
+          ],
+        },
+      },
+    }));
+    // 打开 write 触发迁移：加列 + 从 calibration 回填
+    const db = openSurveyDb(root, "t3", true);
+    const row = db.prepare("SELECT reason_code, destroyed_by, is_our_core FROM notable_events WHERE tick = 73094").get() as Record<string, unknown>;
+    assert.equal(row.reason_code, "ATTACK", "reason_code 回填");
+    assert.equal(row.destroyed_by, JSON.stringify(["feiwu"]), "destroyed_by 数组回填");
+    assert.equal(row.is_our_core, 1, "我方核心判定回填");
+    // 幂等：再次打开不重扫不回退
+    db.close();
+    const db2 = openSurveyDb(root, "t3", true);
+    const row2 = db2.prepare("SELECT reason_code, destroyed_by, is_our_core FROM notable_events WHERE tick = 73094").get() as Record<string, unknown>;
+    assert.equal(row2.reason_code, "ATTACK", "幂等：已回填行保持");
+    db2.close();
+  } finally {
+    cleanup(root);
+  }
+});
+
+test("survey-db: migrateNotableSanity——CORE_DESTROYED 重复行去重 + 表达式唯一索引（叙事 A11b）", () => {
+  const root = mkdtempSync(join(tmpdir(), "arena-notable-dedup-"));
+  try {
+    // 造旧版库（无三列、无去重索引）并插入同 tick 同 target 的两行——模拟
+    // actor_id=NULL 时 SQLite UNIQUE 约束 NULL 语义（NULL≠NULL）不去重的历史重复
+    const dbPath = join(root, "runtime", "survey", "t3.db");
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const oldDb = new DatabaseSync(dbPath);
+    oldDb.exec(`CREATE TABLE notable_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant TEXT NOT NULL, tick INTEGER NOT NULL, event_type TEXT NOT NULL,
+      actor_id TEXT, target_id TEXT, x INTEGER, y INTEGER, amount INTEGER, unit_type TEXT,
+      UNIQUE(tenant, tick, event_type, actor_id, target_id)
+    );`);
+    const ins = oldDb.prepare(
+      "INSERT INTO notable_events (tenant, tick, event_type, actor_id, target_id, x, y, amount, unit_type) VALUES ('t3', 73094, 'CORE_DESTROYED', NULL, 'ee9f1034-5261-450c-ad8a-5daaede58fb5', 118, 461, NULL, NULL)",
+    );
+    ins.run();
+    ins.run(); // actor_id=NULL 两行都插入（NULL≠NULL，UNIQUE 不拦截）
+    oldDb.close();
+    // 打开 write 触发迁移：删重复（保留最小 id）+ 建表达式唯一索引
+    const db = openSurveyDb(root, "t3", true);
+    const rows = db.prepare("SELECT id FROM notable_events").all() as Array<{ id: number }>;
+    assert.equal(rows.length, 1, "重复行去重：只留 1 行");
+    // 唯一索引存在且后续 NULL actor_id 插入被忽略（INSERT OR IGNORE 生效）
+    const n = recordNotableEvent(db, {
+      tenant: "t3", tick: 73094, eventType: "CORE_DESTROYED", actorId: null,
+      targetId: "ee9f1034-5261-450c-ad8a-5daaede58fb5", x: 118, y: 461, amount: null, unitType: null,
+      reasonCode: "ATTACK", destroyedBy: ["feiwu"], isOurCore: true,
+    });
+    assert.equal(n, 0, "表达式唯一索引拦截重复插入");
+    const cnt = db.prepare("SELECT COUNT(*) AS c FROM notable_events").get() as { c: number };
+    assert.equal(cnt.c, 1, "总数不变");
+    // 幂等：再次打开迁移不报错不删有效行
+    db.close();
+    const db2 = openSurveyDb(root, "t3", true);
+    const cnt2 = db2.prepare("SELECT COUNT(*) AS c FROM notable_events").get() as { c: number };
+    assert.equal(cnt2.c, 1, "幂等：有效行保留");
+    db2.close();
+  } finally {
+    cleanup(root);
+  }
+});
+
+test("survey-db: recordUnitDeath 死亡 tick 只进不退 + 语义单调（审计 A12）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-death-mono-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    recordUnitBirth(db, "u1", "WORKER", 100, { x: 1, y: 1 });
+    recordUnitDeath(db, "u1", 200, { x: 5, y: 5 });
+    let r = db.prepare("SELECT death_tick, current_state FROM unit_lifecycle WHERE unit_id='u1'").get() as Record<string, unknown>;
+    assert.equal(r.death_tick, 200);
+    assert.equal(r.current_state, "dead");
+    // 更早 tick 死亡不回退（防 force 重跑/run 顺序不一致覆盖）
+    recordUnitDeath(db, "u1", 90, { x: 0, y: 0 });
+    r = db.prepare("SELECT death_tick FROM unit_lifecycle WHERE unit_id='u1'").get() as Record<string, unknown>;
+    assert.equal(r.death_tick, 200, "更早死亡忽略，保持 200");
+    // 更晚死亡正常更新
+    recordUnitDeath(db, "u1", 250, { x: 6, y: 6 });
+    r = db.prepare("SELECT death_tick FROM unit_lifecycle WHERE unit_id='u1'").get() as Record<string, unknown>;
+    assert.equal(r.death_tick, 250, "更晚死亡覆盖");
+    // birth ≤ last_seen ≤ death 语义
+    const bad = db.prepare(
+      "SELECT COUNT(*) AS c FROM unit_lifecycle WHERE death_tick IS NOT NULL AND (birth_tick > death_tick OR last_seen_tick < birth_tick)",
+    ).get() as { c: number };
+    assert.equal(bad.c, 0, "语义单调：birth ≤ last_seen ≤ death");
+    db.close();
+  } finally {
+    cleanup(dir);
+  }
 });
 
 test("World: seedObstacleMemory 注入障碍记忆（重启后导航直接准确）", () => {
