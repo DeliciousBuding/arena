@@ -19,6 +19,7 @@ import { combatPhase } from "./combat.ts";
 import { coreMigrationPhase } from "./core-migration.ts";
 import { coreSelfDestructPhaseExport, economyPhases } from "./economy.ts";
 import { movementPhase } from "./movement.ts";
+import { refillChunkQuota } from "./refill.ts";
 import { respawnPhase } from "./respawn.ts";
 import { EMPTY_OUTCOME, outcome, type Phase, type PhaseContext, type PhaseOutcome, type ResolutionEvent, type UnknownEffect } from "./phase.ts";
 
@@ -27,13 +28,16 @@ export interface SettlementContext {
   /** test-seeded 随机源（refill-policy 用）；null = disabled。 */
   readonly rng: (() => number) | null;
   /**
-   * 近似 refill（实验可选；默认 undefined = 不实现官方 refill，保持
+   * refill（实验可选；默认 undefined = 不实现官方 refill，保持
    * unknown-by-design）：官方 refill 是 server-secret（永久 seed），模拟器
-   * 不伪装官方语义；此配置按 cadence 把原始资源格补回（近似节奏），
-   * unknown effect note 明确标注 approximate，不混淆为 MATCH。
+   * 不伪装官方精确位置；此配置按 cadence 执行官方 chunk-quota 空槽模型
+   * （chunks = 世界载入时含自然点的 32×32 chunk；位置 = chunk 内确定性随机
+   * 空槽），行为等价于官方（周期/数量/约束/分布），unknown effect note
+   * 保留 unknown 标注（官方 seed 不可见，精确位置归 EXPECTED_UNKNOWN）。
    */
   readonly refill?: {
-    readonly cells: readonly string[];
+    /** 世界载入时含自然点的 chunk key（"cx,cy"），refill 只作用于这些 chunk。 */
+    readonly chunks: readonly string[];
     readonly everyTicks: number;
   };
 }
@@ -148,22 +152,22 @@ const PHASES: readonly Phase[] = [
           ],
         });
       }
-      // 近似 refill（实验配置）：把原始资源格中已被采空的节点补回，
-      // 模拟真实节奏的持续供给；unknown note 明确标注 approximate。
-      const resources = new Map(draft.terrain.resources);
-      for (const key of ctx.refill.cells) {
-        if (!resources.has(key)) resources.set(key, { cell: keyToPosition(key) });
-      }
-      (draft as unknown as { terrain: SimWorld["terrain"] }).terrain = {
-        ...draft.terrain,
-        resources,
-      };
+      // chunk-quota refill（M4-1，逆向实证定案）：对初始含自然点的每个
+      // 32×32 chunk 按官方配额补缺（quota = max(2, floor(16*8/(8+ring))），
+      // ring = axis(cx)+axis(cy)）；位置 = chunk 内确定性随机空槽（排除：
+      // 现有自然点/障碍/结算后 Core 格；允许单位脚下与地面信标之下）。
+      // unknown note 保留——官方 placement seed 不可见，精确位置归
+      // EXPECTED_UNKNOWN（calibrate.ts refillUnknown 分类不变）。
+      const summary = refillChunkQuota(draft, ctx.refill.chunks, draft.tick);
       return outcome({
         unknownEffects: [
           {
             tick: draft.tick,
             kind: "refill",
-            note: `approximate refill (config-driven every ${cadence} ticks); official placement is server-secret`,
+            note:
+              summary.total > 0
+                ? `chunk-quota refill (every ${cadence} ticks): +${summary.total} natural points in deterministic random empty slots; official placement seed is server-secret`
+                : `refill cadence (every ${cadence} ticks) reached; all chunks at quota`,
           },
         ],
       });
@@ -248,12 +252,6 @@ function sortEvents(events: readonly ResolutionEvent[]): readonly ResolutionEven
     if (byType !== 0) return byType;
     return compareCodeUnit(a.recipientPlayerId ?? "", b.recipientPlayerId ?? "");
   });
-}
-
-/** "x,y" → Position（近似 refill 补回节点用）。 */
-function keyToPosition(key: string): [number, number] {
-  const [x, y] = key.split(",").map((part) => Number.parseInt(part, 10));
-  return [x, y];
 }
 
 /** 调试/诊断：列出 phase 顺序（供测试断言）。 */

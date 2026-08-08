@@ -18,6 +18,7 @@ import { loadRulesManifest, type RulesManifest } from "../contracts/rules-manife
 import { createSeededRng } from "../deterministic/rng.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { ResolutionEvent, UnknownEffect } from "../engine/phase.ts";
+import { initialChunkKeys } from "../engine/refill.ts";
 import { settleTick, type SettlementContext } from "../engine/settlement.ts";
 import { privateEventsForPlayer } from "../visibility/private-events.ts";
 import { simTurnLike } from "../visibility/visibility.ts";
@@ -66,10 +67,11 @@ export interface EpisodeConfig {
    *  （模拟级验证生产指挥机制）。tick 为游戏 tick（1-based）。 */
   readonly policyProvider?: (tenantId: string, tick: number, state: TickState) => MacroPolicy | null;
   /**
-   * 近似 refill（实验可选；默认 undefined = 不实现官方 refill，保持
-   * unknown-by-design）：按规则 cadence 把原始资源格补回，模拟真实节奏的
-   * 持续供给（官方 refill 是 server-secret，本配置只是近似，unknown note
-   * 明确标注 approximate）。
+   * refill（实验可选；默认 undefined = 不实现官方 refill，保持
+   * unknown-by-design）：按 cadence 执行官方 chunk-quota 空槽模型
+   * （逆向实证定案，2026-08-08——官方 refill placement seed 是
+   * server-secret，本配置用自洽确定性随机空槽，行为等价；unknown note
+   * 保留 unknown 标注，不混淆为 MATCH）。
    */
   readonly refill?: { readonly everyTicks?: number };
   readonly validatePlans?: boolean;
@@ -219,7 +221,9 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
       ? {}
       : {
           refill: {
-            cells: [...loaded.terrain.resources.keys()].sort(compareCodeUnit),
+            // 世界载入时含自然点的 chunk（refill 只作用于这些 chunk；
+            // chunk 计数在 refill 阶段即时计算，terrain 平铺表达不变）。
+            chunks: initialChunkKeys(loaded),
             everyTicks: config.refill.everyTicks ?? rules.rules.economy.refillEveryTicks,
           },
         }),
