@@ -32,6 +32,12 @@ for (const tenant of tenants) {
     .filter((d) => d.isDirectory()).map((d) => d.name).sort();
   const targets = runs > 0 ? runDirs.slice(-runs) : runDirs;
   let cases = 0, absences = 0;
+  // 已知矿格集合缓存：全量回填 1.3 万 case/租户，每 case 查 resources 表极慢——
+  // 改为每租户查一次（collectResourceAbsences 支持外部传入）。
+  const knownCells = new Set(
+    (db.prepare("SELECT x, y FROM resources").all() as Array<{ x: number; y: number }>)
+      .map((r) => `${r.x},${r.y}`),
+  );
   for (const runDir of targets) {
     const casesDir = join(calDir, runDir, "cases");
     if (!existsSync(casesDir)) continue;
@@ -44,7 +50,7 @@ for (const tenant of tenants) {
         const objects = parseCaseObjects(raw);
         if (objects === null) continue;
         cases += 1;
-        const rows = collectResourceAbsences(db, objects, tick);
+        const rows = collectResourceAbsences(db, objects, tick, knownCells);
         if (rows.length > 0) absences += upsertResourceAbsences(db, rows);
       } catch { /* 坏 case 跳过 */ }
     }
