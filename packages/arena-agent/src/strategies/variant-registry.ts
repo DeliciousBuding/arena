@@ -58,6 +58,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "assault-overmatch-v1": Object.freeze({ assaultOvermatch: true }),
     /**
+     * 攻坚集结（2026-08-08，guide "有护卫 Core 先退到安全集结点、全员到齐再共同
+     * 出击"对照，t2 jerkman 二轮 5R 全灭实证）：aggressive 无可见敌人对已知敌 Core
+     * 记忆攻坚时，军事单位先到敌核外圈安全集结位（Chebyshev 5，Vanguard 射程 1 /
+     * Ranger 射程 3 之外）汇合，≥3 到齐或首到后 40 tick 超时再成建制压上——防逐个
+     * 送死。与 assault-overmatch-v1 叠加：一个管"兵力够不够"，一个管"到齐再上"。
+     */
+    "rally-assault-v1": Object.freeze({ rallyAssault: true }),
+    /**
      * 威胁方向侦察（2026-08-07，t2 生产实证）：worker 巡逻方位向已知敌核心
      * 方向（coreHuntTargets 首个 CORE）加权——前 4 worker 覆盖威胁扇区 ±1，
      * 保证威胁来路（如 t2 NE=jerkman）始终有 ≥3 worker 侦察，小股进攻更早
@@ -141,6 +149,15 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 无反击），避开敌核心守军 8 格；只最近 1 个去（防扎堆）。默认 false 零回归。
      */
     "vanguard-prey-worker-v1": Object.freeze({ vanguardPreyWorker: true }),
+    /**
+     * 威胁优先产兵（2026-08-08，military-priority-v1）：活跃敌核贴脸
+     * （raid-defense nearbyEnemyCore ≤24 格，coreHuntTargets CORE sticky）且
+     * 军事规模 < 地板（threatMilitaryFloor 默认 4）→ 跳过 worker 积累直接产兵
+     * + 用低储备（reserveEarly=1）尽早成型——reference guide"敌方进入 Core
+     * 防区 → 守家队优先补齐"（t3 实证 3 活跃敌核 ≤20 格仅 1 Vanguard，res 11
+     * 被财富储备 3 卡到 13）。默认 false = 历史行为（worker→军事顺序零回归）。
+     */
+    "military-priority-v1": Object.freeze({ threatMilitaryPriority: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),
@@ -183,6 +200,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
       // ——t1 生产实证：敌 Core 迁移后军队在旧位置空转、环搜几何近失永不接敌。
       militaryHunt: true,
     }),
+    /**
+     * 人口上限 20→30（2026-08-08 用户裁决，t1 恢复综合扩张）：populationCeiling
+     * 是产兵硬门（deterministic selectDeterministicCoreAction 与 SafetyPlanner
+     * 共用）——t1 pop 25 时 20 上限导致 4500+ tick 零产兵、res 顶到容量上限
+     * （pop×5=120）空转。30 = v0.14 动态定价 k=2 档末（pop 26-30：Vanguard 17/
+     * Ranger 20；31 起 k=3 跳 22+），继续扩张但不过度进入高溢价档。仅 t1 启用。
+     */
+    "population-ceiling-30-v1": Object.freeze({ populationCeiling: 30 }),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要

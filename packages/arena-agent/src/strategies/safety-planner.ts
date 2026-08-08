@@ -199,6 +199,17 @@ const PREY_STATIONARY_TTL = 12;
  *  World.CORE_WATCH_RADIUS / CORE_WATCH_TTL 同值；配置可覆盖。 */
 const CORE_THREAT_WATCH_RADIUS = 18;
 const CORE_THREAT_WATCH_TICKS = 60;
+/** 攻坚集结参数（2026-08-08，rally-assault-v1）：敌核外圈集结位距敌核
+ *  Chebyshev RALLY_DISTANCE（敌守军 Vanguard 射程 1 / Ranger 射程 3，站 5 格外
+ *  安全）；单位进入集结位半径 RALLY_ARRIVE_RADIUS 视为已到；≥RALLY_READY_COUNT
+ *  或首到后 RALLY_TIMEOUT_TICKS 强制成建制压上（防永久空等）。 */
+const RALLY_DISTANCE = 5;
+const RALLY_ARRIVE_RADIUS = 2;
+const RALLY_READY_COUNT = 3;
+const RALLY_TIMEOUT_TICKS = 40;
+/** 攻坚单位距敌核 ≤ RALLY_ATTACK_RADIUS = 已在敌核攻击圈内，直接压上不集结
+ *  （已投入战斗，回集结位反而送死）。 */
+const RALLY_ATTACK_RADIUS = 4;
 /** 挂机 WORKER 记忆回访半径（Manhattan）：无敌核清扫目标时 Vanguard 对静止敌
  *  WORKER 的追击上限——有界不跨图远征（白赚但不过度绕路）。 */
 const PREY_STATIONARY_RADIUS = 25;
@@ -362,6 +373,9 @@ export class SafetyPlanner {
    *  目标 lastSeenTick > sweptAt 视为"清扫后重新发现"，恢复狩猎）。 */
   private readonly huntArriveAt = new Map<string, { key: string; tick: number }>();
   private readonly huntSweptAt = new Map<string, number>();
+  /** 攻坚集结状态（2026-08-08，rally-assault-v1）：targetKey -> { ready, firstArriveTick }。
+   *  集结位在敌核外圈，组齐（ready）或超时后成建制压上；目标被重新目击/更换时重置。 */
+  private readonly rallyTargets = new Map<string, { ready: boolean; firstArriveTick: number }>();
   /** B10 worker 遭遇撤离状态（unitId → 返回截止/冷却截止 tick）。 */
   private scoutEvadeState = new Map<string, { returnUntil: number; cooldownUntil: number }>();
   /** B8 守卫轮换 one-at-a-time：回修流程中的守卫（unitId → 名额占用截止 tick）。 */
@@ -485,6 +499,49 @@ export class SafetyPlanner {
   /** 敌情狩猎扫掠点：远距离（>清扫圈）直接朝基地中心；近距离按单位序号绕基地
    *  圆周展开（DENSE_DELTAS × 2，16 方位）——小队扇形覆盖清扫，防所有单位挤
    *  同格/同向（竞品彻查时"优先选择新增覆盖最多、相互视野重叠最少的目标"）。 */
+  /** 攻坚集结位（rally-assault-v1）：敌核外圈 Chebyshev RALLY_DISTANCE 的 8 方位
+   *  点，按"距我方 Core 最近"排序（从我方一侧接近，不绕敌后），第一个非障碍/非
+   *  资源点作为集结位；全堵回退敌核格（兜底直接攻坚）。确定性（同输入同输出）。 */
+  private rallyPoint(target: Position, home: Position, obstacles: ReadonlySet<string>, resourceCells: ReadonlySet<string>): Position {
+    const offsets: ReadonlyArray<readonly [number, number]> = [
+      [1, 0], [-1, 0], [0, 1], [0, -1],
+      [1, 1], [1, -1], [-1, 1], [-1, -1],
+    ];
+    const candidates = offsets
+      .map(([dx, dy]) => [target[0] + dx * RALLY_DISTANCE, target[1] + dy * RALLY_DISTANCE] as Position)
+      .sort((a, b) => manhattan(a, home) - manhattan(b, home));
+    for (const candidate of candidates) {
+      if (obstacles.has(cellKey(candidate))) continue;
+      if (resourceCells.has(cellKey(candidate))) continue;
+      return candidate;
+    }
+    return target;
+  }
+
+  /** 攻坚组是否"已到齐"（rally-assault-v1）：敌核外圈集结区（≤RALLY_DISTANCE+
+   *  RALLY_ARRIVE_RADIUS）内军事单位 ≥RALLY_READY_COUNT，或首到后超时强制压上
+   *  （防某单位被障碍卡住导致永久空等）。目标切换/被重新目击时重置 ready。 */
+  private rallyReady(target: Position, key: string, state: TickState): boolean {
+    const arrived = [...state.vanguards, ...state.rangers].filter(
+      (u) => chebyshev(u.position, target) <= RALLY_DISTANCE + RALLY_ARRIVE_RADIUS,
+    ).length;
+    const rec = this.rallyTargets.get(key);
+    if (rec === undefined) {
+      this.rallyTargets.set(key, { ready: false, firstArriveTick: -1 });
+      return false;
+    }
+    if (arrived >= RALLY_READY_COUNT) {
+      rec.ready = true;
+      return true;
+    }
+    if (rec.firstArriveTick === -1 && arrived > 0) rec.firstArriveTick = state.tick;
+    if (rec.firstArriveTick !== -1 && state.tick - rec.firstArriveTick >= RALLY_TIMEOUT_TICKS) {
+      rec.ready = true;
+      return true;
+    }
+    return rec.ready;
+  }
+
   private huntSweepPoint(target: Position, index: number, reach: number): Position {
     if (reach > HUNT_SWEEP_RADIUS) return target;
     const [dx, dy] = DENSE_DELTAS[(index * 3 + 7) % DENSE_DELTAS.length]!;
@@ -1608,6 +1665,23 @@ export class SafetyPlanner {
             if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_bounded_return");
             return;
           }
+          // 攻坚集结（2026-08-08，rally-assault-v1）：组未齐且本单位还在敌核攻击圈
+          // 外 → 先到敌核外圈安全集结位汇合，组齐/超时后成建制压上（防逐个送死）。
+          const key = cellKey(enemyCoreMemory.position);
+          if (
+            this.config.rallyAssault === true &&
+            !this.rallyReady(enemyCoreMemory.position, key, state) &&
+            chebyshev(unit.position, enemyCoreMemory.position) > RALLY_ATTACK_RADIUS
+          ) {
+            const point = this.rallyPoint(enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
+            if (!samePosition(unit.position, point)) {
+              const direction = stepToward(unit.position, point, militaryObstacles);
+              if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_rally");
+              return;
+            }
+            set(unit, { type: "WAIT" }, "vanguard_rally_hold");
+            return;
+          }
           const direction = stepToward(unit.position, enemyCoreMemory.position, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_pressure_memory");
           return;
@@ -2083,6 +2157,25 @@ export class SafetyPlanner {
               target.source === "CORE" &&
               chebyshev(state.core!.position, target.position) <= BOUNDED_RAID_DISTANCE,
           );
+      // 攻坚集结（rally-assault-v1 Ranger 版，2026-08-08）：Vanguard 先集结但
+      // Ranger 单独前压仍会被守军逐个点掉（t2 二轮 jerkman 攻坚实证：5 Ranger
+      // 独立前压全灭、核心未破）。Ranger 与 Vanguard 同集结位汇合（同目标同
+      // 点位同 rallyReady 状态），组齐/超时后再一起压上——成建制共同出击。
+      if (
+        this.config.rallyAssault === true &&
+        enemyCoreMemory !== undefined &&
+        !this.rallyReady(enemyCoreMemory.position, cellKey(enemyCoreMemory.position), state) &&
+        chebyshev(unit.position, enemyCoreMemory.position) > RALLY_ATTACK_RADIUS
+      ) {
+        const point = this.rallyPoint(enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
+        if (!samePosition(unit.position, point)) {
+          const direction = stepToward(unit.position, point, militaryObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_rally");
+          return;
+        }
+        set(unit, { type: "WAIT" }, "ranger_rally_hold");
+        return;
+      }
       moveTarget = enemyCoreMemory?.position ?? this.effectivePolicy?.focusRegion ?? home;
     } else {
       moveTarget = this.effectivePolicy?.focusRegion ?? home;
@@ -2278,6 +2371,14 @@ export class SafetyPlanner {
     }
 
     const military = state.vanguards.length + state.rangers.length;
+    // 威胁优先产兵（2026-08-08，military-priority-v1）：活跃敌核贴脸
+    // （raid-defense nearbyEnemyCore ≤24 格）且军事未达地板 → 跳过 worker
+    // 积累直接产兵（reference guide"敌方进入 Core 防区 → 守家队优先补齐"）。
+    // 默认关闭零回归；t3 实证 3 活跃敌核 ≤20 格仅 1 Vanguard。
+    const threatened =
+      this.config.threatMilitaryPriority === true &&
+      military < (this.config.threatMilitaryFloor ?? 4) &&
+      this.nearbyEnemyCore(state);
     // 三阶段爆兵状态机（2026-08-06 用户导向"积累到一定程度开始爆兵"）：
     // 1. 积累期（surgeActive=false 且 res < 阈值）：只产 Worker 积累经济；
     // 2. 爆兵期（surgeActive=true）：持续全力产兵（交替 VANGUARD/RANGER，
@@ -2292,16 +2393,22 @@ export class SafetyPlanner {
     const unitType = threshold > 0
       ? this.surgeActive
         ? nextMilitary(state, this.config)
-        : "WORKER"
-      : this.config.accumulateTarget > 0 &&
+        : threatened
+          ? nextMilitary(state, this.config)
+          : "WORKER"
+      : threatened
+        ? nextMilitary(state, this.config)
+        : this.config.accumulateTarget > 0 &&
           state.resources >= this.config.guardResources &&
           military < this.config.guardForce
         ? nextMilitary(state, this.config)
         : nextSpawn(state, this.effectiveWorkerTarget, this.config);
     const cost = unitType === "WORKER" ? 5 : unitType === "VANGUARD" ? 10 : 12;
-    const reserve = state.resources >= this.config.wealthyThreshold
-      ? this.config.reserveWealthy
-      : this.config.reserveEarly;
+    const reserve = threatened
+      ? this.config.reserveEarly
+      : state.resources >= this.config.wealthyThreshold
+        ? this.config.reserveWealthy
+        : this.config.reserveEarly;
     if (state.resources < cost + reserve) {
       if (threshold > 0 && this.surgeActive) this.surgeActive = false;
       return null;

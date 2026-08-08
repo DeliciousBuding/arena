@@ -2287,7 +2287,9 @@ async function boot() {
     const replaying = !!(replay.data && replay.playing);
     const moving = anyUnitsMoving();
     // 命令倒计时不算 active（100ms 节流更新即可，不必撑 175fps）
-    const active = animating || zooming || replaying || moving || !!state.tactical.moveRoute || !!state.tactical.routePreview || !!state.tactical.selected || !!state.tactical.mode;
+    // 选中静态环不需要 175fps：仅选中波纹窗口（selectionRipples）与命令模式才撑 rAF 全速；
+    // 拖拽/框选/hover 均显式 draw()，不依赖本调度。
+    const active = animating || zooming || replaying || moving || !!state.tactical.moveRoute || !!state.tactical.routePreview || !!state.tactical.mode || selectionRipples.size > 0;
     // 模式切换：idle→active 立即补一帧（避免切换延迟）；active→idle 自然降频
     if (active && frameMode !== 'active') { frameMode = 'active'; }
     else if (!active && frameMode !== 'idle') { frameMode = 'idle'; }

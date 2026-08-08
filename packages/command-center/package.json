@@ -10,9 +10,10 @@
     "start:cc:bg": "node scripts/start-cc.mjs --hidden",
     "stop:cc": "node scripts/start-cc.mjs --stop",
     "check": "tsc --noEmit",
-    "check:all": "npm run check && npm --prefix web run typecheck && npm --prefix web run build",
+    "check:all": "npm run check && npm run check:alliance-sync && npm --prefix web run typecheck && npm --prefix web run build",
     "test:regression": "npm --prefix web run test:regression",
-    "test:unit": "node --test --test-force-exit \"test/*.test.ts\""
+    "test:unit": "node --test --test-force-exit \"test/*.test.ts\"",
+    "check:alliance-sync": "node scripts/check-alliance-sync.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",
