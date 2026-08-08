@@ -125,6 +125,15 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 无反击），避开敌核心守军 8 格；只最近 1 个去（防扎堆）。默认 false 零回归。
      */
     "vanguard-prey-worker-v1": Object.freeze({ vanguardPreyWorker: true }),
+    /**
+     * 威胁优先产兵（2026-08-08，military-priority-v1）：活跃敌核贴脸
+     * （raid-defense nearbyEnemyCore ≤24 格，coreHuntTargets CORE sticky）且
+     * 军事规模 < 地板（threatMilitaryFloor 默认 4）→ 跳过 worker 积累直接产兵
+     * + 用低储备（reserveEarly=1）尽早成型——reference guide"敌方进入 Core
+     * 防区 → 守家队优先补齐"（t3 实证 3 活跃敌核 ≤20 格仅 1 Vanguard，res 11
+     * 被财富储备 3 卡到 13）。默认 false = 历史行为（worker→军事顺序零回归）。
+     */
+    "military-priority-v1": Object.freeze({ threatMilitaryPriority: true }),
     "threat-breakout-v1": Object.freeze({ threatBreakout: true }),
     "core-evade-v1": Object.freeze({ coreEvade: true }),
     "core-evade-persist-v1": Object.freeze({ coreEvade: true, coreEvadePersist: true }),
