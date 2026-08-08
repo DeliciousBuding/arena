@@ -196,6 +196,8 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "bounded-raid-v1": Object.freeze({ boundedRaid: true }),
     "scout-evade-v1": Object.freeze({ scoutEvade: true }),
     "ranger-memory-shot-v1": Object.freeze({ rangerMemoryShot: true }),
+    "ranger-scavenge-v1": Object.freeze({ rangerScavenge: true }),
+    "ranger-kite-v1": Object.freeze({ rangerKite: true }),
     /**
      * 攻坚候选（2026-08-07 用户导向"爆兵打对面水晶"，安全侧 = 军事单位行为）：
      * - aggression=aggressive：Vanguard 记忆推进敌 Core / Ranger 断敌经济；
@@ -301,6 +303,10 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
         // 迁移方向勘探（2026-08-08）：核心 MOVING 时 EXPLORE worker 朝核心迁移方向
         // 探路（为落点测绘），核心 NORMAL 零影响。t1 不迁移=零回归；t3 迁移中生效。
         migrationScout: true,
+        // 全量外出（2026-08-08，用户导向"矿工不许原地守家"）：剩余空闲 worker 全部
+        // EXPLORE 外出测绘/打探，永不守家 WAIT——守家是军事单位职责，矿工只负责
+        // 采/探/寻矿；特殊卡位（worker-blockade）与核心迁移持货保持显式例外。
+        alwaysSurvey: true,
       },
     }),
   });

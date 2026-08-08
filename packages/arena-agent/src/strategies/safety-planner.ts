@@ -50,6 +50,7 @@ import {
   defensePost,
   defensiveShotPriority,
   homeCell,
+  kiteCell,
   nearestEnemy,
   nextMilitary,
   nextSpawn,
@@ -1163,6 +1164,17 @@ export class SafetyPlanner {
         this.config.coreMovingHold === true &&
         state.core?.state === "MOVING"
       ) {
+        // 满载 worker 站在核心格上（核心 MOVING 中）→ 先移出核心格待命（不堵迁移路径/
+        // 不站桩核心格，2026-08-08 生产实证 t1 worker 在 MOVING 核心格上站桩）；
+        // 不在核心格 → 原地持货等核心稳定（核心回 NORMAL 后恢复交仓）。
+        if (home !== null && samePosition(unit.position, home)) {
+          const exit = homeCell(home, movementObstacles, index)
+            ?? this.coreGuardFallback(home, movementObstacles, index);
+          if (exit !== null && !samePosition(unit.position, exit)) {
+            const direction = stepToward(unit.position, exit, movementObstacles);
+            if (direction !== null) { set(unit, { type: "MOVE", direction }, "worker_hold_cargo_off_core"); return; }
+          }
+        }
         set(unit, { type: "WAIT" }, "worker_hold_cargo_moving");
         return;
       }
@@ -2108,6 +2120,25 @@ export class SafetyPlanner {
       if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_outnumbered_retreat"); return; }
     }
 
+    // 游侠风筝（ranger-kite-v1，2026-08-08，用户导向"打了就跑"）：aggressive Ranger
+    // 近身（Chebyshev 1）遇 VANGUARD 近战威胁 → 先退到射程 2-3 可射击格再打，
+    // 保射程不被 SWEEP 换血（Ranger HP 2，贴脸两刀就死）；无合法风筝位才原地射击。
+    if (this.config.rangerKite === true && this.effectiveAggression === "aggressive") {
+      const meleeThreat = enemies.find(
+        (enemy) =>
+          enemy.kind === "UNIT" &&
+          enemy.unitType === "VANGUARD" &&
+          chebyshev(unit.position, enemy.position) === 1,
+      );
+      if (meleeThreat !== undefined) {
+        const kite = kiteCell(unit.position, meleeThreat.position, militaryObstacles, occupancyCounts(state), enemies);
+        if (kite !== null) {
+          const direction = stepToward(unit.position, kite, militaryObstacles);
+          if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_kite"); return; }
+        }
+      }
+    }
+
     // Precision shot at a visible enemy in range. Aggressive mode prioritizes
     // enemy Workers to cut their economy (cargo never reaches their Core).
     // Defensive mode prioritizes the nearest threat first (a Vanguard one cell
@@ -2316,7 +2347,22 @@ export class SafetyPlanner {
         set(unit, { type: "WAIT" }, "ranger_rally_hold");
         return;
       }
-      moveTarget = enemyCoreMemory?.position ?? this.effectivePolicy?.focusRegion ?? home;
+      // 攻坚目标存在 → 成建制前压（enemyCoreMemory 已过 forceGate/集结检查）；
+      // 有聚焦区 → 前出到聚焦区；否则 aggressive Ranger 不再回 Core 守位发呆——
+      // 游侠打野（ranger-scavenge-v1，2026-08-08，用户导向"游侠出去乱逛、打野、
+      // 获取信息、打了就跑"）：沿巡逻环外出测绘 + 敌情 + 寻敌（遇敌由上方射击分支
+      // 接管、寡不敌众由 outnumberedRetreat 接管）。
+      const focus = this.effectivePolicy?.focusRegion ?? null;
+      if (enemyCoreMemory !== undefined) {
+        moveTarget = enemyCoreMemory.position;
+      } else if (focus !== null) {
+        moveTarget = focus;
+      } else if (this.config.rangerScavenge === true) {
+        this.rangerScavenge(state, unit, index, militaryObstacles, set);
+        return;
+      } else {
+        moveTarget = home;
+      }
     } else {
       moveTarget = this.effectivePolicy?.focusRegion ?? home;
     }
@@ -2351,6 +2397,53 @@ export class SafetyPlanner {
         // 已展开或环上无空位：原地待机（保持射程）
       }
     }
+  }
+
+  /** 游侠打野（ranger-scavenge-v1，2026-08-08，用户导向"游侠出去乱逛、打野、获取信息"）：
+   *  aggressive Ranger 无可见敌人、无攻坚目标、无聚焦区时沿巡逻环外出（复用
+   *  vanguard_scavenge 的环推进机制：16/8 方位 + militaryRingHoldTicks 时间预算
+   *  强制升环）——测绘 + 敌情 + 寻敌。遇敌由 decideRanger 上方射击分支接管、
+   *  寡不敌众由 outnumberedRetreat 接管，"打了就跑"由 ranger_kite 保射程。
+   */
+  private rangerScavenge(
+    state: TickState,
+    unit: UnitSnapshot,
+    index: number,
+    militaryObstacles: ReadonlySet<string>,
+    set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
+  ): void {
+    const dense = this.config.militarySearchDense === true;
+    const directionCount = dense ? 16 : EXPLORE_DIRECTION_COUNT;
+    const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % directionCount);
+    const home = state.core!.position;
+    const beacon = state.beacon.position ?? home;
+    let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
+    let patrolPoint = dense
+      ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
+      : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+    const ringSince = this.unitRingSince.get(unit.id) ?? state.tick;
+    const ringHoldExceeded =
+      (this.config.militaryRingHoldTicks ?? 0) > 0 &&
+      state.tick - ringSince >= (this.config.militaryRingHoldTicks ?? 0);
+    if (samePosition(unit.position, patrolPoint) || ringHoldExceeded) {
+      this.unitRingSince.set(unit.id, state.tick);
+      if (memory.patrolRing < EXPLORE_RING_COUNT - 1) {
+        memory.patrolRing += 1;
+        patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
+        patrolPoint = dense
+          ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
+          : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+      } else {
+        memory.patrolRing = 0;
+        memory.patrolDirection = (memory.patrolDirection + 3) % directionCount;
+        patrolPoint = dense
+          ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
+          : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
+      }
+    }
+    const direction = stepToward(unit.position, patrolPoint, militaryObstacles);
+    if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_scavenge");
+    else set(unit, { type: "WAIT" }, "ranger_scavenge_blocked");
   }
 
   /** 产兵让位预判（spawn-yield-v1，2026-08-08）：核心本 tick 是否计划 SPAWN——

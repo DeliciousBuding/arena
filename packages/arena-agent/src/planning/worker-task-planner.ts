@@ -191,13 +191,17 @@ export class WorkerTaskPlanner {
     // （SURVEYOR，由 deterministic-planner 落 patrolFallback 勘探基线）；超出部分
     // 守家 WAIT 不空跑。测绘期已在采集前预留（上面的 pre-reserve 分支），此处
     // 剩余 worker 均为非勘探者 → WAIT。
+    // 全量外出（2026-08-08，用户导向"矿工不许原地守家"）：alwaysSurvey=true 时
+    // 剩余空闲 worker 全部 EXPLORE（外出测绘/打探，永不守家 WAIT）——矿工不守家，
+    // 守家是军事单位职责；特殊卡位（blockade）与核心迁移持货由 SafetyPlanner 显式例外。
     const leftoverSurveyors = options.surveyBurstActive === true
       ? new Set<string>()
       : surveyorIds(pool, this.mission, false);
+    const alwaysOutbound = this.mission.alwaysSurvey === true;
     for (const worker of pool) {
       assignments.push({
         unitId: worker.id,
-        task: leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
+        task: alwaysOutbound || leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
       });
     }
 
