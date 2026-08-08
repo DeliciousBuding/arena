@@ -42,9 +42,22 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
     const obstacles = db.prepare(
       "SELECT x, y, last_seen_tick AS tick FROM obstacles ORDER BY last_seen_tick DESC",
     ).all() as Array<Record<string, unknown>>;
-    const cores = db.prepare(
+    const coreRows = db.prepare(
       "SELECT x, y, last_seen_tick AS tick, owner, source FROM core_hunts ORDER BY last_seen_tick DESC",
     ).all() as Array<Record<string, unknown>>;
+    // 地图层核心按 owner 合并（2026-08-08 数据质量 A5）：同一玩家核心迁移产生多格
+    // core_hunts 记录，原始行直接给前端会显示“双核”——非 null owner 保留
+    // 最新位置（last_seen 最大），null owner（无主核心）按格独立保留。
+    const seenOwners = new Set<string>();
+    const cores: Array<Record<string, unknown>> = [];
+    for (const r of coreRows) {
+      const owner = typeof r.owner === "string" && r.owner.length > 0 ? r.owner : null;
+      if (owner !== null) {
+        if (seenOwners.has(owner)) continue;
+        seenOwners.add(owner);
+      }
+      cores.push(r);
+    }
     const meta = db.prepare("SELECT MAX(last_tick) AS m, SUM(cases_synced) AS c FROM sync_meta").get() as { m: number | null; c: number | null };
     const chunks = (db.prepare(
       "SELECT chunk_key AS key, last_seen_tick AS lastSeenTick FROM chunks ORDER BY last_seen_tick DESC",
