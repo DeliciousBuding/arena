@@ -49,8 +49,10 @@ test("refill: 窗口切分（抖动容忍）+ 周期估计 + dueInTicks", () => 
   assert.equal(a!.windows, 3);
   assert.equal(a!.avgGapTicks, 240);
   assert.equal(a!.lastWindowStartTick, 580);
-  assert.equal(a!.predictedNextTick, 820);
-  assert.equal(a!.dueInTicks, 220); // 820 − 600
+  // 2026-08-08 契约对齐：predictedNextTick = lastEnd(581) + avgAbsent(237) = 818
+  // （与 command-center mine-patterns 一致；旧公式 lastStart+avgGap = 820 已弃）
+  assert.equal(a!.predictedNextTick, 818);
+  assert.equal(a!.dueInTicks, 218); // 818 − 600
 });
 
 test("refill: 单窗口不可预测 + 无历史 = 空", () => {
@@ -92,3 +94,26 @@ test("refill: 即将刷新格加成——dueInTicks ≤ lookahead → +bonus；�
 });
 
 export {};
+
+test("refill: avgAbsent 语义——窗口时长影响预测（与 mine-patterns 一致）", () => {
+  // 窗口 [100..104] 时长 4、[200..204] 时长 4：gap=100、absent=96 → predictedNext = 204+96 = 300
+  const p1 = computeRefillPredictions(
+    [
+      { cell: "1,1", tick: 100 }, { cell: "1,1", tick: 104 },
+      { cell: "1,1", tick: 200 }, { cell: "1,1", tick: 204 },
+    ],
+    300,
+  );
+  assert.equal(p1.get("1,1")?.predictedNextTick, 300);
+  assert.equal(p1.get("1,1")?.avgGapTicks, 100);
+  assert.equal(p1.get("1,1")?.dueInTicks, 0, "300-300");
+  // 单 tick 窗口（时长 0）：absent = gap → lastStart+avgGap 与 lastEnd+avgAbsent 相等
+  const p2 = computeRefillPredictions(
+    [
+      { cell: "2,2", tick: 100 },
+      { cell: "2,2", tick: 300 },
+    ],
+    400,
+  );
+  assert.equal(p2.get("2,2")?.predictedNextTick, 500, "lastEnd(300)+avgAbsent(200)");
+});
