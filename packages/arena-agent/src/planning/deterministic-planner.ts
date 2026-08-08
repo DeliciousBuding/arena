@@ -42,6 +42,7 @@ import type { ThreatProfile } from "../strategies/safety-planner-config.ts";
 import { unitSpawnCosts } from "../domain/pricing.ts";
 import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snapshot.ts";
 import { WorkerTaskPlanner, type Assignment } from "./worker-task-planner.ts";
+import { DEFAULT_MISSION_CONFIG, type MissionConfig } from "./mission-planner.ts";
 
 const CELL_ENTITY_CAPACITY = 2;
 const REROUTE_ORDER: Readonly<Record<Direction, readonly Direction[]>> = {
@@ -527,6 +528,11 @@ export class DeterministicPlanner implements PlanProvider {
   private surgeActive = false;
   /** 补员 reserve（第十轮实验配置；默认 2 = 生产行为零回归）。 */
   private spawnReserve: number;
+  /** 使命层配置（worker-mission-v1）：值层门槛 + SURVEYOR 角色仲裁。 */
+  private missionConfig: MissionConfig;
+  /** 迁移后测绘期截止 tick（核心位置变化时刷新为 tick + surveyBurstTicks）。 */
+  private surveyBurstUntilTick = 0;
+  private previousCorePosition: Position | null = null;
   /** 官方排行榜威胁画像（2026-08-07，威胁自适应）：透传内部 SafetyPlanner。 */
   private readonly threatProfiles: ReadonlyMap<string, ThreatProfile>;
   private previousAssignments: readonly Assignment[] = [];
@@ -554,6 +560,9 @@ export class DeterministicPlanner implements PlanProvider {
      *  SafetyPlanner 的 World——重启后导航/寻路直接准确，无需重新探索。
      *  缺省空 = 零回归。 */
     initialObstacleCells: readonly Position[] = [],
+    /** 使命层配置（worker-mission-v1，2026-08-08）：值层门槛 + SURVEYOR 角色仲裁。
+     *  缺省 DEFAULT_MISSION_CONFIG = 关闭（现行为零回归）。 */
+    missionConfig: MissionConfig = DEFAULT_MISSION_CONFIG,
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
@@ -564,6 +573,7 @@ export class DeterministicPlanner implements PlanProvider {
     this.vanguardRatio = vanguardRatio;
     this.accumulateThreshold = accumulateThreshold;
     this.spawnReserve = spawnReserve;
+    this.missionConfig = missionConfig;
     this.threatProfiles = threatProfiles;
     if (initialCoreHuntTargets.length > 0) {
       fallbackPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
@@ -579,6 +589,7 @@ export class DeterministicPlanner implements PlanProvider {
     }
     fallbackPlanner.seedThreatProfiles(threatProfiles);
     patrolPlanner.seedThreatProfiles(threatProfiles);
+    this.planner.updateConfig({ mission: missionConfig });
   }
 
   /** 热刷新官方排行榜威胁画像（2026-08-08）：替换式透传内部两个 SafetyPlanner——
@@ -596,6 +607,7 @@ export class DeterministicPlanner implements PlanProvider {
       readonly vanguardRatio?: number;
       readonly accumulateThreshold?: number;
       readonly spawnReserve?: number;
+      readonly mission?: MissionConfig;
     },
   ): void {
     this.fallbackPlanner.updateConfig(safetyConfig);
@@ -603,6 +615,10 @@ export class DeterministicPlanner implements PlanProvider {
     this.vanguardRatio = deterministicConfig.vanguardRatio;
     this.accumulateThreshold = deterministicConfig.accumulateThreshold ?? 0;
     this.spawnReserve = deterministicConfig.spawnReserve ?? WORKER_SPAWN_RESERVE;
+    if (deterministicConfig.mission !== undefined) {
+      this.missionConfig = { ...DEFAULT_MISSION_CONFIG, ...deterministicConfig.mission };
+      this.planner.updateConfig({ mission: this.missionConfig });
+    }
   }
 
   decide(input: DeterministicPlannerInput): Plan {
@@ -650,7 +666,20 @@ export class DeterministicPlanner implements PlanProvider {
     const economicSnapshot: PlanningSnapshot = safetyVetoIds.size === 0
       ? snapshot
       : { ...snapshot, units: snapshot.units.filter((unit) => !safetyVetoIds.has(unit.id)) };
-    const { assignments } = this.planner.plan(economicSnapshot, this.previousAssignments);
+    // 迁移后测绘期（worker-mission-v1）：核心位置变化 → 未来 surveyBurstTicks 内
+    // 保证 ≥ surveyWorkerFloor 个勘探者（新家园先测绘再采集，防搬进 0 资源区空转）。
+    const corePosition = input.state.core?.position ?? null;
+    if (
+      corePosition !== null &&
+      this.previousCorePosition !== null &&
+      (corePosition[0] !== this.previousCorePosition[0] || corePosition[1] !== this.previousCorePosition[1])
+    ) {
+      this.surveyBurstUntilTick = input.state.tick + this.missionConfig.surveyBurstTicks;
+    }
+    this.previousCorePosition = corePosition;
+    const { assignments } = this.planner.plan(economicSnapshot, this.previousAssignments, {
+      surveyBurstActive: input.state.tick <= this.surveyBurstUntilTick,
+    });
     this.previousAssignments = assignments;
 
     const unitActions: Record<string, UnitAction> = { ...fallback.unitActions };
@@ -669,6 +698,16 @@ export class DeterministicPlanner implements PlanProvider {
         // 让它按 patrolFallback 继续探索，而不是下一 tick 偷跑去已被别人占用的矿。
         fallbackMemory.workerMode = "patrol";
         fallbackMemory.harvestTarget = null;
+      }
+      if (assignment.task.type === "EXPLORE") {
+        // SURVEYOR 角色（worker-mission-v1）：勘探动作落 patrolFallback 基线
+        // （覆盖感知方向由 patrolPlanner 的 frontier-priority 逻辑提供）。
+        const fallbackMemoryExplore = this.fallbackPlanner.world.unitMemory(assignment.unitId);
+        fallbackMemoryExplore.workerMode = "patrol";
+        fallbackMemoryExplore.harvestTarget = null;
+        unitActions[assignment.unitId] = patrolFallback.unitActions[assignment.unitId] ?? { type: "WAIT" };
+        intents[assignment.unitId] = "worker_survey";
+        continue;
       }
       if (assignment.task.type === "WAIT") {
         // 无可见资源时保留完整 Safety 的资源记忆；有可见资源但数量少于 Worker 时，
