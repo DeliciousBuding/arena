@@ -63,6 +63,15 @@ async function main() {
   page.on("console", (m) => { if (m.type() === "error") errs.push(m.text()); });
 
   try {
+    // 0) 前置健康：8787 可达性快速诊断（不可达立即报错退出，避免 30s goto 超时无反馈）
+    let pre = null, preErr = "";
+    try { pre = await fetch(BASE + "/api/overview", { signal: AbortSignal.timeout(5000) }); } catch (e) { preErr = String(e?.name ?? e).slice(0, 40); }
+    if (!pre || !pre.ok) {
+      bad("前置健康", `8787 不可达（${pre ? "HTTP " + pre.status : preErr || "fetch 失败"}）——确认 server.ts 已启动且 /api/overview 可用`);
+      return;
+    }
+    ok("前置健康", "8787 /api/overview 可达");
+
     // 1) 加载
     await page.goto(BASE + "/", { waitUntil: "domcontentloaded", timeout: 30000 });
     await sleep(8000);
