@@ -1233,7 +1233,9 @@ body {
 .rb-track {
   flex: 1; height: 5px; border-radius: 4px;
   background: rgba(255,255,255,.08); overflow: hidden; position: relative;
+  cursor: pointer; /* 可拖拽 seek（2026-08-09） */
 }
+.rb-track:hover { background: rgba(255,255,255,.12); }
 .rb-track::after {
   content: ""; position: absolute; inset: 0;
   background: linear-gradient(90deg, transparent, rgba(255,255,255,.06), transparent);
