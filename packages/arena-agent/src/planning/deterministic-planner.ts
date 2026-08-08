@@ -296,10 +296,19 @@ function compareWorstMoveFirst(a: MoveCandidate, b: MoveCandidate): number {
   return b.priority - a.priority || b.unitId.localeCompare(a.unitId);
 }
 
-/** Safety 决策拥有对经济 overlay 的否决权：这些 intent 是生存/撤离动作，
- * WorkerTaskPlanner 不得用采矿任务覆盖。 */
+/** Safety 决策拥有对经济 overlay 的否决权：这些 intent 是生存/撤离/通道清障
+ * 动作，WorkerTaskPlanner 不得用采矿任务覆盖。core 通道清障（worker_clear_core*）
+ * 2026-08-08 补入：t2 现场实证——Safety 已对核心格空 worker 发 worker_clear_core_empty
+ * 疏散，但经济层用 GO_RESOURCE 覆盖（该空 worker 无 cargo 被 WorkerTaskPlanner 派矿），
+ * 疏散永远不落地 → 空 worker 占核心格 130+ tick、7 满载围死 ring、deposit=0 冻结。 */
 function isSafetyVetoIntent(intent: string | undefined): boolean {
-  return intent === "heal" || intent === "worker_heal_return" || intent?.startsWith("worker_evade_") === true;
+  return (
+    intent === "heal" ||
+    intent === "worker_heal_return" ||
+    intent === "worker_clear_core" ||
+    intent === "worker_clear_core_empty" ||
+    intent?.startsWith("worker_evade_") === true
+  );
 }
 
 const WORKER_RECOVERY_FLOOR = 2;
