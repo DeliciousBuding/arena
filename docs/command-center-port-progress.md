@@ -413,3 +413,12 @@ mapEngine.ts 对应函数。
   （对齐动线语义：mine=白 / goto=青 / agent 规划=绿），hover 即见“单位正在干什么”。
 - **测试/验证**：commands.test.ts +1 项，web 单测 43→44 全绿；探针实测 hover 受控先锋
   显示「决策 · 移动 DOWN」；typecheck/build + 完整回归 **22/22 全绿**。
+
+### 9.23 编队多选 HUD + 渲染性能基线实测（2026-08-08）
+- **编队多选 HUD**：commands.ts 新增纯函数 squadSummary（受控 UNIT ≥2 时返回
+  构成/平均、最低 HP），tactRenderHud 追加「编队 N · 工/锋/射 · HP 平均/最低」行
+  （HP≤2 红色警示），多选取消后自动消失。web 单测 44→45；探针实测
+  fleetHud 显示「编队 2 1工/1射 HP 2/2」；回归 22/22 全绿。
+- **渲染性能基线（实测）**：headless 1680×1000 下 draw() 均值全局 2.2ms / 聚焦 4.3ms
+  （p95 2.9/6.7ms），远低于 16.6ms 帧预算；LOD静态缓存 + LQ 动画降级
+  （跳过测绘记忆/阴影/血条/载货）+ DPR cap + idle 降频已覆盖，无需激进优化。
