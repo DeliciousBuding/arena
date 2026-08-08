@@ -216,6 +216,41 @@ export {
 } from "./eval/metrics.ts";
 export type { EpisodeMetrics } from "./eval/metrics.ts";
 
+// ── Eval / Fitness (W51) ──
+export {
+  fitnessFromDetail,
+  riskMetrics,
+  combineDetails,
+  buildFitnessDetail,
+  ledgerToDetail,
+  evaluateMultiSeed,
+} from "./eval/fitness.ts";
+export type {
+  FitnessDetail,
+  CombinePart,
+} from "./eval/fitness.ts";
+
+// ── Eval / GA (W52) ──
+export {
+  GA_MANIFEST_PATH,
+  DEFAULT_MACRO_GENOME,
+  GENE_BOUNDS,
+  createSpawnProfileEvaluator,
+  GA,
+  SerialRunner,
+  WorkerPoolRunner,
+} from "./eval/ga.ts";
+export type {
+  MacroGenome,
+  GeneBound,
+  EvalResult,
+  IndividualEvaluator,
+  SpawnProfileEvalSpec,
+  EvaluationRunner,
+  GAConfig,
+  GenerationReport,
+} from "./eval/ga.ts";
+
 // ── Split ──
 export {
   DEFAULT_SPLIT_RATIOS,
