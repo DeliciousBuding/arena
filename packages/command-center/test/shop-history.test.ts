@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   normalizeProducts, snapshotSignature, shouldAppend,
-  aggregateShopHistory, type ShopHistoryEntry,
+  aggregateShopHistory, buildShopJournalLine, type ShopHistoryEntry,
 } from "../lib/shop-history.ts";
 
 test("shop-history: 归一 + 去重 + 变化追加", () => {
@@ -53,4 +53,34 @@ test("shop-history: 趋势聚合 current/delta + 空兜底", () => {
   assert.equal(e.snapshots, 0);
   assert.equal(e.trends.length, 0);
   assert.equal(e.lastSnapshotAt, null);
+});
+
+test("shop-history: 跨快照日记摘要（变动/下架/无变化）", () => {
+  const e1: ShopHistoryEntry[] = [
+    { at: "2026-08-08T00:00:00.000Z", products: normalizeProducts([{ id: "a1", name: "A", resource_cost: 95, available_stock: 10, purchase_limit: 1 }]) },
+    { at: "2026-08-08T01:00:00.000Z", products: normalizeProducts([{ id: "a1", name: "A", resource_cost: 110, available_stock: 7, purchase_limit: 1 }]) },
+  ];
+  const line = buildShopJournalLine(e1);
+  assert.ok(line && line.includes("商店动态"), "有变动应生成日记行");
+  assert.ok(line && line.includes("A 95→110 Core"), "价格变动要写明");
+  assert.equal(line?.includes("下架"), false, "未下架不含下架");
+
+  // 下架：首快照有 B，最新无
+  const e2: ShopHistoryEntry[] = [
+    { at: "2026-08-08T00:00:00.000Z", products: normalizeProducts([
+      { id: "a1", name: "A", resource_cost: 95, available_stock: 10, purchase_limit: 1 },
+      { id: "b2", name: "B", resource_cost: 50, available_stock: 0, purchase_limit: 5 },
+    ]) },
+    { at: "2026-08-08T01:00:00.000Z", products: normalizeProducts([{ id: "a1", name: "A", resource_cost: 95, available_stock: 10, purchase_limit: 1 }]) },
+  ];
+  const line2 = buildShopJournalLine(e2);
+  assert.ok(line2 && line2.includes("下架") && line2.includes("B"), "下架商品要写明");
+
+  // 无变化 / 样本不足 → null
+  assert.equal(buildShopJournalLine([e1[0]]), null, "单快照无对比");
+  const same: ShopHistoryEntry[] = [
+    { at: "2026-08-08T00:00:00.000Z", products: normalizeProducts([{ id: "a1", name: "A", resource_cost: 95, available_stock: 10, purchase_limit: 1 }]) },
+    { at: "2026-08-08T01:00:00.000Z", products: normalizeProducts([{ id: "a1", name: "A", resource_cost: 95, available_stock: 10, purchase_limit: 1 }]) },
+  ];
+  assert.equal(buildShopJournalLine(same), null, "全同无变化 → null");
 });

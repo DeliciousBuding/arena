@@ -10,6 +10,7 @@ import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
 import { loadAuditOverview } from "./audit-overview.ts";
 import { loadAllianceMining } from "./alliance-mining.ts";
 import { loadMiningEffectiveness } from "./mining-effectiveness.ts";
+import { loadShopHistoryEntries, buildShopJournalLine } from "./shop-history.ts";
 import { TtlCache } from "./cache.ts";
 import { TENANTS } from "./fs-jsonl.ts";
 
@@ -106,7 +107,15 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
     if (d.star > t.topStar) t.topStar = d.star;
     perTenant[d.tenant] = t;
   }
-  const narrative = buildNarrative(windowed, counts, perTenant, tenant);
+  let narrative = buildNarrative(windowed, counts, perTenant, tenant);
+  // 商店历史跨日涨跌（2026-08-08，日记层）：联盟级追加一行——观察期内价格/库存变动 +
+  // 下架商品（读落盘快照，30s 缓存，无触网/无定时任务）。
+  if (tenant === "all") {
+    try {
+      const shopLine = buildShopJournalLine(loadShopHistoryEntries());
+      if (shopLine) narrative = narrative ? narrative + " " + shopLine : shopLine;
+    } catch { /* 商店数据不可用不阻断 */ }
+  }
   const windowDelta = buildWindowDelta(windowed, prevWindowed);
   const payload: DeedsJournalPayload = {
     generatedAt: new Date().toISOString(),
