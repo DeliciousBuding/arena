@@ -9,7 +9,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit && node scripts/check-sim-isolation.ts",
-    "test": "node --test \"test/*.test.ts\"",
+    "test": "node --test \"test/**/*.test.ts\"",
     "arena:doctor": "tsx src/cli/run-tenant.ts --doctor",
     "arena:shadow": "tsx src/cli/run-tenant.ts",
     "arena:live": "tsx src/cli/run-tenant.ts --live",
@@ -20,7 +20,7 @@
     "sim:bench": "tsx src/cli/run-sim.ts benchmark",
     "sim:calibrate": "tsx src/cli/run-sim.ts calibrate",
     "sim:isolation-check": "node scripts/check-sim-isolation.ts",
-    "sim:test": "node --test \"test/sim-*.test.ts\"",
+    "sim:test": "node --test \"test/**/sim-*.test.ts\"",
     "sim:calibrate-dataset": "tsx src/cli/run-sim.ts calibrate-dataset",
     "sim:dataset": "tsx src/cli/run-sim.ts dataset",
     "arena:supervisor": "tsx src/cli/run-supervisor.ts",
