@@ -48,6 +48,23 @@ if [ -f "$OUTCOME" ]; then
     exit 0
   fi
 fi
+# 死区/贫矿豁免（2026-08-08，t4 死区实证）：worker>=3 探矿（GO_RESOURCE 意图）
+# 但视野持续 0 新鲜资源（outcome visibleResourceCellCount==0）→ 地理性停滞，
+# 不是决策死锁（无矿可采，重启不能解决，反而每分钟杀全租户——13:26-13:38 13
+# 连、15:03-15:07 5 连重启实证）。与"满载持货死锁"（economy-stall 独立捕获）
+# 互补：探矿无果豁免，持货不交不豁免。
+OUTCOME="$DATA_ROOT/runtime/$TENANT/telemetry/outcome.jsonl"
+if [ -f "$OUTCOME" ]; then
+  VIS0=$(tail -n 40 "$OUTCOME" | grep -c '"visibleResourceCellCount":0')
+  VIS_TOTAL=$(tail -n 40 "$OUTCOME" | grep -c '"visibleResourceCellCount"')
+  HAS_GO=$(echo "$LAST" | grep -c '"GO_RESOURCE":[1-9]')
+  # 需要同时满足：探矿意图存在 + 视野记录充足 + 40 行全 0 可见资源
+  if [ "$HAS_GO" -gt 0 ] && [ "$VIS_TOTAL" -gt 0 ] && [ "$VIS0" = "$VIS_TOTAL" ]; then
+    echo "OK:$TENANT"  # 死区/贫矿探矿：视野无资源可采，重启无效
+    exit 0
+  fi
+fi
+
 
 # 0 人口豁免（2026-08-08，t4 死经济实证）：全租户无单位时 intentCounts 为空
 # （{}）——0 动作是合法的（没有单位可命令），不是"决策停摆"（停摆指有单位
