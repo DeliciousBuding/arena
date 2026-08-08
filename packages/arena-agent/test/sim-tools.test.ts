@@ -373,7 +373,7 @@ test("TS-009: clear-path 清障 ROI——敌占资源格被清后经济恢复（
   }
 });
 
-test("近似 refill：开启后资源节点按 cadence 补回（长期经济不失真）", () => {
+test("refill：开启后资源节点按 chunk-quota cadence 补回（长期经济不失真）", () => {
   const scenario = JSON.parse(
     readFileSync(join(here, "fixtures", "sim", "scenario-focus-exile.json"), "utf8"),
   ) as unknown;
@@ -392,19 +392,21 @@ test("近似 refill：开启后资源节点按 cadence 补回（长期经济不�
     tenants: [{ id: "p1", planner: "deterministic" }],
     refill: {},
   });
-  // 近似 refill 开启后资源持续供给：100 ticks 最终资源应高于无 refill
+  // refill 开启后资源持续供给：100 ticks 最终资源应高于无 refill
   const res = (result: { finalWorld: { players: ReadonlyMap<string, { resources: number }> } }): number =>
     result.finalWorld.players.get("p1")!.resources;
   assert.ok(
     res(refilled) >= res(base),
     `refill 应提供持续供给（refill=${res(refilled)} vs base=${res(base)}）`,
   );
-  // unknown effect 明确标注 approximate（不伪装官方语义）
+  // M4-1（2026-08-08）：unknown note 从"approximate 原格补回"更新为
+  // "chunk-quota refill"——官方 chunk-quota 空槽模型（行为等价，官方
+  // placement seed 仍不可见，保留 unknown 标注）。
   const notes = refilled.records
     .flatMap((record) => record.unknownEffects)
     .filter((effect) => effect.kind === "refill")
     .map((effect) => effect.note);
-  assert.ok(notes.some((note) => note.includes("approximate refill")), "unknown note 标注 approximate");
+  assert.ok(notes.some((note) => note.includes("chunk-quota refill")), "unknown note 标注 chunk-quota refill");
   // 默认关闭零行为变化：base 的 refill note 是 server-secret 语义
   const baseNotes = base.records
     .flatMap((record) => record.unknownEffects)
