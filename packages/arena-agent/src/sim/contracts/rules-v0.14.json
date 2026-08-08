@@ -100,8 +100,8 @@
     },
     "refill": {
       "status": "server-secret",
-      "simulation": "unknown-by-design",
-      "note": "refill 使用永久 secret world seed，客户端不可预测；模拟器不实现官方精确 refill，结算中标记 unknown"
+      "simulation": "chunk-quota-empty-slot-v1",
+      "note": "官方每 4 个 resolved tick 按 32×32 chunk 配额 max(2,floor(16*8/(8+ring))) 补自然点；placement 用永久 secret world seed（客户端不可预测）。模拟器实现自洽确定性 chunk-quota 空槽模型（行为等价），结算中仍标记 unknown（精确位置归 EXPECTED_UNKNOWN）"
     },
     "settlementOrder": "self-destruct -> capacity-shrink -> upkeep -> movement -> start-move-validation -> beacon -> harvest/deposit -> combat -> heal -> core-action -> respawn -> refill(4-tick) -> commit"
   }

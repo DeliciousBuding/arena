@@ -60,9 +60,10 @@ export interface PhaseContext {
   readonly features: ReadonlySet<SimFeature>;
   /** Cells where a carried Beacon landed through death before P07. */
   readonly beaconPickupLockedCells: Set<string>;
-  /** 近似 refill（实验可选；undefined = 不实现官方 refill）。 */
+  /** refill（实验可选；undefined = 不实现官方 refill）。chunk-quota 空槽模型，
+   *  chunks = 世界载入时含自然点的 32×32 chunk。 */
   readonly refill?: {
-    readonly cells: readonly string[];
+    readonly chunks: readonly string[];
     readonly everyTicks: number;
   };
 }
