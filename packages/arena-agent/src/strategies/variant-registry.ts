@@ -9,6 +9,7 @@
  */
 
 import type { SafetyPlannerConfig } from "./safety-planner.ts";
+import type { MissionConfig } from "../planning/mission-planner.ts";
 
 /** 候选变体 → SafetyPlanner 配置开关（全部默认 false 的历史行为零回归）。 */
 export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlannerConfig>>> =
@@ -197,6 +198,13 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "spawn-yield-v1": Object.freeze({}),
     "worker-blockade-v1": Object.freeze({}),
     "coordinated-fire-v1": Object.freeze({ coordinatedFire: true }),
+    /**
+     * Worker 使命层（2026-08-08，worker-mission-v1）：t1 配置声明（值层门槛 +
+     * SURVEYOR 角色）——本线（watchdog 恢复线）已同步完整实现（mission-planner +
+     * Hungarian 门槛过滤 + 测绘期），与 v3 线行为一致；safety 侧无开关，
+     * 空覆盖注册以满足 resolveVariantsConfig 全量校验。
+     */
+    "worker-mission-v1": Object.freeze({}),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要
@@ -210,6 +218,9 @@ export interface DeterministicVariantConfig {
   readonly accumulateThreshold?: number;
   /** 补员 reserve（缺省 2 = 生产行为零回归）。 */
   readonly spawnReserve?: number;
+  /** 使命层配置（worker-mission-v1，2026-08-08）：值层置信 + SURVEYOR 角色仲裁。
+   *  缺省 undefined = 关闭（现行为零回归）。 */
+  readonly mission?: MissionConfig;
 }
 
 export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, DeterministicVariantConfig>> =
@@ -224,6 +235,27 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
      * accumulateThreshold=30 爆兵节奏。
      */
     "vanguard-heavy-v1": Object.freeze({ vanguardRatio: 0.75 }),
+    /**
+     * Worker 使命层（2026-08-08，架构设计 docs/design/worker-mission-layer-v1.md，
+     * t1 实证：14 worker 全扑陈旧测绘种子、30+ tick 零采集零巡逻）：
+     * - 值层：采集价值门槛 collectionValueFloor + 最大距离 maxCollectionDistance——
+     *   低于门槛/超距的格 = forbidden（worker 宁选 WAIT→勘探也不长途奔陈旧种子）；
+     * - 使命层：迁移后测绘期 surveyBurstTicks 内保证 ≥ surveyWorkerFloor 个勘探者
+     *   （求解前预留，新家园先测绘再采集）。
+     * 与 Hungarian 匹配器的 stale/seed 惩罚互补（该惩罚只排序不拦截；
+     * 门槛负责"拦截不值得的格"）。参数保守起步（floor −30 / 距 24 / burst 100×floor 3）。
+     */
+    "worker-mission-v1": Object.freeze({
+      mission: {
+        collectionValueFloor: -30,
+        maxCollectionDistance: 24,
+        surveyWorkerCap: 3,
+        surveyBurstTicks: 100,
+        surveyWorkerFloor: 3,
+        visibleBonus: 0.3,
+        seedAgeDecay: 0.02,
+      },
+    }),
   });
 
 /** 解析变体 id → SafetyPlanner 配置覆盖；未知 id 抛错（fail-fast）。 */

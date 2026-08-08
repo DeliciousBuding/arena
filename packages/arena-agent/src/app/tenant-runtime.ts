@@ -538,6 +538,7 @@ export async function runTenant(
               threatProfiles,
               surveyResourceCells,
               surveyObstacleCells,
+              deterministicVariantConfig.mission,
             )
         : new SafetyPlanner(baseSafetyConfig, undefined, threatProfiles);
     if (planner instanceof SafetyPlanner) {
