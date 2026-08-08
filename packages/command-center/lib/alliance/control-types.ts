@@ -77,4 +77,3 @@ export interface AllianceDirective {
   readonly mode: ControlMode;
   readonly explanation?: string;
 }
-
