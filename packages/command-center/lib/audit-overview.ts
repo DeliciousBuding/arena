@@ -47,6 +47,8 @@ export interface TenantAuditOverview {
     visibleNever: number;
     utilizationRate: number | null;
     topCandidates: Array<{ cell: string; x: number; y: number }>;
+    /** 可见未开采矿发现后仍未采的最长时长（tick，2026-08-08）。 */
+    maxGapAgeTicks: number | null;
   } | null;
   exploration: { exploredChunks: number | null; lastSeenTick: number | null } | null;
   pipeline: { lagTicks: number | null; healthy: boolean } | null;
@@ -158,6 +160,7 @@ export function aggregateAuditOverview(
         visibleNever: num(mu.visibleNever),
         utilizationRate: mu.utilizationRate,
         topCandidates: mu.candidates.slice(0, 5).map((c) => ({ cell: c.cell, x: c.x, y: c.y })),
+        maxGapAgeTicks: mu.maxGapAgeTicks ?? null,
       } : null,
       exploration: explorationByTenant.get(t) ?? null,
       pipeline: pipelineByTenant.get(t) ?? null,

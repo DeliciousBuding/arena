@@ -38,6 +38,30 @@ test("mine-utilization: 缺口汇总 + 候选排序 + 首采耗时", () => {
   assert.equal(med, 30, "两条首采耗时均 30 → 中位 30");
 });
 
+test("mine-utilization: gapAge 发现后仍未采时长", () => {
+  // currentTick=5000：可见未开采 2,2（firstSeen 200）→ gapAge 4800；已采 1,1 → null
+  const resources = [
+    { cell: "1,1", x: 1, y: 1, firstSeenTick: 100, lastSeenTick: 4800, seenCount: 40 },
+    { cell: "2,2", x: 2, y: 2, firstSeenTick: 200, lastSeenTick: 4700, seenCount: 20 },
+    { cell: "3,3", x: 3, y: 3, firstSeenTick: 1000, lastSeenTick: 4600, seenCount: 5 },
+  ];
+  const events = [
+    { cell: "1,1", tick: 130, eventType: "HARVEST_SUCCEEDED", amount: 2 },
+    { cell: "3,3", tick: 1200, eventType: "HARVEST_SUCCEEDED", amount: 1 },
+  ];
+  const a = aggregateMineUtilization("t1", 5000, resources, events);
+  const byCell = Object.fromEntries(a.candidates.map((c) => [c.cell, c]));
+  assert.equal(byCell["2,2"].gapAgeTicks, 4800, "5000-200");
+  assert.equal(byCell["2,2"].neverHarvested, true);
+  assert.equal(a.maxGapAgeTicks, 4800);
+  assert.equal(a.medianGapAgeTicks, 4800, "仅一个候选 → 中位=自身");
+  // 空数据兜底：gapAge 相关为 null
+  const b = aggregateMineUtilization("t2", null, [], []);
+  assert.equal(b.maxGapAgeTicks, null);
+  assert.equal(b.medianGapAgeTicks, null);
+  assert.equal(b.candidates.length, 0);
+});
+
 test("mine-utilization: 空数据兜底 + 全采集", () => {
   const a = aggregateMineUtilization("t2", null, [], []);
   assert.equal(a.total, 0);
