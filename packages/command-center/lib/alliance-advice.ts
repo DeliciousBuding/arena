@@ -18,6 +18,7 @@ import { loadMinePatterns } from "./mine-patterns.ts";
 import { loadMineUtilization } from "./mine-utilization.ts";
 import { loadDecisionTrend } from "./decision-audit.ts";
 import { loadHumanConflict } from "./human-conflict.ts";
+import { loadMiningEffectiveness } from "./mining-effectiveness.ts";
 import { TtlCache } from "./cache.ts";
 
 export type AdviceSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "INFO";
@@ -343,6 +344,47 @@ export function loadAllianceAdvice(): AllianceAdvicePayload {
           weight: Math.round(rate * 100),
           confidence: 0.7,
           evidence: [{ type: "audit", tenant: t, ref: `rejectedRate=${rate}` }],
+          at: new Date().toISOString(),
+        });
+      }
+    }
+    // 分工兑现（2026-08-08，闭环执行反馈）：alliance/mining 分了但没采到 →
+    // 按兑现状态分级建议（全失效 HIGH / 全在途 MEDIUM / 部分兑现 INFO）。证据 type=audit。
+    const me = loadMiningEffectiveness();
+    for (const m of Object.values(snap.members)) {
+      const t = m.tenantId;
+      const e = me.perTenant?.[t];
+      if (!e || e.assigned < 5) continue;
+      const staleOnly = e.stale > 0 && e.harvested === 0;
+      const openOnly = e.harvested === 0 && e.open > 0;
+      if (staleOnly) {
+        out.push({
+          severity: "HIGH", category: "ECONOMY", tenant: t,
+          title: `${t} 分工 ${e.assigned} 矿兑现失效（${e.stale} 失效/0 采到）`,
+          detail: "已闭环但全失效——分配距离/路径/承载与就近模型不符",
+          action: "按 alliance/mining 换就近观测者重分配；校验 worker 路径障碍",
+          weight: e.assigned, confidence: 0.8,
+          evidence: [{ type: "audit", tenant: t, ref: `assigned=${e.assigned} stale=${e.stale}` }],
+          at: new Date().toISOString(),
+        });
+      } else if (openOnly) {
+        out.push({
+          severity: "MEDIUM", category: "ECONOMY", tenant: t,
+          title: `${t} 分工 ${e.assigned} 矿 0 兑现（${e.open} 在途）`,
+          detail: "联盟就近分配尚未被采集——分配未兑现，需真正派 worker",
+          action: "派 worker 到分工候选格（alliance/mining）；下轮看兑现率",
+          weight: e.assigned, confidence: 0.75,
+          evidence: [{ type: "audit", tenant: t, ref: `assigned=${e.assigned} open=${e.open} progress=${e.progressRate}` }],
+          at: new Date().toISOString(),
+        });
+      } else if (e.harvested > 0) {
+        out.push({
+          severity: "INFO", category: "ECONOMY", tenant: t,
+          title: `${t} 分工兑现中（${e.harvested}/${e.assigned} 采到）`,
+          detail: `已采 ${e.harvested} / 在途 ${e.open} / 失效 ${e.stale}——闭环中`,
+          action: "保持派 worker；失效格按联盟重分配",
+          weight: -e.harvested, confidence: 0.7,
+          evidence: [{ type: "audit", tenant: t, ref: `harvested=${e.harvested}/${e.assigned} progress=${e.progressRate}` }],
           at: new Date().toISOString(),
         });
       }

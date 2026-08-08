@@ -55,6 +55,8 @@ export interface MineUtilEntry {
   /** 发现→首次采集耗时（tick）；未开采 = null。 */
   timeToFirstHarvest: number | null;
   activity: number;
+  /** 发现后仍未采的时长（tick）：currentTick - firstSeenTick；已采 = null。 */
+  gapAgeTicks: number | null;
 }
 
 export interface MineTenantUtilization {
@@ -67,6 +69,9 @@ export interface MineTenantUtilization {
   staleNever: number;
   utilizationRate: number | null;
   medianTimeToFirstHarvest: number | null;
+  /** 可见未开采矿的发现→仍未采时长（tick）：max / 中位。 */
+  maxGapAgeTicks: number | null;
+  medianGapAgeTicks: number | null;
   candidates: MineUtilEntry[];
 }
 
@@ -146,6 +151,7 @@ export function aggregateMineUtilization(
       neverHarvested: never,
       timeToFirstHarvest: never ? null : (h?.first !== null && h?.first !== undefined ? num(h.first) - num(r.firstSeenTick) : null),
       activity: num(r.seenCount) / age,
+      gapAgeTicks: never ? Math.max(0, (currentTick ?? 0) - num(r.firstSeenTick)) : null,
     });
   }
 
@@ -158,6 +164,9 @@ export function aggregateMineUtilization(
   const median = firstHarvestTimes.length > 0
     ? firstHarvestTimes[Math.floor(firstHarvestTimes.length / 2)]
     : null;
+  const gapAges = candidates.map((e) => e.gapAgeTicks ?? 0).sort((a, b) => a - b);
+  const maxGapAge = candidates.length > 0 ? gapAges[gapAges.length - 1] : null;
+  const medianGapAge = gapAges.length > 0 ? gapAges[Math.floor(gapAges.length / 2)] : null;
 
   return {
     tenant,
@@ -169,6 +178,8 @@ export function aggregateMineUtilization(
     staleNever,
     utilizationRate: total > 0 ? Math.round((harvested / total) * 1000) / 1000 : null,
     medianTimeToFirstHarvest: median,
+    maxGapAgeTicks: maxGapAge,
+    medianGapAgeTicks: medianGapAge,
     candidates,
   };
 }
@@ -245,7 +256,8 @@ function tenantUtilization(tenant: string): MineTenantUtilization {
   const file = join(DATA_ROOT, "runtime", "survey", tenant + ".db");
   const empty: MineTenantUtilization = {
     tenant, currentTick: null, total: 0, harvested: 0, neverHarvested: 0,
-    visibleNever: 0, staleNever: 0, utilizationRate: null, medianTimeToFirstHarvest: null, candidates: [],
+    visibleNever: 0, staleNever: 0, utilizationRate: null, medianTimeToFirstHarvest: null,
+    maxGapAgeTicks: null, medianGapAgeTicks: null, candidates: [],
   };
   if (!existsSync(file)) return empty;
   let db: DatabaseSync;
