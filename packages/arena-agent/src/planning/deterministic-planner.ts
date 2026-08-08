@@ -505,7 +505,10 @@ export function selectDeterministicCoreAction(
         // RECOVERY 早期防御（ref 4W→1V 语义）：worker 已起步但无军事 → 产 1 Vanguard 自卫，
         // 不等 workerTarget=12（裸奔期被拆教训）。产 1 个后回到正常扩编。
         if (state.vanguards.length + state.rangers.length < EARLY_MILITARY_COUNT &&
-            state.resources >= spawnCosts.VANGUARD + spawnReserve) {
+            // 防御产兵豁免 spawnReserve（2026-08-08，与 threatDefenseSpawn 同语义：
+            // 生存行为只看纯成本——t4 生产实证 res 0-2 裸奔 7W/0 军事，res<cost+reserve
+            // 永远产不起 Vanguard；豁免后 res>=10 即可自卫，防裸奔期被拆）。
+            state.resources >= spawnCosts.VANGUARD) {
           return {
             action: { type: "SPAWN", unitType: "VANGUARD" },
             intent: "spawn_vanguard_recovery",
