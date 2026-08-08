@@ -103,6 +103,27 @@ export function stepTowardAvoiding(
   return pathStepToward(from, target, obstacles, options);
 }
 
+/** 迁移方向勘探（2026-08-08，migration-scout）：核心 MOVING 时，EXPLORE worker
+ *  朝核心迁移方向前方 scoutRange 格探路（为落点测绘），而非随机老分区。
+ *  返回该方向的下一步 Direction；无迁移/无方向/已在目标附近返回 null（fallback 巡逻）。
+ *  纯函数可测；核心 NORMAL 时 previousCorePosition 不匹配 → null 零影响。 */
+export function migrationScoutDirection(
+  workerPosition: Position,
+  corePosition: Position,
+  previousCorePosition: Position | null,
+  obstacles: ReadonlySet<string>,
+  scoutRange = 24,
+): Direction | null {
+  if (previousCorePosition === null) return null;
+  const dx = corePosition[0] - previousCorePosition[0];
+  const dy = corePosition[1] - previousCorePosition[1];
+  if (dx === 0 && dy === 0) return null;
+  const sx = Math.sign(dx), sy = Math.sign(dy);
+  const target: Position = [corePosition[0] + sx * scoutRange, corePosition[1] + sy * scoutRange];
+  if (workerPosition[0] === target[0] && workerPosition[1] === target[1]) return null;
+  return stepTowardAvoiding(workerPosition, target, obstacles);
+}
+
 /** 满载 Worker 资源满时让出 Core 格的移动方向：Core 四邻中第一个非障碍格
  *  （确定性 UP→RIGHT→DOWN→LEFT，与守家锚点 homeCell 同序）。
  *  资源满时 DEPOSIT 不合法，原地等待会永久占住 Core 格（SPAWN 被拒 → 资源
@@ -714,6 +735,24 @@ export class DeterministicPlanner implements PlanProvider {
         fallbackMemory.harvestTarget = null;
       }
       if (assignment.task.type === "EXPLORE") {
+        // migration-scout（2026-08-08，worker-mission-v1 延伸）：核心 MOVING 时
+        // 勘探 worker 朝核心迁移方向探路（为落点测绘），不随机巡老分区——
+        // t3 迁移期"worker 探索测绘"直接服务新家园；核心 NORMAL 时零影响。
+        if (
+          this.missionConfig.migrationScout === true &&
+          snapshot.coreState === "MOVING" &&
+          snapshot.corePosition !== null
+        ) {
+          const worker = snapshot.units.find((u: any) => u.id === assignment.unitId);
+          const dir = worker
+            ? migrationScoutDirection(worker.position, snapshot.corePosition, this.previousCorePosition, snapshot.obstacleCells)
+            : null;
+          if (dir !== null) {
+            unitActions[assignment.unitId] = { type: "MOVE", direction: dir };
+            intents[assignment.unitId] = "worker_migration_scout";
+            continue;
+          }
+        }
         // SURVEYOR 角色（worker-mission-v1）：勘探动作落 patrolFallback 基线
         // （覆盖感知方向由 patrolPlanner 的 frontier-priority 逻辑提供）。
         const fallbackMemoryExplore = this.fallbackPlanner.world.unitMemory(assignment.unitId);
