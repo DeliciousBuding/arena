@@ -1995,7 +1995,7 @@ function bindEvents() {
     }
   });
   // 右键指挥菜单（群星式）：命中单位/核心弹命令菜单，空白处取消选中
-  els.canvas.addEventListener('contextmenu', (e) => {
+  els.canvas.addEventListener('contextmenu', (e: MouseEvent) => {
     pokeHint();
     e.preventDefault();
     const rect = els.canvas.getBoundingClientRect();
@@ -2782,7 +2782,7 @@ function renderCtxMenu(tenant: any, obj: any, px: any, py: any) {
   els.ctxMenu.style.top = `${top}px`;
   ctxMenuOpenFor = obj.id;
   els.ctxMenu.querySelector('[data-ctx-close]')?.addEventListener('click', hideCtxMenu);
-  els.ctxMenu.querySelectorAll('[data-action]').forEach((b) => b.addEventListener('click', () => {
+  els.ctxMenu.querySelectorAll('[data-action]').forEach((b: any) => b.addEventListener('click', () => {
     const act = b.dataset.action;
     if (b.classList.contains('blocked')) {
       toast(b.dataset.reason || '当前不可用', 'warn');
@@ -2863,10 +2863,10 @@ function tactRenderAssets(tenant: any) {
   const groups = [
     ['CORE', '核心'], ['WORKER', '工人'], ['VANGUARD', '先锋'], ['RANGER', '游侠'],
   ];
-  let collapsed = {};
+  let collapsed: Record<string, boolean> = {};
   try { collapsed = JSON.parse(localStorage.getItem('arena-cc.assetGroups') ?? '{}') || {}; } catch { /* 忽略 */ }
   els.assetList.innerHTML = groups.map(([gtype, gcn]) => {
-    const members = controlled.filter((o) => o.kind === 'CORE' ? gtype === 'CORE' : (o.unit_type ?? '') === gtype);
+    const members = controlled.filter((o: any) => o.kind === 'CORE' ? gtype === 'CORE' : (o.unit_type ?? '') === gtype);
     if (!members.length) return '';
     const isCollapsed = collapsed[gtype] === true;
     const rows = members.map((o: any) => {
@@ -2902,7 +2902,7 @@ function tactRenderAssets(tenant: any) {
     if (o.position) { state.view.cx = o.position[0]; state.view.cy = o.position[1]; state.viewAnim = null; }
     tactSelect(tenant, o);
   }));
-  els.assetList.querySelectorAll('[data-grp-head]').forEach((h) => h.addEventListener('click', () => {
+  els.assetList.querySelectorAll('[data-grp-head]').forEach((h: any) => h.addEventListener('click', () => {
     const g = h.dataset.grpHead;
     const grp = els.assetList.querySelector(`[data-grp="${g}"]`);
     if (!grp) return;
