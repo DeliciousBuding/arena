@@ -218,25 +218,26 @@ export function nearestEnemy(enemies: readonly VisibleEntity[], position: Positi
  *  修复：旧评分只取 minEnemyDistance，退向"离最近敌最远"的方向可能冲进
  *  另一敌的射程（Ranger 3 格直线）。 */
 const RANGER_SHOOT_RANGE = 3;
-const VANGUARD_SWEEP_RANGE = 1;
 
 /** 竞品投影伤害（rule-correct）：敌当前格可对候选格发动的合法攻击——
- *  Vanguard 仅邻格（Chebyshev 1，SWEEP）；Ranger 八方向直线 ≤3 且中间格
- *  无障碍（SHOOT，lineBlocked）。旧实现用 Manhattan ≤ range 代理：把
- *  (2,1) 非法线算 1 伤、无视障碍遮挡（2026-08-07 C6 对齐）。 */
+ *  Vanguard 仅卡向邻格（Manhattan 1，SWEEP 方向枚举只有四向，对角不可扫）；
+ *  Ranger 八方向直线 ≤3 且中间格无障碍（SHOOT，lineBlocked）。旧实现用
+ *  Manhattan ≤ range 代理：把 (2,1) 非法线算 1 伤、无视障碍遮挡
+ *  （2026-08-07 C6 对齐）。 */
 function projectedDamageAt(
   target: Position,
   enemy: VisibleEntity,
   obstacles: ReadonlySet<string>,
 ): number {
   if (enemy.kind === "CORE") return 0;
-  const distance = chebyshev(target, enemy.position);
   if (enemy.unitType === "RANGER") {
+    const distance = chebyshev(target, enemy.position);
     if (distance === 0 || distance > RANGER_SHOOT_RANGE) return 0;
     return lineBlocked(target, enemy.position, obstacles) ? 0 : 1;
   }
-  // VANGUARD / WORKER 近战：仅邻格可伤害
-  return distance === VANGUARD_SWEEP_RANGE ? 1 : 0;
+  // VANGUARD / WORKER 近战：SWEEP 无斜向——只有卡向邻格可伤害，对角邻格
+  // 当前打不到（2026-08-08 与米字修复同源：四方向语义不按八方向估算）。
+  return manhattan(target, enemy.position) === 1 ? 1 : 0;
 }
 
 export function retreatDirection(

@@ -105,9 +105,10 @@ function hasEscapeDirection(
 }
 
 /** 竞品投影伤害（rule-correct）：Core 当前格是否被任一敌合法攻击覆盖——
- *  Vanguard 仅邻格（Chebyshev 1，SWEEP）；Ranger 八方向直线 ≤3 且中间格
- *  无障碍（SHOOT，lineBlocked）。C5 用"当前格投影伤害 >0"作为 BREAKOUT
- *  前提（旧判定用 12 格内——打不到的远处包围被高估为 BREAKOUT）。 */
+ *  Vanguard 仅卡向邻格（Manhattan 1，SWEEP 方向枚举只有四向，对角不可扫）；
+ *  Ranger 八方向直线 ≤3 且中间格无障碍（SHOOT，lineBlocked）。C5 用
+ *  "当前格投影伤害 >0"作为 BREAKOUT 前提（旧判定用 12 格内——打不到的
+ *  远处包围被高估为 BREAKOUT）。 */
 export function projectedDamageOnCore(
   core: Position,
   enemies: readonly VisibleEntity[],
@@ -116,15 +117,17 @@ export function projectedDamageOnCore(
   let damage = 0;
   for (const enemy of enemies) {
     if (enemy.kind === "CORE") continue;
-    const distance = Math.max(
-      Math.abs(enemy.position[0] - core[0]),
-      Math.abs(enemy.position[1] - core[1]),
-    );
     if (enemy.unitType === "RANGER") {
+      const distance = Math.max(
+        Math.abs(enemy.position[0] - core[0]),
+        Math.abs(enemy.position[1] - core[1]),
+      );
       if (distance === 0 || distance > 3) continue;
       if (lineBlocked(core, enemy.position, obstacles)) continue;
       damage += 1;
-    } else if (distance === 1) {
+    } else if (manhattan(core, enemy.position) === 1) {
+      // 对角邻格 Vanguard 当前打不到 Core（SWEEP 无斜向）——与米字修复
+      // 同源（2026-08-08）：四方向语义不按八方向估算。
       damage += 1;
     }
   }
