@@ -121,6 +121,35 @@ export function aggregateShopHistory(entries: readonly ShopHistoryEntry[]): Omit
   };
 }
 
+/** 跨快照商品变动摘要（2026-08-08，日记层）：观察期内每商品「首见 → 最新」的价格/
+ *  库存变化 + 下架商品。供日记叙事追加一行（联盟级，只读）。无变化/样本不足返回 null。
+ *  纯函数可测，读落盘快照（不触网）。 */
+export function buildShopJournalLine(entries: readonly ShopHistoryEntry[]): string | null {
+  if (entries.length < 2) return null;
+  const first = entries[0];
+  const last = entries[entries.length - 1];
+  const byId = new Map<string, { name: string; firstCost: number; lastCost: number; firstStock: number; lastStock: number }>();
+  for (const e of entries) {
+    for (const p of e.products) {
+      const cur = byId.get(p.id);
+      if (!cur) byId.set(p.id, { name: p.name, firstCost: p.resourceCost, lastCost: p.resourceCost, firstStock: p.availableStock, lastStock: p.availableStock });
+      else { cur.lastCost = p.resourceCost; cur.lastStock = p.availableStock; }
+    }
+  }
+  const changed: string[] = [];
+  for (const v of byId.values()) {
+    if (v.firstCost !== v.lastCost) changed.push(`${v.name || v.id} ${v.firstCost}→${v.lastCost} Core`);
+    else if (v.firstStock !== v.lastStock) changed.push(`${v.name || v.id} 库存 ${v.firstStock}→${v.lastStock}`);
+  }
+  const disappeared = first.products.filter((p) => !last.products.some((q) => q.id === p.id));
+  const parts: string[] = [];
+  if (changed.length) parts.push(`变动 ${changed.slice(0, 5).join("、")}${changed.length > 5 ? ` 等 ${changed.length} 项` : ""}`);
+  if (disappeared.length) parts.push(`下架 ${disappeared.map((p) => p.name || p.id).slice(0, 3).join("、")}${disappeared.length > 3 ? ` 等 ${disappeared.length} 件` : ""}`);
+  if (parts.length === 0) return null;
+  const span = `${first.at.slice(0, 10)} ~ ${last.at.slice(0, 10)}`;
+  return `商店动态（${span} · ${entries.length} 次快照）：${parts.join("；")}。`;
+}
+
 /** 读历史快照（全部；文件小，直接读）。 */
 export function loadShopHistoryEntries(): ShopHistoryEntry[] {
   if (!existsSync(historyFile)) return [];
