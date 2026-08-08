@@ -432,6 +432,18 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
       beaconCommitmentHysteresis: 2,
       beaconCommitmentProgress: 3,
     }),
+    /**
+     * militaryRatio 接线（W52 GA 前置，2026-08-09）：SafetyPlanner.decideCore
+     * 产兵分支历史完全不读 policy.militaryRatio——GA 搜出来的 MacroPolicy 5
+     * 维参数在生产只 4 维生效。开启后 decideCore 在 workers ≥
+     * effectiveWorkerTarget 且 policy.militaryRatio > 0 时按 militaryRatio 决定
+     * VANGUARD vs RANGER（ratio 接近 1 多 Vanguard、接近 0 多 Ranger、0.5 交替）
+     * ——augment 而非替换：是否产兵/产 Worker 仍由历史门控（nextSpawn/
+     * nextMilitary/accumulateThreshold/guardForce）决定，仅 V/R 选择读 policy。
+     * 默认关零回归。deterministic 侧无需覆盖（selectDeterministicCoreAction
+     * 已读 policy.militaryRatio）。
+     */
+    "military-ratio-enabled-v1": Object.freeze({ militaryRatioEnabled: true }),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要

@@ -63,6 +63,17 @@ export interface SafetyPlannerConfig {
    */
   readonly vanguardRatio?: number;
   /**
+   * militaryRatio 接线开关（W52 GA 前置，2026-08-09）：默认 false = 历史行为
+   * （decideCore 产兵分支完全不读 policy.militaryRatio——GA 搜出来的
+   * MacroPolicy 5 维参数在生产只有 4 维生效）。开启后 decideCore 在
+   * workers ≥ effectiveWorkerTarget 且 policy.militaryRatio > 0 时，按
+   * militaryRatio 决定 VANGUARD vs RANGER（ratio 接近 1 多 Vanguard、接近
+   * 0 多 Ranger、0.5 交替）——augment 而非替换 nextSpawn/nextMilitary：
+   * 是否产兵/产 Worker 仍由历史门控决定，仅 V/R 选择读 policy。零回归：
+   * 关闭时行为不变。变体 military-ratio-enabled-v1 注册映射本字段。
+   */
+  readonly militaryRatioEnabled?: boolean;
+  /**
    * 爆兵阈值（2026-08-06 用户导向"积累到一定程度开始爆兵"）：resources 达到
    * 该值前只产 Worker 积累经济；达到后全力爆兵（交替产 VANGUARD/RANGER，
    * 不受 militaryRatio 比例限制，人口上限内持续）。默认 0 = 关闭（历史行为

@@ -12,18 +12,22 @@
  *  - 这里不 import reference 内部——只依赖 ProtocolBridge + 对手 adapter。
  */
 
-import type { Plan, Position, UnitType } from "../../domain/model.ts";
+import type { Plan } from "../../domain/model.ts";
 import { runEpisode, type EpisodeTenant } from "../../sim/harness/episode.ts";
 import type { SimWorld } from "../../sim/world/types.ts";
-import { chunkOf } from "../../sim/world/chunks.ts";
 import {
-  generateTerrainForChunks,
-  type WorldDistributionProfileV1,
-} from "../../sim/world/generator.ts";
+  DEFAULT_PROCEDURAL_PARAMS,
+  makeProceduralMatchScenario,
+  makeProceduralScenarioN,
+  type ProceduralWorldParams,
+} from "../world/procedural.ts";
 import type { PlanProvider } from "../../runtime/decision-types.ts";
-import type { ResolutionEvent } from "../engine/phase.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../../strategies/safety-planner.ts";
 import { createEpisodeRecorder } from "./recorder.ts";
+
+/** Re-export 程序化生成旋钮（调用方无需直接 import world/procedural）。 */
+export { DEFAULT_PROCEDURAL_PARAMS } from "../world/procedural.ts";
+export type { ProceduralWorldParams } from "../world/procedural.ts";
 
 /** 比赛结果（规范化，供横向对比）。 */
 export interface MatchResult {
@@ -52,15 +56,7 @@ export interface TournEntry {
 
 /** 一个纯协议别的比赛 runner（供"记忆型对手我在多局间保留状态"等可复用场景）。 */
 export interface MatchObserver {
-  onTick?(args: MatchTickObservation): void;
-}
-
-export interface MatchTickObservation {
-  readonly tick: number;
-  readonly before: SimWorld;
-  readonly after: SimWorld;
-  readonly plans: Readonly<Record<string, Plan>>;
-  readonly events: readonly ResolutionEvent[];
+  onTick?(args: { tick: number; before: SimWorld; plans: Readonly<Record<string, Plan>> }): void;
 }
 
 export interface TournConfig {
@@ -79,23 +75,6 @@ export interface TournamentOptions {
   readonly seeds: readonly number[];
   readonly entries: readonly TournEntry[];
   readonly validatePlans?: boolean;
-}
-
-/**
- * 对抗平台唯一 refill 解析口：默认严格跟随官方 v0.14 的 4 resolved ticks。
- * null 仅用于显式关闭的诊断实验；其他值必须为正整数。
- *
- * 1v1 / FFA 共用本函数，防止两条 runner 再次出现默认 cadence 漂移。
- */
-export function resolveTournamentRefillConfig(
-  everyTicks: number | null | undefined,
-): Readonly<{ everyTicks: number }> | null {
-  if (everyTicks === null) return null;
-  const resolved = everyTicks ?? 4;
-  if (!Number.isSafeInteger(resolved) || resolved <= 0) {
-    throw new Error(`refillEveryTicks must be a positive safe integer or null (got ${String(everyTicks)})`);
-  }
-  return Object.freeze({ everyTicks: resolved });
 }
 
 interface ScenarioPlayerSeed {
@@ -182,101 +161,6 @@ function initialWorkers(
       cargo: 0,
     };
   });
-}
-
-/** W54: FFA birth-state profile. Strategy identity and geometric slot stay independent. */
-export interface FfaSpawnProfile {
-  readonly resources: number;
-  readonly workers: number;
-  readonly vanguards: number;
-  readonly rangers: number;
-}
-
-export const FFA_SPAWN_NEWBORN: FfaSpawnProfile = Object.freeze({
-  resources: 5, workers: 1, vanguards: 0, rangers: 0,
-});
-export const FFA_SPAWN_ESTABLISHED_RICH: FfaSpawnProfile = Object.freeze({
-  resources: 20, workers: 7, vanguards: 6, rangers: 6,
-});
-export const FFA_SPAWN_ESTABLISHED: FfaSpawnProfile = Object.freeze({
-  resources: 10, workers: 7, vanguards: 6, rangers: 6,
-});
-export const FFA_SPAWN_REMAINS: FfaSpawnProfile = Object.freeze({
-  resources: 5, workers: 2, vanguards: 0, rangers: 0,
-});
-
-function canonicalProfileUnitId(playerIndex: number, unitIndex: number, unitType: UnitType): string {
-  const typeNibble = unitType === "WORKER" ? "1" : unitType === "VANGUARD" ? "2" : "3";
-  const playerHex = playerIndex.toString(16).padStart(7, "0").slice(-7);
-  const tail = unitIndex.toString(16).padStart(12, "0").slice(-12);
-  return `${typeNibble}${playerHex}-0000-4000-8000-${tail}`;
-}
-
-function profileOffsets(count: number): readonly Position[] {
-  const offsets: Position[] = [];
-  for (let radius = 1; offsets.length < count; radius += 1) {
-    for (let y = -radius; y <= radius && offsets.length < count; y += 1) {
-      for (let x = -radius; x <= radius && offsets.length < count; x += 1) {
-        if (Math.max(Math.abs(x), Math.abs(y)) !== radius) continue;
-        offsets.push([x, y]);
-      }
-    }
-  }
-  return offsets;
-}
-
-function initialProfileUnits(
-  playerIndex: number,
-  corePosition: Position,
-  profile: FfaSpawnProfile,
-): readonly { id: string; position: Position; hp: number; unitType: UnitType; cargo: number }[] {
-  const types: UnitType[] = [
-    ...Array.from({ length: profile.workers }, () => "WORKER" as const),
-    ...Array.from({ length: profile.vanguards }, () => "VANGUARD" as const),
-    ...Array.from({ length: profile.rangers }, () => "RANGER" as const),
-  ];
-  const offsets = profileOffsets(types.length);
-  return types.map((unitType, index) => ({
-    id: canonicalProfileUnitId(playerIndex, index, unitType),
-    position: [corePosition[0] + offsets[index]![0], corePosition[1] + offsets[index]![1]],
-    hp: unitType === "VANGUARD" ? 4 : 2,
-    unitType,
-    cargo: 0,
-  }));
-}
-
-/**
- * arena-evolve-inspired live mixture, keyed by logical participant id rather
- * than geometric slot. Reordering entries therefore never changes who is the
- * established/remains/newborn role.
- */
-export function liveMixedSpawnProfiles(
-  subjectId: string,
-  opponentIds: readonly string[],
-): Readonly<Record<string, FfaSpawnProfile>> {
-  const profiles: Record<string, FfaSpawnProfile> = { [subjectId]: FFA_SPAWN_NEWBORN };
-  opponentIds.forEach((id, index) => {
-    profiles[id] =
-      index === 0 ? FFA_SPAWN_ESTABLISHED_RICH :
-      index === 1 ? FFA_SPAWN_ESTABLISHED :
-      index <= 3 ? FFA_SPAWN_REMAINS : FFA_SPAWN_NEWBORN;
-  });
-  return Object.freeze(profiles);
-}
-
-/** W54 subject slot rotation: stable opponent order, subject moves by seed. */
-export function rotateEntriesForSubject(
-  entries: readonly TournEntry[],
-  subjectId: string,
-  seed: number,
-): readonly TournEntry[] {
-  const subject = entries.find((entry) => entry.id === subjectId);
-  if (subject === undefined) throw new Error(`slot rotation subject not found: ${subjectId}`);
-  const others = entries.filter((entry) => entry.id !== subjectId);
-  const slot = ((seed % entries.length) + entries.length) % entries.length;
-  const rotated = [...others];
-  rotated.splice(slot, 0, subject);
-  return Object.freeze(rotated);
 }
 
 /** 由一个"玩家位置 + seed 派生资源盘/障碍集"构造 1v1 场景（确定性）。
@@ -422,12 +306,29 @@ export function runMatch(
     /** 自定义场景（真实测绘窗口等）；缺省用 makeArenaScenario 合成布局。
      *  场景 players 必须与 a/b 的 id 一致。 */
     scenario?: unknown;
-    /** 只读逐 tick 观察器（评估/统计用），不参与计划生成或 settlement。 */
-    observer?: MatchObserver;
+    /** 程序化场景（W53）：提供即启用——用 makeProceduralMatchScenario 替换
+     *  默认手写布局。true = 用 DEFAULT_PROCEDURAL_PARAMS；传入 params 覆盖。
+     *  默认关（不改变现有场景行为）；与 scenario 互斥（scenario 优先）。 */
+    procedural?: boolean | ProceduralWorldParams;
   },
 ): MatchResult {
-  const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
-  const scenario = opts?.scenario ?? makeArenaMatchScenario(a, b, seed);
+  const refillConfig =
+    opts?.refillEveryTicks === undefined
+      ? { everyTicks: 4 }
+      : opts.refillEveryTicks === null
+        ? null
+        : { everyTicks: opts.refillEveryTicks };
+  // scenario 优先；否则按 procedural 启用程序化场景；缺省 makeArenaMatchScenario。
+  const scenario =
+    opts?.scenario ??
+    (opts?.procedural !== undefined
+      ? makeProceduralMatchScenario(
+          a.id,
+          b.id,
+          seed,
+          typeof opts.procedural === "boolean" ? DEFAULT_PROCEDURAL_PARAMS : opts.procedural,
+        )
+      : makeArenaMatchScenario(a, b, seed));
   // build 移入 try：中途抛错时已建 provider 也走 finally close（卫生项，
   // 防 worker/state-slot 泄漏导致进程无法退出）。
   const providers: PlanProvider[] = [];
@@ -458,13 +359,7 @@ export function runMatch(
       // 关键：注入我们两个条目的 provider，而不是用内置 deterministic/safety
       plannerFactory: (tenant: EpisodeTenant): PlanProvider => (tenant.id === a.id ? providers[0] : providers[1]),
       validatePlans: opts?.validatePlans ?? true,
-      onTickRecorded:
-        recorder === null && opts?.observer === undefined
-          ? undefined
-          : (args: MatchTickObservation) => {
-              recorder?.onTickRecorded(args);
-              opts?.observer?.onTick?.(args);
-            },
+      onTickRecorded: recorder?.onTickRecorded,
     } as never);
     const { winner: w, coreAlive, finalResources, finalPopulation } = decideWinner([a.id, b.id], undefined as never, result.finalWorld);
     return {
@@ -490,26 +385,15 @@ export function runMatch(
   }
 }
 
-/** N 玩家混战场景：核心均匀分布在圆周（缺省半径 18），各自 1 worker（官方起点
+/** N 玩家混战场景：核心均匀分布在圆周（半径 18），各自 1 worker（官方起点
  *  5 资源 + 1 worker，M4-3）+ 近距资源盘。每核资源盘取 RESOURCE_LAYOUTS 前
  *  4 个近距点（±7 内），圆周间距（3 人 ~31、4 人 ~25）远大于盘半径，无跨核
  *  重叠；id 按参与序派生（CORE/WORKER 前缀表）。M4-2：信标归位圆周圆心
  *  [0,0]（半径 18 圆周上所有核心距圆心 18 > 视野 5）；M4-4：seed 同源派生
- *  圆心附近障碍集（OBSTACLE_LAYOUTS_FFA）。W54 可显式注入 spawnProfiles +
- *  更大的圆周半径，默认调用保持原始 5资源+1W 语义。 */
-export function makeArenaScenarioN(
-  entries: readonly TournEntry[],
-  seed = 1,
-  options: {
-    readonly radius?: number;
-    readonly spawnProfiles?: Readonly<Record<string, FfaSpawnProfile>>;
-  } = {},
-): unknown {
+ *  圆心附近障碍集（OBSTACLE_LAYOUTS_FFA）。 */
+export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): unknown {
   const n = Math.max(2, entries.length);
-  const radius = options.radius ?? 18;
-  if (!Number.isSafeInteger(radius) || radius < 18) {
-    throw new Error(`FFA radius must be a safe integer >= 18 (got ${String(radius)})`);
-  }
+  const radius = 18;
   const layoutIndex = Math.abs(seed) % RESOURCE_LAYOUTS.length;
   const layout = RESOURCE_LAYOUTS[layoutIndex].slice(0, 4);
   const obstacles = [...OBSTACLE_LAYOUTS_FFA[layoutIndex]];
@@ -517,26 +401,16 @@ export function makeArenaScenarioN(
     const angle = (2 * Math.PI * index) / n - Math.PI / 2;
     const cx = Math.round(radius * Math.cos(angle));
     const cy = Math.round(radius * Math.sin(angle));
-    const profile = options.spawnProfiles?.[entry.id];
-    if (profile !== undefined) {
-      for (const [name, value] of Object.entries(profile)) {
-        if (!Number.isSafeInteger(value) || value < 0) {
-          throw new Error(`FFA spawn profile ${entry.id}.${name} must be a non-negative safe integer`);
-        }
-      }
-    }
-    const units = profile === undefined
-      ? initialWorkers(
-          entry.id,
-          `${WORKER_ID_PREFIXES[index % WORKER_ID_PREFIXES.length]}-0000-0000-0000-000000000000`,
-          index,
-          [cx + 1, cy],
-        )
-      : initialProfileUnits(index, [cx, cy], profile);
+    const workers = initialWorkers(
+      entry.id,
+      `${WORKER_ID_PREFIXES[index % WORKER_ID_PREFIXES.length]}-0000-0000-0000-000000000000`,
+      index,
+      [cx + 1, cy],
+    );
     return {
       id: entry.id,
       username: entry.id,
-      resources: profile?.resources ?? 5,
+      resources: 5,
       core: {
         // 前缀表仅 4 项——尾部按参与序派生，n≥5 时也保证全图唯一（防静默覆盖）
         id: `${CORE_ID_PREFIXES[index % CORE_ID_PREFIXES.length].slice(0, 23)}-${String(index).padStart(12, "0")}`,
@@ -549,7 +423,7 @@ export function makeArenaScenarioN(
         moveRequiredTicks: null,
         destination: null,
       },
-      units,
+      units: workers,
     };
   });
   const resources = players.flatMap((player) => {
@@ -567,67 +441,6 @@ export function makeArenaScenarioN(
 }
 
 /**
- * W53 generated-terrain FFA. Player/spawn semantics still come from the
- * canonical makeArenaScenarioN path; only terrain is replaced by a survey-
- * calibrated procedural sample. This keeps W53 orthogonal to W54 profiles.
- */
-export function makeGeneratedArenaScenarioN(
-  entries: readonly TournEntry[],
-  seed: number,
-  options: {
-    readonly radius?: number;
-    readonly spawnProfiles?: Readonly<Record<string, FfaSpawnProfile>>;
-    readonly distribution?: WorldDistributionProfileV1;
-    readonly paddingChunks?: number;
-  } = {},
-): unknown {
-  const base = makeArenaScenarioN(entries, seed, {
-    radius: options.radius,
-    spawnProfiles: options.spawnProfiles,
-  }) as {
-    readonly rulesVersion: string;
-    readonly tick: number;
-    readonly seed: number;
-    readonly players: readonly {
-      readonly core: { readonly position: Position };
-      readonly units: readonly { readonly position: Position }[];
-    }[];
-    readonly beacon: { readonly position: Position; readonly status: string; readonly carrierId: string | null };
-  };
-  const padding = options.paddingChunks ?? 1;
-  if (!Number.isSafeInteger(padding) || padding < 0 || padding > 8) {
-    throw new Error(`generated terrain paddingChunks must be within 0..8 (got ${String(padding)})`);
-  }
-  const coreChunks = base.players.map((player) => chunkOf(player.core.position[0], player.core.position[1]));
-  const minCx = Math.min(...coreChunks.map(([cx]) => cx)) - padding;
-  const maxCx = Math.max(...coreChunks.map(([cx]) => cx)) + padding;
-  const minCy = Math.min(...coreChunks.map(([, cy]) => cy)) - padding;
-  const maxCy = Math.max(...coreChunks.map(([, cy]) => cy)) + padding;
-  const chunks: (readonly [number, number])[] = [];
-  for (let cy = minCy; cy <= maxCy; cy += 1) {
-    for (let cx = minCx; cx <= maxCx; cx += 1) chunks.push([cx, cy]);
-  }
-  const reserved = new Set<string>();
-  const reserve = ([x, y]: Position): void => { reserved.add(`${x},${y}`); };
-  for (const player of base.players) {
-    reserve(player.core.position);
-    for (const unit of player.units) reserve(unit.position);
-  }
-  reserve(base.beacon.position);
-  const terrain = generateTerrainForChunks(seed, chunks, {
-    profile: options.distribution,
-    reservedCells: reserved,
-  });
-  return {
-    ...base,
-    terrain: {
-      obstacles: terrain.obstacles,
-      resources: terrain.resources,
-    },
-  };
-}
-
-/**
  * 跑一场 N 玩家混战（N≥2），返回规范化结果。同一场次内所有 entry 共享世界，
  * 多计划同时结算（引擎原生支持）；胜负判定复用 decideWinner（最后存活核心
  * 胜；都存活 → 资源/人口排序）。
@@ -640,16 +453,32 @@ export function runFreeForAll(
   opts?: {
     validatePlans?: boolean;
     recordTo?: string;
-    /** refill 节奏（同 runMatch）：undefined=4（官方 v0.14 节奏）；null=关闭；N=每 N tick。 */
+    /** refill 节奏（同 runMatch）：undefined=65；null=关闭；N=每 N tick。 */
     refillEveryTicks?: number | null;
     /** 自定义场景；缺省用 makeArenaScenarioN 圆周布局。场景 players 必须与 entries id 一致。 */
     scenario?: unknown;
-    /** 只读逐 tick 观察器（评估/统计用），不参与计划生成或 settlement。 */
-    observer?: MatchObserver;
+    /** 程序化场景（W53）：提供即启用——用 makeProceduralScenarioN 替换
+     *  默认圆周布局。true = 用 DEFAULT_PROCEDURAL_PARAMS；传入 params 覆盖。
+     *  默认关；与 scenario 互斥（scenario 优先）。 */
+    procedural?: boolean | ProceduralWorldParams;
   },
 ): MatchResult {
-  const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
-  const scenario = opts?.scenario ?? makeArenaScenarioN(entries, seed);
+  const refillConfig =
+    opts?.refillEveryTicks === undefined
+      ? { everyTicks: 65 }
+      : opts.refillEveryTicks === null
+        ? null
+        : { everyTicks: opts.refillEveryTicks };
+  // scenario 优先；否则按 procedural 启用程序化场景；缺省 makeArenaScenarioN。
+  const scenario =
+    opts?.scenario ??
+    (opts?.procedural !== undefined
+      ? makeProceduralScenarioN(
+          entries.map((entry) => entry.id),
+          seed,
+          typeof opts.procedural === "boolean" ? DEFAULT_PROCEDURAL_PARAMS : opts.procedural,
+        )
+      : makeArenaScenarioN(entries, seed));
   const ids = entries.map((entry) => entry.id);
   // build 移入 try：中途抛错时已建 provider 也走 finally close（卫生项同 runMatch）。
   const providers: PlanProvider[] = [];
@@ -682,13 +511,7 @@ export function runFreeForAll(
       // 注入各条目的 provider（按参与序对齐 id）
       plannerFactory: (tenant: EpisodeTenant): PlanProvider => providers[ids.indexOf(tenant.id)],
       validatePlans: opts?.validatePlans ?? true,
-      onTickRecorded:
-        recorder === null && opts?.observer === undefined
-          ? undefined
-          : (args: MatchTickObservation) => {
-              recorder?.onTickRecorded(args);
-              opts?.observer?.onTick?.(args);
-            },
+      onTickRecorded: recorder?.onTickRecorded,
     } as never);
     const { winner, coreAlive, finalResources, finalPopulation } = decideWinner(
       ids,

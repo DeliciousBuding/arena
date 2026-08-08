@@ -10,16 +10,21 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runEpisode } from "../src/sim/harness/episode.ts";
-import type { EpisodeTenant } from "../src/sim/harness/episode.ts";
+import type { EpisodeResult, EpisodeTenant } from "../src/sim/harness/episode.ts";
 import type { PlanProvider } from "../src/runtime/decision-types.ts";
 import { SafetyPlanner } from "../src/strategies/safety-planner.ts";
 import { DEFAULT_SAFETY_CONFIG } from "../src/strategies/safety-planner.ts";
 import type { SafetyPlannerConfig } from "../src/strategies/safety-planner.ts";
+import { makeProceduralMatchScenario, DEFAULT_PROCEDURAL_PARAMS } from "../src/sim/world/procedural.ts";
+import { evaluateMultiSeed } from "../src/offline-learning/eval/fitness.ts";
 
 const MANIFEST_PATH = "src/sim/contracts/rules-v0.14.json";
 const SCENARIO_DIR = "scripts/scenarios";
 const SEEDS = [1, 2, 3];
 const TICKS = 150;
+
+/** CLI：--procedural 在 JSON 场景矩阵之外追加程序化场景行（W53，默认关）。 */
+const USE_PROCEDURAL = process.argv.slice(2).includes("--procedural");
 
 /** 候选变体清单（SafetyPlanner config 开关；全部默认关闭）。 */
 const VARIANTS: ReadonlyArray<{ readonly name: string; readonly config: Partial<SafetyPlannerConfig> }> = [
@@ -44,17 +49,18 @@ interface Outcome {
   p2CoreAlive: boolean;
   p2DestroyedAt: number;
   p1Resources: number;
+  /** W51: 保留 EpisodeResult 供 fitness 评估复用（不重跑 episode）。 */
+  result: EpisodeResult;
 }
 
-function runScenario(
-  scenarioPath: string,
+function runScenarioObject(
+  scenario: unknown,
   variant: (typeof VARIANTS)[number],
   seed: number,
 ): Outcome {
-  const scenario = JSON.parse(readFileSync(scenarioPath, "utf-8"));
   // 场景 evaluation 元数据：p1 姿态（balanced=防御评估 / aggressive=攻击
   // 评估——攻击性候选如 strikeGroup 只在攻击场景有意义）。
-  const evaluation = scenario.evaluation as { p1Posture?: string; p1AttackPriority?: string | null } | undefined;
+  const evaluation = (scenario as { evaluation?: { p1Posture?: string; p1AttackPriority?: string | null } | undefined }).evaluation;
   const p1Posture = evaluation?.p1Posture === "aggressive" ? "aggressive" : "balanced";
   const p1Priority = evaluation?.p1AttackPriority ?? null;
   const makePlanner = (tenant: EpisodeTenant): PlanProvider => {
@@ -62,7 +68,7 @@ function runScenario(
     return new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, ...variant.config });
   };
   const result = runEpisode({
-    scenario: { ...scenario, seed },
+    scenario: { ...(scenario as object), seed },
     rulesPath: MANIFEST_PATH,
     seed,
     ticks: TICKS,
@@ -85,7 +91,16 @@ function runScenario(
     }
   }
   const p1 = result.finalWorld.players.get("p1")!;
-  return { p1CoreAlive, p2CoreAlive, p2DestroyedAt, p1Resources: p1.resources };
+  return { p1CoreAlive, p2CoreAlive, p2DestroyedAt, p1Resources: p1.resources, result };
+}
+
+function runScenario(
+  scenarioPath: string,
+  variant: (typeof VARIANTS)[number],
+  seed: number,
+): Outcome {
+  const scenario = JSON.parse(readFileSync(scenarioPath, "utf-8"));
+  return runScenarioObject(scenario, variant, seed);
 }
 
 const scenarioFiles = readdirSync(SCENARIO_DIR).filter((f) => f.endsWith(".json")).sort();
@@ -114,3 +129,49 @@ for (const file of scenarioFiles) {
   console.log([name.padEnd(16), ...cells].join(" | "));
 }
 console.log("图例: p1x/3 = p1 Core 存活数; p2x/3 = p2 被拆数; tN = 平均拆毁 tick（未拆=∞）");
+
+// ---- W53：程序化场景行（--procedural 启用，默认关） ----
+// 用 makeProceduralMatchScenario 生成 p1/p2 双人场景（同 evaluate-variants
+// 评测前提：tenants 与 players 严格一一对应）。DEFAULT_PROCEDURAL_PARAMS
+// 移植 world.py 校准值；calibrate-scenario-distribution.mts 可输出更贴近真实
+// 的参数，覆盖 DEFAULT_PROCEDURAL_PARAMS 后再跑。
+if (USE_PROCEDURAL) {
+  console.log("-".repeat(120));
+  console.log("程序化场景（W53，DEFAULT_PROCEDURAL_PARAMS）".padEnd(16));
+  const procCells: string[] = [];
+  for (const variant of VARIANTS) {
+    const outcomes = SEEDS.map((seed) =>
+      runScenarioObject(makeProceduralMatchScenario("p1", "p2", seed, DEFAULT_PROCEDURAL_PARAMS), variant, seed),
+    );
+    const p1Alive = outcomes.filter((o) => o.p1CoreAlive).length;
+    const p2Down = outcomes.filter((o) => !o.p2CoreAlive).length;
+    const avgTick = outcomes.filter((o) => o.p2DestroyedAt > 0).reduce((s, o) => s + o.p2DestroyedAt, 0) / Math.max(1, outcomes.filter((o) => o.p2DestroyedAt > 0).length);
+    procCells.push(`p1${p1Alive}/3 p2${p2Down}/3 t${avgTick.toFixed(0)}`.padEnd(16));
+  }
+  console.log(["procedural".padEnd(16), ...procCells].join(" | "));
+}
+
+// ---- W51：fitness 多目标评分出口 ----
+// 在第一个双人场景上对每个变体跑 3 seeds，用 evaluateMultiSeed 计算
+// p1 的 fitness（cost ledger 已在 episode 运行时累计，此处只做聚合）。
+// fitness 权重移植自 reference fitness_from_detail（GA 超参，不进搜索空间）。
+const fitnessScenarioFile = scenarioFiles.find((f) => {
+  const scenario = JSON.parse(readFileSync(join(SCENARIO_DIR, f), "utf-8"));
+  return (scenario.players ?? []).length === 2;
+});
+if (fitnessScenarioFile !== undefined) {
+  console.log("-".repeat(120));
+  console.log(`W51 fitness（场景 ${fitnessScenarioFile.replace(".json", "")}，p1 多种子聚合）`);
+  const fitnessCells: string[] = [];
+  for (const variant of VARIANTS) {
+    const outcomes = SEEDS.map((seed) => runScenario(join(SCENARIO_DIR, fitnessScenarioFile), variant, seed));
+    const { fitness, detail } = evaluateMultiSeed(
+      outcomes.map((o) => ({ result: o.result, playerId: "p1" })),
+      TICKS,
+    );
+    const std = detail.fitness_std ?? 0;
+    fitnessCells.push(`f${fitness.toFixed(1)}±${std.toFixed(1)}`.padEnd(16));
+  }
+  console.log(["p1-fitness".padEnd(16), ...fitnessCells].join(" | "));
+  console.log("图例: fN±M = fitness 均值 ± std（3 seeds；权重移植自 reference fitness_from_detail）");
+}
