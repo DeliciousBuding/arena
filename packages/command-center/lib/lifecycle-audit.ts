@@ -16,9 +16,10 @@
  * I/O 边界：每租户最多读 500 个 case（按 tick 升序取最新 500），单次全量 JSON 解析
  * 约 50-300ms（run 内通常 40-60 个 case，更小）；30s 缓存 + 启动预热。
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_ROOT, TENANTS, calibrationDir, latestRunDir, listCases, parseTick } from "./fs-jsonl.ts";
+import { DatabaseSync } from "node:sqlite";
 import { TtlCache } from "./cache.ts";
 
 const MAX_CASES = 500;
@@ -42,6 +43,8 @@ export interface LifecycleEvent {
 
 export interface LifecycleUnit {
   actor: string;
+  /** survey-db unit_lifecycle 回填的单位类型（WORKER/RANGER/VANGUARD/...）；事件窗口外单位可为 null。 */
+  unitType: string | null;
   role: "core" | "worker" | "combat" | "unit";
   firstSeenTick: number | null;
   lastSeenTick: number | null;
@@ -82,6 +85,7 @@ export interface CoreLifecycle {
   moveOk: number;
   moveFail: number;
   capturedResources: number;
+  captures: { count: number; amount: number };
   destroyed: boolean;
   destroyedAtTick: number | null;
   destroyedBy: string | null;
@@ -103,6 +107,8 @@ export interface ConsumptionSummary {
   selfDestructs: number;
   destroyedByEnemy: number;
   coreDamageTaken: number;
+  /** 核心消费（core_spends，全历史）：按 kind（spawn/...）与单位类型汇总。 */
+  spends: { byKind: Record<string, number>; byType: Record<string, number>; total: number };
 }
 
 export interface LifecycleAuditPayload {
@@ -150,13 +156,14 @@ export function aggregateLifecycle(tenant: string, runId: string | null, evs: re
   const mines = new Map<string, MineLifecycle>();
   let core: CoreLifecycle = {
     actor: null, damageTaken: 0, damageEvents: 0, healOk: 0, healFail: 0, moveOk: 0, moveFail: 0,
-    capturedResources: 0, destroyed: false, destroyedAtTick: null, destroyedBy: null,
-    lastPosition: null, positionSamples: [],
+    capturedResources: 0, captures: { count: 0, amount: 0 }, destroyed: false, destroyedAtTick: null,
+    destroyedBy: null, lastPosition: null, positionSamples: [],
   };
   const cons: ConsumptionSummary = {
     harvestOk: 0, harvestFail: 0, harvestAmount: 0, depositOk: 0, depositFail: 0, depositAmount: 0,
     cargoDropped: 0, spawns: 0, respawns: 0, unitDestroyed: 0, selfDestructs: 0,
     destroyedByEnemy: 0, coreDamageTaken: 0,
+    spends: { byKind: {}, byType: {}, total: 0 },
   };
   let fromTick: number | null = null;
   let toTick: number | null = null;
@@ -165,7 +172,7 @@ export function aggregateLifecycle(tenant: string, runId: string | null, evs: re
     let u = units.get(actor);
     if (!u) {
       u = {
-        actor, role: "unit", firstSeenTick: null, lastSeenTick: null, alive: true,
+        actor, unitType: null, role: "unit", firstSeenTick: null, lastSeenTick: null, alive: true,
         destroyedAtTick: null, destroyedBy: null, spawned: false,
         moves: { ok: 0, fail: 0 }, harvest: { ok: 0, fail: 0, amount: 0 },
         deposit: { ok: 0, fail: 0, amount: 0 },
@@ -213,7 +220,8 @@ export function aggregateLifecycle(tenant: string, runId: string | null, evs: re
         case "CORE_MOVE_SUCCEEDED": core.moveOk += 1; break;
         case "CORE_MOVE_FAILED":
         case "CORE_MOVE_START_FAILED": core.moveFail += 1; break;
-        case "CORE_RESOURCES_CAPTURED": core.capturedResources += amount; break;
+        case "CORE_RESOURCES_CAPTURED":
+          core.capturedResources += amount; core.captures.count += 1; core.captures.amount += amount; break;
         case "CORE_DESTROYED": core.destroyed = true; core.destroyedAtTick = ev.tick;
           core.destroyedBy = ev.destroyedBy ?? ev.source ?? null;
           if (core.destroyedBy !== null) cons.destroyedByEnemy += 1; break;
@@ -323,7 +331,8 @@ function auditTenant(tenant: string): LifecycleAuditPayload {
       units: [], mines: [], core: null,
       consumption: { harvestOk: 0, harvestFail: 0, harvestAmount: 0, depositOk: 0, depositFail: 0,
         depositAmount: 0, cargoDropped: 0, spawns: 0, respawns: 0, unitDestroyed: 0,
-        selfDestructs: 0, destroyedByEnemy: 0, coreDamageTaken: 0 },
+        selfDestructs: 0, destroyedByEnemy: 0, coreDamageTaken: 0,
+        spends: { byKind: {}, byType: {}, total: 0 } },
       cachedAt: new Date().toISOString() };
   }
   const files = listCases(tenant, runDir).slice(-MAX_CASES);
@@ -360,7 +369,76 @@ function auditTenant(tenant: string): LifecycleAuditPayload {
   evs.sort((a, b) => a.tick - b.tick);
   const payload = aggregateLifecycle(tenant, runDir, evs);
   payload.window.cases = files.length;
+  enrichFromSurveyDb(tenant, payload);
   return payload;
+}
+
+/** survey-db 回填（2026-08-08）：unit_lifecycle 单位类型/跨 run 出生-死亡 +
+ *  core_spends 核心消费 + notable_events 核心捕获/受击——补足"标注/消费优化"。 */
+function enrichFromSurveyDb(tenant: string, payload: LifecycleAuditPayload): void {
+  const file = join(DATA_ROOT, "runtime", "survey", tenant + ".db");
+  if (!existsSync(file)) return;
+  let db: DatabaseSync;
+  try { db = new DatabaseSync(file, { readOnly: true }); } catch { return; }
+  try {
+    // 1) 单位类型 + 出生/死亡回填（原始事件窗口可能只有 move，类型在 unit_lifecycle）
+    const units = db.prepare(
+      "SELECT unit_id AS id, unit_type AS type, birth_tick AS b, birth_pos AS bp, death_tick AS d, death_pos AS dp, death_reason AS dr, current_state AS st FROM unit_lifecycle",
+    ).all() as Array<{ id: string; type: string; b: number | null; bp: string | null; d: number | null; dp: string | null; dr: string | null; st: string }>;
+    const byId = new Map(units.map((u) => [u.id, u]));
+    for (const u of payload.units) {
+      const rec = byId.get(u.actor);
+      if (!rec) continue;
+      u.unitType = rec.type ?? null;
+      if (u.firstSeenTick === null && rec.b !== null && rec.b !== undefined) u.firstSeenTick = num(rec.b);
+      if (rec.d !== null && rec.d !== undefined) {
+        u.alive = false;
+        u.destroyedAtTick = num(rec.d);
+        u.destroyedBy = rec.dr ?? u.destroyedBy;
+      }
+      if (u.lastSeenTick === null && rec.b !== null && rec.b !== undefined) u.lastSeenTick = num(rec.b);
+    }
+    // 2) 核心消费（core_spends，全历史）——spawn 成本/治疗等
+    const spends = db.prepare("SELECT kind AS k, amount AS a, unit_type AS t FROM core_spends").all() as Array<{ k: string; a: number; t: string | null }>;
+    for (const s of spends) {
+      const amt = num(s.a);
+      const kind = String(s.k ?? "other");
+      payload.consumption.spends.byKind[kind] = (payload.consumption.spends.byKind[kind] ?? 0) + amt;
+      const t = String(s.t ?? "unknown");
+      payload.consumption.spends.byType[t] = (payload.consumption.spends.byType[t] ?? 0) + amt;
+      payload.consumption.spends.total += amt;
+    }
+    // 3) notable_events：核心捕获/受击/被毁——若事件窗口无 CORE_* 事件，用历史合成 core
+    const notables = db.prepare(
+      "SELECT event_type AS e, amount AS a FROM notable_events",
+    ).all() as Array<{ e: string; a: number | null }>;
+    const coreNotables = notables.filter((n) =>
+      n.e === "CORE_RESOURCES_CAPTURED" || n.e === "CORE_DAMAGED" || n.e === "CORE_DESTROYED");
+    if (coreNotables.length > 0 && payload.core === null) {
+      payload.core = {
+        actor: null, damageTaken: 0, damageEvents: 0, healOk: 0, healFail: 0, moveOk: 0, moveFail: 0,
+        capturedResources: 0, captures: { count: 0, amount: 0 }, destroyed: false,
+        destroyedAtTick: null, destroyedBy: null, lastPosition: null, positionSamples: [],
+      };
+    }
+    for (const n of coreNotables) {
+      if (!payload.core) continue;
+      if (n.e === "CORE_RESOURCES_CAPTURED") {
+        payload.core.captures.count += 1;
+        payload.core.captures.amount += num(n.a);
+        payload.core.capturedResources += num(n.a);
+      } else if (n.e === "CORE_DAMAGED") {
+        payload.core.damageTaken += num(n.a);
+        payload.core.damageEvents += 1;
+      } else if (n.e === "CORE_DESTROYED") {
+        payload.core.destroyed = true;
+      }
+    }
+  } catch {
+    /* 回填失败不阻断（原始事件聚合仍可用） */
+  } finally {
+    db.close();
+  }
 }
 
 export function loadLifecycleAudit(tenant = "all"): Record<string, LifecycleAuditPayload> | LifecycleAuditPayload {
