@@ -198,6 +198,7 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
     "ranger-memory-shot-v1": Object.freeze({ rangerMemoryShot: true }),
     "ranger-scavenge-v1": Object.freeze({ rangerScavenge: true }),
     "ranger-kite-v1": Object.freeze({ rangerKite: true }),
+    "military-frontier-scavenge-v1": Object.freeze({ militaryScavengeFrontier: true }),
     /**
      * 攻坚候选（2026-08-07 用户导向"爆兵打对面水晶"，安全侧 = 军事单位行为）：
      * - aggression=aggressive：Vanguard 记忆推进敌 Core / Ranger 断敌经济；

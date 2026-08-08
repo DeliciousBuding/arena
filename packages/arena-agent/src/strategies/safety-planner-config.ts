@@ -274,6 +274,14 @@ export interface SafetyPlannerConfig {
    */
   readonly rangerKite?: boolean;
   /**
+   * 军事打野陈旧区块优先（2026-08-08，对齐 ref "scout routes prioritize the
+   *  least recently observed chunks"）：vanguard_scavenge / ranger_scavenge 选
+   *  巡逻方位时按"当前环探测点所在 chunk 观察老化"排序（最旧区块优先），
+   *  替代固定 +3 步进——测绘/敌情覆盖直奔盲区，不再均匀轮转。
+   *  默认 false = 历史行为（固定方位序，零回归）。military-frontier-scavenge-v1 启用。
+   */
+  readonly militaryScavengeFrontier?: boolean;
+  /**
    * worker 空闲回血（2026-08-07，B13 候选，竞品 heal priority 对照）：
    * 空 worker（无 cargo、无资源任务、未撤离）HP 未满且 Core 资源足够
    * 补满时回 Core 补血——在 Core 上由主循环 HEAL 分支结算（1 HP=1 资源，
