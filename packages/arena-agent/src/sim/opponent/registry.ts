@@ -10,18 +10,29 @@
  *  2. HTTP 服务：任何语言实现 POST {tick,state} → CommandPlan JSON，
  *     直接传端点（vs-arena --opponents http://host:port/decide）。
  */
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { TournEntry } from "./tournament.ts";
 import { OpponentAdapter, PersistentSubprocessDecider } from "./opponent-adapter.ts";
 import { HttpDecider } from "./http-decider.ts";
 
-/** 协调根 = arena-ts 的父目录（reference/ 下官方仓库在其下）。
- *  本文件位于 arena-ts/packages/arena-agent/src/sim/opponent/ → 上 6 级。 */
-export const COORDINATION_ROOT = fileURLToPath(new URL("../../../../../../", import.meta.url));
+/** 协调根 = 从本文件向上找到第一个含 reference/arena-hero-python 的目录
+ *  （主工作树 6 级、.worktrees/<分支> 深一层——硬编码层级在 worktree 会落空）。 */
+function findCoordinationRoot(from: string): string {
+  let dir = from;
+  for (let depth = 0; depth < 12; depth += 1) {
+    if (existsSync(join(dir, "reference", "arena-hero-python"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error("coordination root (reference/arena-hero-python) not found");
+}
+
+export const COORDINATION_ROOT = findCoordinationRoot(fileURLToPath(new URL("..", import.meta.url)));
 const FARMER_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-agent");
 const SDK_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-python");
 
