@@ -630,9 +630,27 @@ function draw() {
   if (!state.cells.length) {
     ctx.fillStyle = '#56626c'; ctx.font = '600 12px ' + CANVAS_FONT;
     ctx.textAlign = 'center';
-    ctx.fillText('等待测绘数据…', w / 2, h / 2);
+    // 空态诊断（2026-08-08）：地图端点已返回（tenants 有 run 信息）但 0 格 →
+    // 显示各租户 case 水位，一眼看出是"数据还没生成"还是"管线断了"；
+    // 地图端点还没返回（首屏）→ 显示"正在连接指挥中心"。
+    const tenants = state.map?.tenants as Array<{ tenant?: string; caseCount?: number; runId?: string | null; latestTick?: number | null }> | undefined;
+    if (tenants && tenants.length > 0) {
+      ctx.font = '600 12px ' + CANVAS_FONT;
+      ctx.fillText('等待测绘数据…', w / 2, h / 2 - 26);
+      ctx.font = '500 10px ' + CANVAS_FONT;
+      ctx.fillStyle = '#8a949c';
+      const parts = tenants.map((t) => {
+        const run = t.runId ? '·' + String(t.caseCount ?? 0) + ' case' : '';
+        return `${String(t.tenant ?? '').toUpperCase()}${t.caseCount ? ' ' + t.caseCount : ''}${run}`;
+      });
+      ctx.fillText(parts.join('  '), w / 2, h / 2 - 8);
+      ctx.fillText('数据尚未生成或测绘管线未写入，正在等待…', w / 2, h / 2 + 8);
+    } else {
+      ctx.fillText('正在连接指挥中心…', w / 2, h / 2);
+    }
   }
 }
+
 /** 全局联盟地图：每租户疆域色晕 + 核心标签（大联盟地图"完全设计"：一眼区分 4 租户领地）。 */
 function drawTenantRegions(s: any) {
   const groups: Record<string, any[]> = {};
@@ -3156,8 +3174,9 @@ async function openCtxMenu(px: any, py: any) {
   if (cell && (cell.type === 'unit' || cell.type === 'core')) {
     const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
     const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
-    const world = await tactLoadWorld(cell.tenant, true);
-    const liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
+    let world: any = T().worlds[cell.tenant];
+    let liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
+    if (!liveObj) { world = await tactLoadWorld(cell.tenant, true); liveObj = world ? tactObjectNear(world, wx, wy, 1) : null; }
     if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
       cell = { ...cell, x: wx, y: wy, fresh: true, id: liveObj.id };
     }
@@ -4325,16 +4344,18 @@ function tactShowFeature(cell: any, px: any, py: any) {
   if (cell && (cell.type === 'unit' || cell.type === 'core')) {
     const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
     const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
-    const world = await tactLoadWorld(cell.tenant, true);
-    const liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
+    let world: any = T().worlds[cell.tenant];
+    let liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
+    if (!liveObj) { world = await tactLoadWorld(cell.tenant, true); liveObj = world ? tactObjectNear(world, wx, wy, 1) : null; }
     if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
       cell = { ...cell, x: wx, y: wy, fresh: true, id: liveObj.id };
     }
   } else if (!cell && state.soloTenant) {
     const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
     const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
-    const world = await tactLoadWorld(state.soloTenant, true);
-    const liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
+    let world: any = T().worlds[state.soloTenant];
+    let liveObj = world ? tactObjectNear(world, wx, wy, 1) : null;
+    if (!liveObj) { world = await tactLoadWorld(state.soloTenant, true); liveObj = world ? tactObjectNear(world, wx, wy, 1) : null; }
     if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
       cell = { tenant: state.soloTenant, type: liveObj.kind === 'CORE' ? 'core' : 'unit', x: wx, y: wy, fresh: true, id: liveObj.id, controlled: liveObj.controlled };
     }
@@ -4447,7 +4468,13 @@ function tactShowFeature(cell: any, px: any, py: any) {
     } else {
       toast('请点击单位相邻格选择清扫方向', 'warn');
     }
-    tactRenderActionDialog(); tactRenderInspect(); draw();
+    if (T().multi.size) {
+      els.actionDialog.hidden = true; // 多选时隐藏单单位对话框——不挡后续选点（批量命令走右键菜单）
+    } else {
+      tactRenderActionDialog(); // 单选：命令已提交，刷新对话框（模式徽章消失）
+    }
+    tactRenderInspect();
+    draw();
     return;
   }
   if (cell && (cell.type === 'unit' || cell.type === 'core')) {

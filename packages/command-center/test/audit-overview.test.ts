@@ -117,6 +117,7 @@ test("audit-overview: 单租户折叠 + 全局汇总", () => {
   assert.equal(a.global.totalVisibleNever, 5);
   assert.equal(a.global.totalUnits, 2);
   assert.equal(a.global.totalCoreDelta, 5);
+  assert.equal(a.global.totalOverdueRefills, 1, 'patterns dueInTicks<0 全联盟加总');
   assert.equal(a.global.coveragePct, 0.25);
   assert.equal(a.global.currentTick, 1000);
   assert.equal(t1.conflict?.applied, 3);
@@ -144,3 +145,4 @@ test("audit-overview: 空输入兜底", () => {
   assert.equal(a.tenants.t1.mining, null);
   assert.equal(a.tenants.t1.trend, null);
 });
+

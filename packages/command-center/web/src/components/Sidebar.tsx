@@ -73,8 +73,107 @@ function statusOf(t: OverviewTenant): { cls: string; label: string } {
   return { cls: "stale", label: "离线" };
 }
 
+/** 综合审计总览（数据线单调用）：/api/audit/overview —— 矿缺口/失联/分工/对齐/停滞/核心增量。
+ *  服务端 30s TTL 缓存 + 启动预热，前端 30s 拉一次即可（不新增 I/O，不碰定时任务）。 */
+interface AuditTenant {
+  tenant?: string;
+  mines?: { total?: number | null; neverHarvested?: number | null; overdueRefills?: number | null; maxGapAgeTicks?: number | null } | null;
+  mining?: { assigned?: number | null } | null;
+  trend?: { coreDelta?: number | null; stallRate?: number | null } | null;
+  exploration?: { exploredChunks?: number | null } | null;
+}
+interface AuditOverview {
+  tenants?: Record<string, AuditTenant>;
+  global?: {
+    totalNeverHarvested?: number | null;
+    totalVisibleNever?: number | null;
+    totalOverdueRefills?: number | null;
+    miningFulfillment?: { assigned?: number | null; harvested?: number | null; effectiveRate?: number | null } | null;
+    alignment?: { aligned?: number | null; misaligned?: number | null } | null;
+  } | null;
+}
+function useAuditOverview(): AuditOverview | null {
+  const [ao, setAo] = useState<AuditOverview | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/audit/overview", { cache: "no-store" });
+        if (res.ok) { const data = await res.json(); if (alive) setAo(data as AuditOverview); }
+      } catch { /* 忽略，下次重试 */ }
+    };
+    load();
+    const timer = setInterval(load, 30000);
+    return () => { alive = false; clearInterval(timer); };
+  }, []);
+  return ao;
+}
+
+/** 目录树根节点：全联盟加总（未采/失联/分工兑现/对齐）——一眼看联盟整体健康。 */
+function AllianceRoot({ audit }: { audit: AuditOverview | null }) {
+  const g = audit?.global ?? null;
+  const f = g?.miningFulfillment;
+  const al = g?.alignment;
+  const items: Array<{ k: string; v: string; cls?: string; title?: string }> = [
+    { k: "未采", v: fmt(g?.totalNeverHarvested), title: "全联盟发现后从未开采的矿数" },
+    { k: "失联", v: fmt(g?.totalOverdueRefills), cls: (g?.totalOverdueRefills ?? 0) > 0 ? "warn" : "", title: "预测该刷新却未再出现（需复测）" },
+    { k: "分工", v: f ? `${fmt(f.harvested)}/${fmt(f.assigned)}` : "—", cls: (f?.effectiveRate ?? 0) > 0 ? "pos" : "", title: "分工兑现 harvested/assigned" },
+    { k: "对齐", v: al ? `${fmt(al.misaligned)}✗/${fmt(al.aligned)}✓` : "—", cls: (al?.misaligned ?? 0) > 0 ? "warn" : "", title: "决策-分配对齐 misaligned/aligned" },
+  ];
+  return (
+    <div className="alliance-root" data-alliance-root>
+      <div className="ar-head"><span className="ar-dot" />全联盟 · ALLIANCE</div>
+      <div className="ar-strip">
+        {items.map((it) => (
+          <span key={it.k} className={`ar-item${it.cls ? " " + it.cls : ""}`} title={it.title}>
+            <b>{it.v}</b><i>{it.k}</i>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 单租户数据线条：矿 total/未采/失联 · 积压 gapAge · 采集 assigned · 停滞率 · 核心增量。
+ *  与资源/工人实时指标并排，构成左侧「目录树」节点详情。 */
+function TenantDataStrip({ a }: { a: AuditTenant | undefined }) {
+  const m = a?.mines;
+  const gap = m?.maxGapAgeTicks ?? null;
+  const gapCls = gap !== null && gap > 1500 ? "danger" : gap !== null && gap > 600 ? "warn" : "";
+  const cd = a?.trend?.coreDelta ?? null;
+  const stall = a?.trend?.stallRate ?? null;
+  const stallCls = stall !== null && stall > 0.7 ? "warn" : "";
+  const explored = a?.exploration?.exploredChunks ?? null;
+  return (
+    <div className="data-strip" data-tenant-strip>
+      <div className="ds-row">
+        <span className="ds-k">矿</span>
+        <span className="ds-v"><b>{fmt(m?.total)}</b> 总 · <b>{fmt(m?.neverHarvested)}</b> 未采 · <b className={((m?.overdueRefills ?? 0) > 0) ? "warn" : ""}>{fmt(m?.overdueRefills)}</b> 失联</span>
+      </div>
+      <div className="ds-row">
+        <span className="ds-k">积压</span>
+        <span className={`ds-v ${gapCls}`} title="发现后仍未采的最长时长"><b>{fmt(gap)}</b> tick</span>
+        <span className="ds-sep" />
+        <span className="ds-k">采集</span>
+        <span className="ds-v"><b>{fmt(a?.mining?.assigned)}</b> 分工</span>
+        <span className="ds-sep" />
+        <span className="ds-k">停滞</span>
+        <span className={`ds-v ${stallCls}`} title="WAIT 决策占比"><b>{stall !== null ? Math.round(stall * 100) + "%" : "—"}</b></span>
+      </div>
+      <div className="ds-row">
+        <span className="ds-k">核心Δ</span>
+        <span className={`ds-v ${(cd ?? 0) > 0 ? "pos" : (cd ?? 0) < 0 ? "neg" : ""}`} title="本窗口核心资源净变化"><b>{cd !== null && cd > 0 ? "+" : ""}{fmt(cd)}</b></span>
+        <span className="ds-sep" />
+        <span className="ds-k">探索</span>
+        <span className="ds-v"><b>{fmt(explored)}</b> 区块</span>
+      </div>
+    </div>
+  );
+}
+
 function TenantCards() {
   const overview = useOverview();
+  const audit = useAuditOverview();
   const engine = useEngine();
   const solo = engine?.getState().soloTenant ?? null;
   const tenants = overview?.tenants ?? [];
@@ -82,11 +181,13 @@ function TenantCards() {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   return (
     <div id="tenantCards" className="stack">
+      <AllianceRoot audit={audit} />
       {tenants.map((t) => {
         const tenant = String(t.tenant ?? "");
         const color = TENANT_COLORS[tenant] ?? "#999";
         const st = statusOf(t);
         const L = t.latest ?? {};
+        const A = audit?.tenants?.[tenant] as AuditTenant | undefined;
         const isSolo = solo === tenant;
         const isFolded = collapsed[tenant] === true;
         return (
@@ -121,7 +222,7 @@ function TenantCards() {
             {isFolded ? (
               <div className="fold-summary">
                 <span>资源 <b>{fmt(L.resources)}</b></span>
-                <span>tick <b>{fmt(L.tick)}</b></span>
+                <span>矿 <b>{fmt(A?.mines?.total)}</b></span>
                 <span className="fold-ellipsis">…</span>
               </div>
             ) : (
@@ -138,6 +239,7 @@ function TenantCards() {
               <span>均值 <b>{fmt(L.workerMeanDistance)}</b></span>
               <span>可见资源 <b>{fmt(L.visibleResources)}</b></span>
             </div>
+            <TenantDataStrip a={A} />
             </>
             )}
           </div>
