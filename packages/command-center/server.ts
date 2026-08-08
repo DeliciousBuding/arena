@@ -153,14 +153,20 @@ app.get("/api/deeds", async (c) => {
 });
 app.get("/api/deeds/journal", async (c) => {
   // 事迹日记摘要（2026-08-08）：把事迹流聚合成"日记"层——tick 窗口头条/
-  // 分租户统计/中文叙事段落。?tenant=all|tN&window=5000。30s 缓存。
+  // 分租户统计/中文叙事段落。?tenant=all|tN&window=5000；2026-08-08 新增
+  // 折叠/筛选：?category=harvest,deposit,spawn,death,milestone,newCore,
+  // heatZone,conflict,economy,status&minStar=2（KIND_GROUP 类别 + 星级下限）。
+  // 返回 groups 按类别分组（每组 ≤20 条），前端可折叠。30s 缓存（key 含筛选）。
   const tenant = c.req.query("tenant") ?? "all";
   if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
     return c.json({ error: "非法租户" }, 400);
   }
   const w = Number(c.req.query("window") ?? 5000);
   const windowTicks = Number.isFinite(w) ? Math.min(Math.max(w, 500), 50_000) : 5000;
-  return c.json(await loadDeedsJournal(tenant, windowTicks));
+  const categories = (c.req.query("category") ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+  const ms = Number(c.req.query("minStar") ?? 0);
+  const minStar = Number.isFinite(ms) ? ms : 0;
+  return c.json(await loadDeedsJournal(tenant, windowTicks, { categories, minStar }));
 });
 app.get("/api/alliance/survey", (c) => {
   // 联盟共享测绘（2026-08-08）：四租户 survey-db 聚合（敌核/矿/障碍/探索分区
