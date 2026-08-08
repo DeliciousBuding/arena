@@ -93,6 +93,17 @@
 
 v1 只实现 `core_migrate` + `worker_relocate`（当前生产最痛）；其余留接口。
 
+**worker_mine 实际落地（2026-08-08，mine_hold）**：t2/t3/t4 视野 0 活跃矿但
+harvest=0 的根因是矿刷新快（2-6 tick 消失）、worker 记忆目标失效满图跑。新增
+`mine_hold` 意图（human-override goal kind）：**矿在不在都走向目标格，到达后矿在
+则 HARVEST、矿不在则 WAIT 守位等刷新**——高频刷新矿带提前就位。arena-ctl
+`mine <tenant> --target x,y --units a,b --hold` 幂等部署（同 worker 去重=刷新，
+防 10min stale override 过期）。配套 `mine-watch`（resource_seen_history → 每格
+刷新周期 avgGap → dueInTicks 预测即将刷新格）。生产实证：t3 矿带 (-536,258/
+-537,268) 72077/72081 有产出 → 盯守；t4 52,314 目击 44 次但 0 次采到（目击≠可采，
+需以 HARVEST 事件为准选盯守格）。
+v1 只实现 `core_migrate` + `worker_relocate`（当前生产最痛）；其余留接口。
+
 ## 5. 安全护栏（guardrails.ts）
 
 复用 migration-audit 的判定（资源贫瘠/敌核贴脸），扩展到通用命令：
@@ -135,7 +146,10 @@ v1 只实现 `core_migrate` + `worker_relocate`（当前生产最痛）；其余
 2. **停滞检测自适应**：目标格空才判停滞（6 轮）；目标格被占=让位中不算。
 3. **分阶段迁移**：长途拆段，每段审计 + 敌核重扫。
 4. **军事护航**：迁核时最近 VANGUARD 编队 goto 核心前方（占位护核）。
-5. **资源带决策**：迁核目标由 survey `resource_seen_history` 聚类选点
+5. **矿带盯守（2026-08-08 t3/t4 实证）**：视野无矿时 worker 不应满图跑——
+   mine_hold 让 worker 提前就位于高频刷新矿带（HARVEST 事件确认可采的格），
+   矿刷新即采；mine-watch 预测刷新窗口指导部署。
+6. **资源带决策**：迁核目标由 survey `resource_seen_history` 聚类选点
    （矿刷新频率最高的区域），而非盲选中点。
 
 ## 9. 落地路线图
