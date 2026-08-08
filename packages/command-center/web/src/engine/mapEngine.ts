@@ -7,7 +7,7 @@ import { CANVAS_FONT, setCtx, ring, drawMeterBar, drawUnitHealth, drawWorkerCarg
 import { createMinimap } from './minimap.ts';
 let minimap: ReturnType<typeof createMinimap> | null = null; // createMapEngine 时初始化
 import { getJSON } from './api.js';
-import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets, tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability } from './tactical.js';
+import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, TACT_ACTION_ICON, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets, tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability } from './tactical.js';
 import { findPath } from './pathfind.ts';
 import { createReplayState, replayAdvance, replayLoad, replayStep, replayToggle, replayCycleSpeed, updateReplayUI } from './replay.js';
 import { spawnEventFx, drawEventFx } from './fx.js';
@@ -2520,7 +2520,7 @@ function renderBatchCtxMenu(tenant: any, px: any, py: any) {
   els.ctxMenu.innerHTML = `
     <div class="ctx-head"><span class="ctx-icon">⛶</span><b>批量命令 · ${n} 个单位</b><button class="ctx-close" data-ctx-close type="button" title="关闭（Esc）">✕</button></div>
     ${items.map(([act, cn, cnt]) => Number(cnt) > 0
-      ? `<button class="ctx-item" data-action="${act}">${cn} <span class="ctx-cnt">×${cnt}</span></button>`
+      ? `<button class="ctx-item" data-action="${act}"><span class="ctx-ico">${TACT_ACTION_ICON[act] ?? ''}</span>${cn} <span class="ctx-cnt">×${cnt}</span></button>`
       : '').join('')}
     <div class="ctx-foot">Shift 拖拽框选 / Shift 点击加选 · Esc 取消</div>`;
   const rect = els.canvas.getBoundingClientRect();
@@ -2972,8 +2972,8 @@ function renderCtxMenu(tenant: any, obj: any, px: any, py: any) {
     .map((t) => {
       const available = av.actions[t] === true;
       const reason = av.reasons?.[t];
-      if (available) return `<button class="ctx-item" data-action="${t}">${TACT_ACTION_CN[t] ?? t}</button>`;
-      if (reason) return `<button class="ctx-item blocked" data-action="${t}" data-reason="${escapeHtml(reason)}" title="${escapeHtml(reason)}">${TACT_ACTION_CN[t] ?? t}</button>`;
+      if (available) return `<button class="ctx-item" data-action="${t}"><span class="ctx-ico">${TACT_ACTION_ICON[t] ?? ''}</span>${TACT_ACTION_CN[t] ?? t}</button>`;
+      if (reason) return `<button class="ctx-item blocked" data-action="${t}" data-reason="${escapeHtml(reason)}" title="${escapeHtml(reason)}"><span class="ctx-ico">${TACT_ACTION_ICON[t] ?? ''}</span>${TACT_ACTION_CN[t] ?? t}</button>`;
       return '';
     }).join('');
   els.ctxMenu.innerHTML = `
