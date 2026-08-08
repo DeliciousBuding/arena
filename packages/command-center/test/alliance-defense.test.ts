@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildDefenseCoordination, directionOf, ENDANGERED_COMBAT_MAX } from "../lib/alliance-defense.ts";
+import { buildDefenseCoordination, directionOf, ENDANGERED_COMBAT_MAX, suggestedRaidForce } from "../lib/alliance-defense.ts";
 import type { DefenseMemberInput } from "../lib/alliance-defense.ts";
 
 const member = (over: Partial<DefenseMemberInput> & { tenantId: string }): DefenseMemberInput => ({
@@ -141,4 +141,24 @@ test("alliance-defense: directionOf 8 向扇区（dy>0=北，与 threat-summary 
   assert.equal(directionOf([0, 0], [100, 100]), "NE");
   assert.equal(directionOf([0, 0], [-100, -100]), "SW");
   assert.equal(directionOf([0, 0], [0, 0]), "C");
+});
+
+test("alliance-defense: suggestedRaidForce 编成量化", () => {
+  assert.deepEqual(suggestedRaidForce(0, 5), { vanguard: 2, ranger: 0 }, "敌 0 → 至少 2 Vanguard");
+  assert.deepEqual(suggestedRaidForce(4, 10), { vanguard: 4, ranger: 2 }, "敌 4 ×1.5=6 → 4V+2R");
+  assert.deepEqual(suggestedRaidForce(2, 1), { vanguard: 1, ranger: 0 }, "冗余 1 → 1 单位");
+  assert.equal(suggestedRaidForce(2, 0), null, "无冗余 → null");
+  assert.equal(suggestedRaidForce(0, 0), null, "零冗余零敌 → null");
+});
+
+test("alliance-defense: REINFORCE 建议带编成量化", () => {
+  const p = buildDefenseCoordination([
+    member({ tenantId: "t2", core: [0, 0], military: 0, threatScore: 8, threatCount: 4 }),
+    member({ tenantId: "t1", core: [100, 0], military: 10 }),
+  ]);
+  const r = p.advice.find((a) => a.category === "REINFORCE")!;
+  assert.ok(r, "有驰援建议");
+  assert.ok(r.detail.includes("建议编成 4 Vanguard + 2 Ranger"), `detail 含编成: ${r.detail}`);
+  const ev = r.evidence.find((e) => e.label === "建议编成");
+  assert.ok(ev && ev.value.includes("4V"), "evidence 含编成");
 });

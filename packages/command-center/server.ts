@@ -286,6 +286,7 @@ app.get("/api/alliance/defense", (c) => {
   const snap = loadAllianceSnapshot();
   const byTenant = new Map(snap.threatSummaries.map((s) => [s.tenantId, s.totalScore]));
   const dirsByTenant = new Map(snap.threatSummaries.map((s) => [s.tenantId, s.highDirections]));
+  const countByTenant = new Map(snap.threatSummaries.map((s) => [s.tenantId, s.sectors.reduce((n, x) => n + (x.entityCount ?? 0), 0)]));
   const members = Object.values(snap.members).map((m) => ({
     tenantId: m.tenantId,
     core: m.core?.position ?? null,
@@ -293,6 +294,7 @@ app.get("/api/alliance/defense", (c) => {
     status: m.status,
     threatScore: byTenant.get(m.tenantId) ?? 0,
     threatDirections: dirsByTenant.get(m.tenantId) ?? [],
+    threatCount: countByTenant.get(m.tenantId) ?? 0,
   }));
   return c.json(buildDefenseCoordination(members));
 });

@@ -26,6 +26,19 @@ export interface DefenseMemberInput {
   readonly threatScore?: number;
   /** 高威胁扇区方向（threatSummaries.highDirections，8 向 N/NE/E/SE/S/SW/W/NW）。 */
   readonly threatDirections?: readonly string[];
+  /** 附近敌单位数（threatSummaries sectors entityCount 总和，无则 0）。 */
+  readonly threatCount?: number;
+}
+
+/** 建议驰援编成：按濒危方敌单位数 × 1.5 安全系数定战斗单位数（至少 2），
+ *  不超过援方冗余（military - 1 留 1 守家）；敌 ≥5 时配 Ranger 追击。 */
+export function suggestedRaidForce(enemyCount: number, allySurplus: number): { vanguard: number; ranger: number } | null {
+  if (allySurplus <= 0) return null;
+  const want = Math.max(2, Math.ceil(enemyCount * 1.5));
+  const send = Math.min(want, allySurplus);
+  if (send <= 0) return null;
+  const ranger = send >= 5 ? Math.min(2, Math.floor(send / 3)) : 0;
+  return { vanguard: send - ranger, ranger };
 }
 
 export interface DefenseAdvice {
@@ -164,12 +177,18 @@ export function buildDefenseCoordination(members: readonly DefenseMemberInput[])
             ? `；注意 ${best.tenantId.toUpperCase()} 位于威胁锋面（${threatDirs.join("/")}）侧——驰援需绕行或先清剿`
             : `；${best.tenantId.toUpperCase()} 从 ${flankDir} 侧进入可避开威胁锋面（${threatDirs.join("/")}）`)
         : "";
+      // 驰援编成量化（Phase 2 深化）：按濒危方敌单位数 × 1.5 定编成，不超过援方冗余。
+      const enemyCount = byId.get(e.tenantId)?.threatCount ?? 0;
+      const force = suggestedRaidForce(enemyCount, Math.max(0, best.military - 1));
+      const forceNote = force
+        ? `——建议编成 ${force.vanguard} Vanguard${force.ranger > 0 ? ` + ${force.ranger} Ranger` : ""}${enemyCount > 0 ? `（对应敌 ${enemyCount} 单位）` : "（防御底线）"}`
+        : "";
       advice.push({
         id: `defense:reinforce:${best.tenantId}:${e.tenantId}`,
         category: "REINFORCE",
         severity: "HIGH",
         title: `${best.tenantId.toUpperCase()} 可驰援 ${e.tenantId.toUpperCase()}`,
-        detail: `距 ${best.dist} 格、${best.military} 战斗单位可调配——濒危租户 ${e.tenantId.toUpperCase()} 需外援${flankNote}`,
+        detail: `距 ${best.dist} 格、${best.military} 战斗单位可调配——濒危租户 ${e.tenantId.toUpperCase()} 需外援${forceNote}${flankNote}`,
         tenant: best.tenantId,
         relatedTenants: [e.tenantId],
         evidence: [
@@ -177,6 +196,7 @@ export function buildDefenseCoordination(members: readonly DefenseMemberInput[])
           { label: "可调配", value: `${best.military} 战斗单位` },
           { label: "濒危方", value: e.tenantId.toUpperCase() },
           ...(flankDir ? [{ label: "援军方位", value: flankDir }] : []),
+          ...(force ? [{ label: "建议编成", value: `${force.vanguard}V${force.ranger > 0 ? `+${force.ranger}R` : ""}` }] : []),
         ],
       });
     }
