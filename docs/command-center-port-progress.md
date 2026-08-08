@@ -381,3 +381,9 @@ mapEngine.ts 对应函数。
 - **6g 队列加固**：资产行探测加 20s 重试循环 + MOVE 按钮轮询（高负载动作框渲染 >800ms）；
   队列轮询窗 2.4s→4s。
 - **验证**：完整回归 **22/22 全绿** + web 单测 34/34 + typecheck/build 全绿。
+
+### 9.20 全局小地图抽取 minimap.ts（2026-08-08）
+- **抽取** `web/src/engine/minimap.ts`：全局小地图（世界缩略 + 视野框 + 点击/拖拽跳转）
+  自包含模块化——注入 getCanvas/getState/getViewSize/getDpr/onJump，内部持有 mmCtx/缓存。
+  mapEngine 4466→4362 行。
+- **验证**：完整回归 **22/22 全绿** + web 单测 34/34 + typecheck/build 全绿。
