@@ -51,6 +51,7 @@ import { buildDecisionPrompt } from "../infrastructure/pi/prompt-builder.ts";
 import { buildMacroPolicyPrompt, readLastAssistantText } from "../infrastructure/pi/policy-prompt.ts";
 import { MacroPolicyOrchestrator } from "../runtime/macro-policy-orchestrator.ts";
 import { serializeMacroPolicy } from "../runtime/macro-policy.ts";
+import type { MacroDecisionPointV1 } from "../offline-learning/runtime/macro-decision-point.ts";
 import { StallDetector, type StallEvent } from "../runtime/stall-detector.ts";
 import { StallRecovery } from "../runtime/stall-recovery.ts";
 import { WorkerLivenessTracker } from "../runtime/worker-liveness.ts";
@@ -456,6 +457,21 @@ export async function runTenant(
         );
       } catch {}
     };
+    // M2b：决策点 shadow 流（candidate universe + 选定候选；生产行为零变化——
+    // LLM 仍唯一选择者，此处只 append telemetry，供 M2c REAL decision point 消费）
+    const decisionPointPath = join(dirs.telemetryDir, "policy-decision-points.jsonl");
+    const appendDecisionPointTelemetry = (event: MacroDecisionPointV1): void => {
+      try {
+        appendJsonlLine(
+          decisionPointPath,
+          JSON.stringify(sanitizeValue({
+            at: new Date().toISOString(),
+            tenantId: config.tenantId,
+            ...event,
+          })),
+        );
+      } catch {}
+    };
     if (options.runtime === undefined) {
       try {
         const policyFactory = new PiSessionFactory({
@@ -494,6 +510,12 @@ export async function runTenant(
           onPolicyError: (message, tick) => {
             appendPolicyTelemetry({ type: "policy_error", tick, message });
           },
+          // M2b：决策点 shadow 落盘（candidate universe + 选定候选）。
+          // 生产路径零影响——LLM 仍唯一选择者，此回调只 append telemetry。
+          onDecisionPoint: (event) => {
+            appendDecisionPointTelemetry(event);
+          },
+          processRunId,
           timeoutMs: 60000,
           // 实验框架：config.policyOverride 非空时绕过 LLM 恒用固定策略
           override: config.policyOverride ?? null,

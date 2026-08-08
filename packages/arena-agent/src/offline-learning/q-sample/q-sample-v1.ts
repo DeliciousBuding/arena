@@ -36,10 +36,15 @@ import { createHash } from "node:crypto";
 
 import { canonicalJson } from "../../sim/tools/artifacts.ts";
 import {
+  computeCandidateSetHash,
   type DecisionCandidateV1,
   type Posture,
   validateDecisionCandidateV1,
 } from "../candidate/decision-candidate-v1.ts";
+
+// Candidate-set identity lives with the candidate contract (M2a.1); q-sample
+// re-exports it so the dataset layer and the shadow layer share one source.
+export { computeCandidateSetHash } from "../candidate/decision-candidate-v1.ts";
 
 export const Q_SAMPLE_SCHEMA_VERSION = "q-sample-v1";
 export const PAIRWISE_PREFERENCE_SCHEMA_VERSION = "q-pairwise-preference-v1";
@@ -157,12 +162,6 @@ export function canonicalFeatures(features: Readonly<Record<string, number>>): s
 
 export function computeFeatureHash(features: Readonly<Record<string, number>>): string {
   return createHash("sha256").update(canonicalFeatures(features), "utf8").digest("hex");
-}
-
-/** Candidate-set identity: sha256 over the sorted deterministic hashes. */
-export function computeCandidateSetHash(candidates: readonly DecisionCandidateV1[]): string {
-  const hashes = candidates.map((candidate) => candidate.deterministicHash).sort();
-  return createHash("sha256").update(hashes.join("\n"), "utf8").digest("hex");
 }
 
 /**

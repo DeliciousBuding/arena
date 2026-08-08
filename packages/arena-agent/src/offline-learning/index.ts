@@ -118,16 +118,66 @@ export {
   DECISION_CANDIDATE_SCHEMA_VERSION,
   CANDIDATE_KINDS,
   CANDIDATE_SOURCES,
+  POSTURE_VALUES,
+  TARGET_CLASSES,
+  MIGRATE_DIRECTIONS,
   candidateSemanticRecord,
   computeCandidateDeterministicHash,
+  computeCandidateSetHash,
   validateDecisionCandidateV1,
   makeCandidateV1,
 } from "./candidate/decision-candidate-v1.ts";
 export type {
   CandidateKind,
   CandidateSource,
+  CandidateParameters,
+  ParametersForKind,
+  Posture,
+  TargetClass,
+  MigrateDirection,
+  ResourceFocusParameters,
+  AttackTargetParameters,
+  MigrateParameters,
   DecisionCandidateV1,
 } from "./candidate/decision-candidate-v1.ts";
+
+// ── Candidate Generator (M2b) ──
+export { generateCandidateSet } from "./candidate/candidate-generator.ts";
+export type { CandidateGeneratorOptions } from "./candidate/candidate-generator.ts";
+
+// ── Q-Sample (M2c) ──
+export {
+  Q_SAMPLE_SCHEMA_VERSION,
+  PAIRWISE_PREFERENCE_SCHEMA_VERSION,
+  Q_LABEL_SOURCES,
+  SUGGESTED_LABEL_HORIZONS,
+  canonicalFeatures,
+  computeFeatureHash,
+  derivePairwisePreferences,
+  validateQSampleV1,
+  makeQSampleV1,
+} from "./q-sample/q-sample-v1.ts";
+export type {
+  QLabelSource,
+  BehaviorPolicySnapshot,
+  QSampleLabel,
+  QSampleSimProvenance,
+  QSampleEvaluation,
+  QSampleV1,
+  QPairwisePreferenceV1,
+} from "./q-sample/q-sample-v1.ts";
+
+// ── Decision Point shadow (M2b) ──
+export {
+  MACRO_DECISION_POINT_SCHEMA_VERSION,
+  DECISION_CHOOSERS,
+  resolveChosenCandidate,
+  validateMacroDecisionPointV1,
+} from "./runtime/macro-decision-point.ts";
+export type {
+  DecisionChooser,
+  MacroDecisionPointV1,
+} from "./runtime/macro-decision-point.ts";
 
 // ── Runtime (M1d-lite) ──
 export {

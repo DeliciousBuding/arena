@@ -122,6 +122,13 @@ export function computeCandidateDeterministicHash(
   return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
+/** Candidate-set identity: sha256 over the sorted deterministic hashes
+ *  (order-independent — the same set always hashes identically). */
+export function computeCandidateSetHash(candidates: readonly DecisionCandidateV1[]): string {
+  const hashes = candidates.map((candidate) => candidate.deterministicHash).sort();
+  return createHash("sha256").update(hashes.join("\n"), "utf8").digest("hex");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
