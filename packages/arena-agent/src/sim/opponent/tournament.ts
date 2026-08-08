@@ -174,9 +174,10 @@ export function decideWinner(
   let winner: string | null = null;
   if (alive.length === 1) {
     winner = alive[0];
-  } else if (alive.length === players.length) {
-    // 都活：资源多优先；平 → 人口多；平 → null
-    const sorted = [...players].sort(
+  } else if (alive.length > 1) {
+    // 多存活（含全员存活）：存活者内资源多优先；平 → 人口多；平 → null。
+    // FFA 中间态（部分核心被拆、未到唯一存活）同样按存活阵营资源定胜。
+    const sorted = [...alive].sort(
       (a, b) => finalResources[b] - finalResources[a] || finalPopulation[b] - finalPopulation[a],
     );
     const top = sorted[0];
