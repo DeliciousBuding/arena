@@ -2107,6 +2107,7 @@ function toggleSolo(tenant: any) {
     toast(`已聚焦 ${tenant.toUpperCase()} · 再点卡片 / 点「✕ 返回全局」 / 按 G 或 Esc 返回全局`, 'info');
   } else {
     fitView();
+    els.respawnOverlay.hidden = true; // 退出聚焦：重生横幅一并收起
     tactClear();
     const sb = document.getElementById('sidebar');
     if (sb) sb.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2124,8 +2125,10 @@ let respawnDestroys: Record<string, any> = {}; // tenant -> { destroyedBy, selfD
 async function tactRenderRespawn(tenant: any) {
   const world = T().worlds[tenant];
   const respawning = world && world.state && world.state.status === 'RESPAWNING';
-  els.respawnOverlay.hidden = !respawning;
-  if (!respawning) return;
+  // 仅聚焦租户重生时显示横幅；全局视图/他租户聚焦时隐藏——避免退出聚焦后横幅常显
+  // （"一打开就是一直核心被摧毁"根因，2026-08-08）。
+  els.respawnOverlay.hidden = !(state.soloTenant === tenant && respawning);
+  if (!respawning || state.soloTenant !== tenant) return;
   const rt = world.state.respawn_at_tick;
   const title = els.respawnOverlay.querySelector('.ro-title');
   const sub = els.respawnOverlay.querySelector('#roTick');
@@ -2906,6 +2909,7 @@ function syncSoloBadge() {
 /** 退出单租户回全局联盟：清空战术层/回放 + 视图适应 + UI 同步（viewGlobal / mapGlobal / G 键共用）。 */
 function exitSolo() {
   state.soloTenant = null;
+  els.respawnOverlay.hidden = true; // 退出聚焦：重生横幅一并收起
   tactClear();
   invalidateStatic();
   fitView();
