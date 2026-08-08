@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useEngine, getEngine } from "../lib/bridge";
 
 const TENANTS = ["t1", "t2", "t3", "t4"];
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#7fd8a5", t3: "#a892d6", t4: "#fc5646" };
+const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
 const DECISION_KIND_CN: Record<string, string> = {
   accepted: "已接受", rejected: "已拒绝", timeout: "超时", missed: "错过", aborted: "中止",
   not_applicable: "无需决策", in_progress: "进行中", unknown: "未知",
@@ -66,6 +66,8 @@ interface JournalPayload {
   deeds?: JournalDeed[];
   narrative?: string;
   generatedAt?: string;
+  counts?: Record<string, number>;
+  filters?: { categories?: string[]; minStar?: number };
 }
 
 interface Prefs { collapsed: boolean; height: number; quiet: boolean; tab: string }
@@ -99,6 +101,9 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
   const [prefs, setPrefsState] = useState<Prefs>(loadPrefs);
   const [newDot, setNewDot] = useState(false);
   const [journal, setJournal] = useState<JournalPayload | null>(null);
+  // 事迹折叠/筛选（2026-08-08）：类别 + 星级下限，服务端 /api/deeds/journal 过滤
+  const [deedCat, setDeedCat] = useState<string>("all");
+  const [deedStar, setDeedStar] = useState<number>(0);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -113,9 +118,13 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => {
     if (prefs.tab !== "deeds") return;
     let stop = false;
+    const q = new URLSearchParams();
+    if (deedCat !== "all") q.set("category", deedCat);
+    if (deedStar > 0) q.set("minStar", String(deedStar));
+    const qs = q.toString();
     const load = async () => {
       try {
-        const r = await fetch("/api/deeds/journal", { cache: "no-store" });
+        const r = await fetch(`/api/deeds/journal${qs ? `?${qs}` : ""}`, { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const d = (await r.json()) as JournalPayload;
         if (!stop) setJournal(d);
@@ -124,7 +133,7 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
     load();
     const timer = setInterval(load, 30000);
     return () => { stop = true; clearInterval(timer); };
-  }, [prefs.tab]);
+  }, [prefs.tab, deedCat, deedStar]);
 
   // 折叠/只看决策/标签页变化 → 通知引擎（引擎持有 tab 状态并决定拉哪个租户）
   useEffect(() => { savePrefs(prefs); }, [prefs]);
@@ -234,8 +243,8 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
           ) : (
             eventRows.map((e) => {
               const color = TENANT_COLORS[e.tenant] ?? "#999";
-              const evColor = e.kind.startsWith("SHOT") || e.kind.includes("DESTROYED") || e.kind.includes("FAILED") ? "#fc5646"
-                : e.kind.includes("SUCCEEDED") || e.kind === "SPAWN" || e.kind === "PICKUP_BEACON" || e.kind === "HEAL" ? "#7fd8a5" : "#e4a02e";
+              const evColor = e.kind.startsWith("SHOT") || e.kind.includes("DESTROYED") || e.kind.includes("FAILED") ? "#dd626d"
+                : e.kind.includes("SUCCEEDED") || e.kind === "SPAWN" || e.kind === "PICKUP_BEACON" || e.kind === "HEAL" ? "#57bd84" : "#a2a2a8";
               const detail = [e.actor ? `actor ${shortId(e.actor)}` : "", e.target ? `target ${shortId(e.target)}` : "", e.amount != null ? `×${e.amount}` : ""].filter(Boolean).join(" ");
               return (
                 <div key={`${e.tenant}:${e.tick}:${e.kind}:${e.actor ?? ""}:${e.target ?? ""}`} className="stream-line" style={{ ["--tc" as string]: color }}>
@@ -248,10 +257,21 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
             })
           )
         ) : tab === "deeds" ? (
-          (journal?.deeds?.length ?? 0) === 0 ? (
-            <div className="stream-empty">{journal ? "暂无联盟事迹（30s 刷新）" : "加载联盟事迹…"}</div>
-          ) : (
-            journal?.deeds?.map((d) => {
+          <>
+            <div className="deeds-filters" role="group" aria-label="事迹筛选">
+              <span className="df-label">类别</span>
+              {([["all", "全部"], ["milestone", "里程碑"], ["harvest", "采集"], ["deposit", "交付"], ["spawn", "产兵"], ["death", "阵亡"], ["conflict", "冲突"], ["economy", "经济"], ["other", "其他"]] as Array<[string, string]>).map(([id, label]) => (
+                <button key={id} type="button" className={`chip${deedCat === id ? " active" : ""}`} onClick={() => setDeedCat(id)}>{label}</button>
+              ))}
+              <span className="df-label">星级</span>
+              {([[0, "全部"], [2, "★2+"], [3, "★3+"]] as Array<[number, string]>).map(([v, label]) => (
+                <button key={v} type="button" className={`chip${deedStar === v ? " active" : ""}`} onClick={() => setDeedStar(v)}>{label}</button>
+              ))}
+            </div>
+            {(journal?.deeds?.length ?? 0) === 0 ? (
+              <div className="stream-empty">{journal ? "暂无联盟事迹（30s 刷新）" : "加载联盟事迹…"}</div>
+            ) : (
+              journal?.deeds?.map((d) => {
               const color = TENANT_COLORS[d.tenant ?? ""] ?? "#999";
               const star = d.star ?? 0;
               const pos = d.position;
@@ -267,7 +287,8 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
                 </div>
               );
             })
-          )
+            )}
+          </>
         ) : shown.length === 0 ? (
           <div className="stream-empty">{prefs.quiet ? "暂无实际决策（可关闭「只看决策」查看全部行）" : "暂无决策数据"}</div>
         ) : (

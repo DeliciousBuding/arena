@@ -7,7 +7,7 @@ interface HealthPayload {
   global?: { healthy?: boolean; maxLagTicks?: number; avgLagTicks?: number; staleTenants?: string[]; missingTenants?: string[] };
 }
 
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#7fd8a5", t3: "#a892d6", t4: "#fc5646" };
+const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
 const TENANT_LABEL: Record<string, string> = { t1: "T1", t2: "T2", t3: "T3", t4: "T4" };
 
 interface OverviewTenant {
@@ -73,7 +73,7 @@ export function TopBar() {
         <img src="/assets/game/units/core.png" alt="" className="brand-icon" draggable="false" />
         <div className="brand-text">
           <h1>Arena 指挥面板</h1>
-          <p className="subtitle">COMMAND CENTER · 4 租户全局联盟测绘 · 人类最高控制权</p>
+          <p className="subtitle">COMMAND CENTER</p>
         </div>
       </div>
       <div className="empire-strip" title="帝国总览：各租户 资源 / 工人 / 增量（点击租户卡可聚焦）">
