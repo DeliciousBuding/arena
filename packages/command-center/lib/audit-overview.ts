@@ -78,6 +78,13 @@ export interface TenantAuditOverview {
   } | null;
   /** 综合决策质量分（2026-08-08）：0-100 + 等级 + 权重归因。 */
   quality: DecisionQuality | null;
+  /** 质量趋势（2026-08-08）：最新窗口 vs 前一窗口质量分——"决策层在不在变好"一眼可读。 */
+  qualityTrend: {
+    score: number | null;
+    prevScore: number | null;
+    delta: number | null;
+    direction: "improving" | "worsening" | "stable" | "unknown";
+  } | null;
 }
 
 export interface AuditOverviewPayload {
@@ -124,6 +131,7 @@ export function aggregateAuditOverview(
   alignment: AlignmentPayload | null = null,
   patterns: MinePatternsPayload | null = null,
   trends: Record<string, { coreDelta: number; coreDeltaPrev: number; visibleNever: number; visibleNeverPrev: number; stallRate: number | null }> = {},
+  qualityTrends: Record<string, { score: number | null; prevScore: number | null; delta: number | null; direction: "improving" | "worsening" | "stable" | "unknown" }> = {},
 ): AuditOverviewPayload {
   const tenants: Record<string, TenantAuditOverview> = {};
   let maxLag: number | null = null;
@@ -211,6 +219,7 @@ export function aggregateAuditOverview(
         coreDelta: num(dec.outcome.coreDeltaSum),
         effectiveRate: miningEff?.perTenant?.[t]?.progressRate ?? null,
       }) : null,
+      qualityTrend: qualityTrends[t] ?? null,
     };
   }
 
@@ -258,6 +267,7 @@ export function loadAuditOverview(): AuditOverviewPayload {
   const mining = loadAllianceMining();
   const miningEff = loadMiningEffectiveness();
   const trends: Record<string, { coreDelta: number; coreDeltaPrev: number; visibleNever: number; visibleNeverPrev: number; stallRate: number | null }> = {};
+  const qualityTrends: Record<string, { score: number | null; prevScore: number | null; delta: number | null; direction: "improving" | "worsening" | "stable" | "unknown" }> = {};
   for (const t of TENANTS) {
     try {
       const dt = loadDecisionTrend(t, 500, 3);
@@ -274,9 +284,24 @@ export function loadAuditOverview(): AuditOverviewPayload {
         visibleNeverPrev: num(mPrev?.visibleNever),
         stallRate: dLast.stallRate,
       };
+      // 质量趋势（2026-08-08）：最近两个窗口用同公式算质量分（趋势步骤无分工兑现，
+      // 归一后可比）——"决策层在不在变好"。
+      if (dLast && dPrev) {
+        const qScore = computeDecisionQuality({
+          stallRate: dLast.stallRate, cargoEff: dLast.cargoEff, planChurn: dLast.planChurn, coreDelta: num(dLast.coreDelta), effectiveRate: null,
+        }).score;
+        const qPrev = computeDecisionQuality({
+          stallRate: dPrev.stallRate, cargoEff: dPrev.cargoEff, planChurn: dPrev.planChurn, coreDelta: num(dPrev.coreDelta), effectiveRate: null,
+        }).score;
+        const delta = qScore - qPrev;
+        qualityTrends[t] = {
+          score: qScore, prevScore: qPrev, delta,
+          direction: Math.abs(delta) <= 1 ? "stable" : delta > 0 ? "improving" : "worsening",
+        };
+      }
     } catch { /* 趋势不可用跳过 */ }
   }
-  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts, mining, miningEff, loadAlignmentAudit(), loadMinePatterns("all"), trends);
+  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts, mining, miningEff, loadAlignmentAudit(), loadMinePatterns("all"), trends, qualityTrends);
   cache.set("overview", payload);
   return payload;
 }
