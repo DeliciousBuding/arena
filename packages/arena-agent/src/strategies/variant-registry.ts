@@ -161,6 +161,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "worker-blockade-v1": Object.freeze({ workerBlockade: true }),
     /**
+     * VANGUARD 预判拦截（2026-08-08，vanguard-blockade-v1，手操实战实证见
+     * docs/progress/evidence/vanguard-intercept-20260808.md）：VANGUARD 复用
+     * 回程预测预判可见敌方 WORKER 前进路径，去拦截点站桩——敌方撞上被卡，
+     * 邻接 SWEEP 白打（锁+收割一体）。t1 手操实证：VANGUARD 提前 1 格站桩，
+     * 敌方 worker 被卡 2 tick + 掉血。默认 false 零回归。
+     */
+    "vanguard-blockade-v1": Object.freeze({ vanguardBlockade: true }),
+    /**
      * 记忆矿主动开采（2026-08-08，harvest-memory-mine-v1，survey-db 联动）：
      * 无可见资源且无活跃采集目标时从已知矿记忆（含跨 run 测绘 seed）挑最近
      * 的去挖——"矿发现了没标注/没分配去挖"的算法端闭环。默认 false 零回归。

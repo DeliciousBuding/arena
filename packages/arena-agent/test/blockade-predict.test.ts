@@ -183,8 +183,9 @@ function prediction(
   direction: EnemyReturnPrediction["direction"],
   nextCells: [number, number][],
   targetCore: [number, number] | null = null,
+  enemyType: EnemyReturnPrediction["enemyType"] = "WORKER",
 ): EnemyReturnPrediction {
-  return { enemyId, position, direction, nextCells, targetCore };
+  return { enemyId, enemyType, position, direction, nextCells, targetCore };
 }
 
 test("pairBlockadeTargets：选拦截点而非下一步格（锁手追不上时选最近接格）", () => {
