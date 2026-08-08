@@ -9,7 +9,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import type { Position, TickState, VisibleEntity } from "../src/domain/model.ts";
-import { advanceRecentAttack, assessThreat, coreDamagedThisTick, damagedThisTick, squadContactThisTick } from "../src/domain/threat.ts";
+import { cellKey } from "../src/domain/model.ts";
+import { advanceRecentAttack, assessThreat, coreDamagedThisTick, damagedThisTick, projectedDamageOnCore, squadContactThisTick } from "../src/domain/threat.ts";
 import { World } from "../src/domain/world.ts";
 
 const CORE: Position = [0, 0];
@@ -127,9 +128,83 @@ test("威胁评估：三角邻接夹击（三轴无逃逸）→ BREAKOUT", () =>
     ],
     coreDamagedThisTick: false,
   });
-  // 邻接 Vanguard 投影伤害 3 >0，任一候选方向都至少靠近某敌 → BREAKOUT
+  // e1 卡向邻接投影伤害 1 >0（e2/e3 对角邻格 SWEEP 不可扫，不计伤），
+  // 任一候选方向都至少靠近某敌 → BREAKOUT
   assert.equal(result.level, "BREAKOUT");
   assert.equal(result.reason, "multi_axis");
+});
+
+test("威胁评估：全对角 Vanguard 包围（投影伤害 0）→ 不算 BREAKOUT（SWEEP 无斜向）", () => {
+  // 2026-08-08 米字同源修复：SWEEP 方向枚举只有四向——对角邻格 Vanguard
+  // 当前打不到 Core。四角包围投影伤害 0 → 不满足 BREAKOUT 前提，降级 ALERT。
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [
+      enemy("e1", [1, 1]),
+      enemy("e2", [-1, 1]),
+      enemy("e3", [-1, -1]),
+      enemy("e4", [1, -1]),
+    ],
+    enemyHints: [
+      hint("e1", [1, 1], [1, 1]),
+      hint("e2", [-1, 1], [-1, 1]),
+      hint("e3", [-1, -1], [-1, -1]),
+      hint("e4", [1, -1], [1, -1]),
+    ],
+    coreDamagedThisTick: false,
+  });
+  assert.equal(result.level, "ALERT");
+  assert.equal(result.reason, "enemy_near");
+  assert.equal(result.axes, 4);
+});
+
+test("威胁评估：卡向邻接 Vanguard + 对角 Ranger 混合 → BREAKOUT（伤害来自卡向 Vanguard）", () => {
+  // 对角 Ranger (1,1) 在八方向线上可射（1 伤），但 Vanguard 对角不可扫——
+  // 投影伤害仍 >0（Vanguard 卡向 1 + Ranger 对角 1）→ 无逃逸时 BREAKOUT。
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [
+      enemy("e1", [1, 0]),
+      enemy("e2", [-1, 1], "RANGER"),
+      enemy("e3", [1, -1]),
+    ],
+    enemyHints: [
+      hint("e1", [1, 0], [1, 0]),
+      hint("e2", [-1, 1], [-1, 1]),
+      hint("e3", [1, -1], [1, -1]),
+    ],
+    coreDamagedThisTick: false,
+  });
+  assert.equal(result.level, "BREAKOUT");
+  assert.equal(result.reason, "multi_axis");
+});
+
+test("projectedDamageOnCore：对角 Vanguard 不计伤、卡向计 1、Ranger 按八线+遮挡", () => {
+  assert.equal(
+    projectedDamageOnCore(CORE, [enemy("d1", [1, 1])], new Set()),
+    0,
+    "对角 Vanguard 当前打不到 Core（SWEEP 无斜向）",
+  );
+  assert.equal(
+    projectedDamageOnCore(CORE, [enemy("c1", [1, 0])], new Set()),
+    1,
+    "卡向邻接 Vanguard 可扫",
+  );
+  assert.equal(
+    projectedDamageOnCore(CORE, [enemy("r1", [1, 1], "RANGER")], new Set()),
+    1,
+    "对角 Ranger 在八方向线上可射",
+  );
+  assert.equal(
+    projectedDamageOnCore(CORE, [enemy("r2", [2, 1], "RANGER")], new Set()),
+    0,
+    "(2,1) 非八方向线不可射",
+  );
+  assert.equal(
+    projectedDamageOnCore(CORE, [enemy("r3", [3, 0], "RANGER")], new Set([cellKey([2, 0])])),
+    0,
+    "中间格障碍遮挡 Ranger 弹道",
+  );
 });
 
 test("威胁评估：四向 8 格包围但打不到 → 不算 BREAKOUT（C5 投影伤害前提）", () => {
