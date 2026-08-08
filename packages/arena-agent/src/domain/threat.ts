@@ -37,6 +37,22 @@ export interface ThreatAssessment {
 /** 回退半径（竞品 12-cell fallback）：ALERT 触发条件之一。 */
 export const THREAT_FALLBACK_RADIUS = 12;
 
+/** 受击记忆窗口（tick 数，对齐竞品 RECENT_ATTACK_MEMORY_TICKS=6）：Core 受击后
+ *  即使敌人消失/不可见，威胁保持 ENGAGED 一段时间，防“打完就跑”后立刻放松。 */
+export const RECENT_ATTACK_MEMORY_TICKS = 6;
+
+/** 推进受击记忆：本 tick Core 受击则刷新到期 tick，否则保留原值（未过期时调用方
+ *  传入 assessThreat 保持 ENGAGED）。纯函数，供 decide 入口维护跨 tick 状态。 */
+export function advanceRecentAttack(
+  tick: number,
+  coreDamaged: boolean,
+  prevUntilTick: number,
+  memoryTicks: number = RECENT_ATTACK_MEMORY_TICKS,
+): number {
+  if (coreDamaged) return Math.max(prevUntilTick, tick + memoryTicks - 1);
+  return prevUntilTick;
+}
+
 /** 45° 轴分桶：敌位置相对 Core 的角度 → 0..7（确定性：atan2 → round）。 */
 function axisOf(core: Position, enemy: Position): number {
   const dx = enemy[0] - core[0];
@@ -133,6 +149,12 @@ export function assessThreat(options: {
    *  "盘踞/间歇可见"的近核敌情提升为 ALERT（短记忆 6 tick 会漏——t2 实证
    *  敌 WORKER 离核 2 格盘踞 600+ tick）。仅当本 tick 无可见敌时消费。 */
   readonly coreWatch?: readonly CoreWatchMemory[];
+  /** 受击记忆到期 tick（decide 入口用 advanceRecentAttack 维护）：tick <= 该值
+   *   且 tick>0 时，即使当前无可见敌也保持 ENGAGED（recent_attack_memory）。
+   *   默认 0 = 未启用记忆。 */
+  readonly recentAttackUntilTick?: number;
+  /** 当前 tick（受击记忆过期判定用）。 */
+  readonly tick?: number;
 }): ThreatAssessment {
   const {
     core,
@@ -142,6 +164,8 @@ export function assessThreat(options: {
     obstacles = new Set<string>(),
     resourceCells = new Set<string>(),
     coreWatch = [],
+    recentAttackUntilTick = 0,
+    tick = 0,
   } = options;
 
   if (core === null) {
@@ -174,6 +198,19 @@ export function assessThreat(options: {
 
   if (coreDamagedThisTick) {
     return { level: "ENGAGED", reason: "damaged", closingEnemies, movingEnemies, axes: axes.size, confirmedPursuit };
+  }
+  // 受击记忆保持（对齐竞品 recent_core_attack）：Core 曾在记忆窗口内受击且未过期——
+  // 即使当前无可见敌也保持 ENGAGED，防“打完就跑后立刻放松”（t3 丢局实证：受击后
+  // 威胁随敌人消失即刻降级，守军撤离防空窗）。
+  if (recentAttackUntilTick >= tick && tick > 0) {
+    return {
+      level: "ENGAGED",
+      reason: "recent_attack_memory",
+      closingEnemies,
+      movingEnemies,
+      axes: axes.size,
+      confirmedPursuit,
+    };
   }
   if (
     visibleEnemies.length >= 2 &&
