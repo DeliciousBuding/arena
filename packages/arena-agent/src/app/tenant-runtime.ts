@@ -35,6 +35,9 @@ import { compileRuntimeStrategy, compileRuntimeStrategyFile, hotReloadCompatibil
 import { isConfigReloadRequest, type ConfigReloadResult, type RuntimeConfigStatus } from "./config-reload-protocol.ts";
 import { knownChunks, knownCoreHunts, knownObstacles, knownResources, openSurveyDb } from "../intel/survey-db.ts";
 import { loadRefillPredictions } from "../intel/refill-predictions.ts";
+import { migrationOverlay as applyMigrationOverlay } from "../migration/overlay.ts";
+import { migrationPlanPath, readMigrationPlan } from "../migration/io.ts";
+import { DEFAULT_MIGRATION_RUNTIME_CONFIG, type MigrationRuntimeConfig } from "../migration/config.ts";
 import { checkAndMirrorOfficialManual, type OfficialManualMirror, type ReceiptLike } from "../command-plane/official-bridge.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
@@ -1254,6 +1257,7 @@ export async function runTenant(
     };
 
     // 8) 主循环（signal/maxTicks → 终止 turns → 当前 Tick 提交完成后自然停止）
+    const migrationConfig: MigrationRuntimeConfig = DEFAULT_MIGRATION_RUNTIME_CONFIG;
     const loopPromise = runTenantLoop({
       client,
       coordinator,
@@ -1265,6 +1269,36 @@ export async function runTenant(
       onTick,
       // 人类最高控制权：提交前从 data/runtime/human-commands/<tenant>.json 合并人类指令。
       humanCommands: { tenantId: config.tenantId, storeDir: join(baseDir, "human-commands") },
+      // 迁移 overlay（migration-system-v1 §1/§6.2）：plan → overlay → override → submit。
+      // 模块默认关；无计划文件 = 零影响。lease/epoch/coreId 任一不满足 → fail-closed。
+      migrationOverlay: ({ state, plan, nowMs }) => {
+        if (!migrationConfig.enabled) return null;
+        const read = readMigrationPlan(migrationPlanPath(dataRoot, config.tenantId));
+        if (!read.ok) return null;
+        const result = applyMigrationOverlay({
+          state: { tick: state.tick, core: state.core ?? null },
+          plan,
+          migrationPlan: read.plan,
+          nowMs,
+          // M2：overlay 在提交时点读文件，文件即最新；epoch 错配场景由单测
+          // 覆盖，conductor 落线后经 tick 起始快照校验真正 fencing。
+          fileEpoch: read.plan.conductorEpoch,
+          config: migrationConfig,
+        });
+        // worker 集结带（migration-system-v1 §3.3）：min 叠加既有权威上限；
+        // 仅 SafetyPlanner（DeterministicPlanner 的 fallback config 由
+        // deterministicOverrides 路径管理，conductor 落线时一并接线）。
+        if (
+          planner instanceof SafetyPlanner &&
+          result.workerBand !== (planner.config.migrationWorkerBand ?? null)
+        ) {
+          planner.updateConfig({
+            ...planner.config,
+            migrationWorkerBand: result.workerBand ?? undefined,
+          });
+        }
+        return { plan: result.plan, active: result.active, failClosed: result.failClosed };
+      },
     });
     await Promise.race([loopPromise, stopped]);
     // requestStop 可能先于 async generator 完成；必须等待 loop 真正退出，避免 close writer 后迟到写入。
