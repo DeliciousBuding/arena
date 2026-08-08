@@ -2637,6 +2637,21 @@ function queueStatusHtml(unitId: any): string {
 function queueOnSatisfied(tenant: any, unitId: any) {
   if (queueOf(unitId)) queueAdvance(tenant, unitId);
 }
+/** 选中即定位（2026-08-08）：单位不在当前视口（含边距）时平滑移入视野，
+ *  复用 animateView 指数缓动——解决“点卡片/点画布选中屏外单位看不到”。
+ *  已在视野内则不平移（避免打扰正在观察的上下文）。 */
+function revealUnit(tenant: any, obj: any) {
+  if (!obj || !Array.isArray(obj.position) || obj.position.length < 2) return;
+  const s = state.view.scale;
+  const p = project(obj.position[0], obj.position[1]);
+  const mx = 90, my = 70; // 边距：避开左/右面板与顶/底栏（侧栏 291 / 决策流 339）
+  const w = W(), h = H();
+  const l = mx, r = w - mx, t = my, b = h - my;
+  if (p.sx >= l && p.sx <= r && p.sy >= t && p.sy <= b) return;
+  const tx = state.view.cx + (p.sx - (l + r) / 2) / s;
+  const ty = state.view.cy + (p.sy - (t + b) / 2) / s;
+  animateView({ cx: tx, cy: ty, scale: state.view.scale }, 420);
+}
 async function tactSelect(tenant: any, obj: any) {
   const world = await tactLoadWorld(tenant);
   if (!world) return;
@@ -2646,6 +2661,7 @@ async function tactSelect(tenant: any, obj: any) {
   tac.mode = null; tac.moveRoute = null; tac.routePreview = null; tac.attackTarget = null;
   panelDrag = {}; // 新选中：卡片回到默认锚点
   startSelectionRipple(obj.id);
+  revealUnit(tenant, obj); // 选中即定位：屏外单位平滑移入视野
   tactRenderActionDialog();
   tactRenderInspect();
   tactRenderAssets(tenant);
@@ -3080,8 +3096,7 @@ function tactRenderAssets(tenant: any) {
   els.assetList.querySelectorAll('[data-asset]').forEach((b: any) => b.addEventListener('click', () => {
     const o = world.state.objects.find((x: any) => x.id === b.dataset.asset);
     if (!o) return;
-    // 官方 selectFromAssetList：选中并居中定位到该单位
-    if (o.position) { state.view.cx = o.position[0]; state.view.cy = o.position[1]; state.viewAnim = null; }
+    // 官方 selectFromAssetList：选中并平滑定位到该单位（统一走 tactSelect 内的 revealUnit，不再硬跳）
     tactSelect(tenant, o);
   }));
   els.assetList.querySelectorAll('[data-grp-head]').forEach((h: any) => h.addEventListener('click', () => {
