@@ -249,6 +249,11 @@ const BLOCKADE_LOCK_MAX_TICKS = 10;
  *  预测错 30 tick 后锁手回巡逻（自我纠正）。 */
 const BLOCKADE_CORE_LOCK_MAX_TICKS = 30;
 const BLOCKADE_ENV_MAX_DIST = 24;
+/** VANGUARD 预判拦截参数（vanguard-blockade-v1，2026-08-08，手操实证）：
+ *  拦截手上限 1（Vanguard 数量有限，t1 7 个，抽 1 个不影响守家/攻坚）；
+ *  站桩锁龄 20（到达拦截点后目标未到 → 放弃，防 Vanguard 长期闲置）。 */
+const VANGUARD_BLOCKADE_CAP = 1;
+const VANGUARD_BLOCKADE_MAX_TICKS = 20;
 /** 敌情狩猎清扫半径（Chebyshev）：进入该范围视为"到达基地"，开始扇形清扫。 */
 const HUNT_SWEEP_RADIUS = 4;
 /** 敌情狩猎清扫时长：单位在基地清扫圈内停留该 tick 数仍未发现敌 Core → 记
@@ -359,6 +364,13 @@ export class SafetyPlanner {
   /** 锁阵站桩起始 tick（unitId → tick）：站桩超过 blockadeLockMaxTicks 仍未
    *  等到目标 → 放弃回巡逻（预测错误/敌方已绕路，防锁位单位长期闲置）。 */
   private blockadeLockedSince = new Map<string, number>();
+  /** VANGUARD 预判拦截配对（vanguard-blockade-v1，2026-08-08）：unitId →
+   *  拦截点。decide 入口由 enemyReturnPath 计算（只锁敌方 WORKER），
+   *  decideVanguard 消费（SWEEP 之后、prey 之前——邻接敌先打）。 */
+  private vanguardBlockadeAssignment = new Map<string, Position>();
+  /** 拦截站桩起始 tick（unitId → tick）：超过 vanguardBlockadeMaxTicks
+   *  目标未到 → 放弃（预测错误/目标转向）。 */
+  private vanguardBlockadeLockedSince = new Map<string, number>();
   /** 记忆矿卡死防护（2026-08-08，t3 生产实证）：worker 连续 go_harvest_mem 未推进
    *  的 tick 数（capacity_wait 是 planner 内部拒绝，不产生 MOVE_FAILED 事件，
    *  需独立计数）。 */
@@ -437,7 +449,18 @@ export class SafetyPlanner {
     if (home === null) return Number.POSITIVE_INFINITY;
     const recallActive =
       this.config.threatRecall === true &&
-      (state.visibleEnemies.some((enemy) => manhattan(enemy.position, home) <= THREAT_RECALL_DISTANCE) ||
+      (state.visibleEnemies.some(
+        // 只对敌方战斗单位（Vanguard/Ranger）召回（2026-08-08，t4 被 majorcycle
+        // 敌核 + 1 worker 压制 25+ tick 全体停产实证）：敌核是攻击目标、敌方
+        // worker 无攻击不升级核心级威胁——与 threat.ts 同款语义，worker 采矿
+        // 路径仍由 threatMap 避开敌占格。
+        (enemy) =>
+          enemy.kind === "UNIT" &&
+          enemy.unitType !== undefined &&
+          enemy.unitType !== "WORKER" &&
+          home !== null &&
+          manhattan(enemy.position, home) <= THREAT_RECALL_DISTANCE,
+      ) ||
         (this.config.raidDefense === true &&
           this.raidUnitDistance(state) <= (this.config.raidWatchRadius ?? RAID_UNIT_WATCH_RADIUS)));
     const breakoutActive = this.config.threatBreakout === true && this.currentThreat?.level === "BREAKOUT";
@@ -1064,6 +1087,82 @@ export class SafetyPlanner {
             this.coreLockHands.add(unitId);
           }
         }
+      }
+    }
+
+    // VANGUARD 预判拦截配对（vanguard-blockade-v1，2026-08-08，手操实证）：
+    // 只锁敌方 WORKER（军事单位由战斗逻辑处理）；targetCore 只保留真实
+    // CORE 目击（WORKER_INFER 锚点漂移 → 中途拦截/伏击）；与 prey 互斥。
+    const vanguardBlockadeActive =
+      this.config.vanguardBlockade === true &&
+      !(this.currentThreat?.level === "BREAKOUT");
+    if (!vanguardBlockadeActive) {
+      this.vanguardBlockadeAssignment = new Map();
+    }
+    if (vanguardBlockadeActive) {
+      const hints = this.world.enemyHints();
+      const coreTargets = this.world.coreHuntTargets();
+      const predictions = enemyReturnPath(hints, coreTargets, obstacles)
+        .filter((prediction) => prediction.enemyType === "WORKER")
+        // targetCore 只保留真实 CORE 目击（终点封锁可靠）；WORKER_INFER
+        // 推断锚点随敌方移动漂移（前方 8 格），单 Vanguard 跑 20+ 格去错误
+        // 入口 = 白费（A/B 实证 Vanguard 移动 60 格零击杀）——降级为中途
+        // 拦截（margin 选点），由伏击兜底承接采集点蹲守。
+        .map((prediction) =>
+          prediction.targetCore !== null &&
+          coreTargets.some(
+            (target) => target.source === "CORE" && samePosition(target.position, prediction.targetCore!),
+          )
+            ? prediction
+            : { ...prediction, targetCore: null },
+        )
+        // 禁区：锁点落在己方核心格不锁（军事禁区 + 挡卸货通道）。
+        .filter((prediction) =>
+          state.core === null || !samePosition(prediction.nextCells[0], state.core.position),
+        );
+      // prey 已覆盖的目标（12 格内最近猎手-猎物配对）跳过——不重复抢活。
+      let preyTarget: Position | null = null;
+      if (this.config.vanguardPreyWorker === true && state.core !== null) {
+        let prey: VisibleEntity | undefined;
+        let preyDist = Number.POSITIVE_INFINITY;
+        for (const enemy of state.visibleEnemies) {
+          if (enemy.kind !== "UNIT" || enemy.unitType !== "WORKER") continue;
+          for (const v of state.vanguards) {
+            const d = manhattan(v.position, enemy.position);
+            if (d < preyDist) { preyDist = d; prey = enemy; }
+          }
+        }
+        if (prey !== undefined && preyDist <= PREY_WORKER_RADIUS) {
+          preyTarget = prey.position;
+        }
+      }
+      const filtered = predictions.filter(
+        (prediction) => preyTarget === null || !samePosition(prediction.position, preyTarget),
+      );
+      const idleVanguards = state.vanguards;
+      const assignment = pairBlockadeTargets(
+        filtered,
+        idleVanguards,
+        this.config.vanguardBlockadeCap ?? VANGUARD_BLOCKADE_CAP,
+      );
+      // 伏击兜底：无移动预测命中时，可见敌方 WORKER 正在采集的资源点
+      // → 派最近 Vanguard 去邻格蹲守（敌方回程/再采必经，守株待兔）。
+      if (assignment.size === 0 && idleVanguards.length > 0) {
+        for (const enemy of state.visibleEnemies) {
+          if (enemy.kind !== "UNIT" || enemy.unitType !== "WORKER") continue;
+          if (!state.resourceCells.has(cellKey(enemy.position))) continue;
+          const ambush = (["UP", "RIGHT", "DOWN", "LEFT"] as const)
+            .map((d) => move(enemy.position, d))
+            .find((cell) => !obstacles.has(cellKey(cell)));
+          if (ambush === undefined) break;
+          const nearest = [...idleVanguards]
+            .sort((a, b) => manhattan(a.position, ambush) - manhattan(b.position, ambush) || a.id.localeCompare(b.id))[0];
+          if (nearest !== undefined) assignment.set(nearest.id, ambush);
+          break;
+        }
+      }
+      if (assignment.size > 0) {
+        this.vanguardBlockadeAssignment = assignment;
       }
     }
 
@@ -1755,6 +1854,36 @@ export class SafetyPlanner {
       const direction = stepToward(unit.position, target, militaryObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, intent);
       return;
+    }
+
+    // VANGUARD 预判拦截（vanguard-blockade-v1，2026-08-08，手操实战实证）：
+    // 本 tick 配对到拦截点的 Vanguard → 走向拦截点站桩——敌方 worker 撞上
+    // （MOVE_DESTINATION_OCCUPIED）被卡，邻接时上方 SWEEP 分支自动攻击
+    // （锁+收割一体）。站桩锁龄超限（预测错误/目标转向）→ 放弃回巡逻。
+    // 防御优先：reinforce/beacon/escort 已在上方处理；邻接敌 SWEEP 优先。
+    if (this.config.vanguardBlockade === true) {
+      const lockPoint = this.vanguardBlockadeAssignment.get(unit.id);
+      if (lockPoint !== undefined) {
+        const lockMaxTicks = this.config.vanguardBlockadeMaxTicks ?? VANGUARD_BLOCKADE_MAX_TICKS;
+        const lockedSince = this.vanguardBlockadeLockedSince.get(unit.id);
+        if (samePosition(unit.position, lockPoint)) {
+          if (lockedSince !== undefined && state.tick - lockedSince >= lockMaxTicks) {
+            this.vanguardBlockadeLockedSince.delete(unit.id);
+          } else {
+            if (lockedSince === undefined) this.vanguardBlockadeLockedSince.set(unit.id, state.tick);
+            set(unit, { type: "WAIT" }, "vanguard_blockade");
+            return;
+          }
+        } else {
+          const direction = stepToward(unit.position, lockPoint, militaryObstacles);
+          if (direction !== null) {
+            set(unit, { type: "MOVE", direction }, "vanguard_blockade");
+            return;
+          }
+        }
+      } else {
+        this.vanguardBlockadeLockedSince.delete(unit.id);
+      }
     }
 
     if (this.effectiveAggression === "aggressive") {

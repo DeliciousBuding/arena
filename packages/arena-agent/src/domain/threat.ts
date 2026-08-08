@@ -185,6 +185,14 @@ export function assessThreat(options: {
   const axes = new Set<number>();
 
   for (const enemy of visibleEnemies) {
+    // 威胁只由敌方战斗单位（Vanguard/Ranger）驱动（2026-08-08，t4 被
+    // majorcycle 敌核 [44,315] + 1 敌方 worker 压制 25+ tick 全体停产实证）：
+    // - 敌核（kind CORE）是攻击目标（strike-core 消费），静态非威胁源；
+    // - 敌方 WORKER 无攻击不升级 Core 级威胁（官方语义，coreWatch 注释同款，
+    //   由 Vanguard 回访清剿）——worker 采矿路径仍由 threatMap 避开敌占格。
+    // 敌战斗单位 12 格内/移动/追击仍按原口径触发 ALERT（行为不变）。
+    if (enemy.kind === "CORE") continue;
+    if (enemy.unitType === undefined || enemy.unitType === "WORKER") continue;
     const hint = hintsById.get(enemy.id);
     if (hint?.prevPosition !== undefined && !sameCell(hint.prevPosition, enemy.position)) {
       movingEnemies += 1;
