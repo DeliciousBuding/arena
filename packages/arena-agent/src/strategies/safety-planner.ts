@@ -211,6 +211,10 @@ const HUNT_SWEEP_RADIUS = 4;
 /** 敌情狩猎清扫时长：单位在基地清扫圈内停留该 tick 数仍未发现敌 Core → 记
  *  清扫并旋转到下一目标（竞品 "整个区域被视野覆盖且未发现 Core 才删除"）。 */
 const HUNT_SWEEP_TICKS = 8;
+/** 产兵让位连续上限（spawn-yield-v1）：满载 worker 连续让位 ≥N tick 后
+ *  强制卸货——防"核心永远想产兵、worker 永远卸不了"的让位饿死循环
+ *  （核心每 tick 产 1 兵后资源下降，正常情况让位 1-2 tick 即恢复卸货）。 */
+const SPAWN_YIELD_MAX_TICKS = 3;
 /** B10 worker 遭遇撤离（竞品 Scout And Observer Response）：撤离触发半径。 */
 const SCOUT_EVADE_RADIUS = 3;
 /** 到 Core 3 格内后的冷却 tick（竞品 three-Tick cooldown）。 */
@@ -302,6 +306,9 @@ export class SafetyPlanner {
   /** MOVE_FAILED 连续失败计数（moveFailedAvoidance）：单位连续 N tick 移动被
    *  结算拒绝时改走垂直绕行格，避免无反馈重试同格死循环。 */
   private moveFailedStreak = new Map<string, number>();
+  /** 产兵让位连续计数（spawn-yield-v1）：满载 worker 连续让位 tick 数——超过
+   *  spawnYieldMaxTicks 强制卸货，防"核心永远想产兵、worker 永远卸不了"。 */
+  private spawnYieldStreak = new Map<string, number>();
   /** 记忆矿卡死防护（2026-08-08，t3 生产实证）：worker 连续 go_harvest_mem 未推进
    *  的 tick 数（capacity_wait 是 planner 内部拒绝，不产生 MOVE_FAILED 事件，
    *  需独立计数）。 */
@@ -857,6 +864,39 @@ export class SafetyPlanner {
       recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
 
     if (unit.cargo > 0) {
+      // 产兵让位（spawn-yield-v1，2026-08-08）：核心本 tick 计划 SPAWN 时，
+      // 满载 worker 在核心格/核心邻格 → 让位——DEPOSIT Phase8 先于 SPAWN
+      // Phase10，worker 卸货成功仍占核心格会挡掉同 tick SPAWN（生产 t2 实证
+      // 112 次 CORE_SPAWN_FAILED/CELL_UNIT_LIMIT，其中 74 次是 worker 本 tick
+      // 移入核心格、38 次已在核心格；现核心区 9 次仍在发生）。产兵价值 >
+      // 1 资源卸货，让位净赚。已在核心格 → 让出（复用 coreClearance 出口）；
+      // 在邻格 → WAIT 不进核心格（下 tick 核心 spawn 完成后正常卸货）。
+      if (this.config.spawnYield === true && home !== null && this.coreWantsSpawn(state)) {
+        const yieldMaxTicks = this.config.spawnYieldMaxTicks ?? SPAWN_YIELD_MAX_TICKS;
+        const streak = this.spawnYieldStreak.get(unit.id) ?? 0;
+        if (streak < yieldMaxTicks && samePosition(unit.position, home)) {
+          const exit = homeCell(home, movementObstacles, index)
+            ?? this.coreGuardFallback(home, movementObstacles, index);
+          if (exit !== null && !samePosition(unit.position, exit)) {
+            const direction = stepToward(unit.position, exit, movementObstacles);
+            if (direction !== null) {
+              this.spawnYieldStreak.set(unit.id, streak + 1);
+              set(unit, { type: "MOVE", direction }, "worker_yield_spawn");
+              return;
+            }
+          }
+        } else if (
+          streak < yieldMaxTicks &&
+          manhattan(unit.position, home) === 1
+        ) {
+          // 邻格待命：不移动进核心格，下 tick 核心 spawn 完成后再进卸货。
+          this.spawnYieldStreak.set(unit.id, streak + 1);
+          set(unit, { type: "WAIT" }, "worker_yield_spawn");
+          return;
+        }
+        // 让位超限（连续让位 ≥max tick 仍未卸）→ 强制卸货，防让位饿死循环。
+        this.spawnYieldStreak.delete(unit.id);
+      }
       // 核心迁移中交仓待命（core-moving-hold-v1，2026-08-07）：MOVING 期间
       // 引擎拒绝 DEPOSIT（CORE_MOVING/CORE_NOT_PRESENT——生产实测 t2/t3 手操
       // 迁移时 150 tick 内 17/11 次失败），cargo worker 原地持货等核心稳定，
@@ -1928,6 +1968,41 @@ export class SafetyPlanner {
         // 已展开或环上无空位：原地待机（保持射程）
       }
     }
+  }
+
+  /** 产兵让位预判（spawn-yield-v1，2026-08-08）：核心本 tick 是否计划 SPAWN——
+   *  与 decideCore 的 spawn 意图同构但不含副作用（surgeActive 翻转等）：
+   *  NORMAL、人口未满、无 heal/repair 优先、非 accumulateTarget 拦截、资源
+   *  足够成本+储备。decideWorker 满载分支据此让位（DEPOSIT Phase8 先于
+   *  SPAWN Phase10，worker 占核心格会挡 spawn——生产 t2 实证 112 次
+   *  CORE_SPAWN_FAILED/CELL_UNIT_LIMIT）。资源不足时不预判 spawn →
+   *  worker 正常卸货补充资源（预判与 decideCore 同口径，误差 = 白等 1 tick
+   *  卸货，可接受；绝不反向挡 spawn）。 */
+  private coreWantsSpawn(state: TickState): boolean {
+    const core = state.core;
+    if (core === null || core.state !== "NORMAL") return false;
+    if (state.population >= this.config.populationCeiling) return false;
+    if (core.hp < 5) return false; // heal 优先于 spawn
+    if (core.shield < 5 && state.resources >= 1) return false; // repair 优先
+    if (this.config.accumulateTarget > 0 && state.resources >= this.config.accumulateTarget) {
+      return false; // 积累目标拦截，不产兵
+    }
+    const threshold = this.config.accumulateThreshold ?? 0;
+    const surge = threshold > 0 && (this.surgeActive || state.resources >= threshold);
+    const unitType = threshold > 0
+      ? surge
+        ? nextMilitary(state, this.config)
+        : "WORKER"
+      : this.config.accumulateTarget > 0 &&
+        state.resources >= this.config.guardResources &&
+        state.vanguards.length + state.rangers.length < this.config.guardForce
+        ? nextMilitary(state, this.config)
+        : nextSpawn(state, this.effectiveWorkerTarget, this.config);
+    const cost = unitType === "WORKER" ? 5 : unitType === "VANGUARD" ? 10 : 12;
+    const reserve = state.resources >= this.config.wealthyThreshold
+      ? this.config.reserveWealthy
+      : this.config.reserveEarly;
+    return state.resources >= cost + reserve;
   }
 
   private decideCore(state: TickState, intents: Record<string, string>): CoreAction | null {
