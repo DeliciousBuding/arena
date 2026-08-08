@@ -17,6 +17,10 @@ const beaconTrailCache = new Map<string, { latestRun: string; latestFile: string
 const BEACON_TRAIL_RUNS = 6; // 跨最近 N 个 run 合并历史（run 重启不丢轨迹）
 const BEACON_TRAIL_CASE_LIMIT = 300; // 每 run 最多扫 N 个 case（首扫/重建成本上限）
 const BEACON_TRAIL_MAX_POINTS = 96; // 轨迹点数上限（超长滚动保留最近）
+/** 轨迹时间窗（2026-08-08）：只保留最近 N tick 内的位置变化点——信标可能
+ *  长期静止（如 t≈70000 起停在 [0,0] 17 小时），历史迁移轨迹会误导面板
+ *  渲染成"信标在移动/逼近"（实际是 8+ 小时前的旧路径）。 */
+const BEACON_TRAIL_RECENT_TICKS = 2000;
 
 function beaconPointsFromRun(tenant: string, runDir: string, maxCases: number): TrailPoint[] {
   const files = listCases(tenant, runDir).slice(-maxCases);
@@ -81,6 +85,12 @@ export function loadBeaconTrail(tenant: string): TrailPoint[] {
       trail.push(pt);
       if (trail.length > BEACON_TRAIL_MAX_POINTS) trail.shift();
     }
+  }
+  // 时间窗（2026-08-08）：只保留最近窗口内的位置变化点——历史迁移轨迹（如
+  // 17 小时前的旧路径）会误导面板渲染成"信标正在移动/逼近"。
+  const maxTick = runs[0].maxTick;
+  if (trail.length > 0) {
+    trail = trail.filter((pt) => maxTick - pt.tick <= BEACON_TRAIL_RECENT_TICKS);
   }
   beaconTrailCache.set(tenant, { latestRun, latestFile, trail });
   return trail;
