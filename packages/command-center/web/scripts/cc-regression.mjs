@@ -73,6 +73,10 @@ async function main() {
     const want = ["logs", "intel", "advice", "survey", "situation", "redeem"];
     JSON.stringify(tabs) === JSON.stringify(want) ? ok("右栏六 tab", tabs.join(",")) : bad("右栏六 tab", "got " + tabs.join(","));
 
+    // 2b) 全局威胁玫瑰数据管道：/api/alliance/snapshot 被页面拉取（威胁扇区玫瑰数据源）
+    const snapReq = await page.evaluate(() => performance.getEntriesByType("resource").some((e) => e.name.includes("/api/alliance/snapshot")));
+    snapReq ? ok("全局威胁玫瑰数据管道", "snapshot 已拉取") : bad("全局威胁玫瑰数据管道", "未发现 snapshot 请求");
+
     // 3) 决策流有数据
     for (const tab of ["logs", "intel", "advice", "survey", "situation", "redeem"]) {
       await page.click(`.rp-tab[data-rp-tab="${tab}"]`, { timeout: 4000 }).catch(() => {});
