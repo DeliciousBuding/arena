@@ -399,6 +399,16 @@ export interface SafetyPlannerConfig {
    * 未破）。默认 false = 历史行为（直接逐个前压，零回归）。
    */
   readonly rallyAssault?: boolean;
+  /**
+   * 寡不敌众撤退（2026-08-08，outnumbered-retreat-v1，guide "巡逻单位兵力不足
+   * 撤退"对照）：非守家（距我方 Core > 4）军事单位遇可见敌战斗单位且附近我方
+   * 军事 < 敌（aggressive 严格劣势 / defensive ≤）→ 向家撤退（绕开敌人占位），
+   * 防 1v2+ 单薄送死；敌核守军（known CORE 8 格内）不计入——攻坚目标守军不算
+   * "遭遇战"。默认 false = 历史行为（照常接战，零回归）。
+   */
+  readonly outnumberedRetreat?: boolean;
+  /** 寡不敌众判定半径（Chebyshev，默认 aggressive 10 / defensive 6）。 */
+  readonly outnumberedRetreatRadius?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

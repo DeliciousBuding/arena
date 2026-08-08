@@ -66,6 +66,13 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "rally-assault-v1": Object.freeze({ rallyAssault: true }),
     /**
+     * 寡不敌众撤退（2026-08-08，guide 巡逻单位兵力不足撤退对照）：非守家军事单位
+     * 遇可见敌战斗单位且附近我方军事 < 敌 → 向家撤退（绕开敌人占位），防 1v2+
+     * 单薄送死；敌核守军（known CORE 8 格内）不计入。与 rally-assault-v1 互补：
+     * rally 管进攻集结，这里管遭遇战止损。默认关闭零回归。
+     */
+    "outnumbered-retreat-v1": Object.freeze({ outnumberedRetreat: true }),
+    /**
      * 威胁方向侦察（2026-08-07，t2 生产实证）：worker 巡逻方位向已知敌核心
      * 方向（coreHuntTargets 首个 CORE）加权——前 4 worker 覆盖威胁扇区 ±1，
      * 保证威胁来路（如 t2 NE=jerkman）始终有 ≥3 worker 侦察，小股进攻更早

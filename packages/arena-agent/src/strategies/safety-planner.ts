@@ -205,6 +205,13 @@ const RALLY_TIMEOUT_TICKS = 40;
 /** 攻坚单位距敌核 ≤ RALLY_ATTACK_RADIUS = 已在敌核攻击圈内，直接压上不集结
  *  （已投入战斗，回集结位反而送死）。 */
 const RALLY_ATTACK_RADIUS = 4;
+/** 寡不敌众撤退参数（2026-08-08，outnumbered-retreat-v1，guide 巡逻单位兵力
+ *  不足撤退对照）：判定半径 aggressive 10 / defensive 6（guide 同值，Chebyshev）；
+ *  守家豁免圈 = REINFORCE_HOME_RING（4，Core 防区不撤——最后防线接战）；敌核
+ *  守军豁免半径 = PREY_CORE_SAFE（8，known CORE 守军不算"遭遇战"——攻坚不因
+ *  目标守军撤退）。 */
+const OUTNUMBERED_RADIUS_AGGRESSIVE = 10;
+const OUTNUMBERED_RADIUS_DEFENSIVE = 6;
 /** 挂机 WORKER 记忆回访半径（Manhattan）：无敌核清扫目标时 Vanguard 对静止敌
  *  WORKER 的追击上限——有界不跨图远征（白赚但不过度绕路）。 */
 const PREY_STATIONARY_RADIUS = 25;
@@ -464,6 +471,36 @@ export class SafetyPlanner {
   /** 敌情狩猎扫掠点：远距离（>清扫圈）直接朝基地中心；近距离按单位序号绕基地
    *  圆周展开（DENSE_DELTAS × 2，16 方位）——小队扇形覆盖清扫，防所有单位挤
    *  同格/同向（竞品彻查时"优先选择新增覆盖最多、相互视野重叠最少的目标"）。 */
+  /** 寡不敌众判定（outnumbered-retreat-v1，2026-08-08，guide 巡逻单位兵力不足
+   *  撤退对照）：非守家（>home ring）单位遇可见敌战斗单位（Vanguard/Ranger，
+   *  排除 Worker）且附近我方军事 < 敌（aggressive 严格劣势 / defensive ≤）→
+   *  true。敌核守军（known CORE 8 格内）不计入——攻坚目标守军不算遭遇战，
+   *  否则围攻守军核心时永远"寡不敌众"撤退。确定性（同输入同输出）。 */
+  private outnumbered(state: TickState, unit: UnitSnapshot, enemies: readonly VisibleEntity[]): boolean {
+    if (state.core === null) return false;
+    if (manhattan(unit.position, state.core.position) <= REINFORCE_HOME_RING) return false;
+    const radius = this.config.outnumberedRetreatRadius
+      ?? (this.effectiveAggression === "aggressive" ? OUTNUMBERED_RADIUS_AGGRESSIVE : OUTNUMBERED_RADIUS_DEFENSIVE);
+    const nearEnemyCore = (enemy: VisibleEntity): boolean =>
+      this.world.coreHuntTargets().some(
+        (t) => t.source === "CORE" && chebyshev(t.position, enemy.position) <= PREY_CORE_SAFE,
+      );
+    const combatEnemies = enemies.filter(
+      (e) =>
+        e.kind === "UNIT" &&
+        e.unitType !== "WORKER" &&
+        chebyshev(unit.position, e.position) <= radius &&
+        !nearEnemyCore(e),
+    );
+    if (combatEnemies.length === 0) return false;
+    const localAllies = [...state.vanguards, ...state.rangers].filter(
+      (u) => u.id !== unit.id && chebyshev(unit.position, u.position) <= radius,
+    ).length;
+    return this.effectiveAggression === "aggressive"
+      ? localAllies < combatEnemies.length
+      : localAllies <= combatEnemies.length;
+  }
+
   /** 攻坚集结位（rally-assault-v1）：敌核外圈 Chebyshev RALLY_DISTANCE 的 8 方位
    *  点，按"距我方 Core 最近"排序（从我方一侧接近，不绕敌后），第一个非障碍/非
    *  资源点作为集结位；全堵回退敌核格（兜底直接攻坚）。确定性（同输入同输出）。 */
@@ -1265,6 +1302,16 @@ export class SafetyPlanner {
         ?? (this.config.coreClearance === true
           ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
           : state.core.position);
+    // 寡不敌众撤退（outnumbered-retreat-v1，2026-08-08）：非守家单位遇可见敌
+    // 战斗单位且附近我方军事 < 敌 → 向家撤退（绕开敌人占位，stepToward 障碍集
+    // 含敌格）——防 1v2+ 单薄送死。守家圈（≤4）单位不撤（最后防线接战）；敌核
+    // 守军不计入（攻坚不因目标守军撤退）。置于 SWEEP 之前：劣势遭遇战先止损。
+    if (this.config.outnumberedRetreat === true && this.outnumbered(state, unit, enemies)) {
+      const retreatObstacles = new Set(militaryObstacles);
+      for (const enemy of enemies) retreatObstacles.add(cellKey(enemy.position));
+      const direction = stepToward(unit.position, state.core!.position, retreatObstacles);
+      if (direction !== null) { set(unit, { type: "MOVE", direction }, "vanguard_outnumbered_retreat"); return; }
+    }
     const adjacent = enemies.find((enemy) => manhattan(unit.position, enemy.position) === 1);
     if (adjacent !== undefined) {
       const direction = directionToAdjacent(unit.position, adjacent.position);
@@ -1787,6 +1834,15 @@ export class SafetyPlanner {
         const direction = stepToward(unit.position, exit, movementObstacles);
         if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_clear_core"); return; }
       }
+    }
+
+    // 寡不敌众撤退（outnumbered-retreat-v1，2026-08-08，与 Vanguard 同）：非守家
+    // Ranger 遇可见敌战斗单位且附近我方军事 < 敌 → 向家撤退（保持射程别被近身）。
+    if (this.config.outnumberedRetreat === true && this.outnumbered(state, unit, enemies)) {
+      const retreatObstacles = new Set(militaryObstacles);
+      for (const enemy of enemies) retreatObstacles.add(cellKey(enemy.position));
+      const direction = stepToward(unit.position, state.core!.position, retreatObstacles);
+      if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_outnumbered_retreat"); return; }
     }
 
     // Precision shot at a visible enemy in range. Aggressive mode prioritizes
