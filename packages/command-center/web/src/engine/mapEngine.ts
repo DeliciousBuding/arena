@@ -11,7 +11,7 @@ import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT
 import { findPath } from './pathfind.ts';
 import { createReplayState, replayAdvance, replayLoad, replayStep, replayToggle, replayCycleSpeed, updateReplayUI } from './replay.js';
 import { spawnEventFx, drawEventFx } from './fx.js';
-import { commandTelemetryDeltas as teleDeltas, commandGoalOf as cmdGoalOf, commandActionOf as cmdActionOf, unitHumanCommandOf as cmdHumanOf, commandStatusText as cmdStatusText, unitTelemetryOf as cmdUnitTelemetry, unitCommandLabel as cmdLabel } from './commands.js';
+import { commandTelemetryDeltas as teleDeltas, commandGoalOf as cmdGoalOf, commandActionOf as cmdActionOf, unitHumanCommandOf as cmdHumanOf, commandStatusText as cmdStatusText, unitTelemetryOf as cmdUnitTelemetry, unitCommandLabel as cmdLabel, squadSummary as cmdSquad } from './commands.js';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
 const POLL_MS = 3000;
@@ -3170,12 +3170,17 @@ function tactRenderHud(tenant: any) {
         tele && (tele.rejected ?? []).length ? `<span class="hud-val" style="color:var(--danger)" title="被拒指令">${tele.rejected.length}✗</span>` : ''
       }</div>`
     : '';
+  // 编队多选 HUD（2026-08-08）：Shift 多选 ≥2 时显示编队构成 + 平均/最低 HP
+  const sq = cmdSquad(T(), world);
+  const squadRow = sq
+    ? `<div class="hud-row hud-survey"><span class="hud-label" style="color:var(--warn)">编队 ${sq.count}</span><span class="hud-val">${sq.parts}</span><span class="hud-val" style="color:${sq.hpMin <= 2 ? 'var(--danger)' : 'var(--success)'}" title="平均/最低 HP">HP ${sq.hpAvg}/${sq.hpMin}</span></div>`
+    : '';
   els.fleetHud.innerHTML = `<div class="hud-row">
     <span class="hud-label">${tenant.toUpperCase()} · HUD</span>
     <span class="hud-val"><img src="${UNIT_ICONS.resource}" alt="" /> ${st.resources ?? 0} <i>/ ${cap}</i></span>
     <span class="hud-val"><img src="${UNIT_ICONS.population}" alt="" /> ${st.population ?? 0}</span>
     <span class="hud-val mono">tick ${world.tick ?? st.tick ?? '—'}</span>
-  </div>${surveyRow}${lcRow}${hudCmd}`;
+  </div>${surveyRow}${lcRow}${hudCmd}${squadRow}`;
 }
 /* ============ 回放引擎（连续 tick 快照 → 单位移动动画 + 15s 读条） ============ */
 function replayDrawLayer(s: any) {

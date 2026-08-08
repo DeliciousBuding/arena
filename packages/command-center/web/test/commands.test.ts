@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   commandTelemetryDeltas, commandGoalOf, commandActionOf, unitHumanCommandOf,
-  commandStatusText, unitTelemetryOf, unitCommandLabel,
+  commandStatusText, unitTelemetryOf, unitCommandLabel, squadSummary,
 } from "../src/engine/commands.ts";
 
 const mkTac = (commands: any, commandsByTenant: any = {}) => ({ commands, commandsByTenant });
@@ -60,4 +60,24 @@ test("cmd-unit-label: 人类 goal 优先，算法决策兜底，无指令 null",
   // 人类指令优先于算法决策
   const tac2 = mkTac({ tenant: "t1", mode: "override", goals: [{ unitId: "u1", kind: "goto", target: [1, 1] }] });
   assert.equal(unitCommandLabel(tac2, "t1", "u1", plan), "指挥 · 移动 → [1, 1]");
+});
+
+test("squad-summary: 编队构成 + 平均/最低 HP，单个/无多选 null", () => {
+  const world = { state: { objects: [
+    { id: "a", kind: "UNIT", unit_type: "WORKER", hp: 4 },
+    { id: "b", kind: "UNIT", unit_type: "VANGUARD", hp: 2 },
+    { id: "c", kind: "UNIT", unit_type: "RANGER", hp: 1, health: 5 },
+  ] } };
+  const tac1 = { multi: new Set(["a", "b", "c"]) };
+  const s = squadSummary(tac1, world);
+  assert.ok(s);
+  assert.equal(s.count, 3);
+  assert.equal(s.parts, "1工/1锋/1射");
+  assert.equal(s.hpAvg, 2);
+  assert.equal(s.hpMin, 1);
+  const tac2 = { multi: new Set(["a"]) };
+  assert.equal(squadSummary(tac2, world), null, "单个不算编队");
+  const tac3 = { multi: new Set(["x"]) };
+  assert.equal(squadSummary(tac3, world), null, "无命中编队");
+  assert.equal(squadSummary(null, world), null);
 });
