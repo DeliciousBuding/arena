@@ -753,7 +753,10 @@ export class SafetyPlanner {
           this.raidUnitDistance(state) <= (this.config.raidWatchRadius ?? RAID_UNIT_WATCH_RADIUS)));
     const breakoutActive =
       this.config.threatBreakout === true && this.currentThreat?.level === "BREAKOUT";
-    return recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
+    const band = this.config.migrationWorkerBand;
+    const base = recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
+    // 迁移期 worker 集结带（migration-system-v1 §3.3）：min 叠加既有权威上限。
+    return band === undefined ? base : Math.min(base, band);
   }
 
   /** 快攻单位压力（raid-defense-v1，2026-08-07）：敌方战斗单位（Vanguard/Ranger）

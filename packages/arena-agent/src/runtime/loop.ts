@@ -116,6 +116,26 @@ export interface TenantLoopOptions {
   readonly outcomeDrainTurns?: number;
   /** 人类最高控制权：提交前从 <storeDir>/<tenantId>.json 读取并合并人类指令。 */
   readonly humanCommands?: HumanCommandSource;
+  /**
+   * 迁移 overlay（migration-system-v1 §1/§6.2）：coordinator 决策后、
+   * humanOverride 前应用（plan → overlay → override → submit）。
+   * 返回 null = 不干预（模块关闭/无计划）。fail-closed 语义由实现保证。
+   * phase="pre-decision"：决策前钩子（如把计划注入 planner 供勘探前向约束），
+   * 返回值被忽略——它不产订单，只做副作用。
+   */
+  readonly migrationOverlay?: (context: {
+    readonly state: TickState;
+    readonly plan: Plan;
+    readonly nowMs: number;
+    readonly phase: "pre-decision" | "pre-submit";
+  }) => MigrationOverlayResult | null;
+}
+
+/** 迁移 overlay 结果（migration/overlay.ts 的类型镜像，避免 loop 依赖具体模块）。 */
+export interface MigrationOverlayResult {
+  readonly plan: Plan;
+  readonly active: boolean;
+  readonly failClosed: boolean;
 }
 
 export async function runTenantLoop(options: TenantLoopOptions): Promise<void> {
@@ -161,7 +181,10 @@ export async function runTenantLoop(options: TenantLoopOptions): Promise<void> {
 export async function handleTurn(
   turn: Turn,
   planner: SafetyPlanner,
-  options: Pick<TenantLoopOptions, "decide" | "submissionMode" | "onTick" | "coordinator" | "humanCommands">,
+  options: Pick<
+    TenantLoopOptions,
+    "decide" | "submissionMode" | "onTick" | "coordinator" | "humanCommands" | "migrationOverlay"
+  >,
   deadlineMs: number,
 ): Promise<TickOutcome> {
   const state = reduceTurn(turn as unknown as TurnLike);
@@ -170,6 +193,16 @@ export async function handleTurn(
   // W4 路径（唯一正式路径，4D-pre）：coordinator 时序（Safety 预计算 + deadline race + arbiter）。
   // 4D-pre：不再压缩 source（hybrid/emergency 原样保留进遥测）。
   if (options.coordinator) {
+    // 迁移 overlay 预决策钩子（migration-system-v1 §3.3，评审 P1）：决策前把
+    // 计划注入 planner（勘探前向约束），不产订单；返回值忽略。
+    if (options.migrationOverlay) {
+      options.migrationOverlay({
+        state,
+        plan: { tick: state.tick, unitActions: {}, coreAction: null, intents: {} },
+        nowMs: Date.now(),
+        phase: "pre-decision",
+      });
+    }
     const result = await options.coordinator.decide(state);
     const source = result.execution.source;
     if (!live) {
@@ -188,8 +221,18 @@ export async function handleTurn(
       };
     }
     try {
-      // 人类最高控制权：提交前合并人类指令（Manual > Agent > Safety）。
+      // 迁移 overlay（coordinator 决策后、humanOverride 前）：migration-system-v1
+      // 提交链 plan → overlay → override → submit。overlay 未启用/无计划返回 null。
       let plan = result.execution.plan;
+      let migrationFailClosed = false;
+      if (options.migrationOverlay) {
+        const overlay = options.migrationOverlay({ state, plan, nowMs: Date.now(), phase: "pre-submit" });
+        if (overlay !== null) {
+          plan = overlay.plan;
+          migrationFailClosed = overlay.failClosed;
+        }
+      }
+      // 人类最高控制权：提交前合并人类指令（Manual > Agent > Safety）。
       let humanOverride: HumanOverrideResult | null = null;
       if (options.humanCommands) {
         humanOverride = applyHumanOverrides(state, plan, options.humanCommands);
