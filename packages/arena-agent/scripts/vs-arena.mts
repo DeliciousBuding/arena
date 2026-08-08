@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkdirSync } from "node:fs";
 import { runFreeForAll, runMatch, type TournEntry } from "../src/sim/opponent/tournament.ts";
-import { COORDINATION_ROOT, opponentEntry, resolveOpponent, listMyVersions, resolveVersion } from "../src/sim/opponent/registry.ts";
+import { COORDINATION_ROOT, opponentEntry, resolveOpponent, listMyVersions, resolveVersion, validateMyVersions } from "../src/sim/opponent/registry.ts";
 import {
   inWindow,
   makeSurveyScenario,
@@ -45,8 +45,16 @@ function hasFlag(flag: string): boolean {
 }
 
 const ME = argValue("--me") ?? "aggressive";
-/** 第二版本（path: 或配置档）——版本对比（1v1）或多版本混战（ffa）的参与者。 */
+/** 版本对比分支（--me2）不消费 --opponents——显式传入时给指引，防静默丢对手。 */
 const ME2 = argValue("--me2");
+if (ME2 !== undefined && argValue("--opponents") !== undefined) {
+  console.error(
+    `--me2 版本对比分支不接受 --opponents（对手不会参赛，横幅会撒谎）。\n` +
+      `  1v1 版本对比：去掉 --opponents；\n` +
+      `  带对手参照的同场混战：--mode ffa --me2 <版本> --opponents farmer,core,...`,
+  );
+  process.exit(1);
+}
 const MODE = argValue("--mode") ?? "1v1";
 const OPPONENTS = (argValue("--opponents") ?? "farmer").split(",");
 const TICKS = Number(argValue("--ticks") ?? 200);
@@ -83,6 +91,19 @@ if (hasFlag("--list-versions")) {
   process.exit(0);
 }
 
+/** 注册表 schema 校验（fail-fast，防静默跑错版本）。 */
+const versionErrors = validateMyVersions();
+if (versionErrors.length > 0) {
+  console.error("my-versions.json 校验失败：");
+  for (const error of versionErrors) console.error(`  - ${error}`);
+  process.exit(1);
+}
+
+if (SEEDS.length === 0) {
+  console.error(`--seeds ${SEEDS_ARG} 解析为空（例：1-8 / 1,3,5）`);
+  process.exit(1);
+}
+
 /** 我方一个版本条目的构造参数（id/描述 + 版本源）。 */
 interface MineSpec {
   readonly id: string;
@@ -91,9 +112,13 @@ interface MineSpec {
   readonly source: string;
 }
 
-/** 构造一个"我"的版本条目：注册表名（my-versions.json）> path: 跨 worktree > 配置档。 */
+/** 构造一个"我"的版本条目：注册表名（my-versions.json）> path: 跨 worktree > 配置档。
+ *  aggression：source 本身是配置档（--me2 defensive 等）时用 source；否则取全局 ME 推导。 */
 async function mineEntry(spec: MineSpec): Promise<TournEntry> {
-  const aggression = ME === "defensive" ? "defensive" : ME === "balanced" ? "balanced" : "aggressive";
+  const isConfigTier = spec.source === "aggressive" || spec.source === "defensive" || spec.source === "balanced";
+  const aggression = isConfigTier
+    ? (spec.source as "aggressive" | "defensive" | "balanced")
+    : (ME === "defensive" ? "defensive" : ME === "balanced" ? "balanced" : "aggressive");
   // 1) 注册表名（strategy-versioning-v1 平台）
   if (listMyVersions().some((v) => v.name === spec.source)) {
     const resolved = await resolveVersion(spec.source, aggression);

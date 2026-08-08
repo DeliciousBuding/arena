@@ -96,17 +96,19 @@ const RESOURCE_LAYOUTS: readonly (readonly (readonly [number, number])[])[] = [
   [[4, 2], [-2, 4], [-4, -2], [2, -4], [33, 2], [27, 4]],
 ];
 
-/** 为一方玩家生成 3 个初始 worker（id 确定性派生，跨 seed 稳定，满足 canonical UUID）。 */
+/** 为一方玩家生成 3 个初始 worker（id 确定性派生，跨 seed 稳定，满足 canonical UUID）。
+ *  playerIndex 参与 id 尾部派生——多玩家场景下同前缀组（worker 前缀仅 5 个）也不会撞。 */
 function initialWorkers(
   ownerId: string,
   idPrefix: string,
+  playerIndex: number,
   ...positions: readonly (readonly [number, number])[]
 ): readonly { id: string; position: [number, number]; hp: number; unitType: "WORKER"; cargo: number }[] {
   const base = idPrefix.slice(0, 8);
-  return positions.map((position, index) => {
-    const marker = `${index}${ownerId.length % 10}`.padStart(2, "0");
+  return positions.map((position, workerIndex) => {
+    const tail = `${String(playerIndex).padStart(6, "0")}${String(workerIndex).padStart(6, "0")}`;
     return {
-      id: `${base}-0000-0000-0000-${"0".repeat(10)}${marker}`,
+      id: `${base}-0000-0000-0000-${tail}`,
       position: [position[0], position[1]] as [number, number],
       hp: 2,
       unitType: "WORKER" as const,
@@ -206,7 +208,7 @@ export function runMatch(
   opts?: {
     validatePlans?: boolean;
     recordTo?: string;
-    /** refill 节奏（近似再生，见 episode.ts）：undefined=65（现状默认，向后兼容）；
+    /** refill 节奏（近似再生，见 episode.ts）：undefined=4（官方节奏，用户裁决）；
      *  null=关闭；N=每 N tick 补回采空原格。 */
     refillEveryTicks?: number | null;
     /** 自定义场景（真实测绘窗口等）；缺省用 makeArenaScenario 合成布局。
@@ -216,13 +218,13 @@ export function runMatch(
 ): MatchResult {
   const refillConfig =
     opts?.refillEveryTicks === undefined
-      ? { everyTicks: 65 }
+      ? { everyTicks: 4 }
       : opts.refillEveryTicks === null
         ? null
         : { everyTicks: opts.refillEveryTicks };
   const scenario = opts?.scenario ?? makeArenaScenario(
-    { id: a.id, username: a.id, resources: 25, core: { id: "491977e4-d3db-417b-8d82-2f5f3b5c8006", position: [0, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(a.id, "22222222-2222-2222-2222-2222222222", [1, 0], [0, 1], [-1, 0]) },
-    { id: b.id, username: b.id, resources: 25, core: { id: "9fe0ca6d-53cb-4dd5-a8f8-2e6925f19e72", position: [30, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(b.id, "33333333-3333-3333-3333-3333333333", [29, 0], [30, 1], [31, 0]) },
+    { id: a.id, username: a.id, resources: 25, core: { id: "491977e4-d3db-417b-8d82-2f5f3b5c8006", position: [0, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(a.id, "22222222-2222-2222-2222-2222222222", 0, [1, 0], [0, 1], [-1, 0]) },
+    { id: b.id, username: b.id, resources: 25, core: { id: "9fe0ca6d-53cb-4dd5-a8f8-2e6925f19e72", position: [30, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(b.id, "33333333-3333-3333-3333-3333333333", 1, [29, 0], [30, 1], [31, 0]) },
     seed,
   );
   const providerA = a.build();
@@ -293,6 +295,7 @@ export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): un
     const workers = initialWorkers(
       entry.id,
       `${WORKER_ID_PREFIXES[index % WORKER_ID_PREFIXES.length]}-0000-0000-0000-000000000000`,
+      index,
       [cx + 1, cy], [cx, cy + 1], [cx - 1, cy],
     );
     return {
@@ -300,7 +303,8 @@ export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): un
       username: entry.id,
       resources: 25,
       core: {
-        id: CORE_ID_PREFIXES[index % CORE_ID_PREFIXES.length],
+        // 前缀表仅 4 项——尾部按参与序派生，n≥5 时也保证全图唯一（防静默覆盖）
+        id: `${CORE_ID_PREFIXES[index % CORE_ID_PREFIXES.length].slice(0, 23)}-${String(index).padStart(12, "0")}`,
         position: [cx, cy],
         hp: 5,
         shield: 5,

@@ -164,17 +164,60 @@ export function listMyVersions(): readonly MyVersionEntry[] {
   return Object.values(loadMyVersions());
 }
 
-/** 材料化一个 git tag 到缓存目录（git archive + tar 解包，缓存命中即跳过）。 */
+/** 材料化一个 git tag 到缓存目录（git archive + tar 解包）。
+ *  缓存绑定 tag 指向的 commit SHA——tag 重打/删除后自动重新材料化，
+ *  不静默提供陈旧版本。 */
 function materializeTag(tag: string): string {
   const cacheDir = join(tmpdir(), `arena-versions/${tag}`);
   const marker = join(cacheDir, ".ready");
-  if (existsSync(marker)) return cacheDir;
+  const sha = execFileSync("git", ["-C", ARENA_TS_ROOT, "rev-parse", `${tag}^{}`], { encoding: "utf8" }).trim();
+  if (existsSync(marker) && readFileSync(marker, "utf8").trim() === sha) {
+    return cacheDir;
+  }
   mkdirSync(cacheDir, { recursive: true });
   const tarOut = execFileSync("git", ["-C", ARENA_TS_ROOT, "archive", "--format=tar", tag,
     "packages/arena-agent/src", "packages/arena-agent/scripts"], { encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
   execFileSync("tar", ["-x", "-C", cacheDir], { input: tarOut, stdio: "pipe", maxBuffer: 256 * 1024 * 1024 });
-  writeFileSync(marker, new Date().toISOString());
+  writeFileSync(marker, sha);
   return cacheDir;
+}
+
+/** 校验注册表 schema（vs-arena 启动时 fail-fast）：kind 枚举、按 kind 必填字段、
+ *  baseline 唯一、wip 不得标 baseline、git-tag 存在、module 文件存在。 */
+export function validateMyVersions(): readonly string[] {
+  const errors: string[] = [];
+  const versions = Object.values(loadMyVersions());
+  const baselines = versions.filter((v) => v.meta?.baseline === true);
+  if (baselines.length > 1) {
+    errors.push(`baseline 唯一性：多个条目标记 baseline（${baselines.map((v) => v.name).join(", ")}）`);
+  }
+  for (const version of versions) {
+    if (version.kind !== "config" && version.kind !== "git-tag" && version.kind !== "worktree-path") {
+      errors.push(`${version.name}: kind 非法（${version.kind as string}，应为 config/git-tag/worktree-path）`);
+      continue;
+    }
+    if (version.meta?.wip === true && version.meta?.baseline === true) {
+      errors.push(`${version.name}: wip 条目不得标 baseline`);
+    }
+    if (version.kind === "git-tag") {
+      if (version.gitTag === undefined) {
+        errors.push(`${version.name}: kind=git-tag 缺 gitTag`);
+        continue;
+      }
+      try {
+        execFileSync("git", ["-C", ARENA_TS_ROOT, "rev-parse", "--verify", `${version.gitTag}^{}`], { stdio: "ignore" });
+      } catch {
+        errors.push(`${version.name}: git tag ${version.gitTag} 不存在（git fetch --tags 拉取后重试）`);
+      }
+    }
+    if (version.kind === "worktree-path" && version.worktreePath === undefined) {
+      errors.push(`${version.name}: kind=worktree-path 缺 worktreePath`);
+    }
+    if (version.module === undefined || version.module === "") {
+      errors.push(`${version.name}: 缺 module`);
+    }
+  }
+  return errors;
 }
 
 /** 从模块文件构造"我的版本"条目（动态 import，版本完全隔离）。 */
