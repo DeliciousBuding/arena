@@ -67,3 +67,18 @@ test("decision-input: 补测目标（resurveyTargets）——按陈旧度降序 
   const q = buildDecisionInput("t2", 73000, [], []);
   assert.equal(q.resurveyTargets.length, 0);
 });
+
+test("decision-input: 采集候选（miningCandidates）归一 + 空兕底", () => {
+  const candidates = [
+    { cell: "5,5", x: 5, y: 5, lastSeenTick: 12000, gapAgeTicks: 300, harvestFail: 0, activity: 0.5 },
+    { cell: "6,6", x: 6, y: 6, lastSeenTick: 11800, gapAgeTicks: 500, harvestFail: 2, activity: 0.1 },
+  ];
+  const p = buildDecisionInput("t1", 12000, [], [], undefined, [], [], candidates);
+  assert.equal(p.miningCandidates.length, 2);
+  assert.equal(p.miningCandidates[0].cell, "5,5", "保持传入顺序（已 lastSeen 降序）");
+  assert.equal(p.miningCandidates[1].harvestFail, 2, "竞争矿信号保留");
+  assert.equal(p.miningCandidates[1].gapAgeTicks, 500);
+  // 空兕底
+  const q = buildDecisionInput("t2", null, [], []);
+  assert.equal(q.miningCandidates.length, 0);
+});
