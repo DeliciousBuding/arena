@@ -113,10 +113,10 @@ const THREAT_RECALL_DISTANCE = 12;
 const RECALL_PATROL_RADIUS = 4;
 /** 记忆矿开采距离上限（Manhattan，默认 40 = 探索最外环）：防追 70+ 格远矿。 */
 const HARVEST_MEMORY_MAX_DIST = 40;
-/** 记忆矿格容量（2026-08-08，t3 生产实证）：同一记忆矿格最多分配 2 worker——
- *  否则 10 worker 抢 1 格集体 capacity_wait 死锁（与 deterministic-planner 的
- *  CELL_ENTITY_CAPACITY=2 同口径）。 */
-const HARVEST_MEM_CELL_CAPACITY = 2;
+/** 记忆矿采集槽（2026-08-08 生产吞吐修复）：自然资源节点每 tick 只允许一个
+ *  HARVEST winner；格子实体容量=2 只是移动容量，不代表采集吞吐=2。记忆矿因此
+ *  必须一矿一 Worker，避免第二个 Worker 长期 capacity_wait/到点后必败。 */
+const HARVEST_MEM_TARGET_SLOTS = 1;
 /** 巡逻出发错峰（2026-08-08，t2 生产实证）：核心区 worker 群同步出发 → 出口容量
  *  互堵永久卡死（12 worker 挤核心 5 格 36+ tick 位置不动，capacity_reroute 无
  *  空格可绕）。判定半径（Chebyshev 离 home）与拥挤阈值（manhattan ≤2 内 worker）。 */
@@ -304,7 +304,7 @@ export class SafetyPlanner {
   private harvestMemStuck = new Map<string, number>();
   /** 上 tick worker 位置（记忆矿卡死检测：位置未变 = 未推进）。 */
   private lastWorkerPos = new Map<string, Position>();
-  /** 本 tick 记忆矿分配计数（cellKey -> worker 数；容量感知防 10 抢 1）。 */
+  /** 本 tick 记忆矿采集槽占用（cellKey -> worker 数；自然节点吞吐=1）。 */
   private allocatedMines = new Map<string, number>();
   /** 本 tick 威胁评估（threatBreakout 用）：decide 入口计算一次供 worker 消费。 */
   private currentThreat: ThreatAssessment | null = null;
@@ -350,6 +350,21 @@ export class SafetyPlanner {
     for (const [username, profile] of threatProfiles) {
       this.threatProfiles.set(username, profile);
     }
+  }
+
+  /** Deterministic 经济 overlay 的安全边界：必须与 worker Safety 召回使用同一
+   * 半径事实，避免“Safety 让 worker 缩家，但 WorkerTaskPlanner 又把它派到远矿”。
+   * 需在 decide() 之后读取（currentThreat 已更新）。Infinity = 不限制。 */
+  resourceAssignmentMaxDistanceFromCore(state: TickState): number {
+    const home = state.core?.position ?? null;
+    if (home === null) return Number.POSITIVE_INFINITY;
+    const recallActive =
+      this.config.threatRecall === true &&
+      (state.visibleEnemies.some((enemy) => manhattan(enemy.position, home) <= THREAT_RECALL_DISTANCE) ||
+        (this.config.raidDefense === true &&
+          this.raidUnitDistance(state) <= (this.config.raidWatchRadius ?? RAID_UNIT_WATCH_RADIUS)));
+    const breakoutActive = this.config.threatBreakout === true && this.currentThreat?.level === "BREAKOUT";
+    return recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
   }
 
   /** 当前主要攻坚目标（排行榜威胁画像用）：coreHuntTargets 首个 CORE 目击
@@ -746,9 +761,26 @@ export class SafetyPlanner {
         .map((unit, index) => [unit.id, index]),
     );
 
+    // 本 Tick 预计伤害账本（coordinated-fire-v1）：只用于友军目标去重，不改变
+    // Arena action 语义。单位按 id 确定性决策，所以同一输入必得同一转火结果。
+    const projectedFriendlyDamage = new Map<string, number>();
+    const reserveDamage = (enemyId: string, amount = 1): void => {
+      projectedFriendlyDamage.set(enemyId, (projectedFriendlyDamage.get(enemyId) ?? 0) + amount);
+    };
     const set = (unit: UnitSnapshot, action: UnitAction, intent: string): void => {
       actions[unit.id] = action;
       intents[unit.id] = intent;
+      if (this.config.coordinatedFire !== true) return;
+      if (action.type === "SHOOT" && action.targetId !== null) {
+        reserveDamage(action.targetId);
+        return;
+      }
+      if (action.type === "SWEEP") {
+        const targetCell = move(unit.position, action.direction);
+        for (const enemy of enemies) {
+          if (samePosition(enemy.position, targetCell)) reserveDamage(enemy.id);
+        }
+      }
     };
 
     for (const unit of [...state.units].sort((a, b) => a.id.localeCompare(b.id))) {
@@ -775,7 +807,9 @@ export class SafetyPlanner {
       } else if (unit.unitType === "VANGUARD") {
         this.decideVanguard(state, unit, vanguardIndex.get(unit.id) ?? 0, obstacles, enemies, set);
       } else {
-        this.decideRanger(state, unit, rangerIndex.get(unit.id) ?? 0, obstacles, enemies, set);
+        this.decideRanger(
+          state, unit, rangerIndex.get(unit.id) ?? 0, obstacles, enemies, projectedFriendlyDamage, set,
+        );
       }
     }
 
@@ -825,20 +859,8 @@ export class SafetyPlanner {
     // 巡逻/探索半径缩到守家圈（RECALL_PATROL_RADIUS），不放远探/远采。
     // BREAKOUT 全面收缩（threatBreakout，v0.3 实验）：多轴包围（无逃逸方向）
     // 时同样缩家——被包围时外出即送死，等包围解除再恢复。
-    const recallActive =
-      this.config.threatRecall === true &&
-      (state.visibleEnemies.some(
-        (enemy) => home !== null && manhattan(enemy.position, home) <= THREAT_RECALL_DISTANCE,
-      ) ||
-        // 快攻防御（raid-defense-v1，2026-08-07）：警戒半径放宽到 18——小股
-        // 部队更早进入防区即召回 worker 缩家圈（不等贴脸）。
-        (this.config.raidDefense === true &&
-          home !== null &&
-          this.raidUnitDistance(state) <= (this.config.raidWatchRadius ?? RAID_UNIT_WATCH_RADIUS)));
-    const breakoutActive =
-      this.config.threatBreakout === true && this.currentThreat?.level === "BREAKOUT";
-    const maxPatrolRadius =
-      recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
+    const maxPatrolRadius = this.resourceAssignmentMaxDistanceFromCore(state);
+    const resourceRestricted = Number.isFinite(maxPatrolRadius);
 
     if (unit.cargo > 0) {
       // 核心迁移中交仓待命（core-moving-hold-v1，2026-08-07）：MOVING 期间
@@ -954,7 +976,7 @@ export class SafetyPlanner {
     if (visibleResources.length > 0) {
       const target = nearest(visibleResources, unit.position);
       // 召回期间只采守家圈内的矿（远矿等威胁解除再采）
-      if (recallActive && target !== null && home !== null && manhattan(target, home) > maxPatrolRadius) {
+      if (resourceRestricted && target !== null && home !== null && manhattan(target, home) > maxPatrolRadius) {
         memory.workerMode = "patrol";
         memory.harvestTarget = null;
       } else {
@@ -978,6 +1000,21 @@ export class SafetyPlanner {
       memory.harvestTarget !== null &&
       hints.some((hint) => samePosition(hint, memory.harvestTarget!))
     ) {
+      // deterministic 上一 tick 可能执行了全局唯一资源分配，而 Safety fallback
+      // 自己曾把多个 worker 记到同一个“最近可见矿”。进入记忆态时必须重新抢占
+      // 真正的采集槽；后处理到的 worker 释放旧 target，回到下方重新分流/巡逻。
+      if (this.config.harvestMemoryMine === true) {
+        const targetKey = cellKey(memory.harvestTarget);
+        const claims = this.allocatedMines.get(targetKey) ?? 0;
+        if (claims >= HARVEST_MEM_TARGET_SLOTS) {
+          memory.workerMode = "patrol";
+          memory.harvestTarget = null;
+          this.harvestMemStuck.delete(unit.id);
+        } else {
+          this.allocatedMines.set(targetKey, claims + 1);
+        }
+      }
+      if (memory.harvestTarget !== null) {
       // 记忆矿卡死回退（2026-08-08，t3 生产实证 10 worker 集体 capacity_wait：
       // 记忆矿目标格容量饱和/路径被堵时，go_harvest_mem 非 patrol 意图无法
       // capacity_reroute → 永久 WAIT 死锁，经济冻结、无法产兵）。连续未推进
@@ -1008,6 +1045,7 @@ export class SafetyPlanner {
         goMem();
         return;
       }
+      }
     }
 
     // 记忆矿主动开采（harvest-memory-mine-v1，2026-08-08，survey-db 联动）：
@@ -1020,9 +1058,8 @@ export class SafetyPlanner {
       let bestDist = Number.POSITIVE_INFINITY;
       for (const hint of hints) {
         const d = manhattan(unit.position, hint);
-        // 容量感知（2026-08-08，t3 生产实证）：同一记忆矿格最多 HARVEST_MEM_CELL_CAPACITY
-        // 个 worker——否则 10 worker 抢 1 格集体 capacity_wait 死锁（矿格容量 2）。
-        if ((this.allocatedMines.get(cellKey(hint)) ?? 0) >= HARVEST_MEM_CELL_CAPACITY) continue;
+        // 采集吞吐感知：自然节点每 tick 只有 1 个 winner，与格子实体容量无关。
+        if ((this.allocatedMines.get(cellKey(hint)) ?? 0) >= HARVEST_MEM_TARGET_SLOTS) continue;
         if (d <= maxDist && (home === null || manhattan(hint, home) <= maxPatrolRadius) && d < bestDist) {
           best = hint;
           bestDist = d;
@@ -1627,6 +1664,7 @@ export class SafetyPlanner {
     index: number,
     obstacles: ReadonlySet<string>,
     enemies: readonly VisibleEntity[],
+    projectedFriendlyDamage: ReadonlyMap<string, number>,
     set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
   ): void {
     const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
@@ -1665,9 +1703,15 @@ export class SafetyPlanner {
     // from sweeping us outranks a Worker three cells away), then same value
     // ranks by type (workers first = economy damage), then raw id (determinism).
     const inRange = enemies.filter((enemy) => canShoot(unit.position, enemy.position, obstacles));
+    // 协同火力：后决策 Ranger 不再给“本 Tick 已被预计打死”的 Unit 继续补枪。
+    // Core 的 shield 未出现在 VisibleEntity，不能仅用 hp 判断致死，因此 Core 始终
+    // 保留为合法火力目标。若所有在射程 Unit 都已覆盖，转入下方预测射击/机动。
+    const fireable = this.config.coordinatedFire === true
+      ? inRange.filter((enemy) => enemy.kind === "CORE" || (projectedFriendlyDamage.get(enemy.id) ?? 0) < enemy.hp)
+      : inRange;
     const target = this.effectiveAggression === "aggressive"
-      ? inRange.sort(aggressiveShotPriority)[0]
-      : inRange.sort((a, b) => defensiveShotPriority(unit.position, a, b))[0];
+      ? fireable.sort(aggressiveShotPriority)[0]
+      : fireable.sort((a, b) => defensiveShotPriority(unit.position, a, b))[0];
     if (target !== undefined) {
       set(unit, { type: "SHOOT", targetId: target.id, expectedCell: target.position }, "shoot");
       return;
@@ -1676,7 +1720,10 @@ export class SafetyPlanner {
     // Upstream v0.12 cell fire: fire at the predicted next cell of the nearest
     // visible enemy that is out of range. A unit in range 4-5 can be hit next
     // tick if it keeps advancing toward us along the same line.
-    const nearest = nearestEnemy(enemies, unit.position);
+    const predictionPool = this.config.coordinatedFire === true
+      ? enemies.filter((enemy) => enemy.kind === "CORE" || (projectedFriendlyDamage.get(enemy.id) ?? 0) < enemy.hp)
+      : enemies;
+    const nearest = nearestEnemy(predictionPool, unit.position);
     if (nearest !== null) {
       const predicted = predictedEnemyCell(unit.position, nearest.position);
       if (

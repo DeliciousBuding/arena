@@ -54,7 +54,8 @@ export function forcedTaskFor(unit: PlanningUnit, snapshot: PlanningSnapshot): T
   if (unit.cargo > 0 && core !== null) {
     return { type: "DEPOSIT", target: core };
   }
-  if (unit.cargo === 0 && snapshot.resourceCells.has(cellKey(unit.position))) {
+  const currentResource = snapshot.resourceCells.get(cellKey(unit.position));
+  if (unit.cargo === 0 && currentResource !== undefined && currentResource.visible !== false) {
     return {
       type: "HARVEST_CURRENT",
       target: unit.position,

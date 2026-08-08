@@ -18,6 +18,8 @@ const CALIBRATION_DATASET = join(PKG_ROOT, "test", "fixtures", "sim", "calibrati
 const RULES_V011 = join(PKG_ROOT, "src", "sim", "contracts", "rules-v0.11.json");
 const TEST_DATA_ROOT = mkdtempSync(join(tmpdir(), "arena-sim-cli-data-"));
 const RUN_ROOT = join(TEST_DATA_ROOT, "runs", "sim");
+const TSX_CLI = fileURLToPath(import.meta.resolve("tsx/cli"));
+const RUN_SIM_CLI = join(PKG_ROOT, "src", "cli", "run-sim.ts");
 
 interface CommandResult {
   readonly code: number;
@@ -26,12 +28,14 @@ interface CommandResult {
 }
 
 function runSim(args: readonly string[]): CommandResult {
-  const quoted = args.map((argument) => `"${argument.replaceAll('"', '\\"')}"`).join(" ");
   try {
-    const stdout = execFileSync(`npx tsx src/cli/run-sim.ts ${quoted}`, {
+    // Avoid `shell -> npx -> npm-prefix -> node -> tsx` process fan-out on Windows.
+    // Directly execute the installed tsx CLI with the current Node runtime: fewer handles,
+    // lower commit pressure, no quoting ambiguity, and the same run-sim.ts entrypoint.
+    const stdout = execFileSync(process.execPath, [TSX_CLI, RUN_SIM_CLI, ...args], {
       encoding: "utf8",
       cwd: PKG_ROOT,
-      shell: true,
+      windowsHide: true,
       env: {
         ...process.env,
         ARENA_DATA_ROOT: TEST_DATA_ROOT,
