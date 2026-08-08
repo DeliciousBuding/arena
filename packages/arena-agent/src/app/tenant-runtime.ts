@@ -543,6 +543,9 @@ export async function runTenant(
     const surveyResourceCells = loadSurveyResourceSeed(dataRoot, config.tenantId);
     const surveyObstacleCells = loadSurveyObstacleSeed(dataRoot, config.tenantId);
     const surveyChunks = loadSurveyChunkSeed(dataRoot, config.tenantId);
+    // Worker coverage liveness shares the same persisted survey SSOT as frontier planning. Historical
+    // chunks are evidence, not automatic progress: a survey worker must still expand spatially.
+    workerLiveness.seedKnownChunks(surveyChunks.map((chunk) => chunk.key));
     // 联盟 no-fire 花名册（2026-08-08，alliance-no-fire-v1）：可变引用对象——
     // 构造时注入 SafetyPlanner，刷新时原子替换引用（World/巡逻/攻坚记忆不丢）。
     // 变体关闭或文件缺失 = 空集合（零回归）；只加载受信 supervisor 聚合产物。
@@ -1120,6 +1123,8 @@ export async function runTenant(
               priorIntent: event.priorIntent,
               recentPositions: event.recentPositions,
               uniqueRecentPositions: event.uniqueRecentPositions,
+              explorationChunk: event.explorationChunk,
+              knownExplorationChunks: event.knownExplorationChunks,
               recoveryCount: event.recoveryCount,
               recoveryApplied: recovery !== null,
               recovery,

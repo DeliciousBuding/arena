@@ -10,7 +10,7 @@
 import { existsSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { DATA_ROOT, TENANTS, calibrationDir, latestRunDir, listCases } from "./fs-jsonl.ts";
+import { DATA_ROOT, TENANTS } from "./fs-jsonl.ts";
 import { loadWorld } from "./streams.ts";
 import { loadTenantSurveyCached } from "./survey-cache.ts";
 import { TtlCache } from "./cache.ts";
@@ -157,16 +157,41 @@ function fileAgeSeconds(path: string): number | null {
   }
 }
 
+/** 指定 dataRoot 下某租户最新 calibration case 年龄。先按 cases 目录 mtime 选最新
+ * run，再只扫描该 run 的 JSON case，避免 source-health 重新变成全历史 O(runs×cases)。 */
+function latestCaseAgeSeconds(dataRoot: string, tenant: string): number | null {
+  try {
+    const calibrationRoot = join(dataRoot, "runtime", tenant, "calibration");
+    if (!existsSync(calibrationRoot)) return null;
+    const candidates = readdirSync(calibrationRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const casesDir = join(calibrationRoot, entry.name, "cases");
+        return existsSync(casesDir) ? { casesDir, mtime: statSync(casesDir).mtimeMs } : null;
+      })
+      .filter((entry): entry is { casesDir: string; mtime: number } => entry !== null)
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const candidate of candidates) {
+      const cases = readdirSync(candidate.casesDir)
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => join(candidate.casesDir, name));
+      if (cases.length === 0) continue;
+      let newest = 0;
+      for (const file of cases) newest = Math.max(newest, statSync(file).mtimeMs);
+      return Math.max(0, Math.round((Date.now() - newest) / 1000));
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** 数据源新鲜度（2026-08-08）：取各源最新文件 mtime → 年龄 + 陈旧标记。纯文件读取。 */
 export function computeSourceFreshness(dataRoot: string = DATA_ROOT): SourceFreshness[] {
-  // live world：各租户最新 calibration case 文件（取最年轻）
+  // live world：严格使用调用方传入的数据根；不同 release/worktree 可独立 preflight。
   let worldAge: number | null = null;
   for (const t of TENANTS) {
-    const runDir = latestRunDir(t);
-    if (!runDir) continue;
-    const cases = listCases(t, runDir);
-    if (cases.length === 0) continue;
-    const age = fileAgeSeconds(join(calibrationDir(t), runDir, "cases", cases[cases.length - 1]));
+    const age = latestCaseAgeSeconds(dataRoot, t);
     if (age !== null) worldAge = worldAge === null ? age : Math.min(worldAge, age);
   }
   let dbAge: number | null = null;
