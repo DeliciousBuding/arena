@@ -480,3 +480,10 @@ mapEngine.ts 对应函数。
   琥珀色边框/背景），舰队索引与画布编队连接线呼应——
   编队成员一目了然。
 - 探针实测：31 行中 1 行 squad 高亮；回归 22/22 全绿。
+
+### 9.32 批量命令编队级反馈（2026-08-08）
+- batchSubmitTarget 提交后记录 tac.batchLast { n, type, at, applied, rejected }；
+  tactRenderHud 10s 内显示「批量 移动 · X/N 生效 · M 被拒」。
+- consumeCommandTelemetry 将最新批次的 applied/rejected 累计入 batchLast，
+  有变化即刷新 HUD——批量指挥成败一目了然（toast 短暂，HUD 持续）。
+- 探针实测：0/2 生效 → 累计后 2/2 生效 1 被拒；回归 22/22 全绿。
