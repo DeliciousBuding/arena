@@ -1473,6 +1473,7 @@ body::after {
   padding: 4px 2px 3px; min-height: 40px; transition: all .18s var(--ease);
 }
 .sit-sec:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+.sit-sec.clickable { cursor: pointer; }
 .sit-sec.empty { background: transparent !important; opacity: .45; }
 .sit-sec.danger { border-color: rgba(221,98,109,.55); }
 .sit-sec.warn { border-color: rgba(211,173,85,.45); }
