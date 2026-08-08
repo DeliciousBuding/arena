@@ -265,6 +265,12 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "recovery-early-military-v1": Object.freeze({}),
     /**
+     * 家防底线渐进补编（2026-08-09，home-defense-bottom-v1，W3b）：只影响
+     *  deterministic 侧产兵（见 DETERMINISTIC_VARIANT_CONFIG）——safety 侧无开关，
+     *  空覆盖注册以满足 resolveVariantsConfig 全量 safety 校验（缺注册 = fail-fast）。
+     */
+    "home-defense-bottom-v1": Object.freeze({}),
+    /**
      * 精打细算（2026-08-08，lean-spend-v1，用户裁决"不囤资源全部用出去"）：
      * 只影响 deterministic 侧产兵储备（spawnReserve 1，见 DETERMINISTIC_VARIANT_CONFIG）
      * ——safety 侧无开关，空覆盖注册以满足 resolveVariantsConfig 全量 safety 校验
@@ -287,6 +293,10 @@ export interface DeterministicVariantConfig {
   /** RECOVERY 早期防御产兵（recovery-early-military-v1，2026-08-08）：军事=0 且
    *  worker 起步（>=4）时先产 1 Vanguard 自卫——重生/弱小期裸奔被拆的兜底。 */
   readonly recoveryEarlyMilitary?: boolean;
+  /** 家防底线渐进补编（home-defense-bottom-v1，W3b，2026-08-09）：早期按官方
+   *  3V+3R 底线渐进补编（1V → 1V+2R → 3V+3R），豁免 reserve、不受 workerTarget
+   *  前置门。默认关（零回归），变体显式开启。 */
+  readonly homeDefenseBottom?: boolean;
   /** 使命层配置（worker-mission-v1，2026-08-08）：值层置信 + SURVEYOR 角色仲裁。
    *  缺省 undefined = 关闭（现行为零回归）。 */
   readonly mission?: MissionConfig;
@@ -299,6 +309,10 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
      *  worker>=4 时先产 1 Vanguard 自卫——t3 重生后裸奔被拆的兜底。仅对重生产兵
      *  场景开启（t3/t4 配置），不影响经济优先租户。 */
     "recovery-early-military-v1": Object.freeze({ recoveryEarlyMilitary: true }),
+    /** 家防底线渐进补编（home-defense-bottom-v1，W3b，2026-08-09）：早期按官方
+     *  3V+3R 底线渐进补编（1V → 1V+2R → 3V+3R），豁免 reserve、不受 workerTarget
+     *  前置门。默认关（零回归），变体显式开启。 */
+    "home-defense-bottom-v1": Object.freeze({ homeDefenseBottom: true }),
     /**
      * 前锋重装（2026-08-08，用户裁决"多生产前锋"）：vanguardRatio 0.5→0.75——
      * 军事单位 3/4 为 Vanguard（攻坚拆家/守家前排），Ranger 保留 1/4 远程压制。

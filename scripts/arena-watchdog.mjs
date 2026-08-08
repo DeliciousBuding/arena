@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Arena 本地看护（Node 版，2026-08-08 从 bash 迁移）：
+ * v6（2026-08-09）：REPO 改相对脚本目录解析（vbs v5 同款语义，mjs 内部不再
+ * 硬编码 worktree 路径）+ PowerShell 探测带 30s 超时；错误 worktree 路径
+ * 报错退出（v4 MSYS 路径静默失效教训）。
  * 每分钟由计划任务调用一次；检查本地 supervisor /ready；异常则确认旧进程
  * 死透 → 清理死锁 → 重启 live supervisor（t1-t4 全 TS 线）。
  *
@@ -21,16 +24,18 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HOME = homedir();
 const LOG = join(HOME, "arena-watchdog.log");
 const SUPERVISOR_LOG = join(HOME, "arena-supervisor.log");
-// 注意：必须用 Windows 风格路径（正斜杠可）。MSYS 风格 "/d/Code/..." 在
-// Windows node 的 fs 操作里解析为 "D:\d\Code\..."（不存在）——v4 曾因此
-// 静默失效：stall 检测全跳过、lease 永不生效、重启以错误 data-root 启动。
-const REPO = "ARENA_REPO_ROOT/arena-ts/.worktrees/production-runtime-v3";
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+/** PowerShell 探测命令超时（毫秒）：PowerShell 挂死不能拖死看护——计划任务
+ *  静默运行、无可见 console，挂死 = 看护静默失效（同 v4 教训）。 */
+const PORT_PROBE_TIMEOUT_MS = 30_000;
+const PID_PROBE_TIMEOUT_MS = 30_000;
 const DATA_ROOT = "ARENA_REPO_ROOT/data";
 const RUNTIME_ROOT = join(DATA_ROOT, "runtime");
 const READY_URL = "http://127.0.0.1:8120/ready";
@@ -60,6 +65,27 @@ const SUPERVISOR_ARGS = [
  *  npm run 已不可靠；v4 曾用 npm run arena:supervisor，workspace 布局下
  *  无法解析）。 */
 const NODE_EXE = process.execPath;
+
+/** 相对脚本目录解析 worktree 根：arena-watchdog.mjs 与 vbs 同目录部署在
+ *  <worktree>/scripts/（vbs v5 相对解析同款语义；晋升部署不跳回旧硬编码
+ *  worktree）。解析出的根不存在 = 抛错退出——v4 曾用 MSYS 风格
+ *  "/d/Code/..." 路径在 Windows node 下解析成不存在的 "D:\d\..." 而
+ *  静默失效（stall 全跳过、lease 不生效、错误 data-root 重启）。 */
+export function resolveWorktreeRoot(scriptsDir) {
+  const root = resolve(scriptsDir, "..");
+  if (!existsSync(root)) {
+    throw new Error(`arena worktree not found at ${root} (scripts dir: ${scriptsDir})`);
+  }
+  return root;
+}
+
+let REPO;
+try {
+  REPO = resolveWorktreeRoot(SCRIPT_DIR);
+} catch (error) {
+  log(`watchdog fatal: worktree resolution failed: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
 const TSX_CLI = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
 
 function now() {
@@ -103,18 +129,20 @@ async function fetchReady() {
   }
 }
 
-/** 8120 是否仍被监听（旧 netstat 的 Windows 等价；失败 = true 保守）。 */
-function port8120Listening() {
+/** 8120 是否仍被监听（旧 netstat 的 Windows 等价；失败 = true 保守，避免
+ *  与运行中实例双写）。探测带 30s 超时（execFileSync timeout，与
+ *  stalledTenant 的 bash 调用同款风格）；exec/timeoutMs 可注入便于单测。 */
+export function probePort8120(exec = execFileSync, timeoutMs = PORT_PROBE_TIMEOUT_MS) {
   try {
-    const out = execFileSync(
+    const out = exec(
       "powershell",
       ["-NoProfile", "-Command", "Get-NetTCPConnection -LocalPort 8120 -State Listen -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count"],
-      { encoding: "utf8", shell: false },
+      { encoding: "utf8", shell: false, timeout: timeoutMs },
     );
     const count = Number(out.trim());
     return Number.isFinite(count) && count > 0;
   } catch {
-    return true; // 探测失败保守视为监听中（避免与运行中实例双写）
+    return true;
   }
 }
 
@@ -124,7 +152,7 @@ function arenaPids() {
     const out = execFileSync(
       "powershell",
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", join(REPO, "scripts", "arena-pids.ps1")],
-      { encoding: "utf8", shell: false },
+      { encoding: "utf8", shell: false, timeout: PID_PROBE_TIMEOUT_MS },
     );
     return out
       .split(/\r?\n/)
@@ -147,7 +175,7 @@ async function gracefulShutdown() {
     // 无 8120 服务（可能已死）→ 直接走进程清理
   }
   await new Promise((resolve) => setTimeout(resolve, GRACEFUL_WAIT_S * 1000));
-  if (port8120Listening()) {
+  if (probePort8120()) {
     const pids = arenaPids();
     if (pids !== null && pids.length > 0) {
       for (const pid of pids) {
@@ -253,7 +281,7 @@ async function main() {
     log(`STALL detected (${stalled} outcome stale > ${STALL_MAX_AGE_S}s or decision inactive) -> recovering`);
   } else {
     // 启动宽限：8120 有监听但未 ready → 等 BOOT_GRACE_MS 再查一次
-    if (port8120Listening()) {
+    if (probePort8120()) {
       await new Promise((resolve) => setTimeout(resolve, BOOT_GRACE_MS));
       const ready2 = await fetchReady();
       if (ready2 !== null && ready2.ready) {
@@ -294,7 +322,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  log(`watchdog fatal: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
-});
+// 仅直接执行时跑主流程；被测试 import 时不触发（避免单测拉起真实探测/重启）。
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    log(`watchdog fatal: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}

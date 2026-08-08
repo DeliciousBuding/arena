@@ -15,13 +15,25 @@ import type { TraceRecord } from "./decision-trace.ts";
 
 // ---------- 脱敏（递归） ----------
 
+/** 已知哈希字段（W30）：保留原文，不做疑似凭据脱敏。
+ *  configHash/strategyHash 是配置漂移审计链的区分键（tenant-runtime 消费），
+ *  64 位 sha256 hex 会被通用长串规则误判为凭据，导致恒为 sha256:[REDACTED]。
+ *  planHash 是 FNV 指纹（同源审计身份），一并白名单。 */
+const HASH_FIELD_KEYS: ReadonlySet<string> = new Set([
+  "configHash",
+  "strategyHash",
+  "planHash",
+]);
+
 const SECRET_PATTERNS: Array<RegExp> = [
   /sk-[A-Za-z0-9_-]{10,}/g,
   /Bearer\s+[A-Za-z0-9._~+/=-]+/gi,
   /(authorization|api[-_]?key|token|cookie|secret|password)\s*[:=]\s*["']?[^\s"'",}]+/gi,
   /ARENA_HERO_API_KEY(?:_\d+)?=\S+/g,
-  // 任意 ≥32 位疑似凭据串（纯字母数字；不含连字符——UUID runId 是遥测关联键，不得误伤）
-  /[A-Za-z0-9]{32,}/g,
+  // 任意 ≥32 位疑似凭据串（纯字母数字；不含连字符——UUID runId 是遥测关联键，不得误伤）。
+  // 负向 lookbehind：sha256: 之后的 hex 是 hash 标识（审计键）不是 secret，不得脱敏；
+  // 无 sha256: 前缀的裸 64 位串仍是疑似凭据，照常脱敏。
+  /(?<!sha256:[0-9a-f]*)[A-Za-z0-9]{32,}/g,
 ];
 
 function redactText(text: string): string {
@@ -54,7 +66,8 @@ export function sanitizeValue(value: unknown): unknown {
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = sanitizeValue(v);
+      // 已知哈希字段白名单：保留原文（审计链区分键，见 HASH_FIELD_KEYS）
+      out[key] = HASH_FIELD_KEYS.has(key) ? v : sanitizeValue(v);
     }
     return out;
   }

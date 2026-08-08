@@ -52,11 +52,11 @@ Arena stream
 ## 常用命令
 
 ```bash
-npm ci
-npm run check
-npm test
-npm run schema:check
-npm run replay:ts
+pnpm install --frozen-lockfile
+pnpm -r check
+pnpm -r test
+pnpm run schema:check
+pnpm run replay:ts
 ```
 
 单租户：

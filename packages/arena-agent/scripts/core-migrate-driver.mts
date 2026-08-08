@@ -13,9 +13,11 @@
  *
  * 用法：cd packages/arena-agent && npx tsx scripts/core-migrate-driver.mts \
  *   --tenant=t4 --target-x=300 --target-y=-150 [--interval-ms=15000] [--max-steps=400] [--beacon-safe=60]
- * 停止/清理：删 data/runtime/human-commands/<tenant>.json 里的 command，或等脚本自然结束。
+ * 数据根：ARENA_DATA_ROOT 必须显式设置（缺省 fail-fast），可用 --data-root 覆盖。
+ * 停止/清理：删 data/runtime/human-commands/<tenant>.json 里的 command，或等脚本自然结束；
+ *  arena-ctl cancel <tenant> 会按本租户 PID 白名单杀本 driver（runtime/drivers/<tenant>.<pid>.json 登记）。
  */
-import { writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, readdirSync, mkdirSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +25,18 @@ import { createNavState, notePosition, planDirection, chebyshev, mergeObstacleSe
 import { auditMigrationTarget } from "../src/domain/migration-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DATA_ROOT = process.env.ARENA_DATA_ROOT ?? "ARENA_REPO_ROOT/data";
+
+/** 数据根解析（W31，与 arena-ctl 同契约）：ARENA_DATA_ROOT 必须显式设置，
+ *  缺失/空白 → fail-fast 抛错（禁止硬编码机器绝对路径）；--data-root 可覆盖。 */
+function resolveDataRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const root = env.ARENA_DATA_ROOT?.trim();
+  if (!root) {
+    throw new Error(
+      "ARENA_DATA_ROOT 未设置：core-migrate-driver 拒绝隐式回退。请 export ARENA_DATA_ROOT=<data-root>（或传 --data-root=<...>）。",
+    );
+  }
+  return root;
+}
 
 interface Args {
   readonly tenant: string;
@@ -48,7 +61,7 @@ function parseArgs(argv: readonly string[]): Args {
     maxSteps: Number(get("max-steps") ?? 400),
     beaconSafe: Number(get("beacon-safe") ?? 60),
     force: argv.includes("--force"),
-    dataRoot: get("data-root") ?? DATA_ROOT,
+    dataRoot: get("data-root") ?? resolveDataRoot(),
   };
 }
 
@@ -241,8 +254,31 @@ function clearCommand(tenant: string): void {
   writeFileSync(path, JSON.stringify({ version: existing.version ?? 1, mode: existing.mode ?? "override", commands: [], goals: [], updatedAt: now }, null, 2), "utf-8");
 }
 
+/** driver 进程登记（W32）：写 runtime/drivers/<tenant>.<pid>.json——arena-ctl cancel
+ *  只按该租户 PID 白名单杀进程，绝不按命令行全机匹配。正常退出时自动注销。 */
+function registerDriverProcess(dataRoot: string, tenant: string): void {
+  const pidDir = join(dataRoot, "runtime", "drivers");
+  mkdirSync(pidDir, { recursive: true });
+  const pidPath = join(pidDir, `${tenant}.${process.pid}.json`);
+  writeFileSync(
+    pidPath,
+    JSON.stringify({
+      tenant,
+      pid: process.pid,
+      script: "core-migrate-driver",
+      startedAt: new Date().toISOString(),
+      target: [args.targetX, args.targetY],
+    }, null, 2) + "\n",
+    "utf-8",
+  );
+  process.once("exit", () => {
+    try { rmSync(pidPath, { force: true }); } catch { /* 注销失败不阻塞退出 */ }
+  });
+}
+
 const args = parseArgs(process.argv.slice(2));
 const log = (msg: string): void => console.log(`${new Date().toISOString()} [migrate-${args.tenant}] ${msg}`);
+registerDriverProcess(args.dataRoot, args.tenant);
 
 const nav = createNavState();
 const recentlyFailed = new Set<string>(); // "dir:x,y" 短时回避
