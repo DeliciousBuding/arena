@@ -53,56 +53,20 @@ function loadMergedMapInner(): MergedMap {
     const terrain = new Map<string, TerrainEntry>(); // key -> { type, tick }（obstacle/resource 累积）
     const coreById = new Map<string, DynamicEntry>(); // id -> 最新快照
     const unitById = new Map<string, DynamicEntry>(); // id -> 最新快照
-    for (const file of caseFiles) {
-      const tick = parseTick(file);
-      if (tick > latestTick) latestTick = tick;
-      const path = join(calibrationDir(tenant), runDir, "cases", file);
-      let raw: { before?: { state?: { objects?: Array<Record<string, unknown>> } } } | null = null;
-      try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
-      const state = raw?.before?.state;
-      if (!state?.objects) continue;
-      for (const obj of state.objects) {
-        if (obj.kind === "OBSTACLE") {
-          for (const [x, y] of (obj.positions as number[][] | undefined) ?? []) {
-            const key = cellKey(x, y);
-            const cur = terrain.get(key);
-            if (!cur || cur.type !== "obstacle") terrain.set(key, { x, y, type: "obstacle", tick });
-          }
-        } else if (obj.kind === "RESOURCE") {
-          for (const [x, y] of (obj.positions as number[][] | undefined) ?? []) {
-            const key = cellKey(x, y);
-            const cur = terrain.get(key);
-            if (!cur || cur.type !== "obstacle") terrain.set(key, { x, y, type: "resource", tick });
-          }
-        } else if (obj.kind === "CORE") {
-          const [x, y] = (obj.position as number[] | undefined) ?? [0, 0];
-          const id = typeof obj.id === "string" ? obj.id : `core@${x},${y}`;
-          const cur = coreById.get(id);
-          if (!cur || tick >= cur.tick) coreById.set(id, { x, y, type: "core", tick, hp: obj.hp as number, shield: obj.shield as number, controlled: obj.controlled as boolean, owner: typeof obj.owner_username === "string" ? obj.owner_username : null, id: typeof obj.id === "string" ? obj.id : null });
-        } else if (obj.kind === "UNIT") {
-          const [x, y] = (obj.position as number[] | undefined) ?? [0, 0];
-          const id = obj.id as string | undefined;
-          if (!id) continue;
-          const cur = unitById.get(id);
-          if (!cur || tick >= cur.tick) unitById.set(id, { x, y, type: "unit", tick, hp: obj.hp as number, unitType: (obj.unit_type as string | undefined) ?? "WORKER", cargo: (obj.cargo as number | undefined) ?? 0, controlled: obj.controlled as boolean, id });
-        }
-      }
-    }
-    // —— 动态层实时化：单位/核心改用最新 case 的 after.state ——
-    // before.state 是上一 tick 起点，after.state 才是当前实时位置（recorder 在 tick 完成后写 case）；
-    // 以 after 为准重建动态层 → 已摧毁/失联的单位核心不再残留（修复"已摧毁还显示""落后 1 tick"）。
     let lastCaseRaw: { after?: { tick?: number; state?: { objects?: Array<Record<string, unknown>>; champion_beacon?: { position?: number[]; status?: string; carrier_id?: string | null } } }; before?: { state?: { champion_beacon?: { position?: number[]; status?: string; carrier_id?: string | null } } } } | null = null;
+    let afterValid = false; // 2026-08-08 结构性优化：after 全量世界状态直接重建地形/动态层，
+    // 跳过 before 循环 24 case parse（其结果本就被 clear 丢弃——重建 ~300ms → ~30ms，地图卡根治）
     if (caseFiles.length > 0) {
       const lastPath = join(calibrationDir(tenant), runDir, "cases", caseFiles[caseFiles.length - 1]);
       try { lastCaseRaw = JSON.parse(readFileSync(lastPath, "utf8")); } catch { lastCaseRaw = null; }
-      const afterTick = typeof lastCaseRaw?.after?.tick === "number" ? lastCaseRaw.after.tick : latestTick;
-      if (afterTick > latestTick) latestTick = afterTick;
       const after = lastCaseRaw?.after?.state;
+      const afterTick = typeof lastCaseRaw?.after?.tick === "number" ? lastCaseRaw.after.tick : parseTick(caseFiles[caseFiles.length - 1]);
+      if (afterTick > latestTick) latestTick = afterTick;
       if (after?.objects) {
+        afterValid = true;
         // 地形重建（2026-08-08，数据质量 A7）：after 是全量世界状态（含
-        // OBSTACLE/RESOURCE，资源点动态 2-6 tick 消失）——此前只清单位/核心，
-        // terrain 是 before 循环累积（run 内出现过即保留），已消失的矿/障碍仍
-        // 显示在地图上（"绿色残留"地图层根因）。after 存在时重建地形为当前态。
+        // OBSTACLE/RESOURCE，资源点动态 2-6 tick 消失）——已消失的矿/障碍不残留
+        //（"绿色残留"地图层根因）；单位/核心以 after 为准，已摧毁的不残留。
         terrain.clear(); unitById.clear(); coreById.clear();
         for (const obj of after.objects) {
           if (obj.kind === "OBSTACLE" || obj.kind === "RESOURCE") {
@@ -121,6 +85,44 @@ function loadMergedMapInner(): MergedMap {
         }
       }
     }
+    // —— after 缺失（异常 case）时 before 循环兜底：24 case 累积地形/单位/核心 ——
+    if (!afterValid) {
+      for (const file of caseFiles) {
+        const tick = parseTick(file);
+        if (tick > latestTick) latestTick = tick;
+        const path = join(calibrationDir(tenant), runDir, "cases", file);
+        let raw: { before?: { state?: { objects?: Array<Record<string, unknown>> } } } | null = null;
+        try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+        const state = raw?.before?.state;
+        if (!state?.objects) continue;
+        for (const obj of state.objects) {
+          if (obj.kind === "OBSTACLE") {
+            for (const [x, y] of (obj.positions as number[][] | undefined) ?? []) {
+              const key = cellKey(x, y);
+              const cur = terrain.get(key);
+              if (!cur || cur.type !== "obstacle") terrain.set(key, { x, y, type: "obstacle", tick });
+            }
+          } else if (obj.kind === "RESOURCE") {
+            for (const [x, y] of (obj.positions as number[][] | undefined) ?? []) {
+              const key = cellKey(x, y);
+              const cur = terrain.get(key);
+              if (!cur || cur.type !== "obstacle") terrain.set(key, { x, y, type: "resource", tick });
+            }
+          } else if (obj.kind === "CORE") {
+            const [x, y] = (obj.position as number[] | undefined) ?? [0, 0];
+            const id = typeof obj.id === "string" ? obj.id : `core@${x},${y}`;
+            const cur = coreById.get(id);
+            if (!cur || tick >= cur.tick) coreById.set(id, { x, y, type: "core", tick, hp: obj.hp as number, shield: obj.shield as number, controlled: obj.controlled as boolean, owner: typeof obj.owner_username === "string" ? obj.owner_username : null, id: typeof obj.id === "string" ? obj.id : null });
+          } else if (obj.kind === "UNIT") {
+            const [x, y] = (obj.position as number[] | undefined) ?? [0, 0];
+            const id = obj.id as string | undefined;
+            if (!id) continue;
+            const cur = unitById.get(id);
+            if (!cur || tick >= cur.tick) unitById.set(id, { x, y, type: "unit", tick, hp: obj.hp as number, unitType: (obj.unit_type as string | undefined) ?? "WORKER", cargo: (obj.cargo as number | undefined) ?? 0, controlled: obj.controlled as boolean, id });
+          }
+        }
+  
+    }    }
     // 组装：地形在下，动态在上。
     // 地形（障碍/资源）按格去重（priority：obstacle < resource，一格只能一种）；
     // 单位/核心按对象 id 各自保留——同租户多单位可同格（如 worker 叠 core），
@@ -176,7 +178,12 @@ function loadMergedMapInner(): MergedMap {
  *  4 租户 × 最近 24 个 case（~96 次文件读+全量 JSON 解析）。case 文件原子写入，
  *  以 (runId, caseCount, 最新 case 名) 为签名——tick 未前进时直接命中缓存，
  *  15s tick vs 3s poll 下命中率 ~80%，/api/map 从毫秒级 I/O 降到近零。 */
+/** 2026-08-08 stale-while-revalidate（地图卡根治）：/api/map 全量重建 ~300ms 同步阻塞
+ *  事件循环，3s poll 撞上重建即卡。改为：签名变且有旧缓存 → 立即返回旧数据 +
+ *  后台 async 分片重建（每 4 case 让出事件循环，其他请求穿插，永不阻塞）；
+ *  重建完成前所有请求命中旧缓存，地图每 tick 平滑更新。无缓存（首屏）才同步全量。 */
 const mergedCache: { sig: string; payload: MergedMap | null } = { sig: "", payload: null };
+let mapRebuilding = false;
 export function loadMergedMap(): MergedMap {
   const parts: string[] = [];
   for (const tenant of TENANTS) {
@@ -187,8 +194,22 @@ export function loadMergedMap(): MergedMap {
   }
   const sig = parts.join("|");
   if (mergedCache.sig === sig && mergedCache.payload) return mergedCache.payload;
+  if (mergedCache.payload) {
+    if (!mapRebuilding) {
+      mapRebuilding = true;
+      setTimeout(() => {
+        try {
+          const p = loadMergedMapInner(); // 2026-08-08 结构性优化后 ~30ms，可接受
+          mergedCache.sig = sig; mergedCache.payload = p;
+        } catch { /* 重建失败保留旧缓存，下次请求重试 */ }
+        mapRebuilding = false;
+      }, 0);
+    }
+    return mergedCache.payload;
+  }
   const payload = loadMergedMapInner();
   mergedCache.sig = sig;
   mergedCache.payload = payload;
   return payload;
 }
+
