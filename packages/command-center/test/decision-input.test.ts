@@ -84,3 +84,19 @@ test("decision-input: 采集候选（miningCandidates）归一 + 威胁 join + �
   const q = buildDecisionInput("t2", null, [], []);
   assert.equal(q.miningCandidates.length, 0);
 });
+
+test("decision-input: 补测目标 chunk 威胁并入（threatLevel/threatCombat）", () => {
+  const targets = [
+    { key: "2,2", cx: 2, cy: 2, lastSeenTick: 5000, stalenessTicks: 7000, distChunks: 2, threatLevel: 3, threatCombat: 53 },
+    { key: "5,5", cx: 5, cy: 5, lastSeenTick: 6000, stalenessTicks: 6000, distChunks: 1, threatLevel: 0, threatCombat: 0 },
+  ];
+  const p = buildDecisionInput("t1", 12000, [], [], undefined, targets);
+  assert.equal(p.resurveyTargets.length, 2);
+  const t1 = p.resurveyTargets[0];
+  assert.equal(t1.threatLevel, 3, "chunk 威胁级保留");
+  assert.equal(t1.threatCombat, 53);
+  assert.equal(t1.stalenessTicks, 7000, "最旧优先");
+  // 空兕底 + 缺威胁默认 0
+  const q = buildDecisionInput("t2", null, [], []);
+  assert.equal(q.resurveyTargets.length, 0);
+});
