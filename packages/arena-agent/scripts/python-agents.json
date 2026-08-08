@@ -38,6 +38,17 @@
       "slot": "pickle",
       "slotEvery": 25,
       "desc": "Waaiging/ArenaHero 社区战术 agent（410KB 策略：自适应经济/动态产兵/编队推进/Core 斩首/信标控制，GitHub 开源玩家）"
+    },
+    "arena-evolve": {
+      "repo": "arena-evolve",
+      "module": "arena_evolve_adapter",
+      "construct": {
+        "fn": "ArenaEvolveAgent",
+        "kwargs": []
+      },
+      "decide": "choose_actions",
+      "slot": "process-memory",
+      "desc": "Torther/arena-evolve@bef407e 进化冠军（evolve_v7_best；复用其 LiveAdapter 接官方 SDK Turn）"
     }
   }
 }

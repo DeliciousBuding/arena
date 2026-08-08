@@ -149,8 +149,8 @@ export function createReferenceBridge(options: {
   readonly sdkRepoDir?: string;
   readonly stateSlot?: string;
   readonly bridgeScript?: string;
-  /** 参考对手：farmer=榜二（默认）；core=官方完整参考 agent。 */
-  readonly agent?: "farmer" | "core";
+  /** python-agents.json 注册名；默认 farmer。 */
+  readonly agent?: string;
 }): { readonly bridge: PersistentSyncBridge; readonly stateSlot: string } {
   const stateSlot =
     options.stateSlot ?? join(tmpdir(), `arena-ref-${randomUUID()}.pkl`);
