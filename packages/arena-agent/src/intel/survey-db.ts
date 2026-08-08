@@ -281,7 +281,12 @@ function migrateResourceSanity(db: DatabaseSync): void {
  *  vs 自爆"，且 destroyed_by 真实值是数组（combat.ts ATTACK 事件），旧解析只认
  *  string 导致摧毁者丢失。回填源 = calibration case（按 tick 匹配，扫描该租户
  *  calibration 全量 case；CORE_DESTROYED 稀有，仅一次迁移可接受）。
- *  幂等：只处理 reason_code IS NULL 的行；已回填行不再触发全扫。 */
+ *  幂等：只处理 reason_code IS NULL 的行；已回填行不再触发全扫。
+ *  叙事 A11b（2026-08-08）：重复行去重 + 表达式唯一索引——SQLite UNIQUE 约束
+ *  中 NULL≠NULL，CORE_DESTROYED 的 actor_id 恒 NULL 导致 UNIQUE(tenant,tick,
+ *  event_type,actor_id,target_id) 完全不去重（force 重跑/水位回退重复插入，
+ *  实测 t2/t3/t4 各有 1 对同 tick 同 target 重复行）。修复：按 COALESCE 归一
+ *  键删重复（保留最小 id）+ 表达式唯一索引根治未来写入（INSERT OR IGNORE 生效）。 */
 function migrateNotableSanity(db: DatabaseSync, dataRoot: string, tenant: string): void {
   try {
     const cols = db.prepare("PRAGMA table_info(notable_events)").all() as Array<{ name: string }>;
@@ -289,6 +294,18 @@ function migrateNotableSanity(db: DatabaseSync, dataRoot: string, tenant: string
     if (!names.has("reason_code")) db.exec("ALTER TABLE notable_events ADD COLUMN reason_code TEXT;");
     if (!names.has("destroyed_by")) db.exec("ALTER TABLE notable_events ADD COLUMN destroyed_by TEXT;");
     if (!names.has("is_our_core")) db.exec("ALTER TABLE notable_events ADD COLUMN is_our_core INTEGER;");
+    // 去重：按 COALESCE 归一键（NULL 参与唯一性）保留最小 id；幂等——无重复行时 DELETE 0 行。
+    db.exec(
+      "DELETE FROM notable_events WHERE id NOT IN (" +
+      "SELECT MIN(id) FROM notable_events GROUP BY tenant, tick, event_type, COALESCE(actor_id, ''), COALESCE(target_id, '')" +
+      ")",
+    );
+    // 表达式唯一索引：NULL 归一后唯一（根治 CORE_DESTROYED actor_id=NULL 不去重）。
+    // 先删重复后建，索引创建幂等；历史重复已清。
+    db.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_notable_events_dedup ON notable_events(" +
+      "tenant, tick, event_type, COALESCE(actor_id, ''), COALESCE(target_id, ''))",
+    );
     const pending = db.prepare(
       "SELECT id, tick, target_id FROM notable_events WHERE event_type = 'CORE_DESTROYED' AND reason_code IS NULL",
     ).all() as Array<{ id: number; tick: number; target_id: string | null }>;

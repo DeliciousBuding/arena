@@ -387,6 +387,9 @@ function collectNotableDeeds(tenant: string): Deed[] {
         ? "SELECT tick, event_type, actor_id, target_id, x, y, amount, unit_type, reason_code, destroyed_by, is_our_core FROM notable_events ORDER BY tick DESC LIMIT 300"
         : "SELECT tick, event_type, actor_id, target_id, x, y, amount, unit_type FROM notable_events ORDER BY tick DESC LIMIT 300",
     ).all() as Array<Record<string, unknown>>;
+    // 显示层去重兜底（叙事 A11b）：库内历史重复行（旧库 UNIQUE 约束 NULL 语义
+    // 不去重）即使未迁移清理，面板也不重复显示——按 dedupeKey 只保留首条。
+    const seenRows = new Set<string>();
     for (const row of rows) {
       const d = deedFromNotableRow({
         tick: Number(row.tick),
@@ -401,7 +404,13 @@ function collectNotableDeeds(tenant: string): Deed[] {
         destroyed_by: typeof row.destroyed_by === "string" ? row.destroyed_by : null,
         is_our_core: typeof row.is_our_core === "number" ? row.is_our_core : null,
       }, tenant);
-      if (d) out.push(d);
+      if (!d) continue;
+      const k = dedupeKey(d);
+      if (k !== null) {
+        if (seenRows.has(k)) continue;
+        seenRows.add(k);
+      }
+      out.push(d);
     }
   } catch {
     // 旧库无 notable_events 表：扫描兜底（loadDeeds 仍走 collectEventDeeds）

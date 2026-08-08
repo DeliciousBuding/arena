@@ -428,6 +428,50 @@ test("survey-db: migrateNotableSanity——旧库 CORE_DESTROYED 回填敌我/�
   }
 });
 
+test("survey-db: migrateNotableSanity——CORE_DESTROYED 重复行去重 + 表达式唯一索引（叙事 A11b）", () => {
+  const root = mkdtempSync(join(tmpdir(), "arena-notable-dedup-"));
+  try {
+    // 造旧版库（无三列、无去重索引）并插入同 tick 同 target 的两行——模拟
+    // actor_id=NULL 时 SQLite UNIQUE 约束 NULL 语义（NULL≠NULL）不去重的历史重复
+    const dbPath = join(root, "runtime", "survey", "t3.db");
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const oldDb = new DatabaseSync(dbPath);
+    oldDb.exec(`CREATE TABLE notable_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant TEXT NOT NULL, tick INTEGER NOT NULL, event_type TEXT NOT NULL,
+      actor_id TEXT, target_id TEXT, x INTEGER, y INTEGER, amount INTEGER, unit_type TEXT,
+      UNIQUE(tenant, tick, event_type, actor_id, target_id)
+    );`);
+    const ins = oldDb.prepare(
+      "INSERT INTO notable_events (tenant, tick, event_type, actor_id, target_id, x, y, amount, unit_type) VALUES ('t3', 73094, 'CORE_DESTROYED', NULL, 'ee9f1034-5261-450c-ad8a-5daaede58fb5', 118, 461, NULL, NULL)",
+    );
+    ins.run();
+    ins.run(); // actor_id=NULL 两行都插入（NULL≠NULL，UNIQUE 不拦截）
+    oldDb.close();
+    // 打开 write 触发迁移：删重复（保留最小 id）+ 建表达式唯一索引
+    const db = openSurveyDb(root, "t3", true);
+    const rows = db.prepare("SELECT id FROM notable_events").all() as Array<{ id: number }>;
+    assert.equal(rows.length, 1, "重复行去重：只留 1 行");
+    // 唯一索引存在且后续 NULL actor_id 插入被忽略（INSERT OR IGNORE 生效）
+    const n = recordNotableEvent(db, {
+      tenant: "t3", tick: 73094, eventType: "CORE_DESTROYED", actorId: null,
+      targetId: "ee9f1034-5261-450c-ad8a-5daaede58fb5", x: 118, y: 461, amount: null, unitType: null,
+      reasonCode: "ATTACK", destroyedBy: ["feiwu"], isOurCore: true,
+    });
+    assert.equal(n, 0, "表达式唯一索引拦截重复插入");
+    const cnt = db.prepare("SELECT COUNT(*) AS c FROM notable_events").get() as { c: number };
+    assert.equal(cnt.c, 1, "总数不变");
+    // 幂等：再次打开迁移不报错不删有效行
+    db.close();
+    const db2 = openSurveyDb(root, "t3", true);
+    const cnt2 = db2.prepare("SELECT COUNT(*) AS c FROM notable_events").get() as { c: number };
+    assert.equal(cnt2.c, 1, "幂等：有效行保留");
+    db2.close();
+  } finally {
+    cleanup(root);
+  }
+});
+
 test("World: seedObstacleMemory 注入障碍记忆（重启后导航直接准确）", () => {
   const world = new World();
   const n = world.seedObstacleMemory([[1, 1], [2, 2], [1, 1]]);
