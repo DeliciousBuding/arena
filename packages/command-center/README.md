@@ -91,7 +91,7 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
   快照（单位插值移动 + 15s tick 读条 + 事件浮字）；SHOT/SWEEP/HARVEST/DEPOSIT/CORE_DESTROYED 等
   事件特效 + 销毁碎片迸溅。
 - **租户卡片**：在线状态（supervisor 探测 / outcome.jsonl 新鲜度）、资源、增量、工人数、最大/均值距离、可见资源、事件数、60 tick 均值。
-- **实时决策流**：`runtime.jsonl` 尾部决策（tick / deadlineOutcome / agent/selection 延迟 / submitResult / 中止请求），统一或按租户 tab；事件 tab 聚合 outcome events。
+- **实时决策流**：`runtime.jsonl` 尾部决策（tick / deadlineOutcome / agent/selection 延迟 / submitResult / 中止请求），统一或按租户 tab；事件 tab 聚合 outcome events；事迹 tab 直读 `/api/deeds/journal` 联盟叙事（★星级、点击跳图定位）。
 - **三栏布局 + 右栏面板（2026-08-08）**：左栏（租户/图层）+ 地图 + 右栏六 tab（决策流 / 威胁情报 /
   参谋建议 / 测绘 / 联盟态势 / 兑换码），左右栏可折叠为 40px 窄条（VSCode 侧边栏模式，折叠状态持久化）。
   威胁情报 = 官方排行榜（威胁/信标/核心三 tab、我方/遭遇高亮、榜外遭遇补全）；参谋建议 = 该做什么清单
