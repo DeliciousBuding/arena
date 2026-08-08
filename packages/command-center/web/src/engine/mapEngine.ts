@@ -9,7 +9,7 @@ let minimap: ReturnType<typeof createMinimap> | null = null; // createMapEngine 
 import { getJSON } from './api.js';
 import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, TACT_ACTION_ICON, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets, tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability } from './tactical.js';
 import { findPath } from './pathfind.ts';
-import { createReplayState, replayAdvance, replayLoad, replayStep, replayToggle, replayCycleSpeed, updateReplayUI } from './replay.js';
+import { createReplayState, replayAdvance, replayLoad, replayStep, replayToggle, replayCycleSpeed, updateReplayUI, replayDrawLayer as replayDrawImpl } from './replay.js';
 import { spawnEventFx, drawEventFx } from './fx.js';
 import { commandTelemetryDeltas as teleDeltas, commandGoalOf as cmdGoalOf, commandActionOf as cmdActionOf, unitHumanCommandOf as cmdHumanOf, commandStatusText as cmdStatusText, unitTelemetryOf as cmdUnitTelemetry, unitCommandLabel as cmdLabel, squadSummary as cmdSquad } from './commands.js';
 
@@ -612,7 +612,7 @@ function draw() {
   drawBoxSelection(s);   // 框选矩形
   drawJumpMark(s);
   drawJumpPins(s);
-  if (replayActive) replayDrawLayer(s);
+  if (replayActive) replayDrawImpl(replay, replayRenderDeps, s);
   const ztxt = `×${state.view.scale.toFixed(1)}`;
   if (!state.tactical.mode && els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽/方向键平移 · 滚轮缩放 · 双击适应 · G 全局 · ${ztxt}`; }
   if (els.zoomLevel && els.zoomLevel.textContent !== ztxt) {
@@ -3201,65 +3201,18 @@ function tactRenderHud(tenant: any) {
   </div>${surveyRow}${lcRow}${hudCmd}${squadRow}`;
 }
 /* ============ 回放引擎（连续 tick 快照 → 单位移动动画 + 15s 读条） ============ */
-function replayDrawLayer(s: any) {
-  const f = replay.frame;
-  const prog = replay.playing ? replay.progress : 1;
-  spawnEventFx(T(), replay.data, replay.data.ticks[f], performance.now());
-  // 核心（含敌我区分）
-  for (const c of replay.data.cores) {
-    const p = replayInterp(c, f, prog);
-    if (!p) continue;
-    const color = c.controlled ? (TENANT_COLORS[state.soloTenant!] ?? '#69b3d8') : '#e0625d';
-    const size = Math.max(8, s * 0.72);
-    const pr = project(p.x, p.y);
-    if (c.controlled) { ctx.shadowColor = color; ctx.shadowBlur = 10; }
-    if (images[SPRITE.core]) sprite(images[SPRITE.core], pr.sx, pr.sy, size);
-    else { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(3, size * 0.3), 0, Math.PI * 2); ctx.fill(); }
-    ctx.shadowBlur = 0;
-    ring(pr.sx, pr.sy, size * 0.62, color, c.controlled ? 2 : 1.6, c.controlled ? [] : [3, 3]);
-    if (!c.controlled) {
-      ctx.strokeStyle = 'rgba(198,99,112,.85)'; ctx.lineWidth = 2;
-      const d = Math.max(4, size * 0.2);
-      ctx.beginPath();
-      ctx.moveTo(pr.sx - d, pr.sy - d); ctx.lineTo(pr.sx + d, pr.sy + d);
-      ctx.moveTo(pr.sx + d, pr.sy - d); ctx.lineTo(pr.sx - d, pr.sy + d);
-      ctx.stroke();
-    }
-    if (typeof p.hp === 'number') {
-      const bw = Math.max(14, size * 1.1), bh = 3;
-      const bx = pr.sx - bw / 2, by = pr.sy + size * 0.62 + 4;
-      ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(bx, by, bw, bh);
-      ctx.fillStyle = p.hp > 3 ? '#8fce9f' : p.hp > 1 ? '#ffffff' : '#e0625d';
-      ctx.fillRect(bx, by, bw * Math.max(0, Math.min(1, p.hp / 5)), bh);
-    }
-    // 人类指挥中标记（聚焦=回放接管单位绘制，需在此补画）
-    if (c.controlled && unitHumanCommandOf(state.soloTenant, c.id)) drawHumanMarker(s, pr.sx, pr.sy, size, c.id);
-  }
-  // 单位
-  for (const u of replay.data.units) {
-    const p = replayInterp(u, f, prog);
-    if (!p) continue;
-    const color = u.controlled ? (TENANT_COLORS[state.soloTenant!] ?? '#69b3d8') : '#e0625d';
-    const size = Math.max(6, s * (u.type === 'RANGER' ? 0.68 : 0.62));
-    const pr = project(p.x, p.y);
-    if (s >= 6) {
-      ring(pr.sx, pr.sy, size * 0.72, u.controlled ? color : 'rgba(198,99,112,.55)', u.controlled ? 1.6 : 1.1, u.controlled ? [] : [3, 3]);
-      const path = unitSpritePath(u.type);
-      if (images[path]) sprite(images[path], pr.sx, pr.sy, size);
-      else { ctx.fillStyle = u.controlled ? color : '#e0625d'; ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(2, size * 0.25), 0, Math.PI * 2); ctx.fill(); }
-    } else {
-      ctx.fillStyle = u.controlled ? color : 'rgba(198,99,112,.7)';
-      ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(1.8, s * 0.42), 0, Math.PI * 2); ctx.fill();
-    }
-    // 载货小点
-    if ((p.cargo ?? 0) > 0 && s >= 8) {
-      ctx.fillStyle = '#8fce9f';
-      ctx.beginPath(); ctx.arc(pr.sx, pr.sy - size * 0.62, Math.max(1.6, s * 0.14), 0, Math.PI * 2); ctx.fill();
-    }
-    // 人类指挥中标记（聚焦=回放接管单位绘制，需在此补画）
-    if (u.controlled && unitHumanCommandOf(state.soloTenant, u.id)) drawHumanMarker(s, pr.sx, pr.sy, size, u.id);
-  }
-}
+/** 回放渲染依赖注入（replay.ts replayDrawLayer 用）：画布/投影/精灵/状态提供给回放模块，
+ *  无 mapEngine 循环依赖。 */
+const replayRenderDeps = {
+  getCtx: () => ctx,
+  project,
+  images,
+  sprite,
+  drawHumanMarker,
+  soloTenant: () => state.soloTenant,
+  tac: T,
+  spawnFx: (tac2: any, data: any, tick: any, now: number) => spawnEventFx(tac2, data, tick, now),
+};
 
 /** 测绘层：聚焦租户时，把该 run 全部 case 累积的已知地形（障碍/资源）以半透明显示，
     当前 case 可见的物体由上层 cells 全亮覆盖 —— 即"探索过的范围"的记忆测绘。 */
