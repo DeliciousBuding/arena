@@ -75,6 +75,7 @@ import {
 } from "../telemetry/jsonl-writer.ts";
 import { planHashOf } from "../telemetry/decision-trace.ts";
 import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
+import { countOutcomeEvents } from "../telemetry/outcome-events.ts";
 import { AllianceShadowWriter } from "../alliance/shadow.ts";
 import type { AllianceShadowFrameV1 } from "../alliance/shadow-frame.ts";
 import { EMPTY_ROSTER_ID_SET, loadAllianceRosterFile, type AllianceRosterRef } from "../alliance/roster-file.ts";
@@ -1061,6 +1062,7 @@ export async function runTenant(
         resources: number;
         plan: TickOutcome["plan"];
         coreId: string | null;
+        unitIds: readonly string[];
       } | null;
     } = { prev: null };
     let processedTickCount = 0;
@@ -1204,6 +1206,12 @@ export async function runTenant(
               priorIntent,
             };
           });
+        const outcomeCounters = countOutcomeEvents(outcome.state.events, {
+          priorUnitIds: new Set(holder.prev.unitIds),
+          currentUnitIds: new Set(outcome.state.units.map((unit) => unit.id)),
+          priorCoreId: holder.prev.coreId,
+          currentCoreId: outcome.state.core?.id ?? null,
+        });
         const outcomeRecord: OutcomeTraceRecord = {
           processRunId,
           tenantId: config.tenantId,
@@ -1211,6 +1219,10 @@ export async function runTenant(
           coreResourcesBefore: holder.prev.resources,
           coreResourcesAfter: outcome.state.resources,
           coreResourceDelta: outcome.state.resources - holder.prev.resources,
+          grossDeposit: outcomeCounters.grossDeposit,
+          spawnCount: outcomeCounters.spawnCount,
+          healCount: outcomeCounters.healCount,
+          unitLossCount: outcomeCounters.unitLossCount,
           coreState: outcome.state.core?.state ?? null,
           visibleResourceCellCount: outcome.state.resourceCells.size,
           workerCount: outcome.state.workers.length,
@@ -1388,6 +1400,7 @@ export async function runTenant(
         resources: outcome.state.resources,
         plan: outcome.plan,
         coreId: outcome.state.core?.id ?? null,
+        unitIds: outcome.state.units.map((unit) => unit.id),
       };
       processedTickCount += 1;
       if (outcome.submitAttempted) liveSubmitCount += 1;
