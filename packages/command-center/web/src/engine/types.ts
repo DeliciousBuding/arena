@@ -28,6 +28,7 @@ export interface EngineState {
   readonly layers: Readonly<Record<string, boolean>>;
   readonly tenantsOn: Readonly<Record<string, boolean>>;
   readonly cellCount: number;
+  readonly jumpPins: readonly { x: number; y: number; at: number; label: string | null }[];
 }
 export interface EngineHandle {
   toggleSolo(t: string): void;
