@@ -33,6 +33,23 @@ const child = spawn(python, [bridgeScript, ...bridgeArgs], {
   stdio: ["pipe", "pipe", "inherit"],
 });
 
+// 孤儿进程防护（M2 卫生项）：worker 线程退出（正常结束/被 parentPort.close
+// 或 worker.terminate 终止）时 kill 子进程，防常驻 Python 桥变孤儿。
+process.on("exit", () => {
+  try {
+    child.kill();
+  } catch {
+    /* 已退出 */
+  }
+});
+parentPort.on("close", () => {
+  try {
+    child.kill();
+  } catch {
+    /* 已退出 */
+  }
+});
+
 const lines = [];
 const reader = createInterface({ input: child.stdout, crlfDelay: Infinity });
 reader.on("line", (line) => lines.push(line));

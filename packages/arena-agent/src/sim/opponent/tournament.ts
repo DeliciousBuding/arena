@@ -227,8 +227,9 @@ export function runMatch(
     { id: b.id, username: b.id, resources: 25, core: { id: "9fe0ca6d-53cb-4dd5-a8f8-2e6925f19e72", position: [30, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(b.id, "33333333-3333-3333-3333-3333333333", 1, [29, 0], [30, 1], [31, 0]) },
     seed,
   );
-  const providerA = a.build();
-  const providerB = b.build();
+  // build 移入 try：中途抛错时已建 provider 也走 finally close（卫生项，
+  // 防 worker/state-slot 泄漏导致进程无法退出）。
+  const providers: PlanProvider[] = [];
   const recorder =
     opts?.recordTo === undefined
       ? null
@@ -242,6 +243,7 @@ export function runMatch(
           refill: refillConfig ?? undefined,
         });
   try {
+    providers.push(a.build(), b.build());
     const result = runEpisode({
       scenario,
       rulesPath,
@@ -253,7 +255,7 @@ export function runMatch(
         { id: b.id, planner: "safety", plannerConfig: {}, policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" } },
       ],
       // 关键：注入我们两个条目的 provider，而不是用内置 deterministic/safety
-      plannerFactory: (tenant: EpisodeTenant): PlanProvider => (tenant.id === a.id ? providerA : providerB),
+      plannerFactory: (tenant: EpisodeTenant): PlanProvider => (tenant.id === a.id ? providers[0] : providers[1]),
       validatePlans: opts?.validatePlans ?? true,
       onTickRecorded: recorder?.onTickRecorded,
     } as never);
@@ -272,7 +274,7 @@ export function runMatch(
     recorder?.close();
     // 对局结束必须释放对手资源（常驻子进程桥：close worker + 清 state-slot），
     // 否则 worker 线程泄漏导致进程无法退出（鸭子类型：非子进程 provider 无 close）。
-    for (const provider of [providerA, providerB]) {
+    for (const provider of providers) {
       const closer = (provider as { close?: () => void }).close;
       if (typeof closer === "function") {
         closer.call(provider);
@@ -358,7 +360,8 @@ export function runFreeForAll(
         : { everyTicks: opts.refillEveryTicks };
   const scenario = opts?.scenario ?? makeArenaScenarioN(entries, seed);
   const ids = entries.map((entry) => entry.id);
-  const providers = entries.map((entry) => entry.build());
+  // build 移入 try：中途抛错时已建 provider 也走 finally close（卫生项同 runMatch）。
+  const providers: PlanProvider[] = [];
   const recorder =
     opts?.recordTo === undefined
       ? null
@@ -372,6 +375,7 @@ export function runFreeForAll(
           refill: refillConfig ?? undefined,
         });
   try {
+    for (const entry of entries) providers.push(entry.build());
     const result = runEpisode({
       scenario,
       rulesPath,

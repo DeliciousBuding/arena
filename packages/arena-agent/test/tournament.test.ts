@@ -9,8 +9,11 @@ import assert from "node:assert/strict";
 import {
   makeArenaScenario,
   decideWinner,
+  makeSafetyEntry,
   type TournEntry,
 } from "../src/sim/opponent/tournament.ts";
+import { runMatrix, type MatrixOpponent } from "../src/sim/opponent/matrix.ts";
+import { formatWinRateCI, wilson95 } from "../src/sim/opponent/stats.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../src/strategies/safety-planner.ts";
 import type { SimWorld } from "../src/sim/world/types.ts";
 
@@ -142,4 +145,110 @@ test("TournEntry：makeSafetyEntry 构造可用的 SafetyPlanner provider", () =
   const provider = entry.build();
   assert.ok(provider);
   assert.equal(typeof provider.decide, "function");
+});
+
+// ---------- M2：Wilson 95% 区间（evidence-v1 契约） ----------
+
+const close = (actual: number, expected: number, tolerance = 0.011): void => {
+  assert.ok(
+    Math.abs(actual - expected) <= tolerance,
+    `expected ${expected} ± ${tolerance}, got ${actual}`,
+  );
+};
+
+test("wilson95：已知标定 6/8 → [0.41, 0.93]（evidence-v1.md 示例）", () => {
+  const [lower, upper] = wilson95(6, 8);
+  close(lower, 0.41);
+  close(upper, 0.93);
+  // 半宽 ≈ ±30%（M2 最低样本量门禁的论述依据）
+  assert.ok(upper - lower >= 0.5, "8 局区间半宽应 ≥ ±25%");
+});
+
+test("wilson95：极端样本不越界（0/n 与 n/n 都在 [0,1] 内）", () => {
+  const [zeroLower, zeroUpper] = wilson95(0, 8);
+  assert.equal(zeroLower, 0);
+  assert.ok(zeroUpper > 0 && zeroUpper <= 1);
+  const [allLower, allUpper] = wilson95(8, 8);
+  assert.ok(allLower > 0 && allLower < 1);
+  assert.equal(allUpper, 1);
+  // 对称性：4/8 区间以 0.5 为中心（Wilson 中点略偏，但不会出界）
+  const [midLower, midUpper] = wilson95(4, 8);
+  assert.ok(midLower < 0.5 && midUpper > 0.5);
+});
+
+test("wilson95：n=0 无样本 → [0, 1] 哨兵（不给出误导性窄区间）", () => {
+  assert.deepEqual(wilson95(0, 0), [0, 1]);
+});
+
+test("formatWinRateCI：胜率=75% [41-93] 展示格式（整数百分比 + Wilson 取整）", () => {
+  assert.equal(formatWinRateCI(6, 8), "75% [41-93]");
+  assert.equal(formatWinRateCI(0, 4), "0% [0-49]");
+});
+
+// ---------- M2：交叉矩阵（runMatrix） ----------
+
+const MANIFEST_PATH = "src/sim/contracts/rules-v0.14.json";
+
+test("matrix：2 版本 × 1 对手短局——全组合跑通、统计自洽、CI 单调", () => {
+  const opponent: MatrixOpponent = {
+    name: "t-opp",
+    desc: "test opponent",
+    kind: "reference-python",
+    source: "t-opp",
+    entry: (seed) => makeSafetyEntry(`t-opp-s${seed}`),
+  };
+  const combos = runMatrix(
+    [
+      { entry: makeSafetyEntry("mine-aggressive"), kind: "config", source: "aggressive" },
+      { entry: makeSafetyEntry("mine-defensive"), kind: "config", source: "defensive" },
+    ],
+    [opponent],
+    [1, 2],
+    { ticks: 30, rulesPath: MANIFEST_PATH, validatePlans: false, refillEveryTicks: null },
+  );
+  assert.equal(combos.length, 2, "2 版本 × 1 对手 = 2 组合");
+  for (const combo of combos) {
+    assert.equal(combo.matches.length, 2, "每组合 2 seeds");
+    assert.equal(combo.matches[0].seed, 1);
+    assert.equal(combo.matches[1].seed, 2);
+    assert.equal(combo.versionWins + combo.opponentWins + combo.draws, 2, "胜负平合计 = 局数");
+    assert.ok(combo.versionWinRate >= 0 && combo.versionWinRate <= 1);
+    assert.ok(combo.opponentWinRate >= 0 && combo.opponentWinRate <= 1);
+    assert.ok(combo.versionWilson95[0] <= combo.versionWilson95[1]);
+    assert.ok(combo.opponentWilson95[0] <= combo.opponentWilson95[1]);
+    assert.ok(Number.isFinite(combo.versionMeanResources));
+    assert.ok(Number.isFinite(combo.opponentMeanResources));
+    // 对手 id 约定 <name>-s<seed>：finalResources 必须收录
+    assert.ok("t-opp-s1" in combo.matches[0].result.finalResources);
+    assert.ok("t-opp-s2" in combo.matches[1].result.finalResources);
+  }
+});
+
+test("matrix：2 版本 × 2 对手 = 4 组合（交叉全组合）", () => {
+  const opponentA: MatrixOpponent = {
+    name: "t-opp-a",
+    desc: "test opponent a",
+    kind: "reference-python",
+    source: "t-opp-a",
+    entry: (seed) => makeSafetyEntry(`t-opp-a-s${seed}`),
+  };
+  const opponentB: MatrixOpponent = {
+    name: "t-opp-b",
+    desc: "test opponent b",
+    kind: "reference-python",
+    source: "t-opp-b",
+    entry: (seed) => makeSafetyEntry(`t-opp-b-s${seed}`),
+  };
+  const combos = runMatrix(
+    [
+      { entry: makeSafetyEntry("mine-a"), kind: "config", source: "a" },
+      { entry: makeSafetyEntry("mine-b"), kind: "config", source: "b" },
+    ],
+    [opponentA, opponentB],
+    [1],
+    { ticks: 30, rulesPath: MANIFEST_PATH, validatePlans: false, refillEveryTicks: null },
+  );
+  assert.equal(combos.length, 4, "2 版本 × 2 对手 = 4 组合");
+  const comboKeys = combos.map((c) => `${c.version.entry.id}:${c.opponent.name}`).sort();
+  assert.deepEqual(comboKeys, ["mine-a:t-opp-a", "mine-a:t-opp-b", "mine-b:t-opp-a", "mine-b:t-opp-b"]);
 });
