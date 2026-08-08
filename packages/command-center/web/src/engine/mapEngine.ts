@@ -2072,7 +2072,8 @@ function tickClock() {
   const has = m.lastMtime > 0 && m.period > 0;
   const elapsed = has ? Math.max(0, Date.now() - m.lastMtime) : 0;
   const frac = has ? Math.min(1, elapsed / m.period) : 0;
-  emit('tick', { clock: timeFmt.format(new Date()), tick: m.lastTick, period: m.period, frac });
+  const remain = has ? Math.max(0, (m.period - elapsed) / 1000) : null; // 剩余秒数（2026-08-08：读条显示距下一 tick 还剩几秒）
+  emit('tick', { clock: timeFmt.format(new Date()), tick: m.lastTick, period: m.period, frac, remain });
 }
 function markRefresh(ok: any) {
   emit('refresh', ok);
