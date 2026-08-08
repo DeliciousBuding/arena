@@ -77,6 +77,8 @@ export interface MacroPolicyTournamentFitnessOptions {
   readonly liveMixedRadius?: number;
   /** W53: fixed keeps legacy six layouts; generated-survey samples calibrated chunk terrain. */
   readonly terrainMode?: "fixed" | "generated-survey";
+  /** Explicit exercise/replay scenario; when present it overrides generated/fixed scenario selection. */
+  readonly scenario?: unknown;
   readonly refillEveryTicks?: number | null;
 }
 
@@ -167,11 +169,13 @@ export function evaluateMacroPolicyTournament(
     : undefined;
   const radius = spawnProfileMode === "live-mixed" ? options.liveMixedRadius ?? 50 : undefined;
   const terrainMode = options.terrainMode ?? "fixed";
-  const scenario = terrainMode === "generated-survey"
-    ? makeGeneratedArenaScenarioN(entries, seed, { radius, spawnProfiles: profiles })
-    : spawnProfileMode === "live-mixed"
-      ? makeArenaScenarioN(entries, seed, { radius, spawnProfiles: profiles })
-      : undefined;
+  const scenario = options.scenario ?? (
+    terrainMode === "generated-survey"
+      ? makeGeneratedArenaScenarioN(entries, seed, { radius, spawnProfiles: profiles })
+      : spawnProfileMode === "live-mixed"
+        ? makeArenaScenarioN(entries, seed, { radius, spawnProfiles: profiles })
+        : undefined
+  );
   const fitnessMode = options.fitnessMode ?? "event-ledger";
   const ledgerCollector = fitnessMode === "event-ledger" ? new FitnessLedgerCollector() : null;
   const match = runFreeForAll(

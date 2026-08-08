@@ -27,6 +27,7 @@
     "arena:config-preflight": "tsx scripts/config-preflight.ts",
     "sim:variant-window": "tsx scripts/variant-window.mts",
     "sim:evolve:macro": "tsx scripts/evolve-macro-policy.mts",
+    "sim:audit-evolution": "tsx scripts/audit-evolution-dimensions.mts",
     "sim:calibrate-world": "tsx scripts/calibrate-world.mts",
     "survey:sync": "tsx scripts/run-survey-sync.mts"
   },
