@@ -29,7 +29,7 @@ import { loadPipelineHealth, refreshPipelineHealth } from "./lib/pipeline-health
 import { loadAllianceDeeds, refreshAllianceDeeds } from "./lib/alliance-deeds.ts";
 import { loadDeedsJournal, refreshDeedsJournal } from "./lib/deeds-journal.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
-import { loadLeaderboardIntel, loadOurUsernames } from "./lib/leaderboard.ts";
+import { loadLeaderboardIntel, loadOurUsernames, maybeRefreshLeaderboardLazy, refreshLeaderboardFromOfficial } from "./lib/leaderboard.ts";
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
 import { shopProducts, shopCookie, shopMe, shopOrders, shopOrder } from "./lib/shop.ts";
 import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/redeem-log.ts";
@@ -199,8 +199,11 @@ app.get("/api/events", (c) => {
   return c.json(loadEvents(tenant, n));
 });
 app.get("/api/leaderboard", (c) => {
+  // 惰性刷新检查（2026-08-08 无计划任务）：快照 stale 且距上次拉取 ≥10min → 后台异步拉取
+  // 一次（不 await、不阻塞请求，返回旧数据；下一次请求即新快照）。
+  maybeRefreshLeaderboardLazy();
   const intel = loadLeaderboardIntel();
-  if (!intel) return c.json({ generatedAt: new Date().toISOString(), error: "排行榜快照缺失（运行 docs/progress/leaderboard-intel.py 拉取）" }, 404);
+  if (!intel) return c.json({ generatedAt: new Date().toISOString(), error: "排行榜快照缺失（运行 docs/progress/leaderboard-intel.py 拉取，或 POST /api/leaderboard/refresh）" }, 404);
   const ours = loadOurUsernames();
   const encountered = buildEncounteredIndex();
   const profiles = (intel.profiles ?? []).map((p) => ({
@@ -215,6 +218,13 @@ app.get("/api/leaderboard", (c) => {
     encounteredCount: encountered.size,
     encountered: Object.fromEntries(encountered),
   });
+});
+app.post("/api/leaderboard/refresh", async (c) => {
+  // 手动刷新排行榜（2026-08-08）：请求驱动拉取官方一次——替代原计划任务 ArenaLeaderboardIntel
+  // （用户明确不要计划任务/定时任务）。前端可放"刷新"按钮；拉取 ~1s，成功后缓存即新。
+  const r = await refreshLeaderboardFromOfficial();
+  if (!r.ok) return c.json({ ok: false, error: r.error ?? "拉取失败" }, 502);
+  return c.json({ ok: true, message: "排行榜已刷新", snapshot: loadLeaderboardIntel()?.snapshot });
 });
 app.get("/api/intel", (c) => c.json(loadAllianceIntel()));
 app.get("/api/health/pipeline", (c) => {
@@ -436,6 +446,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
       refreshPipelineHealth(); // 数据管线健康 15s 缓存（读 survey 水位/世界，快）
       refreshAllianceDeeds(); // 联盟事迹 45s 缓存（读快照/共享测绘/热区缓存，快）
       void refreshDeedsJournal(); // 事迹日记摘要 30s 缓存（读 deeds 缓存，快）
+      maybeRefreshLeaderboardLazy(); // 排行榜惰性刷新检查（无计划任务：stale 且间隔到才后台拉）
       void supervisorState(); // 8120 健康状态 5s 缓存（/api/overview、/api/tenants 首开即快）
     } catch { /* 数据缺失/临时 IO 失败不阻塞启动 */ }
   };
