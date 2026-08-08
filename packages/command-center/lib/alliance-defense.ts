@@ -13,7 +13,7 @@
  */
 import type { Position } from "./alliance/types.ts";
 
-export type DefenseCategory = "ENDANGERED" | "REINFORCE" | "FORMATION";
+export type DefenseCategory = "ENDANGERED" | "REINFORCE" | "FORMATION" | "POCKET";
 export type DefenseSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "INFO";
 
 export interface DefenseMemberInput {
@@ -41,6 +41,95 @@ export function suggestedRaidForce(enemyCount: number, allySurplus: number): { v
   return { vanguard: send - ranger, ranger };
 }
 
+/** 敌核目击（来自联盟快照 CORE sightings——共享测绘敌核记忆）。 */
+export interface PocketEnemyCore {
+  readonly key: string;
+  readonly owner: string | undefined;
+  readonly position: Position;
+  readonly lastSeenTick: number;
+}
+
+/** POCKET 聚类配置。 */
+export interface PocketConfig {
+  /** 敌核聚类连接距离（Chebyshev）：≤ 此距离视为同一敌核群。 */
+  readonly clusterDist?: number;
+  /** 威胁半径：敌核距租户核心 ≤ 此距离视为威胁该租户。 */
+  readonly threatRadius?: number;
+}
+
+export const DEFAULT_POCKET_CONFIG: Readonly<Required<PocketConfig>> = Object.freeze({
+  clusterDist: 120,   // 与 alliance-cluster CLUSTER_LINK_DIST 同口径
+  threatRadius: 200,  // 敌核距核心 200 格内即威胁（Vanguard 行军 2-3 tick 可及）
+});
+
+/** 联防圈（POCKET）：敌核群聚类 + 威胁租户判定——纯函数、确定性。
+ *  敌核按 Chebyshev ≤ clusterDist 贪心连通分组；每簇被"簇内最近敌核距租户核心
+ *  ≤ threatRadius"的租户威胁；威胁租户 ≥2 → 联防圈（多租户核心夹缝中的敌核群）。 */
+export function buildDefensePockets(
+  members: readonly { readonly tenantId: string; readonly core: Position | null }[],
+  enemyCores: readonly PocketEnemyCore[],
+  config: PocketConfig = {},
+): DefensePocket[] {
+  const { clusterDist, threatRadius } = { ...DEFAULT_POCKET_CONFIG, ...config };
+  const cores = enemyCores.filter((c) => Number.isFinite(c.position[0]) && Number.isFinite(c.position[1]));
+  const groups: Array<{ enemy: PocketEnemyCore[] }> = [];
+  for (const c of cores) {
+    let merged = false;
+    for (const g of groups) {
+      const near = g.enemy.some((e) => chebyshev(e.position, c.position) <= clusterDist);
+      if (near) {
+        g.enemy.push(c);
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) groups.push({ enemy: [c] });
+  }
+  const out: DefensePocket[] = [];
+  for (const g of groups) {
+    if (g.enemy.length < 2) continue; // 单敌核不构成"群"
+    const cx = g.enemy.reduce((n, e) => n + e.position[0], 0) / g.enemy.length;
+    const cy = g.enemy.reduce((n, e) => n + e.position[1], 0) / g.enemy.length;
+    const threatened: Array<{ tenantId: string; minDist: number }> = [];
+    for (const m of members) {
+      if (!m.core) continue;
+      const minDist = Math.min(...g.enemy.map((e) => chebyshev(m.core as Position, e.position)));
+      if (minDist <= threatRadius) threatened.push({ tenantId: m.tenantId, minDist });
+    }
+    if (threatened.length < 2) continue;
+    out.push({
+      id: `pocket:${g.enemy.map((e) => e.key).sort().join("+")}`,
+      centroid: [Math.round(cx), Math.round(cy)],
+      enemyCores: g.enemy.map((e) => ({ owner: e.owner, position: e.position })),
+      threatenedTenants: threatened.map((t) => t.tenantId),
+      minDistance: Math.min(...threatened.map((t) => t.minDist)),
+    });
+  }
+  return out;
+}
+
+/** POCKET 联防圈建议（纯函数）：敌核群威胁 ≥2 租户 → 协同设防/收缩。 */
+export function buildDefensePocketAdvice(
+  members: readonly { readonly tenantId: string; readonly core: Position | null }[],
+  enemyCores: readonly PocketEnemyCore[],
+  config: PocketConfig = {},
+): DefenseAdvice[] {
+  return buildDefensePockets(members, enemyCores, config).map((p) => ({
+    id: `defense:pocket:${p.id}`,
+    category: "POCKET",
+    severity: "MEDIUM",
+    title: `联防圈：${p.threatenedTenants.map((t) => t.toUpperCase()).join("/")} 之间的敌核群`,
+    detail: `${p.enemyCores.length} 个敌核（中心 ${p.centroid[0]},${p.centroid[1]}）威胁 ${p.threatenedTenants.map((t) => t.toUpperCase()).join("/")}（最近 ${p.minDistance} 格）——建议协同设防或收缩核心避其锋芒`,
+    tenant: p.threatenedTenants[0],
+    relatedTenants: p.threatenedTenants,
+    evidence: [
+      { label: "敌核", value: p.enemyCores.map((e) => e.owner ?? "?").join("、") },
+      { label: "中心", value: `${p.centroid[0]},${p.centroid[1]}` },
+      { label: "最近核距", value: `${p.minDistance} 格` },
+    ],
+  }));
+}
+
 export interface DefenseAdvice {
   readonly id: string;
   readonly category: DefenseCategory;
@@ -52,10 +141,20 @@ export interface DefenseAdvice {
   readonly evidence: readonly { readonly label: string; readonly value: string }[];
 }
 
+export interface DefensePocket {
+  readonly id: string;
+  readonly centroid: Position;
+  readonly enemyCores: readonly { readonly owner: string | undefined; readonly position: Position }[];
+  readonly threatenedTenants: readonly string[];
+  /** 簇到最近被威胁租户核心的距离（Chebyshev）。 */
+  readonly minDistance: number;
+}
+
 export interface DefensePayload {
   readonly generatedAtMs: number;
   readonly advice: readonly DefenseAdvice[];
   readonly endangered: readonly { readonly tenantId: string; readonly military: number; readonly threatScore: number }[];
+  readonly pockets: readonly DefensePocket[];
 }
 
 /** 濒危军事上限：≤1 战斗单位视为军事薄弱（无防御反击能力）。
@@ -241,5 +340,5 @@ export function buildDefenseCoordination(members: readonly DefenseMemberInput[])
   }
 
   advice.sort((a, b) => (SEV_ORDER[a.severity] - SEV_ORDER[b.severity]) || a.id.localeCompare(b.id));
-  return { generatedAtMs: Date.now(), advice, endangered };
+  return { generatedAtMs: Date.now(), advice, endangered, pockets: [] };
 }
