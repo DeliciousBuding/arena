@@ -90,6 +90,21 @@ async function main() {
   page.on("pageerror", (e) => errs.push("PAGEERROR: " + e.message));
   page.on("console", (m) => { if (m.type() === "error") errs.push(m.text()); });
 
+  /** 等待相机动画稳定（F 适应/跳图后 view 仍在动画中，坐标会脱靶——轮询两次采样一致再继续） */
+  const waitViewStable = async () => {
+    let prev = null;
+    for (let i = 0; i < 12; i++) {
+      const v = await page.evaluate(() => {
+        const g = window.__arenaEngine && window.__arenaEngine.getState ? window.__arenaEngine.getState() : null;
+        return g && g.view ? { cx: g.view.cx, cy: g.view.cy, scale: g.view.scale } : null;
+      });
+      if (v && prev && prev.cx === v.cx && prev.cy === v.cy && prev.scale === v.scale) return true;
+      prev = v;
+      await sleep(400);
+    }
+    return false;
+  };
+
   try {
     // 0) 前置健康：8787 可达性快速诊断（node:http 直连绕代理；失败关浏览器后打印退出，避免 return 吞掉结果）
     let pre = null, preErr = "";
@@ -304,7 +319,7 @@ async function main() {
     try {
       // 相机可能被 6b 跳图移走（如跳到 T4 区域）→ 按 F 适应回聚焦租户视口，坐标才不脱靶
       await page.keyboard.press("f");
-      await sleep(800);
+      await waitViewStable();
       const cvE = await page.$("#map");
       const boxE = await cvE.boundingBox();
       const tgt = await page.evaluate(async ({ boxX, boxY, boxW, boxH }) => {
@@ -344,7 +359,7 @@ async function main() {
     let multiOk = null; // true | false
     try {
       await page.keyboard.press("f");
-      await sleep(800);
+      await waitViewStable();
       const cvF = await page.$("#map");
       const boxF = await cvF.boundingBox();
       const picks = await page.evaluate(async ({ boxX, boxY, boxW, boxH }) => {
@@ -386,6 +401,65 @@ async function main() {
     } catch (e) { multiOk = false; }
     if (multiOk === true) ok("编队多选（Shift 加选）", "两次 Shift 点击 toast 计数正确");
     else if (multiOk === false) bad("编队多选（Shift 加选）", "toast 未出现或计数错误");
+
+    // 6g) 命令队列：选中单位 → MOVE → Shift+点击目标格 → toast「已加入队列」+ 动作面板队列段
+    let queueOk = null; // true | false
+    try {
+      await page.keyboard.press("f");
+      await waitViewStable();
+      let rowSelQ = -1;
+      const cntQ = await page.locator("#assetList .asset-row").count();
+      for (let j = 0; j < cntQ && rowSelQ < 0; j++) {
+        await page.click(`#assetList .asset-row:nth-child(${j + 1})`, { timeout: 3000 }).catch(() => {});
+        await sleep(500);
+        if (await page.locator('#actionDialog [data-action="MOVE"]').count() > 0) rowSelQ = j;
+      }
+      if (rowSelQ >= 0) {
+        await page.click('#actionDialog [data-action="MOVE"]', { timeout: 4000 });
+        await page.waitForSelector('.act-targeting', { timeout: 4000 }).catch(() => {});
+        await sleep(300);
+        const cvG = await page.$("#map");
+        const boxG = await cvG.boundingBox();
+        const hitG = await page.evaluate(async ({ boxX, boxY, boxW, boxH }) => {
+          const eng = window.__arenaEngine;
+          if (!eng) return { err: "no engine" };
+          const st = eng.getState();
+          const tenant = st.soloTenant || "t1";
+          const w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json();
+          const objs = w?.state?.objects ?? [];
+          const unit = objs.find((o) => o.kind === "UNIT" && o.controlled === true && o.position);
+          if (!unit) return { err: "no unit" };
+          const [ux, uy] = unit.position;
+          const blocked = new Set();
+          for (const o of objs) if (o.kind === "OBSTACLE" && Array.isArray(o.positions)) for (const pp of o.positions) blocked.add(pp[0] + "," + pp[1]);
+          let tx = ux + 2, ty = uy;
+          for (const [dx, dy] of [[2,0],[-2,0],[0,2],[0,-2],[2,1],[-2,-1],[1,2],[-1,-2]]) {
+            if (!blocked.has((ux + dx) + "," + (uy + dy))) { tx = ux + dx; ty = uy + dy; break; }
+          }
+          const v = st.view;
+          return { sx: boxX + (tx - v.cx) * v.scale + boxW / 2, sy: boxY + (ty - v.cy) * v.scale + boxH / 2 };
+        }, { boxX: boxG.x, boxY: boxG.y, boxW: boxG.width, boxH: boxG.height });
+        if (hitG.err) { queueOk = false; }
+        else {
+          await page.keyboard.down("Shift");
+          await page.mouse.click(hitG.sx, hitG.sy);
+          await page.keyboard.up("Shift");
+          await sleep(700);
+          const qInfo = await page.evaluate(() => {
+            const el = document.getElementById("uiToast");
+            const toastTxt = el && (el.className || "").includes("show") ? el.textContent || "" : "";
+            const qTitle = document.querySelector(".act-queue .q-title")?.textContent || "";
+            return { toastTxt, qTitle, qSegs: document.querySelectorAll(".act-queue .q-seg").length };
+          });
+          queueOk = qInfo.toastTxt.includes("已加入队列") || (qInfo.qTitle.includes("命令队列") && qInfo.qSegs > 0);
+        }
+      } else { queueOk = false; }
+      await page.evaluate(async () => { await fetch("/api/command/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenant: "t1" }) }); }).catch(() => {});
+      await page.keyboard.press("Escape").catch(() => {});
+      await sleep(300);
+    } catch (e) { queueOk = false; }
+    if (queueOk === true) ok("命令队列（Shift 入队）", "MOVE 模式 Shift 点击入队成功");
+    else if (queueOk === false) bad("命令队列（Shift 入队）", "队列未创建");
     // 7) API 健康
     for (const path of ["/api/overview", "/api/stream?tenant=t1&n=5", "/api/survey?tenant=t1"]) {
       const t0 = Date.now();

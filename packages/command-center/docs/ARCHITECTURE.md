@@ -72,12 +72,13 @@ graph LR
 
 ```bash
 npm run check:all          # server tsc → 联盟同步护栏 → web typecheck → web build 一键全绿
-npm run test:regression    # Playwright 回归 21 项（web/scripts/cc-regression.mjs）
+npm run test:regression    # Playwright 回归 22 项（web/scripts/cc-regression.mjs）
 ```
 
 - 回归覆盖：页面零错误 / 六 tab / 威胁玫瑰 / 决策流 / 聚焦 HUD / 计划层像素 /
   人类指挥链（goal 落盘）/ 跳图定位标记 jumpPins / 手操审计 UI / 15s tick 读条 / 右键指挥菜单 /
-  编队多选（Shift 加选）/ API 健康。
+  编队多选（Shift 加选）/ 命令队列（MOVE 模式 Shift 入队）/ API 健康。
+- 相机稳定辅助 waitViewStable：F 适应/跳图后轮询 view 两次采样一致再算坐标（消 flaky）。
 - 全局 240s 硬超时：服务重启/高负载时不无限卡，强制打印部分结果退出。
 - 联盟同步护栏 `check:alliance-sync`：diff lib/alliance 与 arena-agent/src/alliance，漂移即失败。
 - 2026-08-08 实测：console 全量审计零 warning/error；压力交互（快速切 tab/缩放/跳图）零 JS 错误。
