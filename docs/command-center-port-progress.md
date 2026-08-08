@@ -279,3 +279,15 @@ mapEngine.ts 对应函数。
   solo 兜底），右键空白仍保持取消选中语义。
 - **验证**：`#map` 画布实例 clearRect 计数（=draw 次数），solo 移动态 **20→61fps**；
   右键菜单定向 3/3 + 完整回归 22/22 全绿（连跑两轮）+ check:all 全绿。
+
+
+### 9.12 前端架构化：战术规则层抽取 tactical.ts（2026-08-08）
+- **背景**：mapEngine.ts 单文件 4925 行（256KB）——目标"架构化/不屎山"最大技术债。
+  已有 utils.ts（纯工具/素材）与 api.ts 基础；本轮抽取**战术规则层**。
+- **抽取** `web/src/engine/tactical.ts`（117 行纯常量 + 纯函数，无 DOM/state 依赖）：
+  租户色/中文映射（TENANT_COLORS、TACT_UNIT_CN、EVENT_KIND_CN 等）、单位成本/核心容量、
+  意图短标签、近邻命中/精确格/障碍地形/敌情判定/移动可达方向。mapEngine 改为导入，删除内联副本
+  （4925→4863 行）。
+- **收益**：纯函数可单测——新增 `test/tactical.test.ts` 7 项（成本阶梯/容量/标签/命中/地形/敌情/可达），
+  verify 单测 59+10 全绿。
+- **验证**：web typecheck 0 / build 0 / 完整回归 22/22 全绿（零行为变化）。
