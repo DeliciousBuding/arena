@@ -338,6 +338,13 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
         // 迁移方向勘探（2026-08-08）：核心 MOVING 时 EXPLORE worker 朝核心迁移方向
         // 探路（为落点测绘），核心 NORMAL 零影响。t1 不迁移=零回归；t3 迁移中生效。
         migrationScout: true,
+        // 分配滞回（2026-08-08，t2 生产实证 planChurn=1.0 根治）：上一 tick 目标
+        // 仍可采时保持（sticky 0.5 基础上再加 1.5 = 2.0 加成），只有新目标净收益
+        // 显著更高才切换——worker 路程不浪费、分配跨 tick 稳定。
+        switchThreshold: 1.5,
+        // 供给缺口勘探（2026-08-08，t2 生产实证 12 空 worker 抢 1-8 可见矿）：
+        // 候选可采格 < 空 worker 时缺口全部转 SURVEYOR 测绘新矿源，不守家 WAIT。
+        surveyOnSupplyGap: true,
       },
     }),
     /**

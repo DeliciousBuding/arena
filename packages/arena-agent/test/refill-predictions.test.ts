@@ -23,6 +23,8 @@ const MISSION: MissionConfig = {
   refillBonus: 0.5,
   deadMineOverdueTicks: 100,
   migrationScout: false,
+  switchThreshold: 0,
+  surveyOnSupplyGap: false,
 };
 
 function worker(id: string, x: number, y: number) {

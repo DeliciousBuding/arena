@@ -2,7 +2,17 @@
  * 测绘增量同步器（2026-08-08）：把 calibration case 增量写入测绘库。
  *
  * 数据源 = runtime/<tenant>/calibration/<run>/cases/*.json 的 before.state
- * （服务端全量投影：RESOURCE/OBSTACLE/CORE/UNIT 对象）。
+ * ——官方 PlayerState 的 objects 是"自有实体 + 当前可见地形与敌人"
+ * （arena-hero-doc state-model.md：Owned entities plus currently visible
+ * terrain and enemies），即**单玩家视野投影**，不是服务端全量地图。
+ * 语义影响：
+ *  - upsertResources 只标注"我方视野内可见/可采的资源点"（RESOURCE =
+ *    All visible, currently available resource points）——跨 run 累积成
+ *    "我方测绘记忆"，不是全图矿；补充可能在 chunk 内别处生成
+ *    （Replenishment may later create a natural replacement elsewhere
+ *    in the chunk）——格级 refill 预测（0/401 实证）失败的官方依据；
+ *  - collectResourceAbsences 补负观测：用我方单位/Core 位置 + supercover
+ *    视线判定"视野覆盖内确认无矿"——真实缺席，与观测中断区分开。
  * 幂等：sync_meta 记录每个 run 已同步的最大 tick，跳过已同步 case。
  *
  * 调用方式：

@@ -99,6 +99,61 @@ test("Core 视野确认缺失（半径 5）→ harvested", () => {
   assert.equal(mem!.state, "harvested", "Core 视野确认缺失应记 harvested");
 });
 
+test("seeded 种子被视野确认无矿 → harvested（v2 死种子批量证伪）", () => {
+  const world = new World();
+  // seed 注入（lastSeenTick=0，跨 run 测绘种子）
+  world.seedResourceMemory([[2, 0]], 0);
+  assert.ok(
+    world.resourceCandidates().some((c) => c.cell[0] === 2 && c.cell[1] === 0),
+    "seed 在候选",
+  );
+  // worker 在 [0,0] 视野覆盖 [2,0]（Manhattan 2 ≤ 3），资源不在本轮 →
+  // seed 被视野确认无矿 → harvested（旧行为：seed 永不过期、只降级可见态，
+  // 视野确认后仍入池 = 死种子循环）
+  world.observe(makeState(101, { ...WORKER_AT_ORIGIN }));
+  const snap = world.snapshot();
+  const mem = snap.resources.find((r) => r.cell === "2,0");
+  assert.equal(mem!.state, "harvested", "seed 被视野确认应记 harvested");
+  assert.ok(
+    !world.resourceCandidates().some((c) => c.cell[0] === 2 && c.cell[1] === 0),
+    "证伪后不再入池（乒乓断链）",
+  );
+});
+
+test("seeded 种子视野外 → 保持候选（不误伤未确认格）", () => {
+  const world = new World();
+  world.seedResourceMemory([[10, 0]], 0);
+  // worker [0,0] 距 [10,0] = 10 > 3，Core 置 null 排除半径 5 → 视野外
+  world.observe(makeState(101, {
+    core: null,
+    units: [{ id: "p1-w", position: [0, 0] as const, hp: 2, unitType: "WORKER", cargo: 0 }],
+    workers: [{ id: "p1-w", position: [0, 0] as const, hp: 2, unitType: "WORKER", cargo: 0 }],
+  }));
+  assert.ok(
+    world.resourceCandidates().some((c) => c.cell[0] === 10 && c.cell[1] === 0),
+    "视野外 seed 保持候选（等 worker 实地勘察证伪）",
+  );
+});
+
+test("stale 新鲜记忆被视野确认无矿 → harvested（v2 扩展）", () => {
+  const world = new World();
+  // tick1：worker [0,0] 看到资源 [2,0]
+  world.observe(makeState(100, { ...WORKER_AT_ORIGIN, resourceCells: new Set(["2,0"]) }));
+  // 资源不在本轮但仍在视野 → 一次 observe 后已 harvested（可见态也走失效）；
+  // 这里验证 stale 态（worker 移远后降级 stale）再被视野确认 → harvested
+  world.observe(makeState(101, { core: null, units: [], workers: [] })); // 移远 → stale
+  let mem = world.snapshot().resources.find((r) => r.cell === "2,0");
+  assert.equal(mem!.state, "stale", "视野外降级 stale");
+  // worker 回来再确认 → stale 记忆同样被视野确认 harvested
+  world.observe(makeState(102, { ...WORKER_AT_ORIGIN }));
+  mem = world.snapshot().resources.find((r) => r.cell === "2,0");
+  assert.equal(mem!.state, "harvested", "stale 记忆被视野确认应 harvested");
+  assert.ok(
+    !world.resourceCandidates().some((c) => c.cell[0] === 2 && c.cell[1] === 0),
+    "stale 确认无矿后不再入池",
+  );
+});
+
 test("障碍遮挡不算确认（资源在障碍后）→ stale 不误删", () => {
   const world = new World();
   // tick1：无遮挡时看到资源 [0,3]（worker 半径 3）
