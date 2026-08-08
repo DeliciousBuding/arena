@@ -104,4 +104,23 @@ export {
 
 export * from "./director-policy.ts";
 
+export type {
+  StrategyKind,
+  StrategicPolicyProfile,
+  StrategicPolicySelection,
+} from "./strategic-policy.ts";
+export {
+  ALL_STRATEGY_KINDS,
+  computeProfileHash,
+  StrategicPolicyRegistry,
+  StrategicPolicySelector,
+  BALANCED_PROFILE,
+  AGGRESSIVE_PROFILE,
+  SCOUT_PROFILE,
+  DEFEND_PROFILE,
+  RESERVE_PROFILE,
+  STRATEGIC_REGISTRY,
+  STRATEGIC_SELECTOR,
+} from "./strategic-policy.ts";
+
 export * from "./shadow-frame.ts";

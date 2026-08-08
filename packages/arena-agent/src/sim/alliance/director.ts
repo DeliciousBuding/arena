@@ -91,10 +91,15 @@ export class FixedAllianceDirector implements AllianceDirector {
 /** Real Director v1 policy adapter for simulator/shadow evaluation only. */
 export class ShadowPolicyAllianceDirector implements AllianceDirector {
   readonly kind = "shadow-policy-v1";
-  private readonly config: Partial<ShadowDirectorPolicyConfig>;
+  private config: Partial<ShadowDirectorPolicyConfig>;
 
   constructor(config: Partial<ShadowDirectorPolicyConfig> = {}) {
     this.config = { ...config };
+  }
+
+  /** Set or override the strategy profile at runtime (for sim fault-injection / hot-switch tests). */
+  setStrategyName(name: string): void {
+    this.config = { ...this.config, strategyName: name };
   }
 
   decide(snapshot: AllianceSnapshot, _rng: () => number) {
