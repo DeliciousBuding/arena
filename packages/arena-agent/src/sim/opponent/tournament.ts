@@ -15,6 +15,11 @@
 import type { Plan, Position, UnitType } from "../../domain/model.ts";
 import { runEpisode, type EpisodeTenant } from "../../sim/harness/episode.ts";
 import type { SimWorld } from "../../sim/world/types.ts";
+import { chunkOf } from "../../sim/world/chunks.ts";
+import {
+  generateTerrainForChunks,
+  type WorldDistributionProfileV1,
+} from "../../sim/world/generator.ts";
 import type { PlanProvider } from "../../runtime/decision-types.ts";
 import type { ResolutionEvent } from "../engine/phase.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../../strategies/safety-planner.ts";
@@ -558,6 +563,67 @@ export function makeArenaScenarioN(
     players,
     terrain: { obstacles, resources },
     beacon: { position: [0, 0], status: "GROUND", carrierId: null },
+  };
+}
+
+/**
+ * W53 generated-terrain FFA. Player/spawn semantics still come from the
+ * canonical makeArenaScenarioN path; only terrain is replaced by a survey-
+ * calibrated procedural sample. This keeps W53 orthogonal to W54 profiles.
+ */
+export function makeGeneratedArenaScenarioN(
+  entries: readonly TournEntry[],
+  seed: number,
+  options: {
+    readonly radius?: number;
+    readonly spawnProfiles?: Readonly<Record<string, FfaSpawnProfile>>;
+    readonly distribution?: WorldDistributionProfileV1;
+    readonly paddingChunks?: number;
+  } = {},
+): unknown {
+  const base = makeArenaScenarioN(entries, seed, {
+    radius: options.radius,
+    spawnProfiles: options.spawnProfiles,
+  }) as {
+    readonly rulesVersion: string;
+    readonly tick: number;
+    readonly seed: number;
+    readonly players: readonly {
+      readonly core: { readonly position: Position };
+      readonly units: readonly { readonly position: Position }[];
+    }[];
+    readonly beacon: { readonly position: Position; readonly status: string; readonly carrierId: string | null };
+  };
+  const padding = options.paddingChunks ?? 1;
+  if (!Number.isSafeInteger(padding) || padding < 0 || padding > 8) {
+    throw new Error(`generated terrain paddingChunks must be within 0..8 (got ${String(padding)})`);
+  }
+  const coreChunks = base.players.map((player) => chunkOf(player.core.position[0], player.core.position[1]));
+  const minCx = Math.min(...coreChunks.map(([cx]) => cx)) - padding;
+  const maxCx = Math.max(...coreChunks.map(([cx]) => cx)) + padding;
+  const minCy = Math.min(...coreChunks.map(([, cy]) => cy)) - padding;
+  const maxCy = Math.max(...coreChunks.map(([, cy]) => cy)) + padding;
+  const chunks: (readonly [number, number])[] = [];
+  for (let cy = minCy; cy <= maxCy; cy += 1) {
+    for (let cx = minCx; cx <= maxCx; cx += 1) chunks.push([cx, cy]);
+  }
+  const reserved = new Set<string>();
+  const reserve = ([x, y]: Position): void => { reserved.add(`${x},${y}`); };
+  for (const player of base.players) {
+    reserve(player.core.position);
+    for (const unit of player.units) reserve(unit.position);
+  }
+  reserve(base.beacon.position);
+  const terrain = generateTerrainForChunks(seed, chunks, {
+    profile: options.distribution,
+    reservedCells: reserved,
+  });
+  return {
+    ...base,
+    terrain: {
+      obstacles: terrain.obstacles,
+      resources: terrain.resources,
+    },
   };
 }
 

@@ -18,6 +18,7 @@ import {
 import { opponentEntry, type OpponentSpec } from "../opponent/registry.ts";
 import {
   liveMixedSpawnProfiles,
+  makeGeneratedArenaScenarioN,
   makeArenaScenarioN,
   rotateEntriesForSubject,
   runFreeForAll,
@@ -74,6 +75,8 @@ export interface MacroPolicyTournamentFitnessOptions {
   /** W54 birth-state distribution. uniform keeps official-newborn starts. */
   readonly spawnProfileMode?: "uniform" | "live-mixed";
   readonly liveMixedRadius?: number;
+  /** W53: fixed keeps legacy six layouts; generated-survey samples calibrated chunk terrain. */
+  readonly terrainMode?: "fixed" | "generated-survey";
   readonly refillEveryTicks?: number | null;
 }
 
@@ -159,13 +162,16 @@ export function evaluateMacroPolicyTournament(
     ? logicalEntries
     : rotateEntriesForSubject(logicalEntries, subjectId, seed);
   const spawnProfileMode = options.spawnProfileMode ?? "uniform";
-  const scenario = spawnProfileMode === "live-mixed"
-    ? makeArenaScenarioN(entries, seed, {
-        radius: options.liveMixedRadius ?? 50,
-        // Role assignment is based on logical opponent identity/order, not rotated slot.
-        spawnProfiles: liveMixedSpawnProfiles(subjectId, opponents.map((entry) => entry.id)),
-      })
+  const profiles = spawnProfileMode === "live-mixed"
+    ? liveMixedSpawnProfiles(subjectId, opponents.map((entry) => entry.id))
     : undefined;
+  const radius = spawnProfileMode === "live-mixed" ? options.liveMixedRadius ?? 50 : undefined;
+  const terrainMode = options.terrainMode ?? "fixed";
+  const scenario = terrainMode === "generated-survey"
+    ? makeGeneratedArenaScenarioN(entries, seed, { radius, spawnProfiles: profiles })
+    : spawnProfileMode === "live-mixed"
+      ? makeArenaScenarioN(entries, seed, { radius, spawnProfiles: profiles })
+      : undefined;
   const fitnessMode = options.fitnessMode ?? "event-ledger";
   const ledgerCollector = fitnessMode === "event-ledger" ? new FitnessLedgerCollector() : null;
   const match = runFreeForAll(

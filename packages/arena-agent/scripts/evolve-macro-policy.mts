@@ -33,8 +33,10 @@ interface CliOptions {
   readonly patience: number;
   readonly rotateSubjectSlot: boolean;
   readonly spawnProfileMode: "uniform" | "live-mixed";
+  readonly terrainMode: "fixed" | "generated-survey";
   readonly runId: string | null;
   readonly force: boolean;
+  readonly smoke: boolean;
 }
 
 function findCoordinationRoot(start: string): string {
@@ -76,10 +78,15 @@ function oneOf<T extends string>(raw: string, name: string, allowed: readonly T[
 function parseArgs(argv: readonly string[]): CliOptions {
   const values = new Map<string, string>();
   let force = false;
+  let smoke = false;
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]!;
     if (token === "--force") {
       force = true;
+      continue;
+    }
+    if (token === "--smoke") {
+      smoke = true;
       continue;
     }
     if (!token.startsWith("--")) throw new Error(`unexpected argument ${token}`);
@@ -93,6 +100,9 @@ function parseArgs(argv: readonly string[]): CliOptions {
   if (opponents.length === 0) throw new Error("--opponents requires at least one opponent");
   const trainingSeeds = numbers(values.get("--train-seeds") ?? "1,2,3", "--train-seeds");
   const holdoutSeeds = numbers(values.get("--holdout-seeds") ?? "101,102", "--holdout-seeds");
+  if (!smoke && holdoutSeeds.length < 2) {
+    throw new Error("non-smoke evolution requires at least 2 holdout seeds (use --smoke for one-seed wiring checks)");
+  }
   const rollingRaw = values.get("--seed-pool");
   const rollingSeedPool = rollingRaw === undefined ? null : numbers(rollingRaw, "--seed-pool");
   const rollingCountRaw = values.get("--rolling-seeds");
@@ -117,8 +127,14 @@ function parseArgs(argv: readonly string[]): CliOptions {
       "--spawn-profiles",
       ["uniform", "live-mixed"] as const,
     ),
+    terrainMode: oneOf(
+      values.get("--terrain") ?? "fixed",
+      "--terrain",
+      ["fixed", "generated-survey"] as const,
+    ),
     runId: values.get("--run-id") ?? null,
     force,
+    smoke,
   });
 }
 
@@ -159,6 +175,7 @@ function main(): void {
       validatePlans: true,
       rotateSubjectSlot: cli.rotateSubjectSlot,
       spawnProfileMode: cli.spawnProfileMode,
+      terrainMode: cli.terrainMode,
     },
   });
 
@@ -168,6 +185,8 @@ function main(): void {
     ticks: cli.ticks,
     rotateSubjectSlot: cli.rotateSubjectSlot,
     spawnProfileMode: cli.spawnProfileMode,
+    terrainMode: cli.terrainMode,
+    smoke: cli.smoke,
     evolution,
   };
   const outputBase = resolveOutputBase(dataRoot, null);
@@ -182,6 +201,8 @@ function main(): void {
     ticks: cli.ticks,
     rotateSubjectSlot: cli.rotateSubjectSlot,
     spawnProfileMode: cli.spawnProfileMode,
+    terrainMode: cli.terrainMode,
+    smoke: cli.smoke,
     evolution,
     champion: result.champion,
     history: result.history,
@@ -192,6 +213,7 @@ function main(): void {
       "Holdout seeds are disjoint from training/rolling seeds and never participate in selection.",
       "Subject slot rotation is seed-driven by default; disable only for historical reproduction.",
       "live-mixed spawn profiles are identity-bound and independent of rotated geometric slots.",
+      "generated-survey terrain uses partial-observation survey calibration and must not be treated as server ground truth.",
       "Promotion to production still requires evidence-v1 + real shadow/live gates.",
     ],
   });
