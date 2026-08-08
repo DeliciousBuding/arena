@@ -1806,6 +1806,10 @@ function showTooltip(px: any, py: any, cell: any) {
       const plan = state.soloTenant === cell.tenant ? T().plan?.plan : T().plans?.[cell.tenant];
       const cmdLine = cmdLabel(T(), cell.tenant, cell.id, plan);
       if (cmdLine) lines.push(`<div class="tt-row"><span>当前</span><b style="color:${cmdHumanOf(T(), cell.tenant, cell.id) ? '#ffffff' : 'var(--cyan)'}">${cmdLine}</b></div>`);
+      // 编队成员标签（2026-08-08）：与编队连接线呼应，hover 即知所属编队
+      if (T().multi.has(cell.id)) {
+        lines.push(`<div class="tt-row"><span>编队</span><b style="color:var(--warn)">编队成员 · 共 ${T().multi.size}</b></div>`);
+      }
     }
   }
   if (cell.type === 'core') {
