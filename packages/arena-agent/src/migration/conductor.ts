@@ -34,8 +34,15 @@
  *   矿'的强证据"，取 8）。
  * - **"hp 满"阈值 = 规则契约 core.maxHp（v0.14 = 5）**：输入无 coreMaxHp；
  *   hp 未知（null）按满血处理（fail-safe 恢复方向）。
- * - **THREAT_ESCALATED 未接线**：M5 行为清单不含"敌核贴脸持续→ABORT"；
- *   活跃敌核持续 → 无限期 HOLD 直至目击陈旧（安全侧），后续里程碑接入。
+ * - **THREAT_ESCALATED 已接线（M8，migration-survival-v1 §3）**：LEG_SETTLE /
+ *   DEFENSIVE_HOLD 中活跃敌核（新鲜目击 ≤escalateRadius=12）持续 ≥escalateTicks=10
+ *   tick → 升级；窗口（600 tick）内前两次 = REPLAN 换目的地（非放弃长征），
+ *   第三次 = THREAT_ESCALATED → ABORT（安全落：目的地周边持续被敌核占领）。
+ *   受击（CORE_DAMAGED）优先于升级（被打先防御）。
+ * - **战损补员已接线（M8，migration-survival-v1 §4）**：LEG_SETTLE 每 tick 做编成
+ *   缺口检测（军事单位 < replenish.minMilitaryCount=6 持续 ≥minGapTicks=5）→
+ *   写 plan.replenish（缺口数 + 缺口角色 + sinceTick）；缺口恢复 → 字段清除。
+ *   迁移系统不产兵（产兵是 planner/经济层职责）——replenish 是请求不是指令。
  * - **停滞检测已接线（M6，migration-assist-v1 §4-D）**：LEG_MOVE 中核心
  *   NORMAL 未推进 ≥2 tick = 迁移失败签名（引擎拒：占位者不移走/争抢/容量
  *   R3/R4）→ 写 plan.clearRequests（destination + 前瞻）→ runtime 清路订单
@@ -50,6 +57,7 @@ import type { MigrationRuntimeConfig } from "./config.ts";
 import { planRoute } from "./route.ts";
 import { auditCorridor, type CorridorAuditOptions } from "./corridor.ts";
 import { isMigrationLeaseFresh } from "./lease.ts";
+import { degradationTable } from "./squads.ts";
 import { CORE_DESTROYED_EVENT } from "./core-generation.ts";
 import {
   MIGRATION_MIN_FRESH_RESOURCES,
@@ -136,6 +144,14 @@ export interface ConductorHeldState {
   readonly stallTicks: number;
   /** M6：清路重试计数（≥3 次仍未清空 → REPLAN）。 */
   readonly clearRetries: number;
+  /** M8（migration-survival-v1 §3）：敌核贴脸持续 tick（敌核离开/升级复位）。 */
+  readonly threatStallTicks: number;
+  /** M8：威胁升级窗口首次贴脸 tick（0 = 无窗口）。 */
+  readonly threatFirstTick: number;
+  /** M8：窗口内威胁升级次数（≥2 → 第 3 次 THREAT_ESCALATED → ABORT）。 */
+  readonly threatReplanCount: number;
+  /** M8（migration-survival-v1 §4）：编成缺口持续 tick（缺口恢复/写请求后复位）。 */
+  readonly gapTicks: number;
 }
 
 export interface ConductorTransitionRecord {
@@ -163,6 +179,10 @@ export const INITIAL_CONDUCTOR_HELD_STATE: ConductorHeldState = {
   settleElapsed: 0,
   stallTicks: 0,
   clearRetries: 0,
+  threatStallTicks: 0,
+  threatFirstTick: 0,
+  threatReplanCount: 0,
+  gapTicks: 0,
 };
 
 const chebyshev = (first: readonly [number, number], second: { readonly x: number; readonly y: number }): number =>
@@ -297,6 +317,149 @@ function buildLegs(
     });
   }
   return legs;
+}
+
+/**
+ * M8 威胁升级（migration-survival-v1 §3）：LEG_SETTLE / DEFENSIVE_HOLD 共用。
+ * 活跃敌核贴脸（≤escalateRadius）持续 ≥escalateTicks tick → 升级：
+ * - 窗口（replanWindowTicks）内前两次：REPLAN_REQUESTED → PLAN（revision+1，
+ *   换目的地重审，非放弃长征）；
+ * - 第三次：THREAT_ESCALATED → ABORT（安全落：目的地周边持续被敌核占领）。
+ * 敌核离开 → 计数复位。返回 null = 未触发（或仍在计数中），调用方继续常态逻辑。
+ */
+function escalateThreat(
+  input: ConductorStepInput,
+  plan: MigrationPlanV1,
+  held: ConductorHeldState,
+  transitions: readonly ConductorTransitionRecord[],
+  reasons: readonly string[],
+  context: string,
+): ConductorStepResult | null {
+  const threatConfig = input.config.threat ?? { escalateRadius: 12, escalateTicks: 10, replanWindowTicks: 600 };
+  const threatNow = activeEnemyNearCore(input, threatConfig.escalateRadius);
+  if (!threatNow) {
+    // 敌核离开/目击陈旧 → 贴脸计数复位（窗口保留，升级计数仍有效）
+    if (held.threatStallTicks === 0) return null;
+    return waitStep(
+      input,
+      plan,
+      { ...held, threatStallTicks: 0 },
+      transitions,
+      reasons,
+      `${context}：敌核离开警戒半径 → 贴脸计数复位（升级计数 ${held.threatReplanCount} 保留）`,
+    );
+  }
+
+  const stallTicks = held.threatStallTicks + 1;
+  if (stallTicks < threatConfig.escalateTicks) {
+    return waitStep(
+      input,
+      plan,
+      { ...held, threatStallTicks: stallTicks, threatFirstTick: held.threatFirstTick > 0 ? held.threatFirstTick : input.tick },
+      transitions,
+      reasons,
+      `${context}：活跃敌核贴脸持续 ${stallTicks}/${threatConfig.escalateTicks} tick（≤${threatConfig.escalateRadius} 格），计数中——未受击不放弃防御姿态`,
+    );
+  }
+
+  const windowOpen =
+    held.threatFirstTick > 0 &&
+    input.tick - held.threatFirstTick <= threatConfig.replanWindowTicks;
+  const replanCount = windowOpen ? held.threatReplanCount + 1 : 1;
+  if (replanCount >= 3) {
+    transition(plan.state, { type: "THREAT_ESCALATED" }); // 状态机校验：LEG_SETTLE/DEFENSIVE_HOLD → ABORT
+    return {
+      plan: refreshLease({ ...plan, state: "ABORT" }, input),
+      held: { ...held, threatStallTicks: 0, threatFirstTick: 0, threatReplanCount: 0 },
+      transitions: [...transitions, {
+        from: plan.state,
+        to: "ABORT",
+        event: "THREAT_ESCALATED",
+        tick: input.tick,
+      }],
+      reasons: [
+        ...reasons,
+        `${context}：敌核贴脸第 ${replanCount} 次升级（窗口自 tick ${held.threatFirstTick}）→ THREAT_ESCALATED → ABORT（目的地周边持续被敌核占领，安全落）`,
+      ],
+    };
+  }
+  transition(plan.state, { type: "REPLAN_REQUESTED" }); // 状态机校验：LEG_SETTLE/DEFENSIVE_HOLD → PLAN
+  return {
+    plan: refreshLease({ ...plan, state: "PLAN", revision: plan.revision + 1 }, input),
+    held: { ...held, threatStallTicks: 0, threatFirstTick: input.tick, threatReplanCount: replanCount },
+    transitions: [...transitions, {
+      from: plan.state,
+      to: "PLAN",
+      event: "REPLAN_REQUESTED",
+      tick: input.tick,
+    }],
+    reasons: [
+      ...reasons,
+      `${context}：敌核贴脸持续 ${threatConfig.escalateTicks} tick → REPLAN_REQUESTED → PLAN（revision ${plan.revision + 1}，换目的地绕开敌核带；窗口内第 ${replanCount} 次）`,
+    ],
+  };
+}
+
+/** 军事单位判定：非 WORKER 即为军事（Vanguard/Ranger 等；WORKER 只采矿）。 */
+function militaryUnitCount(input: ConductorStepInput): number {
+  return input.units.filter((unit) => unit.unitType !== "WORKER").length;
+}
+
+/**
+ * M8 编成缺口检测（migration-survival-v1 §4）：LEG_SETTLE 每 tick 调用。
+ * 军事单位 < minMilitaryCount 持续 ≥ minGapTicks → 写 plan.replenish
+ * （缺口数 + 缺口角色 + sinceTick）；缺口恢复 → 字段清除。返回更新后的计划
+ * （reasons 含缺口信息；无缺口变化返回原计划）。
+ */
+function applyReplenishDetection(
+  input: ConductorStepInput,
+  plan: MigrationPlanV1,
+  held: ConductorHeldState,
+  reasons: readonly string[],
+): { readonly plan: MigrationPlanV1; readonly held: ConductorHeldState; readonly reasons: readonly string[] } {
+  const replenishConfig = input.config.replenish ?? { minMilitaryCount: 6, minGapTicks: 5 };
+  const militaryCount = militaryUnitCount(input);
+  const gap = replenishConfig.minMilitaryCount - militaryCount;
+
+  if (gap <= 0) {
+    if (plan.replenish === undefined && held.gapTicks === 0) return { plan, held, reasons };
+    return {
+      plan: refreshLease({ ...plan, replenish: undefined }, input),
+      held: { ...held, gapTicks: 0 },
+      reasons: [...reasons, `编成缺口恢复（军事单位 ${militaryCount} ≥ ${replenishConfig.minMilitaryCount}）→ replenish 请求清除`],
+    };
+  }
+
+  if (plan.replenish !== undefined) {
+    return { plan, held, reasons }; // 已请求，缺口未恢复 → 保持
+  }
+  const gapTicks = held.gapTicks + 1;
+  if (gapTicks < replenishConfig.minGapTicks) {
+    return {
+      plan,
+      held: { ...held, gapTicks },
+      reasons: [...reasons, `编成缺口持续 ${gapTicks}/${replenishConfig.minGapTicks}（军事 ${militaryCount} < ${replenishConfig.minMilitaryCount}），防阵亡瞬间误报`],
+    };
+  }
+  const sinceTick = input.tick - (gapTicks - 1); // 缺口首现 tick
+  return {
+    plan: refreshLease({ ...plan, replenish: { gap, missingRole: missingSquadRole(militaryCount), sinceTick } }, input),
+    held: { ...held, gapTicks: 0 },
+    reasons: [...reasons, `编成缺口确认（军事 ${militaryCount} < ${replenishConfig.minMilitaryCount}，缺口 ${gap}，自 tick ${sinceTick}）→ 写 plan.replenish（产兵交 planner/经济层）`],
+  };
+}
+
+/**
+ * 缺口角色推导（migration-survival-v1 §4.3）：退化表在 militaryCount+1 与
+ * militaryCount 之间新增的槽位角色（如 5→6 新增 RG；缺员恢复满编时优先补它）。
+ */
+function missingSquadRole(militaryCount: number): "SC" | "SW" | "ES" | "RG" {
+  const current = degradationTable(Math.max(0, militaryCount)).roles;
+  const next = degradationTable(militaryCount + 1).roles;
+  const remaining = new Set(next);
+  for (const role of current) remaining.delete(role);
+  const added = [...remaining][0];
+  return added ?? "ES"; // 理论不可达（next 恒多 1 槽）；ES 为最安全兜底
 }
 
 /**
@@ -654,6 +817,18 @@ function legSettleStep(
     return enterDefensiveHold(input, plan, held, transitions, reasons, "LEG_SETTLE 中受击");
   }
 
+  // M8（migration-survival-v1 §3）：敌核贴脸持续 → 升级（REPLAN 换目的地 / ABORT）。
+  const escalated = escalateThreat(input, plan, held, transitions, reasons, "LEG_SETTLE");
+  if (escalated !== null) return escalated;
+
+  // M8（migration-survival-v1 §4）：战损编成缺口检测（SETTLE 是唯一产兵窗口）。
+  const replenish = applyReplenishDetection(input, plan, held, reasons);
+  if (replenish.plan !== plan || replenish.reasons.length > reasons.length) {
+    held = replenish.held;
+    reasons = replenish.reasons;
+  }
+  plan = replenish.plan;
+
   const settleElapsed = held.settleElapsed + 1;
   const leg = plan.legs[plan.legProgress.legIndex];
   if (leg === undefined) {
@@ -728,6 +903,10 @@ function defensiveHoldStep(
   const threat = activeEnemyNearCore(input, input.config.hold.enterRadius) || hitRecently;
 
   if (threat) {
+    // M8（migration-survival-v1 §3）：HOLD 中敌核贴脸持续 → 升级
+    // （HOLD 是"被打暂停"，不是"敌占区长期驻留"——贴脸达标即换目的地/安全落）。
+    const escalated = escalateThreat(input, plan, held, transitions, reasons, "DEFENSIVE_HOLD");
+    if (escalated !== null) return escalated;
     return waitStep(
       input,
       plan,
