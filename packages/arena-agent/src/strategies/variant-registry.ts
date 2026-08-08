@@ -114,6 +114,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "core-moving-hold-v1": Object.freeze({ coreMovingHold: true }),
     /**
+     * 产兵让位（2026-08-08，spawn-yield-v1）：核心本 tick 计划 SPAWN 时，
+     * 核心格/邻格的满载 worker 让位（WAIT 或让出核心格）——DEPOSIT Phase8
+     * 先于 SPAWN Phase10，worker 卸货成功仍占核心格会挡掉同 tick SPAWN
+     * （生产 t2 实证 112 次 CORE_SPAWN_FAILED/CELL_UNIT_LIMIT）。产兵价值
+     * > 1 资源卸货，让位净赚。默认 false = 历史行为（卸货优先，零回归）。
+     */
+    "spawn-yield-v1": Object.freeze({ spawnYield: true }),
+    /**
      * 记忆矿主动开采（2026-08-08，harvest-memory-mine-v1，survey-db 联动）：
      * 无可见资源且无活跃采集目标时从已知矿记忆（含跨 run 测绘 seed）挑最近
      * 的去挖——"矿发现了没标注/没分配去挖"的算法端闭环。默认 false 零回归。

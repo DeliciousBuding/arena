@@ -378,6 +378,18 @@ export interface SafetyPlannerConfig {
   readonly coreThreatWatchRadius?: number;
   /** 入侵观察记忆 TTL（tick，默认 60，与 World.CORE_WATCH_TTL 同值）。 */
   readonly coreThreatWatchTicks?: number;
+  /**
+   * 产兵让位（2026-08-08，spawn-yield-v1）：核心本 tick 计划 SPAWN 时，
+   * 满载 worker 让位——核心格/邻格的满载 worker 不卸货（WAIT 或让出核心
+   * 格），保证 SPAWN 不被自己人占格挡掉（生产 t2 实证 112 次
+   * CORE_SPAWN_FAILED/CELL_UNIT_LIMIT：DEPOSIT Phase8 先于 SPAWN Phase10，
+   * worker 卸货成功仍占核心格 → 同 tick SPAWN 失败）。产兵价值 > 1 资源
+   * 卸货，让位净赚。默认 false = 历史行为（卸货优先，零回归）。
+   */
+  readonly spawnYield?: boolean;
+  /** 让位连续上限（默认 3）：满载 worker 连续让位 ≥N tick 后强制卸货——
+   *  防"核心永远想产兵、worker 永远卸不了"的让位饿死循环。 */
+  readonly spawnYieldMaxTicks?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
