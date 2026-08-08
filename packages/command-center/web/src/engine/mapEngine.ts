@@ -7,6 +7,7 @@ import { getJSON } from './api.js';
 import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets, tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability } from './tactical.js';
 import { findPath } from './pathfind.ts';
 import { spawnEventFx, drawEventFx } from './fx.js';
+import { commandTelemetryDeltas as teleDeltas, commandGoalOf as cmdGoalOf, commandActionOf as cmdActionOf, unitHumanCommandOf as cmdHumanOf, commandStatusText as cmdStatusText, unitTelemetryOf as cmdUnitTelemetry } from './commands.js';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
 const POLL_MS = 3000;
@@ -4523,9 +4524,9 @@ function consumeCommandTelemetry(tenant: any, tele: any, prevTele: any) {
   if (seen && seen.sig === sig) return; // 同一状态不重复提示
   tac.cmdTelemetry[tenant] = { sig, at: Date.now() };
   if (prevSig === null) return; // 首次加载不弹历史
-  const rejected = (tele.rejected ?? []).filter((rj: any) => !(prevTele?.rejected ?? []).some((p: any) => p.unitId === rj.unitId));
-  const satisfied = (tele.satisfied ?? []).filter((u: any) => !(prevTele?.satisfied ?? []).includes(u));
-  const applied = (tele.applied ?? []).filter((u: any) => !(prevTele?.applied ?? []).includes(u));
+  const { rejected, satisfied, applied } = teleDeltas(prevTele, tele);
+
+
   if (rejected.length) {
     const rs = rejected.map((rj: any) => `[${shortId(rj.unitId)}] ${escapeHtml(rj.reason)}`).join('；');
     toast(`指令被拒绝：${rs}`, 'warn');
@@ -4539,57 +4540,22 @@ function consumeCommandTelemetry(tenant: any, tele: any, prevTele: any) {
 }
 /** 人类指令状态快照：{ mode, actions:[], goals:[], updatedAt, telemetry }。 */
 function commandStatusText(tenant: any) {
-  const c = T().commands;
-  if (!c || c.mode !== 'override') return null;
-  const n = (c.actions?.length ?? 0) + (c.goals?.length ?? 0);
-  const tele = c.telemetry;
-  let parts = [];
-  if (n > 0) parts.push(`${n} 条指令`);
-  if (tele) {
-    if ((tele.applied ?? []).length) parts.push(`${tele.applied.length} 已生效`);
-    if ((tele.rejected ?? []).length) parts.push(`${tele.rejected.length} 被拒`);
-    if ((tele.satisfied ?? []).length) parts.push(`${tele.satisfied.length} 已完成`);
-  }
-  if (!parts.length) return null;
-  return `人类指挥 · ${parts.join(' · ')}`;
+  return cmdStatusText(T(), tenant);
 }
 /** 单位级人类指令遥测状态行（HTML）：已生效 / 已完成 / 被拒+原因。 */
 function unitTelemetryOf(tenant: any, unitId: any) {
-  const c = T().commands;
-  if (!c || !c.telemetry) return null;
-  const t = c.telemetry;
-  const parts = [];
-  if ((t.applied ?? []).includes(unitId)) parts.push('<b class="ok">已生效</b>');
-  if ((t.satisfied ?? []).includes(unitId)) parts.push('<b class="done">已完成</b>');
-  const rej = (t.rejected ?? []).find((rj: any) => rj.unitId === unitId);
-  if (rej) parts.push(`<b class="no">被拒</b><span class="dim">${escapeHtml(rej.reason)}</span>`);
-  if (!parts.length) return null;
-  return `人类指挥 · ${parts.join(' ')}`;
+  return cmdUnitTelemetry(T(), unitId);
 }
 function commandGoalOf(tenant: any, unitId: any) {
-  const c = T().commands;
-  if (!c) return null;
-  return (c.goals ?? []).find((g: any) => g.unitId === unitId) ?? null;
+  return cmdGoalOf(T(), tenant, unitId);
 }
 function commandActionOf(tenant: any, unitId: any) {
-  const c = T().commands;
-  if (!c) return null;
-  return (c.actions ?? []).find((a: any) => a.unitId === unitId) ?? null;
+  return cmdActionOf(T(), tenant, unitId);
 }
 /** 单位是否有活跃人类指令（goal 或一键 action）——舰队索引/地图「指挥中」标记。
  *  全局联盟用 commandsByTenant（refreshAllCommands 每 poll 刷新），聚焦用 T().commands。 */
 function unitHumanCommandOf(tenant: any, unitId: any): 'goal' | 'cmd' | null {
-  const byT = T().commandsByTenant ? T().commandsByTenant[tenant] : null;
-  if (byT) {
-    if ((byT.goals ?? []).some((g: any) => g.unitId === unitId)) return 'goal';
-    if ((byT.actions ?? []).some((a: any) => a.unitId === unitId)) return 'cmd';
-  }
-  const c = T().commands;
-  if (c && c.tenant === tenant && c.mode === 'override') {
-    if ((c.goals ?? []).some((g: any) => g.unitId === unitId)) return 'goal';
-    if ((c.actions ?? []).some((a: any) => a.unitId === unitId)) return 'cmd';
-  }
-  return null;
+  return cmdHumanOf(T(), tenant, unitId);
 }
 
 /* ---------- React 挂载桥 ---------- */

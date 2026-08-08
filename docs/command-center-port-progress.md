@@ -347,3 +347,14 @@ mapEngine.ts 对应函数。
 - **测试**：新增 `test/fx.test.ts` 5 项（弹道曲线控制点/侧偏方向/事件帧浮字+碎片/
   上限裁剪/未知事件跳过），web 单测 21→26 全绿。
 - **验证**：typecheck/build + 完整回归 **22/22 全绿**。
+
+### 9.17 人类指令选择器/遥测差分抽取 commands.ts（2026-08-08）
+- **抽取** `web/src/engine/commands.ts`（纯函数，无 DOM/state 依赖）：commandTelemetryDeltas
+  （遥测差分：新增被拒/已完成/已生效）+ commandGoalOf/commandActionOf/unitHumanCommandOf/
+  commandStatusText/unitTelemetryOf（人类指令选择器）。mapEngine 中对应实现改为薄包装，
+  consumeCommandTelemetry 用 teleDeltas 替代内联 filter。
+- **收益**：人类指挥链路（用户核心诉求"人类指挥最高控制权"）的选择器与差分逻辑可单测，
+  渲染/提交 I/O 与派生逻辑解耦。
+- **测试**：新增 `test/commands.test.ts` 4 项（遥测差分/goal-action 命中/状态摘要/单位遥测行），
+  web 单测 26→30 全绿。
+- **验证**：typecheck/build + 完整回归 **22/22 全绿**（含人类指挥链 goal 落盘、命令队列）。
