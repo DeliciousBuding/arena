@@ -83,7 +83,12 @@ function loadPrefs(): Prefs {
   }
 }
 function savePrefs(p: Prefs) {
-  try { localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch { /* 忽略 */ }
+  try {
+    // 合并写入：arena-cc-web.prefs 与 AppShell（左右栏折叠/tab）和 Sidebar（分区开关）共用，
+    // 整体覆盖会把它们的偏好一起冲掉（折叠流/切 tab 后刷新即丢）。
+    const all = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ ...all, collapsed: p.collapsed, height: p.height, quiet: p.quiet, tab: p.tab }));
+  } catch { /* 忽略 */ }
 }
 
 const shortId = (id: string | null | undefined): string => (id ? String(id).slice(0, 8) : "");
