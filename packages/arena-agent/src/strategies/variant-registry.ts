@@ -241,6 +241,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "population-ceiling-30-v1": Object.freeze({ populationCeiling: 30 }),
     /**
+     * 人口上限 30→35（2026-08-08 用户裁决，全局统一调高）：populationCeiling
+     * 是产兵硬门（deterministic selectDeterministicCoreAction 与 SafetyPlanner
+     * 共用）。35 = v0.14 动态定价 k=3 档末（pop 31-35：Vanguard 22/Ranger 26），
+     * 不跳 k=4（36 起 Vanguard 29/Ranger 34 成本爆炸）；pop 35 资源容量 175。
+     * 覆盖旧 30 上限（t1 恢复综合扩张 + t2 提高军事能力 + t3/t4 重生产兵）。
+     */
+    "population-ceiling-35-v1": Object.freeze({ populationCeiling: 35 }),
+    /**
      * Worker 使命层（2026-08-08，worker-mission-v1）：只影响 deterministic 侧
      * 分配（值层置信 + SURVEYOR 角色，见 DETERMINISTIC_VARIANT_CONFIG），
      * safety 侧无开关——空覆盖注册以满足 resolveVariantsConfig 的
@@ -253,6 +261,13 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      *  空覆盖注册以满足 resolveVariantsConfig 全量 safety 校验（缺注册 = fail-fast）。
      */
     "recovery-early-military-v1": Object.freeze({}),
+    /**
+     * 精打细算（2026-08-08，lean-spend-v1，用户裁决"不囤资源全部用出去"）：
+     * 只影响 deterministic 侧产兵储备（spawnReserve 1，见 DETERMINISTIC_VARIANT_CONFIG）
+     * ——safety 侧无开关，空覆盖注册以满足 resolveVariantsConfig 全量 safety 校验
+     * （缺注册 = 生产重启 fail-fast）。
+     */
+    "lean-spend-v1": Object.freeze({}),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要
@@ -325,6 +340,15 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
         migrationScout: true,
       },
     }),
+    /**
+     * 精打细算（2026-08-08，lean-spend-v1，用户裁决"不囤资源全部用出去"）：
+     * 产兵储备 2→1——res 刚够成本就产（Worker 5+1 / Vanguard 10+1 / Ranger
+     * 12+1），减少囤积空转（t2 生产实证 res 23 但 pop 27 卡 30 上限产不出）。
+     * 保留 1 缓冲防掏空后连串 INSUFFICIENT_RESOURCES（reserve=0 过激）。
+     * 与 population-ceiling-35-v1 配套：上限放开 + 储备降低 → 资源尽快转化为
+     * 兵力/军事。
+     */
+    "lean-spend-v1": Object.freeze({ spawnReserve: 1 }),
   });
 
 /** 解析变体 id → SafetyPlanner 配置覆盖；未知 id 抛错（fail-fast）。 */
