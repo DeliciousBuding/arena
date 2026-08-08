@@ -7,6 +7,7 @@
 import { loadDeeds, type Deed } from "./deeds.ts";
 import { loadAllianceDeeds } from "./alliance-deeds.ts";
 import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
+import { loadAllianceExploration, type AllianceExplorationPayload } from "./exploration-coverage.ts";
 import { loadAuditOverview } from "./audit-overview.ts";
 import { loadAllianceMining } from "./alliance-mining.ts";
 import { loadMiningEffectiveness } from "./mining-effectiveness.ts";
@@ -114,6 +115,9 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
     try {
       const shopLine = buildShopJournalLine(loadShopHistoryEntries());
       if (shopLine) narrative = narrative ? narrative + " " + shopLine : shopLine;
+      // 联盟测绘覆盖（2026-08-08，共享测绘日记）：覆盖% + 各租户区块 + 核心旁盲区。
+      const covLine = buildAllianceCoverageLine(loadAllianceExploration());
+      if (covLine) narrative = narrative ? narrative + " " + covLine : covLine;
     } catch { /* 商店数据不可用不阻断 */ }
   }
   const windowDelta = buildWindowDelta(windowed, prevWindowed);
@@ -135,6 +139,22 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
   };
   journalCache.set(key, payload);
   return payload;
+}
+
+/** 联盟测绘覆盖摘要（2026-08-08，日记层）：共享测绘覆盖%（区块数）+ 各租户探索区块 +
+ *  核心旁盲区。供联盟日记叙事追加一行（只读，读 exploration 30s 缓存，无触网）。 */
+export function buildAllianceCoverageLine(exp: AllianceExplorationPayload | null): string | null {
+  const world = exp?.world;
+  const explored = Number(world?.exploredChunks ?? 0);
+  if (!world || explored <= 0) return null;
+  const span = Number(world?.spanChunks ?? 0);
+  const pct = typeof world?.coveragePct === "number" ? world.coveragePct : span > 0 ? Math.round((explored / span) * 1000) / 10 : null;
+  const per = exp?.perTenant ?? {};
+  const byTenant = TENANTS.map((t) => `${t.toUpperCase()} ${Number(per[t]?.exploredChunks ?? 0)}`).join("·");
+  const parts: string[] = [`覆盖 ${pct ?? 0}%（${explored}/${span} 区块）`, `各租户 ${byTenant}`];
+  const gaps = Number(exp?.gaps?.length ?? 0);
+  if (gaps > 0) parts.push(`核心旁盲区 ${gaps} 处`);
+  return `联盟测绘：${parts.join("，")}。`;
 }
 
 /** 审计事迹（2026-08-08）：把综合审计总览的关键健康信号合成可读日记条目——
