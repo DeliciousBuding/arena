@@ -76,6 +76,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "rally-assault-v1": Object.freeze({ rallyAssault: true }),
     /**
+     * W62 环形扇区扫荡（2026-08-09，竞品 arena_hero_strategy.py
+     * `_assault_frontier_target` :6955 对照）：aggressive 军事打野改用全队共享
+     * 前沿航点（半径 MIN→MAX 振荡 + 扇区 8 方位旋转 + 全员到齐门控），替代
+     * per-unit patrolRing 散开各自升环。与 rally-assault 不同（搜索阶段几何 vs
+     * 压已知目标前集结）。默认关闭零回归。
+     */
+    "assault-sector-sweep-v1": Object.freeze({ assaultSectorSweep: true }),
+    /**
      * 寡不敌众撤退（2026-08-08，guide 巡逻单位兵力不足撤退对照）：非守家军事单位
      * 遇可见敌战斗单位且附近我方军事 < 敌 → 向家撤退（绕开敌人占位），防 1v2+
      * 单薄送死；敌核守军（known CORE 8 格内）不计入。与 rally-assault-v1 互补：
@@ -198,7 +206,23 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 更早（高速逼近的敌人在 20 格外 TTR 已 ≤16）。小股快攻更早预警。
      */
     "core-evade-ttr-v1": Object.freeze({ coreEvade: true, coreEvadeTtr: true, coreEvadePersist: true }),
+    /**
+     * W55 单入口掩体寻找（2026-08-09，竞品 arena_hero_strategy.py
+     * `_find_core_shelter` :9388 / `_shelter_entrance` :2297 对照）：
+     * aggressive 且无可见敌人时主动抢占单入口掩体（三面岩石口袋）作为 Core
+     * 迁移目标——背靠地形防守（仅一方向需布防，raid 难以多轴夹击）。与
+     * coreEvade 正交（反应式 vs 主动式）。默认关闭零回归。
+     */
+    "core-shelter-v1": Object.freeze({ coreShelter: true }),
     "guard-axes-v1": Object.freeze({ guardAxes: true }),
+    /**
+     * W64 地形背靠守位（2026-08-09，竞品 arena_hero_strategy.py
+     * `_core_attack_surface_profile` :2043 / `_terrain_guard_offsets` :2080 /
+     * `_core_patrol_slots` :9303 对照）：无可见敌人时按地形背靠重排 Core 四邻
+     * 守位顺序（守位站开阔侧、岩石在背后——背靠地形减少受击方向）。与
+     * guard-axes 正交（threat vs terrain 维度），可叠加。默认关闭零回归。
+     */
+    "terrain-guard-v1": Object.freeze({ terrainGuard: true }),
     "guard-heal-rotation-v1": Object.freeze({ guardHealRotation: true }),
     /**
      * W57 双相轮换治疗（2026-08-09，竞品 arena_hero_strategy.py 两相 heal

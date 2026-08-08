@@ -61,6 +61,9 @@ import {
   predictedEnemyCell,
   retreatDirection,
   samePosition,
+  terrainGuardPost,
+  coreShelterTarget,
+  isCoreShelter,
   yieldAnchor,
 } from "./safety-planner-helpers.ts";
 import { EMPTY_ROSTER_ID_SET, type AllianceRosterRef } from "../alliance/roster-file.ts";
@@ -215,6 +218,8 @@ const PREY_STATIONARY_TTL = 12;
  *  World.CORE_WATCH_RADIUS / CORE_WATCH_TTL 同值；配置可覆盖。 */
 const CORE_THREAT_WATCH_RADIUS = 18;
 const CORE_THREAT_WATCH_TICKS = 60;
+/** W55 单入口掩体搜索默认半径（Chebyshev，对齐 ref AGGRESS_CORE_SHELTER_SEARCH_RADIUS）。 */
+const CORE_SHELTER_DEFAULT_RADIUS = 8;
 /** 攻坚集结参数（2026-08-08，rally-assault-v1）：敌核外圈集结位距敌核
  *  Chebyshev RALLY_DISTANCE（敌守军 Vanguard 射程 1 / Ranger 射程 3，站 5 格外
  *  安全）；单位进入集结位半径 RALLY_ARRIVE_RADIUS 视为已到；≥RALLY_READY_COUNT
@@ -286,6 +291,17 @@ const HUNT_SWEEP_RADIUS = 4;
 /** 敌情狩猎清扫时长：单位在基地清扫圈内停留该 tick 数仍未发现敌 Core → 记
  *  清扫并旋转到下一目标（竞品 "整个区域被视野覆盖且未发现 Core 才删除"）。 */
 const HUNT_SWEEP_TICKS = 8;
+/** W62 环形扇区扫荡参数（2026-08-09，assault-sector-sweep-v1，竞品
+ *  `_assault_frontier_target` :6955 对照）：半径在 MIN→MAX 间振荡（近-远-近
+ *  循环覆盖）+ 扇区索引在 8 方位间旋转（覆盖全方向）；全员到齐门控推进航点。
+ *  默认 MIN 8 / MAX 28（对齐 WIDE_EXPLORE_DEFAULTS.aggressSweepMax）。 */
+const ASSAULT_SWEEP_MIN_RADIUS = 8;
+const ASSAULT_SWEEP_MAX_RADIUS = 28;
+const ASSAULT_SWEEP_WAYPOINT_REACHED_RADIUS = 4;
+/** W62 扇区符号组合（8 方位，顺时针：E SE S SW W NW N NE）。 */
+const ASSAULT_SWEEP_SECTOR_OFFSETS: readonly (readonly [number, number])[] = [
+  [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1],
+];
 /** Worker 局部活性恢复后，短期禁止再次领取历史矿任务，强制进入 patrol/explore。
  *  8 tick 足够离开原死锁小环，又远短于资源记忆 TTL；当前可见矿仍由主流程直接采。 */
 const WORKER_LIVENESS_RECOVERY_TICKS = 8;
@@ -545,6 +561,13 @@ export class SafetyPlanner {
   /** 攻坚集结状态（2026-08-08，rally-assault-v1）：targetKey -> { ready, firstArriveTick }。
    *  集结位在敌核外圈，组齐（ready）或超时后成建制压上；目标被重新目击/更换时重置。 */
   private readonly rallyTargets = new Map<string, { ready: boolean; firstArriveTick: number }>();
+  /** W62 环形扇区扫荡状态（2026-08-09，assault-sector-sweep-v1，竞品
+   *  `_assault_frontier_target` :6955 对照）：全队共享前沿航点几何——
+   *  assaultSweepStep 是周期步进计数器（半径在 MIN→MAX 间振荡 + 扇区旋转），
+   *  assaultSweepLastAdvanceTick 防同 tick 多次推进。全员到齐门控推进航点。
+   *  未启用时永 0（零回归）。 */
+  private assaultSweepStep = 0;
+  private assaultSweepLastAdvanceTick = -1;
   /** 斩首配额会计（W10，sortie-quota-v1，2026-08-09）：sortieKey（目标 cellKey）
    *  → SortieRecord。借调 1V+2R 编成攻坚小队，按家防余量分档借调，不全部扑同一
    *  弱核。跨 tick sticky（Map 持久化）+ 超时/过期/家防回援/目标消失 4 种取消回收。
@@ -1052,6 +1075,66 @@ export class SafetyPlanner {
     if (reach > HUNT_SWEEP_RADIUS) return target;
     const [dx, dy] = DENSE_DELTAS[(index * 3 + 7) % DENSE_DELTAS.length]!;
     return [target[0] + dx * 2, target[1] + dy * 2];
+  }
+
+  /** W62 环形扇区扫荡前沿航点（2026-08-09，竞品 `_assault_frontier_target`
+   *  :6955 对照）：全队共享前沿搜索目标——半径在 MIN→MAX 间振荡（近-远-近
+   *  循环覆盖全纵深）+ 扇区索引在 8 方位间旋转（覆盖全方向）。全员到齐门控
+   *  （所有攻坚单位 ≤WAYPOINT_REACHED_RADIUS 才推进下一航点），防单位散开各自
+   *  升环（per-unit patrolRing 的缺陷）。返回当前航点坐标（调用方 stepToward）。
+   *  与 rally-assault 不同：rally 是压已知敌 Core 前的集结点，W62 是搜索阶段的
+   *  前沿航点几何——阶段不同、门控语义不同（rally ≥3 到齐或超时 vs W62 全员到齐）。 */
+  private assaultFrontierTarget(state: TickState, obstacles: ReadonlySet<string>): Position | null {
+    const home = state.core?.position ?? null;
+    if (home === null) return null;
+    const minRadius = this.config.assaultSweepMinRadius ?? ASSAULT_SWEEP_MIN_RADIUS;
+    const maxRadius = this.config.assaultSweepMaxRadius ?? ASSAULT_SWEEP_MAX_RADIUS;
+    const reachRadius = this.config.assaultSweepWaypointReachedRadius
+      ?? ASSAULT_SWEEP_WAYPOINT_REACHED_RADIUS;
+    const radiusSpan = maxRadius - minRadius;
+    const halfTurn = Math.floor(ASSAULT_SWEEP_SECTOR_OFFSETS.length / 2);
+    const cycleSteps = radiusSpan * 2 + halfTurn * 2;
+    const phase = this.assaultSweepStep % cycleSteps;
+    // 半径振荡：MIN→MAX（phase ≤ span）→ MAX 停留半圈 → MAX→MIN → MIN 停留半圈。
+    let radius: number;
+    if (phase <= radiusSpan) {
+      radius = minRadius + phase;
+    } else if (phase <= radiusSpan + halfTurn) {
+      radius = maxRadius;
+    } else if (phase <= radiusSpan * 2 + halfTurn) {
+      radius = maxRadius - (phase - radiusSpan - halfTurn);
+    } else {
+      radius = minRadius;
+    }
+    // 扇区索引旋转（覆盖全方向）。
+    const sectorIndex = phase % ASSAULT_SWEEP_SECTOR_OFFSETS.length;
+    const [signX, signY] = ASSAULT_SWEEP_SECTOR_OFFSETS[sectorIndex]!;
+    // 对角扇区：x 取半径一半、y 取余量（竞品几何近似，保证 8 方位整数格可达）。
+    let xDistance: number;
+    let yDistance: number;
+    if (signX !== 0 && signY !== 0) {
+      xDistance = Math.floor(radius / 2);
+      yDistance = radius - xDistance;
+    } else {
+      xDistance = signX !== 0 ? radius : 0;
+      yDistance = signY !== 0 ? radius : 0;
+    }
+    const arcAnchor: Position = [home[0] + signX * xDistance, home[1] + signY * yDistance];
+    // 全员到齐门控：所有攻坚单位（Vanguard+Ranger）到达当前航点 ≤reachRadius
+    // 才推进下一航点（防散开各自升环）；空队（无军事单位）= 不推进（防 step
+    // 在无单位时空转）。同 tick 防多次推进（assaultSweepLastAdvanceTick）。
+    const assaultUnits = [...state.vanguards, ...state.rangers];
+    const target = arcAnchor; // 简化：航点 = 扇区锚点（竞品在锚点 Chebyshev 4 内
+    // 取非障碍候选 + 评分；这里取锚点本身，stepToward 绕障已处理硬块）。
+    const allArrived =
+      assaultUnits.length > 0
+      && assaultUnits.every((u) => chebyshev(u.position, target) <= reachRadius)
+      && this.assaultSweepLastAdvanceTick !== state.tick;
+    if (allArrived) {
+      this.assaultSweepStep += 1;
+      this.assaultSweepLastAdvanceTick = state.tick;
+    }
+    return target;
   }
 
   /** 远端军事回援（remoteReinforce 候选，竞品 "敌方战斗单位已经进入 Core
@@ -2844,6 +2927,19 @@ export class SafetyPlanner {
       // Core 格被 Worker 回仓占用时永远到不了 → 打野永不触发、Vanguard 枯竭后
       // 空转守家。无敌人时 target 恒为 Core 位置，该到位限制无意义。
       if (enemies.length === 0 && state.resourceCells.size === 0 && state.core !== null) {
+        // W62 环形扇区扫荡（assault-sector-sweep-v1，2026-08-09，竞品
+        // `_assault_frontier_target` :6955 对照）：aggressive 军事打野改用
+        // 全队共享前沿航点（半径振荡 + 扇区旋转 + 全员到齐门控），替代 per-unit
+        // patrolRing 散开各自升环。置于 militaryHunt 之后（敌情狩猎优先回访已知
+        // 敌基地）、per-unit scavenge 之前（W62 是 scavenge 的共享几何升级）。
+        if (this.config.assaultSectorSweep === true && this.effectiveAggression === "aggressive") {
+          const sweepTarget = this.assaultFrontierTarget(state, militaryObstacles);
+          if (sweepTarget !== null) {
+            const direction = stepToward(unit.position, sweepTarget, militaryObstacles);
+            if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_sector_sweep");
+            return;
+          }
+        }
         // 敌情狩猎（militaryHunt，2026-08-07 持久敌情测绘）：优先回访最后已知
         // 敌基地（CORE 目击 sticky + Worker 轨迹推断锚点），而不是从自家 Core
         // 盲目环搜。清扫语义：进入清扫圈停留 HUNT_SWEEP_TICKS 仍未发现敌 Core
@@ -3096,12 +3192,16 @@ export class SafetyPlanner {
     // 单位长期占用会造成 capacity_wait:DEPOSIT 经济死锁，生产实测）。
     // guardAxes（B4 候选）：有可见敌人时按威胁轴分桶守位（Vanguard 3 格外层
     // 屏、Ranger 2 格内层屏），守卫分散到各威胁轴；无敌人回退历史四邻轮转。
+    // W64（terrain-guard 候选）：无可见敌人时按地形背靠重排四邻顺序（守位站
+    // 开阔侧、岩石在背后），与 guardAxes 正交（threat vs terrain）。
     let home: Position | null = null;
     if (state.core !== null) {
       home =
         this.config.guardAxes === true && enemies.length > 0
           ? defensePost(state.core.position, enemies, movementObstacles, "VANGUARD", index)
-          : homeCell(state.core.position, movementObstacles, index);
+          : this.config.terrainGuard === true
+            ? terrainGuardPost(state.core.position, movementObstacles, index)
+            : homeCell(state.core.position, movementObstacles, index);
     }
     // 已在 Core 格且满血：移出到让位锚点（yieldAnchor——与 Ranger 同，
     // 避开被占格；t2 实证：Core 四邻全堵时 homeCell 选到满格 → 预裁决
@@ -3378,9 +3478,14 @@ export class SafetyPlanner {
     // 单位长期占用会造成 capacity_wait:DEPOSIT 经济死锁，生产实测 t2）。
     // guardAxes（B4 候选）有可见敌人时按威胁轴守内层屏（2 格，天然保持
     // Core 邻格为空）；无敌人回退历史四邻轮转。
+    // W64（terrain-guard 候选）：无可见敌人时按地形背靠重排四邻顺序
+    // （守位站开阔侧、岩石在背后），与 guardAxes 正交（threat vs terrain）。
     const home = state.core === null
       ? null
-      : guardAxesPost ?? homeCell(state.core.position, movementObstacles, index);
+      : guardAxesPost
+        ?? (this.config.terrainGuard === true
+          ? terrainGuardPost(state.core.position, movementObstacles, index)
+          : homeCell(state.core.position, movementObstacles, index));
     // 已在 Core 格且满血：移出到让位锚点（yieldAnchor——优先空邻格、其次
     // 单占用邻格（可挤入，容量 2）；Core 四邻全堵（障碍+单位）时 homeCell
     // 会选到满格 → 预裁决淘汰让位 → Ranger 永不离开 → worker 永不
@@ -3757,6 +3862,37 @@ export class SafetyPlanner {
           }
           intents.core = ttrTrigger ? "core_evade_ttr" : "core_evade";
           return { type: "START_MOVE", direction };
+        }
+      }
+    }
+    // W55 单入口掩体寻找（2026-08-09，竞品 `_find_core_shelter` :9388 对照）：
+    // aggressive 且无可见敌人时主动抢占单入口掩体（三面岩石口袋）作为 Core
+    // 迁移目标——背靠地形防守（仅一方向需布防，raid 难以多轴夹击）。当前
+    // Core 位置本身是掩体 = 原地 hold（不迁移、继续产兵/heal）；否则向掩体
+    // 入口方向 START_MOVE（逐 tick 推进，与 coreEvade 同走 START_MOVE）。
+    // 仲裁优先级：coreEvade（反应式远敌）> coreShelter（主动式抢地形）
+    // > cargoBlockedSelfHeal > heal/repair/spawn。仅 NORMAL 非迁移期触发。
+    // 与 coreEvade 正交：coreEvade 要求可见敌/追击，coreShelter 要求无可见敌。
+    if (
+      this.config.coreShelter === true
+      && core.state === "NORMAL"
+      && this.effectiveAggression === "aggressive"
+      && state.visibleEnemies.length === 0
+    ) {
+      const obstacles = this.world.obstacles(state.obstacleCells);
+      // 当前 Core 位置已是掩体 → 原地 hold（继续产兵/heal，不白迁移）。
+      if (isCoreShelter(core.position, obstacles) === null) {
+        const radius = this.config.coreShelterSearchRadius ?? CORE_SHELTER_DEFAULT_RADIUS;
+        const shelter = coreShelterTarget(core.position, obstacles, state.resourceCells, radius);
+        if (shelter !== null) {
+          // 向掩体入口方向走 1 格（stepToward BFS 首步；入口是口袋的唯一开放
+          // 邻格——走到入口下 tick 即可再决策进入掩体）。
+          const direction = stepToward(core.position, shelter.entrance, obstacles);
+          if (direction !== null) {
+            this.coreMoveDirection = direction;
+            intents.core = "core_shelter_seek";
+            return { type: "START_MOVE", direction };
+          }
         }
       }
     }

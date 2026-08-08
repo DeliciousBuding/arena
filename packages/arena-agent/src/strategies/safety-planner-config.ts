@@ -123,6 +123,19 @@ export interface SafetyPlannerConfig {
    */
   readonly coreMigrationCancel?: boolean;
   /**
+   * W55 单入口掩体寻找（2026-08-09，竞品 arena_hero_strategy.py
+   * `_find_core_shelter` :9388 / `_shelter_entrance` :2297 对照）：aggressive
+   * 且无可见敌人时，主动寻找地图上的单入口掩体（dead-end/chokepoint 地形——
+   * 四邻中恰有一个开放 = 三面被岩石包围的口袋）作为 Core 迁移目标——背靠
+   * 地形防守（仅一个方向需布防，raid 时敌方难以多轴夹击）。当前 Core 位置
+   * 本身就是掩体 = 原地 hold；否则向掩体入口方向 START_MOVE（逐 tick 推进）。
+   * 与 coreEvade 正交：coreEvade 是"敌逼近时远敌"反应式迁移，W55 是"无威胁
+   * 时抢占地形"主动式迁移。默认 false = 历史行为（不主动迁移到掩体，零回归）。
+   */
+  readonly coreShelter?: boolean;
+  /** W55 掩体搜索半径（Chebyshev，默认 8，对齐 ref AGGRESS_CORE_SHELTER_SEARCH_RADIUS）。 */
+  readonly coreShelterSearchRadius?: number;
+  /**
    * MOVE_FAILED 反馈规避（v0.3，实验）：单位连续 N 次移动被结算拒绝
    * （MOVE_CONTESTED/CELL_UNIT_LIMIT 等）时，不再盲目重试同格——改走垂直
    * 绕行格（探路）。模拟器实证（2026-08-06 第三十一轮）：2 Vanguard vs 敌
@@ -196,6 +209,19 @@ export interface SafetyPlannerConfig {
    * 邻格为空（cargo 通道）。默认 false = 历史行为（Core 四邻轮转）。
    */
   readonly guardAxes?: boolean;
+  /**
+   * W64 地形背靠守位（2026-08-09，竞品 arena_hero_strategy.py
+   * `_core_attack_surface_profile` :2043 / `_terrain_guard_offsets` :2080 /
+   * `_core_patrol_slots` :9303 对照）：守位选择时考虑地形背靠——从 Core
+   * 沿 8 方向步进统计开阔远程格与四轴集中度，"地形背靠"位置（半侧集中
+   * 足够多远程格）时 Core 四邻守位按"开阔半侧优先"重排（守位站开阔侧、
+   * 岩石在背后——背靠地形减少受击方向）；非地形背靠 = 历史四邻轮转。
+   *
+   * 与 guard-axes 正交：guard-axes 按**威胁方向**（敌来路）分桶选守位轴，
+   * W64 按**地形背靠**（岩石分布）重排四邻顺序——维度不同（threat vs
+   * terrain），可叠加。默认 false = homeCell 历史四邻轮转（零回归）。
+   */
+  readonly terrainGuard?: boolean;
   /**
    * 守卫轮换治疗（v0.3，实验，B8 竞品 healing rotation 对照）：defensive
    * 守卫受伤（Vanguard ≤2/4、Ranger ≤1/2——掉血过半）且无反击压力（敌不在
@@ -294,6 +320,26 @@ export interface SafetyPlannerConfig {
    * （历史行为：到达精确点才升环）。strike-core-v1 设 20。
    */
   readonly militaryRingHoldTicks?: number;
+  /**
+   * W62 环形扇区扫荡（2026-08-09，竞品 arena_hero_strategy.py
+   * `_assault_frontier_target` :6955 对照）：aggressive 军事打野（无可见敌人/
+   * 资源/敌情狩猎目标时）改用**共享**环形扇区扫荡目标——半径在 MIN→MAX 间
+   * 振荡（覆盖近-远-近循环），扇区索引在 8 方位间旋转，**全员到齐门控**
+   * （所有攻坚单位到达当前航点 ≤WAYPOINT_REACHED_RADIUS 才推进下一航点）。
+   *
+   * 与 rally-assault 不同：rally 是"压已知敌 Core 前的集结点"（门控 = ≥3 到齐
+   * 或超时），W62 是"搜索阶段的前沿航点几何"（门控 = 全员到齐）—— rally 管压
+   * 已知目标前的集结、W62 管未知阶段的搜索队形。与 per-unit patrolRing 不同：
+   * patrolRing 是每单位独立升环（到达或时间预算），W62 是全队共享航点
+   * （到齐才升）。默认 false = 历史行为（per-unit patrolRing，零回归）。
+   */
+  readonly assaultSectorSweep?: boolean;
+  /** W62 扫荡最小半径（Chebyshev，默认 8）。 */
+  readonly assaultSweepMinRadius?: number;
+  /** W62 扫荡最大半径（Chebyshev，默认 28，对齐 WIDE_EXPLORE_DEFAULTS.aggressSweepMax）。 */
+  readonly assaultSweepMaxRadius?: number;
+  /** W62 航点到达半径（Chebyshev，默认 4——单位到航点 ≤4 格视为已到达）。 */
+  readonly assaultSweepWaypointReachedRadius?: number;
   /**
    * 敌情狩猎（2026-08-07，持久敌情测绘）：aggressive 军事在无可见敌人/资源时，
    * 优先回访"最后已知敌基地"（World.coreHuntTargets：CORE 目击 sticky + Worker
