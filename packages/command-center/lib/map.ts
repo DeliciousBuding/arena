@@ -276,4 +276,3 @@ export function loadMergedMap(): MergedMap {
   mergedCache.payload = payload;
   return payload;
 }
-

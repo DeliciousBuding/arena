@@ -18,6 +18,12 @@ interface Advice {
   at: string;
 }
 interface AdvicePayload { generatedAt?: string; advice?: Advice[]; summary?: { critical: number; high: number; medium: number; info: number } }
+interface DirectorPayload {
+  available?: boolean; enabled?: boolean; mode?: string; actionOwnership?: string; revision?: number; tick?: number | null;
+  frameTenants?: string[];
+  runtime?: { directiveSentCount?: number; ackCount?: number; directorErrorCount?: number; invalidOutputCount?: number; sendErrorCount?: number };
+  policy?: { treasuryTenant?: string; missions?: Array<{ id?: string; kind?: string; defendTenant?: string; scope?: string }>; taskForces?: Array<{ id?: string; missionId?: string; commanderTenant?: string; fleetRefs?: Array<{ tenantId?: string; fleetId?: string }> }> } | null;
+}
 
 const SEV_CN: Record<string, string> = { CRITICAL: "危急", HIGH: "高", MEDIUM: "中", INFO: "提示" };
 const CAT_CN: Record<string, string> = { ECONOMY: "经济", MILITARY: "军事", THREAT: "威胁", CONFLICT: "冲突", INTEL: "情报" };
@@ -39,14 +45,19 @@ export function AdvicePanel() {
   const [data, setData] = useState<AdvicePayload | null>(null);
   const [err, setErr] = useState("");
   const [at, setAt] = useState("");
+  const [director, setDirector] = useState<DirectorPayload | null>(null);
   useEffect(() => {
     let stop = false;
     const load = async () => {
       try {
-        const r = await fetch("/api/alliance/advice", { cache: "no-store" });
+        const [r, dr] = await Promise.all([
+          fetch("/api/alliance/advice", { cache: "no-store" }),
+          fetch("/api/alliance/director", { cache: "no-store" }),
+        ]);
         if (!r.ok) throw new Error("HTTP " + r.status);
         const d = (await r.json()) as AdvicePayload;
-        if (!stop) { setData(d); setAt(d.generatedAt ?? ""); setErr(""); }
+        const dd = dr.ok ? (await dr.json()) as DirectorPayload : { available: false, enabled: false, mode: "ASSIST_ONLY", actionOwnership: "none" };
+        if (!stop) { setData(d); setDirector(dd); setAt(d.generatedAt ?? ""); setErr(""); }
       } catch (e) { if (!stop) setErr(String((e as Error).message ?? e)); }
     };
     load();
@@ -62,6 +73,27 @@ export function AdvicePanel() {
         <h3>该做什么清单</h3>
         <span className="rp-sub mono dim">{at ? "更新 " + at.slice(5, 16).replace("T", " ") + " UTC" : ""}</span>
       </div>
+      {director ? (
+        <>
+          <div className="sv-summary">
+            <span className={`adv-sum ${director.available && director.enabled ? "adv-info" : "adv-medium"}`}>
+              Director {director.available && director.enabled ? "SHADOW" : "OFFLINE"}
+            </span>
+            <span className="adv-sum">rev {director.revision ?? "—"} · tick {director.tick ?? "—"}</span>
+            <span className="adv-sum">任务 {director.policy?.missions?.length ?? 0}</span>
+            <span className="adv-sum">联合队 {director.policy?.taskForces?.length ?? 0}</span>
+            <span className="adv-sum">ACK {director.runtime?.ackCount ?? 0}/{director.runtime?.directiveSentCount ?? 0}</span>
+          </div>
+          <div className="rp-sub mono dim">
+            {director.mode ?? "ASSIST_ONLY"} · actionOwnership={director.actionOwnership ?? "none"}
+            {director.frameTenants?.length ? ` · frames ${director.frameTenants.join("/")}` : ""}
+            {director.policy?.treasuryTenant ? ` · treasury ${director.policy.treasuryTenant.toUpperCase()}` : ""}
+          </div>
+          {director.policy?.missions?.length ? (
+            <div className="rp-sub mono dim">中央任务：{director.policy.missions.slice(0, 6).map((m) => `${m.defendTenant ?? m.scope ?? "ALL"}:${m.kind ?? "?"}`).join(" · ")}</div>
+          ) : null}
+        </>
+      ) : null}
       {summary ? (
         <div className="sv-summary">
           {(["CRITICAL", "HIGH", "MEDIUM", "INFO"] as const).map((k) => (

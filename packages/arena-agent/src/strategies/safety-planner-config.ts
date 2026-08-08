@@ -261,9 +261,24 @@ export interface SafetyPlannerConfig {
    */
   readonly militaryHunt?: boolean;
   /**
-   * 军事打野陈旧区块优先：Vanguard 无显式攻坚目标时，按当前环探测点所在
-   * chunk 的观察老化选择方位（最旧优先），而不是永远固定方位轮转。多单位
-   * 通过 deterministic offset 分散候选顺序。默认 false = 历史固定序。
+   * 游侠打野（2026-08-08，用户导向"游侠出去乱逛、打野、获取信息、打了就跑"）：
+   * aggressive Ranger 无可见敌人且无攻坚目标（无敌 Core 记忆前压/无 focusRegion）时，
+   * 不再守家发呆——沿巡逻环外出打野（测绘 + 敌情 + 寻敌），遇敌即射、寡不敌众即撤。
+   * 默认 false = 历史行为（回 Core 守位，零回归）。ranger-scavenge-v1 启用。
+   */
+  readonly rangerScavenge?: boolean;
+  /**
+   * 游侠风筝（2026-08-08，用户导向"打了就跑"）：aggressive Ranger 近身（Chebyshev 1）
+   * 遇 VANGUARD 近战威胁时，优先退到射程 2-3 的可射击格再打——保射程不被 SWEEP 换血；
+   * 无合法风筝位才原地射击。默认 false = 历史行为（原地射，零回归）。ranger-kite-v1 启用。
+   */
+  readonly rangerKite?: boolean;
+  /**
+   * 军事打野陈旧区块优先（2026-08-08，对齐 ref "scout routes prioritize the
+   *  least recently observed chunks"）：vanguard_scavenge / ranger_scavenge 选
+   *  巡逻方位时按"当前环探测点所在 chunk 观察老化"排序（最旧区块优先），
+   *  替代固定 +3 步进——测绘/敌情覆盖直奔盲区，不再均匀轮转。
+   *  默认 false = 历史行为（固定方位序，零回归）。military-frontier-scavenge-v1 启用。
    */
   readonly militaryScavengeFrontier?: boolean;
   /**
@@ -356,6 +371,10 @@ export interface SafetyPlannerConfig {
   /** 记忆矿开采距离上限（Manhattan，默认 40 = 探索最外环）：防止追 70+ 格
    *  远矿（t4 实证 worker 跨 30-78 格追空记忆）——超出上限交给巡逻发现。 */
   readonly harvestMemoryMaxDist?: number;
+  /** 记忆矿追猎新鲜度窗口（tick，2026-08-08，t4 幽灵矿复现）：只在“当前可见”
+   * 或“lastSeenTick 举今 ≤ 该窗口”时主动追记忆矿；更旧的（含跨 run seeded
+   * 陈旧矿）视为幽灵——worker 反复追早已消失的矿格空跑（生产实证）。缺省 64 = TTL。*/
+  readonly harvestMemoryFreshTicks?: number;
   /**
    * 清剿可见敌方 WORKER（2026-08-08，用户"挂机/落单单位赶紧打掉"）：
    * aggressive Vanguard 在可见敌方 WORKER（断经济 + 无反击，白赚）距
@@ -365,19 +384,19 @@ export interface SafetyPlannerConfig {
    */
   readonly vanguardPreyWorker?: boolean;
   /**
+   * 同 Tick 协同火力（2026-08-08，竞品 projected-damage/overkill 对照）：
+   * SafetyPlanner 按确定性单位顺序维护本 Tick 预计伤害账本；Vanguard SWEEP
+   * 对相邻格全部敌人记 1，Ranger precision SHOOT 对目标记 1。后续 Ranger
+   * 优先转火尚未被预计击杀的敌方 Unit，减少多枪打 1HP 目标的 DPS 浪费。
+   * 敌 Core 因可见模型不含 shield，不做“预计已死”过滤。默认 false 零回归。
+   */
+  readonly coordinatedFire?: boolean;
+  /**
    * 近核入侵观察（2026-08-08，core-threat-watch-v1）：敌单位距我方 Core
    * ≤ coreThreatWatchRadius（Chebyshev 默认 18）即入长 TTL 观察记忆
    * （coreThreatWatchTicks，默认 60）——短 TTL（enemyHints 6 / stationary 12）
-   * 会漏掉"盘踞/间歇可见"的近核敌情（t2 实证敌 WORKER 离核心 2 格盘踞
-   * 600+ tick，记忆过期后威胁归零、无军事响应）。启用后：
-   *  - 威胁评估：观察内敌战斗单位（Vanguard/Ranger）→ ALERT
-   *    （reason=invasion_watch），即使当前不可见（遥测/决策持续显示入侵）；
-   *  - 远端回援：raidUnitDistance 纳入观察目标——盘踞近核的敌战斗单位触发
-   *    远端军事回援（reinforce-home-v1 同路径，官方 guide "敌方战斗单位进入
-   *    Core 防区 → 非守家单位立即回援"对齐）；
-   *  - Vanguard 回访清剿：观察内静止 WORKER camp / 战斗单位 camp → 最近
-   *    1 个 Vanguard 回访确认并清剿（防"敌贴脸不知"，白赚/断威胁）。
-   * 默认 false = 历史行为（仅 6-12 tick 短记忆，零回归）。
+   * 会漏掉“盘踞/间歇可见”的近核敌情。启用后威胁评估、远端回援与
+   * Vanguard 回访清剿都可复用该长 TTL 观察；默认 false = 历史行为。
    */
   readonly coreThreatWatch?: boolean;
   /** 入侵观察半径（Chebyshev，默认 18，与 World.CORE_WATCH_RADIUS 同值）。 */

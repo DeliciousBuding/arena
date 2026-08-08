@@ -33,6 +33,7 @@ const MISSION: MissionConfig = {
   refillBonus: 0,
   deadMineOverdueTicks: 0,
   migrationScout: false,
+  alwaysSurvey: false,
 };
 
 /** 造快照：资源格可带置信元数据（visible/lastSeenTick/seeded）。 */
@@ -163,6 +164,43 @@ test("mission: 测绘期（surveyBurstActive）保证 floor 个勘探者", () =>
   const byType = (type: string) => plan.assignments.filter((a) => a.task.type === type);
   assert.equal(byType("EXPLORE").length, 3, "测绘期保证 3 个勘探者（floor）");
   assert.equal(byType("GO_RESOURCE").length, 1);
+});
+
+
+test("mission: alwaysSurvey=true 时剩余空闲 worker 全部 EXPLORE（永不守家 WAIT，矿工不守家）", () => {
+  const workers = [worker("w1", 0, 0), worker("w2", 0, 1), worker("w3", 0, 2), worker("w4", 0, 3)];
+  // 只有 1 个可见新鲜矿 → 1 采 + 3 剩；alwaysSurvey 下 3 个剩余全部 EXPLORE，无 WAIT
+  const snapshot = makeSnapshot(
+    workers,
+    [
+      { key: "5,0", visible: true, lastSeenTick: 1000 },
+    ],
+    1000,
+  );
+  const planner = new WorkerTaskPlanner({ mission: { ...MISSION, alwaysSurvey: true } });
+  const plan = planner.plan(snapshot, []);
+  const byType = (type: string) => plan.assignments.filter((a) => a.task.type === type);
+  assert.equal(byType("GO_RESOURCE").length, 1, "可见矿照采");
+  assert.equal(byType("EXPLORE").length, 3, "剩余 worker 全部外出测绘/打探");
+  assert.equal(byType("WAIT").length, 0, "矿工永不守家 WAIT");
+});
+
+test("mission: alwaysSurvey=false（缺省）保持 cap 行为——超 cap 守家 WAIT（零回归）", () => {
+  const workers = [worker("w1", 0, 0), worker("w2", 0, 1), worker("w3", 0, 2), worker("w4", 0, 3)];
+  const snapshot = makeSnapshot(
+    workers,
+    [{ key: "5,0", visible: true, lastSeenTick: 1000 }],
+    1000,
+  );
+  const cap1 = { ...MISSION, surveyWorkerCap: 1, alwaysSurvey: false };
+  const planner = new WorkerTaskPlanner({ mission: cap1 });
+  const plan = planner.plan(snapshot, []);
+  const byType = (type: string) => plan.assignments.filter((a) => a.task.type === type);
+  assert.equal(byType("GO_RESOURCE").length, 1);
+  // 合并语义（main Hungarian + v3 alwaysSurvey）：非测绘期 dummy worker 仍走
+  // surveyorIds cap 仲裁——cap=1 → 1 个 EXPLORE，其余守家 WAIT（零回归）。
+  assert.equal(byType("EXPLORE").length, 1, "cap=1 → 1 个 SURVEYOR");
+  assert.equal(byType("WAIT").length, 2, "超 cap 剩余 worker 守家 WAIT（零回归）");
 });
 
 test("mission: 结果确定性——同快照两次 plan 输出一致", () => {

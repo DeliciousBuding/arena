@@ -720,6 +720,35 @@ test("migrationScoutDirection: 已在目标附近返回 null（fallback 巡逻�
   assert.equal(d, null);
 });
 
+test("safety veto：core 通道清障 worker_clear_core_empty 不被经济 GO_RESOURCE 覆盖（t2 死锁实证）", () => {
+  const clearConfig = { ...DEFAULT_SAFETY_CONFIG, coreClearance: true };
+  const planner = new DeterministicPlanner(
+    undefined,
+    new SafetyPlanner(clearConfig),
+    new SafetyPlanner(clearConfig),
+  );
+  // 空 worker 占核心格 (0,0)（无 cargo）；满载 worker 在 (0,1) 等卸货；可见矿在
+  // (5,5) → 经济 WorkerTaskPlanner 想把空 worker 派去挖矿（GO_RESOURCE）——若不
+  // veto，疏散意图被覆盖 → 空 worker 永远占核心格 → deposit=0 冻结（t2 生产实证）。
+  const empty = unit("w-empty", 0, 0);
+  const loaded = unit("w-full", 0, 1, "WORKER", 1);
+  const state = {
+    ...makeState(1, [core(), empty, loaded]),
+    resourceCells: new Set<string>(["5,5"]),
+  };
+  const plan = planner.decide({ state } as never);
+  assert.equal(
+    plan.intents["w-empty"],
+    "worker_clear_core_empty",
+    `Safety 疏散意图应被 veto 保留，实际=${plan.intents["w-empty"] ?? "(none)"}`,
+  );
+  const action = plan.unitActions["w-empty"];
+  assert.ok(
+    action !== undefined && action.type === "MOVE",
+    `空 worker 应 MOVE 离开核心格，实际=${JSON.stringify(action)}`,
+  );
+});
+
 /** migration-scout planner 级集成（2026-08-08 修复）：核心"位置已变"（即使决策时
  *  coreState 为 NORMAL——服务端 MOVING 是提交后才出现）即触发 EXPLORE 朝迁移方向
  *  勘探；prevCorePosition 必须在覆盖前捕获（旧实现双因失效：previousCorePosition

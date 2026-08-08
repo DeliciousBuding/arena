@@ -27,6 +27,7 @@ test("variant registry: known ids resolve to expected config overrides", () => {
   assert.deepEqual(resolveSafetyVariantConfig("threat-breakout-v1"), { threatBreakout: true });
   assert.deepEqual(resolveSafetyVariantConfig("core-evade-v1"), { coreEvade: true });
   assert.deepEqual(resolveSafetyVariantConfig("harvest-memory-mine-v1"), { harvestMemoryMine: true });
+  assert.deepEqual(resolveSafetyVariantConfig("coordinated-fire-v1"), { coordinatedFire: true });
 });
 
 test("variant registry: core-threat-watch-v1 resolves coreThreatWatch", () => {
