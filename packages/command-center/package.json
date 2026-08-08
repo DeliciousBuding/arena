@@ -13,7 +13,9 @@
     "check:all": "npm run check && npm run check:alliance-sync && npm --prefix web run typecheck && npm --prefix web run build",
     "test:regression": "npm --prefix web run test:regression",
     "test:unit": "node --test --test-force-exit \"test/*.test.ts\"",
-    "check:alliance-sync": "node scripts/check-alliance-sync.ts"
+    "check:alliance-sync": "node scripts/check-alliance-sync.ts",
+    "verify": "npm run check:all && npm run test:unit",
+    "verify:full": "npm run verify && npm run test:regression"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",
