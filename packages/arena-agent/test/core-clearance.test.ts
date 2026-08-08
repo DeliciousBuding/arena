@@ -127,3 +127,39 @@ test("核心通道清障：variant registry 解析 core-clearance-v1", () => {
   const config = resolveSafetyVariantConfig("core-clearance-v1");
   assert.equal(config.coreClearance, true);
 });
+
+
+test("核心通道清障扩展：空载 worker 占核心格 → 疏散 worker_clear_core_empty（t2 130+tick 冻结实证）", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  // 空载 worker 占核心格（无资源任务 WAIT），满载 worker 在邻格等卸货
+  const empty = worker("w-empty", [0, 0], 0);
+  const loaded = worker("w-full", [0, 1], 1);
+  const plan = planner.decide({
+    state: makeState({
+      units: [empty, loaded],
+      vanguards: [],
+      workers: [empty, loaded],
+      resourceSpace: 5,
+    }),
+    policy: undefined,
+  });
+  const intents = intentsOf(plan);
+  assert.ok(
+    intents.includes("worker_clear_core_empty"),
+    `空载 worker 占核心格应疏散让位，实际 intents=${JSON.stringify(intents)}`,
+  );
+});
+
+test("核心通道清障扩展：空载 worker 需回血（hp<满）留在核心格不疏散（主循环 HEAL 接管）", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  const hurt = { id: "w-hurt", position: [0, 0] as Position, hp: 1, unitType: "WORKER" as const, cargo: 0 };
+  const plan = planner.decide({
+    state: makeState({ units: [hurt], vanguards: [], workers: [hurt], resourceSpace: 5 }),
+    policy: undefined,
+  });
+  const intents = intentsOf(plan);
+  assert.ok(
+    intents.includes("heal"),
+    `受伤空 worker 在核心格应 HEAL 而非疏散，实际 intents=${JSON.stringify(intents)}`,
+  );
+});
