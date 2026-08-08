@@ -132,6 +132,14 @@ export const GENE_BOUNDS: readonly GeneBound[] = [
 export interface EvalResult {
   readonly fitness: number;
   readonly detail: FitnessDetail;
+  /**
+   * 对局总战斗伤害（所有玩家 damageDealt 之和，多种子平均）——仅作"有无战斗"
+   * 诊断指标，不进 fitness 公式。被测者（newborn 1W/5res）在 50 tick 烟雾内
+   * 通常造不出军事单位（VANGUARD=10/RANGER=12），故 detail.damage 恒为 0；
+   * 但 OLD 对手会用 SafetyPlanner aggressive 互相交战——本字段暴露该战斗信号，
+   * 使烟雾输出能验证"有战斗"（用户裁决 2026-08-09 damage>0 验证要求）。
+   */
+  readonly combatDamage?: number;
 }
 
 /**
@@ -168,6 +176,10 @@ export function createSpawnProfileEvaluator(spec: SpawnProfileEvalSpec): Individ
   const mySlot = 0;
   return (genome: MacroGenome, seeds: readonly number[]): EvalResult => {
     const runs: { result: EpisodeResult; playerId: string }[] = [];
+    /** 累计每局所有玩家 damageDealt 之和——对局总战斗量诊断指标
+     *  （不进 fitness，仅供"有战斗"验证；被测者 newborn 50tick 内造不出
+     *  军事单位，detail.damage 恒 0，但 OLD 对手互相交战的伤害在此暴露）。 */
+    let combatDamageSum = 0;
     for (const seed of seeds) {
       const { scenario, rotatedSlot } = buildSpawnScenario(participants, mySlot, seed);
       const subjectCorePos = SPAWN_SITES[rotatedSlot] ?? ([0, 0] as const);
@@ -187,8 +199,16 @@ export function createSpawnProfileEvaluator(spec: SpawnProfileEvalSpec): Individ
       };
       const result = runSpawnEpisode(spec, scenario, participants, mySlot, subjectPolicy);
       runs.push({ result, playerId: SUBJECT_ID });
+      for (const ledger of Object.values(result.metrics.perPlayer)) {
+        combatDamageSum += ledger.damageDealt;
+      }
     }
-    return evaluateMultiSeed(runs, spec.ticks);
+    const evaluated = evaluateMultiSeed(runs, spec.ticks);
+    return {
+      fitness: evaluated.fitness,
+      detail: evaluated.detail,
+      combatDamage: seeds.length === 0 ? 0 : combatDamageSum / seeds.length,
+    };
   };
 }
 
@@ -382,6 +402,7 @@ export class WorkerPoolRunner implements EvaluationRunner {
     const messageObject = message as {
       fitness?: number;
       detail?: FitnessDetail;
+      combatDamage?: number;
       error?: string;
     };
     const resolve = this.resolvers.get(worker);
@@ -396,7 +417,11 @@ export class WorkerPoolRunner implements EvaluationRunner {
       messageObject.detail !== undefined &&
       resolve !== undefined
     ) {
-      resolve({ fitness: messageObject.fitness, detail: messageObject.detail });
+      resolve({
+        fitness: messageObject.fitness,
+        detail: messageObject.detail,
+        combatDamage: messageObject.combatDamage,
+      });
     }
   }
 
@@ -698,12 +723,21 @@ export class GA {
       }
     }
     if (verbose) {
+      const bestCombat = results[bestIdx]?.combatDamage ?? 0;
+      const avgCombat =
+        results.length === 0
+          ? 0
+          : results.reduce((sum, r) => sum + (r.combatDamage ?? 0), 0) / results.length;
       console.log(
         `  gen ${generation}: best=${this.fitness[bestIdx]!.toFixed(1)} ` +
-          `avg=${avg.toFixed(1)} best_detail=${JSON.stringify(this.lastDetails[bestIdx])}`,
+          `avg=${avg.toFixed(1)} combat(best=${bestCombat.toFixed(1)} avg=${avgCombat.toFixed(1)}) ` +
+          `best_detail=${JSON.stringify(this.lastDetails[bestIdx])}`,
       );
       if (this.lastHoldout !== null) {
-        console.log(`  [holdout] best 独立种子复评: ${this.lastHoldout.fitness.toFixed(1)}`);
+        console.log(
+          `  [holdout] best 独立种子复评: ${this.lastHoldout.fitness.toFixed(1)}` +
+            ` combat=${(this.lastHoldout.combatDamage ?? 0).toFixed(1)}`,
+        );
       }
     }
     return {
@@ -878,6 +912,7 @@ async function runEvalWorkerLoop(data: { spec: SpawnProfileEvalSpec }): Promise<
           jobId: request.jobId,
           fitness: result.fitness,
           detail: result.detail,
+          combatDamage: result.combatDamage,
         });
       } catch (error) {
         port.postMessage({
