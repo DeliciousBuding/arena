@@ -151,7 +151,8 @@ test("tournament fitness scores relative resources/population and runs through F
   assert.ok(evaluated.detail.ledger!.aliveTicks > 0);
   assert.ok(Number.isFinite(evaluated.detail.legacyScore));
   assert.equal(evaluated.detail.match.tickCount, 12);
-  assert.deepEqual(evaluated.detail.match.players, ["candidate", "baseline"]);
+  assert.deepEqual([...evaluated.detail.match.players].sort(), ["baseline", "candidate"]);
+  assert.equal(evaluated.detail.match.players[3 % 2], "candidate");
 
   const legacyEvaluated = evaluateMacroPolicyTournament(DEFAULT_MACRO_POLICY, 3, {
     rulesPath: RULES,

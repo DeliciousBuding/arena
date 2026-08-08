@@ -31,6 +31,8 @@ interface CliOptions {
   readonly prescreenFraction: number;
   readonly randomSeed: number;
   readonly patience: number;
+  readonly rotateSubjectSlot: boolean;
+  readonly spawnProfileMode: "uniform" | "live-mixed";
   readonly runId: string | null;
   readonly force: boolean;
 }
@@ -64,6 +66,11 @@ function finite(raw: string, name: string): number {
   const value = Number(raw);
   if (!Number.isFinite(value)) throw new Error(`${name} must be finite`);
   return value;
+}
+
+function oneOf<T extends string>(raw: string, name: string, allowed: readonly T[]): T {
+  if (!allowed.includes(raw as T)) throw new Error(`${name} must be one of ${allowed.join(",")}`);
+  return raw as T;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
@@ -103,6 +110,13 @@ function parseArgs(argv: readonly string[]): CliOptions {
     prescreenFraction: finite(values.get("--prescreen") ?? "0.5", "--prescreen"),
     randomSeed: Number(values.get("--random-seed") ?? "0"),
     patience: Number(values.get("--patience") ?? "4"),
+    rotateSubjectSlot:
+      oneOf(values.get("--slot-rotation") ?? "on", "--slot-rotation", ["on", "off"] as const) === "on",
+    spawnProfileMode: oneOf(
+      values.get("--spawn-profiles") ?? "uniform",
+      "--spawn-profiles",
+      ["uniform", "live-mixed"] as const,
+    ),
     runId: values.get("--run-id") ?? null,
     force,
   });
@@ -143,6 +157,8 @@ function main(): void {
       opponents: opponentSpecs,
       subjectId: "evolve-candidate",
       validatePlans: true,
+      rotateSubjectSlot: cli.rotateSubjectSlot,
+      spawnProfileMode: cli.spawnProfileMode,
     },
   });
 
@@ -150,6 +166,8 @@ function main(): void {
     schema: "sim.macro-policy-evolution.v1",
     opponents: cli.opponents,
     ticks: cli.ticks,
+    rotateSubjectSlot: cli.rotateSubjectSlot,
+    spawnProfileMode: cli.spawnProfileMode,
     evolution,
   };
   const outputBase = resolveOutputBase(dataRoot, null);
@@ -162,6 +180,8 @@ function main(): void {
     simulatorSemantics: "official-defaults-except-tick-acceleration",
     opponents: cli.opponents,
     ticks: cli.ticks,
+    rotateSubjectSlot: cli.rotateSubjectSlot,
+    spawnProfileMode: cli.spawnProfileMode,
     evolution,
     champion: result.champion,
     history: result.history,
@@ -170,6 +190,8 @@ function main(): void {
     notes: [
       "MacroPolicy v1 excludes focusRegion to reduce simulator/world-coordinate overfit.",
       "Holdout seeds are disjoint from training/rolling seeds and never participate in selection.",
+      "Subject slot rotation is seed-driven by default; disable only for historical reproduction.",
+      "live-mixed spawn profiles are identity-bound and independent of rotated geometric slots.",
       "Promotion to production still requires evidence-v1 + real shadow/live gates.",
     ],
   });
