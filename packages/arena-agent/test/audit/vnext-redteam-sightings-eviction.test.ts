@@ -14,8 +14,8 @@ import {
   mergeSightings,
   updateSightingsTick,
   EPHEMERAL_UNIT_MAX_AGE_TICKS,
-} from "../../src/alliance/sightings.js";
-import type { EntitySighting } from "../../src/alliance/types.js";
+} from "../../src/alliance/sightings.ts";
+import type { EntitySighting } from "../../src/alliance/types.ts";
 
 function rawUnit(tenant: string, tick: number, x: number, y: number) {
   return {

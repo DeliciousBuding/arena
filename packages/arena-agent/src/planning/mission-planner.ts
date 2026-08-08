@@ -48,6 +48,14 @@ export interface MissionConfig {
   /** 迁移方向勘探（2026-08-08，migration-scout）：核心 MOVING 时 EXPLORE worker 朝
    *  核心迁移方向探路（为落点测绘），而非随机老分区。核心 NORMAL 时零影响。 */
   readonly migrationScout: boolean;
+  /** 分配滞回阈值（2026-08-08，t2 生产实证 planChurn=1.0 根治）：上一 tick 目标格
+   *  仍可采时，新目标净收益必须高于原目标该阈值才切换——低于阈值保持原目标
+   *  （worker 路程不浪费、分配稳定）。缺省 0 = 关闭（现行为零回归）。 */
+  readonly switchThreshold: number;
+  /** 供给缺口勘探（2026-08-08，t2 生产实证 12 空 worker 抢 1-8 可见矿）：候选可采格
+   *  数量 < 未分配 worker 数时，缺口部分全部转 SURVEYOR（勘探新矿源）——矿工供给
+   *  过剩时边际矿工应去测绘，而不是守家 WAIT 或追死种子。缺省 false = 关闭（零回归）。 */
+  readonly surveyOnSupplyGap: boolean;
 }
 
 /** 缺省 = 关闭（全部保守值，逐字节复现现行为）。 */
@@ -63,6 +71,8 @@ export const DEFAULT_MISSION_CONFIG: MissionConfig = Object.freeze({
   refillBonus: 0,
   deadMineOverdueTicks: 0,
   migrationScout: false,
+  switchThreshold: 0,
+  surveyOnSupplyGap: false,
 });
 
 /** 目标置信项（G1）：可见加成 + seeded 随龄衰减。独立于距离/威胁，便于单测。 */

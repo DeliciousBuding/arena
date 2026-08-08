@@ -1347,6 +1347,55 @@ export class SafetyPlanner {
       return;
     }
 
+    // 核心通道清障（core-clearance-v1 扩展，2026-08-08，v3 eddb4f5 移植）：
+    // 空载 worker 占核心格且不在此刻回血（主循环 HEAL 已处理）→ 疏散到最近
+    // 空邻格/外圈，让位给满载 worker 卸货。生产 t2 实证：同一空 worker 占
+    // 核心格 130+ tick（无资源任务 WAIT），4 满载 worker + 4 Vanguard 围死
+    // 卸货通道，deposit=0 经济冻结——原有 coreClearance 只疏散军事/满载占
+    // 核心格，漏了空载 idle worker。疏散目标优先「物理空邻格」（occ=0，无
+    // MOVE_CONTESTED 冲突），无空位再退单占用邻格（容量 2 可挤入）、最后
+    // 外圈守位点。
+    if (
+      this.config.coreClearance === true &&
+      home !== null &&
+      samePosition(unit.position, home) &&
+      !(unit.hp < UNIT_MAX_HP[unit.unitType])
+    ) {
+      const occupancy = occupancyCounts(state);
+      // 敌占格视为不可疏散目标（2026-08-08 审查修复）：occ 扫描只看我方单位，
+      // 敌格显示 occ=0 → 空 worker 可能朝敌疏散送死。把可见敌占格提升为
+      // occ=2（满），两遍扫描与 yieldAnchor 都不会选它。
+      for (const enemy of state.visibleEnemies) {
+        occupancy.set(cellKey(enemy.position), 2);
+      }
+      let exit: Position | null = null;
+      const cardinals: readonly Position[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      for (const direction of cardinals) {
+        const cand: Position = [home[0] + direction[0], home[1] + direction[1]];
+        if (state.obstacleCells.has(cellKey(cand))) continue;
+        if ((occupancy.get(cellKey(cand)) ?? 0) === 0) {
+          exit = cand;
+          break;
+        }
+      }
+      if (exit === null) {
+        for (const direction of cardinals) {
+          const cand: Position = [home[0] + direction[0], home[1] + direction[1]];
+          if (state.obstacleCells.has(cellKey(cand))) continue;
+          if ((occupancy.get(cellKey(cand)) ?? 0) < 2) {
+            exit = cand;
+            break;
+          }
+        }
+      }
+      exit ??= yieldAnchor(home, movementObstacles, occupancy, state.visibleEnemies);
+      exit ??= this.coreGuardFallback(home, movementObstacles, index);
+      if (exit !== null && !samePosition(unit.position, exit)) {
+        const direction = stepToward(unit.position, exit, state.obstacleCells);
+        if (direction !== null) { set(unit, { type: "MOVE", direction }, "worker_clear_core_empty"); return; }
+      }
+    }
+
     // B10 worker 遭遇撤离（scoutEvade 候选，竞品 Scout And Observer
     // Response 对照）：空 worker 视野内（3 格）出现战斗单位 → 撤离回
     // Core（EVADE+RETURN 合一——向 Core 步进即远离敌人，敌占格视为

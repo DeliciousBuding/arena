@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "description": "Python 对手注册表（opponent-bridge.py --agent 解析用）。新增对手：加一个条目 + 满足最小契约（见 decide 约定），模拟器侧零改动。",
+  "contract": {
+    "decide": "模块级函数或实例方法，签名：decide(turn, context) —— 用官方 SDK 的 turn 方法（turn.unit(id).move(...) / worker.harvest() 等）填充 turn.plan，bridge 负责输出。context 字段见条目；farmer 的 choose_actions(turn) 是历史形态（同一契约的实例方法版）。"
+  },
+  "agents": {
+    "farmer": {
+      "repo": "arena-hero-agent",
+      "module": "arena_farmer",
+      "construct": {
+        "fn": "CoreFarmer",
+        "kwargs": ["worker_target", "beacon_policy", "compatibility_marker"]
+      },
+      "decide": "choose_actions",
+      "slot": "pickle",
+      "slotEvery": 25,
+      "desc": "榜二 arena_farmer（守矿型）"
+    },
+    "core": {
+      "repo": "arena-hero-guide",
+      "module": "arena_core_agent",
+      "decide": "plan_turn",
+      "slot": "json",
+      "slotEvery": 25,
+      "state_paths": ["STATE_PATH", "STATE_TEMP_PATH"],
+      "decide_kwargs": ["target", "mode"],
+      "desc": "官方完整参考 agent（arena_core_agent.py，5895 行，搜索/战斗小队/核心推演）"
+    }
+  }
+}

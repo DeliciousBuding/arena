@@ -67,7 +67,11 @@ function makeWorld(opts: {
       },
     ],
     terrain: { obstacles: [], resources: opts.terrainResources ?? [[2, 0]] },
-    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+    // Beacon 放核心视野内（[3,1] 距 [0,0] 曼哈顿 4 ≤ core.visionRadius 5）：
+    // fog 补强（2026-08-08）后视野外 beacon 的 status 投影为 null，会触发
+    // beaconUnknown → 全部差异降级 EXPECTED_UNKNOWN。校准 fixture 必须让
+    // beacon 可见，才能验证"零差异 → MATCH / 破坏 → MISMATCH"的意图。
+    beacon: { position: [3, 1], status: "GROUND", carrierId: null },
   });
 }
 
@@ -211,7 +215,8 @@ test("S8a: v0.11 历史 case 显式回退——rules-v0.11 manifest 仍可 MATCH
       },
     ],
     terrain: { obstacles: [], resources: [[2, 0]] },
-    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+    // 同 makeWorld：beacon 放核心视野内，fog 下 status 保持 GROUND 可见。
+    beacon: { position: [3, 1], status: "GROUND", carrierId: null },
   });
   const beforeState = projectPlayerState(world, "p1", v011Rules);
   const result = settleTick(world, new Map([["p1", waitPlan(1)]]), { rules: v011Rules, rng: null });
