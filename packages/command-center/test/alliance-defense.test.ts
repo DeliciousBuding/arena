@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildDefenseCoordination, directionOf, ENDANGERED_COMBAT_MAX, suggestedRaidForce } from "../lib/alliance-defense.ts";
+import { buildDefenseCoordination, buildDefensePocketAdvice, buildDefensePockets, directionOf, ENDANGERED_COMBAT_MAX, suggestedRaidForce } from "../lib/alliance-defense.ts";
 import type { DefenseMemberInput } from "../lib/alliance-defense.ts";
 
 const member = (over: Partial<DefenseMemberInput> & { tenantId: string }): DefenseMemberInput => ({
@@ -161,4 +161,58 @@ test("alliance-defense: REINFORCE 建议带编成量化", () => {
   assert.ok(r.detail.includes("建议编成 4 Vanguard + 2 Ranger"), `detail 含编成: ${r.detail}`);
   const ev = r.evidence.find((e) => e.label === "建议编成");
   assert.ok(ev && ev.value.includes("4V"), "evidence 含编成");
+});
+
+test("alliance-defense: POCKET 聚类——敌核群威胁 ≥2 租户 → 联防圈", () => {
+  const members = [
+    { tenantId: "t1", core: [0, 0] as [number, number] },
+    { tenantId: "t2", core: [150, 0] as [number, number] },
+    { tenantId: "t3", core: [800, 0] as [number, number] }, // 远，不受威胁
+  ];
+  const enemyCores = [
+    { key: "CORE:alpha", owner: "alpha", position: [60, 0] as [number, number], lastSeenTick: 100 },
+    { key: "CORE:beta", owner: "beta", position: [70, 5] as [number, number], lastSeenTick: 100 },
+    { key: "CORE:gamma", owner: "gamma", position: [80, -5] as [number, number], lastSeenTick: 100 },
+  ];
+  const pockets = buildDefensePockets(members, enemyCores);
+  assert.equal(pockets.length, 1, "一个联防圈");
+  assert.deepEqual([...pockets[0].threatenedTenants].sort(), ["t1", "t2"], "威胁 t1/t2");
+  assert.equal(pockets[0].enemyCores.length, 3);
+  assert.ok(pockets[0].minDistance <= 60, "最近核距");
+  const advice = buildDefensePocketAdvice(members, enemyCores);
+  assert.equal(advice.length, 1);
+  assert.equal(advice[0].category, "POCKET");
+  assert.ok(advice[0].title.includes("T1/T2"), "标题含威胁租户");
+  assert.ok(advice[0].detail.includes("协同设防"), "建议协同设防");
+});
+
+test("alliance-defense: POCKET 聚类——单敌核或威胁 <2 租户 → 无联防圈", () => {
+  const members = [
+    { tenantId: "t1", core: [0, 0] as [number, number] },
+    { tenantId: "t2", core: [800, 0] as [number, number] },
+  ];
+  // 单敌核（不构成群）
+  const single = buildDefensePockets(members, [
+    { key: "CORE:alpha", owner: "alpha", position: [60, 0] as [number, number], lastSeenTick: 100 },
+  ]);
+  assert.equal(single.length, 0, "单敌核无联防圈");
+  // 敌核群但只威胁 1 个租户（t2 太远）
+  const far = buildDefensePockets(members, [
+    { key: "CORE:alpha", owner: "alpha", position: [60, 0] as [number, number], lastSeenTick: 100 },
+    { key: "CORE:beta", owner: "beta", position: [70, 5] as [number, number], lastSeenTick: 100 },
+  ]);
+  assert.equal(far.length, 0, "威胁 <2 租户无联防圈");
+});
+
+test("alliance-defense: POCKET 聚类——敌核群分散不成簇 → 无联防圈", () => {
+  const members = [
+    { tenantId: "t1", core: [0, 0] as [number, number] },
+    { tenantId: "t2", core: [150, 0] as [number, number] },
+  ];
+  // 两个敌核相距 400 > 120，各自威胁单租户
+  const pockets = buildDefensePockets(members, [
+    { key: "CORE:alpha", owner: "alpha", position: [60, 0] as [number, number], lastSeenTick: 100 },
+    { key: "CORE:beta", owner: "beta", position: [200, 0] as [number, number], lastSeenTick: 100 },
+  ]);
+  assert.equal(pockets.length, 0, "不成簇且各自单威胁 → 无联防圈");
 });
