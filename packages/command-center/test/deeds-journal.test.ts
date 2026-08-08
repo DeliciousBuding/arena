@@ -3,7 +3,9 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildAllianceCoverageLine, buildDecisionHealthLine } from "../lib/deeds-journal.ts";
+import { buildAllianceCoverageLine, buildDecisionHealthLine, buildThreatJournalLine } from "../lib/deeds-journal.ts";
+import type { LeaderboardIntel } from "../lib/leaderboard.ts";
+import type { EncounterEntry } from "../lib/intel.ts";
 import type { AuditOverviewPayload } from "../lib/audit-overview.ts";
 import type { AllianceExplorationPayload } from "../lib/exploration-coverage.ts";
 
@@ -48,4 +50,39 @@ test("deeds-journal: 决策健康摘要", () => {
   assert.ok(line && line.includes("分工零兑现"), "最差归因");
   assert.equal(buildDecisionHealthLine(null), null, "空输入 → null");
   assert.equal(buildDecisionHealthLine({ generatedAt: "", cachedAt: "", tenants: {}, global: {} } as unknown as AuditOverviewPayload), null, "无质量数据 → null");
+});
+
+test("deeds-journal: 敌情威胁摘要——高威胁遭遇 + 猛攻蛆", () => {
+  const lb = {
+    generatedAt: "", snapshot: "", snapshotAt: "", ageSeconds: 0, stale: false,
+    beacon_ticks_held: [], damage_dealt: [], core_destruction_participations: [],
+    profiles: [
+      { username: "jerkman", rank: 2, damage: 2743, tier: "ELITE_AGGRESSOR" },
+      { username: "majorcycle", rank: 5, damage: 2082, tier: "ELITE_AGGRESSOR" },
+      { username: "nobody", rank: 40, damage: 500, tier: "STANDARD" },
+    ],
+  } as unknown as LeaderboardIntel;
+  const enc = new Map<string, EncounterEntry[]>([
+    ["majorcycle", [{ tenant: "t4", lastSeenTick: 72766, distanceToFriendlyCore: 6, raidRisk: "CRITICAL" }]],
+    ["jerkman", [{ tenant: "t2", lastSeenTick: 72645, distanceToFriendlyCore: 4, raidRisk: "HIGH" }]],
+    ["nobody", [{ tenant: "t1", lastSeenTick: 70000, distanceToFriendlyCore: 99, raidRisk: "LOW" }]],
+  ]);
+  const line = buildThreatJournalLine(lb, enc);
+  assert.ok(line && line.includes("敌情"), "应生成敌情行");
+  assert.ok(line && line.includes("高威胁遭遇"), "高威胁遭遇前缀");
+  assert.ok(line && line.includes("majorcycle@T4距核6"), "CRITICAL 且距核近优先");
+  assert.ok(line && line.includes("jerkman@T2距核4"), "HIGH 遭遇");
+  assert.ok(line && line.includes("猛攻蛆 2 人"), "ELITE_AGGRESSOR 计数");
+  assert.ok(line && line.includes("jerkman/majorcycle"), "猛攻蛆名单");
+});
+
+test("deeds-journal: 敌情摘要空兜底——无高威胁且无精英 → null", () => {
+  const lb = { generatedAt: "", snapshot: "", snapshotAt: "", ageSeconds: 0, stale: false,
+    beacon_ticks_held: [], damage_dealt: [], core_destruction_participations: [],
+    profiles: [{ username: "nobody", rank: 40, damage: 500, tier: "STANDARD" }] } as unknown as LeaderboardIntel;
+  const enc = new Map<string, EncounterEntry[]>([
+    ["nobody", [{ tenant: "t1", lastSeenTick: 70000, distanceToFriendlyCore: 99, raidRisk: "LOW" }]],
+  ]);
+  assert.equal(buildThreatJournalLine(lb, enc), null, "无高威胁无精英 → null");
+  assert.equal(buildThreatJournalLine(null, new Map()), null, "全空 → null");
 });
