@@ -3,7 +3,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildAllianceCoverageLine, buildDecisionHealthLine, buildThreatJournalLine } from "../lib/deeds-journal.ts";
+import { buildAllianceCoverageLine, buildDecisionHealthLine, buildThreatJournalLine, buildMiningExecutionLine } from "../lib/deeds-journal.ts";
 import type { LeaderboardIntel } from "../lib/leaderboard.ts";
 import type { EncounterEntry } from "../lib/intel.ts";
 import type { AuditOverviewPayload } from "../lib/audit-overview.ts";
@@ -85,4 +85,22 @@ test("deeds-journal: 敌情摘要空兜底——无高威胁且无精英 → nul
   ]);
   assert.equal(buildThreatJournalLine(lb, enc), null, "无高威胁无精英 → null");
   assert.equal(buildThreatJournalLine(null, new Map()), null, "全空 → null");
+});
+
+test("deeds-journal: 采矿执行摘要——矿总量/未采/失联 + 分工兑现", () => {
+  const ov = {
+    generatedAt: "", cachedAt: "",
+    tenants: {
+      t1: { tenant: "t1", mines: { total: 328, neverHarvested: 28, visibleNever: 6, overdueRefills: 105 } },
+      t2: { tenant: "t2", mines: { total: 200, neverHarvested: 59, visibleNever: 59, overdueRefills: 0 } },
+    },
+    global: { miningFulfillment: { assigned: 79, harvested: 0, harvestedByOther: 0, open: 79, stale: 0, effectiveRate: 0 } },
+  } as unknown as AuditOverviewPayload;
+  const line = buildMiningExecutionLine(ov);
+  assert.ok(line && line.includes("采矿执行"), "应生成采矿执行行");
+  assert.ok(line && line.includes("T1 矿328/未采28/可见未采6/失联105"), "t1 矿总量+缺口");
+  assert.ok(line && line.includes("T2 矿200/未采59/可见未采59"), "t2 矿缺口");
+  assert.ok(line && line.includes("分工 79 已采 0 在途 79"), "分工兑现");
+  assert.ok(line && line.includes("兑现率 0%"), "effectiveRate");
+  assert.equal(buildMiningExecutionLine(null), null, "空输入 → null");
 });
