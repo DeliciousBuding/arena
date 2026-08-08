@@ -28,6 +28,7 @@ import { loadAllianceSurvey, refreshAllianceSurvey, TENANT_COLORS } from "./lib/
 import { loadAllianceSnapshot, refreshAllianceSnapshot } from "./lib/alliance-snapshot.ts";
 import { loadAllianceAdvice, refreshAllianceAdvice } from "./lib/alliance-advice.ts";
 import { loadEnemyHeat, refreshEnemyHeat } from "./lib/enemy-heat.ts";
+import { loadAllianceExploration, refreshAllianceExploration } from "./lib/exploration-coverage.ts";
 import { loadPipelineHealth, refreshPipelineHealth } from "./lib/pipeline-health.ts";
 import { maybeTriggerSurveySync, surveySyncBridgeState } from "./lib/survey-sync-bridge.ts";
 import { loadAllianceDeeds, refreshAllianceDeeds } from "./lib/alliance-deeds.ts";
@@ -237,6 +238,11 @@ app.get("/api/alliance/advice", (c) => {
   return c.json(loadAllianceAdvice());
 });
 
+app.get("/api/alliance/exploration", (c) => {
+  // 联盟探索覆盖（2026-08-08，地图系统 + 共享测绘 + 综合决策）：per-tenant 探索
+  // 格数/新鲜度/bbox/独家贡献 + 联盟并集覆盖 + 距核心未探索盲区。30s 缓存 + 预热。
+  return c.json(loadAllianceExploration());
+});
 app.get("/api/events", (c) => {
   const tenant = c.req.query("tenant") ?? "t1";
   const n = Number(c.req.query("n") ?? 60);
@@ -510,6 +516,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
       void refreshDeedsJournal(); // 事迹日记摘要 30s 缓存（读 deeds 缓存，快）
       maybeRefreshLeaderboardLazy(); // 排行榜惰性刷新检查（无计划任务：stale 且间隔到才后台拉）
       refreshMinePatterns(); // 矿生命周期模式 30s 缓存（读 survey-db，快）
+      refreshAllianceExploration(); // 联盟探索覆盖 30s 缓存（读 survey chunks，快）
       void supervisorState(); // 8120 健康状态 5s 缓存（/api/overview、/api/tenants 首开即快）
     } catch { /* 数据缺失/临时 IO 失败不阻塞启动 */ }
   };
