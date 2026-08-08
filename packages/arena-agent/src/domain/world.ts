@@ -549,6 +549,10 @@ export class World {
             ) {
               this.coreHuntMemory.delete(oldKey);
               this.coreHuntMissingCount.delete(oldKey);
+              // P0 修复：Core 迁移时同步清理旧位置的 enemyCoreForceRecords，
+              // 防旧 key 的 unit-ID Set 永久 orphan（旧位置不再在 coreHuntMemory
+              // 中，confirmCoreHuntMissing 永远查不到、永不清理）。
+              this.enemyCoreForceRecords.delete(oldKey);
             }
           }
         }
