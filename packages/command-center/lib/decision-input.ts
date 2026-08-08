@@ -19,6 +19,7 @@ import { loadConsensusMining } from "./consensus-mining.ts";
 import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
 import { loadCoreTrailsFromSurveyDb } from "./trails.ts";
 import { collectCoreThreats, type CoreThreatInput } from "./core-threats.ts";
+import { loadMineUtilization } from "./mine-utilization.ts";
 
 const TTL_MS = 30_000;
 const cache = new TtlCache<DecisionInputPayload>(TTL_MS);
@@ -57,6 +58,22 @@ export interface ResurveyInput {
   distChunks: number;
 }
 
+/** 采集候选（2026-08-08，决策输入缺口补全）：“发现了但还没去挖”的可见未开采矿
+ *  ——mine-utilization candidates 提炼（lastSeen 降序：最新发现优先，最可能仍在视野），
+ *  mission 层可据此直接派 WORKER 定向采集（回复用户“很多矿发现了没分配去挖”的输入缺口）。 */
+export interface MiningCandidateInput {
+  cell: string;
+  x: number;
+  y: number;
+  lastSeenTick: number;
+  /** 发现后仍未采时长（tick）——越大越该优先派工。 */
+  gapAgeTicks: number | null;
+  /** 采集失败次数（竞争/死矿信号）。 */
+  harvestFail: number;
+  /** 活跃度（seenCount/age）。 */
+  activity: number;
+}
+
 export interface DecisionInputPayload {
   generatedAt: string;
   tenant: string;
@@ -67,6 +84,8 @@ export interface DecisionInputPayload {
   resurveyTargets: ResurveyInput[];
   /** 敌核威胁（2026-08-08）：逼近/近距目击全量（不 cap）——mission 层防御部署方向输入。 */
   coreThreats: CoreThreatInput[];
+  /** 采集候选（2026-08-08）：可见未开采矿（最新发现优先，cap 40）——mission 层派 WORKER 采集直接输入。 */
+  miningCandidates: MiningCandidateInput[];
   cachedAt: string;
 }
 
@@ -81,6 +100,7 @@ export function buildDecisionInput(
   threatByCell?: ReadonlyMap<string, { threatLevel: 0 | 1 | 2 | 3; threatCombat: number }>,
   resurvey?: readonly { key?: unknown; cx?: unknown; cy?: unknown; lastSeenTick?: unknown; stalenessTicks?: unknown; distChunks?: unknown }[],
   coreThreats: readonly CoreThreatInput[] = [],
+  miningCandidates: readonly MiningCandidateInput[] = [],
 ): DecisionInputPayload {
   const refillPredictions: RefillPredictionInput[] = (predictions ?? [])
     .filter((p) => p && p.cell)
@@ -127,6 +147,7 @@ export function buildDecisionInput(
     chunkCoverage,
     resurveyTargets,
     coreThreats: [...coreThreats],
+    miningCandidates: [...miningCandidates],
     cachedAt: new Date().toISOString(),
   };
 }
@@ -170,7 +191,22 @@ export function loadDecisionInput(tenant: string): DecisionInputPayload {
       coreThreats = collectCoreThreats(loadCoreTrailsFromSurveyDb(tenant, 48, 1), friendlyCore, curTick);
     }
   } catch { /* 敌核轨迹不可用不阻断 */ }
-  const payload = buildDecisionInput(tenant, currentTick, patterns.tenants?.[tenant]?.predictions ?? [], chunkRows, threatByCell, resurveyRows, coreThreats);
+  // 采集候选（2026-08-08）：“发现了没去挖”的可见未开采矿——mine-utilization candidates
+  // （lastSeen 降序：最新发现优先，最可能仍在视野），cap 40 防 payload 过大。
+  let miningCandidates: MiningCandidateInput[] = [];
+  try {
+    const util = loadMineUtilization().tenants?.[tenant];
+    miningCandidates = (util?.candidates ?? []).slice(0, 40).map((c) => ({
+      cell: c.cell,
+      x: c.x,
+      y: c.y,
+      lastSeenTick: c.lastSeenTick ?? 0,
+      gapAgeTicks: c.gapAgeTicks ?? null,
+      harvestFail: c.harvestFail ?? 0,
+      activity: c.activity ?? 0,
+    }));
+  } catch { /* 矿利用数据不可用不阻断 */ }
+  const payload = buildDecisionInput(tenant, currentTick, patterns.tenants?.[tenant]?.predictions ?? [], chunkRows, threatByCell, resurveyRows, coreThreats, miningCandidates);
   cache.set(key, payload);
   return payload;
 }
