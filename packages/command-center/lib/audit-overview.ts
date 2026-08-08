@@ -14,6 +14,7 @@ import { loadMineUtilization, type MineUtilizationPayload } from "./mine-utiliza
 import { loadAllianceExploration, type AllianceExplorationPayload } from "./exploration-coverage.ts";
 import { loadPipelineHealth, type PipelineHealthPayload } from "./pipeline-health.ts";
 import { loadHumanConflict, type HumanConflictPayload } from "./human-conflict.ts";
+import { loadAllianceMining, type AllianceMiningPayload } from "./alliance-mining.ts";
 
 const TTL_MS = 30_000;
 
@@ -53,6 +54,10 @@ export interface TenantAuditOverview {
     rejectedRate: number | null;
     topRejectedReason: string | null;
   } | null;
+  mining: {
+    assigned: number;
+    avgDistance: number | null;
+  } | null;
 }
 
 export interface AuditOverviewPayload {
@@ -86,6 +91,7 @@ export function aggregateAuditOverview(
   exploration: AllianceExplorationPayload | null,
   pipeline: PipelineHealthPayload | null,
   conflicts: Record<string, HumanConflictPayload> = {},
+  mining: AllianceMiningPayload | null = null,
 ): AuditOverviewPayload {
   const tenants: Record<string, TenantAuditOverview> = {};
   let maxLag: number | null = null;
@@ -150,6 +156,10 @@ export function aggregateAuditOverview(
         rejectedRate: conflicts[t].rejectedRate,
         topRejectedReason: conflicts[t].topRejectedReasons[0]?.reason ?? null,
       } : null,
+      mining: mining?.perTenant[t] ? {
+        assigned: num(mining.perTenant[t].assigned),
+        avgDistance: mining.perTenant[t].avgDistance,
+      } : null,
     };
   }
 
@@ -178,7 +188,8 @@ export function loadAuditOverview(): AuditOverviewPayload {
   const exploration = loadAllianceExploration();
   const pipeline = loadPipelineHealth();
   const conflicts = loadHumanConflict("all") as Record<string, HumanConflictPayload>;
-  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts);
+  const mining = loadAllianceMining();
+  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts, mining);
   cache.set("overview", payload);
   return payload;
 }
