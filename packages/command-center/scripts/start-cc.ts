@@ -1,10 +1,10 @@
 /**
- * Arena 指挥面板启动器（start-cc.mjs）— 随用随起，无计划任务/管理员。
+ * Arena 指挥面板启动器（start-cc.ts）— 随用随起，无计划任务/管理员。
  *
  * 用法（在 packages/command-center 下）：
- *   node scripts/start-cc.mjs            前台启动：当前终端可见日志，同时落 logs/cc-server.log
- *   node scripts/start-cc.mjs --hidden   后台启动：无终端窗口，日志落 logs/cc-server.log（写 pid）
- *   node scripts/start-cc.mjs --stop     停止上次 --hidden 启动的实例（读 pid 文件）
+ *   node scripts/start-cc.ts            前台启动：当前终端可见日志，同时落 logs/cc-server.log
+ *   node scripts/start-cc.ts --hidden   后台启动：无终端窗口，日志落 logs/cc-server.log（写 pid）
+ *   node scripts/start-cc.ts --stop     停止上次 --hidden 启动的实例（读 pid 文件）
  */
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, writeFileSync, appendFileSync, existsSync, rmSync, readFileSync } from "node:fs";
@@ -26,7 +26,7 @@ const stop = process.argv.includes("--stop");
 function stamp() { return new Date().toISOString().replace("T", " ").slice(0, 19); }
 
 /** 端口占用预检：GET /api/overview 200 即认为已有实例在服务。 */
-async function portBusy(port) {
+async function portBusy(port: string) {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 600);
@@ -50,28 +50,28 @@ if (stop) {
   process.exit(0);
 }
 
-const env = { ...process.env, COMMAND_CENTER_PORT: PORT };
-function defaultDataRoot() {
+const env: NodeJS.ProcessEnv = { ...process.env, COMMAND_CENTER_PORT: PORT };
+function defaultDataRoot(): string {
   try {
-    // Worktree-safe: git common-dir always points at the owning arena-ts/.git, even when
-    // this launcher lives under arena-ts/.worktrees/<release>/packages/command-center.
+    // Worktree-safe：git common-dir 指向所属 arena-ts/.git，而不是当前 worktree 根。
+    // 因而 main 与 .worktrees/<release> 始终共享 D:/Code/Projects/arena/data。
     const commonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
       cwd: CC, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     return resolve(dirname(commonDir), "..", "data");
   } catch {
-    // Source-archive fallback keeps historical main-tree behavior; production watchdog
-    // always injects ARENA_DATA_ROOT explicitly.
+    // 非 Git 源码归档的兼容回退；生产 watchdog 会显式注入 ARENA_DATA_ROOT。
     return resolve(join(CC, "..", "..", "..", "data"));
   }
 }
-// Explicit env wins; otherwise resolve through Git common-dir so main/worktree use one data root.
+// 显式环境变量最高优先；否则通过 Git common-dir 找协调根，避免 release worktree
+// 误读/误写 .worktrees/<release>/data。
 env.ARENA_DATA_ROOT = process.env.ARENA_DATA_ROOT ?? defaultDataRoot();
 
 if (hidden) {
   if (await portBusy(PORT)) {
     console.error(`端口 ${PORT} 已有指挥面板实例在服务——拒绝双开（防双写/pid 混乱）。`);
-    console.error(`  停止旧实例：node scripts/start-cc.mjs --stop；若 pid 文件陈旧，先删 logs/cc-server.pid 再启动。`);
+    console.error(`  停止旧实例：node scripts/start-cc.ts --stop；若 pid 文件陈旧，先删 logs/cc-server.pid 再启动。`);
     process.exit(1);
   }
   const child = spawn(process.execPath, [SERVER], {
@@ -83,7 +83,7 @@ if (hidden) {
   // 冷启动预热期可能 >800ms 才响应——2026-08-08 放宽为轮询，消除误报）。
   setTimeout(async () => {
     let alive = true;
-    try { process.kill(child.pid, 0); } catch { alive = false; }
+    try { if (child.pid !== undefined) process.kill(child.pid, 0); } catch { alive = false; }
     let ok = false;
     for (let i = 0; i < 10 && alive; i += 1) {
       if (await portBusy(PORT)) { ok = true; break; }
@@ -97,13 +97,13 @@ if (hidden) {
   console.log(`指挥面板后台启动（无终端窗口）pid=${child.pid}`);
   console.log(`  访问：http://127.0.0.1:${PORT}`);
   console.log(`  日志：${LOG}`);
-  console.log(`  停止：node scripts/start-cc.mjs --stop`);
+  console.log(`  停止：node scripts/start-cc.ts --stop`);
 } else {
   console.log(`指挥面板前台启动（Ctrl+C 停止）· 日志同时写入 ${LOG}`);
   const child = spawn(process.execPath, [SERVER], {
     cwd: CC, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: false,
   });
-  const tee = (stream, sink) => stream.on("data", (d) => {
+  const tee = (stream: NodeJS.ReadableStream, sink: NodeJS.WriteStream) => stream.on("data", (d: Buffer) => {
     try { sink.write(d); appendFileSync(LOG, `[${stamp()}] ${d}`); } catch { /* 忽略 */ }
   });
   tee(child.stdout, process.stdout);

@@ -480,12 +480,14 @@ function stepZoom(ts: any) {
   const z = state.zoom;
   const dt = Math.min(120, Math.max(1, ts - z.lastTs));
   z.lastTs = ts;
-  const k = 1 - Math.exp(-dt / 110); // ~110ms 时间常数
+  const k = 1 - Math.exp(-dt / 88); // ~88ms 时间常数（2026-08-08 跟手性微调：收敛更快，滚轮/缩放更跟手；指数趋近无过冲）
   const v = state.view;
   v.cx += (z.tx - v.cx) * k;
   v.cy += (z.ty - v.cy) * k;
   v.scale += (z.ts - v.scale) * k;
-  const settled = Math.abs(z.ts - v.scale) < 0.001 && Math.hypot(z.tx - v.cx, z.ty - v.cy) < 0.02;
+  // 收敛阈值放宽（scale 0.001→0.01、位置 0.02→0.2）：指数渐近尾部慢拖是"缩放不跟手"主因，
+  // <1% 视觉差异提前停住，动画 ~2 时间常数更快收敛（2026-08-08）
+  const settled = Math.abs(z.ts - v.scale) < 0.01 && Math.hypot(z.tx - v.cx, z.ty - v.cy) < 0.2;
   if (settled) {
     v.cx = z.tx; v.cy = z.ty; v.scale = z.ts;
     z.active = false;

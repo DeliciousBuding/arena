@@ -39,7 +39,12 @@ import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverri
 import { shopProducts, shopCookie, shopMe, shopOrders, shopOrder } from "./lib/shop.ts";
 import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/redeem-log.ts";
 import { appendArbitration, clearArbitration, listArbitrations } from "./lib/arbitration.ts";
-import { loadDecisionAudit, warmDecisionAudit } from "./lib/decision-audit.ts";
+import { loadDecisionAudit, warmDecisionAudit, loadDecisionTrend, warmDecisionTrend } from "./lib/decision-audit.ts";
+import { loadLifecycleAudit, warmLifecycleAudit } from "./lib/lifecycle-audit.ts";
+import { loadMineUtilization, warmMineUtilization } from "./lib/mine-utilization.ts";
+import { loadAuditOverview, warmAuditOverview } from "./lib/audit-overview.ts";
+import { loadHumanConflict, warmHumanConflict } from "./lib/human-conflict.ts";
+import { loadAllianceMining, warmAllianceMining } from "./lib/alliance-mining.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -312,6 +317,21 @@ const VALID_ACTION_TYPES = new Set([
   "SELF_DESTRUCT", "HEAL", "REPAIR_SHIELD", "SPAWN", "START_MOVE", "CANCEL_MOVE",
 ]);
 const validTenant = (t: string | undefined): t is string => !!t && TENANTS.includes(t as (typeof TENANTS)[number]);
+/** 核心移动中守卫（2026-08-08）：手操目标是本租户核心且核心正在移动 → 立即拒绝并给
+ *  明确原因（否则 agent 端静默拒绝——t3 404 次 "Core is already moving" 实证）。 */
+function coreMovingGuard(tenant: string, unitId: string): { blocked: boolean; coreId: string | null } {
+  try {
+    const snap = loadAllianceSnapshot();
+    const member = snap.members?.[tenant];
+    const core = member?.core;
+    if (!core || !core.id) return { blocked: false, coreId: null };
+    if (unitId !== core.id) return { blocked: false, coreId: core.id };
+    if (core.moving === true) return { blocked: true, coreId: core.id };
+    return { blocked: false, coreId: core.id };
+  } catch {
+    return { blocked: false, coreId: null }; // 快照不可用不阻断
+  }
+}
 
 app.get("/api/commands", (c) => {
   const tenant = c.req.query("tenant") ?? "";
@@ -330,6 +350,62 @@ app.get("/api/audit/decisions", (c) => {
   const w = Number(c.req.query("window") ?? DEFAULT_AUDIT_WINDOW);
   const window = Number.isFinite(w) ? Math.min(Math.max(w, 200), 20_000) : DEFAULT_AUDIT_WINDOW;
   return c.json(loadDecisionAudit(tenant, window));
+});
+app.get("/api/audit/decisions/trend", (c) => {
+  // 决策-结果趋势（2026-08-08，综合决策）：尾部 decision/outcome 切 N 窗口，
+  // 看 stall/planChurn/cargoEff/coreDelta 是否在改善。?tenant=tN&window=500&steps=6。
+  const tenant = c.req.query("tenant") ?? "t1";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  if (tenant === "all") return c.json({ error: "趋势仅支持单租户" }, 400);
+  const w = Number(c.req.query("window") ?? 500);
+  const window = Number.isFinite(w) ? Math.min(Math.max(w, 100), 2000) : 500;
+  const s = Number(c.req.query("steps") ?? 6);
+  const steps = Number.isFinite(s) ? Math.min(Math.max(s, 2), 12) : 6;
+  return c.json(loadDecisionTrend(tenant, window, steps));
+});
+app.get("/api/audit/lifecycle", (c) => {
+  // 生命周期审计（2026-08-08）：单位/矿物/核心生命周期标注 + 消费汇总。
+  // 读最新 run 的 calibration 事件（只读），30s 缓存 + 启动预热，不进周期循环。
+  // ?tenant=all|tN。units 按末见 tick 降序；mines 按格聚合（含刷新间隔）。
+  const tenant = c.req.query("tenant") ?? "all";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  return c.json(loadLifecycleAudit(tenant));
+});
+app.get("/api/alliance/mining", (c) => {
+  // 联盟级采矿分工（2026-08-08）：各租户可见未开采候选 → 就近观测租户分配。
+  // 只读组合（快照核心位置 + 共享测绘 observers + 冲突），30s 缓存 + 启动预热。
+  return c.json(loadAllianceMining());
+});
+app.get("/api/audit/overview", (c) => {
+  // 综合审计总览（2026-08-08）：决策-结果 + 生命周期 + 矿利用 + 联盟探索 + 管线健康
+  // 单调用合成——前端"综合态势"面板一次拉取。纯组合（复用各 30s 缓存），只读。
+  return c.json(loadAuditOverview());
+});
+app.get("/api/audit/mines", (c) => {
+  // 矿发现-利用缺口审计（2026-08-08）：survey-db 只读——已发现未开采矿
+  // （visibleNever 立即分配候选 / staleNever 历史遗留）+ 利用率 + 发现→首采耗时。
+  // ?tenant=all|tN。30s 缓存 + 启动预热，不进周期循环。
+  const tenant = c.req.query("tenant") ?? "all";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  return c.json(loadMineUtilization(tenant));
+});
+app.get("/api/audit/human/conflicts", (c) => {
+  // 人机协同冲突审计（2026-08-08）：手操 vs 自动的冲突量化——applied/rejected、
+  // 拒绝原因 top（t3 "Core is already moving" 404 次实证）、手操类型构成。
+  // outcome 尾部 + human-command-audit 只读；30s 缓存 + 启动预热，不进周期循环。
+  const tenant = c.req.query("tenant") ?? "all";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  const w = Number(c.req.query("window") ?? 3000);
+  const window = Number.isFinite(w) ? Math.min(Math.max(w, 200), 20_000) : 3000;
+  return c.json(loadHumanConflict(tenant, window));
 });
 app.get("/api/audit/human", (c) => {
   // 人类指挥审计（2026-08-08）：手操流水（指令/目标/模式/清空/删除），
@@ -356,6 +432,11 @@ app.post("/api/command", async (c) => {
     note: typeof b.note === "string" ? b.note : undefined,
     createdAt: new Date().toISOString(),
   };
+  const guard = coreMovingGuard(tenant, b.unitId);
+  if (guard.blocked) {
+    appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "command", unitId: b.unitId, action: String((b.action as { type?: unknown }).type ?? "?"), note: "rejected: 核心移动中，指令未提交" });
+    return c.json({ ok: false, error: "核心移动中，指令未提交（等待移动完成后再操作）", reason: "core_moving" }, 409);
+  }
   store.commands = store.commands.filter((x) => x.unitId !== b.unitId).concat(cmd);
   const out = writeHumanStore(tenant, store);
   console.log(`[human-cmd] ${tenant} ${b.unitId} ${JSON.stringify(b.action)}`);
@@ -380,6 +461,11 @@ app.post("/api/command/goal", async (c) => {
     note: typeof b.note === "string" ? b.note : undefined,
     createdAt: new Date().toISOString(),
   };
+  const guard = coreMovingGuard(tenant, b.unitId);
+  if (guard.blocked) {
+    appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "goal", unitId: b.unitId, action: `${b.kind} [${b.target[0]},${b.target[1]}]`, note: "rejected: 核心移动中，指令未提交" });
+    return c.json({ ok: false, error: "核心移动中，指令未提交（等待移动完成后再操作）", reason: "core_moving" }, 409);
+  }
   store.goals = store.goals.filter((g) => g.unitId !== b.unitId).concat(goal);
   const out = writeHumanStore(tenant, store);
   console.log(`[human-goal] ${tenant} ${b.unitId} ${b.kind} [${b.target[0]}, ${b.target[1]}]`);
@@ -526,6 +612,18 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { loadAllianceIntel(); } catch { /* 忽略 */ } }, 0);
   // 决策审计（重 I/O 尾部截读）：启动预热一次，不进 30s 周期循环（请求惰性 30s 缓存）。
   setTimeout(() => { try { warmDecisionAudit(); } catch { /* 忽略 */ } }, 50);
+  // 决策趋势（尾部只读）：启动预热一次，不进周期循环。
+  setTimeout(() => { try { warmDecisionTrend(); } catch { /* 忽略 */ } }, 55);
+  // 生命周期审计（重 I/O 全 case 解析）：启动预热一次，不进周期循环（请求惰性 30s 缓存）。
+  setTimeout(() => { try { warmLifecycleAudit(); } catch { /* 忽略 */ } }, 60);
+  // 矿利用审计（survey-db 只读）：启动预热一次，不进周期循环（请求惰性 30s 缓存）。
+  setTimeout(() => { try { warmMineUtilization(); } catch { /* 忽略 */ } }, 70);
+  // 综合审计总览（复用子审计缓存）：启动预热一次，不进周期循环。
+  setTimeout(() => { try { warmAuditOverview(); } catch { /* 忽略 */ } }, 80);
+  // 人机冲突审计（尾部只读）：启动预热一次，不进周期循环。
+  setTimeout(() => { try { warmHumanConflict(); } catch { /* 忽略 */ } }, 90);
+  // 联盟采矿分工（只读组合）：启动预热一次，不进周期循环。
+  setTimeout(() => { try { warmAllianceMining(); } catch { /* 忽略 */ } }, 100);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）

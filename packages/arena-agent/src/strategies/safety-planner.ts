@@ -58,6 +58,11 @@ import {
   samePosition,
   yieldAnchor,
 } from "./safety-planner-helpers.ts";
+import {
+  chokepointLockPoint,
+  enemyReturnPath,
+  pairBlockadeTargets,
+} from "./blockade-predict.ts";
 
 export { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG } from "./safety-planner-config.ts";
 export type { AggressionLevel, SafetyPlannerConfig } from "./safety-planner-config.ts";
@@ -194,6 +199,24 @@ const PREY_STATIONARY_TTL = 12;
  *  World.CORE_WATCH_RADIUS / CORE_WATCH_TTL 同值；配置可覆盖。 */
 const CORE_THREAT_WATCH_RADIUS = 18;
 const CORE_THREAT_WATCH_TICKS = 60;
+/** 攻坚集结参数（2026-08-08，rally-assault-v1）：敌核外圈集结位距敌核
+ *  Chebyshev RALLY_DISTANCE（敌守军 Vanguard 射程 1 / Ranger 射程 3，站 5 格外
+ *  安全）；单位进入集结位半径 RALLY_ARRIVE_RADIUS 视为已到；≥RALLY_READY_COUNT
+ *  或首到后 RALLY_TIMEOUT_TICKS 强制成建制压上（防永久空等）。 */
+const RALLY_DISTANCE = 5;
+const RALLY_ARRIVE_RADIUS = 2;
+const RALLY_READY_COUNT = 3;
+const RALLY_TIMEOUT_TICKS = 40;
+/** 攻坚单位距敌核 ≤ RALLY_ATTACK_RADIUS = 已在敌核攻击圈内，直接压上不集结
+ *  （已投入战斗，回集结位反而送死）。 */
+const RALLY_ATTACK_RADIUS = 4;
+/** 寡不敌众撤退参数（2026-08-08，outnumbered-retreat-v1，guide 巡逻单位兵力
+ *  不足撤退对照）：判定半径 aggressive 10 / defensive 6（guide 同值，Chebyshev）；
+ *  守家豁免圈 = REINFORCE_HOME_RING（4，Core 防区不撤——最后防线接战）；敌核
+ *  守军豁免半径 = PREY_CORE_SAFE（8，known CORE 守军不算"遭遇战"——攻坚不因
+ *  目标守军撤退）。 */
+const OUTNUMBERED_RADIUS_AGGRESSIVE = 10;
+const OUTNUMBERED_RADIUS_DEFENSIVE = 6;
 /** 挂机 WORKER 记忆回访半径（Manhattan）：无敌核清扫目标时 Vanguard 对静止敌
  *  WORKER 的追击上限——有界不跨图远征（白赚但不过度绕路）。 */
 const PREY_STATIONARY_RADIUS = 25;
@@ -211,6 +234,22 @@ const HUNT_SWEEP_RADIUS = 4;
 /** 敌情狩猎清扫时长：单位在基地清扫圈内停留该 tick 数仍未发现敌 Core → 记
  *  清扫并旋转到下一目标（竞品 "整个区域被视野覆盖且未发现 Core 才删除"）。 */
 const HUNT_SWEEP_TICKS = 8;
+/** 产兵让位连续上限（spawn-yield-v1）：满载 worker 连续让位 ≥N tick 后
+ *  强制卸货——防"核心永远想产兵、worker 永远卸不了"的让位饿死循环
+ *  （核心每 tick 产 1 兵后资源下降，正常情况让位 1-2 tick 即恢复卸货）。 */
+const SPAWN_YIELD_MAX_TICKS = 3;
+/** 锁阵默认参数（worker-blockade-v1，2026-08-08，研究驱动设计）：
+ *  锁位 worker 上限 2 / 经济保底 6 / 锁龄上限 10 / 环境锁点最远 24 格
+ *  （超出视为远征送死，防锁位单位深入敌阵）。 */
+const BLOCKADE_WORKER_CAP = 2;
+const BLOCKADE_MIN_WORKERS = 6;
+const BLOCKADE_LOCK_MAX_TICKS = 10;
+/** 终点封锁锁龄上限（2026-08-08）：核心入口锁手提前部署（敌方可能还有
+ *  十几格回程），10 tick 普通锁龄会先满而敌方未到 → 提前放弃。30 tick
+ *  覆盖常见回程长度（t2 实证敌方直线段 3-18 tick）+ 缓冲；敌方真绕路/
+ *  预测错 30 tick 后锁手回巡逻（自我纠正）。 */
+const BLOCKADE_CORE_LOCK_MAX_TICKS = 30;
+const BLOCKADE_ENV_MAX_DIST = 24;
 /** B10 worker 遭遇撤离（竞品 Scout And Observer Response）：撤离触发半径。 */
 const SCOUT_EVADE_RADIUS = 3;
 /** 到 Core 3 格内后的冷却 tick（竞品 three-Tick cooldown）。 */
@@ -302,6 +341,20 @@ export class SafetyPlanner {
   /** MOVE_FAILED 连续失败计数（moveFailedAvoidance）：单位连续 N tick 移动被
    *  结算拒绝时改走垂直绕行格，避免无反馈重试同格死循环。 */
   private moveFailedStreak = new Map<string, number>();
+  /** 产兵让位连续计数（spawn-yield-v1）：满载 worker 连续让位 tick 数——超过
+   *  spawnYieldMaxTicks 强制卸货，防"核心永远想产兵、worker 永远卸不了"。 */
+  private spawnYieldStreak = new Map<string, number>();
+  /** 锁阵本 tick 配对（worker-blockade-v1）：unitId → lockPoint（敌方下一步
+   *  要进的格，站桩即挡）。decide 入口由 enemyReturnPath + 环境锁点计算一次，
+   *  decideWorker 消费（多 worker 共享同一分配，防扎堆/重复锁同一目标）。 */
+  private blockadeAssignment = new Map<string, Position>();
+  /** 终点封锁锁手标记（unitId，2026-08-08）：配到"敌核心入口邻格"的锁手——
+   *  锁龄用放宽上限（BLOCKADE_CORE_LOCK_MAX_TICKS=30），防锁手提前到达
+   *  而 10 tick 锁龄先满、敌方回程未到就提前放弃。 */
+  private coreLockHands = new Set<string>();
+  /** 锁阵站桩起始 tick（unitId → tick）：站桩超过 blockadeLockMaxTicks 仍未
+   *  等到目标 → 放弃回巡逻（预测错误/敌方已绕路，防锁位单位长期闲置）。 */
+  private blockadeLockedSince = new Map<string, number>();
   /** 记忆矿卡死防护（2026-08-08，t3 生产实证）：worker 连续 go_harvest_mem 未推进
    *  的 tick 数（capacity_wait 是 planner 内部拒绝，不产生 MOVE_FAILED 事件，
    *  需独立计数）。 */
@@ -327,6 +380,9 @@ export class SafetyPlanner {
    *  目标 lastSeenTick > sweptAt 视为"清扫后重新发现"，恢复狩猎）。 */
   private readonly huntArriveAt = new Map<string, { key: string; tick: number }>();
   private readonly huntSweptAt = new Map<string, number>();
+  /** 攻坚集结状态（2026-08-08，rally-assault-v1）：targetKey -> { ready, firstArriveTick }。
+   *  集结位在敌核外圈，组齐（ready）或超时后成建制压上；目标被重新目击/更换时重置。 */
+  private readonly rallyTargets = new Map<string, { ready: boolean; firstArriveTick: number }>();
   /** B10 worker 遭遇撤离状态（unitId → 返回截止/冷却截止 tick）。 */
   private scoutEvadeState = new Map<string, { returnUntil: number; cooldownUntil: number }>();
   /** B8 守卫轮换 one-at-a-time：回修流程中的守卫（unitId → 名额占用截止 tick）。 */
@@ -465,6 +521,79 @@ export class SafetyPlanner {
   /** 敌情狩猎扫掠点：远距离（>清扫圈）直接朝基地中心；近距离按单位序号绕基地
    *  圆周展开（DENSE_DELTAS × 2，16 方位）——小队扇形覆盖清扫，防所有单位挤
    *  同格/同向（竞品彻查时"优先选择新增覆盖最多、相互视野重叠最少的目标"）。 */
+  /** 寡不敌众判定（outnumbered-retreat-v1，2026-08-08，guide 巡逻单位兵力不足
+   *  撤退对照）：非守家（>home ring）单位遇可见敌战斗单位（Vanguard/Ranger，
+   *  排除 Worker）且附近我方军事 < 敌（aggressive 严格劣势 / defensive ≤）→
+   *  true。敌核守军（known CORE 8 格内）不计入——攻坚目标守军不算遭遇战，
+   *  否则围攻守军核心时永远"寡不敌众"撤退。确定性（同输入同输出）。 */
+  private outnumbered(state: TickState, unit: UnitSnapshot, enemies: readonly VisibleEntity[]): boolean {
+    if (state.core === null) return false;
+    if (manhattan(unit.position, state.core.position) <= REINFORCE_HOME_RING) return false;
+    const radius = this.config.outnumberedRetreatRadius
+      ?? (this.effectiveAggression === "aggressive" ? OUTNUMBERED_RADIUS_AGGRESSIVE : OUTNUMBERED_RADIUS_DEFENSIVE);
+    const nearEnemyCore = (enemy: VisibleEntity): boolean =>
+      this.world.coreHuntTargets().some(
+        (t) => t.source === "CORE" && chebyshev(t.position, enemy.position) <= PREY_CORE_SAFE,
+      );
+    const combatEnemies = enemies.filter(
+      (e) =>
+        e.kind === "UNIT" &&
+        e.unitType !== "WORKER" &&
+        chebyshev(unit.position, e.position) <= radius &&
+        !nearEnemyCore(e),
+    );
+    if (combatEnemies.length === 0) return false;
+    const localAllies = [...state.vanguards, ...state.rangers].filter(
+      (u) => u.id !== unit.id && chebyshev(unit.position, u.position) <= radius,
+    ).length;
+    return this.effectiveAggression === "aggressive"
+      ? localAllies < combatEnemies.length
+      : localAllies <= combatEnemies.length;
+  }
+
+  /** 攻坚集结位（rally-assault-v1）：敌核外圈 Chebyshev RALLY_DISTANCE 的 8 方位
+   *  点，按"距我方 Core 最近"排序（从我方一侧接近，不绕敌后），第一个非障碍/非
+   *  资源点作为集结位；全堵回退敌核格（兜底直接攻坚）。确定性（同输入同输出）。 */
+  private rallyPoint(target: Position, home: Position, obstacles: ReadonlySet<string>, resourceCells: ReadonlySet<string>): Position {
+    const offsets: ReadonlyArray<readonly [number, number]> = [
+      [1, 0], [-1, 0], [0, 1], [0, -1],
+      [1, 1], [1, -1], [-1, 1], [-1, -1],
+    ];
+    const candidates = offsets
+      .map(([dx, dy]) => [target[0] + dx * RALLY_DISTANCE, target[1] + dy * RALLY_DISTANCE] as Position)
+      .sort((a, b) => manhattan(a, home) - manhattan(b, home));
+    for (const candidate of candidates) {
+      if (obstacles.has(cellKey(candidate))) continue;
+      if (resourceCells.has(cellKey(candidate))) continue;
+      return candidate;
+    }
+    return target;
+  }
+
+  /** 攻坚组是否"已到齐"（rally-assault-v1）：敌核外圈集结区（≤RALLY_DISTANCE+
+   *  RALLY_ARRIVE_RADIUS）内军事单位 ≥RALLY_READY_COUNT，或首到后超时强制压上
+   *  （防某单位被障碍卡住导致永久空等）。目标切换/被重新目击时重置 ready。 */
+  private rallyReady(target: Position, key: string, state: TickState): boolean {
+    const arrived = [...state.vanguards, ...state.rangers].filter(
+      (u) => chebyshev(u.position, target) <= RALLY_DISTANCE + RALLY_ARRIVE_RADIUS,
+    ).length;
+    const rec = this.rallyTargets.get(key);
+    if (rec === undefined) {
+      this.rallyTargets.set(key, { ready: false, firstArriveTick: -1 });
+      return false;
+    }
+    if (arrived >= RALLY_READY_COUNT) {
+      rec.ready = true;
+      return true;
+    }
+    if (rec.firstArriveTick === -1 && arrived > 0) rec.firstArriveTick = state.tick;
+    if (rec.firstArriveTick !== -1 && state.tick - rec.firstArriveTick >= RALLY_TIMEOUT_TICKS) {
+      rec.ready = true;
+      return true;
+    }
+    return rec.ready;
+  }
+
   private huntSweepPoint(target: Position, index: number, reach: number): Position {
     if (reach > HUNT_SWEEP_RADIUS) return target;
     const [dx, dy] = DENSE_DELTAS[(index * 3 + 7) % DENSE_DELTAS.length]!;
@@ -799,6 +928,82 @@ export class SafetyPlanner {
       }
     };
 
+    // 锁阵配对（worker-blockade-v1，2026-08-08）：decide 入口算一次，多 worker
+    // 共享同一分配（防扎堆/重复锁同一目标）。目标 = 敌方回程路径预测 + 环境
+    // 瓶颈锁点；锁位手 = 巡逻态空 worker（blockadeWorkerCap 上限，保经济）。
+    // 防御激活（召回/包围）→ 锁阵停用（锁位 worker 全员回守家圈）。
+    // 预测断链保持（2026-08-08 修复）：敌方被锁原地后 prevPosition==position
+    // → 差分消失 → enemyReturnPath 无预测 → 若清空配对锁手散伙、敌方原地
+    // 重试成功突破（A/B 实证 t3 后敌方无 MOVE_FAILED 一路到核心）。断链时
+    // 保留上一 tick 配对，锁手继续守原锁点（敌方原地重试同方向必再撞锁；
+    // 锁龄超限由 decideWorker 的 lockMaxTicks 兜底释放）。
+    const blockadeActive =
+      this.config.workerBlockade === true &&
+      state.workers.length >= (this.config.blockadeMinWorkers ?? BLOCKADE_MIN_WORKERS) &&
+      !(this.currentThreat?.level === "BREAKOUT");
+    if (!blockadeActive) {
+      this.blockadeAssignment = new Map();
+    }
+    // 清理已死亡单位的状态残留（spawn-yield-v1）：worker 死亡/重生 id 变化，
+    // 旧 id 的让位计数永远不会再命中——逐 tick 清理防止 Map 无限增长。
+    if (this.spawnYieldStreak.size > 0) {
+      const alive = new Set(state.workers.map((worker) => worker.id));
+      for (const unitId of this.spawnYieldStreak.keys()) {
+        if (!alive.has(unitId)) this.spawnYieldStreak.delete(unitId);
+      }
+    }
+    if (blockadeActive) {
+      const hints = this.world.enemyHints();
+      const coreTargets = this.world.coreHuntTargets();
+      const predictions = enemyReturnPath(hints, coreTargets, obstacles)
+        // 过滤：锁点落在己方核心格 = 禁区（worker 站核心格会挡 DEPOSIT/SPAWN，
+        // t2 卸货死锁教训）——朝核心移动的敌方预测可能直接指向核心格。
+        .filter((prediction) =>
+          state.core === null || !samePosition(prediction.nextCells[0], state.core.position),
+        );
+      // 环境锁点（敌核心邻格优先）——没有回程预测时仍可锁环境瓶颈
+      const idleWorkers = state.workers.filter((worker) => worker.cargo === 0);
+      const assignment = pairBlockadeTargets(predictions, idleWorkers, this.config.blockadeWorkerCap ?? BLOCKADE_WORKER_CAP);
+      // 环境锁点兜底：无回程预测但敌核心已知（CORE 目击）→ 派最近 worker
+      // 锁敌核心邻格（断敌方卸货通道）。仅 CORE 源——WORKER_INFER 锚点
+      // 可能锁错位置（推测核心），且无回程预测时锁空位白站（t1 即触发
+      // 资源旁锁点、锁手被派去空位的 A/B 实证）。
+      if (
+        assignment.size === 0 &&
+        idleWorkers.length > 0 &&
+        coreTargets.some((t) => t.source === "CORE")
+      ) {
+        const enemyCore = coreTargets.find((t) => t.source === "CORE")?.position ?? null;
+        const occupied = new Set(
+          [...state.units].map((unit) => cellKey(unit.position)),
+        );
+        const chokepoint = chokepointLockPoint(enemyCore, [...state.resourceCells].map(parseCell), obstacles, occupied);
+        if (chokepoint !== null && manhattan(chokepoint.cell, state.core?.position ?? chokepoint.cell) <= BLOCKADE_ENV_MAX_DIST) {
+          const nearest = [...idleWorkers]
+            .sort((a, b) => manhattan(a.position, chokepoint.cell) - manhattan(b.position, chokepoint.cell) || a.id.localeCompare(b.id))[0];
+          if (nearest !== undefined) assignment.set(nearest.id, chokepoint.cell);
+        }
+      }
+      // 新配对覆盖旧配对；预测断链（assignment 空）→ 保留上一 tick 配对，
+      // 锁手继续守原锁点（敌方原地重试必再撞；锁龄超限兜底释放）。
+      if (assignment.size > 0) {
+        this.blockadeAssignment = assignment;
+        // 标记终点封锁锁手（锁点 = 敌核心入口邻格）：锁龄放宽到
+        // BLOCKADE_CORE_LOCK_MAX_TICKS（锁手提前部署，敌方回程可能还有
+        // 十几格；10 tick 普通锁龄会先满导致提前放弃）。
+        this.coreLockHands = new Set();
+        for (const [unitId, lockPoint] of assignment) {
+          if (
+            coreTargets.some(
+              (target) => target.source === "CORE" && manhattan(target.position, lockPoint) === 1,
+            )
+          ) {
+            this.coreLockHands.add(unitId);
+          }
+        }
+      }
+    }
+
     for (const unit of [...state.units].sort((a, b) => a.id.localeCompare(b.id))) {
       if (
         state.beacon.status === "GROUND" &&
@@ -879,6 +1084,39 @@ export class SafetyPlanner {
     const resourceRestricted = Number.isFinite(maxPatrolRadius);
 
     if (unit.cargo > 0) {
+      // 产兵让位（spawn-yield-v1，2026-08-08）：核心本 tick 计划 SPAWN 时，
+      // 满载 worker 在核心格/核心邻格 → 让位——DEPOSIT Phase8 先于 SPAWN
+      // Phase10，worker 卸货成功仍占核心格会挡掉同 tick SPAWN（生产 t2 实证
+      // 112 次 CORE_SPAWN_FAILED/CELL_UNIT_LIMIT，其中 74 次是 worker 本 tick
+      // 移入核心格、38 次已在核心格；现核心区 9 次仍在发生）。产兵价值 >
+      // 1 资源卸货，让位净赚。已在核心格 → 让出（复用 coreClearance 出口）；
+      // 在邻格 → WAIT 不进核心格（下 tick 核心 spawn 完成后正常卸货）。
+      if (this.config.spawnYield === true && home !== null && this.coreWantsSpawn(state)) {
+        const yieldMaxTicks = this.config.spawnYieldMaxTicks ?? SPAWN_YIELD_MAX_TICKS;
+        const streak = this.spawnYieldStreak.get(unit.id) ?? 0;
+        if (streak < yieldMaxTicks && samePosition(unit.position, home)) {
+          const exit = homeCell(home, movementObstacles, index)
+            ?? this.coreGuardFallback(home, movementObstacles, index);
+          if (exit !== null && !samePosition(unit.position, exit)) {
+            const direction = stepToward(unit.position, exit, movementObstacles);
+            if (direction !== null) {
+              this.spawnYieldStreak.set(unit.id, streak + 1);
+              set(unit, { type: "MOVE", direction }, "worker_yield_spawn");
+              return;
+            }
+          }
+        } else if (
+          streak < yieldMaxTicks &&
+          manhattan(unit.position, home) === 1
+        ) {
+          // 邻格待命：不移动进核心格，下 tick 核心 spawn 完成后再进卸货。
+          this.spawnYieldStreak.set(unit.id, streak + 1);
+          set(unit, { type: "WAIT" }, "worker_yield_spawn");
+          return;
+        }
+        // 让位超限（连续让位 ≥max tick 仍未卸）→ 强制卸货，防让位饿死循环。
+        this.spawnYieldStreak.delete(unit.id);
+      }
       // 核心迁移中交仓待命（core-moving-hold-v1，2026-08-07）：MOVING 期间
       // 引擎拒绝 DEPOSIT（CORE_MOVING/CORE_NOT_PRESENT——生产实测 t2/t3 手操
       // 迁移时 150 tick 内 17/11 次失败），cargo worker 原地持货等核心稳定，
@@ -999,11 +1237,57 @@ export class SafetyPlanner {
       }
     }
 
+    // 锁阵执行（worker-blockade-v1，2026-08-08）：本 tick 配对到锁点的巡逻
+    // worker → 走向锁点站桩（敌方目标格被占 → MOVE_DESTINATION_OCCUPIED
+    // 敌方失败；脚本对手无反馈无限重试）。锁龄超限（预测错误/敌方已绕路）
+    // → 放弃回巡逻；敌方战斗单位近身 ≤3 格 → 立即撤离（复用 scoutEvade
+    // 半径，锁位 worker 无攻击力保命优先）。
+    if (this.config.workerBlockade === true) {
+      const lockPoint = this.blockadeAssignment.get(unit.id);
+      if (lockPoint !== undefined) {
+        // 终点封锁（锁点 = 敌核心入口邻格）→ 放宽锁龄：锁手提前部署，
+        // 敌方回程可能还有十几格；10 tick 普通锁龄会先满而敌方未到。
+        const lockMaxTicks = this.coreLockHands.has(unit.id)
+          ? BLOCKADE_CORE_LOCK_MAX_TICKS
+          : this.config.blockadeLockMaxTicks ?? BLOCKADE_LOCK_MAX_TICKS;
+        const lockedSince = this.blockadeLockedSince.get(unit.id);
+        const enemyNear = state.visibleEnemies.some(
+          (enemy) =>
+            enemy.kind === "UNIT" &&
+            enemy.unitType !== "WORKER" &&
+            manhattan(unit.position, enemy.position) <= SCOUT_EVADE_RADIUS,
+        );
+        if (samePosition(unit.position, lockPoint)) {
+          if (enemyNear) {
+            // 敌战斗单位近身 → 放弃锁位撤离（保命）
+            this.blockadeLockedSince.delete(unit.id);
+          } else if (lockedSince !== undefined && state.tick - lockedSince >= lockMaxTicks) {
+            // 锁龄超限：目标一直没来（预测错误/已绕路）→ 放弃回巡逻
+            this.blockadeLockedSince.delete(unit.id);
+          } else {
+            // 站桩锁：WAIT 占格（敌方目标格被占 → MOVE_DESTINATION_OCCUPIED）
+            if (lockedSince === undefined) this.blockadeLockedSince.set(unit.id, state.tick);
+            set(unit, { type: "WAIT" }, "worker_blockade");
+            return;
+          }
+        } else {
+          const direction = stepToward(unit.position, lockPoint, movementObstacles);
+          if (direction !== null) {
+            set(unit, { type: "MOVE", direction }, "worker_blockade");
+            return;
+          }
+        }
+      } else {
+        this.blockadeLockedSince.delete(unit.id);
+      }
+    }
+
     // B13 worker 空闲回血（idleHealReturn 候选，竞品 heal priority 对照）：
-    // 空 worker（无 cargo/资源任务/撤离）HP 未满且 Core 资源足够补满时回
-    // Core 补血——在 Core 上由主循环 HEAL 分支结算；治疗成本 1 HP=1 资源，
+    // 空 worker（无 cargo/资源任务/撤离/锁阵）HP 未满且 Core 资源足够补满时
+    // 回 Core 补血——在 Core 上由主循环 HEAL 分支结算；治疗成本 1 HP=1 资源，
     // 资源不足不返航（竞品"远处单位保持原有空闲任务"）。优先级低于撤离/
-    // 回仓（见上），高于采集与巡逻。
+    // 回仓/锁阵（见上，锁位 worker 回血会放弃锁位 → 锁断，故锁阵优先），
+    // 高于采集与巡逻。
     if (
       this.config.idleHealReturn === true &&
       home !== null &&
@@ -1295,6 +1579,16 @@ export class SafetyPlanner {
           ?? (this.config.coreClearance === true
             ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
             : state.core.position);
+    // 寡不敌众撤退（outnumbered-retreat-v1，2026-08-08）：非守家单位遇可见敌
+    // 战斗单位且附近我方军事 < 敌 → 向家撤退（绕开敌人占位，stepToward 障碍集
+    // 含敌格）——防 1v2+ 单薄送死。守家圈（≤4）单位不撤（最后防线接战）；敌核
+    // 守军不计入（攻坚不因目标守军撤退）。置于 SWEEP 之前：劣势遭遇战先止损。
+    if (this.config.outnumberedRetreat === true && this.outnumbered(state, unit, enemies)) {
+      const retreatObstacles = new Set(militaryObstacles);
+      for (const enemy of enemies) retreatObstacles.add(cellKey(enemy.position));
+      const direction = stepToward(unit.position, state.core!.position, retreatObstacles);
+      if (direction !== null) { set(unit, { type: "MOVE", direction }, "vanguard_outnumbered_retreat"); return; }
+    }
     const adjacent = enemies.find((enemy) => manhattan(unit.position, enemy.position) === 1);
     if (adjacent !== undefined) {
       const direction = directionToAdjacent(unit.position, adjacent.position);
@@ -1528,6 +1822,23 @@ export class SafetyPlanner {
           ) {
             const direction = stepToward(unit.position, approachTarget ?? state.core.position, militaryObstacles);
             if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_bounded_return");
+            return;
+          }
+          // 攻坚集结（2026-08-08，rally-assault-v1）：组未齐且本单位还在敌核攻击圈
+          // 外 → 先到敌核外圈安全集结位汇合，组齐/超时后成建制压上（防逐个送死）。
+          const key = cellKey(enemyCoreMemory.position);
+          if (
+            this.config.rallyAssault === true &&
+            !this.rallyReady(enemyCoreMemory.position, key, state) &&
+            chebyshev(unit.position, enemyCoreMemory.position) > RALLY_ATTACK_RADIUS
+          ) {
+            const point = this.rallyPoint(enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
+            if (!samePosition(unit.position, point)) {
+              const direction = stepToward(unit.position, point, militaryObstacles);
+              if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_rally");
+              return;
+            }
+            set(unit, { type: "WAIT" }, "vanguard_rally_hold");
             return;
           }
           const direction = stepToward(unit.position, enemyCoreMemory.position, militaryObstacles);
@@ -1833,6 +2144,15 @@ export class SafetyPlanner {
       }
     }
 
+    // 寡不敌众撤退（outnumbered-retreat-v1，2026-08-08，与 Vanguard 同）：非守家
+    // Ranger 遇可见敌战斗单位且附近我方军事 < 敌 → 向家撤退（保持射程别被近身）。
+    if (this.config.outnumberedRetreat === true && this.outnumbered(state, unit, enemies)) {
+      const retreatObstacles = new Set(militaryObstacles);
+      for (const enemy of enemies) retreatObstacles.add(cellKey(enemy.position));
+      const direction = stepToward(unit.position, state.core!.position, retreatObstacles);
+      if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_outnumbered_retreat"); return; }
+    }
+
     // Precision shot at a visible enemy in range. Aggressive mode prioritizes
     // enemy Workers to cut their economy (cargo never reaches their Core).
     // Defensive mode prioritizes the nearest threat first (a Vanguard one cell
@@ -2042,6 +2362,25 @@ export class SafetyPlanner {
               target.source === "CORE" &&
               chebyshev(state.core!.position, target.position) <= BOUNDED_RAID_DISTANCE,
           );
+      // 攻坚集结（rally-assault-v1 Ranger 版，2026-08-08）：Vanguard 先集结但
+      // Ranger 单独前压仍会被守军逐个点掉（t2 二轮 jerkman 攻坚实证：5 Ranger
+      // 独立前压全灭、核心未破）。Ranger 与 Vanguard 同集结位汇合（同目标同
+      // 点位同 rallyReady 状态），组齐/超时后再一起压上——成建制共同出击。
+      if (
+        this.config.rallyAssault === true &&
+        enemyCoreMemory !== undefined &&
+        !this.rallyReady(enemyCoreMemory.position, cellKey(enemyCoreMemory.position), state) &&
+        chebyshev(unit.position, enemyCoreMemory.position) > RALLY_ATTACK_RADIUS
+      ) {
+        const point = this.rallyPoint(enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
+        if (!samePosition(unit.position, point)) {
+          const direction = stepToward(unit.position, point, militaryObstacles);
+          if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_rally");
+          return;
+        }
+        set(unit, { type: "WAIT" }, "ranger_rally_hold");
+        return;
+      }
       moveTarget = enemyCoreMemory?.position ?? this.effectivePolicy?.focusRegion ?? home;
     } else {
       moveTarget = this.effectivePolicy?.focusRegion ?? home;
@@ -2077,6 +2416,41 @@ export class SafetyPlanner {
         // 已展开或环上无空位：原地待机（保持射程）
       }
     }
+  }
+
+  /** 产兵让位预判（spawn-yield-v1，2026-08-08）：核心本 tick 是否计划 SPAWN——
+   *  与 decideCore 的 spawn 意图同构但不含副作用（surgeActive 翻转等）：
+   *  NORMAL、人口未满、无 heal/repair 优先、非 accumulateTarget 拦截、资源
+   *  足够成本+储备。decideWorker 满载分支据此让位（DEPOSIT Phase8 先于
+   *  SPAWN Phase10，worker 占核心格会挡 spawn——生产 t2 实证 112 次
+   *  CORE_SPAWN_FAILED/CELL_UNIT_LIMIT）。资源不足时不预判 spawn →
+   *  worker 正常卸货补充资源（预判与 decideCore 同口径，误差 = 白等 1 tick
+   *  卸货，可接受；绝不反向挡 spawn）。 */
+  private coreWantsSpawn(state: TickState): boolean {
+    const core = state.core;
+    if (core === null || core.state !== "NORMAL") return false;
+    if (state.population >= this.config.populationCeiling) return false;
+    if (core.hp < 5) return false; // heal 优先于 spawn
+    if (core.shield < 5 && state.resources >= 1) return false; // repair 优先
+    if (this.config.accumulateTarget > 0 && state.resources >= this.config.accumulateTarget) {
+      return false; // 积累目标拦截，不产兵
+    }
+    const threshold = this.config.accumulateThreshold ?? 0;
+    const surge = threshold > 0 && (this.surgeActive || state.resources >= threshold);
+    const unitType = threshold > 0
+      ? surge
+        ? nextMilitary(state, this.config)
+        : "WORKER"
+      : this.config.accumulateTarget > 0 &&
+        state.resources >= this.config.guardResources &&
+        state.vanguards.length + state.rangers.length < this.config.guardForce
+        ? nextMilitary(state, this.config)
+        : nextSpawn(state, this.effectiveWorkerTarget, this.config);
+    const cost = unitType === "WORKER" ? 5 : unitType === "VANGUARD" ? 10 : 12;
+    const reserve = state.resources >= this.config.wealthyThreshold
+      ? this.config.reserveWealthy
+      : this.config.reserveEarly;
+    return state.resources >= cost + reserve;
   }
 
   private decideCore(state: TickState, intents: Record<string, string>): CoreAction | null {
