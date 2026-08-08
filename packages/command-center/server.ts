@@ -35,6 +35,7 @@ import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverri
 import { shopProducts, shopCookie, shopMe, shopOrders, shopOrder } from "./lib/shop.ts";
 import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/redeem-log.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
+import { applyGoalMutation } from "./lib/goal-store.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
@@ -321,18 +322,23 @@ app.post("/api/command/goal", async (c) => {
     return c.json({ error: "非法目标坐标" }, 400);
   }
   const store = readHumanStore(tenant);
-  const goal: HumanGoal = {
-    id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    unitId: b.unitId,
-    kind: b.kind,
-    target: [b.target[0] as number, b.target[1] as number],
+  const goalInput = {
+    unitId: String(b.unitId),
+    kind: b.kind as "mine" | "goto",
+    target: [b.target[0] as number, b.target[1] as number] as [number, number],
     note: typeof b.note === "string" ? b.note : undefined,
-    createdAt: new Date().toISOString(),
   };
-  store.goals = store.goals.filter((g) => g.unitId !== b.unitId).concat(goal);
+  const { outcome, goals } = applyGoalMutation(store, goalInput, Date.now());
+  if (!outcome.applied) {
+    appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "goal_dup", unitId: goalInput.unitId, action: `${goalInput.kind} [${goalInput.target[0]},${goalInput.target[1]}]`, note: `窗口内去重，未重写（现有 goal ${outcome.goalId}）` });
+    const existing = store.goals.find((g) => g.id === outcome.goalId);
+    return c.json({ ok: true, goal: existing ?? null, deduped: true, mode: store.mode, total: store.goals.length });
+  }
+  store.goals = goals as typeof store.goals;
   const out = writeHumanStore(tenant, store);
-  console.log(`[human-goal] ${tenant} ${b.unitId} ${b.kind} [${b.target[0]}, ${b.target[1]}]`);
-  appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "goal", unitId: b.unitId, action: `${b.kind} [${b.target[0]},${b.target[1]}]`, note: typeof b.note === "string" ? b.note : undefined });
+  console.log(`[human-goal] ${tenant} ${goalInput.unitId} ${goalInput.kind} [${goalInput.target[0]}, ${goalInput.target[1]}]`);
+  appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "goal", unitId: goalInput.unitId, action: `${goalInput.kind} [${goalInput.target[0]},${goalInput.target[1]}]`, note: typeof goalInput.note === "string" ? goalInput.note : undefined });
+  const goal = store.goals.find((g) => g.id === outcome.goalId);
   return c.json({ ok: true, goal, mode: out.mode, total: out.goals.length });
 });
 app.delete("/api/command", async (c) => {

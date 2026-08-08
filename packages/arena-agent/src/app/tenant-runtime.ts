@@ -16,7 +16,7 @@
 
 import { ArenaHeroClient } from "@arena/arena-hero-ts";
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
-import { mkdirSync, watch } from "node:fs";
+import { mkdirSync, renameSync, watch } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 
@@ -34,6 +34,7 @@ import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "
 import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
 import { knownChunks, knownCoreHunts, knownObstacles, knownResources, openSurveyDb } from "../intel/survey-db.ts";
 import { loadRefillPredictions } from "../intel/refill-predictions.ts";
+import { checkAndMirrorOfficialManual, type OfficialManualMirror, type ReceiptLike } from "../command-plane/official-bridge.ts";
 import { DEFAULT_MISSION_CONFIG } from "../planning/mission-planner.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
@@ -840,10 +841,36 @@ export async function runTenant(
     } = { prev: null };
     let processedTickCount = 0;
     let liveSubmitCount = 0;
+    // 官方 web 手操镜像去重（内容哈希：同内容不重复写盘/审计）。
+    let officialMirrorHash: string | null = null;
 
     const onTick = (outcome: TickOutcome): void => {
       // Alliance shadow（默认关）：只读快照，IO 失败不阻塞。
       allianceShadowWriter?.onState(outcome.state);
+      // 官方 web 手操镜像（Phase 3 命令打通，只读回显）：官方事件流广播 MANUAL
+      // 回执（官方 web 手动提交）→ 结构化镜像 + 审计；不合并进 human-commands
+      // （官方已接受执行，agent 重发 = 双提交冲突；single-writer 纪律保持）。
+      checkAndMirrorOfficialManual(
+        client.latestReceipts as Readonly<Record<string, ReceiptLike>>,
+        {
+          tenant: config.tenantId,
+          dataRoot,
+          writeMirror: (mirror) => {
+            const mirrorDir = join(baseDir, "official-mirror");
+            mkdirSync(mirrorDir, { recursive: true });
+            const record: OfficialManualMirror = {
+              ...mirror,
+              updatedAt: new Date().toISOString(),
+            };
+            const tmpPath = join(mirrorDir, `${config.tenantId}.json.tmp`);
+            const targetPath = join(mirrorDir, `${config.tenantId}.json`);
+            appendJsonlLine(tmpPath, JSON.stringify(record));
+            // 原子替换（与 human-commands store 同纪律：不落半截坏 JSON）
+            renameSync(tmpPath, targetPath);
+          },
+          previousHash: officialMirrorHash,
+        },
+      );
       const decision = outcome.decision;
       const intentCounts = decision === undefined
         ? {}
