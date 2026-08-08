@@ -37,6 +37,21 @@ export interface ExplorationGap {
   corePos: [number, number] | null;
 }
 
+/** 补测目标（2026-08-08，测绘记录层→勘探）：已探索但观测过旧的 chunk——该区资源可能
+ *  已刷新/已消耗，地图记忆过期，需重新测绘（refill 模型证伪后的替代信号：不预测刷新，
+ *  而是"哪块旧观测区最该先补测"）。按 陈旧度 降序 + 距核心 升序 排。 */
+export interface ResurveyTarget {
+  key: string;
+  cx: number;
+  cy: number;
+  lastSeenTick: number;
+  /** currentTick - lastSeenTick（越大越旧，越该补测）。 */
+  stalenessTicks: number;
+  nearCoreOf: string;
+  distChunks: number;
+  corePos: [number, number] | null;
+}
+
 export interface AllianceExplorationPayload {
   generatedAt: string;
   world: {
@@ -56,6 +71,8 @@ export interface AllianceExplorationPayload {
   };
   /** 距友方核心 ≤GAP_RADIUS_CHUNKS 的未探索盲区（探索扩展目标，上限 40）。 */
   gaps: ExplorationGap[];
+  /** 补测目标（2026-08-08）：已探索但观测过旧的 chunk，按陈旧度+距核心排（上限 40）。 */
+  resurveyTargets: ResurveyTarget[];
   cachedAt: string;
 }
 
@@ -66,6 +83,9 @@ const FRESH_WINDOW_TICKS = 2000;
 /** 核心盲区半径（chunk 单位）：核心 5×5 chunk（80 格）内未探索视为盲区。 */
 const GAP_RADIUS_CHUNKS = 5;
 const GAP_CAP = 40;
+/** 补测半径（chunk）：核心周围已探索但观测过旧的区（略大于盲区半径，覆盖回看范围）。 */
+const RESURVEY_RADIUS_CHUNKS = 8;
+const RESURVEY_CAP = 40;
 
 function num(v: unknown): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -85,7 +105,7 @@ export function computeExplorationStats(
   chunksByTenant: Record<string, readonly { key: string; lastSeenTick?: number | null }[]>,
   coresByTenant: Record<string, [number, number] | null>,
   currentTick: number,
-): { world: AllianceExplorationPayload["world"]; perTenant: Record<string, TenantCoverage>; alliance: AllianceExplorationPayload["alliance"]; gaps: ExplorationGap[] } {
+): { world: AllianceExplorationPayload["world"]; perTenant: Record<string, TenantCoverage>; alliance: AllianceExplorationPayload["alliance"]; gaps: ExplorationGap[]; resurveyTargets: ResurveyTarget[] } {
   const perTenant: Record<string, TenantCoverage> = {};
   const union = new Map<string, { lastSeenTick: number; tenant: string }>();
   const tenantSets: Record<string, Set<string>> = {};
@@ -186,11 +206,40 @@ export function computeExplorationStats(
     if (dedup.length >= GAP_CAP) break;
   }
 
+  // 补测目标（2026-08-08）：已探索 chunk 中观测过旧（< currentTick - FRESH）且
+  //  距任一友方核心 ≤RESURVEY_RADIUS_CHUNKS —— 旧观测区优先重测（资源可能已变）。
+  const rsSeen = new Set<string>();
+  const resurveyTargets: ResurveyTarget[] = [];
+  {
+    const stale: Array<{ key: string; lastSeenTick: number }> = [];
+    for (const [key, v] of union) {
+      if (v.lastSeenTick < currentTick - FRESH_WINDOW_TICKS) stale.push({ key, lastSeenTick: v.lastSeenTick });
+    }
+    stale.sort((a, b) => a.lastSeenTick - b.lastSeenTick); // 最旧优先
+    for (const s of stale) {
+      if (rsSeen.has(s.key)) continue;
+      const [cx, cy] = parseChunkKey(s.key) ?? [0, 0];
+      let best: { t: string; d: number; pos: [number, number] | null } | null = null;
+      for (const t of TENANTS) {
+        const pos = coresByTenant[t];
+        if (!pos) continue;
+        const ccx = Math.floor(pos[0] / CHUNK_SIZE), ccy = Math.floor(pos[1] / CHUNK_SIZE);
+        const d = Math.max(Math.abs(cx - ccx), Math.abs(cy - ccy));
+        if (d <= RESURVEY_RADIUS_CHUNKS && (!best || d < best.d)) best = { t, d, pos };
+      }
+      if (!best) continue;
+      rsSeen.add(s.key);
+      resurveyTargets.push({ key: s.key, cx, cy, lastSeenTick: s.lastSeenTick, stalenessTicks: currentTick - s.lastSeenTick, nearCoreOf: best.t, distChunks: best.d, corePos: best.pos });
+      if (resurveyTargets.length >= RESURVEY_CAP) break;
+    }
+  }
+
   return {
     world: { chunkSize: CHUNK_SIZE, observedSpan: span, spanChunks, exploredChunks: unionKeys.size, coveragePct },
     perTenant,
     alliance: { unionChunks: unionKeys.size, unionRecent, coveragePct, exclusiveByTenant },
     gaps: dedup,
+    resurveyTargets,
   };
 }
 
@@ -202,7 +251,9 @@ function loadAllianceExplorationInner(): AllianceExplorationPayload {
     const cached = loadTenantSurveyCached(t);
     chunksByTenant[t] = (cached.survey?.chunks ?? []) as unknown as { key: string; lastSeenTick?: number | null }[];
     const world = loadWorld(t) as { state?: { tick?: unknown; objects?: Array<{ kind?: string; controlled?: boolean; position?: unknown }> } | null };
-    const wt = num(world.state?.tick);
+    // tick 在 world 顶层（streams.ts loadWorld 返回 { tick, state }）——2026-08-08 修正
+    // 原读 state.tick 恒 undefined → currentTick=0 → 新鲜度/补测全失效。
+    const wt = num((world as { tick?: unknown }).tick ?? world.state?.tick);
     if (wt > currentTick) currentTick = wt;
     // 友方核心在 state.objects（kind=CORE + controlled），非 state.core 字段（2026-08-08 修正）
     const coreObj = (world.state?.objects ?? []).find((o) => o.kind === "CORE" && o.controlled === true);

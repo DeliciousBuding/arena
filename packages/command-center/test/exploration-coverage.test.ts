@@ -44,3 +44,26 @@ test("exploration: 距核心未探索盲区（gap）", () => {
   assert.equal(near?.nearCoreOf, "t1");
   assert.equal(near?.distChunks, 1);
 });
+
+test("exploration: 补测目标（旧观测近核 chunk 优先）", () => {
+  // currentTick=10000，FRESH_WINDOW=2000 → <8000 视为旧
+  const chunks = {
+    t1: [
+      { key: "0,0", lastSeenTick: 9000 },   // 新鲜，不补测
+      { key: "1,0", lastSeenTick: 5000 },   // 旧，距核 (8,8)→chunk(0,0) dist1 → 补测
+      { key: "5,5", lastSeenTick: 3000 },   // 旧，距核 chunk(0,0) dist5 → 补测
+      { key: "20,20", lastSeenTick: 2000 }, // 旧，距核 dist20 > RESURVEY_RADIUS(8) → 不补测
+    ],
+    t2: [], t3: [], t4: [],
+  };
+  const stats = computeExplorationStats(chunks, { t1: [8, 8], t2: null, t3: null, t4: null }, 10000);
+  const rs = stats.resurveyTargets;
+  assert.ok(rs.length >= 2, "近核旧 chunk 进补测清单");
+  assert.equal(rs.some((r) => r.key === "0,0"), false, "新鲜 chunk 不补测");
+  assert.equal(rs.some((r) => r.key === "20,20"), false, "远核旧 chunk 不补测");
+  const byKey = new Map(rs.map((r) => [r.key, r]));
+  assert.equal(byKey.get("1,0")?.nearCoreOf, "t1");
+  assert.equal(byKey.get("1,0")?.stalenessTicks, 5000, "10000-5000");
+  // 最旧优先（5,5 的 staleness 7000 应在 1,0 的 5000 之前）
+  if (rs.length >= 2) assert.ok(rs[0].stalenessTicks >= rs[1].stalenessTicks, "最旧优先排序");
+});
