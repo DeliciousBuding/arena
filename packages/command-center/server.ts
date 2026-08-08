@@ -11,6 +11,7 @@
  *  - supervisor Debug API（127.0.0.1:8120 /ready，探测在线状态）；
  *  - 官方商店代理（linuxdoshop.arenahero.io，需登录 Cookie）。
  */
+import { DatabaseSync } from "node:sqlite";
 import { Hono, type Context } from "hono";
 import { serve } from "@hono/node-server";
 import { existsSync, statSync, readFileSync } from "node:fs";
@@ -29,6 +30,7 @@ import { loadAllianceSnapshot, refreshAllianceSnapshot } from "./lib/alliance-sn
 import { loadAllianceCluster, refreshAllianceCluster } from "./lib/alliance-cluster.ts";
 import { loadAllianceAdvice, refreshAllianceAdvice } from "./lib/alliance-advice.ts";
 import { buildDefenseCoordination, buildDefensePocketAdvice, buildDefensePockets } from "./lib/alliance-defense.ts";
+import { buildEnemyCoreStates, type EnemyCoreHuntRow } from "./lib/enemy-core-state.ts";
 import { loadEnemyHeat, refreshEnemyHeat } from "./lib/enemy-heat.ts";
 import { loadAllianceExploration, refreshAllianceExploration } from "./lib/exploration-coverage.ts";
 import { loadPipelineHealth, refreshPipelineHealth } from "./lib/pipeline-health.ts";
@@ -165,6 +167,53 @@ app.get("/api/survey/mine", (c) => {
   if (!mine) return c.json({ tenant, mine: null, timeline: [] });
   const cell = `${mine.x},${mine.y}`;
   return c.json({ tenant, mine, cell, timeline: loadResourceTimeline(tenant, cell) });
+});
+app.get("/api/survey/enemy-cores", (c) => {
+  // 敌核状态视图（2026-08-08，共享测绘深化）：core_hunts（共享测绘敌核记忆）
+  // 聚合每敌核生命周期状态 ACTIVE/RELOCATED/STALE + 威胁级别——回答"敌方核心
+  // 还活着吗 / 在哪 / 迁哪了"；活跃且距友核近 → high（打核候选）。只读。
+  const hunts: EnemyCoreHuntRow[] = [];
+  let maxTick = 0;
+  for (const t of TENANTS) {
+    const file = join(DATA_ROOT, "runtime", "survey", `${t}.db`);
+    if (!existsSync(file)) continue;
+    let db: DatabaseSync;
+    try {
+      db = new DatabaseSync(file, { readOnly: true });
+    } catch {
+      continue;
+    }
+    try {
+      const rows = db.prepare(
+        "SELECT owner, x, y, first_seen_tick, last_seen_tick, source FROM core_hunts WHERE owner IS NOT NULL",
+      ).all() as Array<Record<string, unknown>>;
+      for (const r of rows) {
+        const last = Number(r.last_seen_tick);
+        if (last > maxTick) maxTick = last;
+        hunts.push({
+          owner: String(r.owner),
+          x: Number(r.x),
+          y: Number(r.y),
+          firstSeenTick: Number(r.first_seen_tick),
+          lastSeenTick: last,
+          source: r.source === "WORKER_INFER" ? "WORKER_INFER" : "CORE",
+        });
+      }
+    } catch {
+      // 旧库无 core_hunts：跳过
+    } finally {
+      db.close();
+    }
+  }
+  const snap = loadAllianceSnapshot();
+  const friendlyCores = Object.values(snap.members)
+    .map((m) => (m.core ? m.core.position : null))
+    .filter((p): p is readonly [number, number] => p !== null);
+  return c.json({
+    generatedAt: new Date().toISOString(),
+    currentTick: maxTick,
+    cores: buildEnemyCoreStates(hunts, maxTick, friendlyCores),
+  });
 });
 app.get("/api/survey/decision-input", (c) => {
   // 决策输入管道（2026-08-08，G3 断层补全）：矿刷新预测（dueInTicks）+ chunk 覆盖
