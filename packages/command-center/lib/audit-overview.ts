@@ -84,6 +84,8 @@ export interface AuditOverviewPayload {
     maxLagTicks: number | null;
     totalNeverHarvested: number;
     totalVisibleNever: number;
+    /** 失联矿总数（2026-08-08）：预测该刷新却未再出现（dueInTicks<0），全联盟加总。 */
+    totalOverdueRefills: number;
     totalUnits: number;
     totalCoreDelta: number;
     coveragePct: number | null;
@@ -120,7 +122,7 @@ export function aggregateAuditOverview(
 ): AuditOverviewPayload {
   const tenants: Record<string, TenantAuditOverview> = {};
   let maxLag: number | null = null;
-  let totalNever = 0, totalVisibleNever = 0, totalUnits = 0, totalCoreDelta = 0;
+  let totalNever = 0, totalVisibleNever = 0, totalUnits = 0, totalCoreDelta = 0, totalOverdueRefills = 0;
 
   const overdueRefillsByTenant: Record<string, number> = {};
   for (const t of TENANTS) {
@@ -149,6 +151,7 @@ export function aggregateAuditOverview(
     totalVisibleNever += num(mu?.visibleNever);
     totalUnits += lc?.units?.length ?? 0;
     totalCoreDelta += num(dec?.outcome?.coreDeltaSum);
+    totalOverdueRefills += num(overdueRefillsByTenant[t]);
 
     const byType: Record<string, number> = {};
     let alive = 0, destroyed = 0, minesActive = 0, coreCaptures = 0, spendTotal = 0;
@@ -206,6 +209,7 @@ export function aggregateAuditOverview(
       maxLagTicks: maxLag,
       totalNeverHarvested: totalNever,
       totalVisibleNever: totalVisibleNever,
+      totalOverdueRefills,
       totalUnits,
       totalCoreDelta,
       coveragePct: exploration?.world?.coveragePct ?? null,
@@ -268,3 +272,7 @@ export function loadAuditOverview(): AuditOverviewPayload {
 export function warmAuditOverview(): void {
   loadAuditOverview();
 }
+
+
+
+
