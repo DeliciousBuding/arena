@@ -36,6 +36,9 @@ runs/run-*/n/
 # 例外：alliance runtime shadow primitives 是源码不是运行时产物（同上）
 !packages/arena-agent/src/alliance/runtime/
 !packages/arena-agent/src/alliance/runtime/**
+# 例外：offline-learning runtime 抽象（M1d-lite ModelScorer/OOD telemetry）是源码
+!packages/arena-agent/src/offline-learning/runtime/
+!packages/arena-agent/src/offline-learning/runtime/**
 
 # 模拟器 worktree（独立分支，模拟器工程专用）
 .worktrees/

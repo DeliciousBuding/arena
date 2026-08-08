@@ -113,6 +113,40 @@ export type {
   MlSplitReport,
 } from "./export/real-sample-export.ts";
 
+// ── Candidate (M2a) ──
+export {
+  DECISION_CANDIDATE_SCHEMA_VERSION,
+  CANDIDATE_KINDS,
+  CANDIDATE_SOURCES,
+  candidateSemanticRecord,
+  computeCandidateDeterministicHash,
+  validateDecisionCandidateV1,
+  makeCandidateV1,
+} from "./candidate/decision-candidate-v1.ts";
+export type {
+  CandidateKind,
+  CandidateSource,
+  DecisionCandidateV1,
+} from "./candidate/decision-candidate-v1.ts";
+
+// ── Runtime (M1d-lite) ──
+export {
+  UnavailableScorer,
+} from "./runtime/model-scorer.ts";
+export type {
+  ModelScorer,
+  ModelScoreResult,
+} from "./runtime/model-scorer.ts";
+export {
+  computeOodReport,
+  oodReferenceFromFeatureQuality,
+} from "./runtime/ood-telemetry.ts";
+export type {
+  OodReference,
+  OodReport,
+  ShadowPredictionRecord,
+} from "./runtime/ood-telemetry.ts";
+
 // ── Eval ──
 export {
   BENCHMARK_RESULT_SCHEMA_VERSION,
