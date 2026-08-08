@@ -199,3 +199,11 @@ mapEngine.ts 对应函数。
   toast 定位（敌核摧毁 / 夺取核心资源 / 敌情高浓度区 / 资源濒危等）。
 - 样式：`.st-badge.deed`（琥珀）/ `.deed-hot`（高危红）/ `.stream-line.clickable`。
 - 验证：check:all 全绿；Playwright 冒烟 30 事迹行 / 18 可点击 / 0 报错。
+
+
+### 9.5 偏好持久化合并修复（commit 7b0d45a）
+- **根因**：`StreamPane.savePrefs` 整体覆盖 `arena-cc-web.prefs`，而 `AppShell`
+  （leftCollapsed/rightCollapsed/rightTab）与 `Sidebar`（sec_* 分区开关）均合并写入
+  同一 key——折叠决策流/切 tab/切只看决策后刷新即丢布局偏好。
+- **修复**：savePrefs 读现有对象后 `{...all, collapsed, height, quiet, tab}` 合并回写。
+- **验证**：预置外壳/侧栏偏好 → 切两次流 tab → 偏好保留且刷新后仍在；回归 14/14。
