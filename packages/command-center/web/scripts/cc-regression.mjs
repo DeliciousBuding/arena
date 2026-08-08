@@ -193,7 +193,7 @@ async function main() {
     }
 
     // 7) API 健康
-    for (const path of ["/api/overview", "/api/stream?tenant=t1&n=5", "/api/survey?tenant=t1"]) {
+    for (const path of ["/api/overview", "/api/stream?tenant=t1&n=5", "/api/survey?tenant=t1", "/api/alliance/director"]) {
       const t0 = Date.now();
       try {
         const r = await page.evaluate(async (p) => { const x = await fetch(p, { cache: "no-store" }); return { ok: x.ok, body: await x.text() }; }, path);
@@ -201,6 +201,12 @@ async function main() {
         (r.ok && ms < API_TIMEOUT_MS) ? ok(`API ${path}`, ms + "ms") : bad(`API ${path}`, `${ms}ms ok=${r.ok} (>${API_TIMEOUT_MS}ms)`);
       } catch (e) { bad(`API ${path}`, e.message); }
     }
+    try {
+      const director = await page.evaluate(async () => await (await fetch("/api/alliance/director", { cache: "no-store" })).json());
+      director.mode === "ASSIST_ONLY" && director.actionOwnership === "none"
+        ? ok("Alliance Director 只读边界", `available=${String(director.available)} rev=${String(director.revision ?? "—")}`)
+        : bad("Alliance Director 只读边界", JSON.stringify(director).slice(0, 160));
+    } catch (e) { bad("Alliance Director 只读边界", e.message); }
   } catch (e) {
     bad("回归主流程", e.message);
   } finally {
