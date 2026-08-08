@@ -192,6 +192,28 @@ async function main() {
       try { await page.evaluate(async () => { await fetch("/api/command/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenant: "t1" }) }); }); } catch { /* 忽略 */ }
     }
 
+    // 6b) 跳图定位标记（jumpPins）：点目击 → pin 生成 → Esc 全清（有数据才断言，数据抖动时跳过不误报）
+    let pinOk = null; // true | false | null(跳过)
+    try {
+      await page.click('.rp-tab[data-rp-tab="situation"]', { timeout: 4000 }).catch(() => {});
+      await sleep(3000);
+      const sightCount = await page.locator(".sit-sight-row").count();
+      if (sightCount > 0) {
+        await page.click(".sit-sight-row", { timeout: 4000 });
+        await sleep(1000);
+        const got = await page.evaluate(() => window.__arenaEngine?.getState?.()?.jumpPins?.length ?? -1);
+        if (got > 0) {
+          await page.keyboard.press("Escape");
+          await sleep(400);
+          const after = await page.evaluate(() => window.__arenaEngine?.getState?.()?.jumpPins?.length ?? -1);
+          pinOk = after === 0;
+        } else pinOk = false;
+      }
+    } catch (e) { pinOk = false; }
+    if (pinOk === true) ok("跳图定位标记（jumpPins）", "目击跳图→pin→Esc 清空");
+    else if (pinOk === false) bad("跳图定位标记（jumpPins）", "点目击后未生成 pin 或 Esc 未清空");
+    else results.push("  ⚠ 跳图定位标记（jumpPins）— 无目击数据，跳过");
+
     // 7) API 健康
     for (const path of ["/api/overview", "/api/stream?tenant=t1&n=5", "/api/survey?tenant=t1", "/api/alliance/director"]) {
       const t0 = Date.now();

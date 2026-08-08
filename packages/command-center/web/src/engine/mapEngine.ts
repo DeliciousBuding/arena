@@ -4341,7 +4341,7 @@ export function createMapEngine(host: any) {
       draw();
     },
     resize: () => { resizeCanvas(); draw(); },
-    getState: () => ({ soloTenant: state.soloTenant, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length }),
+    getState: () => ({ soloTenant: state.soloTenant, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length, jumpPins: state.jumpPins.map((p: any) => ({ x: p.x, y: p.y, at: p.at, label: p.label ?? null })) }),
     subscribe: (cb: any) => { _subs.add(cb); return () => _subs.delete(cb); },
     toast: (msg: any, tone: any) => toast(msg, tone),
   };
