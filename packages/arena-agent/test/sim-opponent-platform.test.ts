@@ -223,3 +223,19 @@ test("ffa: 四方混战（4 玩家）同样完整跑完", () => {
   assert.equal(result.players.length, 4);
   assert.equal(Object.keys(result.coreAlive).length, 4);
 });
+
+test("ffa: 五方混战（5 玩家）核心/worker id 全图唯一（防静默覆盖回归）", () => {
+  const entries = ["mine", "p2", "p3", "p4", "p5"].map((id) => makeSafetyEntry(id));
+  const scenario = makeArenaScenarioN(entries, 7) as {
+    players: readonly {
+      readonly core: { readonly id: string };
+      readonly units: readonly { readonly id: string }[];
+    }[];
+  };
+  const allCoreIds = scenario.players.map((p) => p.core.id);
+  const allWorkerIds = scenario.players.flatMap((p) => p.units.map((u) => u.id));
+  assert.equal(new Set(allCoreIds).size, 5, "5 家 core id 必须唯一");
+  assert.equal(new Set(allWorkerIds).size, 15, "15 个 worker id 必须唯一");
+  const result = runFreeForAll(entries, 7, 30, MANIFEST_PATH, { validatePlans: false, refillEveryTicks: null });
+  assert.equal(Object.keys(result.coreAlive).length, 5);
+});
