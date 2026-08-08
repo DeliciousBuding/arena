@@ -179,6 +179,22 @@ function TenantCards() {
   const tenants = overview?.tenants ?? [];
   // 目录树折叠（2026-08-08）：点折叠按钮收起详情，只留摘要行；独立于聚焦。
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // 首载骨架占位（替代黑屏空白）：overview 未到前渲染 4 张骨架卡，符合极简风
+  if (!overview) {
+    return (
+      <div id="tenantCards" className="stack" aria-busy="true">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="tenant-card skeleton" aria-hidden="true">
+            <div className="row1"><span className="skeleton-line short" /></div>
+            <div className="metrics">
+              {[0, 1, 2, 3].map((j) => <div key={j} className="skeleton-line" />)}
+            </div>
+            <div className="skeleton-line mid" />
+          </div>
+        ))}
+      </div>
+    );
+  }
   return (
     <div id="tenantCards" className="stack">
       <AllianceRoot audit={audit} />
