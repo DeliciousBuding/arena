@@ -247,6 +247,12 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 全量 safety 校验（缺注册 = 生产重启 fail-fast）。
      */
     "worker-mission-v1": Object.freeze({}),
+    /**
+     * RECOVERY 早期防御产兵（2026-08-08，recovery-early-military-v1）：只影响
+     *  deterministic 侧产兵（见 DETERMINISTIC_VARIANT_CONFIG）——safety 侧无开关，
+     *  空覆盖注册以满足 resolveVariantsConfig 全量 safety 校验（缺注册 = fail-fast）。
+     */
+    "recovery-early-military-v1": Object.freeze({}),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要
