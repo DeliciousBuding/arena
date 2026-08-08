@@ -38,8 +38,8 @@ test("deeds-journal: 决策健康摘要", () => {
   const ov = {
     generatedAt: "", cachedAt: "",
     tenants: {
-      t1: { tenant: "t1", quality: { score: 19, grade: "D", parts: { stall: 0, cargo: 0, churn: 0, growth: 0, fulfillment: 0 }, reasons: ["空转率过高"] } },
-      t2: { tenant: "t2", quality: { score: 80, grade: "A", parts: { stall: 30, cargo: 20, churn: 15, growth: 15, fulfillment: 0 }, reasons: ["决策活跃"] } },
+      t1: { tenant: "t1", quality: { score: 19, grade: "D", parts: { stall: 0, cargo: 0, churn: 0, growth: 0, fulfillment: 0 }, reasons: ["空转率过高"] }, qualityTrend: { score: 25, prevScore: 10, delta: 15, direction: "improving" } },
+      t2: { tenant: "t2", quality: { score: 80, grade: "A", parts: { stall: 30, cargo: 20, churn: 15, growth: 15, fulfillment: 0 }, reasons: ["决策活跃"] }, qualityTrend: { score: 60, prevScore: 80, delta: -20, direction: "worsening" } },
     },
     global: { quality: { score: 50, grade: "C", parts: { stall: 15, cargo: 10, churn: 8, growth: 8, fulfillment: 9 }, reasons: ["分工零兑现"] } },
   } as unknown as AuditOverviewPayload;
@@ -49,6 +49,7 @@ test("deeds-journal: 决策健康摘要", () => {
   assert.ok(line && line.includes("T2 80A"), "高分租户");
   assert.ok(line && line.includes("联盟 50C"), "联盟平均");
   assert.ok(line && line.includes("分工零兑现"), "最差归因");
+  assert.ok(line && line.includes("趋势 T1↑·T2↓"), "质量趋势方向");
   assert.equal(buildDecisionHealthLine(null), null, "空输入 → null");
   assert.equal(buildDecisionHealthLine({ generatedAt: "", cachedAt: "", tenants: {}, global: {} } as unknown as AuditOverviewPayload), null, "无质量数据 → null");
 });

@@ -173,7 +173,17 @@ export function buildDecisionHealthLine(ov: AuditOverviewPayload | null): string
   if (parts.length === 0 && !gq) return null;
   const suffix = gq ? `（联盟 ${gq.score}${gq.grade}）` : "";
   const worst = gq ? gq.reasons.slice(0, 3).join("/") : "";
-  return `决策健康：${parts.join("·")}${suffix}${worst ? "——" + worst : ""}。`;
+  // 质量趋势（2026-08-08）：每租户方向（improving/worsening/stable）——"决策层
+  //  在不在变好"进日记，与决策健康分互补（分是现状，趋势是变化）。
+  const dirs: string[] = [];
+  for (const t of TENANTS) {
+    const qt = ov.tenants?.[t]?.qualityTrend;
+    if (!qt || qt.direction === "unknown") continue;
+    const d = qt.direction === "improving" ? "↑" : qt.direction === "worsening" ? "↓" : "→";
+    dirs.push(`${t.toUpperCase()}${d}`);
+  }
+  const trendPart = dirs.length > 0 ? ` 趋势 ${dirs.join("·")}` : "";
+  return `决策健康：${parts.join("·")}${suffix}${trendPart}${worst ? "——" + worst : ""}。`;
 }
 
 

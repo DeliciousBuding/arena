@@ -86,9 +86,10 @@ test("audit-overview: 单租户折叠 + 全局汇总", () => {
     global: { totalCandidates: 57, assigned: 57, shared: 0, conflict: 0, unassigned: 0 },
   } as unknown as import("../lib/alliance-mining.ts").AllianceMiningPayload;
   const trends = { t1: { coreDelta: 5, coreDeltaPrev: -3, visibleNever: 6, visibleNeverPrev: 12, stallRate: 0.5 } };
+  const qualityTrends = { t1: { score: 42, prevScore: 30, delta: 12, direction: "improving" as const } };
   const miningEff = { global: { assigned: 3, harvested: 1, harvestedByOther: 0, open: 2, stale: 0, effectiveRate: 1 } } as unknown as import("../lib/mining-effectiveness.ts").MiningEffectivenessPayload;
   const patterns = { tenants: { t1: { predictions: [{ cell: "1,1", dueInTicks: -5 }, { cell: "2,2", dueInTicks: 10 }] } } } as unknown as import("../lib/mine-patterns.ts").MinePatternsPayload;
-  const a = aggregateAuditOverview(decisions, lifecycles, mines, exploration, pipeline, conflicts, mining, miningEff, null, patterns, trends);
+  const a = aggregateAuditOverview(decisions, lifecycles, mines, exploration, pipeline, conflicts, mining, miningEff, null, patterns, trends, qualityTrends);
   const t1 = a.tenants.t1;
   assert.ok(t1);
   assert.equal(t1.decisions?.stallTicks, 50);
@@ -120,6 +121,9 @@ test("audit-overview: 单租户折叠 + 全局汇总", () => {
   assert.equal(a.global.totalOverdueRefills, 1, 'patterns dueInTicks<0 全联盟加总');
   assert.ok(a.tenants.t1.quality, "综合决策质量分应生成");
   assert.ok((a.tenants.t1.quality?.score ?? 0) >= 0 && (a.tenants.t1.quality?.score ?? 0) <= 100);
+  assert.equal(a.tenants.t1.qualityTrend?.score, 42, "质量趋势分");
+  assert.equal(a.tenants.t1.qualityTrend?.delta, 12, "质量趋势 delta");
+  assert.equal(a.tenants.t1.qualityTrend?.direction, "improving", "质量趋势方向");
   assert.ok(a.global.quality, "联盟平均质量分应生成");
 
   assert.equal(a.global.coveragePct, 0.25);
