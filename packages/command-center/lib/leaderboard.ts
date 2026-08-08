@@ -4,7 +4,7 @@
  * top30 = AGGRESSOR）；另从各租户 calibration 的受控 CORE 提取我方官方
  * 账号名。纯只读。
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_ROOT, TENANTS, calibrationDir, latestRunDir, listCases, parseTick } from "./fs-jsonl.ts";
 import { TtlCache } from "./cache.ts";
@@ -18,17 +18,32 @@ export interface LeaderboardProfile {
 export interface LeaderboardIntel {
   generatedAt: string;
   snapshot: string;
+  /** 快照文件修改时间（ISO）。 */
+  snapshotAt: string;
+  /** 距快照 mtime 的秒数（每次读取动态计算，不随缓存陈旧）。 */
+  ageSeconds: number;
+  /** 快照是否过旧（>15 分钟，官方排行榜 ~15min 一档）——提示手动拉取。 */
+  stale: boolean;
   beacon_ticks_held: Array<{ rank: number; username: string; score: number }>;
   damage_dealt: Array<{ rank: number; username: string; score: number }>;
   core_destruction_participations: Array<{ rank: number; username: string; score: number }>;
   profiles: LeaderboardProfile[];
 }
 
-const leaderboardCache = new TtlCache<LeaderboardIntel>(30_000); // 快照 5 分钟更新一次，30s 缓存足够
+type LeaderboardIntelCached = LeaderboardIntel & { snapshotAtMs: number };
+const leaderboardCache = new TtlCache<LeaderboardIntelCached>(30_000); // 快照 15 分钟更新一次，30s 缓存足够
+/** 快照陈旧阈值（秒）：官方排行榜 ~15min 一档，超过视为需要手动拉取。 */
+const SNAPSHOT_STALE_SECONDS = 15 * 60;
 
 export function loadLeaderboardIntel(): LeaderboardIntel | null {
+  const now = Date.now();
   const hit = leaderboardCache.get("latest");
-  if (hit !== undefined) return hit;
+  if (hit !== undefined) {
+    // 新鲜度动态计算（2026-08-08）：缓存对象不带 age，每次读取按快照 mtime 现算——
+    // 前端可显示"快照 N 分钟前"并对陈旧快照提示手动拉取（leaderboard-intel.py）。
+    const ageSeconds = Math.max(0, Math.round((now - hit.snapshotAtMs) / 1000));
+    return { ...hit, ageSeconds, stale: ageSeconds > SNAPSHOT_STALE_SECONDS, snapshotAt: new Date(hit.snapshotAtMs).toISOString() };
+  }
   const dir = join(DATA_ROOT, "leaderboard");
   if (!existsSync(dir)) return null;
   const files = readdirSync(dir)
@@ -50,14 +65,21 @@ export function loadLeaderboardIntel(): LeaderboardIntel | null {
       damage: row.score,
       tier: tierOf(row.rank),
     }));
-    const result: LeaderboardIntel = {
+    const st = statSync(join(dir, files[0]));
+    const snapshotAtMs = st.mtimeMs;
+    const ageSeconds = Math.max(0, Math.round((Date.now() - snapshotAtMs) / 1000));
+    const result: LeaderboardIntelCached = {
       generatedAt: new Date().toISOString(),
       snapshot: files[0],
+      snapshotAt: new Date(snapshotAtMs).toISOString(),
+      ageSeconds,
+      stale: ageSeconds > SNAPSHOT_STALE_SECONDS,
       beacon_ticks_held: raw.beacon_ticks_held ?? [],
       damage_dealt: raw.damage_dealt ?? [],
       core_destruction_participations: raw.core_destruction_participations ?? [],
       profiles,
-    };
+      snapshotAtMs,
+    } as LeaderboardIntelCached;
     leaderboardCache.set("latest", result);
     return result;
   } catch {
