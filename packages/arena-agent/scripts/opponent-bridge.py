@@ -73,18 +73,35 @@ def _load_agent_registry() -> dict:
 
 
 def _load_repos(repo: Path, sdk_repo: Path) -> None:
-    """注入对手仓库与官方 SDK 源码路径到 sys.path（sdk 优先，防同名模块遮蔽）。
+    """注入对手仓库与官方 SDK 镜像路径到 sys.path。
 
-    SDK 仓库为 src 布局（`src/arena_hero`），故注入 `sdk_repo/src`；
-    旧根级布局（`arena_hero` 平铺在仓库根）时注入仓库根。
+    arena-hero-python 是标准 ``src/arena_hero`` 布局；只放仓根会静默回退到
+    机器 site-packages 里的任意旧 SDK。这里显式把 SDK 的 src 目录放在最高
+    优先级，同时兼容未来对手仓也采用 src-layout。顺序必须是：
+    SDK src > SDK root > opponent src > opponent root > ambient environment。
     """
-    sdk_source = sdk_repo / "src" if (sdk_repo / "src").is_dir() else sdk_repo
-    for repo_path in (sdk_source, repo):
-        resolved = repo_path.resolve()
+    resolved_sdk = sdk_repo.resolve()
+    resolved_repo = repo.resolve()
+    for resolved in (resolved_sdk, resolved_repo):
         if not resolved.exists():
             raise FileNotFoundError(f"repo not found: {resolved}")
-        if str(resolved) not in sys.path:
-            sys.path.insert(0, str(resolved))
+
+    priority = []
+    sdk_src = resolved_sdk / "src"
+    repo_src = resolved_repo / "src"
+    if sdk_src.is_dir():
+        priority.append(sdk_src)
+    priority.append(resolved_sdk)
+    if repo_src.is_dir():
+        priority.append(repo_src)
+    priority.append(resolved_repo)
+
+    # insert(0) reverses order, so prepend from lowest to highest priority.
+    for candidate in reversed(priority):
+        text = str(candidate)
+        if text in sys.path:
+            sys.path.remove(text)
+        sys.path.insert(0, text)
 
 
 def _noop_submitter(plan, idempotency_key=None):
@@ -218,7 +235,7 @@ def _serve_lines(args, decide, persist) -> int:
         except Exception as exc:  # noqa: BLE001 —— 决策失败输出到 stderr
             # （模拟器端 fail-fast 中止——诚实暴露适配/对手问题）。
             print(
-                f"bridge error at line {line_number} (tick "
+                f"bridge error agent={args.agent} at line {line_number} (tick "
                 f"{message.get('tick') if message is not None else '?'}): {exc}",
                 file=sys.stderr,
                 flush=True,
