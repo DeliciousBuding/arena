@@ -111,6 +111,18 @@ CREATE INDEX IF NOT EXISTS idx_core_hunts_last_seen ON core_hunts(last_seen_tick
 -- CREATE INDEX IF NOT EXISTS 幂等，下次 openSurveyDb 自动生效。
 CREATE INDEX IF NOT EXISTS idx_units_seen_controlled_tick ON units_seen(controlled, tick);
 
+-- 共享记忆分层（2026-08-08，A13）：units_seen 旧目击归档聚合（enemy-heat full
+-- 读 archive∪近期，原始行清理防无限膨胀）。每格×类型一行，跨 run 累积。
+CREATE TABLE IF NOT EXISTS heat_archive (
+  x INTEGER NOT NULL,
+  y INTEGER NOT NULL,
+  unit_type TEXT NOT NULL,
+  count INTEGER NOT NULL,
+  first_tick INTEGER NOT NULL,
+  last_tick INTEGER NOT NULL,
+  PRIMARY KEY (x, y, unit_type)
+);
+
 -- 矿物生命周期事件（2026-08-08）：矿格 × tick 的采集/失败序列
 CREATE TABLE IF NOT EXISTS resource_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,6 +219,7 @@ export function openSurveyDb(dataRoot: string, tenant: string, write = false): D
     migrateCoreHuntSanity(db); // 数据质量 A5：核心时间戳倒挂修复（first<=last）
     migrateResourceSanity(db); // 数据质量 A10：矿时间戳倒挂 + seen_count 重建（force 重跑污染）
     migrateNotableSanity(db, dataRoot, tenant); // 叙事 A11：CORE_DESTROYED 敌我/摧毁者回填（旧库）
+    migrateUnitsSeenArchive(db); // 共享记忆分层 A13：旧目击归档 heat_archive + 清理原始行
   }
   return db;
 }
@@ -383,6 +396,40 @@ function coreDestroyedByTick(dataRoot: string, tenant: string): Map<number, { re
     }
   }
   return out;
+}
+
+/** 共享记忆分层阈值（tick）：units_seen 目击超过此龄（相对最新 tick）归档到
+ *  heat_archive 聚合表并删除原始行——enemy-heat full 读 archive∪近期语义不变，
+ *  防 units_seen 无限膨胀（t1 20 万行/16k tick 实测）。与 enemy-heat recent
+ *  窗口（2000）略大，保守保留近期完整目击。 */
+export const ARCHIVE_CUTOFF_TICKS = 3000;
+
+/** 共享记忆分层迁移（2026-08-08，记忆生命周期 A13）：units_seen 旧目击
+ *  （controlled=0 且 tick ≤ 最新-3000）聚合写入 heat_archive（每格×类型计数 +
+ *  first/last tick），随后删除原始旧行。enemy-heat full 改读 archive∪近期——
+ *  「近期原始 + 历史聚合」两层记忆，跨 run 不丢历史强度。幂等：DELETE 后旧行
+ *  不在 units_seen，重复跑 SELECT 选不到旧行不重复累加。仅 write 打开执行。 */
+function migrateUnitsSeenArchive(db: DatabaseSync): void {
+  try {
+    const row = db.prepare("SELECT MAX(tick) - ? AS c FROM units_seen").get(ARCHIVE_CUTOFF_TICKS) as { c: number | null };
+    if (row.c === null || row.c <= 0) return;
+    db.prepare(`
+      INSERT INTO heat_archive (x, y, unit_type, count, first_tick, last_tick)
+      SELECT x, y, unit_type, COUNT(*), MIN(tick), MAX(tick)
+      FROM units_seen
+      WHERE controlled = 0 AND x IS NOT NULL AND tick <= ?
+      GROUP BY x, y, unit_type
+      ON CONFLICT(x, y, unit_type) DO UPDATE SET
+        count = heat_archive.count + excluded.count,
+        first_tick = MIN(heat_archive.first_tick, excluded.first_tick),
+        last_tick = MAX(heat_archive.last_tick, excluded.last_tick)
+    `).run(row.c);
+    db.prepare(
+      "DELETE FROM units_seen WHERE controlled = 0 AND x IS NOT NULL AND tick <= ?",
+    ).run(row.c);
+  } catch {
+    // 容错；下次 sync 重试
+  }
 }
 
 /** upsert 一组可见矿（服务端投影：资源存在）。返回受影响行数。 */
