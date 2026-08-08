@@ -30,32 +30,38 @@
 ## 标准命令
 
 ```bash
-npm ci
-npm run check
-npm test
-npm run schema:check
-npm run replay:ts
+pnpm install
+pnpm -r check
+pnpm -r test
+pnpm run schema:check
 
-npx tsx packages/arena-agent/src/cli/run-tenant.ts --doctor --config=../data/runtime/configs/t1.json
-npm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --shadow --port=8120
+pnpm exec tsx packages/arena-agent/src/cli/run-tenant.ts --doctor --config=../data/runtime/configs/t1.json
+pnpm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --shadow --port=8120
 ```
+
+> 包管理器：**pnpm v10+（2026-08-08 迁移）**——`npm ci`/`npm run *` 已停用；
+> pnpm-workspace.yaml 显式两包（arena-agent + arena-hero-ts），`workspace:*` 协议；
+> 其他 worktree 首次使用时需 `pnpm install` 切换布局（junction 清理见
+> `docs/design/branch-governance-v1.md` §5.3：禁 `rm -rf` 含 junction 目录）。
 
 ## 本地运行形态（2026-08-06 起；t3/t4 收回 TS 线 2026-08-07）
 
 us1 已关闭，t1/t2/t3/t4 本地 live（deterministic + submitEnabled=true，data root 默认 `../data`，baseDir=runtime）：
 ```bash
-npm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --port=8120
+pnpm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --port=8120
 ```
-- 看护：Windows 计划任务 `ArenaWatchdog`（每分钟，t1-t4，重建命令见下）+ `scripts/arena-watchdog.sh`（异常自动恢复：确认死透 → 清死锁 → 带 `--record-calibration` 重启，日志 `~/arena-watchdog.log`）；
+- 看护：Windows 计划任务 `ArenaWatchdog`（每分钟，t1-t4）+ `scripts/arena-watchdog.mjs`（Node 版 v5：
+  异常自动恢复：确认死透 → 清死锁 → 带 `--record-calibration` 重启，日志 `~/arena-watchdog.log`；
+  启动入口 `scripts/arena-watchdog-hide.vbs`（v5，worktree 相对解析））；
 - 生产租户为四线 `t1`/`t2`/`t3`/`t4`（用户 2026-08-06 裁决；t3/t4 2026-08-07 收回 TS 线，
   Rust 线退役、看护已禁用）；supervisor 跑 `--configs=t1,t2,t3,t4`，
-  `scripts/arena-watchdog.sh` 看护四线（含 t3/t4 锁清理与拉起）。
+  watchdog 看护四线（含 t3/t4 锁清理与拉起）。
 
 ### 租户始终运行 + 数据收集线保障（2026-08-06；t3/t4 收回 TS 线 2026-08-07）
 
 - **数据根优先级**：CLI `--data-root` > `ARENA_DATA_ROOT` > 仓库同级 `../data`；supervisor 未显式覆盖时使用 `../data/runtime/configs` 与 `../data/runtime`，模拟器输出严格限制在 `../data/runs/sim`；
 - **数据收集线 = supervisor `--record-calibration` 旁路**（只记录 accepted plan、相邻 raw state 与 receipt，cases 持续落盘 `../data/runtime/<t>/calibration/<runId>/cases/`；校准/分析只离线执行，看护重启命令已含该参数）；
-- **计划任务链路（v3，实测验证）**：ArenaWatchdog（每分钟）→ `scripts/arena-watchdog-hide.vbs`（**wscript.exe //B，GUI 子系统，无控制台窗口不闪屏**——2026-08-06 由 bat 直跑改为 vbs，消除每分钟闪窗）→ PowerShell `Start-Process` 完全分离 bash → `arena-watchdog.sh`（确认死透 → 清死锁 → 带 `--record-calibration` 重启）。**故障注入演练通过**（2026-08-06 23:42 杀 supervisor → 31s 自动恢复 → 超过任务会话杀进程窗口 1.5 分钟仍存活）；v1 直接 `bash -lc` 有缺陷（任务会话结束回收进程树，supervisor 拉起 16s 后被 ^C 杀——实测捕获）；`scripts/arena-watchdog.bat` 保留为手动回退入口（内容与 vbs 等价，不再被计划任务引用）；
+- **计划任务链路（v5，2026-08-08 实测验证）**：ArenaWatchdog（每分钟）→ `scripts/arena-watchdog-hide.vbs`（**wscript.exe //B，GUI 子系统，无控制台窗口不闪屏**——2026-08-06 由 bat 直跑改为 vbs，消除每分钟闪窗；v5 起 mjs 相对 vbs 目录解析，晋升部署不跳回旧硬编码 worktree）→ PowerShell `Start-Process` 完全分离 node → `arena-watchdog.mjs`（Node 版：/ready 结构化解析 + 8120 监听探测 + 进程枚举 fail-closed + 维护租约 + outcome/decision/economy stall 检测；确认死透 → 清死锁 → 带 `--record-calibration` 重启，直接 node+tsx 启动不依赖 npm）。**故障注入演练通过**（2026-08-06 23:42 杀 supervisor → 31s 自动恢复 → 超过任务会话杀进程窗口 1.5 分钟仍存活）；v1 直接 `bash -lc` 有缺陷（任务会话结束回收进程树，supervisor 拉起 16s 后被 ^C 杀——实测捕获）；`scripts/arena-watchdog.bat` 保留为手动回退入口（内容与 vbs 等价，不再被计划任务引用）；
 - **脚本编码约束（防闪窗回归）**：`arena-watchdog.bat` 与 `arena-watchdog-hide.vbs` 必须保持**纯 ASCII**——cmd 按 GBK 代码页解析 bat，UTF-8 中文注释会让行解析错位，实测每次任务运行都闪 `'...' 不是内部或外部命令` 报错窗（2026-08-06 已改为英文注释，中文设计说明在 `.sh` 与本文件）；改脚本时不得再引入非 ASCII 字符；
 - **计划任务丢失恢复**：ArenaWatchdog 曾丢失（2026-08-06 发现）——重建命令（动作 = wscript 跑 vbs，无闪窗）：
   ```bash
