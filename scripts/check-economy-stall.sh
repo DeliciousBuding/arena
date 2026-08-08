@@ -31,6 +31,21 @@ fi
 MAX_CARGO=$(echo "$LAST" | grep -oE '"workersWithCargo":[0-9]+' | sed 's/.*://' | sort -n | tail -1)
 MAX_CARGO="${MAX_CARGO:-0}"
 
+# 新 run 成熟度宽限（2026-08-08，t4 恢复窗口连环重启实证）：重启后 worker 重生、
+# 持货回仓的首 ~30 tick 是合法"有货未交"（DEPOSIT 计数 0、delta 0），若按此判
+# STALL 会每 60s 杀重启（11:45-11:50 实证 5 连）。宽限：最新 processRunId 在窗口
+# 内不足 RUN_MIN_ROWS（30）行 → 判定 OK（run 尚未成熟，不判停摆）。30 tick ≈ 7.5min
+# 足够一个正常经济完成首个交付周期；真停摆 30 tick 后仍会被捕获。
+RUN_MIN_ROWS=30
+LAST_RUNID=$(echo "$LAST" | grep -oE '"processRunId":"[^"]+"' | tail -1 | sed 's/.*":"//; s/"//')
+if [ -n "$LAST_RUNID" ]; then
+  RUN_ROWS=$(echo "$LAST" | grep -c "$LAST_RUNID")
+  if [ "$RUN_ROWS" -lt "$RUN_MIN_ROWS" ]; then
+    echo "OK:$TENANT"  # 当前 run 尚未成熟（新 run 宽限，防恢复期误杀重启）
+    exit 0
+  fi
+fi
+
 DEPOSITS=$(echo "$LAST" | grep -oE '"DEPOSIT_SUCCEEDED"' | wc -l)
 DELTA=$(echo "$LAST" | grep -oE '"coreResourceDelta":-?[0-9.]+' | sed 's/.*://' | awk '{s+=$1} END{print s+0}')
 
