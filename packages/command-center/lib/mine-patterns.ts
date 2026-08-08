@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { DATA_ROOT, TENANTS } from "./fs-jsonl.ts";
 import { TtlCache } from "./cache.ts";
+import { RESOURCE_FRESH_WINDOW_TICKS } from "./survey.ts";
 
 export interface MineActiveEntry {
   cell: string;
@@ -261,7 +262,7 @@ function tenantPattern(tenant: string): MineTenantPattern {
     // DB 的 state 列恒 visible（sync 不写 stale），需按 currentTick 动态判定。
     const meta = db.prepare("SELECT MAX(last_tick) AS m FROM sync_meta").get() as { m: number | null };
     const currentTick = num(meta?.m);
-    const FRESH = 2000;
+    const FRESH = RESOURCE_FRESH_WINDOW_TICKS; // 与 survey.ts 统一（200 tick）
     const rows = db.prepare(
       "SELECT x, y, first_seen_tick AS f, last_seen_tick AS l, seen_count AS n, state FROM resources",
     ).all() as Array<{ x: number; y: number; f: number; l: number; n: number; state: string }>;
