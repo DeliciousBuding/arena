@@ -371,6 +371,30 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * 回归。safety 侧空覆盖（消费由 migration/conductor 处理）。
      */
     "starve-migration-v1": Object.freeze({}),
+    /**
+     * 方向承诺迟滞（2026-08-09，direction-commitment-v1，W60 竞品 "core 方向
+     * 承诺迟滞" 对照）：迁移目标评分中，已选方向（上一轮 plan.target）加迟滞
+     * 带加分——候选落在 commitmentBand 内（方向未变）加 commitmentBonus，
+     * 防 REPLAN 因微小资源波动换方向（换向成本：重新探路/集结/清路）。
+     * migration 层 directionCommitment.{commitmentBand,commitmentBonus} 配置 +
+     * conductor pickStarveTarget 注入 lastTarget（状态）。默认关零回归
+     * （directionCommitment undefined = scoreTarget 不加成）。safety 侧空覆盖
+     * （消费由 migration/target.ts + conductor 处理）。
+     */
+    "direction-commitment-v1": Object.freeze({}),
+    /**
+     * 信标距离迟滞 + 进度权重（2026-08-09，beacon-commitment-v1，W61 竞品
+     * "信标距离迟滞带 + 进度权重" 对照）：beacon fetch 设计者选择加距离
+     * 迟滞带（上一轮设计者减 hysteresis，新候选须近 > 迟滞带才替换）+ 进度
+     * 权重（越接近信标的设计者减得越多，越难被替换——防中途放弃信标 →
+     * 取标进度全废）。beaconFetchDesigneeId 跨 tick 持久。默认关零回归
+     * （beaconCommitment undefined = pickBeaconFetchDesignee 纯最近距离）。
+     */
+    "beacon-commitment-v1": Object.freeze({
+      beaconCommitment: true,
+      beaconCommitmentHysteresis: 2,
+      beaconCommitmentProgress: 3,
+    }),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要

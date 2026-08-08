@@ -169,6 +169,25 @@ export interface SafetyPlannerConfig {
   /** 信标夺取最大距离（Chebyshev，以我方 Core 为圆心）：超出视为远征，不抢。 */
   readonly beaconGrabMaxDist?: number;
   /**
+   * W61（beacon-commitment-v1，竞品 "信标距离迟滞带 + 进度权重" 对照）：
+   * beacon fetch 设计者选择加距离迟滞 + 进度权重——上一轮设计者（仍在候选
+   * 池且未持标）的距离减去迟滞带 + 进度权重，防每 tick 因距离微差换设计者
+   * （中途放弃信标）。进度权重 = 越接近信标（越接近完成拾取）的设计者减得
+   * 越多，使其更难被替换。默认 false = 历史行为（纯最近距离选设计者，零回归）。
+   */
+  readonly beaconCommitment?: boolean;
+  /**
+   * W61：距离迟滞带（Chebyshev）。新候选必须比当前设计者近 > 此值才能替换
+   * （迟滞带防抖动）。未设 = 0（与 beaconCommitment 配对，零回归）。
+   */
+  readonly beaconCommitmentHysteresis?: number;
+  /**
+   * W61：进度权重系数。当前设计者的进度 = 1 - 距离/maxDist（越接近信标进度
+   * 越高），乘以该系数后从其距离中扣减——越接近完成的设计者越难被替换
+   * （防中途放弃信标）。未设 = 0（与 beaconCommitment 配对，零回归）。
+   */
+  readonly beaconCommitmentProgress?: number;
+  /**
    * 防御轴分桶守卫轮转（v0.3，实验，B4 竞品 defense distribution 对照）：
    * 可见战斗敌按相对 Core 的主接近方向分 4 轴桶（N/E/S/W），威胁轴按
    * 最近敌距离升序排序；第 i 个防守者取排序后第 (i % 轴数) 轴的外层守位

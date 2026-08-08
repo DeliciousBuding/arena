@@ -35,7 +35,7 @@ import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "
 import { compileRuntimeStrategy, compileRuntimeStrategyFile, hotReloadCompatibility } from "./strategy-config.ts";
 import { isConfigReloadRequest, type ConfigReloadResult, type RuntimeConfigStatus } from "./config-reload-protocol.ts";
 import { knownChunks, knownCoreHunts, knownObstacles, knownResourceAbsenceCounts, knownResourceCooldownTiers, knownResources, openSurveyDb } from "../intel/survey-db.ts";
-import { loadRefillPredictions } from "../intel/refill-predictions.ts";
+import { loadRefillPredictions, type RefillPrediction } from "../intel/refill-predictions.ts";
 import { migrationOverlay as applyMigrationOverlay } from "../migration/overlay.ts";
 import { migrationAssist, detectMigrationFailure, type AssistCoreSnapshot } from "../migration/assist.ts";
 import { migrationPlanPath, readMigrationPlan } from "../migration/io.ts";
@@ -878,9 +878,16 @@ export async function runTenant(
     // 预测随 tick 老化：planner 侧按当前 tick 折算 dueInTicks（存 predictedNextTick）。
     // 启动前预载一次（与 threatProfiles 同模式）——启动刷新对比相同则跳过，
     // 不产生额外 telemetry 记录（保持既有记录节奏零回归）。
+    // W7 chunk-resurvey-v1（2026-08-09）：SafetyPlanner 消费需要完整
+    // RefillPrediction Map（planChunkResurvey 契约：windows/avgGapTicks 等），
+    // 不能走 loadPredictedTicks 的扁平 Map<string,number>（仅 predictedNextTick）。
+    // 这里加载一次原 Map，扁平化给 DeterministicPlanner、原 Map 给 SafetyPlanner
+    // ——避免重复调 loadRefillPredictions（db 双读）。setter 默认 null = 零回归。
     let lastRefillPredictedTicks = new Map<string, number>();
+    let lastRefillPredictionsFull: ReadonlyMap<string, RefillPrediction> = new Map();
     const loadPredictedTicks = (): Map<string, number> => {
       const predictions = loadRefillPredictions(dataRoot, config.tenantId, 0);
+      lastRefillPredictionsFull = predictions;
       const predictedTicks = new Map<string, number>();
       for (const [key, prediction] of predictions) predictedTicks.set(key, prediction.predictedNextTick);
       return predictedTicks;
@@ -897,6 +904,7 @@ export async function runTenant(
         }
         lastRefillPredictedTicks = predictedTicks;
         if (planner instanceof DeterministicPlanner) planner.replaceRefillPredictions(predictedTicks);
+        if (planner instanceof SafetyPlanner) planner.setRefillPredictions(lastRefillPredictionsFull);
         if (predictedTicks.size > 0) {
           appendJsonlLine(
             join(dirs.telemetryDir, "runtime.jsonl"),
@@ -928,8 +936,12 @@ export async function runTenant(
       if (planner instanceof DeterministicPlanner) {
         planner.replaceRefillPredictions(lastRefillPredictedTicks);
       }
+      if (planner instanceof SafetyPlanner) {
+        planner.setRefillPredictions(lastRefillPredictionsFull);
+      }
     } catch {
       lastRefillPredictedTicks = new Map();
+      lastRefillPredictionsFull = new Map();
     }
     const refillPredictionsTimer = setInterval(refreshRefillPredictions, THREAT_REFRESH_INTERVAL_MS);
     refreshRefillPredictions(); // 启动立即检查一次（对比预载值，无变化不写日志）
