@@ -7,7 +7,8 @@
  *                                                —— 核心分阶段迁移（护栏+审计）
  *   arena-ctl relocate <tenant> --target x,y [--units a,b]  —— worker 疏散
  *   arena-ctl mine     <tenant> --target x,y --units a,b    —— worker 部署矿带盯守（mine goals）
- *   arena-ctl cancel  <tenant> [--intent id]      —— 取消意图，交还 agent
+ *   arena-ctl cancel  <tenant> [--intent id]      —— 取消意图（仅该租户；--intent 精确移除单条；
+ *                                                   杀 driver 按该租户 PID 白名单，不按命令行全机匹配）
  *   arena-ctl audit   <tenant> [--limit n]        —— 命令审计流水
  *   arena-ctl band    <tenant> [--center x,y] [--radius n]  —— 矿刷新频率矿带（迁核选点）
  *   arena-ctl mine-watch <tenant> [--max n]             —— 矿刷新预测（即将刷新格，部署 worker 用）
@@ -16,9 +17,9 @@
  * 用法：cd packages/arena-agent && npx tsx scripts/arena-ctl.mts <cmd> ...
  */
 import { spawn, execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, readdirSync, openSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, readdirSync, openSync, renameSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runGuardrails, type GuardrailContext } from "../src/command-plane/guardrails.ts";
 import { appendAuditEvent, readAudit } from "../src/command-plane/audit.ts";
@@ -26,7 +27,19 @@ import { validateIntent, type Intent } from "../src/command-plane/protocol.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const AGENT_ROOT = join(HERE, "..");
-const DATA_ROOT = process.env.ARENA_DATA_ROOT ?? "D:/Code/Projects/arena/data";
+
+/** 数据根解析（W31）：只接受显式 ARENA_DATA_ROOT，缺失/空白 → fail-fast 抛错，
+ *  绝不静默回退到硬编码机器路径（换机器静默失效的根源）。 */
+export function resolveDataRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const root = env.ARENA_DATA_ROOT?.trim();
+  if (!root) {
+    throw new Error(
+      "ARENA_DATA_ROOT 未设置：arena-ctl 拒绝隐式回退。请显式 export ARENA_DATA_ROOT=<data-root>（代码不得硬编码机器绝对路径）。",
+    );
+  }
+  return root;
+}
+const DATA_ROOT = resolveDataRoot();
 
 /* ---------- 数据读取 ---------- */
 
@@ -106,8 +119,8 @@ function readEnemyCores(tenant: string): { x: number; y: number; lastSeenTick: n
   const db = surveyDb(tenant);
   if (!db) return [];
   try {
-    const rows = db.prepare("SELECT x, y, last_seen_tick FROM core_hunts").all() as
-      { x: number; y: number; last_seen_tick: number }[];
+    const rows = db.prepare("SELECT x, y, last_seen_tick AS lastSeenTick FROM core_hunts").all() as
+      { x: number; y: number; lastSeenTick: number }[];
     db.close();
     return rows;
   } catch { try { db.close(); } catch {} return []; }
@@ -117,8 +130,8 @@ function readResources(tenant: string): { x: number; y: number; lastSeenTick: nu
   const db = surveyDb(tenant);
   if (!db) return [];
   try {
-    const rows = db.prepare("SELECT x, y, last_seen_tick FROM resources").all() as
-      { x: number; y: number; last_seen_tick: number }[];
+    const rows = db.prepare("SELECT x, y, last_seen_tick AS lastSeenTick FROM resources").all() as
+      { x: number; y: number; lastSeenTick: number }[];
     db.close();
     return rows;
   } catch { try { db.close(); } catch {} return []; }
@@ -307,14 +320,50 @@ function writeHumanStore(tenant: string, data: Record<string, unknown>): void {
   renameSync(tmpPath, finalPath);
 }
 
-function clearHumanStore(tenant: string): void {
-  writeHumanStore(tenant, {
-    version: 1,
-    mode: "override",
-    commands: [],
-    goals: [],
-    updatedAt: new Date().toISOString(),
+/** cancel 纯逻辑（W32）：intentId 缺省 → 全清；给定 → 精确移除该 command/goal（其余保留）。
+ *  返回过滤后的新 store 与移除的 id 清单。 */
+export function filterHumanStore(
+  store: { version?: number; mode?: string; commands?: { id?: string }[]; goals?: { id?: string }[] },
+  intentId: string | undefined,
+): {
+  next: { version: number; mode: string; commands: { id?: string }[]; goals: { id?: string }[]; updatedAt: string };
+  removed: string[];
+} {
+  const removed: string[] = [];
+  const commands = (store.commands ?? []).filter((c) => {
+    if (intentId === undefined || c.id === intentId) { removed.push(c.id ?? "<no-id>"); return false; }
+    return true;
   });
+  const goals = (store.goals ?? []).filter((g) => {
+    if (intentId === undefined || g.id === intentId) { removed.push(g.id ?? "<no-id>"); return false; }
+    return true;
+  });
+  return {
+    next: {
+      version: store.version ?? 1,
+      mode: store.mode ?? "override",
+      commands,
+      goals,
+      updatedAt: new Date().toISOString(),
+    },
+    removed,
+  };
+}
+
+/** cancel 文件清理（租户隔离）：只写 <data-root>/runtime/human-commands/<tenant>.json。
+ *  intentId 缺省 → 清空该租户 store；给定 → 精确移除该 intent（其余保留）。 */
+export function clearHumanStore(tenant: string, intentId?: string): { removed: string[] } {
+  const dir = join(DATA_ROOT, "runtime", "human-commands");
+  const finalPath = join(dir, `${tenant}.json`);
+  const existing = existsSync(finalPath)
+    ? (() => { try { return JSON.parse(readFileSync(finalPath, "utf-8")) as { version?: number; mode?: string; commands?: { id?: string }[]; goals?: { id?: string }[] }; } catch { return {}; } })()
+    : {};
+  const { next, removed } = filterHumanStore(existing, intentId);
+  // 原子写：临时文件 + rename（与 writeHumanStore 同规约，避免租户读到半写 JSON）
+  const tmpPath = join(dir, `${tenant}.json.tmp-${process.pid}-${Date.now()}`);
+  writeFileSync(tmpPath, JSON.stringify(next, null, 2) + "\n", "utf-8");
+  renameSync(tmpPath, finalPath);
+  return { removed };
 }
 
 function cmdMigrate(tenant: string, target: [number, number], phases: [number, number][], force: boolean, reason: string | undefined, escort: boolean): void {
@@ -455,14 +504,82 @@ function cmdMine(tenant: string, target: [number, number], unitIds: string[], ho
   console.log(JSON.stringify({ ok: true, accepted: true, deployed: units.map((u) => u.id), target }, null, 2));
 }
 
-function cmdCancel(tenant: string, intentId: string | undefined): void {
-  clearHumanStore(tenant);
-  // 杀残留 migrate driver
+interface DriverPidRecord {
+  readonly pid: number;
+  readonly startedAt: string;
+  readonly file: string;
+}
+
+/** driver 进程登记目录（core-migrate-driver 启动时写 runtime/drivers/<tenant>.<pid>.json）。 */
+function driverPidDir(dataRoot: string): string {
+  return join(dataRoot, "runtime", "drivers");
+}
+
+/** 枚举某租户的 driver PID 白名单：只认 <tenant>.<数字>.json 登记文件（跨租户/非法文件一律排除）。 */
+export function listTenantDriverPids(dataRoot: string, tenant: string): DriverPidRecord[] {
+  const dir = driverPidDir(dataRoot);
+  if (!existsSync(dir)) return [];
+  const out: DriverPidRecord[] = [];
+  for (const f of readdirSync(dir)) {
+    const m = /^([^.]+)\.(\d+)\.json$/.exec(f);
+    if (!m || m[1] !== tenant) continue;
+    try {
+      const j = JSON.parse(readFileSync(join(dir, f), "utf-8")) as { pid?: unknown; startedAt?: unknown };
+      if (typeof j.pid === "number" && Number.isInteger(j.pid) && j.pid > 0) {
+        out.push({ pid: j.pid, startedAt: typeof j.startedAt === "string" ? j.startedAt : "", file: join(dir, f) });
+      }
+    } catch { /* 坏登记文件跳过 */ }
+  }
+  return out;
+}
+
+/** 杀单个白名单 PID：先核对"该 PID 的进程仍是 core-migrate-driver"再杀（pid 复用保护），
+ *  进程不存在/不匹配 → 跳过。绝不自杀。 */
+function killOneDriverPid(pid: number): boolean {
+  if (pid === process.pid) return false;
+  if (process.platform === "win32") {
+    const ps = [
+      `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'`,
+      `if ($p -and $p.CommandLine -like '*core-migrate-driver*') { Stop-Process -Id ${pid} -Force -ErrorAction Stop; exit 0 }`,
+      "exit 2",
+    ].join("; ");
+    try {
+      execSync(`powershell -NoProfile -Command "${ps}"`, { encoding: "utf-8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      return true;
+    } catch {
+      return false;
+    }
+  }
   try {
-    execSync(`powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*core-migrate-driver*' } | ForEach-Object { Stop-Process -Id $($_.ProcessId) -Force -ErrorAction SilentlyContinue }"`, { encoding: "utf-8", windowsHide: true });
-  } catch { /* 无残留 */ }
-  appendAuditEvent(DATA_ROOT, tenant, { tenant, issuer: "codex", sessionId: "arena-ctl", intentId: intentId ?? "unknown", kind: "cancel", action: "cancelled" });
-  console.log(JSON.stringify({ ok: true, cancelled: true, tenant, intentId: intentId ?? "all" }, null, 2));
+    const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf-8");
+    if (!cmdline.includes("core-migrate-driver")) return false;
+    process.kill(pid, "SIGTERM");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 按租户 PID 白名单杀 driver（W32）：只处理本租户登记的 PID，逐个核对后杀；
+ *  不做全机命令行匹配——绝不碰其他租户/无关进程。处理完删除登记文件（防陈旧堆积）。 */
+export function killTenantDrivers(dataRoot: string, tenant: string): { killed: number[]; skipped: number[] } {
+  const killed: number[] = [];
+  const skipped: number[] = [];
+  for (const rec of listTenantDriverPids(dataRoot, tenant)) {
+    if (killOneDriverPid(rec.pid)) killed.push(rec.pid);
+    else skipped.push(rec.pid);
+    try { rmSync(rec.file, { force: true }); } catch { /* 清理失败不阻塞 */ }
+  }
+  return { killed, skipped };
+}
+
+/** cancel：租户隔离取消——只清该租户 human-commands（--intent 精确移除单条，其余保留），
+ *  并按该租户 PID 白名单杀残留 driver。 */
+export function cmdCancel(tenant: string, intentId: string | undefined): void {
+  const { removed } = clearHumanStore(tenant, intentId);
+  const kill = killTenantDrivers(DATA_ROOT, tenant);
+  appendAuditEvent(DATA_ROOT, tenant, { tenant, issuer: "codex", sessionId: "arena-ctl", intentId: intentId ?? "all", kind: "cancel", action: "cancelled", evidence: { removed, killed: kill.killed, skipped: kill.skipped } });
+  console.log(JSON.stringify({ ok: true, cancelled: true, tenant, intentId: intentId ?? "all", removed, ...kill }, null, 2));
 }
 
 function cmdAudit(tenant: string, limit: number): void {
@@ -528,4 +645,7 @@ function getArg(args: string[], key: string): string | undefined {
   return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
 }
 
-void main();
+// 仅作为脚本直接执行时跑 CLI；被测试 import 时不触发（W31/W32 纯函数可测性）。
+const isMain = process.argv[1] !== undefined
+  && resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
+if (isMain) void main();

@@ -24,18 +24,21 @@ jobs:
           ref: 423d252adcca439669adb3e7b04252e53b4430bd
           path: .ci/arena-hero-python
           persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: npm ci
-      - run: npm run check
-      - run: npm test
-      - run: npm run schema:check
-      - run: npm run replay:ts
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r check
+      - run: pnpm -r test
+      - run: pnpm run schema:check
+      - run: pnpm run replay:ts
       - run: python scripts/gen-status.py --check
       - run: python scripts/docs_health.py --check
 

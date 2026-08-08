@@ -1,14 +1,17 @@
-/** Bounded, read-only local observability for TenantSupervisor. */
+/** Bounded local observability for TenantSupervisor; write control requires x-arena-token (W33). */
 
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { TenantSupervisor } from "./tenant-supervisor.ts";
 import { rotatedJsonlPaths } from "../telemetry/jsonl-writer.ts";
 
 const MAX_TAIL_BYTES = 256 * 1024;
 const MAX_EVENT_ROWS = 200;
 const STATE_STREAMS = new Set(["runtime", "decision", "outcome", "pi"]);
+const AUTH_HEADER = "x-arena-token";
+const DEFAULT_TOKEN_FILE = "debug-token";
 
 export interface AllianceStrategyDebugControl {
   view(): unknown;
@@ -25,15 +28,27 @@ export interface DebugServerOptions {
   /** Strategic profile control only; applies at Director replan boundaries and never owns Arena actions. */
   readonly allianceStrategyControl?: AllianceStrategyDebugControl;
   readonly port?: number;
+  /** Ignored for binding: the debug API is always loopback-only (W33). Kept for CLI backward compatibility. */
   readonly host?: string;
+  /** Fixed token for deterministic tests; a random token is generated when omitted. */
+  readonly token?: string;
+  /** File where the token is written for local callers; defaults to <runtimeRoot>/debug-token. */
+  readonly tokenFile?: string;
 }
 
 export class DebugServer {
   private readonly options: DebugServerOptions;
   private readonly server: Server;
+  /** Token required by write endpoints via the x-arena-token header. */
+  readonly token: string;
+  /** File the token is written to so local tooling can authenticate. */
+  readonly tokenFile: string;
 
   constructor(options: DebugServerOptions) {
     this.options = options;
+    this.token = options.token ?? randomBytes(32).toString("hex");
+    this.tokenFile = options.tokenFile ?? join(options.supervisor.runtimeRoot, DEFAULT_TOKEN_FILE);
+    writeDebugToken(this.tokenFile, this.token);
     this.server = createServer((req, res) => {
       this.route(req, res).catch((error) => {
         this.json(res, 500, { error: error instanceof Error ? error.message : String(error) });
@@ -43,7 +58,8 @@ export class DebugServer {
 
   listen(): Promise<void> {
     const port = this.options.port ?? 8120;
-    const host = this.options.host ?? "127.0.0.1";
+    // W33: the debug API is strictly local; any externally supplied host is ignored.
+    const host = "127.0.0.1";
     return new Promise((resolvePromise, reject) => {
       const onError = (error: Error): void => reject(error);
       this.server.once("error", onError);
@@ -139,6 +155,7 @@ export class DebugServer {
         this.json(res, 405, { error: "method not allowed; use GET/POST /alliance-strategy" });
         return;
       }
+      if (!this.requireToken(req, res)) return;
       if (control === undefined) {
         this.json(res, 503, { error: "Alliance strategic control is unavailable" });
         return;
@@ -172,6 +189,7 @@ export class DebugServer {
       return;
     }
     if (path === "/config-reload" && req.method === "POST") {
+      if (!this.requireToken(req, res)) return;
       // Two-phase hot reload: compile/preflight → exact-hash IPC → child apply ACK. Non-hot fields
       // return restart_required instead of silently creating a half-old/half-new runtime.
       const tenantParam = urlObj.searchParams.get("tenant");
@@ -193,8 +211,10 @@ export class DebugServer {
     if (path === "/shutdown" && req.method === "POST") {
       // 受控优雅关停（2026-08-07 增加）：触发 supervisor.shutdown()，tenant 经
       // IPC 收到 arena.shutdown 后执行 cleanup stack——recorder.close() 写
-      // manifest，最后释放 writer lock。仅 127.0.0.1 可及（listen 默认绑定）；
-      // 非 POST 一律 405。看护/受控重启先走这里，硬杀只作兜底。
+      // manifest，最后释放 writer lock。仅 127.0.0.1 可及（listen 强制绑定，
+      // W33），且需 x-arena-token；非 POST 一律 405。看护/受控重启先走这里，
+      // 硬杀只作兜底。
+      if (!this.requireToken(req, res)) return;
       void this.options.supervisor.shutdown();
       this.json(res, 202, { shuttingDown: true });
       return;
@@ -210,6 +230,34 @@ export class DebugServer {
     if (res.headersSent) return;
     res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(body));
+  }
+
+  private requireToken(req: IncomingMessage, res: ServerResponse): boolean {
+    const header = req.headers[AUTH_HEADER];
+    // Header may be string | string[] | undefined; normalize to first value.
+    const provided = typeof header === "string" ? header : Array.isArray(header) && header.length > 0 ? header[0] : undefined;
+    if (tokenMatches(provided, this.token)) return true;
+    this.json(res, 401, { error: `unauthorized: missing or invalid ${AUTH_HEADER} header` });
+    return false;
+  }
+}
+
+/** Constant-time comparison; undefined/malformed/mismatched values are rejected. */
+export function tokenMatches(provided: string | undefined, expected: string): boolean {
+  if (typeof provided !== "string" || provided.length === 0) return false;
+  const providedBuffer = Buffer.from(provided, "utf8");
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  return providedBuffer.length === expectedBuffer.length && timingSafeEqual(providedBuffer, expectedBuffer);
+}
+
+function writeDebugToken(tokenFile: string, token: string): void {
+  try {
+    mkdirSync(dirname(tokenFile), { recursive: true });
+    writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
+  } catch (error) {
+    throw new Error(
+      `cannot write debug token to ${tokenFile}: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 

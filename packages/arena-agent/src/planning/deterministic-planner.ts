@@ -366,6 +366,11 @@ const WORKER_RECOVERY_FLOOR = 2;
 // 不等 workerTarget=12——裸奔期被拆的教训（t3 重生后无军事）。
 const EARLY_MILITARY_WORKER_FLOOR = 4;
 const EARLY_MILITARY_COUNT = 1;
+/** 家防底线编成（W3b，官方 AGGRESS_DEFENDER_VANGUARDS=3 / AGGRESS_DEFENDER_RANGERS=3
+ *  渐进补编，2026-08-09）：早期先 1V 自卫（EARLY_MILITARY_COUNT），再补 1V+2R，
+ *  最后向 3V+3R 满编渐进——每档只产缺口兵种，不一次爆编。 */
+const HOME_DEFENSE_VANGUARD_TARGET = 3;
+const HOME_DEFENSE_RANGER_TARGET = 3;
 /** 冷启动 worker 扩编目标（2026-08-07，t3/t4 生产实证）：worker 数未达该值
  *  时产 worker 豁免 spawnReserve——资源刚够成本就扩编（t4 实证：2W res 5 <
  *  WORKER 5 + reserve 2 = 7 → 永不产第 3 个 worker → 经济停滞）。v3.0
@@ -441,6 +446,13 @@ export function selectDeterministicCoreAction(
    *  worker >= EARLY_MILITARY_WORKER_FLOOR 时先产 1 Vanguard 自卫——重生/弱小期裸奔
    *  被野怪/入侵拆核的兜底（t3 重生后无军事实证）。默认开启（纯防御，不挤占采集）。 */
   recoveryEarlyMilitary = false,
+  /** 家防底线渐进补编（W3b，home-defense-bottom-v1，2026-08-09）：官方
+   *  AGGRESS_DEFENDER_VANGUARDS=3 / AGGRESS_DEFENDER_RANGERS=3 家防底线在
+   *  RECOVERY/弱小期的渐进落地——1V 自卫 → 1V+2R → 3V+3R 满编，每档只产缺口
+   *  兵种；豁免 spawnReserve（生存行为只看纯成本，与 recoveryEarlyMilitary 同
+   *  语义）；不受 workerTarget=12 前置门限制（EARLY_MILITARY_WORKER_FLOOR=4
+   *  起步）。默认关（零回归），变体显式开启。 */
+  homeDefenseBottom = false,
 ): { readonly action: CoreAction | null; readonly intent: string | null; readonly surgeActive: boolean } {
   if (fallbackAction?.type === "HEAL") {
     return { action: fallbackAction, intent: "core_heal", surgeActive };
@@ -542,6 +554,27 @@ export function selectDeterministicCoreAction(
             surgeActive: active,
           };
         }
+      } else if (homeDefenseBottom && militaryRatio > 0 &&
+                 state.workers.length >= EARLY_MILITARY_WORKER_FLOOR &&
+                 (state.vanguards.length < HOME_DEFENSE_VANGUARD_TARGET ||
+                  state.rangers.length < HOME_DEFENSE_RANGER_TARGET)) {
+        // W3b 家防底线渐进补编（官方 AGGRESS_DEFENDER_* = 3V+3R）：早期防御线
+        // 的完整版——1V 自卫 → 1V+2R → 3V+2R → 3V+3R 满编，每档只产缺口兵种
+        // （先肉盾后火力），不受 workerTarget=12 前置门限制。满编后回正常扩编。
+        // 豁免 spawnReserve（生存行为只看纯成本，与 recoveryEarlyMilitary 同语义）。
+        const vanguards = state.vanguards.length;
+        const rangers = state.rangers.length;
+        const needVanguard = vanguards < HOME_DEFENSE_VANGUARD_TARGET &&
+          (vanguards < 1 || rangers >= HOME_DEFENSE_RANGER_TARGET - 1);
+        const needRanger = !needVanguard && vanguards >= 1 && rangers < HOME_DEFENSE_RANGER_TARGET;
+        const unitType: "VANGUARD" | "RANGER" = needVanguard ? "VANGUARD" : "RANGER";
+        if (state.resources >= spawnCosts[unitType]) {
+          return {
+            action: { type: "SPAWN", unitType },
+            intent: unitType === "VANGUARD" ? "spawn_home_defense_vanguard" : "spawn_home_defense_ranger",
+            surgeActive: active,
+          };
+        }
       } else if (state.workers.length < workerTarget && !needMilitary) {
         // 冷启动扩编（2026-08-07）：worker < BOOTSTRAP_WORKER_TARGET 时豁免
         // spawnReserve——资源刚够成本就产 worker，打破"res < cost+reserve
@@ -600,6 +633,10 @@ export class DeterministicPlanner implements PlanProvider {
    *  （>=4）时先产 1 Vanguard 自卫（防野怪/入侵），不等 workerTarget——裸奔期
    *  被拆的兜底（t3 重生后无军事实证）。默认关（零回归），变体显式开启。 */
   private recoveryEarlyMilitary = false;
+  /** 家防底线渐进补编（home-defense-bottom-v1，W3b）：早期按官方 3V+3R 底线
+   *  渐进补编（1V → 1V+2R → 3V+3R），豁免 reserve、不受 workerTarget 前置门。
+   *  默认关（零回归），变体显式开启。 */
+  private homeDefenseBottom = false;
   /** 爆兵阈值（2026-08-06）：resources 达标前只产 Worker 积累、达标后持续爆兵。 */
   private accumulateThreshold: number;
   /** 爆兵状态（跨 tick 保持：达标后持续爆兵直到资源耗尽回积累期）。 */
@@ -663,6 +700,8 @@ export class DeterministicPlanner implements PlanProvider {
     missionConfig: MissionConfig = DEFAULT_MISSION_CONFIG,
     /** RECOVERY 早期防御产兵开关（recovery-early-military-v1，默认关零回归）。 */
     recoveryEarlyMilitary = false,
+    /** 家防底线渐进补编开关（home-defense-bottom-v1，W3b，默认关零回归）。 */
+    homeDefenseBottom = false,
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
@@ -675,6 +714,7 @@ export class DeterministicPlanner implements PlanProvider {
     this.spawnReserve = spawnReserve;
     this.missionConfig = missionConfig;
     this.recoveryEarlyMilitary = recoveryEarlyMilitary;
+    this.homeDefenseBottom = homeDefenseBottom;
     this.threatProfiles = threatProfiles;
     if (initialCoreHuntTargets.length > 0) {
       fallbackPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
@@ -736,6 +776,7 @@ export class DeterministicPlanner implements PlanProvider {
       readonly accumulateThreshold?: number;
       readonly spawnReserve?: number;
       readonly recoveryEarlyMilitary?: boolean;
+      readonly homeDefenseBottom?: boolean;
       readonly mission?: MissionConfig;
     },
   ): void {
@@ -746,6 +787,7 @@ export class DeterministicPlanner implements PlanProvider {
     this.accumulateThreshold = deterministicConfig.accumulateThreshold ?? 0;
     this.spawnReserve = deterministicConfig.spawnReserve ?? WORKER_SPAWN_RESERVE;
     this.recoveryEarlyMilitary = deterministicConfig.recoveryEarlyMilitary ?? false;
+    this.homeDefenseBottom = deterministicConfig.homeDefenseBottom ?? false;
     if (deterministicConfig.mission !== undefined) {
       this.missionConfig = { ...DEFAULT_MISSION_CONFIG, ...deterministicConfig.mission };
       this.planner.updateConfig({ mission: this.missionConfig });
@@ -989,6 +1031,7 @@ export class DeterministicPlanner implements PlanProvider {
       // = v0.14 动态价线）；strike-core-v1 的 SafetyPlanner 用默认 20。
       this.fallbackPlanner.config.populationCeiling,
       this.recoveryEarlyMilitary,
+      this.homeDefenseBottom,
     );
     this.surgeActive = coreDecision.surgeActive;
     if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;

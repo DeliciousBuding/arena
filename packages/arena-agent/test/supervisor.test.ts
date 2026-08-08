@@ -134,9 +134,12 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<vo
 async function requestJson(
   port: number,
   path: string,
-  options: { method?: string } = {},
+  options: { method?: string; headers?: Record<string, string> } = {},
 ): Promise<{ status: number; body: any }> {
-  const response = await fetch(`http://127.0.0.1:${port}${path}`, { method: options.method ?? "GET" });
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+    method: options.method ?? "GET",
+    headers: options.headers,
+  });
   return { status: response.status, body: await response.json() };
 }
 
@@ -645,7 +648,7 @@ test("DebugServer POST /shutdown triggers graceful IPC cleanup; GET rejected", a
     await supervisor.start();
     const port = debug.address()!.port;
     children.get("t1")!.autoExitOnSend = true;
-    const shutdown = await requestJson(port, "/shutdown", { method: "POST" });
+    const shutdown = await requestJson(port, "/shutdown", { method: "POST", headers: { "x-arena-token": debug.token } });
     assert.equal(shutdown.status, 202);
     assert.equal(shutdown.body.shuttingDown, true);
     assert.deepEqual(children.get("t1")!.sent, [{ type: "arena.shutdown" }]);
@@ -1138,20 +1141,20 @@ test("DebugServer /alliance-strategy queues profile/rollback/mark-good control w
     assert.equal(get.status, 200);
     assert.equal(get.body.actionOwnership, "none");
 
-    const select = await requestJson(port, "/alliance-strategy?profile=aggressive", { method: "POST" });
+    const select = await requestJson(port, "/alliance-strategy?profile=aggressive", { method: "POST", headers: { "x-arena-token": debug.token } });
     assert.equal(select.status, 202);
     assert.deepEqual(select.body.strategy.pending, { action: "select", profile: "aggressive" });
     assert.equal(active, "balanced", "debug control queues only; Director replan owns activation");
 
-    const invalid = await requestJson(port, "/alliance-strategy?profile=missing", { method: "POST" });
+    const invalid = await requestJson(port, "/alliance-strategy?profile=missing", { method: "POST", headers: { "x-arena-token": debug.token } });
     assert.equal(invalid.status, 400);
-    const rollback = await requestJson(port, "/alliance-strategy?action=rollback", { method: "POST" });
+    const rollback = await requestJson(port, "/alliance-strategy?action=rollback", { method: "POST", headers: { "x-arena-token": debug.token } });
     assert.equal(rollback.status, 202);
     assert.deepEqual(rollback.body.strategy.pending, { action: "rollback" });
-    const good = await requestJson(port, "/alliance-strategy?action=mark-good", { method: "POST" });
+    const good = await requestJson(port, "/alliance-strategy?action=mark-good", { method: "POST", headers: { "x-arena-token": debug.token } });
     assert.equal(good.status, 202);
     assert.equal(good.body.strategy.lastGood, "balanced");
-    const malformed = await requestJson(port, "/alliance-strategy", { method: "POST" });
+    const malformed = await requestJson(port, "/alliance-strategy", { method: "POST", headers: { "x-arena-token": debug.token } });
     assert.equal(malformed.status, 400);
   } finally {
     await debug.close();
