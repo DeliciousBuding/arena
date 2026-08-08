@@ -3412,6 +3412,84 @@ function drawHumanGoalPaths(s: any) {
   }
 }
 
+/** 算法分配采矿/回仓完整路线（2026-08-08）：intents 为 go_harvest 系 / DEPOSIT 的受控单位，
+ *  从当前位置到目标（最近未采资源格 / 己方核心）寻路并画完整动线——计划只给当前步方向，
+ *  目标经测绘记忆推断（agent 绿，tactDrawRoute 默认配色），缓存 key=tick+起点+目标，
+ *  跨 tick 持续可见（与 drawHumanGoalPaths 同构）。单位有人类指令时跳过（人类动线优先）。 */
+function drawAgentGoalPaths(s: any) {
+  const tac = T();
+  if (!state.layers.plan) return;
+  const solo = state.soloTenant;
+  const scopes = solo ? [solo] : TENANTS;
+  for (const tenant of scopes) {
+    const plan = solo ? tac.plan?.plan : tac.plans?.[tenant];
+    if (!plan || !plan.intents) continue;
+    const world = tac.worlds[tenant] || mergedWorldFor(tenant);
+    if (!world || !world.state || !Array.isArray(world.state.objects)) continue;
+    // 单位定位表（与 tactPlanLayer 同源）：精确 world 优先，全局回退合并测绘 cells
+    const byId = new Map();
+    if (world.state.objects) {
+      for (const o of world.state.objects) if ((o.kind === 'UNIT' || o.kind === 'CORE') && o.id && o.position) byId.set(o.id, o);
+    } else {
+      for (const c of state.cells) {
+        if (c.tenant !== tenant || !c.id) continue;
+        if (c.type === 'unit') byId.set(c.id, { id: c.id, position: [c.x, c.y], controlled: c.controlled, kind: 'UNIT' });
+        else if (c.type === 'core') byId.set(c.id, { id: c.id, position: [c.x, c.y], controlled: c.controlled, kind: 'CORE' });
+      }
+    }
+    // 人类指令单位：跳过（人类动线在 drawHumanGoalPaths 已画，避免双线叠层）
+    const store = tac.commandsByTenant ? tac.commandsByTenant[tenant] : (solo === tenant ? tac.commands : null);
+    const humanUnits = new Set(store && Array.isArray(store.goals) ? store.goals.map((g: any) => g.unitId).filter(Boolean) : []);
+    // 资源格候选：优先测绘记忆（过滤已采/空），全局回退当前帧 cells（去重）
+    const survey = tac.surveys[tenant];
+    const mines = (survey && Array.isArray(survey.resourceCells) ? survey.resourceCells : [])
+      .filter((r: any) => r.state !== 'harvested' && r.state !== 'empty')
+      .map((r: any) => [Number(r.x), Number(r.y)])
+      .filter((p: any) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    if (!solo) {
+      for (const c of state.cells) {
+        if (c.tenant === tenant && c.type === 'resource' && c.fresh !== false) {
+          const has = mines.some((p: any) => p[0] === c.x && p[1] === c.y);
+          if (!has) mines.push([c.x, c.y]);
+        }
+      }
+    }
+    const coreObj = world.state.objects.find((o: any) => o.kind === 'CORE' && o.controlled === true && o.position);
+    const corePos = coreObj ? [coreObj.position[0], coreObj.position[1]] : null;
+    for (const [id, intentRaw] of Object.entries(plan.intents)) {
+      if (humanUnits.has(id)) continue;
+      const intent = String(intentRaw);
+      const base = intent.split(':')[0];
+      const o = byId.get(id);
+      if (!o || o.controlled !== true || !o.position) continue;
+      let target: any = null;
+      if (base === 'go_harvest' || base === 'go_harvest_mem') {
+        if (!mines.length) continue;
+        let best: any = null, bd = Infinity;
+        for (const m of mines) {
+          const d = Math.abs(m[0] - o.position[0]) + Math.abs(m[1] - o.position[1]);
+          if (d < bd) { bd = d; best = m; }
+        }
+        target = best;
+      } else if (intent === 'DEPOSIT') {
+        target = corePos;
+      }
+      if (!target) continue;
+      const key = `${state.tickMeter.lastTick}:${o.position[0]},${o.position[1]}:${target[0]},${target[1]}`;
+      const ck = tenant + ':' + id;
+      let rec = tac.agentPaths ? tac.agentPaths[ck] : null;
+      if (!rec || rec.key !== key) {
+        const path = tactFindPath(world, [o.position[0], o.position[1]], target, tenant);
+        if (!path || path.length < 2) { if (tac.agentPaths) delete tac.agentPaths[ck]; continue; }
+        rec = { key, path, kind: intent === 'DEPOSIT' ? 'deposit' : 'mine' };
+        tac.agentPaths = tac.agentPaths || {};
+        tac.agentPaths[ck] = rec;
+      }
+      tactDrawRoute(rec.path, { eta: rec.path.length - 1 });
+    }
+  }
+}
+
 function tactPlanLayer(s: any) {
   if (!state.layers.plan) return;
   const tac = T();
@@ -3536,6 +3614,7 @@ function tactPlanLayer(s: any) {
     }
   }
   drawHumanGoalPaths(s);
+  drawAgentGoalPaths(s); // 算法分配采矿/回仓完整路线（目标经测绘记忆推断）
   if (!drew) return;
 }
 
