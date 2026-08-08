@@ -196,7 +196,22 @@ function storePath(tenant: string): string {
   return join(args.dataRoot, "runtime", "human-commands", `${tenant}.json`);
 }
 
+/** 迁移系统计划文件（migration-system-v1 P0-2 护栏）：存在 = conductor 已接管
+ *  本租户迁移，driver 直写 human-commands 属双 writer（评审实证竞态），必须拒绝。 */
+function migrationPlanExists(tenant: string): boolean {
+  return existsSync(join(args.dataRoot, "runtime", "migration", `${tenant}.json`));
+}
+
 function writeMoveCommand(tenant: string, coreId: string, direction: Dir): void {
+  // P0-2 护栏（2026-08-08）：迁移计划存在时 driver 直写路径已淘汰——旧实现
+  // 整文件覆盖 human-commands（commands 重建成一条、goals 清空）与 store 模块
+  // 独占声明构成真实双 writer。conductor 上线后由 overlay 提交链接管。
+  if (migrationPlanExists(tenant)) {
+    throw new Error(
+      `[migration-system-v1 P0-2] ${tenant} 存在迁移计划（runtime/migration/${tenant}.json），` +
+        "driver 直写 human-commands 路径已淘汰；请先取消计划（migration_cancel）或改用 conductor。",
+    );
+  }
   const path = storePath(tenant);
   const existing = existsSync(path)
     ? (() => { try { return JSON.parse(readFileSync(path, "utf8")) as { mode?: string; version?: number }; } catch { return {}; } })()

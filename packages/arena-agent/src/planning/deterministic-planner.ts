@@ -31,6 +31,7 @@ import {
 import {
   adaptivePathOptions,
   manhattan,
+  move,
   stepToward as pathStepToward,
   type PathSearchOptions,
 } from "../domain/nav.ts";
@@ -44,6 +45,8 @@ import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snaps
 import { WorkerTaskPlanner, type Assignment } from "./worker-task-planner.ts";
 import { DEFAULT_MISSION_CONFIG, type MissionConfig } from "./mission-planner.ts";
 import type { WorkerProgressExpectation, WorkerProgressExpectations } from "./progress-contract.ts";
+import { directionToNextPathCell } from "../migration/overlay.ts";
+import type { MigrationPlanV1 } from "../migration/plan.ts";
 
 const CELL_ENTITY_CAPACITY = 2;
 const REROUTE_ORDER: Readonly<Record<Direction, readonly Direction[]>> = {
@@ -121,6 +124,29 @@ export function migrationScoutDirection(
   if (dx === 0 && dy === 0) return null;
   const sx = Math.sign(dx), sy = Math.sign(dy);
   const target: Position = [corePosition[0] + sx * scoutRange, corePosition[1] + sy * scoutRange];
+  if (workerPosition[0] === target[0] && workerPosition[1] === target[1]) return null;
+  return stepTowardAvoiding(workerPosition, target, obstacles);
+}
+
+/** 迁移方向勘探·计划前向约束版（migration-system-v1 §3.3，评审 P1 定稿）：
+ *  不再靠核心前后坐标差分推断方向（旧 migration-scout 只在核心完成格子的那
+ *  tick 触发，且推断的是"已经走过的方向"），改读计划路径的下一格方向——
+ *  核心 NORMAL 的 LEG_MOVE 窗口内也持续前向探路。plan.state≠LEG_MOVE 或
+ *  路径无相邻前进格 → null（fallback 巡逻，零影响）。 */
+export function migrationScoutDirectionForPlan(
+  workerPosition: Position,
+  corePosition: Position,
+  plan: MigrationPlanV1,
+  obstacles: ReadonlySet<string>,
+  scoutRange = 24,
+): Direction | null {
+  if (plan.state !== "LEG_MOVE") return null;
+  const next = directionToNextPathCell(plan.path.cells, corePosition, Math.max(0, plan.legProgress.legIndex));
+  if (next === null) return null;
+  const oneStep = move(corePosition, next.direction);
+  const dx = oneStep[0] - corePosition[0];
+  const dy = oneStep[1] - corePosition[1];
+  const target: Position = [corePosition[0] + dx * scoutRange, corePosition[1] + dy * scoutRange];
   if (workerPosition[0] === target[0] && workerPosition[1] === target[1]) return null;
   return stepTowardAvoiding(workerPosition, target, obstacles);
 }
@@ -577,6 +603,10 @@ export class DeterministicPlanner implements PlanProvider {
   private spawnReserve: number;
   /** 使命层配置（worker-mission-v1）：值层置信 + SURVEYOR 角色仲裁。 */
   private missionConfig: MissionConfig;
+  /** 迁移计划（migration-system-v1 §3.3 勘探前向约束，评审 P1）：tenant-runtime
+   *  每 tick 决策前注入；EXPLORE worker 朝计划路径前向探路（替代 core 坐标
+   *  差分触发）。null = 无迁移，历史行为零回归。 */
+  private migrationPlan: MigrationPlanV1 | null = null;
   /** 矿刷新预测（Phase 2，G3）：cellKey → dueInTicks；tenant-runtime 周期刷新注入。 */
   private refillPredictions: ReadonlyMap<string, number> = new Map();
   /** 迁移后测绘期截止 tick（核心位置变化时刷新为 tick + surveyBurstTicks）。 */
@@ -670,6 +700,12 @@ export class DeterministicPlanner implements PlanProvider {
 
   /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
    *  保留 World/巡逻/攻坚记忆（不重建 planner）。调用方先校验变体合法性。 */
+  /** 迁移计划注入（migration-system-v1 §3.3，评审 P1）：tenant-runtime 每 tick
+   *  决策前调用；EXPLORE worker 朝计划路径前向探路。null = 无迁移。 */
+  setMigrationPlan(plan: MigrationPlanV1 | null): void {
+    this.migrationPlan = plan;
+  }
+
   updateConfig(
     safetyConfig: SafetyPlannerConfig,
     deterministicConfig: {
@@ -806,6 +842,23 @@ export class DeterministicPlanner implements PlanProvider {
         // migration-scout（2026-08-08，worker-mission-v1 延伸）：核心 MOVING 时
         // 勘探 worker 朝核心迁移方向探路（为落点测绘），不随机巡老分区——
         // t3 迁移期"worker 探索测绘"直接服务新家园；核心 NORMAL 时零影响。
+        // 计划前向约束版（migration-system-v1 §3.3，评审 P1）：有迁移计划时
+        // 读计划路径下一格方向持续前向探路（不依赖 core 坐标差分触发）。
+        if (
+          this.missionConfig.migrationScout === true &&
+          snapshot.corePosition !== null &&
+          this.migrationPlan !== null
+        ) {
+          const worker = snapshot.units.find((u: any) => u.id === assignment.unitId);
+          const dir = worker
+            ? migrationScoutDirectionForPlan(worker.position, snapshot.corePosition, this.migrationPlan, snapshot.obstacleCells)
+            : null;
+          if (dir !== null) {
+            unitActions[assignment.unitId] = { type: "MOVE", direction: dir };
+            intents[assignment.unitId] = "worker_migration_scout";
+            continue;
+          }
+        }
         if (
           this.missionConfig.migrationScout === true &&
           snapshot.corePosition !== null &&
