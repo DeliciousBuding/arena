@@ -79,31 +79,37 @@ export function latestRunDir(tenant: string): string | null {
 function latestRunDirInner(tenant: string): string | null {
   const base = calibrationDir(tenant);
   if (!existsSync(base)) return null;
+  // 2026-08-08 性能：原实现全扫所有 run 的 cases 目录找最高 tick（O(runs×files)，
+  // /api/map 重建时 4 租户 × 每次 TTL 过期 ~200ms 同步阻塞）。改为 stat 各 run
+  // 目录 mtime 选候选（case 写入会更新目录 mtime，agent 只写最新 run，mtime 最新
+  // 即最新 run），从最新候选开始验证 cases 非空——O(runs stat + 1 readdir)。
   const runs = readdirSync(base, { withFileTypes: true })
     .filter((d) => d.isDirectory())
-    .map((d) => d.name);
-  let best: string | null = null;
-  let bestTick = -1;
-  for (const name of runs) {
-    const casesDir = join(base, name, "cases");
-    if (!existsSync(casesDir)) continue;
-    let maxTick = -1;
-    for (const f of readdirSync(casesDir)) {
-      const tick = parseTick(f);
-      if (tick > maxTick) maxTick = tick;
-    }
-    if (maxTick > bestTick) {
-      bestTick = maxTick;
-      best = name;
-    }
+    .map((d) => ({ name: d.name, mtime: statSync(join(base, d.name)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const r of runs) {
+    const casesDir = join(base, r.name, "cases");
+    if (existsSync(casesDir) && readdirSync(casesDir).length > 0) return r.name;
   }
-  return best;
+  return null;
 }
 
+/** listCases 1.5s TTL 记忆化（2026-08-08 地图性能）：/api/map 重建时签名计算 +
+ *  inner + trails 多次 readdir 同一目录（4 租户 × 数次 = 数十次 readdir，实测
+ *  目录枚举 ~214ms）。case 文件只增不改，1.5s 内新 case 延迟对 3s poll 无感，
+ *  语义不变（与 latestRunDir 同 TTL）。 */
+const listCasesCache = new Map<string, { at: number; files: string[] }>();
+const LIST_CASES_TTL_MS = 1500;
 export function listCases(tenant: string, runDir: string): string[] {
+  const key = `${tenant}/${runDir}`;
+  const now = Date.now();
+  const hit = listCasesCache.get(key);
+  if (hit && now - hit.at < LIST_CASES_TTL_MS) return hit.files;
   const casesDir = join(calibrationDir(tenant), runDir, "cases");
   if (!existsSync(casesDir)) return [];
-  return readdirSync(casesDir).filter((f) => f.endsWith(".json")).sort();
+  const files = readdirSync(casesDir).filter((f) => f.endsWith(".json")).sort();
+  listCasesCache.set(key, { at: now, files });
+  return files;
 }
 
 export function parseTick(fileName: string): number {
