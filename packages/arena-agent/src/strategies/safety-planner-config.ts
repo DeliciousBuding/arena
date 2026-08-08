@@ -390,6 +390,9 @@ export interface SafetyPlannerConfig {
   readonly threatMilitaryPriority?: boolean;
   /** 威胁优先产兵的军事地板（默认 4）：军事规模 < 该值才触发优先产兵。 */
   readonly threatMilitaryFloor?: number;
+  /** 集火协调（coordinated-fire-v1，v3 线行为同步）：多军事单位对同一目标
+   *  协同集火（2026-08-08 并行 agent 特性；本线为接口对齐，行为由 v3 线提供）。 */
+  readonly coordinatedFire?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

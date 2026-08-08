@@ -184,6 +184,19 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * Ranger 20；31 起 k=3 跳 22+），继续扩张但不过度进入高溢价档。仅 t1 启用。
      */
     "population-ceiling-30-v1": Object.freeze({ populationCeiling: 30 }),
+    /**
+     * 并行 agent 新变体占位注册（2026-08-08，watchdog 恢复线防 fail-fast）：
+     * t2/t3 配置已声明这些变体，但本线（production-runtime）落后 v3 线
+     * （并行 agent 部署线）——缺注册会让 watchdog 恢复时 t2/t3 启动即失败
+     * （unknown variant → 连环重启）。空覆盖注册满足 resolveVariantsConfig
+     * 校验（vanguard-heavy-v1 同模式）；实际行为在 v3 线生效，本线为降级运行
+     * 零回归。行为代码由并行 agent 同步到本线后改为真实开关。
+     */
+    "rally-assault-v1": Object.freeze({}),
+    "outnumbered-retreat-v1": Object.freeze({}),
+    "spawn-yield-v1": Object.freeze({}),
+    "worker-blockade-v1": Object.freeze({}),
+    "coordinated-fire-v1": Object.freeze({ coordinatedFire: true }),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要

@@ -629,7 +629,15 @@ export class DeterministicPlanner implements PlanProvider {
         });
       }
     }
-    const maxResourceDistanceFromCore = this.fallbackPlanner.resourceAssignmentMaxDistanceFromCore(input.state);
+    const resourceAssignmentMaxDistance = (this.fallbackPlanner as unknown as {
+      resourceAssignmentMaxDistanceFromCore?: (state: TickState) => number;
+    }).resourceAssignmentMaxDistanceFromCore;
+    // 防御守卫（2026-08-08）：v3 线有该方法、watchdog 恢复线（production-runtime）
+    // 尚无——直接调用会在每 tick decide() 抛 TypeError 导致租户崩溃循环。
+    // 缺失时跳过距离过滤（= 旧行为，零回归）；v3 线同步后自动启用。
+    const maxResourceDistanceFromCore = resourceAssignmentMaxDistance
+      ? resourceAssignmentMaxDistance(input.state)
+      : Number.POSITIVE_INFINITY;
     if (Number.isFinite(maxResourceDistanceFromCore) && rawSnapshot.corePosition !== null) {
       for (const [key, resource] of resourceCells) {
         if (manhattan(resource.position, rawSnapshot.corePosition) > maxResourceDistanceFromCore) {
