@@ -44,6 +44,7 @@ import { loadLifecycleAudit, warmLifecycleAudit } from "./lib/lifecycle-audit.ts
 import { loadMineUtilization, warmMineUtilization } from "./lib/mine-utilization.ts";
 import { loadAuditOverview, warmAuditOverview } from "./lib/audit-overview.ts";
 import { loadHumanConflict, warmHumanConflict } from "./lib/human-conflict.ts";
+import { loadAllianceMining, warmAllianceMining } from "./lib/alliance-mining.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -340,6 +341,11 @@ app.get("/api/audit/lifecycle", (c) => {
   }
   return c.json(loadLifecycleAudit(tenant));
 });
+app.get("/api/alliance/mining", (c) => {
+  // 联盟级采矿分工（2026-08-08）：各租户可见未开采候选 → 就近观测租户分配。
+  // 只读组合（快照核心位置 + 共享测绘 observers + 冲突），30s 缓存 + 启动预热。
+  return c.json(loadAllianceMining());
+});
 app.get("/api/audit/overview", (c) => {
   // 综合审计总览（2026-08-08）：决策-结果 + 生命周期 + 矿利用 + 联盟探索 + 管线健康
   // 单调用合成——前端"综合态势"面板一次拉取。纯组合（复用各 30s 缓存），只读。
@@ -570,6 +576,8 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { warmAuditOverview(); } catch { /* 忽略 */ } }, 80);
   // 人机冲突审计（尾部只读）：启动预热一次，不进周期循环。
   setTimeout(() => { try { warmHumanConflict(); } catch { /* 忽略 */ } }, 90);
+  // 联盟采矿分工（只读组合）：启动预热一次，不进周期循环。
+  setTimeout(() => { try { warmAllianceMining(); } catch { /* 忽略 */ } }, 100);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
