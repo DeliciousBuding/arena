@@ -344,6 +344,10 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
         // EXPLORE 外出测绘/打探，永不守家 WAIT——守家是军事单位职责，矿工只负责
         // 采/探/寻矿；特殊卡位（worker-blockade）与核心迁移持货保持显式例外。
         alwaysSurvey: true,
+        // 分配滞回（2026-08-08，t2 生产实证 planChurn=1.0 根治）：上一 tick 目标
+        // 仍可采时保持（sticky 0.5 基础上再加 1.5 = 2.0 加成），只有新目标净收益
+        // 显著更高才切换——worker 路程不浪费、分配跨 tick 稳定。
+        switchThreshold: 1.5,
       },
     }),
     /**

@@ -51,7 +51,7 @@ const CHUNK_SIZE = 16;
 
 /** 官方视野半径（rules-v0.11/v0.14 钉定，sim/contracts 核对）：
  *  WORKER 3 / VANGUARD 4 / RANGER 5 / CORE 5。 */
-const VISION_RADIUS: Readonly<Record<UnitType | "CORE", number>> = {
+export const VISION_RADIUS: Readonly<Record<UnitType | "CORE", number>> = {
   WORKER: 3,
   VANGUARD: 4,
   RANGER: 5,
@@ -61,7 +61,7 @@ const VISION_RADIUS: Readonly<Record<UnitType | "CORE", number>> = {
 /** 视野遮挡判定：integer supercover 线（与官方 SDK sim/visibility/supercoverLine
  *  及 arena-hero-agent _has_vision_line 同构）。途经格（不含 origin，含 target）
  *  任一为障碍 → 遮挡；target 自身不算遮挡（目标格是资源/单位，非障碍）。 */
-function visionLineBlocked(
+export function visionLineBlocked(
   origin: Position,
   target: Position,
   obstacles: ReadonlySet<string>,
@@ -278,6 +278,9 @@ export class World {
   /** 近核入侵观察（2026-08-08，core-threat-watch-v1）。 */
   private readonly coreWatch = new Map<string, CoreWatchMemory>();
   private readonly failedCells = new Map<string, number>();
+  /** 分级冷却（2026-08-08，缺席实证）：cellKey → 失败冷却 tick 数覆盖（缺席
+   *  统计高频格升级冷却，见 seedFailedCooldownTiers）。无记录 = 走默认冷却。 */
+  private readonly extendedFailedCooldowns = new Map<string, number>();
   private readonly unitMoveFailures = new Map<string, Map<string, number>>();
   private readonly unitMemories = new Map<string, UnitMemory>();
   /** chunk 观察记忆（frontier 探索）：chunkKey → 最近一次观察 tick。
@@ -398,20 +401,23 @@ export class World {
     }
     for (const [cell, memory] of this.resourceMemory) {
       if (visibleResources.has(cell)) continue;
-      if (memory.state === "visible") {
-        // 视线感知资源失效（ref arena-hero-agent _refresh_resource_memory：
-        // definitely_visible && not in current_resources → 立即失效）：
-        // 格子被任意我方观察者确认可见（Manhattan 半径 + supercover 无遮挡）
-        // 却不在本轮 visibleResources → 资源已被采空 → 直接记 harvested 负记忆
-        // （不进 hints，TTL 后删除），杜绝 worker 跨 30-78 格追空矿
-        // （t4 实证 go_harvest_mem 104 意图仅 12 次成功）。
-        if (this.visionInvalidation && resourceCellCoveredByVision(state, parseCellKey(cell), this.obstacleMemory)) {
-          memory.state = "harvested";
-        } else {
-          // harvested（自采成功）保持负记忆不进 hints，不降级 stale——
-          // 自采空格若 refill 会重新可见，未 refill 说明已耗尽（TTL 后删除）。
-          memory.state = "stale";
-        }
+      if (memory.state === "harvested") continue; // 自采成功/确认耗尽保持负记忆
+      // 视线感知资源失效（ref arena-hero-agent _refresh_resource_memory：
+      // definitely_visible && not in current_resources → 立即失效）：
+      // 格子被任意我方观察者确认可见（Manhattan 半径 + supercover 无遮挡）
+      // 却不在本轮 visibleResources → 资源已被采空 → 直接记 harvested 负记忆
+      // （不进 hints，TTL 后删除），杜绝 worker 跨 30-78 格追空矿
+      // （t4 实证 go_harvest_mem 104 意图仅 12 次成功）。
+      // 2026-08-08 v2 扩展：检查面从 visible 扩到 stale/seeded——被视野确认
+      // 无矿的陈旧种子立即证伪（t2 实证：561 个跨 run 种子永不过期，12 空
+      // worker 反复追死种子、两格乒乓；worker 视野 3×3 覆盖周边死种子却不
+      // 证伪 = 只能逐格推进）。负证据（实地视野确认）优先于陈旧正记忆（测绘
+      // 种子）；refill 后重新可见即恢复（上一循环无条件覆盖为 visible）。
+      if (this.visionInvalidation && resourceCellCoveredByVision(state, parseCellKey(cell), this.obstacleMemory)) {
+        memory.state = "harvested";
+      } else if (memory.state === "visible") {
+        // 未被视野确认（可能藏在障碍后/移远）：visible 降级 stale 保持提示。
+        memory.state = "stale";
       }
     }
 
@@ -699,6 +705,34 @@ export class World {
     return n;
   }
 
+  /** 死矿证伪（2026-08-08，t2 生产实证死种子循环根治）：worker 实地到达记忆矿
+   *  格却发现该格当前不可见/采不到（visible=false 的记忆/seed 矿，格上无实体
+   *  资源）→ 写失败冷却，resourceCandidates 在 failedCooldown 内跳过该格——
+   *  "追一次即证伪"，杜绝 worker 反复被重派到同一死种子（两格乒乓的根因，
+   *  t2 实证 osc=11/11）。与 refill 兼容：矿真的刷新后重新可见，visible 优先
+   *  于失败冷却，证伪只压 stale/seeded 记忆，不拦真矿。 */
+  markResourceFailed(position: Position): void {
+    this.failedCells.set(cellKey(position), this.tick);
+  }
+
+  /** 分级冷却播种（2026-08-08，缺席实证）：survey-db 缺席统计（视野确认无矿
+   *  的负观测）分级注入——高频缺席格（如 t2 561 格中 p90 缺席 1378 次）的
+   *  失败冷却从默认 32 tick 升级到 96/192/384 tick，worker 重启后不再每 32
+   *  tick 白试一次长期死格。可见优先语义不变：矿真刷新且被视野看到立即恢复
+   *  （resourceCandidates 第一分支，冷却不拦真矿）。只覆盖有记录的格，无缺席
+   *  记录的格走默认冷却（零回归）。 */
+  seedFailedCooldownTiers(entries: readonly { position: Position; cooldownTicks: number }[]): number {
+    let n = 0;
+    for (const entry of entries) {
+      const key = cellKey(entry.position);
+      if (!this.extendedFailedCooldowns.has(key)) {
+        this.extendedFailedCooldowns.set(key, entry.cooldownTicks);
+        n += 1;
+      }
+    }
+    return n;
+  }
+
 
   /** 启动播种（2026-08-08，测绘库跨 run 障碍）：把测绘库累积的静态障碍注入
    *  obstacleMemory——障碍是静态地形，重启后导航/路径规划直接准确，无需
@@ -737,10 +771,18 @@ export class World {
     const visible: ResourceMemory[] = [];
     const recent: ResourceMemory[] = [];
     for (const memory of this.resourceMemory.values()) {
+      // 本 Tick 可见 = 实体资源在场（正信号），不受失败冷却压制（2026-08-08：
+      // markResourceFailed 只压 stale/seeded 记忆，refill 后重新可见即恢复）。
+      if (memory.state === "visible") {
+        visible.push(memory);
+        continue;
+      }
       const failedAt = this.failedCells.get(cellKey(memory.cell)) ?? Number.NEGATIVE_INFINITY;
-      if (this.tick - failedAt < failedCooldown) continue;
-      if (memory.state === "visible") visible.push(memory);
-      else if (memory.state === "stale" && (memory.seeded === true || this.tick - memory.lastSeenTick <= maxAge)) recent.push(memory);
+      // 分级冷却（2026-08-08，缺席实证）：该格有缺席统计升级的冷却时长则用之，
+      // 否则走默认冷却——高频缺席格（长期死）不每 32 tick 白试一次。
+      const effectiveCooldown = this.extendedFailedCooldowns.get(cellKey(memory.cell)) ?? failedCooldown;
+      if (this.tick - failedAt < effectiveCooldown) continue;
+      if (memory.state === "stale" && (memory.seeded === true || this.tick - memory.lastSeenTick <= maxAge)) recent.push(memory);
     }
     const compare = (a: ResourceMemory, b: ResourceMemory) =>
       b.lastSeenTick - a.lastSeenTick || a.cell[0] - b.cell[0] || a.cell[1] - b.cell[1];

@@ -37,7 +37,7 @@ import {
 import type { PlanProvider } from "../runtime/decision-types.ts";
 import type { MacroPolicy } from "../runtime/macro-policy.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner, type SafetyPlannerConfig } from "../strategies/safety-planner.ts";
-import { type CoreHuntTarget } from "../domain/world.ts";
+import { World, type CoreHuntTarget } from "../domain/world.ts";
 import type { ThreatProfile } from "../strategies/safety-planner-config.ts";
 import { unitSpawnCosts } from "../domain/pricing.ts";
 import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snapshot.ts";
@@ -592,7 +592,10 @@ export class DeterministicPlanner implements PlanProvider {
   constructor(
     planner: WorkerTaskPlanner = new WorkerTaskPlanner(),
     fallbackPlanner: SafetyPlanner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
-    patrolPlanner: SafetyPlanner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
+    patrolPlanner: SafetyPlanner = new SafetyPlanner(
+      DEFAULT_SAFETY_CONFIG,
+      new World({ visionInvalidation: false }),
+    ),
     vanguardRatio: number | undefined = undefined,
     accumulateThreshold = 0,
     spawnReserve = WORKER_SPAWN_RESERVE,
@@ -658,6 +661,13 @@ export class DeterministicPlanner implements PlanProvider {
    *  重读 survey-db），decide() 并入快照——死矿剔除 + 即将刷新格加成即时生效。 */
   replaceRefillPredictions(predictedTicks: ReadonlyMap<string, number>): void {
     this.refillPredictedTicks = predictedTicks;
+  }
+
+  /** 分级冷却播种（2026-08-08，缺席实证）：透传内部 fallback/patrol 两个 World
+   *  ——缺席统计高频格升级失败冷却，worker 不每 32 tick 白试长期死格。 */
+  seedFailedCooldownTiers(entries: readonly { position: Position; cooldownTicks: number }[]): void {
+    this.fallbackPlanner.world.seedFailedCooldownTiers(entries);
+    this.patrolPlanner.world.seedFailedCooldownTiers(entries);
   }
 
   /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
@@ -750,6 +760,20 @@ export class DeterministicPlanner implements PlanProvider {
       this.surveyBurstUntilTick = input.state.tick + this.missionConfig.surveyBurstTicks;
     }
     this.previousCorePosition = corePosition;
+    // 到达死矿证伪（2026-08-08，t2 生产实证 osc=11/11 乒乓根治）：worker 站立格
+    // 是 invisible 记忆/seed 矿（格上无实体资源）→ 实地勘察证伪该格——写 failedCells
+    // 冷却，resourceCandidates 32 tick 内跳过（"追一次即证伪"）。乒乓断链原理：
+    // worker 到达死种子后被 freeze fix 剔除站立格 → 重排到相邻死种子 → 往返。证伪
+    // 让已到达格不再入池，worker 线性推进逐格证伪，直到候选池只剩可见矿 → 正常
+    // 采集；无可见矿 → 转勘探（alwaysSurvey/surveyOnSupplyGap）。refill 后重新可见
+    // 自然恢复（visible 优先于失败冷却，不拦真矿）。
+    for (const unit of snapshot.units) {
+      if (unit.unitType !== "WORKER") continue;
+      const standingCell = snapshot.resourceCells.get(cellKey(unit.position));
+      if (standingCell !== undefined && standingCell.visible === false) {
+        this.fallbackPlanner.world.markResourceFailed(standingCell.position);
+      }
+    }
     const { assignments } = this.planner.plan(economicSnapshot, this.previousAssignments, {
       surveyBurstActive: input.state.tick <= this.surveyBurstUntilTick,
     });

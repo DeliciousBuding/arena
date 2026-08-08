@@ -22,7 +22,7 @@ import { performance } from "node:perf_hooks";
 
 import { loadRuntimeConfig, resolveCircuitBreaker, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
 import { loadPersistentEnemyIntel } from "./enemy-intel.ts";
-import type { CoreHuntTarget, CoreWatchMemory } from "../domain/world.ts";
+import { World, type CoreHuntTarget, type CoreWatchMemory } from "../domain/world.ts";
 import { loadThreatProfiles, threatProfilesEqual } from "./official-intel.ts";
 import { resolveArenaDataRoot, resolveTenantBaseDir } from "./data-root.ts";
 import { SingleWriterLock } from "./single-writer-lock.ts";
@@ -32,7 +32,7 @@ import { LeaseRegistry } from "../runtime/lease-registry.ts";
 import { runTenantLoop, type TickOutcome } from "../runtime/loop.ts";
 import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../strategies/safety-planner.ts";
 import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
-import { knownChunks, knownCoreHunts, knownObstacles, knownResources, openSurveyDb } from "../intel/survey-db.ts";
+import { knownChunks, knownCoreHunts, knownObstacles, knownResourceAbsenceCounts, knownResourceCooldownTiers, knownResources, openSurveyDb } from "../intel/survey-db.ts";
 import { loadRefillPredictions } from "../intel/refill-predictions.ts";
 import { checkAndMirrorOfficialManual, type OfficialManualMirror, type ReceiptLike } from "../command-plane/official-bridge.ts";
 import { DEFAULT_MISSION_CONFIG } from "../planning/mission-planner.ts";
@@ -543,6 +543,11 @@ export async function runTenant(
     const surveyResourceCells = loadSurveyResourceSeed(dataRoot, config.tenantId);
     const surveyObstacleCells = loadSurveyObstacleSeed(dataRoot, config.tenantId);
     const surveyChunks = loadSurveyChunkSeed(dataRoot, config.tenantId);
+    // 分级冷却（2026-08-08，缺席实证）：survey-db 缺席统计高频格 → 升级失败冷却
+    // （96/192/384 tick），worker 重启后不每 32 tick 白试长期死格。与 seed 死格
+    // 过滤互补：过滤管"启动候选"，分级管"运行期证伪后的重试节奏"。visible 优先
+    // 语义不变（refill 后重新可见立即恢复）。
+    const surveyCooldownTiers = loadSurveyCooldownTiers(dataRoot, config.tenantId);
     // 联盟 no-fire 花名册（2026-08-08，alliance-no-fire-v1）：可变引用对象——
     // 构造时注入 SafetyPlanner，刷新时原子替换引用（World/巡逻/攻坚记忆不丢）。
     // 变体关闭或文件缺失 = 空集合（零回归）；只加载受信 supervisor 聚合产物。
@@ -554,7 +559,10 @@ export async function runTenant(
           : new DeterministicPlanner(
               new WorkerTaskPlanner(),
               new SafetyPlanner(baseSafetyConfig, undefined, undefined, allianceRosterRef),
-              new SafetyPlanner(baseSafetyConfig, undefined, undefined, allianceRosterRef),
+              // patrolPlanner 永远看不到资源格（decide 传空 resourceCells）——关闭
+              // visionInvalidation（2026-08-08 审查修复）：A2 视野证伪对"本轮资源恒空"
+              // 的 patrol world 会把全部 seed 记忆标 harvested 且永远无法恢复。
+              new SafetyPlanner(baseSafetyConfig, new World({ visionInvalidation: false }), undefined, allianceRosterRef),
               deterministicVariantConfig.vanguardRatio,
               deterministicVariantConfig.accumulateThreshold ?? 0,
               deterministicVariantConfig.spawnReserve,
@@ -570,6 +578,11 @@ export async function runTenant(
       if (surveyObstacleCells.length > 0) planner.world.seedObstacleMemory(surveyObstacleCells);
       if (surveyCoreHunts.length > 0) planner.world.seedCoreHuntTargets(surveyCoreHunts);
       if (surveyChunks.length > 0) planner.world.seedChunkMemory(surveyChunks);
+      if (surveyCooldownTiers.length > 0) planner.world.seedFailedCooldownTiers(surveyCooldownTiers);
+    } else if (surveyCooldownTiers.length > 0) {
+      // deterministic 模式：fallback（经济分配）与 patrol（勘探基线）各持独立
+      // World，两个都注入——死格冷却对"分配候选"与"巡逻重试"同时生效。
+      planner.seedFailedCooldownTiers(surveyCooldownTiers);
     }
 
     // 配置热加载（2026-08-08）：重读 config 文件 → schema/变体校验 → 原子替换
@@ -1209,19 +1222,76 @@ export function readDecisionMode(config: TenantRuntimeConfig): DecisionModeName 
 
 /** 跨 run 测绘种子（2026-08-08，survey-db 联动）：从测绘库读最近确认的活跃矿
  *  （state ∈ visible/stale、last_seen 距今 ≤ maxAgeTicks）注入 worker 记忆——
- *  重启后不再从零探索。库缺失/损坏/无矿 = 空数组零回归（不阻塞生产启动）。 */
-function loadSurveyResourceSeed(dataRoot: string, tenantId: string, maxAgeTicks = 20_000): readonly Position[] {
+ *  重启后不再从零探索。库缺失/损坏/无矿 = 空数组零回归（不阻塞生产启动）。
+ *
+ *  死格过滤（2026-08-08，缺席实证）：已知矿格近 absentWindowTicks 内缺席
+ *  （我方视野确认无矿，A15 负观测）次数 ≥ absenceThreshold 的格视为长期死格
+ *  ——官方 refill 是 chunk 级补充（Replenishment may later create a natural
+ *  replacement elsewhere in the chunk），格级缺席往往永久；t2 实证缺席→恢复
+ *  中位 133 tick、561 格中 p90 缺席 1378 次。把这些格从 seed 剔除，worker
+ *  重启后不扑死种子（t2 实证 12 worker 反复追死种子的根因之一）。
+ *  seed 语义只影响"启动时的候选矿"，运行期可见矿 / markResourceFailed 照常。 */
+function loadSurveyResourceSeed(
+  dataRoot: string,
+  tenantId: string,
+  maxAgeTicks = 20_000,
+  absenceThreshold = 512,
+  absentWindowTicks = 20_000,
+): readonly Position[] {
   try {
     const db = openSurveyDb(dataRoot, tenantId, false);
     const rows = knownResources(db, { states: ["visible", "stale"] });
-    db.close();
-    if (rows.length === 0) return [];
+    if (rows.length === 0) {
+      db.close();
+      return [];
+    }
     let maxTick = 0;
     for (const row of rows) if (row.lastSeenTick > maxTick) maxTick = row.lastSeenTick;
     const cutoff = maxTick - maxAgeTicks;
-    return rows
-      .filter((row) => row.lastSeenTick >= cutoff)
+    const active = rows.filter((row) => row.lastSeenTick >= cutoff);
+    if (active.length === rows.length) {
+      db.close();
+      return active.map((row) => [row.x, row.y] as const);
+    }
+    // 死格过滤：缺席 ≥ 阈值的格不注入（只过滤有缺席记录的格，缺表/空表零回归）。
+    const absenceCounts = knownResourceAbsenceCounts(db, maxTick - absentWindowTicks);
+    db.close();
+    return active
+      .filter((row) => (absenceCounts.get(row.cell) ?? 0) < absenceThreshold)
       .map((row) => [row.x, row.y] as const);
+  } catch {
+    return [];
+  }
+}
+
+/** 分级冷却加载（2026-08-08，缺席实证）：survey-db 缺席统计 → per-cell 失败冷却
+ *  分级（cooldownTierForAbsenceCount：≥128 → 96 / ≥512 → 192 / ≥2048 → 384 tick）。
+ *  返回 { position, cooldownTicks }[] 供 World.seedFailedCooldownTiers 注入——
+ *  高频缺席格证伪后冷却更长，worker 不每 32 tick 白试长期死格。可见优先语义
+ *  不变（refill 后重新可见立即恢复，冷却只压 stale/seeded 记忆）。空表 = 零回归。 */
+function loadSurveyCooldownTiers(
+  dataRoot: string,
+  tenantId: string,
+  absentWindowTicks = 20_000,
+): readonly { position: Position; cooldownTicks: number }[] {
+  try {
+    const db = openSurveyDb(dataRoot, tenantId, false);
+    let maxTick = 0;
+    const maxRow = db.prepare("SELECT MAX(tick) AS m FROM resource_absences").get() as { m: number | null } | undefined;
+    if (maxRow !== undefined && typeof maxRow.m === "number") maxTick = maxRow.m;
+    if (maxTick === 0) {
+      db.close();
+      return [];
+    }
+    const tiers = knownResourceCooldownTiers(db, maxTick - absentWindowTicks);
+    db.close();
+    const out: { position: Position; cooldownTicks: number }[] = [];
+    for (const [cell, cooldownTicks] of tiers) {
+      const [x, y] = cell.split(",").map((v) => Number(v));
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      out.push({ position: [x, y] as Position, cooldownTicks });
+    }
+    return out;
   } catch {
     return [];
   }

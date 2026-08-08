@@ -293,11 +293,15 @@ export class WorkerTaskPlanner {
         ? BEACON_BONUS
         : 0;
     const sticky = applyStickyBonus(worker.id, key, previousAssignments, this.stickyBonus);
+    // 分配滞回（2026-08-08，t2 生产实证 planChurn=1.0 根治）：上一 tick 目标格
+    // 仍可采时额外加 switchThreshold——只有新目标净收益显著更高才切换，worker
+    // 路程不浪费、分配跨 tick 稳定。缺省 0 = 零回归（sticky 基础保留）。
+    const hysteresis = applyStickyBonus(worker.id, key, previousAssignments, this.mission.switchThreshold);
     // 使命层值层（Phase 2，G3 数据管道）：矿刷新预测加成（即将刷新格提前占位）。
     const refillBonus = refillBonusOf(key, snapshot.refillPredictions, this.mission);
     return (
       RESOURCE_VALUE - travelTime - returnTime - threatRisk - congestion - stalePenalty
-      + explorationGain + beaconBonus + sticky + refillBonus
+      + explorationGain + beaconBonus + sticky + hysteresis + refillBonus
     );
   }
 }
