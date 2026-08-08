@@ -184,6 +184,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
       // ——t1 生产实证：敌 Core 迁移后军队在旧位置空转、环搜几何近失永不接敌。
       militaryHunt: true,
     }),
+    /**
+     * 人口上限 20→30（2026-08-08 用户裁决，t1 恢复综合扩张）：populationCeiling
+     * 是产兵硬门（deterministic selectDeterministicCoreAction 与 SafetyPlanner
+     * 共用）——t1 pop 25 时 20 上限导致 4500+ tick 零产兵、res 顶到容量上限
+     * （pop×5=120）空转。30 = v0.14 动态定价 k=2 档末（pop 26-30：Vanguard 17/
+     * Ranger 20；31 起 k=3 跳 22+），继续扩张但不过度进入高溢价档。仅 t1 启用。
+     */
+    "population-ceiling-30-v1": Object.freeze({ populationCeiling: 30 }),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要
