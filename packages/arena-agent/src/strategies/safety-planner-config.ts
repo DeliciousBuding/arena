@@ -359,14 +359,6 @@ export interface SafetyPlannerConfig {
    */
   readonly vanguardPreyWorker?: boolean;
   /**
-   * 同 Tick 协同火力（2026-08-08，竞品 projected-damage/overkill 对照）：
-   * SafetyPlanner 按确定性单位顺序维护本 Tick 预计伤害账本；Vanguard SWEEP
-   * 对相邻格全部敌人记 1，Ranger precision SHOOT 对目标记 1。后续 Ranger
-   * 优先转火尚未被预计击杀的敌方 Unit，减少多枪打 1HP 目标的 DPS 浪费。
-   * 敌 Core 因可见模型不含 shield，不做“预计已死”过滤。默认 false 零回归。
-   */
-  readonly coordinatedFire?: boolean;
-  /**
    * 近核入侵观察（2026-08-08，core-threat-watch-v1）：敌单位距我方 Core
    * ≤ coreThreatWatchRadius（Chebyshev 默认 18）即入长 TTL 观察记忆
    * （coreThreatWatchTicks，默认 60）——短 TTL（enemyHints 6 / stationary 12）
@@ -386,6 +378,18 @@ export interface SafetyPlannerConfig {
   readonly coreThreatWatchRadius?: number;
   /** 入侵观察记忆 TTL（tick，默认 60，与 World.CORE_WATCH_TTL 同值）。 */
   readonly coreThreatWatchTicks?: number;
+  /**
+   * 威胁优先产兵（2026-08-08，military-priority-v1）：活跃敌核贴脸
+   * （raid-defense nearbyEnemyCore ≤ raidCoreRadius 24 格）且军事规模未达
+   * 地板（threatMilitaryFloor，默认 4）→ 跳过 worker 积累直接产兵，并用
+   * 低储备（reserveEarly=1）尽早成型——reference guide"敌方进入 Core 防区 →
+   * 守家队优先补齐"（t3 实证：3 活跃敌核 ≤20 格但仅 1 Vanguard，res 11 被
+   * 财富储备 3 卡到 13 才产兵）。默认 false = 历史行为（worker→军事顺序，
+   * 零回归）。
+   */
+  readonly threatMilitaryPriority?: boolean;
+  /** 威胁优先产兵的军事地板（默认 4）：军事规模 < 该值才触发优先产兵。 */
+  readonly threatMilitaryFloor?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
