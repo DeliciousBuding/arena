@@ -1,6 +1,6 @@
 // 保持 JS 语义，全量类型化列为独立迁移项（见 DESIGN.md §7 技术债）。
 /* Arena 指挥面板前端引擎 — 由 React（command-center/web）挂载到地图宿主容器。
- * 由 public/app.js 移植：chrome（顶栏/侧栏/决策流/对话框）剥离到 React 组件，
+ * 由 legacy app.js（2026-08-09 退役删除）移植：chrome（顶栏/侧栏/决策流/对话框）剥离到 React 组件，
  * 地图/战术/回放/覆盖层保持原生 Canvas + DOM。入口 createMapEngine(host)。 */
 import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos, bucketScale, gridStepFor, extendScreen, replayInterp } from './utils.js';
 import { CANVAS_FONT, setCtx, ring, drawMeterBar, drawUnitHealth, drawWorkerCargo, drawCoreOwnerLabel, drawStackBadge } from './canvas.js';
