@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TENANTS, calibrationDir, cellKey, latestRunDir, listCases, parseTick } from "./fs-jsonl.ts";
-import { loadBeaconTrail, loadCoreTrails, type TrailPoint } from "./trails.ts";
+import { loadBeaconTrail, loadCoreTrails, loadCoreTrailsFromSurveyDb, type TrailPoint } from "./trails.ts";
 
 const SURVEY_CASE_LIMIT = 24; // 每个租户累积测绘最多取最近 N 个 case（覆盖与新鲜度平衡）
 
@@ -158,7 +158,9 @@ function loadMergedMapInner(): MergedMap {
   // 敌方核心轨迹（跨租户按 username 去重，保留最长轨迹——同一敌核被多租户目击）
   const coreTrailByUser = new Map<string, { username: string; trail: TrailPoint[]; tenant: string }>();
   for (const t of perTenant) {
-    for (const ct of loadCoreTrails(t.tenant)) {
+    // survey-db core_hunts 全量历史优先（A9，敌核目击稀疏时不空），
+    // case 扫描（最近 N run）作补充；长轨迹胜。
+    for (const ct of [...loadCoreTrailsFromSurveyDb(t.tenant), ...loadCoreTrails(t.tenant)]) {
       const cur = coreTrailByUser.get(ct.username);
       if (!cur || ct.trail.length > cur.trail.length) coreTrailByUser.set(ct.username, { ...ct, tenant: t.tenant });
     }
