@@ -1,8 +1,9 @@
 /**
- * refill 敏感性实验（2026-08-08）：
- * 官方 refill 是 server-secret（文档仅知每 4 tick 再生），模拟器默认不伪装。
+ * refill 敏感性实验（2026-08-08，M4-1 更新）：
+ * 官方 refill 每 4 tick 按 32×32 chunk 配额补自然点（placement seed 是
+ * server-secret）；模拟器实现自洽确定性 chunk-quota 空槽模型（行为等价）。
  * 本脚本量化"资源再生节奏"对胜率/资源曲线的影响：
- *   档位：关（null）/ 65（现状基准）/ 16 / 4（官方 cadence）
+ *   档位：关（null）/ 65（压力测试档）/ 16 / 4（官方 cadence）
  * 每档 8 seeds × 200 ticks vs arena_farmer；seed1 每档落盘对局记录。
  *
  * 用法：cd packages/arena-agent && npx tsx scripts/refill-sensitivity.mts
@@ -95,4 +96,4 @@ for (const tier of TIERS) {
 }
 console.log("-".repeat(100));
 console.log(`落盘记录（seed1/档）：${RECORD_ROOT}`);
-console.log("说明：refill=关时矿采空即枯竭；4(官方) 为官方文档 cadence（精确规则仍为 server-secret，模拟为近似原格补回）。");
+console.log("说明：refill=关时矿采空即枯竭；4(官方) 为官方 cadence——chunk-quota 空槽模型（确定性随机空槽，行为等价；placement seed 自洽，非官方 seed）。");
