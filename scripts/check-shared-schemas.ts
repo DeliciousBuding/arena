@@ -305,15 +305,19 @@ async function validateOptionalLiveSamples(validator) {
   return boundedSamplePaths.length;
 }
 
-await verifyBundledSharedDataMirror();
-const validator = createValidator();
-const sharedSchemaCount = await registerSharedSchemas(validator);
-const sharedFixtureCount = await validateSharedFixtures(validator);
-const typeScriptFixtureCount = await validateTypeScriptCalibrationFixtures(validator);
-await verifyCalibrationSchemaCopy();
-const liveSampleCount = await validateOptionalLiveSamples(validator);
+async function main() {
+  await verifyBundledSharedDataMirror();
+  const validator = createValidator();
+  const sharedSchemaCount = await registerSharedSchemas(validator);
+  const sharedFixtureCount = await validateSharedFixtures(validator);
+  const typeScriptFixtureCount = await validateTypeScriptCalibrationFixtures(validator);
+  await verifyCalibrationSchemaCopy();
+  const liveSampleCount = await validateOptionalLiveSamples(validator);
 
 console.log(
-  `shared schema check passed: ${sharedSchemaCount} schemas, ${sharedFixtureCount} shared fixtures, `
-    + `${typeScriptFixtureCount} TypeScript calibration fixtures, ${liveSampleCount} live samples`,
+    `shared schema check passed: ${sharedSchemaCount} schemas, ${sharedFixtureCount} shared fixtures, `
+      + `${typeScriptFixtureCount} TypeScript calibration fixtures, ${liveSampleCount} live samples`,
 );
+}
+
+void main().catch((error) => { console.error(error); process.exitCode = 1; });

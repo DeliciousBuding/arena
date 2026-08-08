@@ -78,6 +78,7 @@ export interface MineUtilizationPayload {
 }
 
 const cache = new TtlCache<MineUtilizationPayload>(TTL_MS);
+const trendCache = new TtlCache<MineUtilizationTrendPayload>(TTL_MS);
 
 function num(v: unknown): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -172,6 +173,74 @@ export function aggregateMineUtilization(
   };
 }
 
+export interface MineTrendStep {
+  /** 0=最早，steps-1=最新。 */
+  index: number;
+  /** 窗口结束 tick。 */
+  endTick: number;
+  total: number;
+  /** 该窗口可见矿（firstSeen<=endTick 且 lastSeen>=endTick-FRESH，累计 last_seen 近似）。 */
+  visible: number;
+  /** 可见且到 endTick 仍从未采集（发现-利用缺口趋势）。 */
+  visibleNever: number;
+}
+
+export interface MineUtilizationTrendPayload {
+  generatedAt: string;
+  tenant: string;
+  window: number;
+  steps: number;
+  currentTick: number | null;
+  trend: MineTrendStep[];
+  cachedAt: string;
+}
+
+/** 矿利用趋势（2026-08-08，共享记忆）：把 resource_events 首次采集 tick + resources
+ *  累计 first/last_seen 切成 N 窗口，算每窗口"可见未开采"数——看发现-利用缺口
+ *  在扩大还是缩小。近似：last_seen 是累计最大值，历史窗口可见性略偏高，近期窗口准确；
+ *  趋势形状（是否恶化）可用。纯函数可测。 */
+export function aggregateMineUtilizationTrend(
+  tenant: string,
+  window: number,
+  steps: number,
+  resources: readonly { cell: string; firstSeenTick: number; lastSeenTick: number }[],
+  harvestEvents: readonly { cell: string; tick: number; eventType: string }[],
+  currentTick: number | null,
+): MineUtilizationTrendPayload {
+  const firstHarvest = new Map<string, number>();
+  for (const ev of harvestEvents) {
+    if (ev.eventType !== "HARVEST_SUCCEEDED") continue;
+    const t = num(ev.tick);
+    const prev = firstHarvest.get(ev.cell);
+    if (prev === undefined || t < prev) firstHarvest.set(ev.cell, t);
+  }
+  const base = currentTick ?? 0;
+  const trend: MineTrendStep[] = [];
+  for (let i = 0; i < steps; i += 1) {
+    const endTick = base - (steps - 1 - i) * window;
+    let total = 0, visible = 0, visibleNever = 0;
+    const cutoff = endTick - FRESH_TICKS;
+    for (const r of resources) {
+      total += 1;
+      if (num(r.firstSeenTick) <= endTick && num(r.lastSeenTick) >= cutoff) {
+        visible += 1;
+        const fh = firstHarvest.get(r.cell);
+        if (fh === undefined || fh > endTick) visibleNever += 1;
+      }
+    }
+    trend.push({ index: i, endTick, total, visible, visibleNever });
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    tenant,
+    window,
+    steps,
+    currentTick,
+    trend,
+    cachedAt: new Date().toISOString(),
+  };
+}
+
 function tenantUtilization(tenant: string): MineTenantUtilization {
   const file = join(DATA_ROOT, "runtime", "survey", tenant + ".db");
   const empty: MineTenantUtilization = {
@@ -218,6 +287,47 @@ export function loadMineUtilization(tenant = "all"): MineUtilizationPayload {
   };
   cache.set(key, payload);
   return payload;
+}
+
+/** 矿利用趋势（只读 survey-db）：单租户 N 窗口；缓存 30s + 启动预热。 */
+export function loadMineUtilizationTrend(tenant: string, window = 2000, steps = 6): MineUtilizationTrendPayload {
+  const key = `mine-trend:${tenant}:${window}:${steps}`;
+  const hit = trendCache.get(key);
+  if (hit !== undefined) return hit;
+  const file = join(DATA_ROOT, "runtime", "survey", tenant + ".db");
+  const empty: MineUtilizationTrendPayload = {
+    generatedAt: new Date().toISOString(), tenant, window, steps, currentTick: null, trend: [], cachedAt: new Date().toISOString(),
+  };
+  if (!existsSync(file)) return empty;
+  let db: DatabaseSync;
+  try { db = new DatabaseSync(file, { readOnly: true }); } catch { return empty; }
+  try {
+    const meta = db.prepare("SELECT MAX(last_tick) AS m FROM sync_meta").get() as { m: number | null };
+    const currentTick = num(meta?.m) || null;
+    const resources = db.prepare(
+      "SELECT cell, first_seen_tick AS f, last_seen_tick AS l FROM resources",
+    ).all() as Array<{ cell: string; f: number; l: number }>;
+    const events = db.prepare(
+      "SELECT cell, tick, event_type AS e FROM resource_events",
+    ).all() as Array<{ cell: string; tick: number; e: string }>;
+    const payload = aggregateMineUtilizationTrend(
+      tenant, window, steps,
+      resources.map((r) => ({ cell: r.cell, firstSeenTick: num(r.f), lastSeenTick: num(r.l) })),
+      events.map((e) => ({ cell: e.cell, tick: num(e.tick), eventType: e.e })),
+      currentTick,
+    );
+    trendCache.set(key, payload);
+    return payload;
+  } catch {
+    return empty;
+  } finally {
+    db.close();
+  }
+}
+
+/** 启动预热一次（不进周期循环；过期后请求惰性刷新）。 */
+export function warmMineUtilizationTrend(): void {
+  for (const t of TENANTS) loadMineUtilizationTrend(t);
 }
 
 /** 启动预热一次（不进周期循环；过期后请求惰性刷新）。 */

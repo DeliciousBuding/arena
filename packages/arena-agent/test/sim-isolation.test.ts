@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, "..");
 const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
-const CHECKER = join(PKG_ROOT, "scripts", "check-sim-isolation.mjs");
+const CHECKER = join(PKG_ROOT, "scripts", "check-sim-isolation.ts");
 // 默认规则版本已切 v0.14：隔离/路径策略用例用 v0.14 标注场景走默认路径。
 const SCENARIO = join(PKG_ROOT, "test", "fixtures", "sim", "scenario-basic-v0.14.json");
 const TEST_DATA_ROOT = mkdtempSync(join(tmpdir(), "arena-sim-isolation-data-"));
