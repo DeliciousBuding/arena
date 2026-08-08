@@ -9,6 +9,7 @@
  *   arena-ctl cancel  <tenant> [--intent id]      —— 取消意图，交还 agent
  *   arena-ctl audit   <tenant> [--limit n]        —— 命令审计流水
  *   arena-ctl band    <tenant> [--center x,y] [--radius n]  —— 矿刷新频率矿带（迁核选点）
+ *   arena-ctl mine-watch <tenant> [--max n]             —— 矿刷新预测（即将刷新格，部署 worker 用）
  *
  * 全部输出 JSON（AI 可解析）。护栏数据不可读 → fail-closed 拒绝。
  * 用法：cd packages/arena-agent && npx tsx scripts/arena-ctl.mts <cmd> ...
@@ -171,6 +172,66 @@ function analyzeResourceBands(
       totalCells: byCell.size,
       bandCells: sorted.length,
       top: sorted.slice(0, 25),
+    };
+  } catch (e) {
+    try { db.close(); } catch {}
+    return { ok: false, error: String(e) };
+  }
+}
+
+/** 矿刷新预测（mine-watch）：resource_seen_history → 每格出现窗口 → gap →
+ *  预计下次刷新 tick + dueInTicks。AI 据此部署 worker 提前就位（视野无矿时的
+ *  资源获取优化，2026-08-08 t2/t3/t4 视野 0 矿 harvest=0 实证）。 */
+function analyzeMineWatch(tenant: string, maxCells: number): Record<string, unknown> {
+  const db = surveyDb(tenant);
+  if (!db) return { ok: false, error: "survey 库不可读" };
+  try {
+    const snap = readSnapshot(tenant);
+    const currentTick = snap?.tick ?? 0;
+    const corePos = snap?.core?.position ?? null;
+    const hist = db.prepare(
+      "SELECT cell, tick FROM resource_seen_history ORDER BY tick",
+    ).all() as { cell: string; tick: number }[];
+    if (hist.length === 0) return { ok: false, error: "resource_seen_history 空" };
+    const GAP_TICKS = 5; // 同窗口容忍
+    const byCell = new Map<string, number[]>();
+    for (const h of hist) {
+      const arr = byCell.get(h.cell) ?? [];
+      arr.push(Number(h.tick));
+      byCell.set(h.cell, arr);
+    }
+    const cells: Record<string, unknown>[] = [];
+    for (const [cell, ticks] of byCell) {
+      ticks.sort((a, b) => a - b);
+      // 出现窗口：连续 tick 段
+      const windows: [number, number][] = [];
+      let start = ticks[0], end = ticks[0];
+      for (const t of ticks.slice(1)) {
+        if (t - end > GAP_TICKS) { windows.push([start, end]); start = t; }
+        end = t;
+      }
+      windows.push([start, end]);
+      if (windows.length < 2) continue; // 无刷新周期样本
+      const gaps: number[] = [];
+      for (let i = 1; i < windows.length; i += 1) gaps.push(windows[i][0] - windows[i - 1][0]);
+      const avgGap = Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length);
+      const lastSeen = windows[windows.length - 1][1];
+      const dueIn = avgGap - (currentTick - lastSeen);
+      const [x, y] = cell.split(",").map(Number);
+      const distCore = corePos ? Math.max(Math.abs(x - corePos[0]), Math.abs(y - corePos[1])) : null;
+      cells.push({ cell, x, y, windows: windows.length, avgGapTicks: avgGap, lastSeenTick: lastSeen, dueInTicks: dueIn, distCore });
+    }
+    cells.sort((a, b) => (a.dueInTicks as number) - (b.dueInTicks as number));
+    const upcoming = cells.filter((c) => (c.dueInTicks as number) > 0 && (c.dueInTicks as number) <= 300);
+    const overdue = cells.filter((c) => (c.dueInTicks as number) <= 0);
+    return {
+      ok: true,
+      tenant,
+      currentTick,
+      core: corePos,
+      upcomingSoon: upcoming.slice(0, maxCells),
+      overdueCandidates: overdue.slice(0, maxCells),
+      totalCells: cells.length,
     };
   } catch (e) {
     try { db.close(); } catch {}
@@ -390,6 +451,11 @@ async function main(): Promise<void> {
       break;
     }
     case "cancel": cmdCancel(tenant, getArg(rest, "--intent")); break;
+    case "mine-watch": {
+      const maxCells = Number(getArg(rest, "--max") ?? 15);
+      console.log(JSON.stringify(analyzeMineWatch(tenant, maxCells), null, 2));
+      break;
+    }
     case "band": {
       const center = parseTarget(getArg(rest, "--center")) ?? [0, 0];
       const radius = Number(getArg(rest, "--radius") ?? 150);
