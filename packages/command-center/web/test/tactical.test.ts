@@ -8,6 +8,7 @@ import {
   tactUnitCost, tactCoreCapacity, intentLabelCn,
   tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets,
   tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability,
+  TACT_ACTION_CN, TACT_ACTION_ICON,
 } from "../src/engine/tactical.ts";
 
 const mkWorld = (objects: any[]): any => ({ state: { objects } });
@@ -173,4 +174,14 @@ test("tact-availability: 核心信标拾取/放置 + 移动中受限", () => {
   assert.equal(av3.actions.PICKUP_BEACON, false);
   assert.equal(av3.actions.DROP_BEACON, false);
   assert.equal(av3.spawns.WORKER, false);
+});
+
+test("action-icon: 图标密集覆盖所有动作且非空（与右键/批量/动作卡共用）", () => {
+  for (const [k, cn] of Object.entries(TACT_ACTION_CN)) {
+    assert.ok(TACT_ACTION_ICON[k] !== undefined && TACT_ACTION_ICON[k] !== "", `${k}(${cn}) 缺图标`);
+  }
+  // 反向：图标表不应含未知动作（防乱定义）
+  for (const k of Object.keys(TACT_ACTION_ICON)) {
+    assert.ok(TACT_ACTION_CN[k] !== undefined, `图标表含未知动作 ${k}`);
+  }
 });
