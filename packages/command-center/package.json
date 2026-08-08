@@ -6,14 +6,14 @@
   "description": "Arena 本地指挥面板：4 租户全局测绘地图 + 资源展示 + 实时决策流（只读，Hono + TypeScript）",
   "scripts": {
     "start": "node server.ts",
-    "start:cc": "node scripts/start-cc.mjs",
-    "start:cc:bg": "node scripts/start-cc.mjs --hidden",
-    "stop:cc": "node scripts/start-cc.mjs --stop",
+    "start:cc": "node scripts/start-cc.ts",
+    "start:cc:bg": "node scripts/start-cc.ts --hidden",
+    "stop:cc": "node scripts/start-cc.ts --stop",
     "check": "tsc --noEmit",
     "check:all": "npm run check && npm run check:alliance-sync && npm --prefix web run typecheck && npm --prefix web run build",
     "test:regression": "npm --prefix web run test:regression",
     "test:unit": "node --test --test-force-exit \"test/*.test.ts\"",
-    "check:alliance-sync": "node scripts/check-alliance-sync.mjs"
+    "check:alliance-sync": "node scripts/check-alliance-sync.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",

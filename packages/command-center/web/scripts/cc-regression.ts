@@ -1,3 +1,5 @@
+// @ts-nocheck — Playwright e2e 黑盒回归脚本（2026-08-08 迁移自 .mjs）：断言以运行时 DOM/API 校验为主，
+// 类型由 Playwright 运行时保证；生产代码类型检查见 src/lib。
 /**
  * 指挥面板 Playwright 回归脚本（2026-08-08）——统一验证入口，替代 tmp/cc-*.cjs 散件。
  *

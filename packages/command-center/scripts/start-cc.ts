@@ -26,7 +26,7 @@ const stop = process.argv.includes("--stop");
 function stamp() { return new Date().toISOString().replace("T", " ").slice(0, 19); }
 
 /** 端口占用预检：GET /api/overview 200 即认为已有实例在服务。 */
-async function portBusy(port) {
+async function portBusy(port: string) {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 600);
@@ -50,7 +50,7 @@ if (stop) {
   process.exit(0);
 }
 
-const env = { ...process.env, COMMAND_CENTER_PORT: PORT };
+const env: NodeJS.ProcessEnv = { ...process.env, COMMAND_CENTER_PORT: PORT };
 // 显式注入共享数据根：command-center/.. = packages, /.. = arena-ts, /.. = 协调根，
 // + data —— 在 main 工作树与 .worktrees 下均解析到同一份协调根 data/。
 env.ARENA_DATA_ROOT = process.env.ARENA_DATA_ROOT ?? resolve(join(CC, "..", "..", "..", "data"));
@@ -70,7 +70,7 @@ if (hidden) {
   // 冷启动预热期可能 >800ms 才响应——2026-08-08 放宽为轮询，消除误报）。
   setTimeout(async () => {
     let alive = true;
-    try { process.kill(child.pid, 0); } catch { alive = false; }
+    try { if (child.pid !== undefined) process.kill(child.pid, 0); } catch { alive = false; }
     let ok = false;
     for (let i = 0; i < 10 && alive; i += 1) {
       if (await portBusy(PORT)) { ok = true; break; }
@@ -90,7 +90,7 @@ if (hidden) {
   const child = spawn(process.execPath, [SERVER], {
     cwd: CC, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: false,
   });
-  const tee = (stream, sink) => stream.on("data", (d) => {
+  const tee = (stream: NodeJS.ReadableStream, sink: NodeJS.WriteStream) => stream.on("data", (d: Buffer) => {
     try { sink.write(d); appendFileSync(LOG, `[${stamp()}] ${d}`); } catch { /* 忽略 */ }
   });
   tee(child.stdout, process.stdout);
