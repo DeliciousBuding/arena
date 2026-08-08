@@ -2,6 +2,7 @@
   "name": "arena",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Arena Hero TS-only safe autonomous runtime and simulator",
   "scripts": {
     "check": "pnpm -r --if-present run check",
@@ -15,6 +16,7 @@
     "node": ">=24.0.0"
   },
   "devDependencies": {
+    "@types/node": "^24.0.0",
     "ajv": "^8.20.0",
     "tsx": "^4.23.4"
   },
