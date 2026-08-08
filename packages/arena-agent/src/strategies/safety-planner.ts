@@ -1522,7 +1522,17 @@ export class SafetyPlanner {
           }
         }
       }
-      const direction = stepToward(unit.position, target, movementObstacles);
+      // 巡逻不穿核心格（2026-08-08，t3 振荡修复）：空载 worker 去巡逻点时若
+      // 目标在核心对侧，stepToward 第一步会穿回核心格（生产格）→ 与
+      // worker_clear_core_empty 交替振荡（t3 实证 pop 冻结 1、res 恒 5、
+      // emergency_spawn_worker/worker_clear_core_empty 每 tick 互切 100+ tick）。
+      // 去巡逻点（target !== home）且非满载时把核心格临时视为禁入——BFS 自动
+      // 绕行，不再穿核心格。满载回核心卸货走 cargo 分支（不经此处），不受影响。
+      const patrolObstacles =
+        home !== null && target !== home && (unit.cargo ?? 0) === 0
+          ? new Set(movementObstacles).add(cellKey(home))
+          : movementObstacles;
+      const direction = stepToward(unit.position, target, patrolObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "patrol");
     }
   }
