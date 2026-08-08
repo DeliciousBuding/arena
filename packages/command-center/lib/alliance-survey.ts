@@ -8,6 +8,7 @@
 import { TENANTS } from "./fs-jsonl.ts";
 import { loadTenantSurveyCached } from "./survey-cache.ts";
 import { TtlCache } from "./cache.ts";
+import { loadArbitrations } from "./arbitration.ts";
 
 /** 租户区分色（前端地图/卡片/树目录共用；与 DESIGN.md 统一：t1 蓝 / t2 绿 / t3 紫 / t4 红 muted）。 */
 export const TENANT_COLORS: Record<string, string> = {
@@ -60,6 +61,7 @@ const allianceSurveyCache = new TtlCache<AllianceSurveyPayload>(ALLIANCE_SURVEY_
 export function loadAllianceSurvey(): AllianceSurveyPayload {
   const hit = allianceSurveyCache.get("all");
   if (hit !== undefined) return hit;
+  const arbitrations = loadArbitrations();
   const colors = { ...TENANT_COLORS };
   const tenantSummaries: Record<string, TenantSummary> = {};
   const enemyCores: Array<Record<string, unknown>> = [];
@@ -106,14 +108,25 @@ export function loadAllianceSurvey(): AllianceSurveyPayload {
     })[0];
   // 共识矿视图（去重归一化）：单租户原样 + observers；多租户重叠
   // 按仲裁取 winner 为代表，observers 列全部观测租户，consensus=观测数。
+  // 人工仲裁覆盖（2026-08-08，冲突闭环）：同格存在人类指定 winner → 以覆盖者
+  //  为代表（arbitrated 标记），否则自动仲裁（lastSeen 最新者胜）。
+  const arbitratedWinner = (rows: Array<Record<string, unknown>>): { winner: Record<string, unknown>; arbitrated: boolean } => {
+    const auto = pickResourceWinner(rows);
+    const arb = arbitrations.get(`${String(auto.x ?? "")},${String(auto.y ?? "")}`);
+    if (arb?.winnerTenant) {
+      const override = rows.find((r) => String(r.tenant) === arb.winnerTenant);
+      if (override) return { winner: override, arbitrated: true };
+    }
+    return { winner: auto, arbitrated: false };
+  };
   const consensusResources: Array<Record<string, unknown>> = [...resByCell.entries()]
     .map(([, rows]): Record<string, unknown> => {
       if (rows.length === 1) {
         const single = rows[0];
         return { ...single, observers: [single.tenant], consensus: 1 };
       }
-      const winner = pickResourceWinner(rows);
-      return { ...winner, observers: rows.map((r) => r.tenant), consensus: rows.length };
+      const { winner, arbitrated } = arbitratedWinner(rows);
+      return { ...winner, observers: rows.map((r) => r.tenant), consensus: rows.length, arbitrated };
     })
     .sort((a, b) => Number(a.x ?? 0) - Number(b.x ?? 0) || Number(a.y ?? 0) - Number(b.y ?? 0));
   // 共识核心（同 owner 多租户目击合并，取最新位置 + observers）
@@ -154,22 +167,28 @@ export function loadAllianceSurvey(): AllianceSurveyPayload {
   const resourceOverlaps = [...resByCell.entries()]
     .filter(([, rows]) => rows.length > 1)
     .map(([cell, rows]) => {
-      const winner = pickResourceWinner(rows);
+      const arb = arbitrations.get(cell);
+      const auto = pickResourceWinner(rows);
+      const winner = arb?.winnerTenant ? (rows.find((r) => String(r.tenant) === arb.winnerTenant) ?? auto) : auto;
       const losers = rows.filter((r) => r !== winner).map((r) => r.tenant);
       const tieBroken = rows.every((r) => Number(r.tick) === Number(winner.tick));
+      const arbitrated = arb?.winnerTenant !== undefined && arb?.winnerTenant !== null;
       return {
         cell,
         tenants: rows.map((r) => r.tenant),
         states: rows.map((r) => r.state),
         lastSeenTicks: rows.map((r) => r.tick),
-        // 共享测绘仲裁建议：winner 占矿，losers 该格作负记忆
+        // 共享测绘仲裁建议：winner 占矿，losers 该格作负记忆（人工覆盖优先）
         arbitration: {
           winner: String(winner.tenant),
           losers,
           tieBroken,
-          reason: tieBroken
-            ? `同 tick 平局，租户序 ${String(winner.tenant)} 胜`
-            : `lastSeen ${String(winner.tick)} 最新，${String(winner.tenant)} 占矿`,
+          arbitrated,
+          reason: arbitrated
+            ? `人工仲裁：${String(arb?.winnerTenant)} 占矿${arb?.note ? `（${arb.note}）` : ""}`
+            : tieBroken
+              ? `同 tick 平局，租户序 ${String(winner.tenant)} 胜`
+              : `lastSeen ${String(winner.tick)} 最新，${String(winner.tenant)} 占矿`,
         },
       };
     })
@@ -214,5 +233,7 @@ export function loadAllianceSurvey(): AllianceSurveyPayload {
 
 /** 后台预热（启动时调用，与 intel/survey 缓存一致，前端首开即命中）。 */
 export function refreshAllianceSurvey(): void {
+  // 先失效缓存再重载——仲裁/写入口后立即生效（2026-08-08，冲突闭环）。
+  allianceSurveyCache.invalidate();
   loadAllianceSurvey();
 }

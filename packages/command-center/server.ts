@@ -37,6 +37,7 @@ import { loadLeaderboardIntel, loadOurUsernames, maybeRefreshLeaderboardLazy, re
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
 import { shopProducts, shopCookie, shopMe, shopOrders, shopOrder } from "./lib/shop.ts";
 import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/redeem-log.ts";
+import { appendArbitration, clearArbitration, listArbitrations } from "./lib/arbitration.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -199,6 +200,29 @@ app.get("/api/alliance/survey", (c) => {
     consensusChunks: full.consensusChunks,
     cachedAt: full.cachedAt,
   });
+});
+// 共享测绘人工仲裁（2026-08-08，冲突闭环）：人类覆盖同格矿默认仲裁
+// （lastSeen 最新者胜）——落盘 arbitration.jsonl（不写 survey-db），
+// 写后失效聚合缓存立即生效；GET 列当前生效仲裁。
+app.get("/api/alliance/survey/arbitrations", (c) => c.json({ generatedAt: new Date().toISOString(), arbitrations: listArbitrations() }));
+app.post("/api/alliance/survey/arbitrate", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const cell = String(body?.cell ?? "").trim();
+  const winnerTenant = String(body?.winnerTenant ?? "").trim();
+  if (!cell || !TENANTS.includes(winnerTenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法参数：cell 必填（x,y）+ winnerTenant ∈ t1..t4" }, 400);
+  }
+  appendArbitration({ cell, winnerTenant, note: String(body?.note ?? ""), createdAt: new Date().toISOString() });
+  refreshAllianceSurvey();
+  return c.json({ ok: true, cell, winnerTenant, arbitrations: listArbitrations() });
+});
+app.post("/api/alliance/survey/arbitrate/clear", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const cell = String(body?.cell ?? "").trim();
+  if (!cell) return c.json({ error: "cell 必填（x,y）" }, 400);
+  clearArbitration(cell);
+  refreshAllianceSurvey();
+  return c.json({ ok: true, cell, arbitrations: listArbitrations() });
 });
 app.get("/api/alliance/snapshot", (c) => {
   // 联盟态势快照（2026-08-08）：canonical 联盟域模型 + survey-db 敌核 +
