@@ -67,12 +67,12 @@ function ensureAtmosphere(w: number, h: number) {
 /** 星点氛围层（draw 顶部，内容之下）。 */
 export function renderStars(deps: EnvRenderDeps, w: number, h: number): void {
   ensureAtmosphere(w, h);
-  deps.getCtx()?.drawImage(bgStars.canvas, 0, 0, w, h);
+  if (bgStars.canvas) deps.getCtx()?.drawImage(bgStars.canvas, 0, 0, w, h);
 }
 /** 暗角层（draw 末尾，内容之上，收拢视觉焦点）。 */
 export function renderVignette(deps: EnvRenderDeps, w: number, h: number): void {
   ensureAtmosphere(w, h);
-  deps.getCtx()?.drawImage(bgVignette.canvas, 0, 0, w, h);
+  if (bgVignette.canvas) deps.getCtx()?.drawImage(bgVignette.canvas, 0, 0, w, h);
 }
 
 /** 背景坐标系网格：细格 + 粗格 + 坐标轴（x=0/y=0）。

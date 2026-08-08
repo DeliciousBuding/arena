@@ -378,7 +378,11 @@ function CommandStatusPanel() {
                 {n === 0 ? <span className="dim">—</span> : null}
               </span>
               <button type="button" className="btn cmd-clear" title={`清空 ${t.toUpperCase()} 人类指令`} disabled={n === 0}
-                onClick={async () => { await ccPostJson("/api/command/clear", { tenant: t }); setTimeout(() => window.location.reload(), 300); }}>清空</button>
+                onClick={async () => {
+                  if (!window.confirm(`确认清空 ${t.toUpperCase()} 全部人类指令（${n} 条）并交还该租户 agent 全权？`)) return;
+                  await ccPostJson("/api/command/clear", { tenant: t });
+                  setTimeout(() => window.location.reload(), 300);
+                }}>清空</button>
             </li>
           );
         })}
