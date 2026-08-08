@@ -19,6 +19,7 @@ import { loadDecisionTrend } from "./decision-audit.ts";
 import { loadMineUtilizationTrend } from "./mine-utilization.ts";
 import { loadMiningEffectiveness, type MiningEffectivenessPayload } from "./mining-effectiveness.ts";
 import { loadAlignmentAudit, type AlignmentPayload } from "./alignment-audit.ts";
+import { loadMinePatterns, type MinePatternsPayload } from "./mine-patterns.ts";
 
 const TTL_MS = 30_000;
 
@@ -51,6 +52,8 @@ export interface TenantAuditOverview {
     topCandidates: Array<{ cell: string; x: number; y: number }>;
     /** 可见未开采矿发现后仍未采的最长时长（tick，2026-08-08）。 */
     maxGapAgeTicks: number | null;
+    /** 失联矿数（2026-08-08）：预测该刷新却未再出现的矿（dueInTicks < 0）——疑似采空/失联，需复测。 */
+    overdueRefills: number;
   } | null;
   exploration: { exploredChunks: number | null; lastSeenTick: number | null } | null;
   pipeline: { lagTicks: number | null; healthy: boolean } | null;
@@ -112,12 +115,21 @@ export function aggregateAuditOverview(
   mining: AllianceMiningPayload | null = null,
   miningEff: MiningEffectivenessPayload | null = null,
   alignment: AlignmentPayload | null = null,
+  patterns: MinePatternsPayload | null = null,
   trends: Record<string, { coreDelta: number; coreDeltaPrev: number; visibleNever: number; visibleNeverPrev: number; stallRate: number | null }> = {},
 ): AuditOverviewPayload {
   const tenants: Record<string, TenantAuditOverview> = {};
   let maxLag: number | null = null;
   let totalNever = 0, totalVisibleNever = 0, totalUnits = 0, totalCoreDelta = 0;
 
+  const overdueRefillsByTenant: Record<string, number> = {};
+  for (const t of TENANTS) {
+    let n = 0;
+    for (const p of patterns?.tenants?.[t]?.predictions ?? []) {
+      if (typeof p.dueInTicks === "number" && p.dueInTicks < 0) n += 1;
+    }
+    overdueRefillsByTenant[t] = n;
+  }
   const pipelineByTenant = new Map<string, { lagTicks: number | null; healthy: boolean }>();
   for (const t of pipeline?.tenants ?? []) {
     pipelineByTenant.set(t.tenant, { lagTicks: num(t.lagTicks) || null, healthy: t.health === "OK" });
@@ -169,6 +181,7 @@ export function aggregateAuditOverview(
         utilizationRate: mu.utilizationRate,
         topCandidates: mu.candidates.slice(0, 5).map((c) => ({ cell: c.cell, x: c.x, y: c.y })),
         maxGapAgeTicks: mu.maxGapAgeTicks ?? null,
+        overdueRefills: num(overdueRefillsByTenant[t]),
       } : null,
       exploration: explorationByTenant.get(t) ?? null,
       pipeline: pipelineByTenant.get(t) ?? null,
@@ -246,7 +259,7 @@ export function loadAuditOverview(): AuditOverviewPayload {
       };
     } catch { /* 趋势不可用跳过 */ }
   }
-  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts, mining, miningEff, loadAlignmentAudit(), trends);
+  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts, mining, miningEff, loadAlignmentAudit(), loadMinePatterns("all"), trends);
   cache.set("overview", payload);
   return payload;
 }
