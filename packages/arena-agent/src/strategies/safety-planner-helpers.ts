@@ -218,25 +218,26 @@ export function nearestEnemy(enemies: readonly VisibleEntity[], position: Positi
  *  修复：旧评分只取 minEnemyDistance，退向"离最近敌最远"的方向可能冲进
  *  另一敌的射程（Ranger 3 格直线）。 */
 const RANGER_SHOOT_RANGE = 3;
-const VANGUARD_SWEEP_RANGE = 1;
 
 /** 竞品投影伤害（rule-correct）：敌当前格可对候选格发动的合法攻击——
- *  Vanguard 仅邻格（Chebyshev 1，SWEEP）；Ranger 八方向直线 ≤3 且中间格
- *  无障碍（SHOOT，lineBlocked）。旧实现用 Manhattan ≤ range 代理：把
- *  (2,1) 非法线算 1 伤、无视障碍遮挡（2026-08-07 C6 对齐）。 */
+ *  Vanguard 仅卡向邻格（Manhattan 1，SWEEP 方向枚举只有四向，对角不可扫）；
+ *  Ranger 八方向直线 ≤3 且中间格无障碍（SHOOT，lineBlocked）。旧实现用
+ *  Manhattan ≤ range 代理：把 (2,1) 非法线算 1 伤、无视障碍遮挡
+ *  （2026-08-07 C6 对齐）。 */
 function projectedDamageAt(
   target: Position,
   enemy: VisibleEntity,
   obstacles: ReadonlySet<string>,
 ): number {
   if (enemy.kind === "CORE") return 0;
-  const distance = chebyshev(target, enemy.position);
   if (enemy.unitType === "RANGER") {
+    const distance = chebyshev(target, enemy.position);
     if (distance === 0 || distance > RANGER_SHOOT_RANGE) return 0;
     return lineBlocked(target, enemy.position, obstacles) ? 0 : 1;
   }
-  // VANGUARD / WORKER 近战：仅邻格可伤害
-  return distance === VANGUARD_SWEEP_RANGE ? 1 : 0;
+  // VANGUARD / WORKER 近战：SWEEP 无斜向——只有卡向邻格可伤害，对角邻格
+  // 当前打不到（2026-08-08 与米字修复同源：四方向语义不按八方向估算）。
+  return manhattan(target, enemy.position) === 1 ? 1 : 0;
 }
 
 export function retreatDirection(
@@ -357,16 +358,22 @@ export function canShoot(from: Position, target: Position, obstacles: ReadonlySe
     !lineBlocked(from, target, obstacles);
 }
 
-/** 预测敌人下一 Tick 位置：朝攻击者逼近一格（八方向切比雪夫步进）。
- *  仅当敌人当前不在射程内（4-5 格）时用于 cell fire 预判；已在射程内
- *  由 precision shoot 覆盖。返回 null 表示无法预测（已在身边）。 */
+/** 预测敌人下一 Tick 位置：朝攻击者沿主导轴逼近一格（四方向卡向步进，
+ *  与官方移动规则一致——移动只有 UP/DOWN/LEFT/RIGHT，无斜向，敌人每 tick
+ *  最多走一格；2026-08-08 米字修复同步回补本恢复线）。仅当敌人当前不在
+ *  射程内时用于 cell fire 预判；已在射程内由 precision shoot 覆盖。
+ *  返回 null 表示无法预测（与攻击者同格）。斜向（|dx|==|dy|）时确定性
+ *  选 x 轴；调用方 canShoot 会过滤非射击线预测格——斜向敌人一步无法进入
+ *  可射击格（其四方向步进的落点都在线外），于是不预判开火，杜绝射空气。 */
 export function predictedEnemyCell(actor: Position, enemy: Position): Position | null {
   const dx = enemy[0] - actor[0];
   const dy = enemy[1] - actor[1];
-  const stepX = dx === 0 ? 0 : Math.sign(dx);
-  const stepY = dy === 0 ? 0 : Math.sign(dy);
-  const next = [enemy[0] - stepX, enemy[1] - stepY] as Position;
-  return samePosition(next, enemy) ? null : next;
+  if (dx === 0 && dy === 0) return null;
+  // 敌人只沿主轴走一步（|dx|>=|dy| 走 x，否则走 y）。
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return [enemy[0] - Math.sign(dx), enemy[1]];
+  }
+  return [enemy[0], enemy[1] - Math.sign(dy)];
 }
 
 export function parseCell(value: string): Position {
