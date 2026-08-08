@@ -94,17 +94,35 @@ test("陈旧敌核不判活跃；窗口内才判活跃", () => {
   assert.equal(active.activeEnemyCoreCount, 1);
 });
 
-test("freshResources 不足 → 拒（reasons 含“资源”）", () => {
+test("freshResources 不足 → 拒（已知测绘充分但新鲜不足）", () => {
   const path = linePath(0, 10);
   const currentTick = 10000;
+  // 已知 8 格（测绘充分），仅 3 格新鲜 → 真拒绝（采空/陈旧带）
   const audit = auditCorridor(
     path,
-    survey([resource(0, 0, 9900), resource(1, 0, 9900), resource(2, 0, 9900), resource(9, 0, 5000)]),
+    survey([
+      resource(0, 0, 9900), resource(1, 0, 9900), resource(2, 0, 9900),
+      resource(3, 0, 5000), resource(4, 0, 5000), resource(5, 0, 5000),
+      resource(6, 0, 5000), resource(7, 0, 5000),
+    ]),
     currentTick,
   );
   assert.equal(audit.ok, false);
-  assert.equal(audit.freshResourceCount, 3, "陈旧资源不计入新鲜数（已知 4，新鲜 3）");
+  assert.equal(audit.freshResourceCount, 3, "陈旧资源不计入新鲜数（已知 8，新鲜 3）");
   assert.ok(audit.reasons.some((r) => r.includes("资源")), `reasons 应含"资源": ${audit.reasons}`);
+});
+
+test("M7：测绘盲区降级为警告（已知资源 < 下限 → 不拒，reasons 含“盲区”）", () => {
+  const path = linePath(0, 10);
+  const currentTick = 10000;
+  // 已知 3 格 < 8 = 测绘盲区（≠无矿）→ 警告不拒（长征穿越语义）
+  const audit = auditCorridor(
+    path,
+    survey([resource(0, 0, 9900), resource(1, 0, 9900), resource(2, 0, 9900)]),
+    currentTick,
+  );
+  assert.equal(audit.ok, true, "测绘盲区不得拒绝（盲区 ≠ 无矿）");
+  assert.ok(audit.reasons.some((r) => r.includes("盲区")), `reasons 应含"盲区": ${audit.reasons}`);
 });
 
 test("corridorWidth 边界：半径外的敌核不算（含边界格）", () => {
