@@ -67,6 +67,21 @@ test("视野确认缺失（worker 未动、资源格仍在半径内）→ harves
   );
 });
 
+test("跨 run seeded stale 矿被当前视野确认不存在 → 立即 harvested（t4 300-tick 假活回归）", () => {
+  const world = new World();
+  // production t4 的根因：survey seed 初始就是 stale+seeded；旧实现只反证
+  // state=visible，因此 Worker 已经站到历史矿格仍会永久保留 GO_RESOURCE 候选。
+  world.seedResourceMemory([[2, 0]], 0);
+  assert.equal(world.resourceCandidates().length, 1, "seed 初始必须可供验证");
+
+  // Core [0,0] 半径 5 明确覆盖 [2,0]，但本 Tick 无 RESOURCE：这是强反证。
+  world.observe(makeState(68000, { resourceCells: new Set() }));
+  const mem = world.snapshot().resources.find((r) => r.cell === "2,0");
+  assert.ok(mem, "负记忆保留用于 refill/审计");
+  assert.equal(mem!.state, "harvested");
+  assert.equal(world.resourceCandidates().length, 0, "确认空的 seed 不得下一 Tick 再被分配");
+});
+
 test("视野外（worker 移远、Manhattan > 半径）→ stale 仍提示", () => {
   const world = new World();
   world.observe(makeState(100, {

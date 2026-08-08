@@ -37,10 +37,18 @@ export interface WorkerTaskPlannerConfig {
   readonly stickyBonus?: number;
   /** 目标格已被分配数的拥挤惩罚，默认 1.0（唯一性硬约束下恒为 0；若后续匹配算法允许多分配则启用）。 */
   readonly congestionPenalty?: number;
+  /**
+   * 无可见矿时，允许拿去“验证 stale/seeded 历史矿”的空闲 Worker 比例。
+   * 其余 Worker 留给上层 patrol/exploration，不被历史坐标全部吸走。
+   * Planner 泛型默认 1.0（兼容旧调用）；生产 runtime 对 harvest-memory 模式显式用 0.25。
+   */
+  readonly memoryVerificationRatio?: number;
 }
 
 export const DEFAULT_STICKY_BONUS = 0.5;
 export const DEFAULT_CONGESTION_PENALTY = 1.0;
+export const DEFAULT_MEMORY_VERIFICATION_RATIO = 1.0;
+export const PRODUCTION_MEMORY_VERIFICATION_RATIO = 0.25;
 
 // 代价模型常数：路径代价来自已知障碍上的最短路距离；搜索预算未覆盖时退回
 // Manhattan + UNKNOWN_ROUTE_PENALTY（“未知”≠“永久不可达”）。
@@ -87,10 +95,15 @@ function sameCell(a: Position, b: Position): boolean {
 export class WorkerTaskPlanner {
   readonly stickyBonus: number;
   readonly congestionPenalty: number;
+  readonly memoryVerificationRatio: number;
 
   constructor(config: WorkerTaskPlannerConfig = {}) {
     this.stickyBonus = config.stickyBonus ?? DEFAULT_STICKY_BONUS;
     this.congestionPenalty = config.congestionPenalty ?? DEFAULT_CONGESTION_PENALTY;
+    this.memoryVerificationRatio = config.memoryVerificationRatio ?? DEFAULT_MEMORY_VERIFICATION_RATIO;
+    if (!Number.isFinite(this.memoryVerificationRatio) || this.memoryVerificationRatio < 0 || this.memoryVerificationRatio > 1) {
+      throw new Error("memoryVerificationRatio must be finite and within [0,1]");
+    }
   }
 
   /** 全局任务分配。previousAssignments：上一 Tick 分配结果（sticky 用）。 */
@@ -120,65 +133,128 @@ export class WorkerTaskPlanner {
     const availableCells = [...snapshot.resourceCells.keys()]
       .filter((key) => !claimedCells.has(key))
       .sort(); // 字典序：确定性迭代顺序
+    let pool = [...unassigned].sort((a, b) => a.id.localeCompare(b.id));
 
-    // Hungarian 全局最优：rows=worker；columns=resource + 每 worker 一个 dummy WAIT。
-    // dummy cost 取高于任一真实候选的确定性上界，因此资源数不足时才 WAIT；
-    // 若未来加入不可达判定，可把不可达候选提升到 forbiddenCost，仍复用同一求解器。
-    const pool = [...unassigned].sort((a, b) => a.id.localeCompare(b.id));
-    if (pool.length > 0) {
-      const targetPositions = availableCells
-        .map((key) => snapshot.resourceCells.get(key)?.position)
-        .filter((position): position is Position => position !== undefined);
-      const routingObstacles = new Set([...snapshot.obstacleCells, ...snapshot.enemyCells]);
-      const routingOptions = { searchRadius: ASSIGNMENT_ROUTE_RADIUS, nodeBudget: ASSIGNMENT_ROUTE_NODE_BUDGET, abandonFactor: 3 };
-      const travelFields = new Map<string, ReadonlyMap<string, number>>();
-      if (routingObstacles.size > 0) {
-        for (const worker of pool) {
-          travelFields.set(worker.id, shortestPathDistances(
-            worker.position, targetPositions, routingObstacles, routingOptions,
-          ));
-        }
-      }
-      const returnField = snapshot.corePosition === null || routingObstacles.size === 0
-        ? new Map<string, number>()
-        : shortestPathDistances(snapshot.corePosition, targetPositions, routingObstacles, routingOptions);
+    // Phase 1 — 当前可见矿：事实置信度最高，直接走 Hungarian 全局匹配。
+    // 这一步与 stale memory 分开，避免“近但陈旧的历史点”抢掉当前真实矿。
+    const visibleCells = availableCells.filter((key) => snapshot.resourceCells.get(key)?.visible !== false);
+    const visibleAssignments = this.assignResourceCells(
+      pool, visibleCells, snapshot, previousAssignments, claimedCells,
+    );
+    assignments.push(...visibleAssignments);
+    for (const assignment of visibleAssignments) {
+      if (assignment.task.targetCellKey !== undefined) claimedCells.add(assignment.task.targetCellKey);
+    }
+    const visibleOwners = new Set(visibleAssignments.map((assignment) => assignment.unitId));
+    pool = pool.filter((worker) => !visibleOwners.has(worker.id));
 
-      const realNetValues = pool.map((worker) => availableCells.map((key) =>
-        this.netValue(
-          worker, key, snapshot, previousAssignments, claimedCells,
-          travelFields.get(worker.id)?.get(key), returnField.get(key), routingObstacles.size > 0,
-        )));
-      const finiteCosts = realNetValues.flat()
-        .filter(Number.isFinite)
-        .map((net) => -net);
-      const maxReal = finiteCosts.length > 0 ? Math.max(...finiteCosts) : 0;
-      // eligible real task is always preferred over WAIT (historical semantics); WAIT beats
-      // explicit ineligible task. This preserves “use all known mines” without forcing a
-      // worker to violate the memory-distance safety boundary.
-      const waitCost = maxReal + 1_000_000;
-      const forbiddenCost = waitCost + 1_000_000;
-      const matrix = realNetValues.map((row) => [
-        ...row.map((net) => Number.isFinite(net) ? -net : forbiddenCost),
-        ...Array.from({ length: pool.length }, () => waitCost),
-      ]);
-      const columns = minimumCostAssignment(matrix);
-      for (let rowIndex = 0; rowIndex < pool.length; rowIndex += 1) {
-        const worker = pool[rowIndex]!;
-        const column = columns[rowIndex]!;
-        if (column >= availableCells.length) {
-          assignments.push({ unitId: worker.id, task: { type: "WAIT" } });
-          continue;
-        }
-        const key = availableCells[column]!;
-        const cell = snapshot.resourceCells.get(key);
-        assignments.push({
-          unitId: worker.id,
-          task: { type: "GO_RESOURCE", target: cell?.position, targetCellKey: key },
-        });
+    // Phase 2 — stale/seeded 记忆矿是“验证任务”，不是无限强制任务。
+    // production t3 曾 12 Worker 全追历史点：300 tick 2813 个 GO_RESOURCE 仅 10 次
+    // HARVEST。默认只拿 25% 空闲 Worker 验证历史矿，其余进入 EXPLORE 扩大新鲜
+    // 情报覆盖；2 Worker 至少留 1 个探索，12 Worker 最多 3 个验证。
+    const memoryCells = availableCells.filter((key) => {
+      const info = snapshot.resourceCells.get(key);
+      return info?.visible === false && !claimedCells.has(key);
+    });
+    if (pool.length > 0 && memoryCells.length > 0 && this.memoryVerificationRatio > 0) {
+      const memoryBudget = Math.min(
+        pool.length,
+        memoryCells.length,
+        Math.max(1, Math.ceil(pool.length * this.memoryVerificationRatio)),
+      );
+      // 先按“任一 Worker 可获得的最好净收益”挑出本 Tick 最值得验证的 K 个历史点，
+      // 再用真实障碍路由 Hungarian 给这些目标分配 Worker。这样预算控制和全局路由
+      // 解耦，不需要在 SafetyPlanner 再维护一套 stale-mine 状态机。
+      const rankedMemoryCells = memoryCells
+        .map((key) => ({
+          key,
+          bestNet: Math.max(...pool.map((worker) =>
+            this.netValue(worker, key, snapshot, previousAssignments, claimedCells))),
+        }))
+        .filter((entry) => Number.isFinite(entry.bestNet))
+        .sort((a, b) => b.bestNet - a.bestNet || a.key.localeCompare(b.key))
+        .slice(0, memoryBudget)
+        .map((entry) => entry.key);
+      const memoryAssignments = this.assignResourceCells(
+        pool, rankedMemoryCells, snapshot, previousAssignments, claimedCells,
+      );
+      assignments.push(...memoryAssignments);
+      for (const assignment of memoryAssignments) {
+        if (assignment.task.targetCellKey !== undefined) claimedCells.add(assignment.task.targetCellKey);
       }
+      const memoryOwners = new Set(memoryAssignments.map((assignment) => assignment.unitId));
+      pool = pool.filter((worker) => !memoryOwners.has(worker.id));
+    }
+
+    // Phase 3 — 其余 Worker 不再追低价值历史矿。这里保留 WAIT 任务合同；
+    // DeterministicPlanner 会继续使用现有 Safety patrol baseline 执行探索，
+    // 因此“任务层 WAIT”不是“执行层原地闲置”，也不需要再造一套探索状态机。
+    for (const worker of pool) {
+      assignments.push({ unitId: worker.id, task: { type: "WAIT" } });
     }
 
     return { assignments };
+  }
+
+  /**
+   * 给指定资源子集做一次最小成本匹配。返回的只有真实 GO_RESOURCE；dummy 列只用来
+   * 吸收不可达/资源数不足的 Worker，调用方随后会把这些 Worker 分配到下一阶段。
+   */
+  private assignResourceCells(
+    workers: readonly PlanningUnit[],
+    cellKeys: readonly string[],
+    snapshot: PlanningSnapshot,
+    previousAssignments: readonly Assignment[],
+    claimedCells: ReadonlySet<string>,
+  ): Assignment[] {
+    if (workers.length === 0 || cellKeys.length === 0) return [];
+    const targetPositions = cellKeys
+      .map((key) => snapshot.resourceCells.get(key)?.position)
+      .filter((position): position is Position => position !== undefined);
+    const routingObstacles = new Set([...snapshot.obstacleCells, ...snapshot.enemyCells]);
+    const routingOptions = {
+      searchRadius: ASSIGNMENT_ROUTE_RADIUS,
+      nodeBudget: ASSIGNMENT_ROUTE_NODE_BUDGET,
+      abandonFactor: 3,
+    };
+    const travelFields = new Map<string, ReadonlyMap<string, number>>();
+    if (routingObstacles.size > 0) {
+      for (const worker of workers) {
+        travelFields.set(worker.id, shortestPathDistances(
+          worker.position, targetPositions, routingObstacles, routingOptions,
+        ));
+      }
+    }
+    const returnField = snapshot.corePosition === null || routingObstacles.size === 0
+      ? new Map<string, number>()
+      : shortestPathDistances(snapshot.corePosition, targetPositions, routingObstacles, routingOptions);
+    const realNetValues = workers.map((worker) => cellKeys.map((key) =>
+      this.netValue(
+        worker, key, snapshot, previousAssignments, claimedCells,
+        travelFields.get(worker.id)?.get(key), returnField.get(key), routingObstacles.size > 0,
+      )));
+    const finiteCosts = realNetValues.flat().filter(Number.isFinite).map((net) => -net);
+    const maxReal = finiteCosts.length > 0 ? Math.max(...finiteCosts) : 0;
+    const dummyCost = maxReal + 1_000_000;
+    const forbiddenCost = dummyCost + 1_000_000;
+    const matrix = realNetValues.map((row) => [
+      ...row.map((net) => Number.isFinite(net) ? -net : forbiddenCost),
+      ...Array.from({ length: workers.length }, () => dummyCost),
+    ]);
+    const columns = minimumCostAssignment(matrix);
+    const result: Assignment[] = [];
+    for (let rowIndex = 0; rowIndex < workers.length; rowIndex += 1) {
+      const column = columns[rowIndex]!;
+      if (column >= cellKeys.length) continue;
+      const worker = workers[rowIndex]!;
+      const key = cellKeys[column]!;
+      const cell = snapshot.resourceCells.get(key);
+      result.push({
+        unitId: worker.id,
+        task: { type: "GO_RESOURCE", target: cell?.position, targetCellKey: key },
+      });
+    }
+    return result;
   }
 
   /** 净收益（总裁决 RP2 代价模型）：越大越优先。 */

@@ -34,7 +34,10 @@ import { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "
 import { resolveDeterministicVariantsConfig, resolveVariantsConfig } from "../strategies/variant-registry.ts";
 import { knownChunks, knownCoreHunts, knownObstacles, knownResources, openSurveyDb } from "../intel/survey-db.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
-import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
+import {
+  PRODUCTION_MEMORY_VERIFICATION_RATIO,
+  WorkerTaskPlanner,
+} from "../planning/worker-task-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
 import { PiSessionFactory } from "../infrastructure/pi/pi-session-factory.ts";
 import { buildDecisionPrompt } from "../infrastructure/pi/prompt-builder.ts";
@@ -532,7 +535,11 @@ export async function runTenant(
         ? Object.keys(variantConfig).length === 0
           ? new DeterministicPlanner(undefined, undefined, undefined, undefined, undefined, undefined, [], new Map(), surveyResourceCells, surveyObstacleCells)
           : new DeterministicPlanner(
-              new WorkerTaskPlanner(),
+              new WorkerTaskPlanner({
+                memoryVerificationRatio: variantConfig.harvestMemoryMine === true
+                  ? PRODUCTION_MEMORY_VERIFICATION_RATIO
+                  : 1,
+              }),
               new SafetyPlanner(baseSafetyConfig),
               new SafetyPlanner(baseSafetyConfig),
               deterministicVariantConfig.vanguardRatio,
@@ -729,6 +736,21 @@ export async function runTenant(
             depositCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "DEPOSIT").length,
             waitCount: Object.values(outcome.plan.unitActions).filter((action) => action.type === "WAIT").length,
           };
+      // “假活”观测：intent 看似正在执行经济任务，但最终动作实际是 WAIT。
+      // 生产 t4 曾连续 300 tick 出现 2×GO_RESOURCE + 2×WAIT、0 move/harvest/deposit，
+      // 仅靠 intentCounts 会把死锁伪装成活跃任务。这里按 unitId 精确关联最终动作。
+      const economicWaitCount = decision === undefined
+        ? 0
+        : Object.entries(outcome.plan.intents).filter(([unitId, intent]) => {
+            const action = outcome.plan.unitActions[unitId];
+            if (action?.type !== "WAIT") return false;
+            return intent === "GO_RESOURCE"
+              || intent === "DEPOSIT"
+              || intent === "HARVEST_CURRENT"
+              || intent === "harvest"
+              || intent === "return_home"
+              || intent.startsWith("go_harvest");
+          }).length;
       if (decision !== undefined) {
         // runtime trace + decision trace（三流以 runId 关联；直接构造 record——
         // 工厂默认值（unknown）是危险默认，生产路径显式传全字段，validate 由 JsonlWriter 执行）
@@ -845,8 +867,8 @@ export async function runTenant(
         };
         outcomeWriter.write(outcomeRecord);
         // 死循环检测与自动跳出（2026-08-05 生产事故后）：StallDetector 多模式
-        // 检测（cargo_blocked/no_production/patrol_only/focus_exile/
-        // capacity_wait_loop），事件落盘 runtime.jsonl 供监控查询/人工介入；
+        // 检测（cargo_blocked/assigned_no_progress/no_production/patrol_only/
+        // focus_exile/capacity_wait_loop），事件落盘 runtime.jsonl 供监控查询/人工介入；
         // StallRecovery 状态机推进（触发/恢复/升级）落盘 stall_recovery。
         // 干预本身（focusRegion=null 覆盖）经 policyProvider 下发，见 coordinator。
         const cargoWorkerCells = outcome.state.workers
@@ -865,6 +887,7 @@ export async function runTenant(
           moveCount: actionCounts.moveCount,
           waitCount: actionCounts.waitCount,
           intentCounts,
+          economicWaitCount,
           cargoWorkerFingerprint: cargoWorkerCells.length > 0 ? cargoWorkerCells : null,
         });
         for (const event of stallEvents) {

@@ -665,14 +665,12 @@ export class DeterministicPlanner implements PlanProvider {
         fallbackMemory.workerMode = "go_harvest";
         fallbackMemory.harvestTarget = assignment.task.target;
       } else if (assignment.task.type === "WAIT" && snapshot.resourceCells.size > 0) {
-        // 有可见矿但该 worker 未被全局匹配器分配：清除 Safety 的虚假最近矿记忆，
-        // 让它按 patrolFallback 继续探索，而不是下一 tick 偷跑去已被别人占用的矿。
+        // 兼容旧/外部 TaskPlanner：有资源但未分配时仍切回 patrol，不允许静态 WAIT
+        // 重新被 Safety 的旧 harvestTarget 拉回同一矿。
         fallbackMemory.workerMode = "patrol";
         fallbackMemory.harvestTarget = null;
       }
       if (assignment.task.type === "WAIT") {
-        // 无可见资源时保留完整 Safety 的资源记忆；有可见资源但数量少于 Worker 时，
-        // 使用看不到资源格的 patrol baseline，保证继续探索且不会重新扎堆。
         if (snapshot.resourceCells.size > 0) {
           unitActions[assignment.unitId] = patrolFallback.unitActions[assignment.unitId] ?? { type: "WAIT" };
           intents[assignment.unitId] = patrolFallback.intents?.[assignment.unitId] ?? "WAIT_UNCLAIMED";

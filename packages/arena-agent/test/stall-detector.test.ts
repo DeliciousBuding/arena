@@ -1,6 +1,6 @@
 /**
- * StallDetector 单元测试：多模式死循环检测（cargo_blocked/no_production/
- * patrol_only/focus_exile/capacity_wait_loop）+ 阈值边界 + 宽限期 + 恢复重计数。
+ * StallDetector 单元测试：多模式死循环检测（cargo_blocked/assigned_no_progress/
+ * no_production/patrol_only/focus_exile/capacity_wait_loop）+ 阈值边界 + 宽限期 + 恢复重计数。
  */
 
 import assert from "node:assert/strict";
@@ -106,6 +106,31 @@ test("StallDetector: capacity_wait_loop 触发（容量互堵占主导）", () =
     intentCounts: { "capacity_wait:DEPOSIT": 3, "capacity_wait:go_focus": 1, patrol: 1 },
   });
   assert.equal(events.some((e) => e.kind === "capacity_wait_loop"), true);
+});
+
+test("StallDetector: assigned_no_progress 捕获 GO_RESOURCE 假活（t4 300-tick 回归）", () => {
+  const detector = new StallDetector();
+  const events = runTicks(detector, 16, {
+    workerCount: 2,
+    waitCount: 2,
+    moveCount: 0,
+    economicWaitCount: 2,
+    intentCounts: { GO_RESOURCE: 2 },
+  });
+  const event = events.find((e) => e.kind === "assigned_no_progress");
+  assert.ok(event, "经济任务已分配但最终全 WAIT 必须被识别为假活");
+  assert.equal(event.streak, 16);
+  assert.equal(event.detail.economicWaitCount, 2);
+
+  const healthy = new StallDetector();
+  const healthyEvents = runTicks(healthy, 16, {
+    workerCount: 2,
+    moveCount: 2,
+    waitCount: 0,
+    economicWaitCount: 0,
+    intentCounts: { GO_RESOURCE: 2 },
+  });
+  assert.equal(healthyEvents.some((e) => e.kind === "assigned_no_progress"), false);
 });
 
 test("StallDetector: 宽限期（tick < 256 不触发慢速类；cargo_blocked 不受影响）", () => {

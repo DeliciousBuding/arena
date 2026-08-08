@@ -397,21 +397,22 @@ export class World {
       });
     }
     for (const [cell, memory] of this.resourceMemory) {
-      if (visibleResources.has(cell)) continue;
+      if (visibleResources.has(cell) || memory.state === "harvested") continue;
+      // 视线感知资源失效必须覆盖 visible 与 stale/seeded 记忆：跨 run survey seed
+      // 本来就是 stale；若 Worker 已走到该历史矿附近、当前视野明确覆盖该格且本 Tick
+      // 没有 RESOURCE，这就是强反证。旧实现只处理 state=visible，导致 t4 两个 Worker
+      // 在历史矿格上 300+ tick 持续 GO_RESOURCE + WAIT，永远无法产生 NOT_RESOURCE_CELL
+      // 事件来清记忆。确认空格后立即转 harvested，并解除 seeded 永久豁免；refill 再次
+      // 可见时上面的 visibleResources 分支会自然恢复为 visible。
+      if (this.visionInvalidation && resourceCellCoveredByVision(state, parseCellKey(cell), this.obstacleMemory)) {
+        memory.state = "harvested";
+        memory.lastSeenTick = state.tick;
+        memory.seeded = false;
+        continue;
+      }
       if (memory.state === "visible") {
-        // 视线感知资源失效（ref arena-hero-agent _refresh_resource_memory：
-        // definitely_visible && not in current_resources → 立即失效）：
-        // 格子被任意我方观察者确认可见（Manhattan 半径 + supercover 无遮挡）
-        // 却不在本轮 visibleResources → 资源已被采空 → 直接记 harvested 负记忆
-        // （不进 hints，TTL 后删除），杜绝 worker 跨 30-78 格追空矿
-        // （t4 实证 go_harvest_mem 104 意图仅 12 次成功）。
-        if (this.visionInvalidation && resourceCellCoveredByVision(state, parseCellKey(cell), this.obstacleMemory)) {
-          memory.state = "harvested";
-        } else {
-          // harvested（自采成功）保持负记忆不进 hints，不降级 stale——
-          // 自采空格若 refill 会重新可见，未 refill 说明已耗尽（TTL 后删除）。
-          memory.state = "stale";
-        }
+        // 真正离开视野时只降级 stale，不把“不知道”误当“已采空”。
+        memory.state = "stale";
       }
     }
 

@@ -21,7 +21,9 @@ export type StallKind =
   /** go_focus 远征：worker 被 focusRegion 支离 Core 且 0 产出。 */
   | "focus_exile"
   /** capacity_wait 占主导（容量互堵循环）。 */
-  | "capacity_wait_loop";
+  | "capacity_wait_loop"
+  /** 经济任务已分配，但这些 Worker 的最终动作实际是 WAIT（假活/路径或记忆死锁）。 */
+  | "assigned_no_progress";
 
 export interface StallObservation {
   readonly tick: number;
@@ -34,6 +36,8 @@ export interface StallObservation {
   readonly moveCount: number;
   readonly waitCount: number;
   readonly intentCounts: Readonly<Record<string, number>>;
+  /** 最终计划中：经济意图（GO_RESOURCE / go_harvest 家族 / DEPOSIT / HARVEST_CURRENT）却实际 WAIT 的 Worker 数。 */
+  readonly economicWaitCount?: number;
   /** 满载 worker 位置指纹（无满载 worker 时 null）；cargo_blocked 的移动判据。 */
   readonly cargoWorkerFingerprint: string | null;
 }
@@ -159,6 +163,9 @@ export class StallDetector {
       noProduction &&
       obs.waitCount > 0 &&
       capacityWaitCount(obs.intentCounts) >= Math.ceil(obs.workerCount / 2);
+    results.assigned_no_progress =
+      noProduction &&
+      (obs.economicWaitCount ?? 0) >= Math.max(1, Math.ceil(obs.workerCount / 2));
     return results;
   }
 
@@ -192,12 +199,20 @@ export class StallDetector {
           waitCount: obs.waitCount,
           intentCounts: obs.intentCounts,
         };
+      case "assigned_no_progress":
+        return {
+          workerCount: obs.workerCount,
+          economicWaitCount: obs.economicWaitCount ?? 0,
+          intentCounts: obs.intentCounts,
+        };
     }
   }
 }
 
 const STALL_KINDS: readonly StallKind[] = [
   "cargo_blocked",
+  // 更具体的假活优先于总括 no_production，StallRecovery 会记录更可解释的 kind。
+  "assigned_no_progress",
   "no_production",
   "patrol_only",
   "focus_exile",

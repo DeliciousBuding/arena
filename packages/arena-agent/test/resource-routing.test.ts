@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { PlanningSnapshot, ResourceCellInfo } from "../src/planning/planning-snapshot.ts";
-import { WorkerTaskPlanner } from "../src/planning/worker-task-planner.ts";
+import {
+  PRODUCTION_MEMORY_VERIFICATION_RATIO,
+  WorkerTaskPlanner,
+} from "../src/planning/worker-task-planner.ts";
 import { shortestPathDistances } from "../src/domain/nav.ts";
 import type { Position, TickState, VisibleEntity } from "../src/domain/model.ts";
 import { DeterministicPlanner } from "../src/planning/deterministic-planner.ts";
@@ -49,6 +52,53 @@ test("WorkerTaskPlanner: memory target beyond historical 40-cell active-mining b
   assert.equal(plan.assignments[0]!.task.type, "WAIT");
 });
 
+test("WorkerTaskPlanner: production memory budget 只让 25% Worker 验证历史矿，其余留给巡逻", () => {
+  const resources = Array.from({ length: 12 }, (_, i) => [
+    `10,${i}`,
+    { position: [10, i] as Position, visible: false, lastSeenTick: 80, seeded: true },
+  ] as [string, ResourceCellInfo]);
+  const base = snapshot(resources);
+  const many: PlanningSnapshot = {
+    ...base,
+    population: 12,
+    units: Array.from({ length: 12 }, (_, i) => ({
+      id: `w${String(i).padStart(2, "0")}`,
+      unitType: "WORKER" as const,
+      position: [0, i] as Position,
+      hp: 2,
+      cargo: 0,
+    })),
+  };
+  const plan = new WorkerTaskPlanner({
+    memoryVerificationRatio: PRODUCTION_MEMORY_VERIFICATION_RATIO,
+  }).plan(many);
+  assert.equal(plan.assignments.filter((a) => a.task.type === "GO_RESOURCE").length, 3);
+  assert.equal(plan.assignments.filter((a) => a.task.type === "WAIT").length, 9);
+});
+
+test("WorkerTaskPlanner: production memory budget 不限流当前可见矿", () => {
+  const resources = Array.from({ length: 4 }, (_, i) => [
+    `5,${i}`,
+    { position: [5, i] as Position, visible: true, lastSeenTick: 100, seeded: false },
+  ] as [string, ResourceCellInfo]);
+  const base = snapshot(resources);
+  const many: PlanningSnapshot = {
+    ...base,
+    population: 4,
+    units: Array.from({ length: 4 }, (_, i) => ({
+      id: `w${i}`,
+      unitType: "WORKER" as const,
+      position: [0, i] as Position,
+      hp: 2,
+      cargo: 0,
+    })),
+  };
+  const plan = new WorkerTaskPlanner({
+    memoryVerificationRatio: PRODUCTION_MEMORY_VERIFICATION_RATIO,
+  }).plan(many);
+  assert.equal(plan.assignments.filter((a) => a.task.type === "GO_RESOURCE").length, 4);
+});
+
 function worker(id: string, position: Position) {
   return { id, position, hp: 2, unitType: "WORKER" as const, cargo: 0 };
 }
@@ -61,6 +111,21 @@ function state(tick: number, workers: readonly ReturnType<typeof worker>[], enem
     beacon: { position: [100, 100], status: "GROUND", carrierId: null }, events: [],
   };
 }
+
+test("DeterministicPlanner: Worker 到达 seeded 历史矿但当前确认无矿 → 不再 GO_RESOURCE 假活（t4 live 回归）", () => {
+  const config = { ...DEFAULT_SAFETY_CONFIG, harvestMemoryMine: true };
+  const fallback = new SafetyPlanner(config);
+  const patrol = new SafetyPlanner(config);
+  fallback.world.seedResourceMemory([[2, 0]], 0);
+  patrol.world.seedResourceMemory([[2, 0]], 0);
+  const planner = new DeterministicPlanner(new WorkerTaskPlanner(), fallback, patrol);
+
+  // Core 与 Worker 都能看清 [2,0]，raw state 无 RESOURCE。旧实现会永久输出
+  // intent=GO_RESOURCE + action=WAIT；修复后该 seed 先被 World 强反证失效。
+  const plan = planner.decide({ state: state(68000, [worker("w1", [2, 0])]) });
+  assert.notEqual(plan.intents.w1, "GO_RESOURCE");
+  assert.equal(fallback.world.resourceCandidates().length, 0);
+});
 
 test("DeterministicPlanner: visible+memory resources use one global assignment authority", () => {
   const config = { ...DEFAULT_SAFETY_CONFIG, harvestMemoryMine: true };
