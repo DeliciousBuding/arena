@@ -14,6 +14,7 @@ import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
 import { loadEnemyHeat } from "./enemy-heat.ts";
 import { loadAllianceSurvey } from "./alliance-survey.ts";
 import { loadLeaderboardIntel } from "./leaderboard.ts";
+import { loadMinePatterns } from "./mine-patterns.ts";
 import { TtlCache } from "./cache.ts";
 
 export type AdviceSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "INFO";
@@ -239,6 +240,30 @@ export function loadAllianceAdvice(): AllianceAdvicePayload {
         at: new Date().toISOString(),
       });
     }
+  }
+
+  // 7) 矿活性采集机会（2026-08-08，mine-patterns 算法闭环到决策）：租户资源低于
+  //    采集机会阈值且有活跃矿（visible > 0）——提示"值得去采的矿"（与资源濒危
+  //    警报互补：濒危是问题，这里给行动指引）。INFO 级，置信度 0.75（survey-db 缓存）。
+  const MINE_OPPORTUNITY_RESOURCE = 15;
+  const mp = loadMinePatterns("all");
+  for (const m of Object.values(snap.members)) {
+    const pat = mp.tenants[m.tenantId];
+    if (!pat || pat.visible === 0) continue;
+    if (m.resources >= MINE_OPPORTUNITY_RESOURCE) continue;
+    const top = pat.topActive[0];
+    out.push({
+      severity: "INFO",
+      category: "ECONOMY",
+      tenant: m.tenantId,
+      title: `${m.tenantId} ${pat.visible} 个活跃矿可采`,
+      detail: top ? `最近活跃 ${top.cell}（seen ${top.seenCount}，t${top.lastSeenTick}）等` : "活跃矿可派 worker 采集",
+      action: "优先派 worker 采活跃矿（mine-patterns 推荐）；资源低于 15 补采集",
+      weight: -pat.visible,
+      confidence: 0.75,
+      evidence: [{ type: "survey", tenant: m.tenantId, ref: `active=${pat.visible} top=${top?.cell ?? "-"}` }],
+      at: new Date().toISOString(),
+    });
   }
 
   out.sort((a, b) => ORDER[a.severity] - ORDER[b.severity] || a.weight - b.weight);
