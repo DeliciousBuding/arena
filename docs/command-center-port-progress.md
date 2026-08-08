@@ -445,3 +445,9 @@ mapEngine.ts 对应函数。
   HARVEST⛏/DEPOSIT▣/SWEEP✸/SHOOT⚔/HEAL✚/信标⚑/维修◈ 等几何符号），
   菜单项加 .ctx-ico 图标列（零素材、更精致）。
 - 探针实测：右键工人菜单 6 图标；回归 22/22 全绿。
+
+### 9.27 动作卡按钮图标化（2026-08-08）
+- tactRenderActionDialog act-grid 三态按钮（可用/blocked/disabled）统一加 .act-ico
+  图标，与右键/批量菜单共用 TACT_ACTION_ICON（零素材）；
+  .act-btn 改 flex 居中布局对齐图标+文本。
+- 探针实测：动作卡 8 图标按钮（工人全动作集）；回归 22/22 全绿。
