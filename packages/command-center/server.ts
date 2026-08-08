@@ -41,6 +41,7 @@ import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/
 import { appendArbitration, clearArbitration, listArbitrations } from "./lib/arbitration.ts";
 import { loadDecisionAudit, warmDecisionAudit } from "./lib/decision-audit.ts";
 import { loadLifecycleAudit, warmLifecycleAudit } from "./lib/lifecycle-audit.ts";
+import { loadMineUtilization, warmMineUtilization } from "./lib/mine-utilization.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -337,6 +338,16 @@ app.get("/api/audit/lifecycle", (c) => {
   }
   return c.json(loadLifecycleAudit(tenant));
 });
+app.get("/api/audit/mines", (c) => {
+  // 矿发现-利用缺口审计（2026-08-08）：survey-db 只读——已发现未开采矿
+  // （visibleNever 立即分配候选 / staleNever 历史遗留）+ 利用率 + 发现→首采耗时。
+  // ?tenant=all|tN。30s 缓存 + 启动预热，不进周期循环。
+  const tenant = c.req.query("tenant") ?? "all";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  return c.json(loadMineUtilization(tenant));
+});
 app.get("/api/audit/human", (c) => {
   // 人类指挥审计（2026-08-08）：手操流水（指令/目标/模式/清空/删除），
   // 重启不丢——复盘"什么时候手操了什么"。?tenant=tN&limit=100。
@@ -534,6 +545,8 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { warmDecisionAudit(); } catch { /* 忽略 */ } }, 50);
   // 生命周期审计（重 I/O 全 case 解析）：启动预热一次，不进周期循环（请求惰性 30s 缓存）。
   setTimeout(() => { try { warmLifecycleAudit(); } catch { /* 忽略 */ } }, 60);
+  // 矿利用审计（survey-db 只读）：启动预热一次，不进周期循环（请求惰性 30s 缓存）。
+  setTimeout(() => { try { warmMineUtilization(); } catch { /* 忽略 */ } }, 70);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
