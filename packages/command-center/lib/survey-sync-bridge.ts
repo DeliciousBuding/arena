@@ -9,7 +9,7 @@
  * sync-guard.lock 单实例锁（fresh 锁不抢，stale 锁可抢），避免并发双写。
  */
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DATA_ROOT, TENANTS } from "./fs-jsonl.ts";
@@ -125,7 +125,18 @@ export function maybeTriggerSurveySync(maxLagTicks: number, tenants: readonly st
   return true;
 }
 
-/** 桥状态（调试端点用）：最后触发/结果/同步时间。 */
-export function surveySyncBridgeState(): { lastAttemptAt: number; running: boolean; lastResult: string | null; lastSyncAt: number | null } {
-  return { ...state };
+/** 最近 N 条同步日志（sync-guard.log，面板侧综合调试——不用开文件看测绘保鲜活动）。 */
+function recentSyncLogLines(n = 4): string[] {
+  try {
+    if (!existsSync(LOG_FILE)) return [];
+    const raw = readFileSync(LOG_FILE, "utf8");
+    return raw.split(/\r?\n/).filter((l) => l.trim() !== "").slice(-n);
+  } catch {
+    return [];
+  }
+}
+
+/** 桥状态（调试端点用）：最后触发/结果/同步时间 + 最近日志。 */
+export function surveySyncBridgeState(): { lastAttemptAt: number; running: boolean; lastResult: string | null; lastSyncAt: number | null; recentLog: string[] } {
+  return { ...state, recentLog: recentSyncLogLines() };
 }
