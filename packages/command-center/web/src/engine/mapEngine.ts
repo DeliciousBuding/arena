@@ -4343,6 +4343,22 @@ export function createMapEngine(host: any) {
   minimap.init();
   const api = {
     toggleSolo: (t: any) => toggleSolo(t),
+    focusTenant: (t: any) => {
+      // 决策流点击联动（2026-08-08）：聚焦该租户并 fitSolo 定位；已聚焦则重置视野到全貌。
+      if (state.soloTenant !== t) {
+        state.soloTenant = t;
+        invalidateStatic();
+        fitSolo(t);
+        tactShowTenant(t);
+        syncSoloBadge();
+        emit('solo', state.soloTenant);
+        els.respawnOverlay.hidden = true;
+        toast(`已定位 ${t.toUpperCase()} · 决策流聚焦（Esc/G 返回全局）`, 'info');
+      } else {
+        fitSolo(t);
+        draw();
+      }
+    },
     exitSolo: () => exitSolo(),
     fitView: () => fitView(),
     fitSolo: (t: any) => fitSolo(t),

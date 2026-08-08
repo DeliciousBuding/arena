@@ -308,7 +308,9 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
             if (r.rotationGeneration != null) extra.push(`rot ${r.rotationGeneration}`);
             const detail = [lat.join(" · "), extra.join(" · ")].filter(Boolean).join(" · ");
             return (
-              <div key={`${r.tenant}:${r.tick}:${outcome}:${submit}`} className={`stream-line${quiet ? " st-quiet" : ""}`} style={{ ["--tc" as string]: color }}>
+              <div key={`${r.tenant}:${r.tick}:${outcome}:${submit}`} className={`stream-line${quiet ? " st-quiet" : ""} clickable`} style={{ ["--tc" as string]: color }}
+                title={`点击聚焦 ${r.tenant.toUpperCase()} · 定位该租户决策动线`}
+                onClick={() => { const e = getEngine(); if (e) e.focusTenant(r.tenant); }}>
                 <span className="st-tenant">{r.tenant.toUpperCase()}</span>
                 <span className="st-tick">{fmt(r.tick)}</span>
                 <span className="st-kind" style={{ color }}>{kindCn}</span>
