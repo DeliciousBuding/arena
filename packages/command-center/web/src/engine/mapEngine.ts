@@ -361,6 +361,7 @@ async function poll() {
   const overview = oR.status === 'fulfilled' ? oR.value : null;
   const map = mR.status === 'fulfilled' ? mR.value : null;
   const intel = iR.status === 'fulfilled' ? iR.value : null;
+  const pollOk = !!overview; // 退避信号：overview 拿到=成功（map/intel 容错降级不算失败）
   try {
     if (overview) state.overview = overview;
     if (intel) { state.intel = intel; emit('intel', intel); }
@@ -371,7 +372,7 @@ async function poll() {
       if (!state.view.ready && state.bounds && state.cells.length) fitView();
       emit('overview', state.overview);
       draw();
-      return;
+      return pollOk;
     }
     state.map = map;
     state.cells = map.cells ?? [];
@@ -426,7 +427,9 @@ async function poll() {
   } catch (err) {
     emit('refresh', false);
     console.warn('poll failed', err);
+    return false;
   }
+  return pollOk;
 }
 
 let pollStreamsTick = 0;
@@ -2151,10 +2154,17 @@ async function boot() {
   await poll();
   emit('refresh', true);
   pollStreams();
-  setInterval(async () => {
-    await poll();
-    emit('refresh', true);
-  }, POLL_MS);
+  // 退避调度（2026-08-09）：连续失败指数退避 3s→6→12→24→30s 上限；
+  // 成功归零。setInterval 改 setTimeout 递归，间隔随失败次数动态增长。
+  let pollFailCount = 0;
+  async function pollLoop() {
+    const ok = await poll();
+    emit('refresh', ok);
+    pollFailCount = ok ? 0 : pollFailCount + 1;
+    const delay = pollFailCount === 0 ? POLL_MS : Math.min(30000, POLL_MS * 2 ** pollFailCount);
+    setTimeout(pollLoop, delay);
+  }
+  pollLoop();
   setInterval(() => { pollStreams(); }, POLL_MS);
   // 高刷/低耗调度（175Hz 显示器）：有动画/回放/单位移动/命令倒计时时 rAF 全速
   // （~175fps），空闲时降频 setTimeout（~8fps）只做轻量检查——175Hz 下 rAF 每帧
