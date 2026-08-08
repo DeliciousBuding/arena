@@ -67,6 +67,11 @@ export interface PipelineHealthPayload {
     lagTrend: { direction: "narrowing" | "widening" | "stable"; delta: number; samples: number } | null;
     /** 数据源新鲜度表（2026-08-08）。 */
     sources: readonly SourceFreshness[];
+    /** 决策数据新鲜度（2026-08-08，管线→决策链路）：decision-input/地图/日记
+     *  依赖 survey-db（refill/chunkCoverage/coreThreats/miningCandidates）——
+     *  其数据年龄 = 同步水位滞后（lagTicks × 15s/tick）。指挥者可判断"决策
+     *  是否基于最新测绘"。 */
+    decisionFreshness: { lagTicks: number; lagSeconds: number; healthy: boolean } | null;
     /** 矿生命周期闭环状态（2026-08-08）：OK=负态在流动（采集事件正确回写）/
      *  STALLED=有采集事件但负态为 0（survey-sync 静默空跑——如 --data-root 缺失
      *  时全 visible 回归的根因类）/ NO_DATA=无采集事件（数据不足，不算故障）。 */
@@ -77,6 +82,11 @@ export interface PipelineHealthPayload {
 
 /** 滞后阈值：超过视为 STALE（约 8 分钟，tick≈0.8s 量级）。 */
 const STALE_LAG_TICKS = 600;
+/** 生产 tick 间隔（秒）：world stale 90s/6 tick 同口径——决策数据滞后换算。 */
+export const TICK_SECONDS = 15;
+/** 决策数据滞后健康阈值（tick）：≤ 60 ≈ 1 分钟内决策数据即算新鲜（与
+ *  survey-sync-bridge LAG_TRIGGER_TICKS 对齐——超过会触发补同步）。 */
+export const DECISION_FRESH_TICKS = 60;
 
 const HEALTH_TTL_MS = 15_000;
 const healthCache = new TtlCache<PipelineHealthPayload>(HEALTH_TTL_MS);
@@ -179,8 +189,11 @@ function fileAgeSeconds(path: string): number | null {
   }
 }
 
-/** 数据源新鲜度（2026-08-08）：取各源最新文件 mtime → 年龄 + 陈旧标记。纯文件读取。 */
-export function computeSourceFreshness(dataRoot: string = DATA_ROOT): SourceFreshness[] {
+/** 数据源新鲜度（2026-08-08）：取各源最新文件 mtime → 年龄 + 陈旧标记。纯文件读取。
+ *  surveyLagTicks：survey-db 同步水位滞后（tick），非必传——传入时 surveyDb
+ *  detail 显示双指标「lag N tick / age s 前同步」（age 只反映距上次同步，数据
+ *  实际滞后看 lag；避免 254s 被误读为 4 分钟旧数据）。 */
+export function computeSourceFreshness(dataRoot: string = DATA_ROOT, surveyLagTicks?: number | null): SourceFreshness[] {
   // live world：各租户最新 calibration case 文件（取最年轻）
   let worldAge: number | null = null;
   for (const t of TENANTS) {
@@ -207,11 +220,20 @@ export function computeSourceFreshness(dataRoot: string = DATA_ROOT): SourceFres
   } catch { /* 忽略 */ }
   const shopAge = fileAgeSeconds(join(dataRoot, "runtime", "shop-history.jsonl"));
   const auditAge = fileAgeSeconds(join(dataRoot, "runtime", "human-command-audit.jsonl"));
-  const mk = (name: SourceFreshness["name"], age: number | null): SourceFreshness => ({
-    name, ageSeconds: age, stale: age !== null && age > SOURCE_STALE_SECONDS[name],
-    detail: age === null ? "缺失" : age + "s",
-  });
-  return [mk("world", worldAge), mk("surveyDb", dbAge), mk("leaderboard", lbAge), mk("shop", shopAge), mk("humanAudit", auditAge)];
+  const mk = (name: SourceFreshness["name"], age: number | null, lagTicks?: number | null): SourceFreshness => {
+    let detail = age === null ? "缺失" : age + "s";
+    if (name === "surveyDb" && age !== null && lagTicks !== null && lagTicks !== undefined) {
+      detail = `lag ${lagTicks} tick / ${age}s 前同步`;
+    }
+    return { name, ageSeconds: age, stale: age !== null && age > SOURCE_STALE_SECONDS[name], detail };
+  };
+  return [
+    mk("world", worldAge),
+    mk("surveyDb", dbAge, surveyLagTicks),
+    mk("leaderboard", lbAge),
+    mk("shop", shopAge),
+    mk("humanAudit", auditAge),
+  ];
 }
 
 /** 矿生命周期闭环守卫（2026-08-08）：有采集事件但负态为 0 → survey-sync 事件
@@ -246,17 +268,24 @@ export function loadPipelineHealth(): PipelineHealthPayload {
       })()
     : null;
   const lifecycleFlow = computeLifecycleFlow(tenants);
+  const avgLagTicks = Math.round(avgLag);
+  const decisionFreshness = {
+    lagTicks: avgLagTicks,
+    lagSeconds: avgLagTicks * TICK_SECONDS,
+    healthy: avgLagTicks <= DECISION_FRESH_TICKS,
+  };
   const payload: PipelineHealthPayload = {
     generatedAt: new Date().toISOString(),
     tenants,
     global: {
       maxLagTicks: maxLag,
-      avgLagTicks: Math.round(avgLag),
+      avgLagTicks,
       staleTenants,
       missingTenants,
       healthy: staleTenants.length === 0 && missingTenants.length === 0 && lifecycleFlow !== "STALLED",
       lagTrend,
-      sources: computeSourceFreshness(),
+      sources: computeSourceFreshness(undefined, avgLagTicks),
+      decisionFreshness,
       lifecycleFlow,
     },
     cachedAt: new Date().toISOString(),
