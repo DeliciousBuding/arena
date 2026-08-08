@@ -48,6 +48,9 @@ export interface PipelineHealthPayload {
     staleTenants: readonly string[];
     missingTenants: readonly string[];
     healthy: boolean;
+    /** 滞后趋势（2026-08-08）：滚动窗口内 avgLag 变化方向 + delta——同步水位在
+     *  缩小（narrowing）/扩大（widening）/稳定（stable）。样本 <3 时 null。 */
+    lagTrend: { direction: "narrowing" | "widening" | "stable"; delta: number; samples: number } | null;
   };
   cachedAt: string;
 }
@@ -57,6 +60,10 @@ const STALE_LAG_TICKS = 600;
 
 const HEALTH_TTL_MS = 15_000;
 const healthCache = new TtlCache<PipelineHealthPayload>(HEALTH_TTL_MS);
+
+/** 滞后历史滚动窗口（2026-08-08）：最近 LAG_HISTORY_MAX 次 avgLag 采样，趋势判断用。 */
+const LAG_HISTORY_MAX = 20;
+const lagHistory: number[] = [];
 
 function num(v: unknown): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -132,6 +139,18 @@ export function loadPipelineHealth(): PipelineHealthPayload {
   const avgLag = lags.length > 0 ? lags.reduce((a, b) => a + b, 0) / lags.length : 0;
   const staleTenants = tenants.filter((t) => t.health === "STALE").map((t) => t.tenant);
   const missingTenants = tenants.filter((t) => t.health === "MISSING").map((t) => t.tenant);
+  // 滞后趋势（2026-08-08）：滚动 avgLag 比较最近 3 次采样（15s×2=30s 窗口）。
+  lagHistory.push(Math.round(avgLag));
+  if (lagHistory.length > LAG_HISTORY_MAX) lagHistory.shift();
+  const lagTrend = lagHistory.length >= 3
+    ? (() => {
+        const prev = lagHistory[lagHistory.length - 3];
+        const cur = lagHistory[lagHistory.length - 1];
+        const delta = cur - prev;
+        const direction = delta < 0 ? "narrowing" as const : delta > 0 ? "widening" as const : "stable" as const;
+        return { direction, delta, samples: lagHistory.length };
+      })()
+    : null;
   const payload: PipelineHealthPayload = {
     generatedAt: new Date().toISOString(),
     tenants,
@@ -141,6 +160,7 @@ export function loadPipelineHealth(): PipelineHealthPayload {
       staleTenants,
       missingTenants,
       healthy: staleTenants.length === 0 && missingTenants.length === 0,
+      lagTrend,
     },
     cachedAt: new Date().toISOString(),
   };
