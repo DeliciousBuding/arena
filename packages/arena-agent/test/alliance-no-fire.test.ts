@@ -115,7 +115,7 @@ test("roster 文件：原子写 → 读取往返；损坏降级 null", () => {
   const dir = mkdtempSync(join(tmpdir(), "arena-roster-"));
   try {
     const file = {
-      schema: ALLIANCE_ROSTER_SCHEMA,
+      schema: "alliance-roster-file-v1" as const,
       revision: 7,
       updatedAtMs: 123456789,
       allyEntityIds: ["core-a", "unit-1"],
