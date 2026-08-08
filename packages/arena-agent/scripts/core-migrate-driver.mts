@@ -36,6 +36,8 @@ interface Args {
   readonly dataRoot: string;
   /** 不用 survey 累积障碍（长距离开阔地误判绕障 2026-08-08 t1 实证）；只信实时视野障碍。 */
   readonly noSurveyObstacles: boolean;
+  /** 军事护航（2026-08-08）：最近 VANGUARD goto 核心前方 2 格开路，防止被围+发现敌核。 */
+  readonly escort: boolean;
 }
 
 function parseArgs(argv: readonly string[]): Args {
@@ -53,6 +55,7 @@ function parseArgs(argv: readonly string[]): Args {
     force: argv.includes("--force"),
     dataRoot: get("data-root") ?? DATA_ROOT,
     noSurveyObstacles: get("no-survey-obstacles") === "1" || get("no-survey-obstacles") === "true",
+    escort: argv.includes("--escort"),
   };
 }
 
@@ -64,6 +67,8 @@ interface CalibCase {
    *  START_MOVE CELL_UNIT_LIMIT 根因（2026-08-08 t1 实证：RIGHT 2 worker、UP 1、
    *  DOWN 2，核心无法移动）。driver 需先让位目标格 worker 再启动核心移动。 */
   readonly coreNeighborUnits: ReadonlyMap<string, { readonly id: string; readonly type: string }[]>;
+  /** 全部我方单位（护航找最近 VANGUARD 用）。 */
+  readonly units: readonly { id: string; type: string; position: [number, number]; hp: number }[];
 }
 
 function calibrationDir(tenant: string): string {
@@ -122,6 +127,17 @@ function readLatestCore(tenant: string): CalibCase | null {
       list.push({ id: o.id, type: String(o.unit_type ?? "?") });
       neighborUnits.set(key, list);
     }
+    const units = objs
+      .filter((o) => o.kind === "UNIT")
+      .map((o) => {
+        const u = o as { id?: string; unit_type?: string; position?: [number, number]; hp?: number };
+        return {
+          id: String(u.id ?? ""),
+          type: String(u.unit_type ?? "?"),
+          position: [u.position?.[0] ?? 0, u.position?.[1] ?? 0] as [number, number],
+          hp: Number(u.hp ?? 0),
+        };
+      });
     // 合并 survey 全局测绘障碍（2026-08-08 修复）：calibration 视野障碍只有十几个且
     // 不稳定（t4 x=400 峡谷实证——(399,-155) 实为可走格却被视野障碍困住），
     // survey 库是全量累积测绘，路径规划更准。返回完整 CalibCase（Set 会被
@@ -133,6 +149,7 @@ function readLatestCore(tenant: string): CalibCase | null {
         ? obstacles
         : mergeObstacleSets(loadSurveyObstacles(args.tenant), obstacles),
       coreNeighborUnits: neighborUnits,
+      units,
     };
   } catch {
     return null;
@@ -228,7 +245,11 @@ interface WireCommand {
   readonly note?: string;
 }
 
-function writeCommands(tenant: string, commands: readonly WireCommand[]): void {
+function writeCommands(
+  tenant: string,
+  commands: readonly WireCommand[],
+  escortGoal?: { unitId: string; kind: "goto"; target: [number, number]; note: string; createdAt: string } | null,
+): void {
   const path = storePath(tenant);
   const existing = existsSync(path)
     ? (() => { try { return JSON.parse(readFileSync(path, "utf8")) as { mode?: string; version?: number }; } catch { return {}; } })()
@@ -244,8 +265,8 @@ function writeCommands(tenant: string, commands: readonly WireCommand[]): void {
       note: c.note ?? "core-migrate-driver 直迁",
       createdAt: now,
     })),
-    // 保留已有持续意图（goals：核心迁移清场的 worker 疏散不能被子 driver 覆盖）
-    goals: existing.goals ?? [],
+    // 保留已有持续意图（goals：worker 疏散）+ 可选护航 goal
+    goals: [...(existing.goals ?? []), ...(escortGoal ? [escortGoal] : [])],
     updatedAt: now,
   };
   writeFileSync(path, JSON.stringify(store, null, 2), "utf-8");
@@ -360,7 +381,19 @@ for (let step = 0; step < args.maxSteps; step += 1) {
   }
 
   cmds.push({ unitId: live.core.id, action: { type: "START_MOVE", direction: plan.dir }, note: "core-migrate-driver 直迁" });
-  writeCommands(args.tenant, cmds);
+  // 军事护航：最近 VANGUARD goto 核心前方 2 格（占位开路、发现敌核；不挡核心 4 邻）
+  let escortGoal: { unitId: string; kind: "goto"; target: [number, number]; note: string; createdAt: string } | null = null;
+  if (args.escort) {
+    const vanguards = live.units.filter((u) => u.type === "VANGUARD");
+    if (vanguards.length > 0) {
+      vanguards.sort((a, b) => chebyshev(a.position, core) - chebyshev(b.position, core));
+      const v = vanguards[0];
+      const fx = core[0] + delta[0] * 2;
+      const fy = core[1] + delta[1] * 2;
+      escortGoal = { unitId: v.id, kind: "goto", target: [fx, fy], note: "core-migrate 护航", createdAt: new Date().toISOString() };
+    }
+  }
+  writeCommands(args.tenant, cmds, escortGoal);
   log(`发出 START_MOVE ${plan.dir}（候选: ${plan.candidates.join(" > ")}${plan.detour ? " [绕障]" : ""}${ownBlockers.length > 0 ? ` +${ownBlockers.length} 让位` : ""}）`);
   nav.lastDir = plan.dir;
   await new Promise((r) => setTimeout(r, args.intervalMs));
