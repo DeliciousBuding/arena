@@ -31,6 +31,8 @@ export interface WorkerLivenessIncident {
   priorIntent: string | null;
   recentPositions: readonly (readonly [number, number])[];
   uniqueRecentPositions: number | null;
+  explorationChunk: string | null;
+  knownExplorationChunks: number | null;
   recoveryCount: number;
   recoveryApplied: boolean;
   recoveryError: string | null;
@@ -74,6 +76,8 @@ interface RuntimeLine extends Record<string, unknown> {
   priorIntent?: unknown;
   recentPositions?: unknown;
   uniqueRecentPositions?: unknown;
+  explorationChunk?: unknown;
+  knownExplorationChunks?: unknown;
   recoveryCount?: unknown;
   recoveryApplied?: unknown;
   recoveryError?: unknown;
@@ -148,6 +152,8 @@ export function aggregateWorkerLiveness(tenant: string, rows: readonly RuntimeLi
       priorIntent: text(row.priorIntent),
       recentPositions: positions(row.recentPositions),
       uniqueRecentPositions: finiteNumber(row.uniqueRecentPositions),
+      explorationChunk: text(row.explorationChunk),
+      knownExplorationChunks: finiteNumber(row.knownExplorationChunks),
       recoveryCount,
       recoveryApplied: row.recoveryApplied === true,
       recoveryError: text(row.recoveryError),

@@ -96,6 +96,42 @@ test("WorkerLiveness: 正常探索移动大量不同格不报警", () => {
   assert.equal(events.length, 0);
 });
 
+test("WorkerLiveness: survey 一直在同一已知 chunk 内移动 → exploration_no_novelty", () => {
+  const tracker = new WorkerLivenessTracker({
+    graceTicks: 0,
+    explorationNoNoveltyTicks: 4,
+    oscillationWindowTicks: 12,
+    moveNoEffectTicks: 99,
+  });
+  tracker.seedKnownChunks(["0,0"]);
+  const events = [];
+  for (let tick = 1; tick <= 5; tick += 1) {
+    events.push(...feed(tracker, tick, [tick - 1, 0], { type: "MOVE", direction: "RIGHT" }, "worker_survey"));
+  }
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.kind, "exploration_no_novelty");
+  assert.equal(events[0]?.streak, 4);
+  assert.equal(events[0]?.explorationChunk, "0,0");
+  assert.equal(events[0]?.knownExplorationChunks, 1);
+  assert.equal(events[0]?.uniqueRecentPositions, 5, "细粒度位置在变，但粗粒度覆盖没有扩张");
+});
+
+test("WorkerLiveness: 跨入另一个 chunk 算 coverage progress，不误伤补测/穿越", () => {
+  const tracker = new WorkerLivenessTracker({
+    graceTicks: 0,
+    explorationNoNoveltyTicks: 3,
+    oscillationWindowTicks: 12,
+    moveNoEffectTicks: 99,
+  });
+  tracker.seedKnownChunks(["0,0"]);
+  const positions: Position[] = [[13, 0], [14, 0], [15, 0], [16, 0], [17, 0], [18, 0]];
+  const events = [];
+  for (let index = 0; index < positions.length; index += 1) {
+    events.push(...feed(tracker, index + 1, positions[index]!, { type: "MOVE", direction: "RIGHT" }, "worker_survey"));
+  }
+  assert.equal(events.length, 0);
+});
+
 test("WorkerLiveness: 人类显式接管期间不自动恢复", () => {
   const tracker = new WorkerLivenessTracker({ graceTicks: 0 });
   const events = [];
