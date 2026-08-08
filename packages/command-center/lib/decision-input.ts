@@ -72,6 +72,10 @@ export interface MiningCandidateInput {
   harvestFail: number;
   /** 活跃度（seenCount/age）。 */
   activity: number;
+  /** 同格敌情威胁（2026-08-08）：consensus-mining 威胁级 0-3 ——
+   *  mission 层派工时可优先回避 threatLevel>=2 高危格（与 refillPredictions 同格一致）。 */
+  threatLevel: 0 | 1 | 2 | 3;
+  threatCombat: number;
 }
 
 export interface DecisionInputPayload {
@@ -196,15 +200,20 @@ export function loadDecisionInput(tenant: string): DecisionInputPayload {
   let miningCandidates: MiningCandidateInput[] = [];
   try {
     const util = loadMineUtilization().tenants?.[tenant];
-    miningCandidates = (util?.candidates ?? []).slice(0, 40).map((c) => ({
-      cell: c.cell,
-      x: c.x,
-      y: c.y,
-      lastSeenTick: c.lastSeenTick ?? 0,
-      gapAgeTicks: c.gapAgeTicks ?? null,
-      harvestFail: c.harvestFail ?? 0,
-      activity: c.activity ?? 0,
-    }));
+    miningCandidates = (util?.candidates ?? []).slice(0, 40).map((c) => {
+      const th = threatByCell.get(c.cell);
+      return {
+        cell: c.cell,
+        x: c.x,
+        y: c.y,
+        lastSeenTick: c.lastSeenTick ?? 0,
+        gapAgeTicks: c.gapAgeTicks ?? null,
+        harvestFail: c.harvestFail ?? 0,
+        activity: c.activity ?? 0,
+        threatLevel: th?.threatLevel ?? 0,
+        threatCombat: th?.threatCombat ?? 0,
+      };
+    });
   } catch { /* 矿利用数据不可用不阻断 */ }
   const payload = buildDecisionInput(tenant, currentTick, patterns.tenants?.[tenant]?.predictions ?? [], chunkRows, threatByCell, resurveyRows, coreThreats, miningCandidates);
   cache.set(key, payload);
