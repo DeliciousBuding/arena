@@ -29,6 +29,7 @@ import { PhaseMachine } from "../domain/phase-machine.ts";
 import { type CoreHuntTarget, World } from "../domain/world.ts";
 import {
   assessThreat,
+  advanceRecentAttack,
   coreDamagedThisTick,
   projectedDamageOnCore,
   type ThreatAssessment,
@@ -367,6 +368,9 @@ export class SafetyPlanner {
   private allocatedMines = new Map<string, number>();
   /** 本 tick 威胁评估（threatBreakout 用）：decide 入口计算一次供 worker 消费。 */
   private currentThreat: ThreatAssessment | null = null;
+  /** 受击记忆到期 tick（2026-08-08 对齐竞品 recent_core_attack）：Core 受击后
+   *   RECENT_ATTACK_MEMORY_TICKS 内保持 ENGAGED，即使敌人消失也不立刻放松。 */
+  private recentAttackUntilTick = 0;
   /** B5 突击组被拦截后的返回截止 tick（unitId → tick；8-tick 防抖动记忆）。 */
   private detachedReturnUntil = new Map<string, number>();
   /** 远端军事回援状态（unitId → 回援截止 tick；remoteReinforce 候选）。 */
@@ -888,8 +892,17 @@ export class SafetyPlanner {
       enemyNearCore: countEnemiesNearCore(state, this.config.threatEnemyDistance),
     });
     // 威胁评估（threatBreakout 用）：decide 入口算一次（有 Core 且有可见敌时）。
+    // 受击记忆推进（对齐竞品 recent_core_attack）：本 tick Core 受击则刷新记忆
+    //   （即使无可见敌也保持 ENGAGED，防打完就跑后立刻放松）。
+    this.recentAttackUntilTick = advanceRecentAttack(
+      state.tick,
+      state.core !== null && coreDamagedThisTick(state.events),
+      this.recentAttackUntilTick,
+    );
+    // 威胁评估（threatBreakout 用）：decide 入口算一次（有 Core 时；受击记忆保持
+    //   需要无可见敌也评估——recentAttackUntilTick 未过期返回 ENGAGED）。
     this.currentThreat = null;
-    if (state.core !== null && state.visibleEnemies.length > 0) {
+    if (state.core !== null) {
       this.currentThreat = assessThreat({
         core: state.core.position,
         visibleEnemies: state.visibleEnemies,
@@ -898,6 +911,8 @@ export class SafetyPlanner {
         obstacles: this.world.obstacles(state.obstacleCells),
         resourceCells: state.resourceCells,
         coreWatch: this.world.coreWatchTargets(this.config.coreThreatWatchTicks ?? CORE_THREAT_WATCH_TICKS),
+        recentAttackUntilTick: this.recentAttackUntilTick,
+        tick: state.tick,
       });
     }
     // MOVE_FAILED 反馈（moveFailedAvoidance）：上 tick 结算拒绝的单位计连续失败，
@@ -1582,7 +1597,17 @@ export class SafetyPlanner {
           }
         }
       }
-      const direction = stepToward(unit.position, target, movementObstacles);
+      // 巡逻不穿核心格（2026-08-08，t3 振荡修复）：空载 worker 去巡逻点时若
+      // 目标在核心对侧，stepToward 第一步会穿回核心格（生产格）→ 与
+      // worker_clear_core_empty 交替振荡（t3 实证 pop 冻结 1、res 恒 5、
+      // emergency_spawn_worker/worker_clear_core_empty 每 tick 互切 100+ tick）。
+      // 去巡逻点（target !== home）且非满载时把核心格临时视为禁入——BFS 自动
+      // 绕行，不再穿核心格。满载回核心卸货走 cargo 分支（不经此处），不受影响。
+      const patrolObstacles =
+        home !== null && target !== home && (unit.cargo ?? 0) === 0
+          ? new Set(movementObstacles).add(cellKey(home))
+          : movementObstacles;
+      const direction = stepToward(unit.position, target, patrolObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "patrol");
     }
   }
