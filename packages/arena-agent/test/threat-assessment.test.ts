@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import type { Position, TickState, VisibleEntity } from "../src/domain/model.ts";
-import { assessThreat, coreDamagedThisTick, damagedThisTick } from "../src/domain/threat.ts";
+import { advanceRecentAttack, assessThreat, coreDamagedThisTick, damagedThisTick } from "../src/domain/threat.ts";
 import { World } from "../src/domain/world.ts";
 
 const CORE: Position = [0, 0];
@@ -376,4 +376,36 @@ test("威胁评估：可见敌存在时近核观察不覆盖（可见敌路径�
   // 可见敌静止 12 格外 + 观察战斗单位 → ALERT（入侵观察仍生效：家边有战斗单位盘踞）
   assert.equal(result.level, "ALERT");
   assert.equal(result.reason, "invasion_watch");
+});
+
+test("受击记忆：Core 受击后无可见敌仍保持 ENGAGED（recent_attack_memory）", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [],
+    enemyHints: [],
+    coreDamagedThisTick: false,
+    recentAttackUntilTick: 15,
+    tick: 12,
+  });
+  assert.equal(result.level, "ENGAGED");
+  assert.equal(result.reason, "recent_attack_memory");
+});
+
+test("受击记忆：记忆过期后恢复 NORMAL", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [],
+    enemyHints: [],
+    coreDamagedThisTick: false,
+    recentAttackUntilTick: 15,
+    tick: 16,
+  });
+  assert.equal(result.level, "NORMAL");
+});
+
+test("advanceRecentAttack：受击刷新到期、未受击保留、过期自然失效", () => {
+  assert.equal(advanceRecentAttack(10, true, 0), 15); // tick + 6 - 1
+  assert.equal(advanceRecentAttack(12, false, 15), 15); // 保留
+  assert.equal(advanceRecentAttack(12, false, 0), 0); // 从未受击保持 0
+  assert.equal(advanceRecentAttack(12, true, 10), 17); // 受击刷新 max
 });
