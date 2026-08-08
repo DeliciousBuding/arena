@@ -13,6 +13,8 @@ interface Advice {
   detail: string;
   action: string;
   weight: number;
+  confidence?: number;
+  evidence?: { type?: string; tenant?: string; ref?: string } | string;
   at: string;
 }
 interface AdvicePayload { generatedAt?: string; advice?: Advice[]; summary?: { critical: number; high: number; medium: number; info: number } }
@@ -20,6 +22,18 @@ interface AdvicePayload { generatedAt?: string; advice?: Advice[]; summary?: { c
 const SEV_CN: Record<string, string> = { CRITICAL: "危急", HIGH: "高", MEDIUM: "中", INFO: "提示" };
 const CAT_CN: Record<string, string> = { ECONOMY: "经济", MILITARY: "军事", THREAT: "威胁", CONFLICT: "冲突", INTEL: "情报" };
 const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
+
+/** 证据链摘要：后端 /api/alliance/advice 的 evidence 对象 → 一行人类可读来源。 */
+const EVIDENCE_TYPE_CN: Record<string, string> = { world: "世界态", heat: "敌情热区", intel: "情报", economy: "经济", survey: "测绘" };
+const fmtEvidence = (ev: Advice["evidence"]): string => {
+  if (!ev) return "";
+  if (typeof ev === "string") return ev;
+  const parts: string[] = [];
+  if (ev.type) parts.push(EVIDENCE_TYPE_CN[ev.type] ?? ev.type);
+  if (ev.tenant) parts.push(ev.tenant.toUpperCase());
+  if (ev.ref) parts.push(ev.ref);
+  return parts.join(" · ");
+};
 
 export function AdvicePanel() {
   const [data, setData] = useState<AdvicePayload | null>(null);
@@ -63,12 +77,16 @@ export function AdvicePanel() {
               <li key={i} className={`adv-item adv-${a.severity.toLowerCase()}`}>
                 <div className="adv-top">
                   <span className="adv-sev">{SEV_CN[a.severity] ?? a.severity}</span>
+                  {a.confidence != null ? (
+                    <span className="adv-conf mono" title={"置信度 " + Math.round(a.confidence * 100) + "%"} style={{ color: a.confidence >= 0.8 ? "var(--success)" : "var(--text-dim)" }}>{Math.round(a.confidence * 100)}%</span>
+                  ) : null}
                   {a.tenant ? <span className="adv-tenant" style={{ color: TENANT_COLORS[a.tenant] ?? "#999" }}>{a.tenant.toUpperCase()}</span> : null}
                   <span className="adv-cat mono dim">{CAT_CN[a.category] ?? a.category}</span>
                 </div>
                 <b className="adv-title">{a.title}</b>
                 <p className="adv-detail dim">{a.detail}</p>
                 {a.action ? <p className="adv-action"><span className="adv-action-label">建议</span>{a.action}</p> : null}
+                {a.evidence ? <p className="adv-evidence dim" title="决策证据来源（后端证据链）">证据 · {fmtEvidence(a.evidence)}</p> : null}
               </li>
             ))}
           </ul>
