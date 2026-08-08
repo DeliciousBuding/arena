@@ -81,6 +81,10 @@ export interface MinePatternsPayload {
   generatedAt: string;
   tenant: string;
   tenants: Record<string, MineTenantPattern>;
+  /** 模型局限说明（2026-08-08）：resource_seen_history 是观测记录，非资源生命周期——
+   *  观测间隔 ≠ 资源缺席。实测已过预测时间命中率 0%（401 样本、四租户），refill 预测
+   *  不能用于死矿剔除/刷新计时，只能作低优先级参考。消费方（mission Phase 2）应据此调整。 */
+  modelCaveat: string;
   cachedAt: string;
 }
 
@@ -338,10 +342,16 @@ export function loadMinePatterns(tenant = "all"): MinePatternsPayload {
   const tenants = tenant === "all" ? [...TENANTS] : [tenant];
   const perTenant: Record<string, MineTenantPattern> = {};
   for (const t of tenants) perTenant[t] = tenantPattern(t);
+  const evaluated = Object.values(perTenant).reduce((a, p) => a + (p.predictionAccuracy?.evaluated ?? 0), 0);
+  const hits = Object.values(perTenant).reduce((a, p) => a + (p.predictionAccuracy?.hits ?? 0), 0);
+  const caveat = evaluated > 0 && hits / evaluated < 0.1
+    ? `观测间隔≠资源缺席：refill 预测已过预期命中率 ${hits}/${evaluated}（${Math.round((hits / evaluated) * 100)}%）——resource_seen_history 只记观测 tick，矿格长时间未被测绘即被误判"失联/死矿"。建议按 lastSeenTick 新鲜度派工，勿按 refill 预测剔除。`
+    : "refill 预测命中率正常（样本不足或命中率高），可作刷新参考。";
   const payload: MinePatternsPayload = {
     generatedAt: new Date().toISOString(),
     tenant,
     tenants: perTenant,
+    modelCaveat: caveat,
     cachedAt: new Date().toISOString(),
   };
   patternCache.set(key, payload);
