@@ -448,6 +448,12 @@ export interface SafetyPlannerConfig {
   readonly weakCoreFirst?: boolean;
   /** 弱核优先的守军记忆窗口（默认 20 tick，enemyCoreForces maxAge）。 */
   readonly weakCoreFirstForceTicks?: number;
+  /** 联盟 no-fire 硬规则（2026-08-08，alliance-no-fire-v1）：租户加载联盟
+   *  roster（受控实体 id 并集）后，decide 将联盟友军从可见敌人/威胁/打击目标
+   *  中剔除——knownAllianceEntityId => never deliberate target（spec §5.5），
+   *  防抱团联防时误伤自家账号单位（UNIT 视图无 owner_username，只能按 id）。
+   *  默认 false；true 时 tenant-runtime 才会加载 roster 文件。 */
+  readonly allianceNoFire?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

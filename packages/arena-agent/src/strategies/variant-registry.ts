@@ -58,6 +58,15 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "assault-overmatch-v1": Object.freeze({ assaultOvermatch: true }),
     /**
+     * 联盟 no-fire 硬规则（2026-08-08，alliance-no-fire-v1）：租户加载联盟
+     *  roster（supervisor 聚合受控实体 id 并集 → data/runtime/alliance/roster.json）
+     *  后，SafetyPlanner 将联盟友军从可见敌人/威胁/打击目标剔除——
+     *  knownAllianceEntityId => never deliberate target（spec §5.5），防抱团联防
+     *  时误伤自家账号（UNIT 视图无 owner_username，只能按实体 id）。默认关闭；
+     *  四线统一启用后联盟单位互相接近不再互打。
+     */
+    "alliance-no-fire-v1": Object.freeze({ allianceNoFire: true }),
+    /**
      * 攻坚集结（2026-08-08，guide "有护卫 Core 先退到安全集结点、全员到齐再共同
      * 出击"对照，t2 jerkman 二轮 5R 全灭实证）：aggressive 无可见敌人对已知敌 Core
      * 记忆攻坚时，军事单位先到敌核外圈安全集结位（Chebyshev 5，Vanguard 射程 1 /
