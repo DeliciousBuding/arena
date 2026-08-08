@@ -20,10 +20,21 @@ import {
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../src/strategies/safety-planner.ts";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const COORDINATION_ROOT = join(PACKAGE_ROOT, "..", "..", "..");
+function findCoordinationRoot(start: string): string {
+  let current = start;
+  for (let depth = 0; depth < 12; depth += 1) {
+    if (existsSync(join(current, "reference", "arena-hero-python"))) return current;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return join(PACKAGE_ROOT, "..", "..", "..");
+}
+const COORDINATION_ROOT = findCoordinationRoot(PACKAGE_ROOT);
 const CORE_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-guide");
 const SDK_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-python");
 const FARMER_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-agent");
+const EVOLVE_REPO = join(COORDINATION_ROOT, "reference", "arena-evolve");
 
 const MANIFEST_PATH = "src/sim/contracts/rules-v0.14.json";
 
@@ -48,6 +59,7 @@ test("protoPlanToPlan：unit_actions 偶发 null action 跳过（外部 agent �
 });
 
 const reposAvailable = [CORE_REPO, SDK_REPO, FARMER_REPO].every(existsSync);
+const evolveAvailable = [SDK_REPO, FARMER_REPO, EVOLVE_REPO].every(existsSync);
 
 test(
   "常驻桥：arena_core_agent 端到端短对局（--agent core 全链路）",
@@ -77,5 +89,35 @@ test(
     assert.ok(result.eventCount > 0);
     assert.ok(result.finalResources["mine"] !== undefined);
     assert.ok(result.finalResources["core-s1"] !== undefined);
+  },
+);
+
+test(
+  "常驻桥：arena-evolve 进化冠军可作为模拟器对手端到端运行",
+  { skip: evolveAvailable ? false : "reference 仓库缺失（arena-evolve/python/agent）" },
+  () => {
+    const ours: TournEntry = {
+      id: "mine",
+      desc: "my safety aggressive",
+      build: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, aggression: "aggressive", attackForce: 2 }),
+    };
+    const opponent: TournEntry = {
+      id: "arena-evolve-s1",
+      desc: "arena-evolve evolved champion",
+      build: () => {
+        const decider = new PersistentSubprocessDecider({
+          farmerRepoDir: FARMER_REPO,
+          sdkRepoDir: SDK_REPO,
+          farmerPath: join(FARMER_REPO, "arena_farmer.py"),
+          agent: "arena-evolve",
+        });
+        return new OpponentAdapter(decider, "arena-evolve-s1", "arena-evolve");
+      },
+    };
+    const result = runMatch(ours, opponent, 1, 5, MANIFEST_PATH, { validatePlans: false });
+    assert.equal(result.tickCount, 5);
+    assert.ok(result.eventCount > 0);
+    assert.ok(result.finalResources["mine"] !== undefined);
+    assert.ok(result.finalResources["arena-evolve-s1"] !== undefined);
   },
 );

@@ -67,6 +67,23 @@ export interface TournamentOptions {
   readonly validatePlans?: boolean;
 }
 
+/**
+ * 对抗平台唯一 refill 解析口：默认严格跟随官方 v0.14 的 4 resolved ticks。
+ * null 仅用于显式关闭的诊断实验；其他值必须为正整数。
+ *
+ * 1v1 / FFA 共用本函数，防止两条 runner 再次出现默认 cadence 漂移。
+ */
+export function resolveTournamentRefillConfig(
+  everyTicks: number | null | undefined,
+): Readonly<{ everyTicks: number }> | null {
+  if (everyTicks === null) return null;
+  const resolved = everyTicks ?? 4;
+  if (!Number.isSafeInteger(resolved) || resolved <= 0) {
+    throw new Error(`refillEveryTicks must be a positive safe integer or null (got ${String(everyTicks)})`);
+  }
+  return Object.freeze({ everyTicks: resolved });
+}
+
 interface ScenarioPlayerSeed {
   readonly id: string;
   readonly username: string;
@@ -298,12 +315,7 @@ export function runMatch(
     scenario?: unknown;
   },
 ): MatchResult {
-  const refillConfig =
-    opts?.refillEveryTicks === undefined
-      ? { everyTicks: 4 }
-      : opts.refillEveryTicks === null
-        ? null
-        : { everyTicks: opts.refillEveryTicks };
+  const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
   const scenario = opts?.scenario ?? makeArenaMatchScenario(a, b, seed);
   // build 移入 try：中途抛错时已建 provider 也走 finally close（卫生项，
   // 防 worker/state-slot 泄漏导致进程无法退出）。
@@ -429,18 +441,13 @@ export function runFreeForAll(
   opts?: {
     validatePlans?: boolean;
     recordTo?: string;
-    /** refill 节奏（同 runMatch）：undefined=65；null=关闭；N=每 N tick。 */
+    /** refill 节奏（同 runMatch）：undefined=4（官方 v0.14 节奏）；null=关闭；N=每 N tick。 */
     refillEveryTicks?: number | null;
     /** 自定义场景；缺省用 makeArenaScenarioN 圆周布局。场景 players 必须与 entries id 一致。 */
     scenario?: unknown;
   },
 ): MatchResult {
-  const refillConfig =
-    opts?.refillEveryTicks === undefined
-      ? { everyTicks: 65 }
-      : opts.refillEveryTicks === null
-        ? null
-        : { everyTicks: opts.refillEveryTicks };
+  const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
   const scenario = opts?.scenario ?? makeArenaScenarioN(entries, seed);
   const ids = entries.map((entry) => entry.id);
   // build 移入 try：中途抛错时已建 provider 也走 finally close（卫生项同 runMatch）。

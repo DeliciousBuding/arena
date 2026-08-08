@@ -5,7 +5,10 @@
  * At every real macro-policy decision point (MacroPolicyOrchestrator,
  * ~every intervalTicks=32), a bounded candidate set (5–20) is generated
  * around the CURRENT behavior policy: KEEP (baseline) + workerTarget ±Δ +
- * militaryRatio ±Δ + posture alternatives. The production policy path
+ * militaryRatio ±Δ + posture alternatives. Numeric candidates that collapse
+ * to the current policy after clamping are NOT emitted: KEEP is the sole
+ * identity for "no change", avoiding semantically duplicate actions in the
+ * ranking dataset. The production policy path
  * (Pi/LLM) still makes the actual choice — this module only produces the
  * candidate universe that M2 will later learn to rank. Zero action rights.
  *
@@ -49,8 +52,7 @@ function round1(value: number): number {
 
 /**
  * Generate the bounded candidate set for a decision point. The current
- * policy is ALWAYS representable: KEEP means "stay exactly as we are",
- * and the numeric neighborhoods include the current values.
+ * policy is ALWAYS representable: KEEP means "stay exactly as we are".
  */
 export function generateCandidateSet(
   _state: TickState,
@@ -70,9 +72,13 @@ export function generateCandidateSet(
     source: "baseline",
   }));
 
-  // WORKER_TARGET neighborhood (includes the current target).
+  // WORKER_TARGET alternatives. Exclude current/clamped-to-current values:
+  // KEEP is the one canonical "no-op" candidate.
+  const seenWorkerTargets = new Set<number>();
   for (let delta = -workerTargetDelta; delta <= workerTargetDelta; delta += 1) {
     const workerTarget = clampInt(currentPolicy.workerTarget + delta, 1, 16);
+    if (workerTarget === currentPolicy.workerTarget || seenWorkerTargets.has(workerTarget)) continue;
+    seenWorkerTargets.add(workerTarget);
     candidates.push(makeCandidateV1({
       candidateId: `worker-target-${workerTarget}`,
       kind: "WORKER_TARGET",
@@ -81,12 +87,15 @@ export function generateCandidateSet(
     }));
   }
 
-  // MILITARY_RATIO neighborhood (includes the current ratio).
+  // MILITARY_RATIO alternatives, with the same no-op dedupe discipline.
+  const seenMilitaryRatios = new Set<number>();
   for (let step = -militaryRatioDelta; step <= militaryRatioDelta; step += 1) {
     const militaryRatio = Math.min(
       1,
       Math.max(0, round1(currentPolicy.militaryRatio + step * militaryRatioStep)),
     );
+    if (militaryRatio === currentPolicy.militaryRatio || seenMilitaryRatios.has(militaryRatio)) continue;
+    seenMilitaryRatios.add(militaryRatio);
     candidates.push(makeCandidateV1({
       candidateId: `military-ratio-${militaryRatio.toFixed(1)}`,
       kind: "MILITARY_RATIO",

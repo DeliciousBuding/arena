@@ -116,6 +116,15 @@ export interface EpisodeConfig {
   }) => void;
 }
 
+/**
+ * Arbitrary-state rollout entrypoint for counterfactual evaluation.
+ * Callers must provide a complete SimWorld; private-observation completion is
+ * a separate, explicit adapter whose assumptions belong in q-sample provenance.
+ */
+export interface EpisodeFromWorldConfig extends Omit<EpisodeConfig, "scenario"> {
+  readonly initialWorld: SimWorld;
+}
+
 export interface ValidationSummary {
   readonly valid: boolean;
   readonly repaired: boolean;
@@ -185,7 +194,11 @@ function hashPlanSet(plans: Readonly<Record<string, Plan>>): string {
   return createHash("sha256").update(canonicalJson(plans)).digest("hex");
 }
 
-function validateConfig(config: EpisodeConfig, world: SimWorld, rules: RulesManifest): EpisodeTenant[] {
+function validateConfig(
+  config: Pick<EpisodeConfig, "seed" | "ticks" | "tenants">,
+  world: SimWorld,
+  rules: RulesManifest,
+): EpisodeTenant[] {
   if (!Number.isSafeInteger(config.seed)) throw new Error(`episode: invalid seed ${config.seed}`);
   if (!Number.isSafeInteger(config.ticks) || config.ticks < 1) {
     throw new Error(`episode: ticks must be a positive safe integer, got ${config.ticks}`);
@@ -204,11 +217,12 @@ function validateConfig(config: EpisodeConfig, world: SimWorld, rules: RulesMani
   return tenants;
 }
 
-/** 运行一个确定性 episode。wallMs 是唯一非确定字段，不参与 replay 等价。 */
-export function runEpisode(config: EpisodeConfig): EpisodeResult {
+type LoadedEpisodeConfig = Omit<EpisodeConfig, "scenario">;
+
+/** Shared deterministic runner after the initial world has been resolved. */
+function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): EpisodeResult {
   const started = performance.now();
   const rules = loadRulesManifest(config.rulesPath);
-  const loaded = worldFromScenario(config.scenario);
   const tenants = validateConfig(config, loaded, rules);
   let world: SimWorld = { ...loaded, seed: config.seed };
   assertWorldInvariants(world);
@@ -357,4 +371,22 @@ export function runEpisode(config: EpisodeConfig): EpisodeResult {
       wallMs: performance.now() - started,
     },
   };
+}
+
+/** Scenario-backed deterministic episode. */
+export function runEpisode(config: EpisodeConfig): EpisodeResult {
+  const loaded = worldFromScenario(config.scenario);
+  const { scenario: _scenario, ...rest } = config;
+  return runLoadedEpisode(rest, loaded);
+}
+
+/**
+ * Run from an already materialized SimWorld (P4 counterfactual foundation).
+ * settleTick structured-clones before mutation, so the caller's initialWorld
+ * remains immutable; invariants are checked before entering the rollout.
+ */
+export function runEpisodeFromWorld(config: EpisodeFromWorldConfig): EpisodeResult {
+  assertWorldInvariants(config.initialWorld);
+  const { initialWorld, ...rest } = config;
+  return runLoadedEpisode(rest, initialWorld);
 }

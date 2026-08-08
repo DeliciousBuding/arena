@@ -214,8 +214,8 @@ export interface PersistentReferenceConfig {
   readonly stateSlot?: string;
   /** bridge 脚本路径（scripts/opponent-bridge.py），缺省按本文件相对定位。 */
   readonly bridgeScript?: string;
-  /** 参考对手：farmer=榜二（默认）；core=官方完整参考 agent。 */
-  readonly agent?: "farmer" | "core";
+  /** python-agents.json 注册名；默认 farmer。 */
+  readonly agent?: string;
 }
 
 /** 常驻子进程决策器：对局级生命周期（随用随起），close() 释放进程与槽。 */
@@ -223,7 +223,7 @@ export class PersistentSubprocessDecider implements ExternalDecider {
   readonly bridge: PersistentSyncBridge;
   readonly stateSlot: string;
   readonly slotIsDefault: boolean;
-  readonly agent: "farmer" | "core";
+  readonly agent: string;
   ready = true;
 
   constructor(config: PersistentReferenceConfig) {

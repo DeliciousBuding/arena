@@ -1,0 +1,142 @@
+/**
+ * MacroPolicy fitness adapter over the official-semantics tournament/FFA stack.
+ *
+ * v1 is intentionally small and auditable: survival + winner + relative
+ * resources/population. Rich event-ledger objectives can extend the detail
+ * without changing the GA kernel.
+ */
+
+import type { Plan, TickState } from "../../domain/model.ts";
+import { DeterministicPlanner } from "../../planning/deterministic-planner.ts";
+import type { PlanProvider } from "../../runtime/decision-types.ts";
+import type { MacroPolicy } from "../../runtime/macro-policy.ts";
+import { opponentEntry, type OpponentSpec } from "../opponent/registry.ts";
+import { runFreeForAll, type MatchResult, type TournEntry } from "../opponent/tournament.ts";
+
+export interface TournamentFitnessWeights {
+  readonly survival: number;
+  readonly win: number;
+  readonly resourceMargin: number;
+  readonly populationMargin: number;
+  readonly finalResources: number;
+  readonly finalPopulation: number;
+}
+
+export const DEFAULT_TOURNAMENT_FITNESS_WEIGHTS: TournamentFitnessWeights = Object.freeze({
+  survival: 100,
+  win: 40,
+  resourceMargin: 1,
+  populationMargin: 3,
+  finalResources: 0.25,
+  finalPopulation: 0.5,
+});
+
+export interface TournamentFitnessDetail {
+  readonly subjectId: string;
+  readonly coreAlive: boolean;
+  readonly winner: boolean;
+  readonly finalResources: number;
+  readonly finalPopulation: number;
+  readonly meanOpponentResources: number;
+  readonly meanOpponentPopulation: number;
+  readonly resourceMargin: number;
+  readonly populationMargin: number;
+  readonly score: number;
+  readonly match: MatchResult;
+}
+
+export interface MacroPolicyTournamentFitnessOptions {
+  readonly rulesPath: string;
+  readonly ticks: number;
+  /** Registry opponents (Python/HTTP) and/or in-process tournament entries. */
+  readonly opponents: readonly (OpponentSpec | TournEntry)[];
+  readonly subjectId?: string;
+  readonly validatePlans?: boolean;
+  readonly weights?: TournamentFitnessWeights;
+  readonly refillEveryTicks?: number | null;
+}
+
+class PolicyBoundPlanner implements PlanProvider {
+  private readonly planner = new DeterministicPlanner();
+  private readonly policy: MacroPolicy;
+
+  constructor(policy: MacroPolicy) {
+    this.policy = policy;
+  }
+
+  decide(input: { readonly state: TickState; readonly policy?: MacroPolicy }): Plan {
+    return this.planner.decide({ state: input.state, policy: this.policy });
+  }
+}
+
+export function macroPolicyEntry(id: string, policy: MacroPolicy): TournEntry {
+  return Object.freeze({
+    id,
+    desc: `macro-policy ${JSON.stringify(policy)}`,
+    build: () => new PolicyBoundPlanner(policy),
+  });
+}
+
+function mean(values: readonly number[]): number {
+  return values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+export function scoreTournamentMatch(
+  match: MatchResult,
+  subjectId: string,
+  weights: TournamentFitnessWeights = DEFAULT_TOURNAMENT_FITNESS_WEIGHTS,
+): TournamentFitnessDetail {
+  if (!match.players.includes(subjectId)) throw new Error(`fitness subject ${subjectId} is not in match`);
+  const opponents = match.players.filter((id) => id !== subjectId);
+  const finalResources = match.finalResources[subjectId] ?? 0;
+  const finalPopulation = match.finalPopulation[subjectId] ?? 0;
+  const meanOpponentResources = mean(opponents.map((id) => match.finalResources[id] ?? 0));
+  const meanOpponentPopulation = mean(opponents.map((id) => match.finalPopulation[id] ?? 0));
+  const resourceMargin = finalResources - meanOpponentResources;
+  const populationMargin = finalPopulation - meanOpponentPopulation;
+  const coreAlive = match.coreAlive[subjectId] === true;
+  const winner = match.winner === subjectId;
+  const score =
+    (coreAlive ? weights.survival : 0) +
+    (winner ? weights.win : 0) +
+    resourceMargin * weights.resourceMargin +
+    populationMargin * weights.populationMargin +
+    finalResources * weights.finalResources +
+    finalPopulation * weights.finalPopulation;
+  return Object.freeze({
+    subjectId,
+    coreAlive,
+    winner,
+    finalResources,
+    finalPopulation,
+    meanOpponentResources,
+    meanOpponentPopulation,
+    resourceMargin,
+    populationMargin,
+    score,
+    match,
+  });
+}
+
+export function evaluateMacroPolicyTournament(
+  policy: MacroPolicy,
+  seed: number,
+  options: MacroPolicyTournamentFitnessOptions,
+): { readonly score: number; readonly detail: TournamentFitnessDetail } {
+  const subjectId = options.subjectId ?? "evolve-candidate";
+  if (options.opponents.length === 0) throw new Error("macro-policy tournament fitness requires at least one opponent");
+  const opponents = options.opponents.map((spec) => "build" in spec ? spec : opponentEntry(spec, seed));
+  if (opponents.some((entry) => entry.id === subjectId)) throw new Error(`subjectId collides with opponent: ${subjectId}`);
+  const match = runFreeForAll(
+    [macroPolicyEntry(subjectId, policy), ...opponents],
+    seed,
+    options.ticks,
+    options.rulesPath,
+    {
+      validatePlans: options.validatePlans ?? true,
+      refillEveryTicks: options.refillEveryTicks,
+    },
+  );
+  const detail = scoreTournamentMatch(match, subjectId, options.weights);
+  return Object.freeze({ score: detail.score, detail });
+}

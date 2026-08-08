@@ -38,7 +38,7 @@ const POLICY_10_02: MacroPolicy = {
   attackPriority: null,
 };
 
-test("generateCandidateSet: bounded 5–20, includes KEEP and the current policy", () => {
+test("generateCandidateSet: bounded 5–20, KEEP is the sole no-change identity", () => {
   const candidates = generateCandidateSet(fakeState(0), POLICY_10_02);
   assert.ok(candidates.length >= 5 && candidates.length <= 20, `size=${candidates.length}`);
   // All structurally valid per the M2a.1 contract.
@@ -47,11 +47,11 @@ test("generateCandidateSet: bounded 5–20, includes KEEP and the current policy
   }
   // KEEP is present (baseline).
   assert.ok(candidates.some((candidate) => candidate.kind === "KEEP" && candidate.source === "baseline"));
-  // The current workerTarget and militaryRatio are in the neighborhoods.
-  assert.ok(candidates.some((candidate) =>
-    candidate.kind === "WORKER_TARGET" && candidate.parameters.workerTarget === 10));
-  assert.ok(candidates.some((candidate) =>
-    candidate.kind === "MILITARY_RATIO" && candidate.parameters.militaryRatio === 0.2));
+  // Numeric candidates identical to the current policy are deliberately absent.
+  assert.equal(candidates.some((candidate) =>
+    candidate.kind === "WORKER_TARGET" && candidate.parameters.workerTarget === 10), false);
+  assert.equal(candidates.some((candidate) =>
+    candidate.kind === "MILITARY_RATIO" && candidate.parameters.militaryRatio === 0.2), false);
   // Both posture alternatives (excluding current) exist.
   const postures = candidates.filter((candidate) => candidate.kind === "POSTURE");
   assert.equal(postures.length, 2);
@@ -64,38 +64,37 @@ test("generateCandidateSet clamps to legal value domains at the edges", () => {
   const workerTargets = candidates
     .filter((candidate) => candidate.kind === "WORKER_TARGET")
     .map((candidate) => candidate.parameters.workerTarget);
-  assert.deepEqual([...new Set(workerTargets)].sort(), [1, 2]);
+  assert.deepEqual([...new Set(workerTargets)].sort(), [2]);
   const ratios = candidates
     .filter((candidate) => candidate.kind === "MILITARY_RATIO")
     .map((candidate) => candidate.parameters.militaryRatio as number);
   assert.ok(ratios.every((ratio) => ratio >= 0 && ratio <= 1));
-  assert.ok(ratios.includes(0));
+  assert.equal(ratios.includes(0), false);
+  assert.ok(ratios.includes(0.1));
 });
 
-test("resolveChosenCandidate: exact workerTarget match wins; KEEP is the last resort", () => {
+test("resolveChosenCandidate requires an exact full-policy explanation", () => {
   const candidates = generateCandidateSet(fakeState(0), POLICY_10_02);
   // LLM picked workerTarget=9 (in the neighborhood around 10).
-  const inNeighborhood = resolveChosenCandidate(candidates, { ...POLICY_10_02, workerTarget: 9 });
-  assert.equal(inNeighborhood.kind, "WORKER_TARGET");
-  assert.equal(
-    (inNeighborhood.candidate.parameters as { workerTarget: number }).workerTarget,
-    9,
+  const inNeighborhood = resolveChosenCandidate(
+    candidates,
+    POLICY_10_02,
+    { ...POLICY_10_02, workerTarget: 9 },
   );
-  // Exact militaryRatio match wins when workerTarget is outside the neighborhood.
-  const ratioMatch = resolveChosenCandidate(candidates, { ...POLICY_10_02, workerTarget: 16 });
-  assert.equal(ratioMatch.kind, "MILITARY_RATIO");
-  // Nothing matches (both dimensions outside the neighborhood) -> KEEP.
-  const farPolicy = { ...POLICY_10_02, workerTarget: 16, militaryRatio: 0.85 };
-  const far = resolveChosenCandidate(candidates, farPolicy);
-  assert.equal(far.kind, "KEEP");
-  // Posture is matched only when the numeric dimensions are outside the
-  // neighborhood too (workerTarget/militaryRatio exact matches win first).
-  const postureSwitch = resolveChosenCandidate(candidates, { ...farPolicy, posture: "aggressive" });
-  assert.equal(postureSwitch.kind, "POSTURE");
-  assert.equal(
-    (postureSwitch.candidate.parameters as { posture: "aggressive" }).posture,
-    "aggressive",
+  assert.equal(inNeighborhood?.kind, "WORKER_TARGET");
+  assert.equal(inNeighborhood?.parameters.workerTarget, 9);
+
+  // Unchanged policy has exactly one canonical explanation: KEEP.
+  const keep = resolveChosenCandidate(candidates, POLICY_10_02, POLICY_10_02);
+  assert.equal(keep?.kind, "KEEP");
+
+  // Multi-field LLM output is outside the one-dimensional candidate universe.
+  const multiField = resolveChosenCandidate(
+    candidates,
+    POLICY_10_02,
+    { ...POLICY_10_02, workerTarget: 9, militaryRatio: 0.3, posture: "aggressive" },
   );
+  assert.equal(multiField, null);
 });
 
 test("orchestrator emits a decision-point event after a successful LLM decision", async () => {
@@ -103,7 +102,7 @@ test("orchestrator emits a decision-point event after a successful LLM decision"
   const orchestrator = new MacroPolicyOrchestrator({
     intervalTicks: 32,
     promptBuilder: () => "prompt",
-    requestPolicy: async () => '{"posture":"aggressive","workerTarget":9,"militaryRatio":0.3}',
+    requestPolicy: async () => '{"posture":"balanced","workerTarget":9,"militaryRatio":0.4}',
     onDecisionPoint: (event) => events.push(event),
     processRunId: "run-m2b",
   });
@@ -121,14 +120,33 @@ test("orchestrator emits a decision-point event after a successful LLM decision"
   assert.equal(event.chosenBy, "policy-llm");
   // Previous policy = the orchestrator default (DEFAULT_MACRO_POLICY).
   assert.deepEqual(event.previousPolicy, { posture: "balanced", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: null });
-  assert.equal(event.newPolicy.posture, "aggressive");
+  assert.equal(event.newPolicy.posture, "balanced");
   assert.equal(event.newPolicy.workerTarget, 9);
   // Chosen candidate: workerTarget=9 is in the neighborhood around default 8.
   const chosen = event.candidates.find((candidate) => candidate.deterministicHash === event.chosenCandidateHash);
   assert.ok(chosen, "chosen candidate must be in the set");
   assert.equal(chosen!.kind, "WORKER_TARGET");
   assert.equal(chosen!.parameters.workerTarget, 9);
+  assert.equal(event.selectionRepresentable, true);
+  assert.equal(event.behaviorPropensity, null);
   assert.ok(event.candidates.length >= 5 && event.candidates.length <= 20);
+});
+
+test("orchestrator marks a multi-field LLM policy as out-of-candidate-set", async () => {
+  const events: MacroDecisionPointV1[] = [];
+  const orchestrator = new MacroPolicyOrchestrator({
+    intervalTicks: 32,
+    promptBuilder: () => "prompt",
+    requestPolicy: async () => '{"posture":"aggressive","workerTarget":9,"militaryRatio":0.3}',
+    onDecisionPoint: (event) => events.push(event),
+    processRunId: "run-m2b-multifield",
+  });
+  orchestrator.onTick(fakeState(100));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(events.length, 1);
+  assert.equal(events[0]!.selectionRepresentable, false);
+  assert.equal(events[0]!.chosenCandidateHash, null);
+  assert.deepEqual(validateMacroDecisionPointV1(events[0]), []);
 });
 
 test("orchestrator emits a sticky decision-point event on LLM failure", async () => {
@@ -151,11 +169,12 @@ test("orchestrator emits a sticky decision-point event on LLM failure", async ()
   assert.equal(events.length, 1);
   const event = events[0]!;
   assert.equal(event.chosenBy, "policy-sticky");
-  // Sticky: new policy == previous policy; chosen resolves to the default's
-  // workerTarget candidate (8 ∈ neighborhood) — NOT a fresh decision.
+  // Sticky: new policy == previous policy; KEEP is the canonical no-op.
   assert.deepEqual(event.newPolicy, event.previousPolicy);
   const chosen = event.candidates.find((candidate) => candidate.deterministicHash === event.chosenCandidateHash);
   assert.ok(chosen, "chosen candidate must be in the set");
+  assert.equal(chosen?.kind, "KEEP");
+  assert.equal(event.selectionRepresentable, true);
 });
 
 test("override and respawn paths do not emit decision points (no real decision)", async () => {

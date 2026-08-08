@@ -48,6 +48,7 @@ const POLICY = {
 function makeRealEvaluation(candidateHash: string, net: number, horizonTicks = 20) {
   return {
     candidateHash,
+    comparisonGroupId: "real-observed",
     label: {
       horizonTicks,
       outcome: { net, deathProb: 0.05, coreRisk: 0 as const },
@@ -55,12 +56,20 @@ function makeRealEvaluation(candidateHash: string, net: number, horizonTicks = 2
       confidence: 1,
       observed: true,
     },
+    behaviorPropensity: null,
   };
 }
 
-function makeSimEvaluation(candidateHash: string, net: number, horizonTicks = 32) {
+function makeSimEvaluation(
+  candidateHash: string,
+  net: number,
+  horizonTicks = 32,
+  scenarioSeed = 42,
+  comparisonGroupId = `sim:seed-${scenarioSeed}`,
+) {
   return {
     candidateHash,
+    comparisonGroupId,
     label: {
       horizonTicks,
       outcome: { net, deathProb: null, coreRisk: null },
@@ -71,10 +80,23 @@ function makeSimEvaluation(candidateHash: string, net: number, horizonTicks = 32
     sim: {
       simulatorVersion: "0.14.0",
       certificateVersion: "cert-v1",
-      scenarioSeed: 42,
+      scenarioSeed,
       opponentId: "op-waaiging",
-      rolloutHorizon: 32,
+      initialStateScope: "full-sim-world" as const,
+      completionPolicy: "none",
+      completionSeed: null,
+      completionAssumptions: [],
+      interventionTicks: Math.min(32, horizonTicks),
+      continuationPolicy: "revert-baseline" as const,
+      rolloutHorizon: horizonTicks,
       unknownEffectCount: 1,
+      unknownEffectCounts: {
+        refill: 1,
+        "opponent-action": 0,
+        "fog-of-war": 0,
+        "rule-assumption": 0,
+        "server-generated-id": 0,
+      },
       firstUnknownTick: 30,
       terminatedByUnknown: false,
     },
@@ -149,6 +171,7 @@ test("SIM labels require full sim provenance; REAL rejects sim block", () => {
     () => makeSample([
       {
         candidateHash: CANDIDATE_A.deterministicHash,
+        comparisonGroupId: "sim:seed-42",
         label: {
           horizonTicks: 32,
           outcome: { net: 3, deathProb: null, coreRisk: null },
@@ -190,6 +213,7 @@ test("label source semantics: REAL confidence=1 observed; HEURISTIC confidence<1
     () => makeSample([
       {
         candidateHash: CANDIDATE_A.deterministicHash,
+        comparisonGroupId: "heuristic-teacher-v1",
         label: {
           horizonTicks: 20,
           outcome: { net: 4, deathProb: null, coreRisk: null },
@@ -207,6 +231,7 @@ test("label source semantics: REAL confidence=1 observed; HEURISTIC confidence<1
   const validHeuristic = makeSample([
     {
       candidateHash: CANDIDATE_A.deterministicHash,
+      comparisonGroupId: "heuristic-teacher-v1",
       label: {
         horizonTicks: 20,
         outcome: { net: 4, deathProb: null, coreRisk: null },
@@ -236,6 +261,13 @@ test("evaluations must reference candidateSet members, uniquely", () => {
     ]),
     /duplicates evaluation key/u,
   );
+
+  // Same SIM candidate/horizon may retain multiple matched rollout seeds.
+  const replicated = makeSample([
+    makeSimEvaluation(CANDIDATE_A.deterministicHash, 5, 32, 41),
+    makeSimEvaluation(CANDIDATE_A.deterministicHash, 6, 32, 42),
+  ]);
+  assert.deepEqual(validateQSampleV1(replicated), []);
 });
 
 test("tampered featureHash and candidateSetHash are rejected", () => {
@@ -296,12 +328,48 @@ test("derivePairwisePreferences never mixes source or horizon groups", () => {
   );
 });
 
+test("derivePairwisePreferences never crosses SIM comparison groups/seeds", () => {
+  const sample = makeSample([
+    makeSimEvaluation(CANDIDATE_A.deterministicHash, 10, 32, 41),
+    makeSimEvaluation(CANDIDATE_B.deterministicHash, 1, 32, 41),
+    makeSimEvaluation(CANDIDATE_A.deterministicHash, -5, 32, 42),
+    makeSimEvaluation(CANDIDATE_B.deterministicHash, 8, 32, 42),
+  ]);
+  const pairs = derivePairwisePreferences(sample);
+  assert.equal(pairs.length, 2);
+  assert.deepEqual(
+    pairs.map((pair) => pair.comparisonGroupId).sort(),
+    ["sim:seed-41", "sim:seed-42"],
+  );
+  assert.notEqual(pairs[0]!.preferredCandidateHash, pairs[1]!.preferredCandidateHash);
+});
+
+test("REAL behaviorPropensity is optional/null or exact probability; SIM rejects it", () => {
+  const known = {
+    ...makeRealEvaluation(CANDIDATE_A.deterministicHash, 5),
+    behaviorPropensity: 0.2,
+  };
+  assert.deepEqual(validateQSampleV1(makeSample([known])), []);
+  assert.throws(
+    () => makeSample([{ ...known, behaviorPropensity: 0 }]),
+    /behaviorPropensity/u,
+  );
+  assert.throws(
+    () => makeSample([{
+      ...makeSimEvaluation(CANDIDATE_A.deterministicHash, 5),
+      behaviorPropensity: 0.5,
+    }]),
+    /behaviorPropensity only allowed for REAL/u,
+  );
+});
+
 test("derivePairwisePreferences: equal values and null outcomes produce no pair", () => {
   const sample = makeSample([
     makeRealEvaluation(CANDIDATE_A.deterministicHash, 3, 20),
     makeRealEvaluation(CANDIDATE_B.deterministicHash, 3, 20),
     {
       candidateHash: CANDIDATE_C.deterministicHash,
+      comparisonGroupId: "real-observed",
       label: {
         horizonTicks: 20,
         outcome: { net: null, deathProb: null, coreRisk: null },

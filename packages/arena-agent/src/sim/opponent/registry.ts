@@ -113,7 +113,7 @@ export function opponentEntry(spec: OpponentSpec, seed: number): TournEntry {
         sdkRepoDir: SDK_REPO,
         farmerPath: join(FARMER_REPO, "arena_farmer.py"),
         stateSlot: join(slotDir, `slot-${seed}-${randomUUID()}.pkl`),
-        agent: spec.pythonAgent as "farmer" | "core",
+        agent: spec.pythonAgent,
       });
       return new OpponentAdapter(decider, opponentId, spec.name);
     },

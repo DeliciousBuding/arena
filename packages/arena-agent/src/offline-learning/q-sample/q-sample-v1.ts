@@ -52,6 +52,19 @@ export const PAIRWISE_PREFERENCE_SCHEMA_VERSION = "q-pairwise-preference-v1";
 export const Q_LABEL_SOURCES = ["REAL", "SIM", "HEURISTIC"] as const;
 export type QLabelSource = (typeof Q_LABEL_SOURCES)[number];
 
+export const INITIAL_STATE_SCOPES = ["full-sim-world", "private-observation-completed"] as const;
+export type InitialStateScope = (typeof INITIAL_STATE_SCOPES)[number];
+export const SIM_CONTINUATION_POLICIES = ["hold-candidate", "revert-baseline"] as const;
+export type SimContinuationPolicy = (typeof SIM_CONTINUATION_POLICIES)[number];
+export const SIM_UNKNOWN_EFFECT_KINDS = [
+  "refill",
+  "opponent-action",
+  "fog-of-war",
+  "rule-assumption",
+  "server-generated-id",
+] as const;
+export type SimUnknownEffectKind = (typeof SIM_UNKNOWN_EFFECT_KINDS)[number];
+
 /**
  * Suggested label horizons (ticks). The schema accepts any positive
  * integer; these are the recommended ladder for M2 data generation so a
@@ -95,8 +108,22 @@ export interface QSampleSimProvenance {
   readonly certificateVersion: string;
   readonly scenarioSeed: number;
   readonly opponentId: string;
+  /** Whether the rollout started from a complete SimWorld or a completed private observation. */
+  readonly initialStateScope: InitialStateScope;
+  /** Named completion/belief policy; "none" for a full SimWorld. */
+  readonly completionPolicy: string;
+  /** Completion randomness if the belief completion is stochastic. */
+  readonly completionSeed: number | null;
+  /** Explicit assumptions made while completing hidden state; empty for a full SimWorld. */
+  readonly completionAssumptions: readonly string[];
+  /** Number of ticks for which the candidate intervention is held. */
+  readonly interventionTicks: number;
+  /** What policy is used after interventionTicks when horizon is longer. */
+  readonly continuationPolicy: SimContinuationPolicy;
   readonly rolloutHorizon: number;
   readonly unknownEffectCount: number;
+  /** Kind-preserving counts; sum must equal unknownEffectCount. */
+  readonly unknownEffectCounts: Readonly<Record<SimUnknownEffectKind, number>>;
   readonly firstUnknownTick: number | null;
   readonly terminatedByUnknown: boolean;
 }
@@ -104,9 +131,21 @@ export interface QSampleSimProvenance {
 export interface QSampleEvaluation {
   /** Must reference a candidate in the decision point's candidateSet. */
   readonly candidateHash: string;
+  /**
+   * Matched comparison cohort. SIM candidates with the same scenario/opponent/
+   * completion seed share one id so pairwise ranking uses common randomness;
+   * different seeds must never be crossed.
+   */
+  readonly comparisonGroupId: string;
   readonly label: QSampleLabel;
   /** Required when label.source === "SIM". */
   readonly sim?: QSampleSimProvenance;
+  /**
+   * Behavior action propensity for REAL labels, when known. Pi/LLM rows use
+   * null; future randomized exploration records the exact probability. This
+   * keeps IPS/doubly-robust OPE possible without inventing propensities later.
+   */
+  readonly behaviorPropensity?: number | null;
   /** Teacher-prior explanation for HEURISTIC labels (never outcome truth). */
   readonly heuristicNote?: string;
 }
@@ -141,6 +180,7 @@ export interface QPairwisePreferenceV1 {
   readonly decisionPointId: string;
   readonly source: QLabelSource;
   readonly horizonTicks: number;
+  readonly comparisonGroupId: string;
   readonly preferredCandidateHash: string;
   readonly dispreferredCandidateHash: string;
   /** |q_preferred − q_dispreferred| — magnitude of the preference. */
@@ -167,8 +207,9 @@ export function computeFeatureHash(features: Readonly<Record<string, number>>): 
 /**
  * Derive pairwise preferences from a decision point's pointwise
  * evaluations (the SSOT → derived transformation). Pairs are formed only
- * within the same (source, horizonTicks) group — mixing REAL and SIM
- * absolute values, or different horizons, would fabricate comparisons.
+ * within the same (source, horizonTicks, comparisonGroupId) group — mixing
+ * REAL and SIM absolute values, different horizons, or different simulator
+ * seeds/opponents would fabricate comparisons.
  * Equal values produce no pair; any null outcome skips that evaluation.
  */
 export function derivePairwisePreferences(sample: QSampleV1): readonly QPairwisePreferenceV1[] {
@@ -178,7 +219,7 @@ export function derivePairwisePreferences(sample: QSampleV1): readonly QPairwise
     const label = evaluation.label;
     const net = label.outcome.net;
     if (net === null) continue;
-    const key = `${label.source}:${label.horizonTicks}`;
+    const key = `${label.source}:${label.horizonTicks}:${evaluation.comparisonGroupId}`;
     const group = byGroup.get(key) ?? [];
     group.push(evaluation);
     byGroup.set(key, group);
@@ -197,6 +238,7 @@ export function derivePairwisePreferences(sample: QSampleV1): readonly QPairwise
             decisionPointId: sample.decisionPointId,
             source: a.label.source,
             horizonTicks: a.label.horizonTicks,
+            comparisonGroupId: a.comparisonGroupId,
             preferredCandidateHash: a.candidateHash,
             dispreferredCandidateHash: b.candidateHash,
             margin: netA - netB,
@@ -207,6 +249,7 @@ export function derivePairwisePreferences(sample: QSampleV1): readonly QPairwise
             decisionPointId: sample.decisionPointId,
             source: b.label.source,
             horizonTicks: b.label.horizonTicks,
+            comparisonGroupId: b.comparisonGroupId,
             preferredCandidateHash: b.candidateHash,
             dispreferredCandidateHash: a.candidateHash,
             margin: netB - netA,
@@ -311,8 +354,10 @@ export function validateQSampleV1(value: unknown): readonly string[] {
     const setHashes = new Set(
       (value.candidateSet as DecisionCandidateV1[] | undefined)?.map((c) => c.deterministicHash) ?? [],
     );
-    // Uniqueness key: one evaluation per (candidateHash, source, horizonTicks)
-    // — the same candidate may carry a REAL:20 and a SIM:32 evaluation.
+    // Uniqueness key: one evaluation per
+    // (candidateHash, source, horizonTicks, comparisonGroupId).
+    // SIM can therefore retain many matched seed/opponent replicates without
+    // collapsing them or mixing them in pairwise comparisons.
     const evaluatedKeys = new Set<string>();
     for (const [index, evaluation] of value.evaluations.entries()) {
       if (!isRecord(evaluation)) {
@@ -324,6 +369,9 @@ export function validateQSampleV1(value: unknown): readonly string[] {
       } else if (!setHashes.has(evaluation.candidateHash)) {
         problems.push(`evaluations[${index}].candidateHash not in candidateSet`);
       }
+      if (typeof evaluation.comparisonGroupId !== "string" || evaluation.comparisonGroupId.length === 0) {
+        problems.push(`evaluations[${index}].comparisonGroupId must be a non-empty string`);
+      }
       const labelProblems = validateQSampleLabel(evaluation.label);
       if (labelProblems.length > 0) {
         problems.push(`evaluations[${index}].label: ${labelProblems.join("; ")}`);
@@ -332,9 +380,10 @@ export function validateQSampleV1(value: unknown): readonly string[] {
       const horizonTicks = (evaluation.label as QSampleLabel | undefined)?.horizonTicks;
       if (
         typeof evaluation.candidateHash === "string" &&
+        typeof evaluation.comparisonGroupId === "string" &&
         source !== undefined && typeof horizonTicks === "number"
       ) {
-        const evaluationKey = `${evaluation.candidateHash}:${source}:${horizonTicks}`;
+        const evaluationKey = `${evaluation.candidateHash}:${source}:${horizonTicks}:${evaluation.comparisonGroupId}`;
         if (evaluatedKeys.has(evaluationKey)) {
           problems.push(`evaluations[${index}] duplicates evaluation key ${evaluationKey}`);
         }
@@ -348,6 +397,15 @@ export function validateQSampleV1(value: unknown): readonly string[] {
         }
       } else if (evaluation.sim !== undefined) {
         problems.push(`evaluations[${index}].sim only allowed for SIM labels`);
+      }
+      if (source === "REAL") {
+        const propensity = evaluation.behaviorPropensity;
+        if (propensity !== undefined && propensity !== null &&
+            (!isFiniteNumber(propensity) || propensity <= 0 || propensity > 1)) {
+          problems.push(`evaluations[${index}].behaviorPropensity must be null or a number in (0,1]`);
+        }
+      } else if (evaluation.behaviorPropensity !== undefined) {
+        problems.push(`evaluations[${index}].behaviorPropensity only allowed for REAL labels`);
       }
       if (source === "HEURISTIC" && evaluation.heuristicNote === undefined) {
         problems.push(`evaluations[${index}].heuristicNote should explain the teacher prior`);
@@ -402,17 +460,66 @@ function validateQSampleLabel(label: unknown): readonly string[] {
 
 function validateSimProvenance(sim: Record<string, unknown>, path: string): readonly string[] {
   const problems: string[] = [];
-  for (const field of ["simulatorVersion", "certificateVersion", "opponentId"] as const) {
+  for (const field of ["simulatorVersion", "certificateVersion", "opponentId", "completionPolicy"] as const) {
     if (typeof sim[field] !== "string" || sim[field].length === 0) {
       problems.push(`${path}.${field} must be a non-empty string`);
     }
   }
-  for (const field of ["scenarioSeed", "rolloutHorizon", "unknownEffectCount"] as const) {
+  if (!INITIAL_STATE_SCOPES.includes(sim.initialStateScope as InitialStateScope)) {
+    problems.push(`${path}.initialStateScope must be one of ${INITIAL_STATE_SCOPES.join(", ")}`);
+  }
+  if (!SIM_CONTINUATION_POLICIES.includes(sim.continuationPolicy as SimContinuationPolicy)) {
+    problems.push(`${path}.continuationPolicy must be one of ${SIM_CONTINUATION_POLICIES.join(", ")}`);
+  }
+  for (const field of ["scenarioSeed", "interventionTicks", "rolloutHorizon", "unknownEffectCount"] as const) {
     if (!isFiniteNumber(sim[field]) || !Number.isInteger(sim[field])) {
       problems.push(`${path}.${field} must be an integer`);
     }
   }
-  if (sim.firstUnknownTick !== null && !isFiniteNumber(sim.firstUnknownTick)) {
+  if (isFiniteNumber(sim.interventionTicks) && sim.interventionTicks <= 0) {
+    problems.push(`${path}.interventionTicks must be > 0`);
+  }
+  if (!isRecord(sim.unknownEffectCounts)) {
+    problems.push(`${path}.unknownEffectCounts must be an object`);
+  } else {
+    let total = 0;
+    for (const key of Object.keys(sim.unknownEffectCounts)) {
+      if (!SIM_UNKNOWN_EFFECT_KINDS.includes(key as SimUnknownEffectKind)) {
+        problems.push(`${path}.unknownEffectCounts.${key} is not allowed`);
+      }
+    }
+    for (const kind of SIM_UNKNOWN_EFFECT_KINDS) {
+      const count = sim.unknownEffectCounts[kind];
+      if (!isFiniteNumber(count) || !Number.isInteger(count) || count < 0) {
+        problems.push(`${path}.unknownEffectCounts.${kind} must be a non-negative integer`);
+      } else {
+        total += count;
+      }
+    }
+    if (isFiniteNumber(sim.unknownEffectCount) && total !== sim.unknownEffectCount) {
+      problems.push(`${path}.unknownEffectCounts sum ${total} != unknownEffectCount ${sim.unknownEffectCount}`);
+    }
+  }
+  if (sim.completionSeed !== null &&
+      (!isFiniteNumber(sim.completionSeed) || !Number.isInteger(sim.completionSeed))) {
+    problems.push(`${path}.completionSeed must be an integer or null`);
+  }
+  if (!Array.isArray(sim.completionAssumptions) ||
+      sim.completionAssumptions.some((assumption) => typeof assumption !== "string" || assumption.length === 0)) {
+    problems.push(`${path}.completionAssumptions must be an array of non-empty strings`);
+  }
+  if (sim.initialStateScope === "full-sim-world" && sim.completionPolicy !== "none") {
+    problems.push(`${path}.completionPolicy must be "none" for full-sim-world`);
+  }
+  if (sim.initialStateScope === "full-sim-world" && sim.completionSeed !== null) {
+    problems.push(`${path}.completionSeed must be null for full-sim-world`);
+  }
+  if (sim.initialStateScope === "full-sim-world" &&
+      Array.isArray(sim.completionAssumptions) && sim.completionAssumptions.length !== 0) {
+    problems.push(`${path}.completionAssumptions must be empty for full-sim-world`);
+  }
+  if (sim.firstUnknownTick !== null &&
+      (!isFiniteNumber(sim.firstUnknownTick) || !Number.isInteger(sim.firstUnknownTick))) {
     problems.push(`${path}.firstUnknownTick must be an integer or null`);
   }
   if (typeof sim.terminatedByUnknown !== "boolean") {
