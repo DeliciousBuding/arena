@@ -28,6 +28,12 @@ export interface DeedsJournalPayload {
   groups: Record<string, readonly Deed[]>;
   /** 生效的筛选（回显，前端可显示当前过滤状态）。 */
   filters: { categories: readonly string[]; minStar: number };
+  /** 窗口对比（2026-08-08，复盘日记）：本窗口 vs 上一窗口各类别变化。 */
+  delta: {
+    prevWindowStartTick: number;
+    counts: Record<string, { cur: number; prev: number; delta: number }>;
+    narrative: string;
+  } | null;
   deeds: readonly Deed[];
   cachedAt: string;
 }
@@ -70,17 +76,23 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
   const snap = loadAllianceSnapshot();
   const currentTick = snap.currentTick;
   const windowStart = currentTick - windowTicks;
+  const prevWindowStart = currentTick - windowTicks * 2;
   const all = tenant === "all"
     ? [...(await loadDeeds("all", 500)), ...loadAllianceDeeds(), ...buildAuditDeeds(currentTick)]
     : [...(await loadDeeds(tenant, 500)), ...buildAuditDeeds(currentTick).filter((d) => d.tenant === tenant)];
-  let windowed = all
-    .filter((d) => d.tick >= windowStart && d.tick <= currentTick)
-    .sort((a, b) => b.star - a.star || b.tick - a.tick);
-  // 2026-08-08 折叠/筛选：minStar 与 category（KIND_GROUP 类别）过滤，供前端
-  // 日记分组折叠/只看某类；counts/perTenant/narrative 基于过滤后集合，语义一致。
-  if (minStar > 0) windowed = windowed.filter((d) => d.star >= minStar);
   const catSet = new Set(cats);
-  if (catSet.size > 0) windowed = windowed.filter((d) => catSet.has(KIND_GROUP[d.kind] ?? "other"));
+  // 2026-08-08 折叠/筛选：minStar 与 category 过滤，供前端分组折叠/只看某类；
+  // counts/perTenant/narrative/delta 基于过滤后集合，语义一致。
+  const applyFilter = (ds: readonly Deed[]): Deed[] => {
+    let out = ds.slice();
+    if (minStar > 0) out = out.filter((d) => d.star >= minStar);
+    if (catSet.size > 0) out = out.filter((d) => catSet.has(KIND_GROUP[d.kind] ?? "other"));
+    return out;
+  };
+  const curRaw = all.filter((d) => d.tick >= windowStart && d.tick <= currentTick);
+  const prevRaw = all.filter((d) => d.tick >= prevWindowStart && d.tick < windowStart);
+  const windowed = applyFilter(curRaw).sort((a, b) => b.star - a.star || b.tick - a.tick);
+  const prevWindowed = applyFilter(prevRaw);
   const headline = windowed[0] ?? null;
   const counts: Record<string, number> = {};
   const perTenant: Record<string, { count: number; topStar: number }> = {};
@@ -95,6 +107,7 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
     perTenant[d.tenant] = t;
   }
   const narrative = buildNarrative(windowed, counts, perTenant, tenant);
+  const windowDelta = buildWindowDelta(windowed, prevWindowed);
   const payload: DeedsJournalPayload = {
     generatedAt: new Date().toISOString(),
     tenant,
@@ -107,6 +120,7 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
     narrative,
     groups: Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, v.slice(0, 20)])),
     filters: { categories: cats, minStar },
+    delta: { prevWindowStartTick: prevWindowStart, ...windowDelta },
     deeds: windowed.slice(0, 30),
     cachedAt: new Date().toISOString(),
   };
@@ -197,6 +211,42 @@ function buildAuditDeeds(currentTick: number): Deed[] {
     }
   } catch { /* 分工数据不可用不阻断 */ }
   return out;
+}
+
+/** 窗口对比（2026-08-08，复盘日记）：本窗口 vs 上一窗口各类别计数变化 +
+ *  中文叙事（新增/归零/±N）。纯函数可测，两窗口已按同一筛选口径。 */
+export function buildWindowDelta(
+  cur: readonly Deed[],
+  prev: readonly Deed[],
+): { counts: Record<string, { cur: number; prev: number; delta: number }>; narrative: string } {
+  const tally = (deeds: readonly Deed[]): Record<string, number> => {
+    const c: Record<string, number> = {};
+    for (const d of deeds) {
+      // AUDIT_INSIGHT 是当前态洞察（tick=now，非历史事件流）——不进窗口对比，避免"新增 N"假象
+      if (d.kind === "AUDIT_INSIGHT") continue;
+      const g = KIND_GROUP[d.kind] ?? "other";
+      c[g] = (c[g] ?? 0) + 1;
+    }
+    return c;
+  };
+  const curC = tally(cur);
+  const prevC = tally(prev);
+  const cats = new Set([...Object.keys(curC), ...Object.keys(prevC)]);
+  const counts: Record<string, { cur: number; prev: number; delta: number }> = {};
+  for (const k of cats) counts[k] = { cur: curC[k] ?? 0, prev: prevC[k] ?? 0, delta: (curC[k] ?? 0) - (prevC[k] ?? 0) };
+  const LABEL: Record<string, string> = {
+    harvest: "采集", deposit: "交付", spawn: "产兵", death: "阵亡", milestone: "里程碑",
+    newCore: "新敌核", heatZone: "热区", conflict: "抢矿冲突", economy: "资源濒危", audit: "审计",
+  };
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(counts)) {
+    if (v.delta === 0) continue;
+    const label = LABEL[k] ?? k;
+    if (v.cur > 0 && v.prev === 0) parts.push(`${label} 新增 ${v.cur}`);
+    else if (v.cur === 0 && v.prev > 0) parts.push(`${label} 归零（-${v.prev}）`);
+    else if (Math.abs(v.delta) >= 2) parts.push(`${label} ${v.delta > 0 ? "+" : ""}${v.delta}（${v.prev}→${v.cur}）`);
+  }
+  return { counts, narrative: parts.length > 0 ? `较上一窗口：${parts.join("，")}。` : "较上一窗口无显著变化。" };
 }
 
 function buildNarrative(
