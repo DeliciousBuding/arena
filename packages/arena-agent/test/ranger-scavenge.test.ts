@@ -12,6 +12,8 @@ import assert from "node:assert/strict";
 import type { Position, TickState, VisibleEntity } from "../src/domain/model.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../src/strategies/safety-planner.ts";
 import { kiteCell } from "../src/strategies/safety-planner-helpers.ts";
+import { chunkKeyFor } from "../src/domain/world.ts";
+import { exploreTarget } from "../src/domain/nav.ts";
 
 function enemyVanguard(position: Position): VisibleEntity {
   return { id: "ev1", kind: "UNIT", position, hp: 4, unitType: "VANGUARD" };
@@ -102,3 +104,47 @@ test("kiteCell 纯函数：威胁稍远（Chebyshev 2）不触发（非近身）
 });
 
 export {};
+
+/** military-frontier-scavenge-v1（2026-08-08，对齐 ref "scout routes prioritize the
+ *  least recently observed chunks"）：军事打野方位按 chunk 观察老化选最旧区块，
+ *  替代固定 +3 分散步进。本测试用 r2（index 1）区分：flag 开 → 东南（陈旧区块
+ *  排序结果）；flag 关 → 正南（固定方位序）。 */
+test("military-frontier-scavenge: 启用时打野方位按陈旧区块优先（可观测方向差异）", () => {
+  const home: Position = [0, 0];
+  const beacon: Position = [100, 100]; // 与 makeState 的信标一致（staleDirection 用 state.beacon）
+  // 播种 chunk：先全部 1000（新鲜），再把 d=5 探测点所在 chunk 覆写为 0（最旧）。
+  // d=5 与 d=6 共享 chunk (0,-1)，必须最后覆写才不会被后续 1000 覆盖。
+  const seed = (planner: SafetyPlanner): void => {
+    for (let d = 0; d < 8; d += 1) {
+      planner.world.seedChunkMemory([{ key: chunkKeyFor(exploreTarget(home, beacon, d, 8)), lastSeenTick: 1000 }]);
+    }
+    planner.world.seedChunkMemory([{ key: chunkKeyFor(exploreTarget(home, beacon, 5, 8)), lastSeenTick: 0 }]);
+  };
+  const mk = (): TickState => {
+    const base = makeState(1, [0, 6], []);
+    return {
+      ...base,
+      population: 2,
+      units: [
+        { id: "r1", position: [0, 6], hp: 2, unitType: "RANGER", cargo: 0 },
+        { id: "r2", position: [0, 7], hp: 2, unitType: "RANGER", cargo: 0 },
+      ],
+      rangers: [
+        { id: "r1", position: [0, 6], hp: 2, unitType: "RANGER", cargo: 0 },
+        { id: "r2", position: [0, 7], hp: 2, unitType: "RANGER", cargo: 0 },
+      ],
+    };
+  };
+  const on = new SafetyPlanner({ ...AGGRESSIVE, rangerScavenge: true, militaryScavengeFrontier: true });
+  seed(on);
+  const planOn = on.decide({ state: mk(), policy: AGGRESSIVE_POLICY });
+  assert.equal(planOn.intents["r2"], "ranger_scavenge", "r2 打野");
+  // flag 开：offset=(1*3+7)%8=2 → candidates[2]=方向0（SE [8,8]）→ r2 [0,7] 右移
+  assert.deepEqual(planOn.unitActions["r2"], { type: "MOVE", direction: "RIGHT" }, "陈旧区块优先 → SE");
+
+  const off = new SafetyPlanner({ ...AGGRESSIVE, rangerScavenge: true }); // flag 关
+  seed(off);
+  const planOff = off.decide({ state: mk(), policy: AGGRESSIVE_POLICY });
+  // flag 关：固定方位 (1*3+7)%8=2 → 探测点 [-8,8]（SW）→ r2 [0,7] 左移
+  assert.deepEqual(planOff.unitActions["r2"], { type: "MOVE", direction: "LEFT" }, "零回归：固定方位序");
+});

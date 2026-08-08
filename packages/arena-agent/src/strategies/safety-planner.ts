@@ -2129,9 +2129,14 @@ export class SafetyPlanner {
         }
         const dense = this.config.militarySearchDense === true;
         const directionCount = dense ? 16 : EXPLORE_DIRECTION_COUNT;
-        const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % directionCount);
         const home = state.core.position;
         const beacon = state.beacon.position ?? home;
+        // 陈旧区块优先（military-frontier-scavenge-v1，2026-08-08）：打野方位
+        // 按"当前环探测点所在 chunk 观察老化"选最旧区块，替代固定分散方位。
+        const memory = this.world.unitMemory(
+          unit.id,
+          this.militaryScavengeDirection(home, beacon, 0, index, directionCount),
+        );
         let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
         let patrolPoint = dense
           ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
@@ -2154,7 +2159,11 @@ export class SafetyPlanner {
               : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
           } else {
             memory.patrolRing = 0;
-            memory.patrolDirection = (memory.patrolDirection + 3) % directionCount;
+            memory.patrolDirection = this.config.militaryScavengeFrontier === true
+              ? this.world.staleDirection(
+                  home, beacon, memory.patrolRing, this.config.exploreRadius, directionCount, (index * 3 + 7) % directionCount,
+                )
+              : (memory.patrolDirection + 3) % directionCount;
             patrolPoint = dense
               ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
               : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
@@ -2686,6 +2695,31 @@ export class SafetyPlanner {
    *  强制升环）——测绘 + 敌情 + 寻敌。遇敌由 decideRanger 上方射击分支接管、
    *  寡不敌众由 outnumberedRetreat 接管，"打了就跑"由 ranger_kite 保射程。
    */
+  /** 军事打野方位（military-frontier-scavenge-v1，2026-08-08，对齐 ref "scout routes
+   *  prioritize the least recently observed chunks"）：启用时按"当前环探测点所在 chunk
+   *  观察老化"选最旧区块优先（offset 分散多单位，避免全员涌向同一最老方位——ref
+   *  "avoid sending every scout through the same corridor"）；否则固定 (index*3+7)%N
+   *  分散方位（历史行为，零回归）。 */
+  private militaryScavengeDirection(
+    home: Position,
+    beacon: Position,
+    ringIndex: number,
+    index: number,
+    directionCount: number,
+  ): number {
+    if (this.config.militaryScavengeFrontier === true) {
+      return this.world.staleDirection(
+        home,
+        beacon,
+        ringIndex,
+        this.config.exploreRadius,
+        directionCount,
+        (index * 3 + 7) % directionCount,
+      );
+    }
+    return (index * 3 + 7) % directionCount;
+  }
+
   private rangerScavenge(
     state: TickState,
     unit: UnitSnapshot,
@@ -2695,9 +2729,13 @@ export class SafetyPlanner {
   ): void {
     const dense = this.config.militarySearchDense === true;
     const directionCount = dense ? 16 : EXPLORE_DIRECTION_COUNT;
-    const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % directionCount);
     const home = state.core!.position;
     const beacon = state.beacon.position ?? home;
+    // 陈旧区块优先（military-frontier-scavenge-v1，2026-08-08）：同 vanguard_scavenge。
+    const memory = this.world.unitMemory(
+      unit.id,
+      this.militaryScavengeDirection(home, beacon, 0, index, directionCount),
+    );
     let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
     let patrolPoint = dense
       ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
@@ -2716,7 +2754,11 @@ export class SafetyPlanner {
           : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
       } else {
         memory.patrolRing = 0;
-        memory.patrolDirection = (memory.patrolDirection + 3) % directionCount;
+        memory.patrolDirection = this.config.militaryScavengeFrontier === true
+          ? this.world.staleDirection(
+              home, beacon, memory.patrolRing, this.config.exploreRadius, directionCount, (index * 3 + 7) % directionCount,
+            )
+          : (memory.patrolDirection + 3) % directionCount;
         patrolPoint = dense
           ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
           : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
