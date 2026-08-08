@@ -46,6 +46,7 @@ import { MacroPolicyOrchestrator } from "../runtime/macro-policy-orchestrator.ts
 import { serializeMacroPolicy } from "../runtime/macro-policy.ts";
 import { StallDetector, type StallEvent } from "../runtime/stall-detector.ts";
 import { StallRecovery } from "../runtime/stall-recovery.ts";
+import { WorkerLivenessTracker } from "../runtime/worker-liveness.ts";
 import { PolicyDiscipline } from "../runtime/policy-discipline.ts";
 import { mapSnapshotOf } from "../infrastructure/pi/map-snapshot.ts";
 import type { PiModel } from "../infrastructure/pi/pi-types.ts";
@@ -411,14 +412,20 @@ export async function runTenant(
     // policy 层感知（低频策略 prompt 摘要）；commandState 告知策略层当前指挥状态。
     const stallDetector = new StallDetector();
     const stallRecovery = new StallRecovery();
+    // WorkerLivenessTracker 与 StallDetector 分层：前者按 unitId 抓局部假活/振荡并
+    // 做 targeted recovery；后者继续负责半数/全租户经济停摆与全局恢复。
+    const workerLiveness = new WorkerLivenessTracker();
     const policyDiscipline = new PolicyDiscipline();
     // 恢复结果反馈（agent 智能跳出闭环）：上次自愈结束的结局（成功/失败/到期），
     // 注入策略 prompt 让 LLM 基于结果调整战略（见 policy-prompt 渲染）。
     let lastRecoveryOutcome: { readonly outcome: "recovered" | "failed" | "expired"; readonly kind: string | null; readonly tick: number } | null = null;
     const recentStallEvents: string[] = [];
-    const appendStallEvent = (event: StallEvent): void => {
-      recentStallEvents.push(`kind=${event.kind}@tick=${event.tick}(streak=${event.streak})`);
+    const appendHealthEvent = (message: string): void => {
+      recentStallEvents.push(message);
       if (recentStallEvents.length > 4) recentStallEvents.shift();
+    };
+    const appendStallEvent = (event: StallEvent): void => {
+      appendHealthEvent(`kind=${event.kind}@tick=${event.tick}(streak=${event.streak})`);
     };
     // policy 流落盘（策略层事件 + discipline 事件共用；函数级作用域）
     const policyPath = join(dirs.telemetryDir, "policy.jsonl");
@@ -866,6 +873,56 @@ export async function runTenant(
               },
         };
         outcomeWriter.write(outcomeRecord);
+
+        // Worker 级活性检测：租户整体 moveCount>0 不能证明每个 Worker 都在工作。
+        // 生产实证：t1/t4 有 Worker 36 tick GO_RESOURCE+WAIT 原地不动；t3 单 Worker
+        // 每 tick MOVE 却只在两格振荡。这里按 unitId 关联“上一 tick 计划 → 当前结果”，
+        // 局部异常只 reset+rotate 对应 Worker，不触发全租户 StallRecovery。
+        const humanControlledUnitIds = new Set(
+          outcome.humanOverride?.active === true ? outcome.humanOverride.applied : [],
+        );
+        const workerLivenessEvents = workerLiveness.onObservation({
+          tick: outcome.tick,
+          workers: outcome.state.workers,
+          unitActions: outcome.plan.unitActions,
+          intents: outcome.plan.intents,
+          humanControlledUnitIds,
+        });
+        for (const event of workerLivenessEvents) {
+          let recovery: ReturnType<typeof planner.recoverWorker> | null = null;
+          let recoveryError: string | null = null;
+          try {
+            recovery = planner.recoverWorker(event.unitId, event.tick);
+          } catch (error) {
+            recoveryError = error instanceof Error ? error.message : String(error);
+          }
+          appendHealthEvent(
+            `worker=${event.unitId.slice(0, 8)} kind=${event.kind}@tick=${event.tick}(streak=${event.streak})`,
+          );
+          appendJsonlLine(
+            join(dirs.telemetryDir, "runtime.jsonl"),
+            JSON.stringify(sanitizeValue({
+              processRunId,
+              tenantId: config.tenantId,
+              tick: event.tick,
+              telemetryType: "worker_liveness",
+              workerLivenessKind: event.kind,
+              unitId: event.unitId,
+              streak: event.streak,
+              position: event.position,
+              cargo: event.cargo,
+              priorActionType: event.priorActionType,
+              priorIntent: event.priorIntent,
+              recentPositions: event.recentPositions,
+              uniqueRecentPositions: event.uniqueRecentPositions,
+              recoveryCount: event.recoveryCount,
+              recoveryApplied: recovery !== null,
+              recovery,
+              recoveryError,
+            })),
+          );
+        }
+
         // 死循环检测与自动跳出（2026-08-05 生产事故后）：StallDetector 多模式
         // 检测（cargo_blocked/assigned_no_progress/no_production/patrol_only/
         // focus_exile/capacity_wait_loop），事件落盘 runtime.jsonl 供监控查询/人工介入；

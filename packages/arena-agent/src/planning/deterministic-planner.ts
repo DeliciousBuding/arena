@@ -530,6 +530,9 @@ export class DeterministicPlanner implements PlanProvider {
   /** 官方排行榜威胁画像（2026-08-07，威胁自适应）：透传内部 SafetyPlanner。 */
   private readonly threatProfiles: ReadonlyMap<string, ThreatProfile>;
   private previousAssignments: readonly Assignment[] = [];
+  /** Worker 局部活性恢复冷却：冷却内从 economicSnapshot 排除，强制沿 Safety patrol
+   *  探索一段时间，防 reset 后下一 Tick 又被 Hungarian 分回同一 stale mine。 */
+  private readonly workerRecoveryUntilTick = new Map<string, number>();
 
   constructor(
     planner: WorkerTaskPlanner = new WorkerTaskPlanner(),
@@ -605,6 +608,19 @@ export class DeterministicPlanner implements PlanProvider {
     this.spawnReserve = deterministicConfig.spawnReserve ?? WORKER_SPAWN_RESERVE;
   }
 
+  /** Worker 局部活性恢复：清 sticky economic assignment，并同步恢复两套 Safety World。 */
+  recoverWorker(
+    unitId: string,
+    currentTick?: number,
+  ): { readonly previousDirection: number; readonly nextDirection: number; readonly clearedMoveFailures: number; readonly cooldownUntilTick: number | null } {
+    this.previousAssignments = this.previousAssignments.filter((assignment) => assignment.unitId !== unitId);
+    const fallback = this.fallbackPlanner.recoverWorker(unitId, currentTick);
+    // patrol planner 独立持有 World；也必须清，否则下一 Tick fallback 仍可能从旧状态回灌。
+    this.patrolPlanner.recoverWorker(unitId, currentTick);
+    if (fallback.cooldownUntilTick !== null) this.workerRecoveryUntilTick.set(unitId, fallback.cooldownUntilTick);
+    return fallback;
+  }
+
   decide(input: DeterministicPlannerInput): Plan {
     // SafetyPlanner 已包含跨 Tick World（障碍/资源线索/Worker 巡逻状态）。先生成完整
     // 基线计划，再用 WorkerTaskPlanner 覆盖可见资源的全局唯一分配。这样 deterministic
@@ -615,6 +631,11 @@ export class DeterministicPlanner implements PlanProvider {
       state: { ...input.state, resourceCells: new Set<string>() },
       policy: input.policy,
     });
+    for (const [unitId, untilTick] of this.workerRecoveryUntilTick) {
+      if (untilTick <= input.state.tick || !input.state.workers.some((worker) => worker.id === unitId)) {
+        this.workerRecoveryUntilTick.delete(unitId);
+      }
+    }
     const rawSnapshot = extractPlanningSnapshot(input.state);
     const resourceCells = new Map(rawSnapshot.resourceCells);
     // harvest-memory-mine-v1 在 deterministic 模式下只负责“允许消费 World 记忆”；
@@ -647,9 +668,15 @@ export class DeterministicPlanner implements PlanProvider {
         .filter((unit) => unit.unitType === "WORKER" && isSafetyVetoIntent(fallback.intents?.[unit.id]))
         .map((unit) => unit.id),
     );
-    const economicSnapshot: PlanningSnapshot = safetyVetoIds.size === 0
+    const economicExcludedIds = new Set([
+      ...safetyVetoIds,
+      ...[...this.workerRecoveryUntilTick.entries()]
+        .filter(([, untilTick]) => untilTick > input.state.tick)
+        .map(([unitId]) => unitId),
+    ]);
+    const economicSnapshot: PlanningSnapshot = economicExcludedIds.size === 0
       ? snapshot
-      : { ...snapshot, units: snapshot.units.filter((unit) => !safetyVetoIds.has(unit.id)) };
+      : { ...snapshot, units: snapshot.units.filter((unit) => !economicExcludedIds.has(unit.id)) };
     const { assignments } = this.planner.plan(economicSnapshot, this.previousAssignments);
     this.previousAssignments = assignments;
 

@@ -127,6 +127,26 @@ test("DeterministicPlanner: Worker 到达 seeded 历史矿但当前确认无矿 
   assert.equal(fallback.world.resourceCandidates().length, 0);
 });
 
+test("DeterministicPlanner: targeted recovery 后 8 Tick 不再被 stale mine 立即吸回", () => {
+  const config = { ...DEFAULT_SAFETY_CONFIG, harvestMemoryMine: true };
+  const fallback = new SafetyPlanner(config);
+  const patrol = new SafetyPlanner(config);
+  fallback.world.seedResourceMemory([[10, 0]], 0);
+  patrol.world.seedResourceMemory([[10, 0]], 0);
+  const planner = new DeterministicPlanner(
+    new WorkerTaskPlanner({ memoryVerificationRatio: 1 }), fallback, patrol,
+  );
+
+  const before = planner.decide({ state: state(100, [worker("w1", [0, 0])]) });
+  assert.equal(before.intents.w1, "GO_RESOURCE", "先证明 stale seed 确实会被领取");
+
+  const recovery = planner.recoverWorker("w1", 100);
+  assert.equal(recovery.cooldownUntilTick, 108);
+  const after = planner.decide({ state: state(101, [worker("w1", [0, 0])]) });
+  assert.notEqual(after.intents.w1, "GO_RESOURCE", "恢复窗口内必须交给 patrol/explore，而非立刻重领旧矿");
+  assert.equal(after.unitActions.w1?.type, "MOVE");
+});
+
 test("DeterministicPlanner: visible+memory resources use one global assignment authority", () => {
   const config = { ...DEFAULT_SAFETY_CONFIG, harvestMemoryMine: true };
   const fallback = new SafetyPlanner(config);
