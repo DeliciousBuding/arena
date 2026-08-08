@@ -1216,6 +1216,12 @@ export async function runTenant(
               priorIntent,
             };
           });
+        const outcomeCounters = countOutcomeEvents(outcome.state.events, {
+          priorUnitIds: new Set(holder.prev.unitIds),
+          currentUnitIds: new Set(outcome.state.units.map((unit) => unit.id)),
+          priorCoreId: holder.prev.coreId,
+          currentCoreId: outcome.state.core?.id ?? null,
+        });
         const outcomeRecord: OutcomeTraceRecord = {
           processRunId,
           tenantId: config.tenantId,
@@ -1234,10 +1240,8 @@ export async function runTenant(
             ? undefined
             : workerDistances.reduce((total, distance) => total + distance, 0) / workerDistances.length,
           failedEvents,
-          // W50 outcome.jsonl 经济计数器：从本 tick 结算事件流聚合四计数器
-          // （grossDeposit/spawnCount/healCount/unitLossCount）。schema Optional
-          // 曾让"不填"过校验——这里显式填充，W51 fitness 直接消费。
-          ...countOutcomeEvents(outcome.state.events),
+          // W50 四计数器：唯一 ownership-aware SSOT，避免把敌方事件计入本租户。
+          ...outcomeCounters,
           events: outcome.state.events.map((e) => e.eventType),
           humanOverride: outcome.humanOverride === undefined || outcome.humanOverride === null
               || (!outcome.humanOverride.active && outcome.humanOverride.applied.length === 0
