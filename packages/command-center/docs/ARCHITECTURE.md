@@ -92,5 +92,8 @@ npm run test:regression    # Playwright 回归 19 项（web/scripts/cc-regressio
 7. **人类指挥链修复 ✅（1004faa）**：MOVE 点击目标非实时障碍必提交——测绘记忆寻路失败不再吞命令
    （服务端权威导航）；实时障碍才 toast 拒绝。修复"点了没反应"类交互。
 8. **全局旧色残留清理 ✅（7055b22）**：`public/style.css` 信标渐变/HP 条/tick 信号青统一到 DESIGN token。
+9. **人类指挥意图线验证 ✅（2026-08-08）**：`drawHumanGoalPaths` + `tactDrawRoute` 已实现且实测通过——
+   发布 goto goal 后 ≤3s（poll 周期）canvas 出现青色 #5fd4e8 完整寻路路径（首步实线/未来步虚线/方向箭头/
+   目标旗/行进脉冲）；mine=白、goto=青、agent 规划=绿，命令被服务端对账清理后自然消失。
 
 9. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
