@@ -15,6 +15,7 @@ import { loadDecisionAudit, type DecisionAuditPayload } from "./decision-audit.t
 import { loadMineUtilization, type MineUtilizationPayload } from "./mine-utilization.ts";
 import { loadMiningEffectiveness, type MiningEffectivenessPayload } from "./mining-effectiveness.ts";
 import { loadMineUtilizationTrend } from "./mine-utilization.ts";
+import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
 
 const TTL_MS = 30_000;
 const cache = new TtlCache<AlignmentPayload>(TTL_MS);
@@ -35,6 +36,8 @@ export interface TenantAlignment {
   open: number;
   stale: number;
   harvested: number;
+  /** 现役 worker 数（联盟快照）——有 worker 却不产采集 = 空闲铁证。 */
+  workers: number | null;
   grade: AlignmentGrade;
   reasons: string[];
 }
@@ -60,6 +63,7 @@ export function aggregateAlignment(
   mines: MineUtilizationPayload["tenants"],
   effectiveness: MiningEffectivenessPayload | null,
   trends: Record<string, { visibleNever: number; visibleNeverPrev: number }> = {},
+  workersByTenant: Partial<Record<string, number | null>> = {},
 ): AlignmentPayload {
   const tenants: Record<string, TenantAlignment> = {};
   let alignedN = 0, misalignedN = 0, dataGapN = 0, unfulfilled = 0;
@@ -76,6 +80,7 @@ export function aggregateAlignment(
     const open = num(eff?.open);
     const stale = num(eff?.stale);
     const harvested = num(eff?.harvested);
+    const workers = workersByTenant[t] ?? null;
     const tr = trends[t];
     const gapTrendDelta = tr && typeof tr.visibleNever === "number" && typeof tr.visibleNeverPrev === "number"
       ? tr.visibleNever - tr.visibleNeverPrev : null;
@@ -97,6 +102,9 @@ export function aggregateAlignment(
       if (gapTrendDelta !== null && gapTrendDelta > 0) {
         reasons.push(`缺口较上窗口 +${gapTrendDelta}`);
       }
+      if (workers !== null && workers > 0 && (harvestRate ?? 0) < 0.05) {
+        reasons.push(`有 ${workers} 个 worker 但采集占比 ${harvestRate === null ? "-" : (harvestRate * 100).toFixed(0)}%——worker 空闲/在移动`);
+      }
       if (grade === "aligned" && reasons.length === 0 && harvestRate !== null) {
         reasons.push(`采集占比 ${(harvestRate * 100).toFixed(0)}%，缺口 ${visibleNever}——对齐`);
       }
@@ -114,6 +122,7 @@ export function aggregateAlignment(
       open,
       stale,
       harvested,
+      workers,
       grade,
       reasons,
     };
@@ -133,6 +142,9 @@ export function loadAlignmentAudit(): AlignmentPayload {
   const decisions = loadDecisionAudit("all") as Record<string, DecisionAuditPayload>;
   const mines = loadMineUtilization("all") as MineUtilizationPayload;
   const effectiveness = loadMiningEffectiveness();
+  const snap = loadAllianceSnapshot();
+  const workersByTenant: Partial<Record<string, number | null>> = {};
+  for (const t of TENANTS) workersByTenant[t] = typeof snap.members?.[t]?.workers === "number" ? snap.members[t].workers : null;
   const trends: Record<string, { visibleNever: number; visibleNeverPrev: number }> = {};
   for (const t of TENANTS) {
     try {
@@ -142,7 +154,7 @@ export function loadAlignmentAudit(): AlignmentPayload {
       if (last) trends[t] = { visibleNever: num(last.visibleNever), visibleNeverPrev: num(prev?.visibleNever) };
     } catch { /* 趋势不可用跳过 */ }
   }
-  const payload = aggregateAlignment(decisions, mines.tenants, effectiveness, trends);
+  const payload = aggregateAlignment(decisions, mines.tenants, effectiveness, trends, workersByTenant);
   cache.set(key, payload);
   return payload;
 }
