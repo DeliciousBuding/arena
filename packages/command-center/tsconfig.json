@@ -3,8 +3,12 @@
     "target": "ES2023",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2023"],
-    "types": ["node"],
+    "lib": [
+      "ES2023"
+    ],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
@@ -13,5 +17,11 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["server.ts", "lib/**/*.ts"]
+  "include": [
+    "server.ts",
+    "lib/**/*.ts",
+    "scripts/**/*.ts",
+    "survey-server.ts",
+    "test/**/*.ts"
+  ]
 }

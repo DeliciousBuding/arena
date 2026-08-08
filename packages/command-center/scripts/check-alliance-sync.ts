@@ -14,7 +14,7 @@ const ROOT = resolve(CC, "..", ".."); // 仓库根
 const A = join(ROOT, "packages", "command-center", "lib", "alliance");
 const B = join(ROOT, "packages", "arena-agent", "src", "alliance");
 
-const norm = (s) => s.replace(/\r\n/g, "\n").trim();
+const norm = (s: string) => s.replace(/\r\n/g, "\n").trim();
 let drift = 0, checked = 0;
 for (const f of readdirSync(A).filter((x) => x.endsWith(".ts")).sort()) {
   const pa = join(A, f), pb = join(B, f);

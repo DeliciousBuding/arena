@@ -11,7 +11,7 @@
  *
  * 数据源：<ARENA_DATA_ROOT>/runtime/survey/<tenant>.db（node:sqlite，零依赖）。
  */
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,18 +23,24 @@ const PORT = Number(process.env.SURVEY_PORT ?? 8788);
 const TENANTS = ["t1", "t2", "t3", "t4"];
 
 
-function dbFor(tenant) {
+interface ResourceRow { x: number; y: number; first_seen_tick: number; last_seen_tick: number; state: string; seen_count: number }
+interface ObstacleRow { x: number; y: number; first_seen_tick: number; last_seen_tick: number }
+interface CoreHuntRow { x: number; y: number; owner: string; source: string; first_seen_tick: number; last_seen_tick: number }
+interface LifecycleUnitRow { state: string; type: string; count: number }
+interface SpendRow { kind: string; count: number; total: number }
+
+function dbFor(tenant: string) {
   const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
   if (!existsSync(file)) return null;
   return new DatabaseSync(file, { readOnly: true });
 }
 
-function queryResources(db, states, maxAgeTicks) {
+function queryResources(db: DatabaseSync, states: string[], maxAgeTicks: number | null) {
   const placeholders = states.map(() => "?").join(",");
   const rows = db.prepare(
     `SELECT x, y, first_seen_tick, last_seen_tick, state, seen_count
      FROM resources WHERE state IN (${placeholders}) ORDER BY last_seen_tick DESC`,
-  ).all(...states);
+  ).all(...states) as unknown as ResourceRow[];
   if (maxAgeTicks === null || maxAgeTicks <= 0) return rows;
   let maxTick = 0;
   for (const r of rows) if (r.last_seen_tick > maxTick) maxTick = r.last_seen_tick;
@@ -42,26 +48,26 @@ function queryResources(db, states, maxAgeTicks) {
   return rows.filter((r) => r.last_seen_tick >= cutoff);
 }
 
-function queryObstacles(db) {
-  return db.prepare("SELECT x, y, first_seen_tick, last_seen_tick FROM obstacles ORDER BY last_seen_tick DESC").all();
+function queryObstacles(db: DatabaseSync) {
+  return db.prepare("SELECT x, y, first_seen_tick, last_seen_tick FROM obstacles ORDER BY last_seen_tick DESC").all() as unknown as ObstacleRow[];
 }
 
-function queryCoreHunts(db) {
+function queryCoreHunts(db: DatabaseSync) {
   return db.prepare(
     "SELECT x, y, owner, source, first_seen_tick, last_seen_tick FROM core_hunts ORDER BY last_seen_tick DESC",
-  ).all();
+  ).all() as unknown as CoreHuntRow[];
 }
 
 
 /** 生命周期摘要（2026-08-08）：单位/消费/采集聚合——与主面板 lib/survey.ts
  *  loadLifecycleDb 同 SQL，独立服务也能直接消费生命周期数据。 */
-function queryLifecycle(db) {
+function queryLifecycle(db: DatabaseSync) {
   const units = db.prepare(
     "SELECT current_state AS state, unit_type AS type, COUNT(*) AS count FROM unit_lifecycle GROUP BY state, unit_type",
-  ).all();
+  ).all() as unknown as LifecycleUnitRow[];
   const spends = db.prepare(
     "SELECT kind, COUNT(*) AS count, SUM(amount) AS total FROM core_spends GROUP BY kind ORDER BY total DESC",
-  ).all();
+  ).all() as unknown as SpendRow[];
   const harvests = db.prepare(
     "SELECT COUNT(*) AS count, MAX(tick) AS last_tick FROM resource_events WHERE event_type = 'HARVEST_SUCCEEDED'",
   ).get();
@@ -76,7 +82,7 @@ function queryLifecycle(db) {
     harvestFailCount: Number(fails?.count ?? 0),
   };
 }
-function sendJson(res, status, body) {
+function sendJson(res: ServerResponse, status: number, body: unknown) {
   const text = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -86,7 +92,7 @@ function sendJson(res, status, body) {
   res.end(text);
 }
 
-const server = createServer(async (req, res) => {
+const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   try {
     const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
     const pathname = url.pathname;
@@ -100,7 +106,7 @@ const server = createServer(async (req, res) => {
         .split(",").map((s) => s.trim()).filter(Boolean);
       const maxAge = Number(url.searchParams.get("maxAge") ?? 20000);
       const tenants = tenant === "all" ? TENANTS : [tenant];
-      const out = { generatedAt: new Date().toISOString(), tenants: {} };
+      const out = { generatedAt: new Date().toISOString(), tenants: {} as Record<string, unknown> };
       for (const t of tenants) {
         const db = dbFor(t);
         if (db === null) {
