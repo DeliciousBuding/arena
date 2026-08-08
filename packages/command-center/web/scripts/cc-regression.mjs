@@ -77,6 +77,13 @@ async function main() {
   const exec = resolveChrome();
   if (!exec) { console.error("未找到 Playwright chromium，先 npx playwright-core install chromium"); process.exit(2); }
   const browser = await chromium.launch({ headless: true, executablePath: exec, args: ["--no-sandbox", "--disable-gpu"] });
+  // 全局硬超时（240s）：服务重启/并行高负载时不无限卡，强制打印部分结果退出
+  const hardTimer = setTimeout(() => {
+    console.log("\n== 指挥面板回归（超时中止）==");
+    console.log(results.join("\n"));
+    console.log(`\n通过 ${pass} / ${pass + fail}（超时中止）`);
+    process.exit(2);
+  }, 240000);
   const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
   const page = await ctx.newPage();
   const errs = [];
@@ -291,6 +298,47 @@ async function main() {
     if (tickOk === true) ok("15s tick 读条", tickDetail);
     else if (tickOk === false) bad("15s tick 读条", "tickFill 缺失");
     else results.push("  ⚠ 15s tick 读条 — 采样窗口内未推进，跳过");
+
+    // 6e) 右键指挥菜单：左键选中受控单位 → 右键 → ctx-menu 打开（有命令项）→ Esc 关闭
+    let ctxOk = null; // true | false
+    try {
+      // 相机可能被 6b 跳图移走（如跳到 T4 区域）→ 按 F 适应回聚焦租户视口，坐标才不脱靶
+      await page.keyboard.press("f");
+      await sleep(800);
+      const cvE = await page.$("#map");
+      const boxE = await cvE.boundingBox();
+      const tgt = await page.evaluate(async ({ boxX, boxY, boxW, boxH }) => {
+        const eng = window.__arenaEngine;
+        if (!eng) return { err: "no engine" };
+        const st = eng.getState();
+        const tenant = st.soloTenant || "t1";
+        const w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json();
+        const objs = w?.state?.objects ?? [];
+        const unit = objs.find((o) => (o.kind === "UNIT" || o.kind === "CORE") && o.controlled === true && o.position);
+        if (!unit) return { err: "no controlled obj" };
+        const v = st.view;
+        return { sx: boxX + (unit.position[0] - v.cx) * v.scale + boxW / 2, sy: boxY + (unit.position[1] - v.cy) * v.scale + boxH / 2 };
+      }, { boxX: boxE.x, boxY: boxE.y, boxW: boxE.width, boxH: boxE.height });
+      if (tgt.err) { ctxOk = false; }
+      else {
+        await page.mouse.click(tgt.sx, tgt.sy);
+        await sleep(700);
+        await page.mouse.click(tgt.sx, tgt.sy, { button: "right" });
+        await sleep(1200);
+        const m1 = await page.evaluate(() => {
+          const el = document.querySelector(".ctx-menu");
+          return { hidden: el ? el.hidden : "no-el", items: document.querySelectorAll(".ctx-item").length };
+        });
+        if (m1.hidden === false && m1.items > 0) {
+          await page.keyboard.press("Escape");
+          await sleep(400);
+          const m2 = await page.evaluate(() => { const el = document.querySelector(".ctx-menu"); return el ? el.hidden : "no-el"; });
+          ctxOk = m2 === true;
+        } else ctxOk = false;
+      }
+    } catch (e) { ctxOk = false; }
+    if (ctxOk === true) ok("右键指挥菜单", "选中→右键打开→Esc 关闭");
+    else if (ctxOk === false) bad("右键指挥菜单", "菜单未打开或 Esc 未关闭");
     // 7) API 健康
     for (const path of ["/api/overview", "/api/stream?tenant=t1&n=5", "/api/survey?tenant=t1"]) {
       const t0 = Date.now();
@@ -309,6 +357,7 @@ async function main() {
   console.log("\n== 指挥面板回归 ==");
   console.log(results.join("\n"));
   console.log(`\n通过 ${pass} / ${pass + fail}`);
+  clearTimeout(hardTimer);
   process.exit(fail ? 1 : 0);
 }
 
