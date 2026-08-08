@@ -16,6 +16,7 @@
  *   7. API 健康：overview/stream/survey 响应 < 5s
  */
 import { createRequire } from "node:module";
+import { request as httpRequest } from "node:http";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -52,6 +53,26 @@ function bad(name, detail = "") { fail++; results.push(`  ❌ ${name}${detail ? 
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 前置健康：node:http 直连（绕开 HTTP_PROXY 环境变量对 undici fetch 的代理劫持，不依赖 NO_PROXY 配置） */
+function probeHealth(url, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    try {
+      const u = new URL(url);
+      const req = httpRequest(
+        { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: "GET", timeout: timeoutMs },
+        (res) => { res.resume(); done({ ok: res.statusCode === 200, status: res.statusCode }); }
+      );
+      req.on("timeout", () => { req.destroy(new Error("timeout")); });
+      req.on("error", (e) => done({ ok: false, err: e.message.slice(0, 40) }));
+      req.end();
+    } catch (e) {
+      done({ ok: false, err: String(e?.message ?? e).slice(0, 40) });
+    }
+  });
+}
+
 async function main() {
   const exec = resolveChrome();
   if (!exec) { console.error("未找到 Playwright chromium，先 npx playwright-core install chromium"); process.exit(2); }
@@ -63,12 +84,15 @@ async function main() {
   page.on("console", (m) => { if (m.type() === "error") errs.push(m.text()); });
 
   try {
-    // 0) 前置健康：8787 可达性快速诊断（不可达立即报错退出，避免 30s goto 超时无反馈）
+    // 0) 前置健康：8787 可达性快速诊断（node:http 直连绕代理；失败关浏览器后打印退出，避免 return 吞掉结果）
     let pre = null, preErr = "";
-    try { pre = await fetch(BASE + "/api/overview", { signal: AbortSignal.timeout(5000) }); } catch (e) { preErr = String(e?.name ?? e).slice(0, 40); }
+    try { pre = await probeHealth(BASE + "/api/overview", 5000); } catch (e) { preErr = String(e?.name ?? e).slice(0, 40); }
     if (!pre || !pre.ok) {
-      bad("前置健康", `8787 不可达（${pre ? "HTTP " + pre.status : preErr || "fetch 失败"}）——确认 server.ts 已启动且 /api/overview 可用`);
-      return;
+      await browser.close().catch(() => {});
+      console.log("\n== 指挥面板回归 ==");
+      console.log("  ❌ 前置健康 — 8787 不可达（" + (pre ? "HTTP " + pre.status : preErr || "连接失败") + "）——确认 server.ts 已启动且 /api/overview 可用");
+      console.log("\n通过 0 / 1");
+      process.exit(1);
     }
     ok("前置健康", "8787 /api/overview 可达");
 
@@ -183,12 +207,16 @@ async function main() {
         if (hit.err) { bad("人类指挥 UI 链", hit.err); }
         else {
           await page.mouse.click(hit.sx, hit.sy);
-          await sleep(1000);
-          const cmds = await page.evaluate(async () => {
-            const r = await fetch("/api/commands?tenant=t1", { cache: "no-store" });
-            const j = await r.json();
-            return { goals: (j.goals ?? []).length, commands: (j.commands ?? []).length };
-          });
+          // 轮询等待落盘（≤4s）：实时世界下服务端写库/应用存在 tick 时序，单次 1s 查询易 flaky
+          let cmds = { goals: 0, commands: 0 };
+          for (let i = 0; i < 8 && cmds.goals === 0 && cmds.commands === 0; i++) {
+            cmds = await page.evaluate(async () => {
+              const r = await fetch("/api/commands?tenant=t1", { cache: "no-store" });
+              const j = await r.json();
+              return { goals: (j.goals ?? []).length, commands: (j.commands ?? []).length };
+            });
+            if (cmds.goals === 0 && cmds.commands === 0) await sleep(500);
+          }
           if (cmds.goals > 0 || cmds.commands > 0) { goalOk = true; ok("人类指挥 UI 链（goal 落盘）", JSON.stringify(cmds)); }
           else bad("人类指挥 UI 链（goal 落盘）", `点击可达格 (${hit.tx},${hit.ty}) 未落盘`);
         }
