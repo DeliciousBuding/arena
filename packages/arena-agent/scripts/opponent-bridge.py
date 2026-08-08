@@ -9,11 +9,18 @@
 榜二零改动：只消费官方 SDK 的 Turn/PlayerState 接口（turn.clear()/
 turn.unit()/turn.plan()）。本脚本是唯一适配面（~90 行）。
 
+跨 tick 记忆（--state-slot）：
+  Windows 桥接常用 "--one-shot"（每 tick 新起进程），此时 CoreFarmer 的
+  记忆（scout/resource/worker 状态表）会随进程退出丢失。--state-slot 把
+  CoreFarmer.__dict__ pickle 到磁盘槽：每次启动先 unpickle 恢复，决策后
+  pickle 存回，从而"随用随起"也能跨 tick 保留记忆。
+
 用法：
   python scripts/opponent-bridge.py \
     [--farmer-repo <arena-hero-agent-path>] \
     [--sdk-repo <arena-hero-python-path>] \
-    [--worker-target 12] [--beacon-policy retreat]
+    [--worker-target 12] [--beacon-policy retreat] \
+    [--state-slot <pickle 槽路径>] [--one-shot]
 
 诊断日志走 stderr（模拟器把外部策略 stderr 透传到终端）。
 """
@@ -22,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pickle
 import sys
 from pathlib import Path
 
@@ -57,8 +65,13 @@ def main() -> int:
     parser.add_argument(
         "--one-shot",
         action="store_true",
-        help="读 stdin 一行 → 决策 → 输出一行 → 退出（Windows 桥接：无跨 tick 记忆；"
-        "solo 全可见场景记忆冗余，行为等价）",
+        help="读 stdin 一行 → 决策 → 输出一行 → 退出（配合 --state-slot 保留记忆）",
+    )
+    parser.add_argument(
+        "--state-slot",
+        type=Path,
+        default=None,
+        help="CoreFarmer 记忆 pickle 槽路径：启动恢复、每次决策后存回（跨 tick 记忆）",
     )
     args = parser.parse_args()
 
@@ -78,9 +91,32 @@ def main() -> int:
         # 模拟器规则 v0.13 与榜二期望一致——不需要兼容性 hold。
         compatibility_marker=None,
     )
+    if args.state_slot is not None and args.state_slot.exists():
+        try:
+            with open(args.state_slot, "rb") as slot_file:
+                farmer.__dict__.update(pickle.load(slot_file))
+            print(
+                f"bridge state restored from slot: {args.state_slot}",
+                file=sys.stderr,
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001 —— 槽损坏不应阻断对局，重置即可。
+            print(f"bridge state slot corrupt, starting fresh: {exc}", file=sys.stderr, flush=True)
+
+    def _persist_state() -> None:
+        if args.state_slot is None:
+            return
+        try:
+            args.state_slot.parent.mkdir(parents=True, exist_ok=True)
+            with open(args.state_slot, "wb") as slot_file:
+                pickle.dump(dict(farmer.__dict__), slot_file)
+        except Exception as exc:  # noqa: BLE001 —— 槽写失败降级为无记忆，不阻断对局。
+            print(f"bridge state slot write failed: {exc}", file=sys.stderr, flush=True)
+
     print(
         f"bridge ready: worker_target={args.worker_target} "
-        f"beacon_policy={args.beacon_policy}",
+        f"beacon_policy={args.beacon_policy} "
+        f"state_slot={'on' if args.state_slot is not None else 'off'}",
         file=sys.stderr,
         flush=True,
     )
@@ -103,6 +139,7 @@ def main() -> int:
             # mode="json"：UUID key/Position 转 JSON 原生类型。
             payload = json.dumps(plan.model_dump(mode="json"), separators=(",", ":"))
             print(payload, flush=True)
+            _persist_state()
             if args.one_shot:
                 return 0
         except Exception as exc:  # noqa: BLE001 —— 决策失败输出到 stderr
