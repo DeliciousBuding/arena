@@ -8,6 +8,9 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -23,6 +26,7 @@ import {
 import {
   assignChronologicalSplits,
 } from "../../src/offline-learning/split/episode-split.ts";
+import { TrajectoryExporter } from "../../src/offline-learning/export/trajectory-exporter.ts";
 
 // ── 确定性：轨迹 ID ──
 
@@ -61,6 +65,25 @@ test("trajectoryId is bit-identical across rebuilds", () => {
   assert.strictEqual(id1, id2, "Identical steps must produce identical trajectory ID");
   assert.strictEqual(id1.length, 64);
   assert.match(id1, /^[0-9a-f]{64}$/);
+});
+
+test("TrajectoryExporter fails closed when EpisodeRecord lacks full private TickState", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arena-trajectory-export-"));
+  try {
+    const exporter = new TrajectoryExporter({
+      outputDir: dir,
+      rulesVersion: "v0.14",
+      rulesManifestHash: "sha256:test",
+      sourceCommit: "0123456789abcdef0123456789abcdef01234567",
+      engineVersion: "0.1.0",
+    });
+    assert.throws(
+      () => exporter.episodeToTrajectory("ep", {} as never, [] as never),
+      /requires full per-tick private state/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("trajectoryId changes when any field changes", () => {

@@ -12,6 +12,7 @@ import {
   computeTrajectoryId,
   projectStepAction,
   projectStepLabel,
+  projectTickState,
   TRAJECTORY_SCHEMA_VERSION,
   validateTrajectoryV1,
   type TrajectoryStep,
@@ -170,7 +171,7 @@ test("projectStepAction extracts action counts correctly", () => {
   assert.deepStrictEqual(result.actionCounts, { MOVE: 2, HARVEST: 1 });
   assert.strictEqual(result.coreAction, "SPAWN");
   assert.strictEqual(result.spawnUnitType, "WORKER");
-  assert.deepStrictEqual(result.intents, ["u1", "u3"]);
+  assert.deepStrictEqual(result.intents, ["patrol"], "trajectory stores intent labels, not unit ids");
   assert.strictEqual(result.planHash, "abc12345");
 });
 
@@ -185,6 +186,48 @@ test("projectStepAction handles null coreAction", () => {
   assert.strictEqual(result.coreAction, null);
   assert.strictEqual(result.spawnUnitType, null);
   assert.deepStrictEqual(result.actionCounts, { WAIT: 1 });
+});
+
+test("projectTickState projects the exact private planner observation without placeholders", () => {
+  const state: import("../../src/domain/model.ts").TickState = {
+    tick: 7,
+    status: "ACTIVE",
+    resources: 13,
+    resourceCapacity: 20,
+    resourceSpace: 7,
+    population: 4,
+    core: { id: "c1", position: [10, 10], hp: 4, shield: 3, state: "NORMAL", ownerUsername: "me" },
+    units: [
+      { id: "w1", position: [11, 10], hp: 2, unitType: "WORKER", cargo: 1 },
+      { id: "w2", position: [12, 10], hp: 2, unitType: "WORKER", cargo: 0 },
+      { id: "v1", position: [10, 11], hp: 3, unitType: "VANGUARD", cargo: 0 },
+      { id: "r1", position: [10, 12], hp: 2, unitType: "RANGER", cargo: 0 },
+    ],
+    workers: [
+      { id: "w1", position: [11, 10], hp: 2, unitType: "WORKER", cargo: 1 },
+      { id: "w2", position: [12, 10], hp: 2, unitType: "WORKER", cargo: 0 },
+    ],
+    vanguards: [{ id: "v1", position: [10, 11], hp: 3, unitType: "VANGUARD", cargo: 0 }],
+    rangers: [{ id: "r1", position: [10, 12], hp: 2, unitType: "RANGER", cargo: 0 }],
+    visibleEnemies: [
+      { id: "ev", kind: "UNIT", unitType: "VANGUARD", position: [13, 10], hp: 3 },
+      { id: "ec", kind: "CORE", position: [20, 20], hp: 5 },
+    ],
+    resourceCells: new Set(["11,11", "15,15"]),
+    obstacleCells: new Set(),
+    beacon: { position: [0, 0], status: "GROUND", carrierId: null },
+    events: [],
+  };
+  const projected = projectTickState(state, "ALERT");
+  assert.equal(projected.resources, 13);
+  assert.equal(projected.resourceCapacity, 20);
+  assert.equal(projected.visibleResourceCells, 2);
+  assert.equal(projected.carriedResources, 1);
+  assert.equal(projected.visibleEnemyCombat, 1);
+  assert.equal(projected.visibleEnemyCores, 1);
+  assert.equal(projected.nearestEnemyCombatDist, 3);
+  assert.equal(projected.nearestEnemyCoreDist, 10);
+  assert.equal(projected.threatLevel, "ALERT");
 });
 
 test("projectStepLabel computes all fields", () => {

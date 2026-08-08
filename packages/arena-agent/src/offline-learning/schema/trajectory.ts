@@ -13,7 +13,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { Plan, Position } from "../../domain/model.ts";
+import type { Plan, Position, TickState } from "../../domain/model.ts";
 import { canonicalJson } from "../../sim/tools/artifacts.ts";
 
 export const TRAJECTORY_SCHEMA_VERSION = "trajectory-v1" as const;
@@ -145,6 +145,7 @@ export function projectStepState(
   visibleEnemies: readonly { readonly kind: string; readonly unitType?: string;
     readonly position: Position }[],
   threatLevel: string,
+  visibleResourceCells: number,
 ): TrajectoryStepState {
   const player = world.players.get(tenantId);
   if (!player) throw new Error(`player ${tenantId} not found`);
@@ -181,13 +182,57 @@ export function projectStepState(
     coreShield: player.core?.shield ?? 0,
     corePosition: corePos,
     coreState: player.core?.state ?? "RESPAWNING",
-    visibleResourceCells: 0, // caller fills
+    visibleResourceCells,
     carriedResources: workers.reduce((sum, w) => sum + w.cargo, 0),
     visibleEnemyUnits: visibleEnemies.filter((e) => e.kind === "UNIT").length,
     visibleEnemyCombat: combatEnemies.length,
     visibleEnemyCores: enemyCores.length,
     nearestEnemyCoreDist,
     nearestEnemyCombatDist,
+    threatLevel,
+  };
+}
+
+/**
+ * Canonical private-observation projection used by new dataset code.
+ * TickState is the exact observation consumed by the tenant planner, so visibility
+ * and resource counts cannot silently fall back to synthetic placeholders.
+ */
+export function projectTickState(
+  state: TickState,
+  threatLevel: "NORMAL" | "ALERT" | "ENGAGED" | "BREAKOUT",
+): TrajectoryStepState {
+  const corePosition = state.core?.position ?? ([0, 0] as const);
+  const combatEnemies = state.visibleEnemies.filter(
+    (enemy) => enemy.kind === "UNIT" && (enemy.unitType === "VANGUARD" || enemy.unitType === "RANGER"),
+  );
+  const enemyCores = state.visibleEnemies.filter((enemy) => enemy.kind === "CORE");
+  const chebyshev = (position: Position): number => Math.max(
+    Math.abs(corePosition[0] - position[0]),
+    Math.abs(corePosition[1] - position[1]),
+  );
+
+  return {
+    tick: state.tick,
+    resources: state.resources,
+    resourceCapacity: state.resourceCapacity,
+    population: state.population,
+    workers: state.workers.length,
+    vanguards: state.vanguards.length,
+    rangers: state.rangers.length,
+    coreHp: state.core?.hp ?? 0,
+    coreShield: state.core?.shield ?? 0,
+    corePosition,
+    coreState: state.status === "RESPAWNING" ? "RESPAWNING" : (state.core?.state ?? "RESPAWNING"),
+    visibleResourceCells: state.resourceCells.size,
+    carriedResources: state.workers.reduce((sum, worker) => sum + worker.cargo, 0),
+    visibleEnemyUnits: state.visibleEnemies.filter((enemy) => enemy.kind === "UNIT").length,
+    visibleEnemyCombat: combatEnemies.length,
+    visibleEnemyCores: enemyCores.length,
+    nearestEnemyCoreDist: enemyCores.length === 0 ? null : Math.min(...enemyCores.map((enemy) => chebyshev(enemy.position))),
+    nearestEnemyCombatDist: combatEnemies.length === 0
+      ? null
+      : Math.min(...combatEnemies.map((enemy) => chebyshev(enemy.position))),
     threatLevel,
   };
 }
@@ -215,7 +260,7 @@ export function projectStepAction(
     actionCounts,
     coreAction,
     spawnUnitType,
-    intents: Object.keys(plan.intents ?? {}),
+    intents: [...new Set(Object.values(plan.intents ?? {}))].sort(),
     planHash,
   };
 }

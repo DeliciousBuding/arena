@@ -82,6 +82,13 @@ export class TrajectoryExporter {
     source: "sim" | "live" = "sim",
     startedAt?: string,
   ): TrajectoryV1 {
+    // EpisodeRecord intentionally does not contain the private TickState consumed by the planner.
+    // Fabricating zeros/defaults here would create schema-valid but semantically false training data.
+    // Keep this legacy convenience API fail-closed until the caller supplies full per-tick capture.
+    throw new Error(
+      "episodeToTrajectory requires full per-tick private state; use buildTrajectoryFromTicks/onTickRecorded capture",
+    );
+
     if (records.length === 0) {
       throw new Error("Cannot create trajectory from empty episode");
     }

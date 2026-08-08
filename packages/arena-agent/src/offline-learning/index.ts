@@ -19,6 +19,7 @@ export {
   TRAJECTORY_SCHEMA_VERSION,
   computeTrajectoryId,
   projectStepState,
+  projectTickState,
   projectStepAction,
   projectStepLabel,
   validateTrajectoryV1,
