@@ -64,72 +64,66 @@ interface HeatAgg {
   cells: Set<string>;
 }
 
-/** 单租户敌情热区聚合（SQL 按格×类型分组，JS 按 16×16 桶聚合）。 */
-function loadTenantEnemyHeat(tenant: string): { buckets: Map<string, HeatAgg>; currentTick: number } {
-  const buckets = new Map<string, HeatAgg>();
+/** 单租户敌情热区聚合（SQL 按格×类型分组，JS 按 16×16 桶聚合）。
+ *  recent：窗口内（tick > cutoff，走 idx_units_seen_controlled_tick 索引范围扫，
+ *  只扫近 windowTicks 行——t1 200k 全表→ ~5k 行，提速 ~20 倍；
+ *  count=近期活跃度（热层渲染用）；
+ *  full：全历史（记录/审计用）。 2026-08-08 数据架构优化。 */
+function loadTenantEnemyHeat(tenant: string, windowTicks: number): {
+  recent: Map<string, HeatAgg>;
+  full: Map<string, HeatAgg>;
+  currentTick: number;
+} {
+  const recent = new Map<string, HeatAgg>();
+  const full = new Map<string, HeatAgg>();
   const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
-  if (!existsSync(file)) return { buckets, currentTick: 0 };
+  if (!existsSync(file)) return { recent, full, currentTick: 0 };
   let db: DatabaseSync;
   try {
     db = new DatabaseSync(file, { readOnly: true });
   } catch {
-    return { buckets, currentTick: 0 };
+    return { recent, full, currentTick: 0 };
   }
   try {
     const meta = db.prepare("SELECT MAX(last_tick) AS m FROM sync_meta").get() as { m: number | null };
     const currentTick = num(meta?.m);
-    const rows = db.prepare(
-      `SELECT x, y, unit_type AS type, COUNT(*) AS n, MAX(tick) AS last_tick
-       FROM units_seen WHERE controlled = 0 AND x IS NOT NULL GROUP BY x, y, type`,
-      // 2026-08-08 审计 A2：units_seen 已补 x/y 列（迁移+回填），不再
-      // substr/instr 解析 cell 字符串；AND x IS NOT NULL 兼容未迁移旧库
-    ).all() as Array<{ x: number; y: number; type: string; n: number; last_tick: number }>;
-    for (const r of rows) {
-      const bx = Math.floor(num(r.x) / BUCKET);
-      const by = Math.floor(num(r.y) / BUCKET);
-      const key = `${bx},${by}`;
-      let agg = buckets.get(key);
-      if (!agg) {
-        agg = { count: 0, combatCount: 0, workerCount: 0, lastTick: -1, firstTick: Number.MAX_SAFE_INTEGER, cells: new Set() };
-        buckets.set(key, agg);
+    const cutoff = Math.max(0, currentTick - windowTicks);
+    const sql = (where: string) =>
+      `SELECT x, y, unit_type AS type, COUNT(*) AS n, MAX(tick) AS last_tick, MIN(tick) AS first_tick
+       FROM units_seen WHERE controlled = 0 AND x IS NOT NULL${where} GROUP BY x, y, type`;
+    const recentRows = db.prepare(sql(" AND tick > ?")).all(cutoff) as Array<{ x: number; y: number; type: string; n: number; last_tick: number; first_tick: number }>;
+    const fullRows = db.prepare(sql("")).all() as Array<{ x: number; y: number; type: string; n: number; last_tick: number; first_tick: number }>;
+    const agg = (m: Map<string, HeatAgg>, rows: Array<{ x: number; y: number; type: string; n: number; last_tick: number; first_tick: number }>): void => {
+      for (const r of rows) {
+        const bx = Math.floor(num(r.x) / BUCKET);
+        const by = Math.floor(num(r.y) / BUCKET);
+        const key = `${bx},${by}`;
+        let a = m.get(key);
+        if (!a) {
+          a = { count: 0, combatCount: 0, workerCount: 0, lastTick: -1, firstTick: Number.MAX_SAFE_INTEGER, cells: new Set() };
+          m.set(key, a);
+        }
+        const n = num(r.n);
+        a.count += n;
+        a.cells.add(`${r.x},${r.y}`);
+        const lt = num(r.last_tick);
+        const ft = num(r.first_tick);
+        if (lt > a.lastTick) a.lastTick = lt;
+        if (ft < a.firstTick) a.firstTick = ft;
+        const type = String(r.type ?? "");
+        if (type === "VANGUARD" || type === "RANGER") a.combatCount += n;
+        else if (type === "WORKER") a.workerCount += n;
       }
-      const n = num(r.n);
-      agg.count += n;
-      agg.cells.add(`${r.x},${r.y}`);
-      const t = num(r.last_tick);
-      if (t > agg.lastTick) agg.lastTick = t;
-      if (t < agg.firstTick) agg.firstTick = t;
-      const type = String(r.type ?? "");
-      if (type === "VANGUARD" || type === "RANGER") agg.combatCount += n;
-      else if (type === "WORKER") agg.workerCount += n;
-    }
-    return { buckets, currentTick };
+    };
+    agg(recent, recentRows);
+    agg(full, fullRows);
+    return { recent, full, currentTick };
   } catch {
-    return { buckets, currentTick: 0 };
+    return { recent, full, currentTick: 0 };
   } finally {
     db.close();
   }
 }
-
-const toBuckets = (m: Map<string, HeatAgg>, tenant: string, currentTick: number, windowTicks: number): EnemyHeatBucket[] => {
-  const cutoff = currentTick - windowTicks;
-  const out: EnemyHeatBucket[] = [];
-  for (const [key, agg] of m) {
-    if (agg.lastTick < cutoff) continue;
-    const [bx, by] = key.split(",").map(Number);
-    out.push({
-      bx,
-      by,
-      tenant,
-      count: agg.count,
-      combatCount: agg.combatCount,
-      workerCount: agg.workerCount,
-      lastTick: agg.lastTick,
-      firstTick: agg.firstTick,
-    });
-  }
-  return out.sort((a, b) => b.count - a.count);
-};
 
 const toAllBuckets = (m: Map<string, HeatAgg>, tenant: string): EnemyHeatBucket[] => {
   const out: EnemyHeatBucket[] = [];
@@ -165,19 +159,19 @@ export function loadEnemyHeat(tenant: string, recentWindowTicks = RECENT_WINDOW_
   const mergedRecent = new Map<string, EnemyHeatBucket>();
   const mergedFull = new Map<string, EnemyHeatBucket>();
   for (const t of tenants) {
-    const { buckets, currentTick: ct } = loadTenantEnemyHeat(t);
+    const { recent, full, currentTick: ct } = loadTenantEnemyHeat(t, recentWindowTicks);
     if (ct > currentTick) currentTick = ct;
-    const all = toAllBuckets(buckets, t);
-    for (const b of all) {
+    for (const b of toAllBuckets(full, t)) {
+      mergedFull.set(`${t}:${b.bx},${b.by}`, b);
+    }
+    // recent 已在 SQL 窗口内聚合，不再需 lastTick 过滤
+    for (const b of toAllBuckets(recent, t)) {
       const k = `${t}:${b.bx},${b.by}`;
-      mergedFull.set(k, b);
-      if (b.lastTick >= ct - recentWindowTicks) {
-        totalSightings += b.count;
-        combatSightings += b.combatCount;
-        workerSightings += b.workerCount;
-        distinctCells.add(`${b.bx},${b.by}`);
-        mergedRecent.set(k, b);
-      }
+      totalSightings += b.count;
+      combatSightings += b.combatCount;
+      workerSightings += b.workerCount;
+      distinctCells.add(`${b.bx},${b.by}`);
+      mergedRecent.set(k, b);
     }
   }
   const payload: EnemyHeatPayload = {
