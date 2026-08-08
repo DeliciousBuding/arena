@@ -12,7 +12,7 @@
  */
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -136,6 +136,8 @@ export interface MyVersionEntry {
   /** 相对 arena-agent 根（config/worktree-path 类型）或 arena-agent 根相对仓内路径（git-tag 解包后）。 */
   readonly module: string;
   readonly config?: Readonly<Partial<SafetyPlannerConfig>>;
+  /** 该版本生效时的规则版本（缺省 v0.14）——战绩可比窗口校验（M2）。 */
+  readonly rulesVersion?: string;
   readonly meta?: { readonly created?: string; readonly baseline?: boolean; readonly wip?: boolean };
 }
 
@@ -164,9 +166,26 @@ export function listMyVersions(): readonly MyVersionEntry[] {
   return Object.values(loadMyVersions());
 }
 
+/** 按注册名查条目（vs-arena --matrix / evidence participants 用；未注册返回 undefined）。 */
+export function lookupMyVersion(name: string): MyVersionEntry | undefined {
+  return loadMyVersions()[name];
+}
+
+/** 当前引擎 commit（前 12 位）——evidence manifest 的可比窗口字段；
+ *  取"正在执行的代码"所在仓的 HEAD（主树/worktree 各自正确）。 */
+export function currentEngineCommit(): string {
+  const repoRoot = join(ARENA_AGENT_ROOT, "..");
+  const sha = execFileSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+  return sha.slice(0, 12);
+}
+
 /** 材料化一个 git tag 到缓存目录（git archive + tar 解包）。
  *  缓存绑定 tag 指向的 commit SHA——tag 重打/删除后自动重新材料化，
- *  不静默提供陈旧版本。 */
+ *  不静默提供陈旧版本。并发安全：先解包到 <tag>.tmp-<uuid> 暂存目录，
+ *  .ready 就绪后 renameSync 原子发布（Windows 同卷 rename）；双进程同时
+ *  材料化时后者复用先发布者（SHA 校验），避免撕裂。 */
 function materializeTag(tag: string): string {
   const cacheDir = join(tmpdir(), `arena-versions/${tag}`);
   const marker = join(cacheDir, ".ready");
@@ -174,11 +193,31 @@ function materializeTag(tag: string): string {
   if (existsSync(marker) && readFileSync(marker, "utf8").trim() === sha) {
     return cacheDir;
   }
-  mkdirSync(cacheDir, { recursive: true });
-  const tarOut = execFileSync("git", ["-C", ARENA_TS_ROOT, "archive", "--format=tar", tag,
-    "packages/arena-agent/src", "packages/arena-agent/scripts"], { encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
-  execFileSync("tar", ["-x", "-C", cacheDir], { input: tarOut, stdio: "pipe", maxBuffer: 256 * 1024 * 1024 });
-  writeFileSync(marker, sha);
+  const stagingDir = join(tmpdir(), `arena-versions/${tag}.tmp-${randomUUID()}`);
+  try {
+    mkdirSync(stagingDir, { recursive: true });
+    const tarOut = execFileSync("git", ["-C", ARENA_TS_ROOT, "archive", "--format=tar", tag,
+      "packages/arena-agent/src", "packages/arena-agent/scripts"], { encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
+    // tar 参数统一正斜杠：Windows 上 Git Bash 的 GNU tar 会把反斜杠路径当转义
+    // 处理（"C\:\..." → 找不到目录），cmd/PowerShell 的 bsdtar 虽可但斜杠全兼容。
+    const extractDir = stagingDir.replaceAll("\\", "/");
+    execFileSync("tar", ["-x", "-C", extractDir], { input: tarOut, stdio: "pipe", maxBuffer: 256 * 1024 * 1024 });
+    writeFileSync(join(stagingDir, ".ready"), sha);
+    try {
+      renameSync(stagingDir, cacheDir);
+    } catch {
+      // 另一进程先发布（目标已存在）——若内容带本 SHA 则复用并清掉自己的暂存，
+      // 否则视为竞态错误
+      rmSync(stagingDir, { recursive: true, force: true });
+      if (existsSync(marker) && readFileSync(marker, "utf8").trim() === sha) return cacheDir;
+      throw new Error(
+        `materializeTag 发布竞态：${cacheDir} 已存在但缓存内容与 tag ${tag}（SHA ${sha}）不符`,
+      );
+    }
+  } catch (error) {
+    rmSync(stagingDir, { recursive: true, force: true });
+    throw error;
+  }
   return cacheDir;
 }
 
@@ -198,6 +237,12 @@ export function validateMyVersions(): readonly string[] {
     }
     if (version.meta?.wip === true && version.meta?.baseline === true) {
       errors.push(`${version.name}: wip 条目不得标 baseline`);
+    }
+    if (
+      version.rulesVersion !== undefined &&
+      (typeof version.rulesVersion !== "string" || version.rulesVersion.trim() === "")
+    ) {
+      errors.push(`${version.name}: rulesVersion 非法（应为规则版本串，如 v0.14）`);
     }
     if (version.kind === "git-tag") {
       if (version.gitTag === undefined) {

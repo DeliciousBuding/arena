@@ -8,6 +8,7 @@
       "gitTag": "safety/v1.0",
       "module": "src/strategies/safety-planner.ts",
       "config": { "aggression": "aggressive", "attackForce": 2 },
+      "rulesVersion": "v0.14",
       "meta": { "created": "2026-08-09", "baseline": true }
     },
     "main-wip": {
@@ -16,6 +17,7 @@
       "worktreePath": "ARENA_REPO_ROOT/arena-ts",
       "module": "packages/arena-agent/src/strategies/safety-planner.ts",
       "config": { "aggression": "aggressive", "attackForce": 2 },
+      "rulesVersion": "v0.14",
       "meta": { "created": "2026-08-09", "wip": true }
     }
   }
