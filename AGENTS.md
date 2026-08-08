@@ -66,7 +66,14 @@ npm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --live --
 
 ## 模拟器真实性（稳定知识）
 
-- 官方 refill 是 **server-secret**（rules manifest `constraints.refill.status=server-secret`，永久 seed 不可预测）——模拟器默认不实现（unknown-by-design，绝不伪装 MATCH）；实验可用 `EpisodeConfig.refill`（近似：按 cadence 补回原始资源格，unknown note 标注 approximate）。
+- 官方 refill 机制已实证定案（2026-08-08，见 `../docs/design/refill-reverse-engineering-2026-08-08.md`）：
+  周期 4 tick（实测 1 tick=15.1s，4×15=60s 与官方自洽）、quota
+  `max(2, floor(16*8/(8+ring)))`、位置 = chunk 内确定性随机空槽（采空后
+  254 例完整周期盯守同格补回 0 例 ↔ 期望 0.25）；**仅确定性随机 seed 的
+  具体函数不可预测（server-secret）**，但行为等价（周期/数量/约束/分布）
+  已定案——模拟器按 `official-v0.14` 参数实现即可（M0 排期，见
+  dl-implementation-plan），不再视为 unknown-by-design；实现前
+  `EpisodeConfig.refill` 近似档仍可用作实验（manifest 标注近似）。
 - **Beacon fog 语义**（官方协议 "Public position and, when visible, carrier state"）：视野外 beacon 的 status/carrier_id 投影为 null。**校准 fixture 的 beacon 必须放核心视野内**（Manhattan ≤ core.visionRadius=5），否则 before.status=null → beaconUnknown 吞掉全部差异分类（校准测试全变 INCONCLUSIVE——2026-08-08 实证）。详见 `../docs/simulator.md` §11.6。
 - **对抗平台**（2026-08-08 平台化）：对手接入走注册中心 `src/sim/opponent/registry.ts`（reference-python 内置 farmer/core + `http://` 端点）；Python 新对手 = `scripts/python-agents.json` 加条目（契约：decide 用官方 SDK turn 方法填 builder）；通用对抗矩阵用 `scripts/vs-arena.mts`（--opponents/--seeds/--refill/--scenario/--record-dir）；真实测绘场景 `src/sim/opponent/survey-scenario.ts`。详见 `../docs/simulator.md` §11。
 - 策略约束（模拟器实证 + prompt 已落地）：**militaryRatio 0.3-0.4 是拐点、>0.5 纯损耗禁止**；**workerTarget 8 是平衡区**（6 保守、10 upkeep 负担）。
@@ -80,7 +87,9 @@ npm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --live --
 - 不把 `INCONCLUSIVE` 写成 `MATCH`；
 - 不把 micro-Golden 写成 Runtime-Golden；
 - 不自动重启 live writer（本地看护例外：用户授权自主维护，`arena-watchdog.sh` 严格确认旧进程死透后拉起）；
-- 不恢复 Python runtime/pyproject/uv.lock；
+- 不恢复 Python runtime/pyproject/uv.lock（**生产运行时仍禁**；ML/DL 线离线
+  训练/分析豁免：`scripts/ml/` 独立 venv + pyproject，不进 supervisor/agent
+  运行时——2026-08-08 用户裁决授权，见 `docs/design/dl-implementation-plan-2026-08-08.md`）；
 - 不在日志、fixture、manifest 或文档写入 token；
 - 不为形式上的路线图提前实现 MapStore worker、控制面写接口或 RL。
 

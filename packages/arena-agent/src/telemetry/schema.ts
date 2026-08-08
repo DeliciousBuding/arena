@@ -88,6 +88,12 @@ export const DecisionTraceSchema = Type.Object({
   threatClosingEnemies: Type.Optional(Type.Integer()),
   threatMovingEnemies: Type.Optional(Type.Integer()),
   threatAxes: Type.Optional(Type.Integer()),
+  // 信标遥测（2026-08-08）：position 永远公开；status/carrierId 仅信标格可见时非空。
+  beacon: Type.Optional(Type.Object({
+    position: Type.Tuple([Type.Integer(), Type.Integer()]),
+    status: Type.Optional(Type.Union([Type.Literal("GROUND"), Type.Literal("CARRIED"), Type.Null()])),
+    carrierId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  })),
 });
 
 export const OutcomeTraceSchema = Type.Object({
