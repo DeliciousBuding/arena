@@ -96,7 +96,43 @@ const RESOURCE_LAYOUTS: readonly (readonly (readonly [number, number])[])[] = [
   [[4, 2], [-2, 4], [-4, -2], [2, -4], [33, 2], [27, 4]],
 ];
 
-/** 为一方玩家生成 3 个初始 worker（id 确定性派生，跨 seed 稳定，满足 canonical UUID）。
+/** 1v1 合成地图障碍集（M4-4）：与 RESOURCE_LAYOUTS 同源（seed % 变体数），
+ *  每个变体 4 个 1×2/2×1 块（8 格，绝对坐标），布局规则（主轴 [0,0]→[30,0]）：
+ *  - 全部位于双方核心之间偏侧（x∈[8,21]、y∈{±3..±6}），y=0 主轴线全程无
+ *    障碍——主轴通路不被封死、包抄通道保留；
+ *  - 距任一核心 Manhattan > 3（核心周围 3 格无阻碍）；
+ *  - 与本变体资源盘格零重叠（逐变体核对 6 个布局）；不压信标 [15,0]
+ *    （y≠0 自动满足）与初始 worker（x∈[1,29] 的 y=0 格）。
+ *  目的：Ranger LOS 遮挡与包抄地形有可复现样本，但不改变"对称公平"评测前提。 */
+const OBSTACLE_LAYOUTS: readonly (readonly (readonly [number, number])[])[] = [
+  [[9, 4], [10, 4], [14, -4], [14, -3], [18, 5], [19, 5], [12, -6], [13, -6]],
+  [[8, 3], [9, 3], [15, -5], [15, -4], [20, 4], [21, 4], [11, 6], [12, 6]],
+  [[10, -5], [10, -4], [16, 3], [17, 3], [13, -6], [14, -6], [19, 5], [20, 5]],
+  [[9, 4], [10, 4], [14, -4], [15, -4], [17, 5], [18, 5], [12, -5], [13, -5]],
+  [[8, 4], [9, 4], [13, -5], [13, -4], [16, 6], [17, 6], [19, -4], [20, -4]],
+  [[10, -5], [10, -4], [15, 3], [16, 3], [18, -6], [19, -6], [12, 5], [13, 5]],
+];
+
+/** FFA 合成地图障碍集（M4-4）：核心均匀分布半径 18 圆周、信标在圆心 [0,0]。
+ *  障碍取圆心附近（|x|+|y| ≤ 10）4 个 1×2/2×1 块：
+ *  - 距任一核心（距圆心 ≥ 18）Manhattan ≥ 8 > 3——核心周围 3 格无阻碍；
+ *  - 距圆心 ≥ 4，不压信标 [0,0]；与任意核心的资源盘格（盘格距圆心 ≥ 13）
+ *    零重叠（任何布局/核心数下成立）；对核连线主轴（x=0 或 y=0 轴）无阻碍。 */
+const OBSTACLE_LAYOUTS_FFA: readonly (readonly (readonly [number, number])[])[] = [
+  [[-4, 4], [-4, 5], [4, 4], [4, 5], [-5, -4], [-4, -4], [5, -3], [4, -3]],
+  [[4, -4], [4, -5], [-4, -4], [-4, -5], [-5, 4], [-4, 4], [5, 3], [4, 3]],
+  [[-5, 3], [-5, 4], [5, -4], [5, -5], [3, 5], [4, 5], [-3, -5], [-4, -5]],
+  [[3, -4], [4, -4], [-3, 4], [-4, 4], [-5, -5], [-4, -5], [5, 5], [4, 5]],
+  [[-4, 3], [-4, 4], [4, -3], [4, -4], [-3, -4], [-3, -5], [3, 4], [3, 5]],
+  [[3, 3], [4, 3], [-3, -3], [-4, -3], [-4, 5], [-5, 5], [4, -5], [5, -5]],
+];
+
+/** 1v1 信标位置（M4-2）：官方信标恒在 [0,0]；合成场景双方核心
+ *  [0,0]/[30,0] 在 [0,0] 上，信标取圆周几何中心 [15,0]（距两核各 15，
+ *  > 视野 5，开局双方均不可见），保持"全场唯一战略目标"语义。 */
+const BEACON_POSITION_1V1: readonly [number, number] = [15, 0];
+
+/** 为一方玩家生成初始 worker（id 确定性派生，跨 seed 稳定，满足 canonical UUID）。
  *  playerIndex 参与 id 尾部派生——多玩家场景下同前缀组（worker 前缀仅 5 个）也不会撞。 */
 function initialWorkers(
   ownerId: string,
@@ -117,20 +153,22 @@ function initialWorkers(
   });
 }
 
-/** 由一个"玩家位置 + seed 派生资源盘"构造 1v1 场景（确定性）。 */
+/** 由一个"玩家位置 + seed 派生资源盘/障碍集"构造 1v1 场景（确定性）。
+ *  M4-2：beacon 归位圆周几何中心 [15,0]；M4-4：seed 同源派生障碍集。 */
 export function makeArenaScenario(
   playerA: ScenarioPlayerSeed,
   playerB: ScenarioPlayerSeed,
   seed = 1,
 ): unknown {
-  const layout = RESOURCE_LAYOUTS[Math.abs(seed) % RESOURCE_LAYOUTS.length];
+  const layoutIndex = Math.abs(seed) % RESOURCE_LAYOUTS.length;
+  const layout = RESOURCE_LAYOUTS[layoutIndex];
   return {
     rulesVersion: "v0.14",
     tick: 1,
     seed,
     players: [playerA, playerB],
-    terrain: { obstacles: [], resources: [...layout] },
-    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+    terrain: { obstacles: [...OBSTACLE_LAYOUTS[layoutIndex]], resources: [...layout] },
+    beacon: { position: [...BEACON_POSITION_1V1], status: "GROUND", carrierId: null },
   };
 }
 
@@ -194,10 +232,54 @@ export function decideWinner(
   return { winner, coreAlive, finalResources, finalPopulation };
 }
 
+/** 1v1 对打默认场景（M4-3：官方起点 5 资源 + 1 初始 worker——rules-v0.14
+ *  startingResources=5 / startingWorkerCount=1；worker 位置取原 3 位置首格
+ *  [1,0]/[29,0]）。场景 players 与 a/b 的 id 精确一致。 */
+export function makeArenaMatchScenario(a: TournEntry, b: TournEntry, seed: number): unknown {
+  return makeArenaScenario(
+    {
+      id: a.id,
+      username: a.id,
+      resources: 5,
+      core: {
+        id: "491977e4-d3db-417b-8d82-2f5f3b5c8006",
+        position: [0, 0],
+        hp: 5,
+        shield: 5,
+        state: "NORMAL",
+        moveDirection: null,
+        moveProgress: null,
+        moveRequiredTicks: null,
+        destination: null,
+      },
+      units: initialWorkers(a.id, "22222222-2222-2222-2222-2222222222", 0, [1, 0]),
+    },
+    {
+      id: b.id,
+      username: b.id,
+      resources: 5,
+      core: {
+        id: "9fe0ca6d-53cb-4dd5-a8f8-2e6925f19e72",
+        position: [30, 0],
+        hp: 5,
+        shield: 5,
+        state: "NORMAL",
+        moveDirection: null,
+        moveProgress: null,
+        moveRequiredTicks: null,
+        destination: null,
+      },
+      units: initialWorkers(b.id, "33333333-3333-3333-3333-3333333333", 1, [29, 0]),
+    },
+    seed,
+  );
+}
+
 /**
  * 跑一场 1v1 对打，返回规范化结果。内部用 runEpisode + 提供的 PlanProviders。
  * 第三方对手需能 feed 同一 rules/manifest。
- * 场景给双方 3 初始 worker + refill（65 ticks 近似），保证对局能发育、有区分度。
+ * 场景给双方 1 初始 worker（官方起点 5/1，M4-3）+ refill（4 ticks 官方节奏），
+ * 保证对局能发育、有区分度。
  */
 export function runMatch(
   a: TournEntry,
@@ -222,11 +304,7 @@ export function runMatch(
       : opts.refillEveryTicks === null
         ? null
         : { everyTicks: opts.refillEveryTicks };
-  const scenario = opts?.scenario ?? makeArenaScenario(
-    { id: a.id, username: a.id, resources: 25, core: { id: "491977e4-d3db-417b-8d82-2f5f3b5c8006", position: [0, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(a.id, "22222222-2222-2222-2222-2222222222", 0, [1, 0], [0, 1], [-1, 0]) },
-    { id: b.id, username: b.id, resources: 25, core: { id: "9fe0ca6d-53cb-4dd5-a8f8-2e6925f19e72", position: [30, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(b.id, "33333333-3333-3333-3333-3333333333", 1, [29, 0], [30, 1], [31, 0]) },
-    seed,
-  );
+  const scenario = opts?.scenario ?? makeArenaMatchScenario(a, b, seed);
   const providerA = a.build();
   const providerB = b.build();
   const recorder =
@@ -281,13 +359,18 @@ export function runMatch(
   }
 }
 
-/** N 玩家混战场景：核心均匀分布在圆周（半径 18），各自 3 worker + 近距资源盘。
- *  每核资源盘取 RESOURCE_LAYOUTS 前 4 个近距点（±7 内），圆周间距（3 人 ~31、
- *  4 人 ~25）远大于盘半径，无跨核重叠；id 按参与序派生（CORE/WORKER 前缀表）。 */
+/** N 玩家混战场景：核心均匀分布在圆周（半径 18），各自 1 worker（官方起点
+ *  5 资源 + 1 worker，M4-3）+ 近距资源盘。每核资源盘取 RESOURCE_LAYOUTS 前
+ *  4 个近距点（±7 内），圆周间距（3 人 ~31、4 人 ~25）远大于盘半径，无跨核
+ *  重叠；id 按参与序派生（CORE/WORKER 前缀表）。M4-2：信标归位圆周圆心
+ *  [0,0]（半径 18 圆周上所有核心距圆心 18 > 视野 5）；M4-4：seed 同源派生
+ *  圆心附近障碍集（OBSTACLE_LAYOUTS_FFA）。 */
 export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): unknown {
   const n = Math.max(2, entries.length);
   const radius = 18;
-  const layout = RESOURCE_LAYOUTS[Math.abs(seed) % RESOURCE_LAYOUTS.length].slice(0, 4);
+  const layoutIndex = Math.abs(seed) % RESOURCE_LAYOUTS.length;
+  const layout = RESOURCE_LAYOUTS[layoutIndex].slice(0, 4);
+  const obstacles = [...OBSTACLE_LAYOUTS_FFA[layoutIndex]];
   const players = entries.map((entry, index) => {
     const angle = (2 * Math.PI * index) / n - Math.PI / 2;
     const cx = Math.round(radius * Math.cos(angle));
@@ -296,12 +379,12 @@ export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): un
       entry.id,
       `${WORKER_ID_PREFIXES[index % WORKER_ID_PREFIXES.length]}-0000-0000-0000-000000000000`,
       index,
-      [cx + 1, cy], [cx, cy + 1], [cx - 1, cy],
+      [cx + 1, cy],
     );
     return {
       id: entry.id,
       username: entry.id,
-      resources: 25,
+      resources: 5,
       core: {
         // 前缀表仅 4 项——尾部按参与序派生，n≥5 时也保证全图唯一（防静默覆盖）
         id: `${CORE_ID_PREFIXES[index % CORE_ID_PREFIXES.length].slice(0, 23)}-${String(index).padStart(12, "0")}`,
@@ -326,8 +409,8 @@ export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): un
     tick: 1,
     seed,
     players,
-    terrain: { obstacles: [], resources },
-    beacon: { position: [100, 100], status: "GROUND", carrierId: null },
+    terrain: { obstacles, resources },
+    beacon: { position: [0, 0], status: "GROUND", carrierId: null },
   };
 }
 
