@@ -18,6 +18,7 @@ import {
   stepTowardAvoiding,
   migrationScoutDirection,
 } from "../src/planning/deterministic-planner.ts";
+import { DEFAULT_MISSION_CONFIG } from "../src/planning/mission-planner.ts";
 import { reduceTurn, type TurnLike } from "../src/domain/state-reducer.ts";
 import { validatePlan } from "../src/domain/plan-validator.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../src/strategies/safety-planner.ts";
@@ -717,4 +718,50 @@ test("migrationScoutDirection: 已在目标附近返回 null（fallback 巡逻�
   // worker 已在核心前方 24 格目标位
   const d = migrationScoutDirection([100, 75], [100, 99], [100, 100], new Set());
   assert.equal(d, null);
+});
+
+/** migration-scout planner 级集成（2026-08-08 修复）：核心"位置已变"（即使决策时
+ *  coreState 为 NORMAL——服务端 MOVING 是提交后才出现）即触发 EXPLORE 朝迁移方向
+ *  勘探；prevCorePosition 必须在覆盖前捕获（旧实现双因失效：previousCorePosition
+ *  在 planner.plan 前被更新为当前值 + coreState==="MOVING" 决策时几乎恒 false）。 */
+test("DeterministicPlanner：migration-scout——核心位移触发 EXPLORE 朝迁移方向勘探", () => {
+  const mission = {
+    ...DEFAULT_MISSION_CONFIG,
+    migrationScout: true,
+    surveyWorkerCap: 3,
+    surveyWorkerFloor: 3,
+    surveyBurstTicks: 100,
+  };
+  const planner = new DeterministicPlanner(
+    undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, mission,
+  );
+  // 第一帧：核心 [100,100]（NORMAL），worker 在 [100,95]；prevCore=null → 不 scout
+  const s1 = makeState(100, [core(100, 100), unit("w1", 100, 95)]);
+  const p1 = planner.decide({ state: s1 });
+  assert.notEqual(p1.intents["w1"], "worker_migration_scout", "首帧无迁移记录 → 不 scout");
+  // 第二帧：核心移到 [100,99]（南移一格，state 仍 NORMAL——决策时服务端 MOVING 未出现）
+  const s2 = makeState(101, [core(100, 99), unit("w1", 100, 95)]);
+  const p2 = planner.decide({ state: s2 });
+  assert.equal(p2.intents["w1"], "worker_migration_scout", "核心位移 → EXPLORE 转迁移勘探");
+  assert.deepEqual(p2.unitActions["w1"], { type: "MOVE", direction: "UP" }, "朝迁移前方 [100,75] 探路");
+});
+
+test("DeterministicPlanner：migration-scout——核心未动（NORMAL 且位置不变）零影响", () => {
+  const mission = {
+    ...DEFAULT_MISSION_CONFIG,
+    migrationScout: true,
+    surveyWorkerCap: 3,
+    surveyWorkerFloor: 3,
+    surveyBurstTicks: 100,
+  };
+  const planner = new DeterministicPlanner(
+    undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, mission,
+  );
+  const s1 = makeState(100, [core(100, 100), unit("w1", 100, 95)]);
+  planner.decide({ state: s1 });
+  const s2 = makeState(101, [core(100, 100), unit("w1", 100, 95)]);
+  const p2 = planner.decide({ state: s2 });
+  assert.notEqual(p2.intents["w1"], "worker_migration_scout", "核心未移动 → 不 scout");
 });
