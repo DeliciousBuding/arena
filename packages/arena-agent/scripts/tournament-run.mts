@@ -4,7 +4,7 @@
  * 用途：验证 runMatch/decideWinner/协议翻译整条链路可用 + 出一份真实对标数。
  * 用法：cd packages/arena-agent && npx tsx scripts/tournament-run.mts
  */
-import { makeSafetyEntry, runMatch, decideWinner } from "../src/strategies/tournament.ts";
+import { makeSafetyEntry, runMatch, decideWinner } from "../src/sim/opponent/tournament.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner, type SafetyPlannerConfig } from "../src/strategies/safety-planner.ts";
 
 const MANIFEST_PATH = "src/sim/contracts/rules-v0.14.json";
@@ -12,12 +12,12 @@ const TICKS = 120;
 const SEEDS = [1, 2, 3, 4, 5];
 
 // 两个真正不同的策略：aggressive（前压） vs defensive（火力留守），体现差异
-const aggressive: import("../src/strategies/tournament.ts").TournEntry = {
+const aggressive: import("../src/sim/opponent/tournament.ts").TournEntry = {
   id: "agg",
   desc: "aggressive 前压",
   build: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, aggression: "aggressive", attackForce: 2 }),
 };
-const defensive: import("../src/strategies/tournament.ts").TournEntry = {
+const defensive: import("../src/sim/opponent/tournament.ts").TournEntry = {
   id: "def",
   desc: "defensive 防守",
   build: () => new SafetyPlanner({ ...DEFAULT_SAFETY_CONFIG, aggression: "defensive", attackForce: 2 }),
