@@ -40,6 +40,8 @@ export function createMinimap(deps: MinimapDeps) {
     el.height = Math.max(1, Math.round(MM_H * dpr));
     mmCtx = el.getContext("2d");
     if (!mmCtx) return;
+    // DPR 坐标变换：位图 = CSS×dpr，绘制坐标统一用 CSS 像素（否则高 DPR 下内容只画左上角）
+    mmCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     let mmDrag = false;
     const jump = (e: any) => {
       const b = worldBounds(); if (!b) return;
@@ -63,6 +65,11 @@ export function createMinimap(deps: MinimapDeps) {
     const el = deps.getCanvas();
     if (!el || !mmCtx) return;
     const state = deps.getState();
+    const dpr = deps.getDpr();
+    // DPR 位图重同步：跨显示器拖动/系统缩放后 bitmap 尺寸可能过时（重设会清空位图，随后全量重画）
+    const wantW = Math.max(1, Math.round(MM_W * dpr)), wantH = Math.max(1, Math.round(MM_H * dpr));
+    if (el.width !== wantW || el.height !== wantH) { el.width = wantW; el.height = wantH; }
+    mmCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const b = worldBounds();
     mmCtx.save();
     mmCtx.clearRect(0, 0, MM_W, MM_H);
@@ -93,14 +100,20 @@ export function createMinimap(deps: MinimapDeps) {
     const ox = pad + (iw - spanX * s) / 2, oy = pad + (ih - spanY * s) / 2;
     const X = (x: number) => ox + (x - b.minX) * s;
     const Y = (y: number) => oy + (y - b.minY) * s;
-    mmCtx.fillStyle = "rgba(255,255,255,.03)";
-    mmCtx.fillRect(0, 0, MM_W, MM_H);
+    // 底=CSS 深底（透明位图），不再叠全幅白 fill（旧实现产生成片半透明白像素 = "白色乱七八糟"）
     if (state.chunks && state.chunks.length) {
       mmCtx.fillStyle = "rgba(120,160,255,.12)";
-      for (const ch of state.chunks.slice(0, 300)) {
+      // chunk 是 16×16 世界格区块：先 ×16 转世界坐标再投影（旧实现直接把区块索引当坐标，
+      // 全部挤到中右一坨），并按区块真实像素尺寸绘制 + 视口剔除
+      const chunkPx = Math.max(1.5, 16 * s);
+      const cap = Math.min(state.chunks.length, 300);
+      for (let i = 0; i < cap; i++) {
+        const ch = state.chunks[i];
         const cx = Number(ch.cx), cy = Number(ch.cy);
         if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
-        mmCtx.fillRect(X(cx) - 1, Y(cy) - 1, 2, 2);
+        const px = X(cx * 16), py = Y(cy * 16);
+        if (px + chunkPx < 0 || py + chunkPx < 0 || px > MM_W || py > MM_H) continue;
+        mmCtx.fillRect(px, py, chunkPx, chunkPx);
       }
     }
     for (const c of mmCoreCells) {
@@ -123,10 +136,21 @@ export function createMinimap(deps: MinimapDeps) {
     }
     const v = state.view;
     const vw = deps.getViewSize().w / v.scale, vh = deps.getViewSize().h / v.scale;
-    const vx0 = X(v.cx - vw / 2), vy0 = Y(v.cy - vh / 2), vx1 = X(v.cx + vw / 2), vy1 = Y(v.cy + vh / 2);
-    mmCtx.strokeStyle = "rgba(255,255,255,.9)";
-    mmCtx.lineWidth = 1;
-    mmCtx.strokeRect(vx0, vy0, Math.max(1, vx1 - vx0), Math.max(1, vy1 - vy0));
+    let vx0 = X(v.cx - vw / 2), vy0 = Y(v.cy - vh / 2), vx1 = X(v.cx + vw / 2), vy1 = Y(v.cy + vh / 2);
+    // 视野框钳到小地图边界；语义判定：视口已包含整个世界（fitView/全局视图）时不画白框——
+    // 旧实现按面积阈值，全局下视野仍差一点就整圈白框贴边 + 叠 CSS 边框 = "白色乱七八糟"。
+    const wb0 = X(b.minX), wb1 = X(b.maxX), wb2 = Y(b.minY), wb3 = Y(b.maxY);
+    const worldInView = vx0 <= wb0 + 0.5 && vy0 <= wb2 + 0.5 && vx1 >= wb1 - 0.5 && vy1 >= wb3 - 0.5;
+    if (!worldInView) {
+      vx0 = Math.max(0, vx0); vy0 = Math.max(0, vy0);
+      vx1 = Math.min(MM_W, vx1); vy1 = Math.min(MM_H, vy1);
+      const bw = Math.max(1, vx1 - vx0), bh = Math.max(1, vy1 - vy0);
+      mmCtx.fillStyle = "rgba(255,255,255,.035)";
+      mmCtx.fillRect(vx0, vy0, bw, bh);
+      mmCtx.strokeStyle = "rgba(255,255,255,.6)";
+      mmCtx.lineWidth = 1;
+      mmCtx.strokeRect(vx0, vy0, bw, bh);
+    }
     mmCtx.restore();
   }
 
