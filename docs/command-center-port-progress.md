@@ -387,3 +387,19 @@ mapEngine.ts 对应函数。
   自包含模块化——注入 getCanvas/getState/getViewSize/getDpr/onJump，内部持有 mmCtx/缓存。
   mapEngine 4466→4362 行。
 - **验证**：完整回归 **22/22 全绿** + web 单测 34/34 + typecheck/build 全绿。
+
+### 9.21 回放引擎核心抽取 replay.ts（2026-08-08）
+- **抽取** `web/src/engine/replay.ts`（121 行）：TICK_MS + createReplayState/
+  replayAdvance/replayStep/replayToggle/replayCycleSpeed/updateReplayUI/replayLoad——
+  回放状态、动画推进、手动步进、播放/暂停/重播、倍速循环、读条 UI 同步全为
+  纯逻辑（无画布依赖）；渲染层 replayDrawLayer 留在 mapEngine（依赖
+  project/ctx/images/sprite/事件特效绘制上下文）。mapEngine 4426→4355 行。
+- **设计收益**：动画循环推进与手动步进共享同一语义（replayAdvance 统一处理
+  越界停播与末帧钳位），消除"回放越界/提前到位"类状态分歧；读条 UI 更新
+  与状态转换解耦，可单测。
+- **顺手加固**：textContent 赋值显式 String()（真实 DOM 会 ToString，显式化
+  避免 mock/实机类型分歧）。
+- **测试**：新增 `web/test/replay.test.ts` 9 项（初始态/推进越界停播/步进
+  钳位/播放暂停重播/倍速 1→2→4→1/UI 同步 at-end/加载成功与异常），
+  web 单测 34→43 全绿。
+- **验证**：typecheck/build + 完整回归 **22/22 全绿**（含 15s tick 读条）。
