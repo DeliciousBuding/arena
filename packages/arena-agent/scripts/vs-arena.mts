@@ -16,7 +16,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
-import { runMatch, type TournEntry } from "../src/sim/opponent/tournament.ts";
+import { runFreeForAll, runMatch, type TournEntry } from "../src/sim/opponent/tournament.ts";
 import { COORDINATION_ROOT, opponentEntry, resolveOpponent } from "../src/sim/opponent/registry.ts";
 import {
   inWindow,
@@ -39,6 +39,8 @@ function hasFlag(flag: string): boolean {
 }
 
 const ME = argValue("--me") ?? "aggressive";
+/** 1v1 矩阵（默认）/ ffa（多对手同场混战）。 */
+const MODE = argValue("--mode") ?? "1v1";
 const OPPONENTS = (argValue("--opponents") ?? "farmer").split(",");
 const TICKS = Number(argValue("--ticks") ?? 200);
 const REFILL_RAW = argValue("--refill") ?? "65";
@@ -96,41 +98,85 @@ function scenarioFor(seed: number, opponentId: string): unknown {
 
 const ours = oursEntry();
 console.log(
-  `vs-arena：我方=${ours.desc} vs [${OPPONENTS.join(", ")}]` +
+  `vs-arena：我方=${ours.desc} ${MODE === "ffa" ? "混战" : "vs"} [${OPPONENTS.join(", ")}]` +
     `（${TICKS} ticks × seeds[${SEEDS_ARG}]，refill=${REFILL_RAW}，场景=${SCENARIO}）`,
 );
 console.log("=".repeat(96));
 
 const wallStart = performance.now();
-for (const opponentName of OPPONENTS) {
-  const spec = resolveOpponent(opponentName);
-  const wins = { n: 0 };
-  const opponentWins = { n: 0 };
-  const myResources: number[] = [];
-  const opponentResources: number[] = [];
+
+/** FFA 模式：我方与全部对手同场混战，按 seed 统计各参与方胜场。 */
+if (MODE === "ffa") {
+  const specs = OPPONENTS.map((name) => resolveOpponent(name));
+  const wins = new Map<string, number>([["mine", 0]]);
+  for (const spec of specs) wins.set(spec.name, 0);
+  const finals = new Map<string, number[]>(specs.map((spec) => [spec.name, []]));
+  finals.set("mine", []);
   for (const seed of SEEDS) {
-    const opponent = opponentEntry(spec, seed);
+    const entries = [
+      ours,
+      ...specs.map((spec) => opponentEntry(spec, seed)),
+    ];
     const recordTo =
-      RECORD_DIR === undefined ? undefined : join(RECORD_DIR, `${spec.name}-s${seed}.jsonl`);
+      RECORD_DIR === undefined ? undefined : join(RECORD_DIR, `ffa-s${seed}.jsonl`);
     if (RECORD_DIR !== undefined) mkdirSync(RECORD_DIR, { recursive: true });
-    const result = runMatch(ours, opponent, seed, TICKS, MANIFEST_PATH, {
+    const result = runFreeForAll(entries, seed, TICKS, MANIFEST_PATH, {
       validatePlans: false,
       refillEveryTicks: REFILL_EVERY_TICKS,
-      scenario: scenarioFor(seed, opponent.id),
       ...(recordTo === undefined ? {} : { recordTo }),
     });
-    if (result.winner === ours.id) wins.n += 1;
-    else if (result.winner === opponent.id) opponentWins.n += 1;
-    myResources.push(result.finalResources[ours.id]);
-    opponentResources.push(result.finalResources[opponent.id]);
+    if (result.winner !== null) {
+      const winnerKey = result.winner === "mine" ? "mine" : specs.find((s) => s.name === result.winner)?.name;
+      if (winnerKey !== undefined) wins.set(winnerKey, (wins.get(winnerKey) ?? 0) + 1);
+    }
+    for (const [key, values] of finals) {
+      const playerId = key === "mine" ? "mine" : `${key}-s${seed}`;
+      values.push(result.finalResources[playerId] ?? 0);
+    }
   }
   const mean = (values: number[]): string => (values.reduce((s, v) => s + v, 0) / values.length).toFixed(1);
-  console.log(
-    `vs ${spec.desc.padEnd(34)} 我胜率=${((wins.n / SEEDS.length) * 100).toFixed(0).padStart(3)}%` +
-      `  对手=${((opponentWins.n / SEEDS.length) * 100).toFixed(0).padStart(3)}%` +
-      ` | 我均资源=${mean(myResources).padStart(5)}  对手均资源=${mean(opponentResources).padStart(5)}`,
-  );
+  for (const spec of specs) {
+    const rate = ((wins.get(spec.name) ?? 0) / SEEDS.length) * 100;
+    console.log(
+      `混战 ${spec.desc.padEnd(30)} 胜率=${rate.toFixed(0).padStart(3)}% | 均资源=${mean(finals.get(spec.name) ?? []).padStart(5)}`,
+    );
+  }
+  const myRate = ((wins.get("mine") ?? 0) / SEEDS.length) * 100;
+  console.log(`混战 my safety ${ME.padEnd(30)} 胜率=${myRate.toFixed(0).padStart(3)}% | 均资源=${mean(finals.get("mine") ?? []).padStart(5)}`);
+  const wallSec = (performance.now() - wallStart) / 1000;
+  console.log("-".repeat(96));
+  console.log(`总耗时 ${wallSec.toFixed(1)}s（${((wallSec * 1000) / (TICKS * SEEDS.length)).toFixed(1)}ms/tick/场）`);
+} else {
+  for (const opponentName of OPPONENTS) {
+    const spec = resolveOpponent(opponentName);
+    const wins = { n: 0 };
+    const opponentWins = { n: 0 };
+    const myResources: number[] = [];
+    const opponentResources: number[] = [];
+    for (const seed of SEEDS) {
+      const opponent = opponentEntry(spec, seed);
+      const recordTo =
+        RECORD_DIR === undefined ? undefined : join(RECORD_DIR, `${spec.name}-s${seed}.jsonl`);
+      if (RECORD_DIR !== undefined) mkdirSync(RECORD_DIR, { recursive: true });
+      const result = runMatch(ours, opponent, seed, TICKS, MANIFEST_PATH, {
+        validatePlans: false,
+        refillEveryTicks: REFILL_EVERY_TICKS,
+        scenario: scenarioFor(seed, opponent.id),
+        ...(recordTo === undefined ? {} : { recordTo }),
+      });
+      if (result.winner === ours.id) wins.n += 1;
+      else if (result.winner === opponent.id) opponentWins.n += 1;
+      myResources.push(result.finalResources[ours.id]);
+      opponentResources.push(result.finalResources[opponent.id]);
+    }
+    const mean = (values: number[]): string => (values.reduce((s, v) => s + v, 0) / values.length).toFixed(1);
+    console.log(
+      `vs ${spec.desc.padEnd(34)} 我胜率=${((wins.n / SEEDS.length) * 100).toFixed(0).padStart(3)}%` +
+        `  对手=${((opponentWins.n / SEEDS.length) * 100).toFixed(0).padStart(3)}%` +
+        ` | 我均资源=${mean(myResources).padStart(5)}  对手均资源=${mean(opponentResources).padStart(5)}`,
+    );
+  }
+  const wallSec = (performance.now() - wallStart) / 1000;
+  console.log("-".repeat(96));
+  console.log(`总耗时 ${wallSec.toFixed(1)}s（${((wallSec * 1000) / (TICKS * SEEDS.length * OPPONENTS.length)).toFixed(1)}ms/tick/局）`);
 }
-const wallSec = (performance.now() - wallStart) / 1000;
-console.log("-".repeat(96));
-console.log(`总耗时 ${wallSec.toFixed(1)}s（${((wallSec * 1000) / (TICKS * SEEDS.length * OPPONENTS.length)).toFixed(1)}ms/tick/局）`);
