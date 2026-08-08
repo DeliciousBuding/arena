@@ -215,14 +215,23 @@ async function main() {
         const cnt = await page.locator("#assetList .asset-row").count();
         for (let j = 0; j < cnt && rowSel < 0; j++) {
           await page.click(`#assetList .asset-row:nth-child(${j + 1})`, { timeout: 3000 }).catch(() => {});
-          await sleep(600);
+          await sleep(800);
           if (await page.locator('#actionDialog [data-action="MOVE"]').count() > 0) rowSel = j;
         }
         if (rowSel < 0) await sleep(1500);
       }
       if (rowSel >= 0) {
         await page.click('#actionDialog [data-action="MOVE"]', { timeout: 4000 });
-        await page.waitForSelector('.act-targeting', { timeout: 4000 });
+        // MOVE 模式以引擎 state.mode 为准（.act-targeting 是视觉元素，面板重渲染/动画下可能延迟出现）
+        let modeOk = false;
+        for (let mp = 0; mp < 20 && !modeOk; mp++) {
+          modeOk = await page.evaluate(() => { const g = (window as any).__arenaEngine?.getState?.(); return g && g.mode === "MOVE"; }).catch(() => false);
+          if (!modeOk) await sleep(200);
+        }
+        if (!modeOk) {
+          const gm = await page.evaluate(() => { const g = (window as any).__arenaEngine?.getState?.(); return g ? g.mode : "no-engine"; }).catch(() => "eval-err");
+          throw new Error("MOVE 模式未激活 mode=" + gm);
+        }
         // 用 __arenaEngine 读相机变换 + 世界障碍，选受控单位旁可达格，精确点击（确定性，不赌固定视口点）
         const cv = await page.$("#map");
         const box = await cv.boundingBox();
@@ -231,21 +240,48 @@ async function main() {
           if (!eng) return { err: "无 __arenaEngine 调试钩子" };
           const st = eng.getState();
           const tenant = st.soloTenant || "t1";
-                    let w = null;
+          const v = st.view;
+          const onScreen = (wx: number, wy: number, m = 8) => {
+            const sx = boxX + (wx - v.cx) * v.scale + boxW / 2, sy = boxY + (wy - v.cy) * v.scale + boxH / 2;
+            return sx >= boxX - m && sx <= boxX + boxW + m && sy >= boxY - m && sy <= boxY + boxH + m;
+          };
+          const dpOf = (c: any) => (window as any).__arena && (window as any).__arena.unitDrawPos ? (window as any).__arena.unitDrawPos(c) : { x: c.x, y: c.y };
+          const uc = (st.cells ?? []).filter((c) => c.type === "unit" && c.controlled === true && (!st.soloTenant || c.tenant === tenant));
+          let bx = 0, by = 0, haveDraw = false;
+          for (const u of uc) { const dp = dpOf(u); if (onScreen(dp.x, dp.y)) { bx = dp.x; by = dp.y; haveDraw = true; break; } }
+          let w = null;
           for (let r = 0; r < 5 && !w; r++) { try { w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json(); } catch { await new Promise((s) => setTimeout(s, 800)); } }
           if (!w || !w.state) return { err: "world fetch failed (service restart?)" };
           const objs = w?.state?.objects ?? [];
-          const unit = objs.find((o) => o.kind === "UNIT" && o.controlled === true && o.position);
-          if (!unit) return { err: "无受控单位" };
-          const [ux, uy] = unit.position;
+          if (!haveDraw) {
+            const unit = objs.find((o) => o.kind === "UNIT" && o.controlled === true && o.position && onScreen(o.position[0], o.position[1]));
+            if (!unit) return { err: "无受控单位在屏内" };
+            bx = unit.position[0]; by = unit.position[1];
+          }
           const blocked = new Set();
           for (const o of objs) if (o.kind === "OBSTACLE" && Array.isArray(o.positions)) for (const pp of o.positions) blocked.add(pp[0] + "," + pp[1]);
-          let tx = ux + 2, ty = uy;
-          for (const [dx, dy] of [[2,0],[-2,0],[0,2],[0,-2],[2,1],[-2,-1],[1,2],[-1,-2]]) {
-            if (!blocked.has((ux + dx) + "," + (uy + dy))) { tx = ux + dx; ty = uy + dy; break; }
+          for (const c of (st.cells ?? [])) if (c.type === "obstacle") blocked.add(c.x + "," + c.y);
+          const atMap = (sx: number, sy: number) => {
+            const el = document.elementFromPoint(sx, sy);
+            if (!el) return false;
+            return el.id === "map" || !!el.closest("#map") || (el as HTMLElement).tagName === "CANVAS";
+          };
+          const offsets = [[2,0],[-2,0],[0,2],[0,-2],[1,0],[-1,0],[0,1],[0,-1],[2,1],[-2,-1],[1,2],[-1,-2],[3,0],[-3,0],[0,3],[0,-3]];
+          let pick: { tx: number; ty: number; sx: number; sy: number } | null = null;
+          for (const [dx, dy] of offsets) {
+            const nx = bx + dx, ny = by + dy;
+            if (blocked.has(nx + "," + ny)) continue;
+            const sx = boxX + (nx - v.cx) * v.scale + boxW / 2, sy = boxY + (ny - v.cy) * v.scale + boxH / 2;
+            if (!(sx >= boxX && sx <= boxX + boxW && sy >= boxY && sy <= boxY + boxH)) continue;
+            if (!atMap(sx, sy)) continue;
+            pick = { tx: nx, ty: ny, sx, sy }; break;
           }
-          const v = st.view;
-          return { sx: boxX + (tx - v.cx) * v.scale + boxW / 2, sy: boxY + (ty - v.cy) * v.scale + boxH / 2, tx, ty };
+          if (!pick) {
+            const sx = boxX + (bx + 2 - v.cx) * v.scale + boxW / 2, sy = boxY + (by - v.cy) * v.scale + boxH / 2;
+            const el = document.elementFromPoint(sx, sy);
+            return { err: "无可用画布点击点", el: el ? (el.id || el.tagName + "." + (typeof (el as any).className === "string" ? (el as any).className.slice(0, 40) : "")) : "null", sx, sy };
+          }
+          return { sx: pick.sx, sy: pick.sy, tx: pick.tx, ty: pick.ty, onscreen: true };
         }, { boxX: box.x, boxY: box.y, boxW: box.width, boxH: box.height });
         if (hit.err) { bad("人类指挥 UI 链", hit.err); }
         else {
@@ -427,11 +463,23 @@ async function main() {
         }, { id, tenant, boxX: boxF.x, boxY: boxF.y, boxW: boxF.width, boxH: boxF.height });
       };
       const clickShift = async (target: { id: string; tenant: string }, needle: string) => {
-        const pt = await livePt(target.id, target.tenant);
+        // 所见即所点：优先点画布上的插值绘制位（引擎按 id 实时命中，抗 /api/world 与画布漂移），
+        // 绘制位已不在 cells（换 tick/销毁）时回退 live 世界位。
+        let pt = await page.evaluate(({ id, tenant, boxX, boxY, boxW, boxH }) => {
+          const eng = window.__arenaEngine;
+          const st = eng ? eng.getState() : null;
+          if (!st) return { err: "no engine" };
+          const cell = (st.cells ?? []).find((c) => (c.type === "unit" || c.type === "core") && String(c.id) === String(id) && (!st.soloTenant || c.tenant === tenant));
+          if (!cell) return { err: "cell-gone:" + String(id).slice(0, 6) };
+          const dp = (window as any).__arena && (window as any).__arena.unitDrawPos ? (window as any).__arena.unitDrawPos(cell) : { x: cell.x, y: cell.y };
+          const v = st.view;
+          return { sx: boxX + (dp.x - v.cx) * v.scale + boxW / 2, sy: boxY + (dp.y - v.cy) * v.scale + boxH / 2, pos: [dp.x, dp.y] };
+        }, { id: target.id, tenant: target.tenant, boxX: boxF.x, boxY: boxF.y, boxW: boxF.width, boxH: boxF.height });
+        if (pt.err) pt = await livePt(target.id, target.tenant);
         if (pt.err) return { ok: false, why: pt.err, t: "" };
         await page.keyboard.down("Shift");
         await page.mouse.click(pt.sx, pt.sy);
-        const t = await waitToast(page, needle, 3000);
+        const t = await waitToast(page, needle, 6000);
         await page.keyboard.up("Shift");
         return { ok: t.includes(needle), why: "toast=" + JSON.stringify(t), t };
       };
@@ -466,7 +514,7 @@ async function main() {
       const cntQ = await page.locator("#assetList .asset-row").count();
       for (let j = 0; j < cntQ && rowSelQ < 0; j++) {
         await page.click(`#assetList .asset-row:nth-child(${j + 1})`, { timeout: 3000 }).catch(() => {});
-        await sleep(500);
+        await sleep(800);
         if (await page.locator('#actionDialog [data-action="MOVE"]').count() > 0) rowSelQ = j;
       }
       if (rowSelQ >= 0) {
@@ -480,21 +528,49 @@ async function main() {
           if (!eng) return { err: "no engine" };
           const st = eng.getState();
           const tenant = st.soloTenant || "t1";
-                    let w = null;
+          // 优先取画布插值绘制位（所见即所点），引擎 cells 无单位时回退 live world。
+          const v = st.view;
+          const onScreen = (wx: number, wy: number, m = 8) => {
+            const sx = boxX + (wx - v.cx) * v.scale + boxW / 2, sy = boxY + (wy - v.cy) * v.scale + boxH / 2;
+            return sx >= boxX - m && sx <= boxX + boxW + m && sy >= boxY - m && sy <= boxY + boxH + m;
+          };
+          const dpOf = (c: any) => (window as any).__arena && (window as any).__arena.unitDrawPos ? (window as any).__arena.unitDrawPos(c) : { x: c.x, y: c.y };
+          const uc = (st.cells ?? []).filter((c) => c.type === "unit" && c.controlled === true && (!st.soloTenant || c.tenant === tenant));
+          let bx = 0, by = 0, haveDraw = false;
+          for (const u of uc) { const dp = dpOf(u); if (onScreen(dp.x, dp.y)) { bx = dp.x; by = dp.y; haveDraw = true; break; } }
+          let w = null;
           for (let r = 0; r < 5 && !w; r++) { try { w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json(); } catch { await new Promise((s) => setTimeout(s, 800)); } }
           if (!w || !w.state) return { err: "world fetch failed (service restart?)" };
           const objs = w?.state?.objects ?? [];
-          const unit = objs.find((o) => o.kind === "UNIT" && o.controlled === true && o.position);
-          if (!unit) return { err: "no unit" };
-          const [ux, uy] = unit.position;
+          if (!haveDraw) {
+            const unit = objs.find((o) => o.kind === "UNIT" && o.controlled === true && o.position && onScreen(o.position[0], o.position[1]));
+            if (!unit) return { err: "无受控单位在屏内" };
+            bx = unit.position[0]; by = unit.position[1];
+          }
           const blocked = new Set();
           for (const o of objs) if (o.kind === "OBSTACLE" && Array.isArray(o.positions)) for (const pp of o.positions) blocked.add(pp[0] + "," + pp[1]);
-          let tx = ux + 2, ty = uy;
-          for (const [dx, dy] of [[2,0],[-2,0],[0,2],[0,-2],[2,1],[-2,-1],[1,2],[-1,-2]]) {
-            if (!blocked.has((ux + dx) + "," + (uy + dy))) { tx = ux + dx; ty = uy + dy; break; }
+          for (const c of (st.cells ?? [])) if (c.type === "obstacle") blocked.add(c.x + "," + c.y);
+          const atMap = (sx: number, sy: number) => {
+            const el = document.elementFromPoint(sx, sy);
+            if (!el) return false;
+            return el.id === "map" || !!el.closest("#map") || (el as HTMLElement).tagName === "CANVAS";
+          };
+          const offsets = [[2,0],[-2,0],[0,2],[0,-2],[1,0],[-1,0],[0,1],[0,-1],[2,1],[-2,-1],[1,2],[-1,-2],[3,0],[-3,0],[0,3],[0,-3]];
+          let pick: { tx: number; ty: number; sx: number; sy: number } | null = null;
+          for (const [dx, dy] of offsets) {
+            const nx = bx + dx, ny = by + dy;
+            if (blocked.has(nx + "," + ny)) continue;
+            const sx = boxX + (nx - v.cx) * v.scale + boxW / 2, sy = boxY + (ny - v.cy) * v.scale + boxH / 2;
+            if (!(sx >= boxX && sx <= boxX + boxW && sy >= boxY && sy <= boxY + boxH)) continue;
+            if (!atMap(sx, sy)) continue;
+            pick = { tx: nx, ty: ny, sx, sy }; break;
           }
-          const v = st.view;
-          return { sx: boxX + (tx - v.cx) * v.scale + boxW / 2, sy: boxY + (ty - v.cy) * v.scale + boxH / 2 };
+          if (!pick) {
+            const sx = boxX + (bx + 2 - v.cx) * v.scale + boxW / 2, sy = boxY + (by - v.cy) * v.scale + boxH / 2;
+            const el = document.elementFromPoint(sx, sy);
+            return { err: "无可用画布点击点", el: el ? (el.id || el.tagName + "." + (typeof (el as any).className === "string" ? (el as any).className.slice(0, 40) : "")) : "null", sx, sy };
+          }
+          return { sx: pick.sx, sy: pick.sy, tx: pick.tx, ty: pick.ty, onscreen: true };
         }, { boxX: boxG.x, boxY: boxG.y, boxW: boxG.width, boxH: boxG.height });
         if (hitG.err) { queueOk = false; }
         else {

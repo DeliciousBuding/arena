@@ -1,6 +1,6 @@
 /* Arena 指挥面板前端 — 战术规则层（纯常量 + 纯函数，无 DOM/state 依赖，供引擎与测试复用） */
 
-import { pKey } from "./utils.ts";
+import { pKey, samePos } from "./utils.ts";
 
 export const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
 export const TENANT_LABEL: Record<string, string> = { t1: "租户 1", t2: "租户 2", t3: "租户 3", t4: "租户 4" };
@@ -119,4 +119,84 @@ export function tactMoveTargets(world: any, obj: any) {
     out.push(t);
   }
   return out;
+}
+
+export function tactRangerRange(world: any, obj: any) {
+  const obstacles = tactTerrain(world, "OBSTACLE");
+  const out = [];
+  for (const [dx, dy] of TACT_RANGER_RAYS) {
+    for (let d = 1; d <= 3; d++) {
+      const p = [obj.position[0] + dx * d, obj.position[1] + dy * d] as [number, number];
+      if (obstacles.has(pKey(p))) break;
+      out.push(p);
+    }
+  }
+  return out;
+}
+export function tactRangerTargets(world: any, obj: any) {
+  const out = [];
+  for (const o of world.state.objects) {
+    if (!o.id || o.controlled !== false || !o.position) continue;
+    const dx = o.position[0] - obj.position[0], dy = o.position[1] - obj.position[1];
+    const dist = Math.max(Math.abs(dx), Math.abs(dy));
+    if (dist < 1 || dist > 3) continue;
+    if (dx !== 0 && dy !== 0 && Math.abs(dx) !== Math.abs(dy)) continue;
+    out.push(o);
+  }
+  return out;
+}
+export function tactVisibility(world: any) {
+  const radiusFor = (o: any) => o.kind === "CORE" ? 5 : o.unit_type === "WORKER" ? 3 : o.unit_type === "VANGUARD" ? 4 : 5;
+  const out = [];
+  for (const o of world.state.objects) {
+    if (o.controlled !== true || !o.position) continue;
+    if (o.kind !== "CORE" && o.kind !== "UNIT") continue;
+    out.push({ x: o.position[0], y: o.position[1], r: radiusFor(o) });
+  }
+  return out;
+}
+export function tactAvailability(world: any, obj: any) {
+  const actions: Record<string, boolean> = { SELF_DESTRUCT: true, WAIT: true }, spawns: Record<string, any> = {}, reasons: Record<string, any> = {};
+  if (!obj || obj.controlled !== true || !obj.position) return { actions, spawns, reasons };
+  const beacon = world.state.champion_beacon ?? {};
+  const carries = beacon.status === "CARRIED" && beacon.carrier_id === obj.id;
+  const atGround = beacon.status === "GROUND" && samePos(beacon.position, obj.position);
+  if (obj.kind === "CORE") {
+    const normal = obj.state !== "MOVING";
+    actions.HEAL = normal; actions.REPAIR_SHIELD = normal;
+    actions.START_MOVE = normal && tactMoveTargets(world, obj).length > 0;
+    actions.CANCEL_MOVE = !normal;
+    actions.PICKUP_BEACON = normal && atGround;
+    actions.DROP_BEACON = normal && carries;
+    if (!normal) { reasons.HEAL = "核心移动中，无法维修"; reasons.REPAIR_SHIELD = "核心移动中，无法修盾"; }
+    if (!actions.START_MOVE) reasons.START_MOVE = "核心移动不可用（无可行路径）";
+    if (!actions.PICKUP_BEACON) reasons.PICKUP_BEACON = "信标不在核心所在格";
+    if (!actions.DROP_BEACON) reasons.DROP_BEACON = "核心未携带信标";
+    spawns.WORKER = normal; spawns.VANGUARD = normal; spawns.RANGER = normal;
+    return { actions, spawns, reasons };
+  }
+  const canMove = tactMoveTargets(world, obj).length > 0;
+  const atOwnCore = world.state.objects.some((o: any) => o.kind === "CORE" && o.controlled === true && o.position && samePos(o.position, obj.position));
+  const atResource = world.state.objects.some((o: any) => o.kind === "RESOURCE" && (o.positions ?? []).some((p: any) => samePos(p, obj.position)));
+  actions.MOVE = canMove;
+  if (!canMove) reasons.MOVE = "无可达移动目标（周围被障碍堵死）";
+  if (obj.unit_type === "WORKER") {
+    actions.HARVEST = (obj.cargo ?? 0) === 0 && atResource;
+    actions.DEPOSIT = (obj.cargo ?? 0) > 0 && atOwnCore;
+    actions.HEAL = atOwnCore;
+    if ((obj.cargo ?? 0) > 0) reasons.HARVEST = "载货已满，先回仓交付";
+    else if (!atResource) reasons.HARVEST = "需站在资源格上才能采集";
+    if ((obj.cargo ?? 0) === 0) reasons.DEPOSIT = "无载货可交付";
+    else if (!atOwnCore) reasons.DEPOSIT = "需回到己方核心旁";
+  } else if (obj.unit_type === "VANGUARD") {
+    actions.SWEEP = true; actions.HEAL = atOwnCore;
+  } else if (obj.unit_type === "RANGER") {
+    actions.SHOOT = true; actions.HEAL = atOwnCore;
+  }
+  if (!atOwnCore) reasons.HEAL = "需在己方核心旁才能维修";
+  actions.PICKUP_BEACON = atGround;
+  actions.DROP_BEACON = carries;
+  if (!atGround) reasons.PICKUP_BEACON = "信标不在脚下（当前格）";
+  if (!carries) reasons.DROP_BEACON = "未携带信标";
+  return { actions, spawns, reasons };
 }
