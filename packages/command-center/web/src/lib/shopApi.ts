@@ -65,3 +65,7 @@ export function pushRedeemHistory(entry: RedeemHistoryEntry): RedeemHistoryEntry
   localStorage.setItem("arena-cc.redeem-history", JSON.stringify(list));
   return list;
 }
+
+export function clearRedeemHistory(): void {
+  localStorage.removeItem("arena-cc.redeem-history");
+}
