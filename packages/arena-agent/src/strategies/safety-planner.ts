@@ -464,6 +464,11 @@ export class SafetyPlanner {
    *  decide() 事件循环消费 HARVEST_SUCCEEDED 更新；patrolRing 截断时读取——
    *  非饥饿期（tick - lastHarvest ≤ gateTicks）锁近环，饥饿放开远环。 */
   private readonly lastHarvestTick = new Map<string, number>();
+  /** W61（beacon-commitment-v1）：上一轮 beacon fetch 设计者 id（跨 tick 持久，
+   *  防每 tick 因距离微差换设计者 → 中途放弃信标）。beacon 关闭/信标
+   *  CARRIED/移动/战区/远征时不重置（任一闸门返回 null 时保留，下次 GROUND
+   *  静止近距仍可复用）；设计者不在候选池时自然失效（新轮选新设计者）。 */
+  private beaconFetchDesigneeId: string | null = null;
   /** 产兵让位连续计数（spawn-yield-v1）：满载 worker 连续让位 tick 数——超过
    *  spawnYieldMaxTicks 强制卸货，防"核心永远想产兵、worker 永远卸不了"。 */
   private spawnYieldStreak = new Map<string, number>();
@@ -1127,9 +1132,60 @@ export class SafetyPlanner {
     const rangerPool = [...state.rangers]
       .map((u) => ({ u, d: chebyshev(u.position, beacon.position) }))
       .sort((a, b) => a.d - b.d || a.u.id.localeCompare(b.u.id));
-    const designee = vanguardPool[0] ?? rangerPool[0];
-    if (designee === undefined || designee.u.id !== unit.id) return null;
+    const designee = this.pickBeaconFetchDesignee(state, beacon, vanguardPool, rangerPool);
+    if (designee === null) return null;
+    // W61（beacon-commitment-v1）：记录本轮设计者（跨 tick 持久，防下 tick
+    // 因距离微差换设计者 → 中途放弃信标）。
+    this.beaconFetchDesigneeId = designee.u.id;
+    if (designee.u.id !== unit.id) return null;
     return "fetch";
+  }
+
+  /**
+   * W61（beacon-commitment-v1，竞品 "信标距离迟滞带 + 进度权重" 对照）：
+   * beacon fetch 设计者选择——上一轮设计者（仍在候选池）的距离减去迟滞带
+   * + 进度权重，防每 tick 因距离微差换设计者（中途放弃信标 → 取标进度全废）。
+   *
+   * 评分：adjusted = distance - hysteresisBonus - progressBonus
+   * - hysteresisBonus：候选 = 上一轮设计者 → 减 `beaconCommitmentHysteresis`
+   *   （新候选必须比当前设计者近 > 迟滞带才能替换，防抖动）。
+   * - progressBonus：候选 = 上一轮设计者 → 减 `progressWeight * (1 - d/maxDist)`
+   *   （越接近信标 = 进度越高，越难被替换——防中途放弃信标）。
+   *
+   * beaconCommitment 关闭 / 字段缺省 → 纯最近距离选设计者（零回归）。
+   */
+  private pickBeaconFetchDesignee(
+    state: TickState,
+    beacon: TickState["beacon"],
+    vanguardPool: readonly { readonly u: UnitSnapshot; readonly d: number }[],
+    rangerPool: readonly { readonly u: UnitSnapshot; readonly d: number }[],
+  ): { u: UnitSnapshot; d: number } | null {
+    void state; // 闸门已在 beaconMission 前置完成，此处仅做设计者选择
+    void beacon;
+    const pool = vanguardPool.length > 0 ? vanguardPool : rangerPool;
+    if (pool.length === 0) return null;
+    const commitmentOn = this.config.beaconCommitment === true;
+    const hysteresis = commitmentOn ? (this.config.beaconCommitmentHysteresis ?? 0) : 0;
+    const progressWeight = commitmentOn ? (this.config.beaconCommitmentProgress ?? 0) : 0;
+    const maxDist = this.config.beaconGrabMaxDist ?? BEACON_GRAB_DEFAULT_MAX_DIST;
+    const previousDesigneeId = this.beaconFetchDesigneeId;
+    let best: { u: UnitSnapshot; d: number; adjusted: number } | null = null;
+    for (const candidate of pool) {
+      let adjusted = candidate.d;
+      if (
+        commitmentOn &&
+        previousDesigneeId !== null &&
+        candidate.u.id === previousDesigneeId
+      ) {
+        adjusted -= hysteresis;
+        const progress = maxDist > 0 ? Math.max(0, 1 - candidate.d / maxDist) : 0;
+        adjusted -= progressWeight * progress;
+      }
+      if (best === null || adjusted < best.adjusted || (adjusted === best.adjusted && candidate.u.id.localeCompare(best.u.id) < 0)) {
+        best = { u: candidate.u, d: candidate.d, adjusted };
+      }
+    }
+    return best === null ? null : { u: best.u, d: best.d };
   }
   /** 信标护送（beacon-escort，2026-08-08 军事负责人信标预案，A/B 证据
    *  beacon-escort-ab.mts）：beaconGrab 开启时，除取标设计者外**最近**的
@@ -1167,7 +1223,21 @@ export class SafetyPlanner {
       const rangerPool = [...state.rangers]
         .map((u) => ({ u, d: chebyshev(u.position, beacon.position) }))
         .sort((a, b) => a.d - b.d || a.u.id.localeCompare(b.u.id));
-      const designee = vanguardPool[0] ?? rangerPool[0];
+      // W61（beacon-commitment-v1）：护送者跟随 beaconMission 选定的设计者
+      // （含迟滞 + 进度权重），而非自行重算最近——保持 fetch/escort 设计者
+      // 一致（否则 W61 改设计者后护送者会跟错人）。beaconMission 在 decide
+      // 中先于本方法调用并已写入 this.beaconFetchDesigneeId；若该 id 不在候选
+      // 池（首 tick/旧设计者已不在）→ 回落 pickBeaconFetchDesignee 重选。
+      let designee: { u: UnitSnapshot; d: number } | undefined = vanguardPool[0] ?? rangerPool[0];
+      const storedId = this.beaconFetchDesigneeId;
+      if (storedId !== null) {
+        const stored = [...vanguardPool, ...rangerPool].find((c) => c.u.id === storedId);
+        if (stored !== undefined) designee = stored;
+      }
+      if (designee === undefined) {
+        const picked = this.pickBeaconFetchDesignee(state, beacon, vanguardPool, rangerPool);
+        designee = picked === null ? undefined : picked;
+      }
       if (designee === undefined) return null;
       if (designee.u.id === unit.id) return null;
       designeeId = designee.u.id;
