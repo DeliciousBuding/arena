@@ -56,6 +56,11 @@ export interface ResurveyInput {
   /** currentTick - lastSeenTick（越大越旧，越该补测）。 */
   stalenessTicks: number;
   distChunks: number;
+  /** chunk 内最高格敌情威胁（2026-08-08）：consensus-mining 同 chunk
+   *  所有格的 max threatLevel（0-3）——mission 层派 EXPLORE 补测时可
+   *  优先回避敌情高发 chunk（threatLevel>=2）。 */
+  threatLevel: 0 | 1 | 2 | 3;
+  threatCombat: number;
 }
 
 /** 采集候选（2026-08-08，决策输入缺口补全）：“发现了但还没去挖”的可见未开采矿
@@ -102,7 +107,7 @@ export function buildDecisionInput(
   predictions: readonly MineRefillPrediction[],
   chunks: readonly { key?: unknown; cx?: unknown; cy?: unknown; lastSeenTick?: unknown }[],
   threatByCell?: ReadonlyMap<string, { threatLevel: 0 | 1 | 2 | 3; threatCombat: number }>,
-  resurvey?: readonly { key?: unknown; cx?: unknown; cy?: unknown; lastSeenTick?: unknown; stalenessTicks?: unknown; distChunks?: unknown }[],
+  resurvey?: readonly { key?: unknown; cx?: unknown; cy?: unknown; lastSeenTick?: unknown; stalenessTicks?: unknown; distChunks?: unknown; threatLevel?: unknown; threatCombat?: unknown }[],
   coreThreats: readonly CoreThreatInput[] = [],
   miningCandidates: readonly MiningCandidateInput[] = [],
 ): DecisionInputPayload {
@@ -134,14 +139,19 @@ export function buildDecisionInput(
   // 补测目标（2026-08-08）：旧观测区按陈旧度降序——mission 层勘探方向直接输入。
   const resurveyTargets: ResurveyInput[] = (resurvey ?? [])
     .filter((r) => r && (r.key !== undefined || (r.cx !== undefined && r.cy !== undefined)))
-    .map((r) => ({
-      key: String(r.key ?? "" + num(r.cx) + "," + num(r.cy)),
-      cx: num(r.cx),
-      cy: num(r.cy),
-      lastSeenTick: num(r.lastSeenTick),
-      stalenessTicks: num(r.stalenessTicks),
-      distChunks: num(r.distChunks),
-    }))
+    .map((r) => {
+      const tl = num(r.threatLevel);
+      return {
+        key: String(r.key ?? "" + num(r.cx) + "," + num(r.cy)),
+        cx: num(r.cx),
+        cy: num(r.cy),
+        lastSeenTick: num(r.lastSeenTick),
+        stalenessTicks: num(r.stalenessTicks),
+        distChunks: num(r.distChunks),
+        threatLevel: (tl === 1 || tl === 2 || tl === 3 ? tl : 0) as 0 | 1 | 2 | 3,
+        threatCombat: num(r.threatCombat),
+      };
+    })
     .sort((a, b) => b.stalenessTicks - a.stalenessTicks); // 最旧优先
   return {
     generatedAt: new Date().toISOString(),
@@ -179,11 +189,28 @@ export function loadDecisionInput(tenant: string): DecisionInputPayload {
   } catch { /* 威胁数据不可用不阻断（refill/chunk 仍返回） */ }
   // 补测目标（2026-08-08）：exploration 的旧观测区（refill 模型证伪后替代勘探信号）
   // ——mission 层据此定向补测（读 30s 缓存，无触网）。
-  let resurveyRows: Array<{ key: string; cx: number; cy: number; lastSeenTick: number; stalenessTicks: number; distChunks: number }> = [];
+  // chunk 级威胁聚合（2026-08-08）：从 threatByCell（格级）按 16×16 chunk 取 max
+  // threatLevel / max combat——resurveyTargets（chunk 级）派工时可回避敌情高发区。
+  const chunkThreat = new Map<string, { threatLevel: 0 | 1 | 2 | 3; threatCombat: number }>();
+  for (const [cell, th] of threatByCell) {
+    const [sx, sy] = cell.split(",");
+    const cx = Math.floor(Number(sx) / 16), cy = Math.floor(Number(sy) / 16);
+    if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+    const key = cx + "," + cy;
+    const cur = chunkThreat.get(key);
+    if (!cur || th.threatLevel > cur.threatLevel || (th.threatLevel === cur.threatLevel && th.threatCombat > cur.threatCombat)) {
+      chunkThreat.set(key, { threatLevel: th.threatLevel, threatCombat: th.threatCombat });
+    }
+  }
+  let resurveyRows: Array<{ key: string; cx: number; cy: number; lastSeenTick: number; stalenessTicks: number; distChunks: number; threatLevel: 0 | 1 | 2 | 3; threatCombat: number }> = [];
   try {
-    resurveyRows = loadAllianceExploration().resurveyTargets.map((r) => ({
-      key: r.key, cx: r.cx, cy: r.cy, lastSeenTick: r.lastSeenTick, stalenessTicks: r.stalenessTicks, distChunks: r.distChunks,
-    }));
+    resurveyRows = loadAllianceExploration().resurveyTargets.map((r) => {
+      const th = chunkThreat.get(`${Math.floor(r.cx)},${Math.floor(r.cy)}`);
+      return {
+        key: r.key, cx: r.cx, cy: r.cy, lastSeenTick: r.lastSeenTick, stalenessTicks: r.stalenessTicks, distChunks: r.distChunks,
+        threatLevel: th?.threatLevel ?? 0, threatCombat: th?.threatCombat ?? 0,
+      };
+    });
   } catch { /* 探索数据不可用不阻断 */ }
   // 敌核威胁（2026-08-08）：core_hunts 轨迹提炼全量（不 cap，mission 层自行决策）。
   let coreThreats: CoreThreatInput[] = [];

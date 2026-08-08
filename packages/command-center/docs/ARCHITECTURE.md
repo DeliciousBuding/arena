@@ -22,6 +22,10 @@ graph LR
 
 - 前端：React 19 + Vite 8 + TS；引擎为命令行式 Canvas（`web/src/engine/mapEngine.ts`，
   已全量类型化 409→0 错误）。
+- 引擎模块化（2026-08-08 持续推进）：mapEngine（核心状态/渲染/战术编排，~4355 行）
+  分层模块——`utils.ts`（纯几何/插值）、`canvas.ts`（绘制助手）、`fx.ts`（事件特效）、
+  `tactical.ts`（动作可用性/视野/规则）、`commands.ts`（人类指令选择器/遥测差分）、
+  `pathfind.ts`（BFS）、`minimap.ts`（全局小地图）、`replay.ts`（回放状态/推进/UI，可单测）。
 - 后端：Hono（Node 24 type stripping），静态服务 `web/dist`（`/app/*`）+ `public/` 素材。
 - 数据流：3s poll 世界快照 + 决策流；15s tick 读条；单位跨 tick 插值动画。
 - 只读边界：面板不写运行时；唯一写通道是人类指挥 `/api/command*`。
@@ -72,14 +76,14 @@ graph LR
 
 ```bash
 npm run check:all          # server tsc → 联盟同步护栏 → web typecheck → web build 一键全绿
-npm run test:regression    # Playwright 回归 22 项（web/scripts/cc-regression.mjs）
+npm run test:regression    # Playwright 回归 22 项（web/scripts/cc-regression.ts，TS 化）
 ```
 
 - 回归覆盖：页面零错误 / 六 tab / 威胁玫瑰 / 决策流 / 聚焦 HUD / 计划层像素 /
   人类指挥链（goal 落盘）/ 跳图定位标记 jumpPins / 手操审计 UI / 15s tick 读条 / 右键指挥菜单 /
   编队多选（Shift 加选）/ 命令队列（MOVE 模式 Shift 入队）/ API 健康。
 - 相机稳定辅助 waitViewStable：F 适应/跳图后轮询 view 两次采样一致再算坐标（消 flaky）。
-- 全局 240s 硬超时：服务重启/高负载时不无限卡，强制打印部分结果退出。
+- 全局 300s 硬超时：服务重启/高负载时不无限卡，强制打印部分结果退出。
 - 联盟同步护栏 `check:alliance-sync`：diff lib/alliance 与 arena-agent/src/alliance，漂移即失败。
 - 2026-08-08 实测：console 全量审计零 warning/error；压力交互（快速切 tab/缩放/跳图）零 JS 错误。
 - 临时 build 验证（不部署）：`vite build --outDir <tmp>`，确认新代码 + 新 token 打包正确。
@@ -89,6 +93,7 @@ npm run test:regression    # Playwright 回归 22 项（web/scripts/cc-regressio
 - 选中单位 → 动作卡：移动（点矿=采矿任务/点空地=移动任务）、清扫、攻击、采集、回仓、拾取/放置信标、自毁、等待。
 - 提交经 `/api/command*` → `data/runtime/human-commands/<tenant>.json`，tenant 主循环合并前覆盖 agent 决策。
 - 地图动线：人类指令 mine=琥珀 / goto=青，agent 规划=绿；jumpPins 跳图定位标记（点击/Esc 清除）。
+- 选中即定位 revealUnit（屏外单位平滑移入视野）；hover 单位 tooltip 显示「当前指令」（人类指挥白 / 算法决策青）。
 
 ## 6. 接力清单（并行重构提交后）
 
@@ -126,4 +131,11 @@ npm run test:regression    # Playwright 回归 22 项（web/scripts/cc-regressio
     （覆盖刚出生/刚移位尚未进 cells 的单位）。命中加 1 格切比雪夫容差（tactObjectNear，r=1）；右键 openCtxMenu 同源校正（async + live 命中）。回归加固：/api/world 拉取重试 + toast/右键菜单/队列轮询等待 + 硬超时 300s；面板点击穿透（.action-dialog/.inspect-panel/.feature-panel 非交互区 pointer-events:none，"卡片挡住选点"根治）。实测 21/21 全绿。
 9. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
 
-
+11. **回放引擎核心抽取 ✅（2026-08-08，`48106bc`）**：`web/src/engine/replay.ts`——
+    回放状态/推进/步进/播放/倍速/读条 UI 同步全为纯逻辑（可单测 9 项），渲染层
+    replayDrawLayer 留 mapEngine；动画循环与手动步进共享 replayAdvance 语义（越界
+    停播/末帧钳位统一）。web 单测 34→43 全绿，回归 22/22 全绿。
+11. **回放引擎核心抽取 ✅（2026-08-08，`48106bc`）**：`web/src/engine/replay.ts`——
+    回放状态/推进/步进/播放/倍速/读条 UI 同步全为纯逻辑（可单测 9 项），渲染层
+    replayDrawLayer 留 mapEngine；动画循环与手动步进共享 replayAdvance 语义（越界
+    停播/末帧钳位统一）。web 单测 34→43 全绿，回归 22/22 全绿。

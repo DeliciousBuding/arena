@@ -349,3 +349,58 @@ test("World: seedChunkMemory 注入探索分区（跨重启 Fog 记忆）", () =
   const n2 = world.seedChunkMemory([{ key: "-39,-10", lastSeenTick: 80 }, { key: "0,0", lastSeenTick: 90 }]);
   assert.equal(n2, 1, "只覆盖更新的 tick");
 });
+
+test("survey-db: migrateResourceSanity——时间戳倒挂修复 + seen_count 重建（A10）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arena-sync-res-migrate-"));
+  const db = openSurveyDb(dir, "t1", true);
+  // 无故意写倒挂行 + 污染 seen_count：用原始 SQL 插入
+  db.exec("INSERT INTO resources (cell, x, y, first_seen_tick, last_seen_tick, state, last_state_tick, seen_count) VALUES ('1,1', 1, 1, 800, 700, 'visible', 800, 50)");
+  db.exec("INSERT INTO resources (cell, x, y, first_seen_tick, last_seen_tick, state, last_state_tick, seen_count) VALUES ('2,2', 2, 2, 100, 200, 'visible', 200, 3)");
+  // resource_seen_history：1,1 真实观测 5 次（不同 tick）；2,2 观测 3 次
+  for (const tick of [100, 110, 120, 130, 140]) db.exec(`INSERT INTO resource_seen_history (cell, tick) VALUES ('1,1', ${tick})`);
+  for (const tick of [100, 200, 300]) db.exec(`INSERT INTO resource_seen_history (cell, tick) VALUES ('2,2', ${tick})`);
+  db.close();
+  // 重开 write 触发迁移
+  const db2 = openSurveyDb(dir, "t1", true);
+  const r1 = db2.prepare("SELECT first_seen_tick, last_seen_tick, seen_count FROM resources WHERE cell = '1,1'").get() as { first_seen_tick: number; last_seen_tick: number; seen_count: number };
+  assert.equal(r1.first_seen_tick, 700, "first 修为 min(800,700)=700");
+  assert.equal(r1.last_seen_tick, 800, "last 修为 max(800,700)=800");
+  assert.equal(r1.seen_count, 5, "seen_count 重建为 hist 计数 5（污染的 50 被校正）");
+  const r2 = db2.prepare("SELECT seen_count FROM resources WHERE cell = '2,2'").get() as { seen_count: number };
+  assert.equal(r2.seen_count, 3, "正常 seen_count=3 不动");
+  db2.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("survey-db: upsertResources MAX 保护 last_seen 单调（A10）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arena-sync-res-max-"));
+  const db = openSurveyDb(dir, "t1", true);
+  upsertResources(db, [{ x: 5, y: 5 }], 1000);
+  // 处理顺序不一：后来更早 tick 的 case
+  upsertResources(db, [{ x: 5, y: 5 }], 900);
+  const r = db.prepare("SELECT first_seen_tick, last_seen_tick FROM resources WHERE cell = '5,5'").get() as { first_seen_tick: number; last_seen_tick: number };
+  // MAX 保护：last_seen 不回退（旧无条件覆盖会变 900 导致 first=1000>last=900 倒挂）
+  assert.equal(r.last_seen_tick, 1000, "last_seen 不回退（MAX 保护）");
+  assert.ok(r.first_seen_tick <= r.last_seen_tick, "无倒挂（first<=last）");
+  db.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("survey-db: migrateResourceSanity 修 obstacles 倒挂 + upsertObstacles MAX 保护（A10）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arena-sync-obs-migrate-"));
+  const db = openSurveyDb(dir, "t1", true);
+  db.exec("INSERT INTO obstacles (cell, x, y, first_seen_tick, last_seen_tick) VALUES ('9,9', 9, 9, 800, 700)");
+  db.close();
+  // 重开 write 触发迁移：倒挂修复
+  const db2 = openSurveyDb(dir, "t1", true);
+  const r = db2.prepare("SELECT first_seen_tick, last_seen_tick FROM obstacles WHERE cell = '9,9'").get() as { first_seen_tick: number; last_seen_tick: number };
+  assert.equal(r.first_seen_tick, 700, "obstacles first 修为 min(800,700)=700");
+  assert.equal(r.last_seen_tick, 800, "obstacles last 修为 max(800,700)=800");
+  // upsertObstacles MAX 保护
+  upsertObstacles(db2, [{ x: 7, y: 7 }], 500);
+  upsertObstacles(db2, [{ x: 7, y: 7 }], 400); // 后来更早 tick
+  const r2 = db2.prepare("SELECT first_seen_tick, last_seen_tick FROM obstacles WHERE cell = '7,7'").get() as { first_seen_tick: number; last_seen_tick: number };
+  assert.equal(r2.last_seen_tick, 500, "obstacles last_seen 不回退（MAX 保护）");
+  db2.close();
+  rmSync(dir, { recursive: true, force: true });
+});

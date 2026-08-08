@@ -4,11 +4,14 @@
  * 地图/战术/回放/覆盖层保持原生 Canvas + DOM。入口 createMapEngine(host)。 */
 import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos, bucketScale, gridStepFor, extendScreen, replayInterp } from './utils.js';
 import { CANVAS_FONT, setCtx, ring, drawMeterBar, drawUnitHealth, drawWorkerCargo, drawCoreOwnerLabel, drawStackBadge } from './canvas.js';
+import { createMinimap } from './minimap.ts';
+let minimap: ReturnType<typeof createMinimap> | null = null; // createMapEngine 时初始化
 import { getJSON } from './api.js';
 import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets, tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability } from './tactical.js';
 import { findPath } from './pathfind.ts';
+import { createReplayState, replayAdvance, replayLoad, replayStep, replayToggle, replayCycleSpeed, updateReplayUI } from './replay.js';
 import { spawnEventFx, drawEventFx } from './fx.js';
-import { commandTelemetryDeltas as teleDeltas, commandGoalOf as cmdGoalOf, commandActionOf as cmdActionOf, unitHumanCommandOf as cmdHumanOf, commandStatusText as cmdStatusText, unitTelemetryOf as cmdUnitTelemetry } from './commands.js';
+import { commandTelemetryDeltas as teleDeltas, commandGoalOf as cmdGoalOf, commandActionOf as cmdActionOf, unitHumanCommandOf as cmdHumanOf, commandStatusText as cmdStatusText, unitTelemetryOf as cmdUnitTelemetry, unitCommandLabel as cmdLabel } from './commands.js';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
 const POLL_MS = 3000;
@@ -570,121 +573,6 @@ if (typeof window !== 'undefined') {
   };
 }
 /* ---------- 渲染 ---------- */
-/* ============ 全局小地图（2026-08-08）：世界缩略 + 视野框 + 点击/拖拽跳转 ============ */
-const MM_W = 172, MM_H = 128;
-let mmCtx: any = null;
-let mmCacheKey = "";
-let mmTenantBox: Record<string, { minX: number; minY: number; maxX: number; maxY: number }> = {};
-let mmCoreCells: any[] = [];
-function initMinimap() {
-  const el = els.minimap;
-  if (!el) return;
-  const dpr = effDpr();
-  el.width = Math.max(1, Math.round(MM_W * dpr));
-  el.height = Math.max(1, Math.round(MM_H * dpr));
-  mmCtx = el.getContext("2d");
-  if (!mmCtx) return;
-  let mmDrag = false;
-  const jump = (e: any) => {
-    const b = mmWorldBounds(); if (!b) return;
-    const r = el.getBoundingClientRect();
-    const pad = 6;
-    const iw = MM_W - pad * 2, ih = MM_H - pad * 2;
-    const spanX = Math.max(1, b.maxX - b.minX), spanY = Math.max(1, b.maxY - b.minY);
-    const s = Math.min(iw / spanX, ih / spanY);
-    const ox = pad + (iw - spanX * s) / 2, oy = pad + (ih - spanY * s) / 2;
-    const wx = b.minX + (e.offsetX - ox) / s;
-    const wy = b.minY + (e.offsetY - oy) / s;
-    if (state.soloTenant) exitSolo();
-    animateView({ cx: wx, cy: wy, scale: Math.max(0.05, state.view.scale) });
-    draw();
-  };
-  el.addEventListener("pointerdown", (e: any) => { mmDrag = true; el.setPointerCapture(e.pointerId); jump(e); });
-  el.addEventListener("pointermove", (e: any) => { if (mmDrag) jump(e); });
-  el.addEventListener("pointerup", () => { mmDrag = false; });
-  el.addEventListener("pointercancel", () => { mmDrag = false; });
-}
-function mmWorldBounds(): { minX: number; minY: number; maxX: number; maxY: number } | null {
-  if (state.bounds) return state.bounds;
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const c of state.cells) {
-    if (c.x < minX) minX = c.x; if (c.x > maxX) maxX = c.x;
-    if (c.y < minY) minY = c.y; if (c.y > maxY) maxY = c.y;
-  }
-  if (!Number.isFinite(minX)) return null;
-  return { minX, minY, maxX, maxY };
-}
-function drawMinimap() {
-  const el = els.minimap;
-  if (!el || !mmCtx) return;
-  const b = mmWorldBounds();
-  mmCtx.save();
-  mmCtx.clearRect(0, 0, MM_W, MM_H);
-  if (!b) {
-    mmCtx.fillStyle = "rgba(255,255,255,.35)"; mmCtx.font = "9px sans-serif"; mmCtx.textAlign = "center";
-    mmCtx.fillText("暂无测绘", MM_W / 2, MM_H / 2);
-    mmCtx.restore(); return;
-  }
-  const ck = state.cells.length + ":" + (state.cells[0] ? state.cells[0].x + "," + state.cells[0].y : "") + ":" + (state.map?.generatedAtMs ?? "");
-  if (ck !== mmCacheKey) {
-    mmCacheKey = ck;
-    mmTenantBox = {}; mmCoreCells = [];
-    for (const c of state.cells) {
-      const t = c.tenant;
-      if (!mmTenantBox[t]) mmTenantBox[t] = { minX: c.x, minY: c.y, maxX: c.x, maxY: c.y };
-      else {
-        const q = mmTenantBox[t];
-        if (c.x < q.minX) q.minX = c.x; if (c.x > q.maxX) q.maxX = c.x;
-        if (c.y < q.minY) q.minY = c.y; if (c.y > q.maxY) q.maxY = c.y;
-      }
-      if (c.type === "core") mmCoreCells.push(c);
-    }
-  }
-  const pad = 6;
-  const iw = MM_W - pad * 2, ih = MM_H - pad * 2;
-  const spanX = Math.max(1, b.maxX - b.minX), spanY = Math.max(1, b.maxY - b.minY);
-  const s = Math.min(iw / spanX, ih / spanY);
-  const ox = pad + (iw - spanX * s) / 2, oy = pad + (ih - spanY * s) / 2;
-  const X = (x: number) => ox + (x - b.minX) * s;
-  const Y = (y: number) => oy + (y - b.minY) * s;
-  mmCtx.fillStyle = "rgba(255,255,255,.03)";
-  mmCtx.fillRect(0, 0, MM_W, MM_H);
-  if (state.chunks && state.chunks.length) {
-    mmCtx.fillStyle = "rgba(120,160,255,.12)";
-    for (const ch of state.chunks.slice(0, 300)) {
-      const cx = Number(ch.cx), cy = Number(ch.cy);
-      if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
-      mmCtx.fillRect(X(cx) - 1, Y(cy) - 1, 2, 2);
-    }
-  }
-  for (const c of mmCoreCells) {
-    if (c.controlled !== false) continue;
-    mmCtx.fillStyle = "#e0625d";
-    mmCtx.beginPath(); mmCtx.arc(X(c.x), Y(c.y), 2.4, 0, Math.PI * 2); mmCtx.fill();
-  }
-  for (const t of TENANTS) {
-    const box = mmTenantBox[t];
-    if (!box) continue;
-    const color = TENANT_COLORS[t];
-    mmCtx.fillStyle = hexA(color, 0.28);
-    mmCtx.fillRect(X(box.minX), Y(box.minY), Math.max(1.5, X(box.maxX) - X(box.minX)), Math.max(1.5, Y(box.maxY) - Y(box.minY)));
-    const core = mmCoreCells.find((c: any) => c.tenant === t && c.controlled !== false);
-    if (core) {
-      mmCtx.fillStyle = color;
-      mmCtx.beginPath(); mmCtx.arc(X(core.x), Y(core.y), 3.2, 0, Math.PI * 2); mmCtx.fill();
-      mmCtx.strokeStyle = "rgba(255,255,255,.7)"; mmCtx.lineWidth = .7; mmCtx.stroke();
-    }
-  }
-  const v = state.view;
-  const vw = W() / v.scale, vh = H() / v.scale;
-  const vx0 = X(v.cx - vw / 2), vy0 = Y(v.cy - vh / 2), vx1 = X(v.cx + vw / 2), vy1 = Y(v.cy + vh / 2);
-  mmCtx.strokeStyle = "rgba(255,255,255,.9)";
-  mmCtx.lineWidth = 1;
-  mmCtx.strokeRect(vx0, vy0, Math.max(1, vx1 - vx0), Math.max(1, vy1 - vy0));
-  mmCtx.restore();
-}
-
-
 function draw() {
   const w = W(), h = H();
   ctx.clearRect(0, 0, w, h);
@@ -756,7 +644,7 @@ function draw() {
       ctx.fillText('正在连接指挥中心…', w / 2, h / 2);
     }
   }
-  drawMinimap();
+  minimap?.draw();
 }
 
 /** 全局联盟地图：每租户疆域色晕 + 核心标签（大联盟地图"完全设计"：一眼区分 4 租户领地）。 */
@@ -1898,6 +1786,12 @@ function showTooltip(px: any, py: any, cell: any) {
     lines.push(`<div class="tt-row"><span>HP</span><b>${fmt(cell.hp)}</b></div>`);
     if (cell.cargo > 0) lines.push(`<div class="tt-row"><span>载货</span><b>${fmt(cell.cargo)}</b></div>`);
     lines.push(`<div class="tt-row"><span>归属</span><b>${cell.controlled ? '我方' : '敌方'}</b></div>`);
+    // 当前指令（hover 即见：人类指挥白 / 算法决策青）——便于人观察“单位正在干什么”
+    if (cell.controlled) {
+      const plan = state.soloTenant === cell.tenant ? T().plan?.plan : T().plans?.[cell.tenant];
+      const cmdLine = cmdLabel(T(), cell.tenant, cell.id, plan);
+      if (cmdLine) lines.push(`<div class="tt-row"><span>当前</span><b style="color:${cmdHumanOf(T(), cell.tenant, cell.id) ? '#ffffff' : 'var(--cyan)'}">${cmdLine}</b></div>`);
+    }
   }
   if (cell.type === 'core') {
     lines.push(`<div class="tt-row"><span>HP / 盾</span><b>${fmt(cell.hp)} / ${fmt(cell.shield)}</b></div>`);
@@ -2094,7 +1988,7 @@ function revealSidebarHud() {
 }
 async function tactShowTenant(tenant: any) {
   const [world, expl, rp, plan] = await Promise.all([
-    tactLoadWorld(tenant), tactLoadExploration(tenant), replayLoad(tenant), tactLoadPlan(tenant),
+    tactLoadWorld(tenant), tactLoadExploration(tenant), replayLoad(replay, replayDeps, tenant), tactLoadPlan(tenant),
   ]);
   if (!world) return;
   T().plan = plan;
@@ -2318,10 +2212,10 @@ function bindEvents() {
   // 视图切换（mapGlobal 在地图控件内；viewGlobal/viewFit 在 React 侧栏，走 api）
   els.mapGlobal.addEventListener('click', exitSolo);
   // 回放控制
-  els.rbPlay.addEventListener('click', replayToggle);
-  els.rbPrev.addEventListener('click', () => replayStepFrame(-1));
-  els.rbNext.addEventListener('click', () => replayStepFrame(1));
-  els.rbSpeed.addEventListener('click', replayCycleSpeed);
+  els.rbPlay.addEventListener('click', () => replayToggle(replay, replayDeps));
+  els.rbPrev.addEventListener('click', () => replayStep(replay, replayDeps, -1));
+  els.rbNext.addEventListener('click', () => replayStep(replay, replayDeps, 1));
+  els.rbSpeed.addEventListener('click', () => replayCycleSpeed(replay, replayDeps));
   // 聚焦徽章可点击：返回全局联盟（悬停 title 提示）
   if (els.soloBadge) {
     els.soloBadge.addEventListener('click', () => { if (state.soloTenant) exitSolo(); });
@@ -2427,14 +2321,8 @@ async function boot() {
     if (animating) applyViewAnim(ts);
     if (zooming) stepZoom(ts);
     if (replaying) {
-      const elapsed = ts - replay.tickStart;
-      replay.progress = Math.min(1, elapsed / (TICK_MS / replay.speed));
-      if (elapsed >= TICK_MS / replay.speed) {
-        replay.frame++;
-        if (replay.frame >= replay.data.ticks.length) { replay.playing = false; replay.frame = replay.data.ticks.length - 1; }
-        replay.tickStart = ts; replay.progress = 0;
-      }
-      updateReplayUI();
+      replayAdvance(replay, ts);
+      updateReplayUI(replay, els);
       draw();
     } else if (animating || zooming) {
       draw();
@@ -2525,9 +2413,10 @@ async function boot() {
   setInterval(updateBeaconIndicator, 500);
 }
 /* ============ 战术交互层（官方 Arena Hero 移植 · 只读演练模式） ============ */
-/* 回放引擎：同一 run 连续 tick 快照 → 单位/核心移动动画 + 15s tick 读条 */
-const TICK_MS = 15000;
-const replay: { data: any; frame: number; playing: boolean; speed: number; loadedFor: string | null; tickStart: number; progress: number } = { data: null, frame: 0, playing: false, speed: 1, loadedFor: null, tickStart: 0, progress: 0 };
+/* 回放引擎：同一 run 连续 tick 快照 → 单位/核心移动动画 + 15s tick 读条
+ * （状态/推进/UI 核心在 replay.ts，可单测；本文件持有状态实例 + 渲染层） */
+const replay = createReplayState();
+const replayDeps = { getJSON, draw, getEls: () => els };
 const T = () => state.tactical;
 async function tactLoadWorld(tenant: any, force?: any) {
   if (!force && T().worlds[tenant]) return T().worlds[tenant];
@@ -2754,6 +2643,21 @@ function queueStatusHtml(unitId: any): string {
 function queueOnSatisfied(tenant: any, unitId: any) {
   if (queueOf(unitId)) queueAdvance(tenant, unitId);
 }
+/** 选中即定位（2026-08-08）：单位不在当前视口（含边距）时平滑移入视野，
+ *  复用 animateView 指数缓动——解决“点卡片/点画布选中屏外单位看不到”。
+ *  已在视野内则不平移（避免打扰正在观察的上下文）。 */
+function revealUnit(tenant: any, obj: any) {
+  if (!obj || !Array.isArray(obj.position) || obj.position.length < 2) return;
+  const s = state.view.scale;
+  const p = project(obj.position[0], obj.position[1]);
+  const mx = 90, my = 70; // 边距：避开左/右面板与顶/底栏（侧栏 291 / 决策流 339）
+  const w = W(), h = H();
+  const l = mx, r = w - mx, t = my, b = h - my;
+  if (p.sx >= l && p.sx <= r && p.sy >= t && p.sy <= b) return;
+  const tx = state.view.cx + (p.sx - (l + r) / 2) / s;
+  const ty = state.view.cy + (p.sy - (t + b) / 2) / s;
+  animateView({ cx: tx, cy: ty, scale: state.view.scale }, 420);
+}
 async function tactSelect(tenant: any, obj: any) {
   const world = await tactLoadWorld(tenant);
   if (!world) return;
@@ -2763,6 +2667,7 @@ async function tactSelect(tenant: any, obj: any) {
   tac.mode = null; tac.moveRoute = null; tac.routePreview = null; tac.attackTarget = null;
   panelDrag = {}; // 新选中：卡片回到默认锚点
   startSelectionRipple(obj.id);
+  revealUnit(tenant, obj); // 选中即定位：屏外单位平滑移入视野
   tactRenderActionDialog();
   tactRenderInspect();
   tactRenderAssets(tenant);
@@ -3197,8 +3102,7 @@ function tactRenderAssets(tenant: any) {
   els.assetList.querySelectorAll('[data-asset]').forEach((b: any) => b.addEventListener('click', () => {
     const o = world.state.objects.find((x: any) => x.id === b.dataset.asset);
     if (!o) return;
-    // 官方 selectFromAssetList：选中并居中定位到该单位
-    if (o.position) { state.view.cx = o.position[0]; state.view.cy = o.position[1]; state.viewAnim = null; }
+    // 官方 selectFromAssetList：选中并平滑定位到该单位（统一走 tactSelect 内的 revealUnit，不再硬跳）
     tactSelect(tenant, o);
   }));
   els.assetList.querySelectorAll('[data-grp-head]').forEach((h: any) => h.addEventListener('click', () => {
@@ -3274,47 +3178,6 @@ function tactRenderHud(tenant: any) {
   </div>${surveyRow}${lcRow}${hudCmd}`;
 }
 /* ============ 回放引擎（连续 tick 快照 → 单位移动动画 + 15s 读条） ============ */
-async function replayLoad(tenant: any) {
-  try {
-    const r = await getJSON(`/api/replay?tenant=${tenant}`);
-    if (!r.replay || !r.replay.ticks.length) return null;
-    replay.data = r.replay;
-    replay.frame = 0;
-    replay.playing = true;
-    replay.speed = 1;
-    replay.loadedFor = tenant;
-    replay.tickStart = performance.now();
-    replay.progress = 0;
-    els.replayBar.hidden = false;
-    updateReplayUI();
-    return replay.data;
-  } catch { return null; }
-}
-function replayStepFrame(delta: any) {
-  if (!replay.data) return;
-  replay.frame = Math.max(0, Math.min(replay.data.ticks.length - 1, replay.frame + delta));
-  replay.progress = 0;
-  replay.tickStart = performance.now();
-  updateReplayUI();
-  draw();
-}
-function replayToggle() {
-  if (!replay.data) return;
-  if (replay.playing) { replay.playing = false; }
-  else {
-    if (replay.frame >= replay.data.ticks.length - 1) replay.frame = 0;
-    replay.playing = true;
-    replay.tickStart = performance.now();
-    replay.progress = 0;
-  }
-  updateReplayUI();
-}
-function replayCycleSpeed() {
-  replay.speed = replay.speed >= 4 ? 1 : replay.speed * 2;
-  replay.tickStart = performance.now(); replay.progress = 0;
-  updateReplayUI();
-}
-/** 插值：frame-1 → frame 之间按 progress(0-1) 平滑移动 */
 function replayDrawLayer(s: any) {
   const f = replay.frame;
   const prog = replay.playing ? replay.progress : 1;
@@ -3373,20 +3236,6 @@ function replayDrawLayer(s: any) {
     // 人类指挥中标记（聚焦=回放接管单位绘制，需在此补画）
     if (u.controlled && unitHumanCommandOf(state.soloTenant, u.id)) drawHumanMarker(s, pr.sx, pr.sy, size, u.id);
   }
-}
-function updateReplayUI() {
-  const d = replay.data;
-  if (!d) return;
-  els.rbTick.textContent = d.ticks[replay.frame] ?? '—';
-  els.rbMaxTick.textContent = d.ticks[d.ticks.length - 1];
-  const overall = (replay.frame + replay.progress) / d.ticks.length;
-  els.rbFill.style.width = `${Math.round(overall * 100)}%`;
-  const remain = Math.max(0, (TICK_MS / replay.speed - (performance.now() - replay.tickStart)) / 1000);
-  const atEnd = replay.frame >= d.ticks.length - 1 && !replay.playing;
-  els.replayBar.classList.toggle('at-end', atEnd);
-  els.rbCountdown.textContent = atEnd ? '已到最新' : `${replay.playing ? remain.toFixed(1) : '—'}s`;
-  els.rbPlay.textContent = replay.playing ? '⏸' : '▶';
-  els.rbSpeed.textContent = `×${replay.speed}`;
 }
 
 /** 测绘层：聚焦租户时，把该 run 全部 case 累积的已知地形（障碍/资源）以半透明显示，
@@ -4478,7 +4327,15 @@ export function createMapEngine(host: any) {
   // desynchronized（低延迟合成，减少输入到像素延迟；不影响内容绘制）
   ctx = els.canvas.getContext('2d', { alpha: false, desynchronized: true }) ?? els.canvas.getContext('2d');
   setCtx(ctx); // 画布助手层（canvas.ts）共享同一上下文
-  initMinimap();
+  minimap = createMinimap({
+    getCanvas: () => els.minimap,
+    getState: () => state,
+    getViewSize: () => ({ w: W(), h: H() }),
+    getDpr: () => effDpr(),
+    onJump: (wx: number, wy: number, scale: number) => { if (state.soloTenant) exitSolo(); animateView({ cx: wx, cy: wy, scale: Math.max(0.05, scale) }); draw(); },
+  });
+
+  minimap.init();
   const api = {
     toggleSolo: (t: any) => toggleSolo(t),
     exitSolo: () => exitSolo(),
