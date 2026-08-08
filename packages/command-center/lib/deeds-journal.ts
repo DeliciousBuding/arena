@@ -9,6 +9,7 @@ import { loadAllianceDeeds } from "./alliance-deeds.ts";
 import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
 import { loadAuditOverview } from "./audit-overview.ts";
 import { loadAllianceMining } from "./alliance-mining.ts";
+import { loadMiningEffectiveness } from "./mining-effectiveness.ts";
 import { TtlCache } from "./cache.ts";
 import { TENANTS } from "./fs-jsonl.ts";
 
@@ -179,11 +180,18 @@ function buildAuditDeeds(currentTick: number): Deed[] {
   // 联盟采矿分工（2026-08-08）：已就近分配的待开采矿——共享记忆→执行清单可读化
   try {
     const mining = loadAllianceMining();
+    let miningEff: ReturnType<typeof loadMiningEffectiveness> | null = null;
+    try { miningEff = loadMiningEffectiveness(); } catch { /* 兑现数据不可用不阻断 */ }
     for (const [t, p] of Object.entries(mining.perTenant ?? {})) {
       const n = Number(p?.assigned ?? 0);
       if (n >= 10) {
-        out.push({ id: `audit-mining-${t}`, tick: now, tenant: t, star: 2, kind: "AUDIT_INSIGHT",
-          title: `${t} 已分工 ${n} 矿待开采`, detail: `联盟就近分配（avg ${p?.avgDistance ?? "-"} 格）——按 audit/mines + alliance/mining 候选格派 worker。`,
+        const e = miningEff?.perTenant?.[t];
+        const closed = (e?.harvested ?? 0) + (e?.stale ?? 0);
+        const detail = e && closed > 0
+          ? `联盟就近分配 ${n} 矿（avg ${p?.avgDistance ?? "-"} 格）——已采 ${e.harvested}/失效 ${e.stale}/在途 ${e.open}，兑现率见 audit/mining-effectiveness。`
+          : `联盟就近分配 ${n} 矿（avg ${p?.avgDistance ?? "-"} 格）——尚 0 兑现（全在途），按 audit/mines + alliance/mining 候选格派 worker。`;
+        out.push({ id: `audit-mining-${t}`, tick: now, tenant: t, star: e && e.harvested > 0 ? 2 : 3, kind: "AUDIT_INSIGHT",
+          title: `${t} 已分工 ${n} 矿${e ? `（0 兑现 ${e.open} 在途）` : "待开采"}`, detail,
           position: null, actor: null, target: null });
       }
     }
