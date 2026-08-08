@@ -390,6 +390,24 @@ export interface SafetyPlannerConfig {
   /** 让位连续上限（默认 3）：满载 worker 连续让位 ≥N tick 后强制卸货——
    *  防"核心永远想产兵、worker 永远卸不了"的让位饿死循环。 */
   readonly spawnYieldMaxTicks?: number;
+  /**
+   * 锁阵（2026-08-08，worker-blockade-v1，研究驱动设计见
+   * docs/design/blockade-tactics-v1.md）：主动利用格子容量 2 + 移动冲突规则
+   * 锁死敌方单位——预判敌方回程路径/环境瓶颈锁点（敌核心邻格/资源旁/窄
+   * 通道），巡逻 worker 去目标格站桩（WAIT 占格），敌方 MOVE 进不来
+   * （MOVE_DESTINATION_OCCUPIED），脚本对手无反馈无限重试（reference
+   * farmer 无 MOVE_FAILED 处理）。t2 日志实证 669 次 MOVE_CONTESTED 全是我方
+   * 被动挨卡——本变体把被动变主动。默认 false = 历史行为（零回归）。
+   */
+  readonly workerBlockade?: boolean;
+  /** 锁位 worker 数量上限（默认 2）：最多派 N 个巡逻 worker 当锁位手——
+   *  再多伤经济（t2 worker avg 11.5，抽 2 个不影响采集曲线）。 */
+  readonly blockadeWorkerCap?: number;
+  /** 锁位连续上限（默认 10）：站桩超过 N tick 目标仍未到锁点 → 放弃回巡逻
+   *  （预测错误/敌方已绕路，防锁位单位长期闲置）。 */
+  readonly blockadeLockMaxTicks?: number;
+  /** 经济保底（默认 6）：worker 数 < 该值时锁阵停用（保采集优先）。 */
+  readonly blockadeMinWorkers?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

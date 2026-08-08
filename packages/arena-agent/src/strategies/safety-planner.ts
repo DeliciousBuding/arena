@@ -58,6 +58,11 @@ import {
   samePosition,
   yieldAnchor,
 } from "./safety-planner-helpers.ts";
+import {
+  chokepointLockPoint,
+  enemyReturnPath,
+  pairBlockadeTargets,
+} from "./blockade-predict.ts";
 
 export { AGGRESSIVE_SAFETY_CONFIG, DEFAULT_SAFETY_CONFIG } from "./safety-planner-config.ts";
 export type { AggressionLevel, SafetyPlannerConfig } from "./safety-planner-config.ts";
@@ -215,6 +220,13 @@ const HUNT_SWEEP_TICKS = 8;
  *  强制卸货——防"核心永远想产兵、worker 永远卸不了"的让位饿死循环
  *  （核心每 tick 产 1 兵后资源下降，正常情况让位 1-2 tick 即恢复卸货）。 */
 const SPAWN_YIELD_MAX_TICKS = 3;
+/** 锁阵默认参数（worker-blockade-v1，2026-08-08，研究驱动设计）：
+ *  锁位 worker 上限 2 / 经济保底 6 / 锁龄上限 10 / 环境锁点最远 24 格
+ *  （超出视为远征送死，防锁位单位深入敌阵）。 */
+const BLOCKADE_WORKER_CAP = 2;
+const BLOCKADE_MIN_WORKERS = 6;
+const BLOCKADE_LOCK_MAX_TICKS = 10;
+const BLOCKADE_ENV_MAX_DIST = 24;
 /** B10 worker 遭遇撤离（竞品 Scout And Observer Response）：撤离触发半径。 */
 const SCOUT_EVADE_RADIUS = 3;
 /** 到 Core 3 格内后的冷却 tick（竞品 three-Tick cooldown）。 */
@@ -309,6 +321,13 @@ export class SafetyPlanner {
   /** 产兵让位连续计数（spawn-yield-v1）：满载 worker 连续让位 tick 数——超过
    *  spawnYieldMaxTicks 强制卸货，防"核心永远想产兵、worker 永远卸不了"。 */
   private spawnYieldStreak = new Map<string, number>();
+  /** 锁阵本 tick 配对（worker-blockade-v1）：unitId → lockPoint（敌方下一步
+   *  要进的格，站桩即挡）。decide 入口由 enemyReturnPath + 环境锁点计算一次，
+   *  decideWorker 消费（多 worker 共享同一分配，防扎堆/重复锁同一目标）。 */
+  private blockadeAssignment = new Map<string, Position>();
+  /** 锁阵站桩起始 tick（unitId → tick）：站桩超过 blockadeLockMaxTicks 仍未
+   *  等到目标 → 放弃回巡逻（预测错误/敌方已绕路，防锁位单位长期闲置）。 */
+  private blockadeLockedSince = new Map<string, number>();
   /** 记忆矿卡死防护（2026-08-08，t3 生产实证）：worker 连续 go_harvest_mem 未推进
    *  的 tick 数（capacity_wait 是 planner 内部拒绝，不产生 MOVE_FAILED 事件，
    *  需独立计数）。 */
@@ -774,6 +793,43 @@ export class SafetyPlanner {
       intents[unit.id] = intent;
     };
 
+    // 锁阵配对（worker-blockade-v1，2026-08-08）：decide 入口算一次，多 worker
+    // 共享同一分配（防扎堆/重复锁同一目标）。目标 = 敌方回程路径预测 + 环境
+    // 瓶颈锁点；锁位手 = 巡逻态空 worker（blockadeWorkerCap 上限，保经济）。
+    // 防御激活（召回/包围）→ 锁阵停用（锁位 worker 全员回守家圈）。
+    this.blockadeAssignment = new Map();
+    if (
+      this.config.workerBlockade === true &&
+      state.workers.length >= (this.config.blockadeMinWorkers ?? BLOCKADE_MIN_WORKERS) &&
+      !(this.currentThreat?.level === "BREAKOUT")
+    ) {
+      const hints = this.world.enemyHints();
+      const coreTargets = this.world.coreHuntTargets();
+      const predictions = enemyReturnPath(hints, coreTargets, obstacles)
+        // 过滤：锁点落在己方核心格 = 禁区（worker 站核心格会挡 DEPOSIT/SPAWN，
+        // t2 卸货死锁教训）——朝核心移动的敌方预测可能直接指向核心格。
+        .filter((prediction) =>
+          state.core === null || !samePosition(prediction.nextCells[0], state.core.position),
+        );
+      // 环境锁点（敌核心邻格优先）——没有回程预测时仍可锁环境瓶颈
+      const idleWorkers = state.workers.filter((worker) => worker.cargo === 0);
+      const assignment = pairBlockadeTargets(predictions, idleWorkers, this.config.blockadeWorkerCap ?? BLOCKADE_WORKER_CAP);
+      // 环境锁点兜底：无回程预测但有敌核心邻格/资源旁/窄通道 → 派最近 worker
+      if (assignment.size === 0 && idleWorkers.length > 0) {
+        const enemyCore = coreTargets.find((t) => t.source === "CORE")?.position ?? null;
+        const occupied = new Set(
+          [...state.units].map((unit) => cellKey(unit.position)),
+        );
+        const chokepoint = chokepointLockPoint(enemyCore, [...state.resourceCells].map(parseCell), obstacles, occupied);
+        if (chokepoint !== null && manhattan(chokepoint.cell, state.core?.position ?? chokepoint.cell) <= BLOCKADE_ENV_MAX_DIST) {
+          const nearest = [...idleWorkers]
+            .sort((a, b) => manhattan(a.position, chokepoint.cell) - manhattan(b.position, chokepoint.cell) || a.id.localeCompare(b.id))[0];
+          if (nearest !== undefined) assignment.set(nearest.id, chokepoint.cell);
+        }
+      }
+      this.blockadeAssignment = assignment;
+    }
+
     for (const unit of [...state.units].sort((a, b) => a.id.localeCompare(b.id))) {
       if (
         state.beacon.status === "GROUND" &&
@@ -997,6 +1053,47 @@ export class SafetyPlanner {
       const direction = stepToward(unit.position, home, movementObstacles);
       if (direction !== null) set(unit, { type: "MOVE", direction }, "worker_heal_return");
       return;
+    }
+
+    // 锁阵执行（worker-blockade-v1，2026-08-08）：本 tick 配对到锁点的巡逻
+    // worker → 走向锁点站桩（敌方目标格被占 → MOVE_DESTINATION_OCCUPIED
+    // 敌方失败；脚本对手无反馈无限重试）。锁龄超限（预测错误/敌方已绕路）
+    // → 放弃回巡逻；敌方战斗单位近身 ≤3 格 → 立即撤离（复用 scoutEvade
+    // 半径，锁位 worker 无攻击力保命优先）。
+    if (this.config.workerBlockade === true) {
+      const lockPoint = this.blockadeAssignment.get(unit.id);
+      if (lockPoint !== undefined) {
+        const lockMaxTicks = this.config.blockadeLockMaxTicks ?? BLOCKADE_LOCK_MAX_TICKS;
+        const lockedSince = this.blockadeLockedSince.get(unit.id);
+        const enemyNear = state.visibleEnemies.some(
+          (enemy) =>
+            enemy.kind === "UNIT" &&
+            enemy.unitType !== "WORKER" &&
+            manhattan(unit.position, enemy.position) <= SCOUT_EVADE_RADIUS,
+        );
+        if (samePosition(unit.position, lockPoint)) {
+          if (enemyNear) {
+            // 敌战斗单位近身 → 放弃锁位撤离（保命）
+            this.blockadeLockedSince.delete(unit.id);
+          } else if (lockedSince !== undefined && state.tick - lockedSince >= lockMaxTicks) {
+            // 锁龄超限：目标一直没来（预测错误/已绕路）→ 放弃回巡逻
+            this.blockadeLockedSince.delete(unit.id);
+          } else {
+            // 站桩锁：WAIT 占格（敌方目标格被占 → MOVE_DESTINATION_OCCUPIED）
+            if (lockedSince === undefined) this.blockadeLockedSince.set(unit.id, state.tick);
+            set(unit, { type: "WAIT" }, "worker_blockade");
+            return;
+          }
+        } else {
+          const direction = stepToward(unit.position, lockPoint, movementObstacles);
+          if (direction !== null) {
+            set(unit, { type: "MOVE", direction }, "worker_blockade");
+            return;
+          }
+        }
+      } else {
+        this.blockadeLockedSince.delete(unit.id);
+      }
     }
 
     if (state.resourceCells.has(cellKey(unit.position))) {

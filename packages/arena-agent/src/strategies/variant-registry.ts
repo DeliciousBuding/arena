@@ -122,6 +122,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "spawn-yield-v1": Object.freeze({ spawnYield: true }),
     /**
+     * 锁阵（2026-08-08，worker-blockade-v1，研究驱动设计见
+     * docs/design/blockade-tactics-v1.md）：主动利用格子容量 2 + 移动冲突
+     * 规则锁死敌方单位——预判敌方回程路径/环境瓶颈锁点（敌核心邻格/资源
+     * 旁/窄通道），巡逻 worker 去目标格站桩（WAIT 占格），敌方 MOVE 进不来
+     * （MOVE_DESTINATION_OCCUPIED）。默认 false = 历史行为（零回归）。
+     */
+    "worker-blockade-v1": Object.freeze({ workerBlockade: true }),
+    /**
      * 记忆矿主动开采（2026-08-08，harvest-memory-mine-v1，survey-db 联动）：
      * 无可见资源且无活跃采集目标时从已知矿记忆（含跨 run 测绘 seed）挑最近
      * 的去挖——"矿发现了没标注/没分配去挖"的算法端闭环。默认 false 零回归。
