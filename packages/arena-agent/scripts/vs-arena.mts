@@ -22,11 +22,9 @@ import { mkdirSync } from "node:fs";
 import { runFreeForAll, runMatch, type TournEntry } from "../src/sim/opponent/tournament.ts";
 import { COORDINATION_ROOT, opponentEntry, resolveOpponent, listMyVersions, resolveVersion, validateMyVersions } from "../src/sim/opponent/registry.ts";
 import {
-  inWindow,
   makeSurveyScenario,
   pickWindow,
   readSurvey,
-  WINDOW_SIZE,
 } from "../src/sim/opponent/survey-scenario.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner, type SafetyPlannerConfig } from "../src/strategies/safety-planner.ts";
 
@@ -182,9 +180,9 @@ function scenarioFor(seed: number, opponentId: string): unknown {
   const tenant = tenants[seed % tenants.length];
   const snapshot = readSurvey(join(SURVEY_DIR, `${tenant}.db`), tenant, TIME_WINDOW_TICKS, KEEP_HARVESTED);
   const window = pickWindow(snapshot.resources);
-  const resourcesIn = snapshot.resources.filter((c) => inWindow(window.x0, window.y0, c.x, c.y));
-  const obstaclesIn = snapshot.obstacles.filter((c) => inWindow(window.x0, window.y0, c.x, c.y));
-  return makeSurveyScenario(window, resourcesIn, obstaclesIn, seed, opponentId);
+  // M4-5：窗外 30 格重生环边距的地形过滤在 makeSurveyScenario 内部完成
+  // （RESPAWN_RING_MARGIN）——这里传入全量切片，由场景构造器统一处理。
+  return makeSurveyScenario(window, snapshot.resources, snapshot.obstacles, seed, opponentId);
 }
 
 const labelFor = (source: string): string =>
