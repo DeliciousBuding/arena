@@ -1441,6 +1441,14 @@ body::after {
 }
 .sit-status.ok { color: var(--success); border-color: rgba(87,189,132,.4); background: rgba(87,189,132,.08); }
 .sit-m-pos { margin-left: auto; font-size: 10px; }
+.sit-focus {
+  margin-left: 6px; flex: none;
+  font-family: var(--font-sans); font-size: 10px; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: rgba(255,255,255,.04); color: var(--text-dim);
+  cursor: pointer; transition: all .2s var(--ease);
+}
+.sit-focus:hover { color: #fff; background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.3); }
 .sit-m-stats { display: flex; gap: 18px; margin-bottom: 8px; }
 .sit-stat { display: flex; flex-direction: column; gap: 1px; }
 .sit-stat-label { font-size: 9.5px; color: var(--text-faint); letter-spacing: .05em; }
