@@ -358,3 +358,16 @@ mapEngine.ts 对应函数。
 - **测试**：新增 `test/commands.test.ts` 4 项（遥测差分/goal-action 命中/状态摘要/单位遥测行），
   web 单测 26→30 全绿。
 - **验证**：typecheck/build + 完整回归 **22/22 全绿**（含人类指挥链 goal 落盘、命令队列）。
+
+### 9.18 纯几何/回放插值抽取 utils.ts + 6f 遗留动作框根治（2026-08-08）
+- **抽取**：`bucketScale`（缩放桶）/`gridStepFor`（网格步长）/`extendScreen`（屏幕线段保底）/
+  `replayInterp`（回放 trail 插值）4 个纯函数从 mapEngine 移入 utils.ts（纯工具层），
+  mapEngine 4557→4530 行。新增 `test/utils.test.ts` 4 项（缩放桶半档幂/网格步长/
+  线段方向拉长/插值钳位），web 单测 30→34 全绿。
+- **6f 遗留动作框根治（探针实证）**：6e 右键菜单后 actionDialog 未关，6f 首次点击的
+  绘制位正好压在 `.act-btn`（等待按钮）上 → 点击提交「等待」而非选中单位（toast 为空
+  的真根因，非慢/脱靶）。修复：6f 开头 Esc 清遗留动作框；clickShift 点击前 elementFromPoint
+  校验为画布，被遮挡则 Esc 后重算一次，仍挡则带元素诊断报错。
+- **探针 TS 化**：probe-toast.mjs → probe-toast.ts（主树零 .mjs 遗留，Node 24 类型擦除直跑），
+  加 @ts-nocheck（Playwright 黑盒探针，与 cc-regression 同约定）。
+- **验证**：完整回归 **22/22 全绿** + web 单测 34/34 + typecheck/build 全绿。
