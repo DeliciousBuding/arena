@@ -69,8 +69,8 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
   const currentTick = snap.currentTick;
   const windowStart = currentTick - windowTicks;
   const all = tenant === "all"
-    ? [...(await loadDeeds("all", 500)), ...loadAllianceDeeds(), ...buildAuditDeeds()]
-    : [...(await loadDeeds(tenant, 500)), ...buildAuditDeeds().filter((d) => d.tenant === tenant)];
+    ? [...(await loadDeeds("all", 500)), ...loadAllianceDeeds(), ...buildAuditDeeds(currentTick)]
+    : [...(await loadDeeds(tenant, 500)), ...buildAuditDeeds(currentTick).filter((d) => d.tenant === tenant)];
   let windowed = all
     .filter((d) => d.tick >= windowStart && d.tick <= currentTick)
     .sort((a, b) => b.star - a.star || b.tick - a.tick);
@@ -115,10 +115,11 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
 /** 审计事迹（2026-08-08）：把综合审计总览的关键健康信号合成可读日记条目——
  *  负增长/发现未开采缺口/决策空转/搬运瓶颈/经济停滞。kind=AUDIT_INSIGHT →
  *  分组 "audit"；star 按严重度 2-4。纯读 audit/overview（30s 缓存），无新增 I/O。 */
-function buildAuditDeeds(): Deed[] {
+function buildAuditDeeds(currentTick: number): Deed[] {
   const ov = loadAuditOverview();
   const out: Deed[] = [];
-  const now = ov.global.currentTick ?? 0;
+  // 审计事迹是"当前状态"洞察，tick 对齐日记窗口（避免与 snapshot tick 不一致被过滤）。
+  const now = currentTick;
   for (const [t, x] of Object.entries(ov.tenants)) {
     const dec = x.decisions;
     const lc = x.lifecycle;
