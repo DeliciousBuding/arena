@@ -5,6 +5,8 @@
  * 避免双 writer 冲突；接线时经 overlay 参数注入）。
  */
 
+import { existsSync, readFileSync } from "node:fs";
+
 export type MigrationPacePolicy = "adaptive" | "time-based" | "harvest-driven";
 
 export interface MigrationPaceConfig {
@@ -62,3 +64,27 @@ export const DEFAULT_MIGRATION_RUNTIME_CONFIG: MigrationRuntimeConfig = {
   hold: { enterRadius: 12, exitRadius: 18, repeatWindowTicks: 600 },
   overlay: { enableCoreOrders: false, recheckEpochEachTick: true },
 };
+
+/**
+ * 从 JSON 文件加载迁移配置（浅合并，缺省回落默认值；路径缺失/损坏 → 默认全关）。
+ * 文件缺省为 null 时返回 DEFAULT（enabled=false，enableCoreOrders=false），
+ * 即生产保持零影响；显式配置 `enabled: true` + `overlay.enableCoreOrders: true`
+ * 才激活迁移执行。
+ */
+export function loadMigrationRuntimeConfig(configPath: string | null): MigrationRuntimeConfig {
+  if (configPath === null) return DEFAULT_MIGRATION_RUNTIME_CONFIG;
+  try {
+    if (!existsSync(configPath)) return DEFAULT_MIGRATION_RUNTIME_CONFIG;
+    const raw = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    return {
+      ...DEFAULT_MIGRATION_RUNTIME_CONFIG,
+      ...raw,
+      pace: { ...DEFAULT_MIGRATION_RUNTIME_CONFIG.pace, ...(raw.pace as object ?? {}) },
+      corridor: { ...DEFAULT_MIGRATION_RUNTIME_CONFIG.corridor, ...(raw.corridor as object ?? {}) },
+      hold: { ...DEFAULT_MIGRATION_RUNTIME_CONFIG.hold, ...(raw.hold as object ?? {}) },
+      overlay: { ...DEFAULT_MIGRATION_RUNTIME_CONFIG.overlay, ...(raw.overlay as object ?? {}) },
+    } as MigrationRuntimeConfig;
+  } catch {
+    return DEFAULT_MIGRATION_RUNTIME_CONFIG;
+  }
+}

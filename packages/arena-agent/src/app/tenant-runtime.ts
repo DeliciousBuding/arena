@@ -40,7 +40,7 @@ import { migrationOverlay as applyMigrationOverlay } from "../migration/overlay.
 import { migrationPlanPath, readMigrationPlan } from "../migration/io.ts";
 import { appendMigrationReport, migrationReportPath } from "../migration/report.ts";
 import { coreReceptiveRatio, idealEtaTicks } from "../migration/pacing.ts";
-import { DEFAULT_MIGRATION_RUNTIME_CONFIG, type MigrationRuntimeConfig } from "../migration/config.ts";
+import { loadMigrationRuntimeConfig, type MigrationRuntimeConfig } from "../migration/config.ts";
 import { checkAndMirrorOfficialManual, type OfficialManualMirror, type ReceiptLike } from "../command-plane/official-bridge.ts";
 import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
@@ -1286,7 +1286,11 @@ export async function runTenant(
     };
 
     // 8) 主循环（signal/maxTicks → 终止 turns → 当前 Tick 提交完成后自然停止）
-    const migrationConfig: MigrationRuntimeConfig = DEFAULT_MIGRATION_RUNTIME_CONFIG;
+    // 迁移运行时配置（migration-system-v1 §7）：默认全关；显式注入
+    // ARENA_MIGRATION_CONFIG=<json 路径> 才激活（enabled+enableCoreOrders 置 true）。
+    const migrationConfig: MigrationRuntimeConfig = loadMigrationRuntimeConfig(
+      process.env.ARENA_MIGRATION_CONFIG ?? null,
+    );
     let lastReportTick = 0;
     let lastReportPhase: string | null = null;
     const loopPromise = runTenantLoop({
