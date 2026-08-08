@@ -39,12 +39,14 @@ import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverri
 import { shopProducts, shopCookie, shopMe, shopOrders, shopOrder } from "./lib/shop.ts";
 import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/redeem-log.ts";
 import { appendArbitration, clearArbitration, listArbitrations } from "./lib/arbitration.ts";
+import { loadDecisionAudit, warmDecisionAudit } from "./lib/decision-audit.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
 const WEB_DIR = join(HERE, "web", "dist"); // React 构建产物（vite build --base=/app/）
 const PORT = Number(process.env.COMMAND_CENTER_PORT ?? 8787);
+const DEFAULT_AUDIT_WINDOW = 3000;
 
 // 兑换申请记录：落盘 JSONL 持久化（2026-08-08，重启不丢），内存只做最近窗口缓存
 const redeemLog: RedeemRecord[] = loadRedeemHistory();
@@ -312,6 +314,18 @@ app.get("/api/commands", (c) => {
   const store = reconcileHumanStore(tenant);
   return c.json({ ...store, telemetry: latestHumanOverride(tenant), stuck: stuckRecord(tenant) });
 });
+app.get("/api/audit/decisions", (c) => {
+  // 决策-结果审计（2026-08-08，综合决策 + 日志系统）：telemetry decision/outcome
+  // 尾部聚合——动作构成/意图 top/planHash 振荡/停摆 tick + 交付成功率/经济吞吐/
+  // 满载率/人类覆盖执行。?tenant=all|tN&window=3000。30s 缓存 + 启动预热。
+  const tenant = c.req.query("tenant") ?? "all";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  const w = Number(c.req.query("window") ?? DEFAULT_AUDIT_WINDOW);
+  const window = Number.isFinite(w) ? Math.min(Math.max(w, 200), 20_000) : DEFAULT_AUDIT_WINDOW;
+  return c.json(loadDecisionAudit(tenant, window));
+});
 app.get("/api/audit/human", (c) => {
   // 人类指挥审计（2026-08-08）：手操流水（指令/目标/模式/清空/删除），
   // 重启不丢——复盘"什么时候手操了什么"。?tenant=tN&limit=100。
@@ -505,6 +519,8 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   // （setTimeout 0，不阻塞首次 listen），不进周期循环；过期后按请求惰性
   // 刷新（内部 30s 缓存，原有行为）。周期循环只做轻量刷新。
   setTimeout(() => { try { loadAllianceIntel(); } catch { /* 忽略 */ } }, 0);
+  // 决策审计（重 I/O 尾部截读）：启动预热一次，不进 30s 周期循环（请求惰性 30s 缓存）。
+  setTimeout(() => { try { warmDecisionAudit(); } catch { /* 忽略 */ } }, 50);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
