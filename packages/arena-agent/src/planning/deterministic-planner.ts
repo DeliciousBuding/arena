@@ -703,6 +703,11 @@ export class DeterministicPlanner implements PlanProvider {
       : { ...snapshot, units: snapshot.units.filter((unit) => !safetyVetoIds.has(unit.id)) };
     // 迁移后测绘期（worker-mission-v1）：核心位置变化 → 未来 surveyBurstTicks 内
     // 保证 ≥ surveyWorkerFloor 个勘探者（新家园先测绘再采集，防搬进 0 资源区空转）。
+    // migration-scout（2026-08-08 修复）：记录上一帧核心位置——必须在下方
+    // previousCorePosition 覆盖前捕获，否则 EXPLORE 分支的 dx/dy 恒为 0，迁移
+    // 方向永远算不出（56a0172/33c7517 原实现双因失效：previousCorePosition 在
+    // planner.plan 前被更新为当前值 + coreState 为 MOVING 的判断在决策时刻几乎恒 false）。
+    const prevCorePosition = this.previousCorePosition;
     const corePosition = input.state.core?.position ?? null;
     if (
       corePosition !== null &&
@@ -740,12 +745,13 @@ export class DeterministicPlanner implements PlanProvider {
         // t3 迁移期"worker 探索测绘"直接服务新家园；核心 NORMAL 时零影响。
         if (
           this.missionConfig.migrationScout === true &&
-          snapshot.coreState === "MOVING" &&
-          snapshot.corePosition !== null
+          snapshot.corePosition !== null &&
+          prevCorePosition !== null &&
+          (snapshot.corePosition[0] !== prevCorePosition[0] || snapshot.corePosition[1] !== prevCorePosition[1])
         ) {
           const worker = snapshot.units.find((u: any) => u.id === assignment.unitId);
           const dir = worker
-            ? migrationScoutDirection(worker.position, snapshot.corePosition, this.previousCorePosition, snapshot.obstacleCells)
+            ? migrationScoutDirection(worker.position, snapshot.corePosition, prevCorePosition, snapshot.obstacleCells)
             : null;
           if (dir !== null) {
             unitActions[assignment.unitId] = { type: "MOVE", direction: dir };
