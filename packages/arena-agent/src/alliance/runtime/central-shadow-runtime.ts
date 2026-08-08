@@ -12,9 +12,26 @@ export interface CentralAllianceShadowOptions {
   readonly send: (tenantId: string, message: Serializable) => boolean;
 }
 
+export interface CentralAllianceShadowView {
+  readonly enabled: boolean;
+  readonly available: true;
+  readonly mode: "ASSIST_ONLY";
+  readonly actionOwnership: "none";
+  readonly periodTicks: number;
+  readonly maxSkewTicks: number;
+  readonly expectedTenants: readonly string[];
+  readonly runtime: ReturnType<import("./supervisor-director.ts").SupervisorAllianceDirectorRuntime["stats"]>;
+  readonly revision: number;
+  readonly tick: number | null;
+  readonly frameTenants: readonly string[];
+  readonly frameTicks: Readonly<Record<string, number>>;
+  readonly snapshot: ReturnType<import("./shadow-policy-adapter.ts").ShadowPolicyAdapter["view"]>["snapshot"];
+  readonly policy: ReturnType<import("./shadow-policy-adapter.ts").ShadowPolicyAdapter["view"]>["policy"];
+}
+
 export interface CentralAllianceShadowRuntime {
   onChildMessage(transportTenantId: string, message: unknown): void;
-  view(): unknown;
+  view(): CentralAllianceShadowView;
 }
 
 export function createCentralAllianceShadowRuntime(options: CentralAllianceShadowOptions): CentralAllianceShadowRuntime {
@@ -61,15 +78,22 @@ export function createCentralAllianceShadowRuntime(options: CentralAllianceShado
       }
     },
     view() {
+      const policy = adapter.view();
       return {
         enabled: runtime.enabled,
-        mode: "ASSIST_ONLY",
-        actionOwnership: "none",
+        available: true as const,
+        mode: "ASSIST_ONLY" as const,
+        actionOwnership: "none" as const,
         periodTicks,
         maxSkewTicks,
         expectedTenants,
         runtime: runtime.stats(),
-        policy: adapter.view(),
+        revision: policy.revision,
+        tick: policy.tick,
+        frameTenants: policy.frameTenants,
+        frameTicks: policy.frameTicks,
+        snapshot: policy.snapshot,
+        policy: policy.policy,
       };
     },
   };
