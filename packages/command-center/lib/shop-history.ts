@@ -128,11 +128,11 @@ export function buildShopJournalLine(entries: readonly ShopHistoryEntry[]): stri
   if (entries.length < 2) return null;
   const first = entries[0];
   const last = entries[entries.length - 1];
-  const byId = new Map<string, { name: string; firstCost: number; lastCost: number; firstStock: number; lastStock: number }>();
+  const byId = new Map<string, { id: string; name: string; firstCost: number; lastCost: number; firstStock: number; lastStock: number }>();
   for (const e of entries) {
     for (const p of e.products) {
       const cur = byId.get(p.id);
-      if (!cur) byId.set(p.id, { name: p.name, firstCost: p.resourceCost, lastCost: p.resourceCost, firstStock: p.availableStock, lastStock: p.availableStock });
+      if (!cur) byId.set(p.id, { id: p.id, name: p.name, firstCost: p.resourceCost, lastCost: p.resourceCost, firstStock: p.availableStock, lastStock: p.availableStock });
       else { cur.lastCost = p.resourceCost; cur.lastStock = p.availableStock; }
     }
   }
