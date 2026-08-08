@@ -6,14 +6,27 @@
  * 并追加一行到 docs/progress/LOG.md。
  *
  * 用法：npx tsx scripts/archive-evidence.mts <record-dir> [--doc-root <path>]
- *   --doc-root 可选，覆盖文档根（默认脚本所在仓库根），测试/冒烟用。
+ *   --doc-root 可选，覆盖文档根（默认向上找含 docs/progress/LOG.md 的协调根），
+ *   测试/冒烟用。
  */
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
+/** 协调根 = 从本文件向上找第一个含 docs/progress/LOG.md 的目录（与 registry 同逻辑）。 */
+function findDocRoot(from: string): string {
+  let dir = from;
+  for (let depth = 0; depth < 12; depth += 1) {
+    if (existsSync(join(dir, "docs", "progress", "LOG.md"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error("doc root (docs/progress/LOG.md) not found");
+}
+
+const REPOSITORY_ROOT = findDocRoot(resolve(import.meta.dirname, ".."));
 const SUPPORTED_MODES = ["matrix", "version-compare", "ffa"] as const;
 type Mode = (typeof SUPPORTED_MODES)[number];
 type Recommend = "promote" | "reject" | "hold" | "record";
