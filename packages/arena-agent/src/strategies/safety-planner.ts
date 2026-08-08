@@ -30,6 +30,7 @@ import { type CoreHuntTarget, World } from "../domain/world.ts";
 import {
   assessThreat,
   advanceRecentAttack,
+  squadContactThisTick,
   coreDamagedThisTick,
   projectedDamageOnCore,
   type ThreatAssessment,
@@ -908,6 +909,10 @@ export class SafetyPlanner {
         visibleEnemies: state.visibleEnemies,
         enemyHints: this.world.enemyHints(),
         coreDamagedThisTick: coreDamagedThisTick(state.events),
+        squadContactThisTick: squadContactThisTick(
+          state.events,
+          new Set([...state.vanguards, ...state.rangers].map((u) => u.id)),
+        ),
         obstacles: this.world.obstacles(state.obstacleCells),
         resourceCells: state.resourceCells,
         coreWatch: this.world.coreWatchTargets(this.config.coreThreatWatchTicks ?? CORE_THREAT_WATCH_TICKS),

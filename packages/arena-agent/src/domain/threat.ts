@@ -140,6 +140,11 @@ export function assessThreat(options: {
    *  ENGAGED 是 Core 级威胁；远程 worker 被摸不得升级为 Core 级
    *  （2026-08-07 竞品 recent_attack vs recent_core_attack 分账对齐）。 */
   readonly coreDamagedThisTick: boolean;
+  /** 本 tick 我方战斗单位（Vanguard/Ranger）是否受击（UNIT_DAMAGED 且 actor 为
+   *   我方战斗单位）——对齐竞品 local_squad_contact：前线接敌即升级 ENGAGED，
+   *   即使核心未受击（t2 信标埋伏 1V+3R 被击杀实证：Vanguard 被围时威胁仍
+   *   NORMAL，守军不增援）。 */
+  readonly squadContactThisTick?: boolean;
   /** 障碍格（逃逸硬块；World.obstacles 合并视野障碍——默认空 = 无硬块）。 */
   readonly obstacles?: ReadonlySet<string>;
   /** 资源格（Core 不可入的逃逸硬块——默认空 = 无硬块）。 */
@@ -161,6 +166,7 @@ export function assessThreat(options: {
     visibleEnemies,
     enemyHints,
     coreDamagedThisTick,
+    squadContactThisTick = false,
     obstacles = new Set<string>(),
     resourceCells = new Set<string>(),
     coreWatch = [],
@@ -198,6 +204,19 @@ export function assessThreat(options: {
 
   if (coreDamagedThisTick) {
     return { level: "ENGAGED", reason: "damaged", closingEnemies, movingEnemies, axes: axes.size, confirmedPursuit };
+  }
+  // 前线接敌（对齐竞品 local_squad_contact）：我方战斗单位本 tick 受击——
+  // 即使核心未受击也升级 ENGAGED，触发守军增援/防御姿态（t2 信标埋伏被击杀
+  // 实证：Vanguard 前线被围时威胁仍 NORMAL，后方不反应）。
+  if (squadContactThisTick) {
+    return {
+      level: "ENGAGED",
+      reason: "squad_contact",
+      closingEnemies,
+      movingEnemies,
+      axes: axes.size,
+      confirmedPursuit,
+    };
   }
   // 受击记忆保持（对齐竞品 recent_core_attack）：Core 曾在记忆窗口内受击且未过期——
   // 即使当前无可见敌也保持 ENGAGED，防“打完就跑后立刻放松”（t3 丢局实证：受击后
@@ -268,6 +287,21 @@ export function damagedThisTick(events: readonly { readonly eventType: string }[
 
 /** 我方 Core 是否受击（仅 CORE_DAMAGED / CORE_DESTROYED）——ENGAGED 判定
  *  用此函数：Core 级威胁与单位级受击分离（竞品 recent_core_attack 对照）。 */
+/** 本 tick 我方战斗单位（Vanguard/Ranger）是否受击——local_squad_contact 判定：
+ *  从 resolution events 过滤 UNIT_DAMAGED 且 actorId 属于我方战斗单位。
+ *  WORKER 受击不升级 Core 级威胁（无攻击力的经济单位，由 Vanguard 清剿处理）。 */
+export function squadContactThisTick(
+  events: readonly { readonly eventType: string; readonly actorId: string | null }[],
+  combatUnitIds: ReadonlySet<string>,
+): boolean {
+  return events.some(
+    (event) =>
+      event.eventType === "UNIT_DAMAGED" &&
+      event.actorId !== null &&
+      combatUnitIds.has(event.actorId),
+  );
+}
+
 export function coreDamagedThisTick(events: readonly { readonly eventType: string }[]): boolean {
   return events.some(
     (event) =>
