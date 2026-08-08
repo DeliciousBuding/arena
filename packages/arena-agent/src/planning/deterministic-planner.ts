@@ -515,6 +515,8 @@ export class DeterministicPlanner implements PlanProvider {
   private spawnReserve: number;
   /** 使命层配置（worker-mission-v1）：值层置信 + SURVEYOR 角色仲裁。 */
   private missionConfig: MissionConfig;
+  /** 矿刷新预测（Phase 2，G3）：cellKey → dueInTicks；tenant-runtime 周期刷新注入。 */
+  private refillPredictions: ReadonlyMap<string, number> = new Map();
   /** 迁移后测绘期截止 tick（核心位置变化时刷新为 tick + surveyBurstTicks）。 */
   private surveyBurstUntilTick = 0;
   private previousCorePosition: Position | null = null;
@@ -581,6 +583,12 @@ export class DeterministicPlanner implements PlanProvider {
     this.patrolPlanner.replaceThreatProfiles(profiles);
   }
 
+  /** 热刷新矿刷新预测（Phase 2，G3 数据管道）：替换式更新（tenant-runtime 周期
+   *  重读 survey-db），decide() 并入快照——死矿剔除 + 即将刷新格加成即时生效。 */
+  replaceRefillPredictions(predictions: ReadonlyMap<string, number>): void {
+    this.refillPredictions = predictions;
+  }
+
   /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
    *  保留 World/巡逻/攻坚记忆（不重建 planner）。调用方先校验变体合法性。 */
   updateConfig(
@@ -617,6 +625,8 @@ export class DeterministicPlanner implements PlanProvider {
     const snapshot: PlanningSnapshot = {
       ...rawSnapshot,
       obstacleCells: this.fallbackPlanner.world.obstacles(rawSnapshot.obstacleCells),
+      // Phase 2（G3 数据管道）：矿刷新预测并入快照——死矿剔除 + 即将刷新加成。
+      refillPredictions: this.refillPredictions,
     };
     // 迁移后测绘期（worker-mission-v1）：核心位置变化 → 未来 surveyBurstTicks 内
     // 保证 ≥ surveyWorkerFloor 个勘探者（新家园先测绘再采集，防搬进 0 资源区空转）。
