@@ -25,6 +25,7 @@ export type TenantLifecycle =
 
 export type SupervisorEventType =
   | "spawned"
+  | "restarting"
   | "ready"
   | "readiness_lost"
   | "exited"
@@ -79,14 +80,17 @@ export interface TenantSupervisorOptions {
   readonly onEvent?: (event: SupervisorEvent) => void;
   /** Raw child IPC observation seam; caller must runtime-guard message type. */
   readonly onChildMessage?: (tenantId: string, message: unknown) => void;
+  /** 单租户意外退出自动重启（2026-08-08）：延迟 ms（缺省 5000）与上限（缺省 3）。 */
+  readonly respawnDelayMs?: number;
+  readonly respawnLimit?: number;
   readonly shutdownTimeoutMs?: number;
   readonly eventLogPath?: string;
 }
 
 interface TenantChild {
   readonly spec: TenantSpec;
-  readonly child: ChildProcess;
-  readonly pid: number;
+  child: ChildProcess;
+  pid: number;
   exitCode: number | null;
   exitSignal: string | null;
   exited: boolean;
@@ -94,6 +98,8 @@ interface TenantChild {
   lifecycle: TenantLifecycle;
   everReady: boolean;
   lastError: string | null;
+  /** 意外退出自动重启计数（超限交 watchdog 全量恢复）。 */
+  respawnCount: number;
 }
 
 interface LockContent {
@@ -201,45 +207,8 @@ export class TenantSupervisor {
           this.dataRoot,
           ...(this.options.tenantArgs ?? []),
         ];
-        const child = (this.options.spawnChild ?? ((argv) => spawnChildProcess(this.repoRoot, argv)))(args, spec);
-        if (!Number.isInteger(child.pid) || (child.pid ?? 0) <= 0) {
-          throw new Error(`spawned child has no valid pid for tenant ${spec.tenantId}`);
-        }
-        const entry: TenantChild = {
-          spec,
-          child,
-          pid: child.pid!,
-          exitCode: null,
-          exitSignal: null,
-          exited: false,
-          terminating: false,
-          lifecycle: "starting",
-          everReady: false,
-          lastError: null,
-        };
+        const entry = this.spawnTenant(spec, null);
         this.children.set(spec.tenantId, entry);
-        child.stdout?.on("data", (chunk) => process.stdout.write(`[${spec.tenantId}] ${chunk}`));
-        child.stderr?.on("data", (chunk) => process.stderr.write(`[${spec.tenantId}] ${chunk}`));
-        child.on("message", (message) => {
-          try { this.options.onChildMessage?.(spec.tenantId, message); } catch {}
-        });
-        child.on("error", (error) => {
-          entry.lastError = error.message;
-          if (!entry.terminating) entry.lifecycle = "failed";
-          this.emit("error", spec.tenantId, error.message, entry.pid);
-        });
-        child.on("exit", (code, signal) => {
-          entry.exitCode = code;
-          entry.exitSignal = signal;
-          entry.exited = true;
-          entry.lifecycle = entry.terminating || code === 0 ? "exited" : "failed";
-          if (!entry.terminating && code !== 0) {
-            entry.lastError = `unexpected exit code=${String(code)} signal=${String(signal)}`;
-          }
-          this.emit("exited", spec.tenantId, undefined, entry.pid, code, signal);
-          this.notifyExitWaiters();
-        });
-        this.emit("spawned", spec.tenantId, undefined, entry.pid, null, null);
         results.set(spec.tenantId, true);
       }
       return results;
@@ -248,6 +217,110 @@ export class TenantSupervisor {
       this.emit("error", "cluster", `partial start rollback: ${message}`);
       await this.shutdown();
       throw error;
+    }
+  }
+
+  /** 构建单租户启动参数（start/respawn 共用）。 */
+  private buildTenantArgs(spec: TenantSpec): string[] {
+    return [
+      "--config",
+      spec.configPath,
+      "--repoRoot",
+      this.repoRoot,
+      "--data-root",
+      this.dataRoot,
+      ...(this.options.tenantArgs ?? []),
+    ];
+  }
+
+  /** Spawn 一个租户 child 并挂监听（start 与 respawn 共用）。previous 非空时
+   *  复用 entry 对象（新 child 接管），children map 引用保持稳定。 */
+  private spawnTenant(spec: TenantSpec, previous: TenantChild | null): TenantChild {
+    const args = this.buildTenantArgs(spec);
+    const child = (this.options.spawnChild ?? ((argv) => spawnChildProcess(this.repoRoot, argv)))(args, spec);
+    if (!Number.isInteger(child.pid) || (child.pid ?? 0) <= 0) {
+      throw new Error(`spawned child has no valid pid for tenant ${spec.tenantId}`);
+    }
+    const entry: TenantChild = previous ?? {
+      spec,
+      child,
+      pid: child.pid!,
+      exitCode: null,
+      exitSignal: null,
+      exited: false,
+      terminating: false,
+      lifecycle: "starting",
+      everReady: false,
+      lastError: null,
+      respawnCount: 0,
+    };
+    if (previous !== null) {
+      entry.child = child;
+      entry.pid = child.pid!;
+      entry.exitCode = null;
+      entry.exitSignal = null;
+      entry.exited = false;
+      entry.lifecycle = "starting";
+    }
+    child.stdout?.on("data", (chunk) => process.stdout.write(`[${spec.tenantId}] ${chunk}`));
+    child.stderr?.on("data", (chunk) => process.stderr.write(`[${spec.tenantId}] ${chunk}`));
+    child.on("message", (message) => {
+      try { this.options.onChildMessage?.(spec.tenantId, message); } catch {}
+    });
+    child.on("error", (error) => {
+      entry.lastError = error.message;
+      if (!entry.terminating) entry.lifecycle = "failed";
+      this.emit("error", spec.tenantId, error.message, entry.pid);
+    });
+    child.on("exit", (code, signal) => {
+      entry.exitCode = code;
+      entry.exitSignal = signal;
+      entry.exited = true;
+      entry.lifecycle = entry.terminating || code === 0 ? "exited" : "failed";
+      const finalExit = entry.terminating || code === 0 || !this.scheduleRespawn(entry, code, signal);
+      if (finalExit) {
+        if (!entry.terminating && code !== 0) {
+          entry.lastError = `unexpected exit code=${String(code)} signal=${String(signal)}`;
+        }
+        this.emit("exited", spec.tenantId, undefined, entry.pid, code, signal);
+        this.notifyExitWaiters();
+      }
+    });
+    this.emit("spawned", spec.tenantId, undefined, entry.pid, null, null);
+    return entry;
+  }
+
+  /** 单租户意外退出自动重启（2026-08-08）：避免单线死 → watchdog 全量重启 →
+   *  空窗（t3 worker 减员即发生在该空窗）。带重启上限防崩溃循环；超限交
+   *  watchdog 全量恢复。返回 true = 已接管（不触发 final-exit 通知）。 */
+  private scheduleRespawn(entry: TenantChild, code: number | null, signal: string | null): boolean {
+    if (entry.terminating || this.shuttingDown) return false;
+    const limit = this.options.respawnLimit ?? 3;
+    if (entry.respawnCount >= limit) {
+      entry.lastError = `unexpected exit code=${String(code)} signal=${String(signal)}; respawn limit ${limit} reached`;
+      return false;
+    }
+    entry.respawnCount += 1;
+    entry.lifecycle = "starting";
+    this.emit("restarting", entry.spec.tenantId, `auto-respawn ${entry.respawnCount}/${limit} after exit code=${String(code)}`, entry.pid);
+    const delayMs = this.options.respawnDelayMs ?? 5000;
+    setTimeout(() => { void this.respawnTenant(entry); }, delayMs).unref?.();
+    return true;
+  }
+
+  /** 延迟后重建租户 child（entry 复用；锁由 run-tenant 自检/自清，异常时交
+   *  watchdog 全量恢复）。 */
+  private async respawnTenant(entry: TenantChild): Promise<void> {
+    if (entry.terminating || this.shuttingDown) return;
+    try {
+      this.spawnTenant(entry.spec, entry);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      entry.lastError = message;
+      entry.lifecycle = "failed";
+      this.emit("error", entry.spec.tenantId, `respawn failed: ${message}`, entry.pid);
+      this.emit("exited", entry.spec.tenantId, undefined, entry.pid, null, null);
+      this.notifyExitWaiters();
     }
   }
 

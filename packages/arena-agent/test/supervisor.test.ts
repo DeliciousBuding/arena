@@ -374,17 +374,32 @@ test("unresponsive child escalates through injected process-tree killer", async 
   }
 });
 
-test("unexpected nonzero exit becomes failed and not ready", async () => {
+test("unexpected nonzero exit auto-respawns (not ready during restart)", async () => {
   const repo = makeTempRepo();
   const children = new Map<string, FakeChild>();
+  const events: string[] = [];
   try {
-    const supervisor = new TenantSupervisor({ repoRoot: repo.root, configs: ["t1.json"], spawnChild: fakeSpawn(children) });
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      configs: ["t1.json"],
+      spawnChild: fakeSpawn(children),
+      respawnDelayMs: 0,
+      onEvent: (event) => events.push(`${event.type}:${event.tenantId}`),
+    });
     await supervisor.start();
-    children.get("t1")!.emitExit(3, null);
+    const first = children.get("t1")!;
+    first.emitExit(3, null);
+    await waitUntil(() => events.includes("restarting:t1"));
+    await waitUntil(() => children.get("t1") !== first); // respawn 完成（setTimeout 0 异步）
     const status = supervisor.status()[0];
-    assert.equal(status.lifecycle, "failed");
-    assert.match(status.lastError ?? "", /unexpected exit/);
+    assert.notEqual(status.lifecycle, "ready", "restarting tenant is not ready");
     assert.equal(supervisor.isReady(), false);
+    // 新 child 接管后写锁 → ready（自动重启闭环）
+    writeLock(supervisor.preflight()[0], children.get("t1")!.pid);
+    await waitUntil(() => supervisor.status()[0].lifecycle === "ready");
+    assert.equal(supervisor.isReady(), true);
+    for (const child of children.values()) child.autoExitOnSend = true;
+    await supervisor.shutdown();
   } finally {
     repo.cleanup();
   }
@@ -864,6 +879,83 @@ test("Supervisor + central Alliance shadow: frames -> ASSIST directives -> ACK, 
     assert.equal(view.runtime.ackRecords.filter((r: any) => r.state === "accepted").length, 2);
     assert.ok(view.policy.missions.length >= 2);
 
+    for (const child of children.values()) child.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    repo.cleanup();
+  }
+});
+
+
+/** 单租户意外退出自动重启（2026-08-08）：避免单线死 → watchdog 全量重启 → 空窗
+ *  （t3 worker 减员即发生在该空窗）。带重启上限防崩溃循环。 */
+test("single tenant unexpected exit auto-respawns (with limit)", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  const events: string[] = [];
+  const supervisor = new TenantSupervisor({
+    repoRoot: repo.root,
+    configs: ["t1.json"],
+    spawnChild: fakeSpawn(children),
+    respawnDelayMs: 0,
+    respawnLimit: 3,
+    onEvent: (event) => events.push(`${event.type}:${event.tenantId}`),
+  });
+  try {
+    await supervisor.start();
+    const first = children.get("t1")!;
+    assert.ok(first, "initial child spawned");
+    const spec = supervisor.preflight()[0];
+    writeLock(spec, first.pid);
+    await waitUntil(() => supervisor.status()[0].lifecycle === "ready");
+
+    first.emitExit(1, null); // 意外失败（非 terminating）
+    await waitUntil(() => {
+      const child = children.get("t1")!;
+      return child !== first && events.includes("restarting:t1");
+    });
+    assert.ok(events.includes("restarting:t1"), `restarting event emitted, got=${events.join(",")}`);
+    assert.notEqual(supervisor.status()[0].lifecycle, "failed", "respawned child should not be failed");
+
+    writeLock(spec, children.get("t1")!.pid);
+    await waitUntil(() => supervisor.status()[0].lifecycle === "ready");
+    assert.equal(supervisor.status()[0].pid, children.get("t1")!.pid, "new child owns tenant lock");
+
+    for (const child of children.values()) child.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    repo.cleanup();
+  }
+});
+
+/** 自动重启超限后放弃（交 watchdog 全量恢复），并正常通知 exit waiters。 */
+test("auto-respawn gives up after limit and reports final exit", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  const events: string[] = [];
+  const supervisor = new TenantSupervisor({
+    repoRoot: repo.root,
+    configs: ["t1.json"],
+    spawnChild: fakeSpawn(children),
+    respawnDelayMs: 0,
+    respawnLimit: 1,
+    onEvent: (event) => events.push(`${event.type}:${event.tenantId}`),
+  });
+  try {
+    await supervisor.start();
+    const first = children.get("t1")!;
+    writeLock(supervisor.preflight()[0], first.pid);
+    await waitUntil(() => supervisor.status()[0].lifecycle === "ready");
+
+    const exitedPromise = supervisor.waitForAllExited();
+    first.emitExit(1, null);
+    // limit=1：第一次退出触发一次 respawn，新 child 再退出 → 放弃
+    await waitUntil(() => children.get("t1") !== first);
+    const second = children.get("t1")!;
+    second.emitExit(1, null);
+    await exitedPromise;
+    assert.equal(supervisor.status()[0].lifecycle, "failed", "limit reached → failed (watchdog handles)");
+    assert.match(events.join(","), /restarting:t1/, "restart attempted before giving up");
     for (const child of children.values()) child.autoExitOnSend = true;
     await supervisor.shutdown();
   } finally {
