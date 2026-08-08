@@ -156,3 +156,79 @@ mapEngine.ts 对应函数。
   web build）与 `npm run test:regression` 转发；README 增「开发与测试流程」节，
   与 CI `command-center` job 等价。
 
+
+
+## 9. 2026-08-08 续：联盟态势 tab（/api/alliance/snapshot + /api/deeds/journal）
+
+**背景**：用户要求"4 租户资源展示 + 总体大地图 + 实时决策"。`/api/alliance/snapshot`
+（并行 agent 已提交）此前前端未消费——本 tab 将其全量接入，成为右栏第 5 个面板。
+
+### 9.1 实现（commit 待填，2026-08-08）
+- 新组件 `web/src/components/right/SituationPanel.tsx`：15s 轮询 `Promise.all`
+  拉 `/api/alliance/snapshot` + `/api/deeds/journal`，右上 ↻ 手动刷新。
+- **全局条**：当前 tick / 联盟金库（treasuryTenant 色点）/ 可见交战 / 近期遭遇 /
+  历史目击 / 估算兵力（counts）。
+- **事迹叙事卡**：journal headline（★星级 + 标题 + 详情）+ 联盟 narrative；有坐标时
+  点击跳转大地图定位（engine.jumpTo + toast）。
+- **4 租户态势卡**：资源（含载货）/ 人口 / 兵力构成（工/锋/射）/ 核心 HP·护盾 mini-bar /
+  核心坐标 / 状态徽章；每卡内嵌 **8 方向威胁扇区**（threatSummaries 的
+  N/NE/E/SE/S/SW/W/NW）：背景白 alpha ∝ score、敌核数字号随距离缩放（视觉权重=距离倒数）、
+  <32 格 warn / <18 格 danger 描边。
+- **敌情目击清单**：sightings 按 lastSeenTick 倒序前 24 条：类型徽章（敌核/单位）/
+  归属玩家/目击租户色点/可见·记忆徽章/坐标/距今 tick；**点击整行跳转地图定位**。
+- 无左侧竖色条；租户色仅小色点/身份语义——对齐 DESIGN.md。
+
+### 9.2 配套清理
+- `public/style.css`：新增 `.sit-*` 全套（面板/卡片/扇区/目击行）+
+  `.rp-head/.eyebrow/.rp-sub` 通用头部类（修参谋建议面板此前未样式化的头部）。
+- **移除 `.adv-item.adv-*` 左侧 2px 竖色条**（用户明确"卡片不要左侧竖着的彩色条"，
+  DESIGN.md 红线"禁止左侧竖条"）——严重度改由 `.adv-sev` 胶囊表达，hover 提升不变。
+
+### 9.3 验证证据（Playwright 冒烟，本地 8787，headless chromium）
+- 联盟态势 tab：4 张租户卡 / 32 个威胁扇区格 / 24 条目击行 / 5 全局 chips / 1 事迹卡，
+  全部真实数据（如 t1 资源 116 人口 24 工11锋7射6；T1 NW 扇区 9 敌核 最近 21 格）。
+- 参谋建议 tab 切换正常（6 条建议，左竖条已移除）。
+- 零 console/pageerror；`npm run check:all`（server tsc + web typecheck + vite build）全绿；
+  dist 已构建，服务 /app/ 直接托管新包（index-Bcv1IvGf.js）。
+
+
+### 9.4 决策流「事迹」tab（commit a18aed1）
+- StreamPane 新增「事迹」tab：纯前端 30s 轮询 `/api/deeds/journal`，不经过引擎 stream
+  状态机（`prefs.tab` 白名单加 `deeds`，同步 effect 跳过 deeds，避免干扰决策流轮询）。
+- 事迹行 = 租户 / tick / 标题 / 详情 / ★星级；有坐标的行可点击 → `engine.jumpTo` +
+  toast 定位（敌核摧毁 / 夺取核心资源 / 敌情高浓度区 / 资源濒危等）。
+- 样式：`.st-badge.deed`（琥珀）/ `.deed-hot`（高危红）/ `.stream-line.clickable`。
+- 验证：check:all 全绿；Playwright 冒烟 30 事迹行 / 18 可点击 / 0 报错。
+
+
+### 9.5 偏好持久化合并修复（commit 7b0d45a）
+- **根因**：`StreamPane.savePrefs` 整体覆盖 `arena-cc-web.prefs`，而 `AppShell`
+  （leftCollapsed/rightCollapsed/rightTab）与 `Sidebar`（sec_* 分区开关）均合并写入
+  同一 key——折叠决策流/切 tab/切只看决策后刷新即丢布局偏好。
+- **修复**：savePrefs 读现有对象后 `{...all, collapsed, height, quiet, tab}` 合并回写。
+- **验证**：预置外壳/侧栏偏好 → 切两次流 tab → 偏好保留且刷新后仍在；回归 14/14。
+
+
+### 9.6 全局威胁扇区玫瑰图（2026-08-08）
+- **背景**：联盟态势 tab 的 8 方向威胁扇区数据（/api/alliance/snapshot threatSummaries）
+  此前只在右栏面板可读；指挥员在大地图上无法一眼看出"哪个方向敌核在逼近哪颗核心"。
+- **实现**（mapEngine.ts）：全局模式每 20s 拉 snapshot → 每己方核心按 8 方向画敌情扇区条
+  （长度/透明度 ∝ score，租户色身份语义），<32 格显示最近距离（黄）、<18 红；
+  随「敌情热区」图层开关显隐（复用 threat 层语义，不新增开关）。
+- **验证**：像素级确认玫瑰距离标签随敌情热区开关（heat 开 77 / 关 61 琥珀标签像素）；
+  回归新增「全局威胁玫瑰数据管道」断言（snapshot 已拉取）→ 15/15 全绿。
+
+
+### 9.7 联盟态势 ↔ 大地图聚焦闭环（2026-08-08）
+- 每张租户态势卡头部新增「聚焦」胶囊按钮 → `engine.toggleSolo(t)`：地图飞抵该租户
+  核心并进入 solo 态（HUD/资产/聚焦徽章全量加载）；再点同一按钮/按 G/Esc 返回全局。
+- 右栏面板数据与大地图操作第一次直接互连：看态势 → 一键下钻 → 可继续指挥。
+- 验证：聚焦 t2 → 徽章「T2 · 聚焦 ✕」/HUD 可见/缩放 ×12；再点返回全局；回归 15/15 全绿。
+
+
+### 9.8 态势扇区点击情报（2026-08-08）
+- 每张态势卡的 8 方向威胁扇区格（非空）可点击 → 地图定位该方向最近敌情：
+  优先用目击列表精确敌核坐标（entityKeys 匹配 sightings.ownerUsername），
+  无精确坐标则按「核心 + 方向向量 × nearestDistance」估算落点；toast 反馈。
+- 验证：点击 t1:N → toast「T1 N 方向最近敌情约 38 格（估算）」+ 画布跳图 + 0 报错；
+  回归 15/15 全绿。

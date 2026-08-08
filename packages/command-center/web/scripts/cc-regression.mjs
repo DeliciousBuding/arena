@@ -8,7 +8,7 @@
  *
  * 覆盖（全部安全/只读，人类指挥链会写后立即清除）：
  *   1. 页面加载零 console/pageerror
- *   2. 右栏四 tab（决策流/威胁情报/测绘/兑换码）渲染
+ *   2. 右栏六 tab（决策流/威胁情报/参谋建议/测绘/联盟态势/兑换码）渲染
  *   3. 决策流有数据（条数 > 0）
  *   4. 聚焦租户 → HUD + 舰队索引可见
  *   5. 计划箭头/意图标签层渲染（画布租户色像素 > 阈值）
@@ -68,15 +68,19 @@ async function main() {
     await sleep(8000);
     errs.length ? bad("页面加载零错误", errs.slice(0, 3).join(" | ")) : ok("页面加载零错误");
 
-    // 2) 右栏四 tab
+    // 2) 右栏六 tab
     const tabs = await page.$$eval(".rp-tab", (els) => els.map((e) => e.getAttribute("data-rp-tab")));
-    const want = ["logs", "intel", "survey", "redeem"];
-    JSON.stringify(tabs) === JSON.stringify(want) ? ok("右栏四 tab", tabs.join(",")) : bad("右栏四 tab", "got " + tabs.join(","));
+    const want = ["logs", "intel", "advice", "survey", "situation", "redeem"];
+    JSON.stringify(tabs) === JSON.stringify(want) ? ok("右栏六 tab", tabs.join(",")) : bad("右栏六 tab", "got " + tabs.join(","));
+
+    // 2b) 全局威胁玫瑰数据管道：/api/alliance/snapshot 被页面拉取（威胁扇区玫瑰数据源）
+    const snapReq = await page.evaluate(() => performance.getEntriesByType("resource").some((e) => e.name.includes("/api/alliance/snapshot")));
+    snapReq ? ok("全局威胁玫瑰数据管道", "snapshot 已拉取") : bad("全局威胁玫瑰数据管道", "未发现 snapshot 请求");
 
     // 3) 决策流有数据
-    for (const tab of ["logs", "intel", "survey", "redeem"]) {
+    for (const tab of ["logs", "intel", "advice", "survey", "situation", "redeem"]) {
       await page.click(`.rp-tab[data-rp-tab="${tab}"]`, { timeout: 4000 }).catch(() => {});
-      await sleep(tab === "intel" || tab === "survey" ? 4000 : 1000);
+      await sleep(tab === "intel" || tab === "survey" || tab === "situation" ? 4000 : 1000);
       const txt = await page.evaluate(() => (document.querySelector(".rp .rp-body")?.innerText ?? "").slice(0, 120));
       if (tab === "logs") {
         /条/.test(txt) ? ok("决策流有数据", txt.slice(0, 40)) : bad("决策流有数据", txt.slice(0, 40));

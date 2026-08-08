@@ -15,6 +15,12 @@ const TRANSIENT_MOVE_FAILURE_REASONS = new Set([
  *  防"幽灵资源"——记忆中的资源格实际已被采空/不再 refill。 */
 const RESOURCE_MEMORY_TTL_TICKS = 64;
 
+/** 核心迁移巡逻重置阈值（Chebyshev）：核心稳定（NORMAL）位置变化 ≥ 5 格视为
+ *  迁移——worker 的 patrolRing/patrolDirection 基于旧 Core 坐标系，迁移后
+ *  继续沿旧方位扫旧区域（t2 生产实证：核心东迁 14 格后 worker 聚集旧区域
+ *  x-44..-49、可见资源 0、全 WAIT 经济冻结）。核心 NORMAL 且位移 ≥ 阈值 →
+ *  重置 worker 巡逻记忆，让 worker 从新核心重新组织。 */
+const CORE_PATROL_RESET_THRESHOLD = 5;
 /** 信标位置历史长度上限（beaconGrab 防追标）：10 tick 窗口内 2+ 个不同位置 =
  *  信标在移动（敌方携带/漂移），窗口 20 足够判定且不拖内存。 */
 const BEACON_HISTORY_MAX = 20;
@@ -261,6 +267,12 @@ export class World {
     rangers: Set<string>;
     lastSeenTick: number;
   }>();
+  /** 核心最近一次稳定（NORMAL）位置——迁移检测基准。 */
+  private lastCoreStablePosition: Position | null = null;
+  /** 核心迁移触发 worker 巡逻重置的次数（telemetry/测试可读）。 */
+  corePatrolResetCount = 0;
+  /** 最近一次巡逻重置 tick（从未触发 = null）。 */
+  lastCorePatrolResetTick: number | null = null;
   /** 世界重置计数（tick 回退检测触发；决策层 telemetry/测试可读）。 */
   worldResetCount = 0;
   /** 最近一次世界重置发生时的 tick（从未重置 = null）。 */
@@ -281,6 +293,26 @@ export class World {
     return cleared;
   }
 
+  /** 核心迁移后重置 worker 巡逻记忆（2026-08-08，t2 生产实证）：
+   *  patrolRing/patrolStarted/patrolReturning 基于旧 Core 坐标系，核心迁移后
+   *  失真（worker 继续沿旧方位扫旧区域→资源枯竭区 WAIT）。仅重置巡逻状态，
+   *  保留 patrolDirection（worker 各自扇区）与绝对坐标 intel（资源/敌情/chunk）。
+   *  返回被重置条数。 */
+  resetWorkerPatrolMemories(): number {
+    let count = 0;
+    for (const memory of this.unitMemories.values()) {
+      if (memory.workerMode === "go_harvest") {
+        memory.workerMode = "patrol";
+        memory.harvestTarget = null;
+      }
+      memory.patrolRing = 0;
+      memory.patrolStarted = false;
+      memory.patrolReturning = false;
+      count += 1;
+    }
+    return count;
+  }
+
   observe(state: TickState): void {
     // 世界重置检测：tick 回退（服务器世界重置/异常）→ 全清本地记忆，避免幽灵障碍/资源
     if (this.tick > state.tick) {
@@ -297,6 +329,21 @@ export class World {
       this.lastWorldResetTick = state.tick;
     }
     this.tick = state.tick;
+    // 核心迁移巡逻重置（2026-08-08，t2 生产实证）：核心稳定位置显著变化
+    // （≥ 5 格 = 迁移）→ 重置 worker 巡逻记忆。仅 NORMAL 时检测/更新基准
+    // （MOVING 是迁移途中，不重置避免反复打断；到达稳定后一次性触发）。
+    if (state.core !== null && state.core.state === "NORMAL") {
+      const cp = state.core.position;
+      if (this.lastCoreStablePosition !== null &&
+          chebyshev(cp, this.lastCoreStablePosition) >= CORE_PATROL_RESET_THRESHOLD) {
+        const cleared = this.resetWorkerPatrolMemories();
+        if (cleared > 0) {
+          this.corePatrolResetCount += 1;
+          this.lastCorePatrolResetTick = state.tick;
+        }
+      }
+      this.lastCoreStablePosition = cp;
+    }
     this.beaconHistory.push({ tick: state.tick, position: state.beacon.position });
     if (this.beaconHistory.length > BEACON_HISTORY_MAX) this.beaconHistory.shift();
     for (const cell of state.obstacleCells) this.obstacleMemory.add(cell);
@@ -755,6 +802,25 @@ export class World {
     this.coreHuntMissingCount.delete(key);
     this.enemyCoreForceRecords.delete(key);
     return existed;
+  }
+
+  /** 旧核验证协议：DESTRUCTION_PARTICIPATION（CORE）事件同步清理 enemyMemory
+   *  （2026-08-08 生产实证 t1：敌核 3fc73555 在 [-632,-126] 被拆后 enemyMemory
+   *  的 CORE 条目残留 ~60 tick——ranger_memory_shot / vanguard_pressure_memory
+   *  读 enemyHints()（enemyMemory）而非 coreHuntTargets()，导致 Ranger 对死核格
+   *  空放枪（该格还站着己方 Vanguard，观感像打友军）、Vanguard 全吸到死核格
+   *  capacity_wait 卡死。摧毁清理必须两处同步。返回是否删除了条目。 */
+  forgetEnemyCoreAt(position: Position, id?: string | null): boolean {
+    const key = cellKey(position);
+    let removed = false;
+    for (const [memId, memory] of this.enemyMemory) {
+      if (memory.kind !== "CORE") continue;
+      if (cellKey(memory.position) === key || (id !== undefined && id !== null && memory.id === id)) {
+        this.enemyMemory.delete(memId);
+        removed = true;
+      }
+    }
+    return removed;
   }
 
   /** 旧核验证协议：视野覆盖确认缺失计数（2026-08-08，ref 对齐）——我方单位

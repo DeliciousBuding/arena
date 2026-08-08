@@ -16,6 +16,7 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   markSyncMeta,
   openSurveyDb,
+  recordNotableEvent,
   recordCoreSpend,
   recordResourceEvent,
   recordUnitBirth,
@@ -48,6 +49,7 @@ export interface SyncSummary {
   resources: number;
   obstacles: number;
   coreHunts: number;
+  notables: number;
 }
 
 interface CaseObjects {
@@ -118,11 +120,13 @@ export interface LifecycleEvents {
   harvests: { cell: string; tick: number; amount: number | null; actorId: string | null }[];
   harvestFails: { cell: string; tick: number; reason: string | null; actorId: string | null }[];
   spends: { kind: string; tick: number; amount: number; unitType: string | null; unitId: string | null }[];
+  /** 稀有事迹（★2-4：核心摧毁/夺取/信标/自爆/阵亡等）——持久化防 run 轮换丢失。 */
+  notables: { eventType: string; actorId: string | null; targetId: string | null; pos: { x: number; y: number } | null; amount: number | null; unitType: string | null }[];
 }
 
 /** 解析 case 的 after.events → 生命周期事件集（容错坏事件）。 */
 export function parseCaseLifecycle(raw: unknown, tick: number): LifecycleEvents {
-  const out: LifecycleEvents = { births: [], deaths: [], harvests: [], harvestFails: [], spends: [] };
+  const out: LifecycleEvents = { births: [], deaths: [], harvests: [], harvestFails: [], spends: [], notables: [] };
   if (typeof raw !== "object" || raw === null) return out;
   const after = (raw as { after?: { state?: { events?: unknown } } }).after?.state;
   if (typeof after !== "object" || after === null) return out;
@@ -182,10 +186,31 @@ export function parseCaseLifecycle(raw: unknown, tick: number): LifecycleEvents 
           unitId: typeof e.actor_id === "string" ? e.actor_id : null,
         });
       }
+    } else if (NOTABLE_TYPES.has(String(type))) {
+      // 稀有事迹（2026-08-08，审计 A4）：持久化，deeds 查库替代回扫
+      out.notables.push({
+        eventType: String(type),
+        actorId: typeof e.actor_id === "string" ? e.actor_id : null,
+        targetId: typeof e.target_id === "string" ? e.target_id : null,
+        pos,
+        amount: typeof vals.amount === "number" ? Math.round(vals.amount) : null,
+        unitType: typeof vals.unit_type === "string" ? vals.unit_type : null,
+      });
     }
   }
   return out;
 }
+
+/** 稀有事迹事件类型（★2-4 叙事；★1 噪声不入库，deeds 从扫描/热区取）。 */
+const NOTABLE_TYPES = new Set([
+  "CORE_DESTROYED",
+  "CORE_RESOURCES_CAPTURED",
+  "CORE_RESOURCE_OVERFLOW_DESTROYED",
+  "PICKUP_BEACON_SUCCEEDED",
+  "DROP_BEACON_SUCCEEDED",
+  "SELF_DESTRUCT",
+  "UNIT_DESTROYED",
+]);
 
 /** 同步一个租户的全部（或最新）calibration run 到测绘库。返回汇总。 */
 export function syncTenantSurvey(
@@ -195,7 +220,7 @@ export function syncTenantSurvey(
 ): SyncSummary {
   const db = options.db ?? openSurveyDb(dataRoot, tenant, true);
   const calDir = join(dataRoot, "runtime", tenant, "calibration");
-  const summary: Mutable<SyncSummary> = { tenant, runs: 0, cases: 0, resources: 0, obstacles: 0, coreHunts: 0 };
+  const summary: Mutable<SyncSummary> = { tenant, runs: 0, cases: 0, resources: 0, obstacles: 0, coreHunts: 0, notables: 0 };
   if (!existsSync(calDir)) return summary;
   const runDirs = readdirSync(calDir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
@@ -260,6 +285,9 @@ export function syncTenantSurvey(
       for (const h of lc.harvests) recordResourceEvent(db, h.cell, h.tick, "HARVEST_SUCCEEDED", null, h.amount, h.actorId);
       for (const f of lc.harvestFails) recordResourceEvent(db, f.cell, f.tick, "HARVEST_FAILED", f.reason, null, f.actorId);
       for (const s of lc.spends) recordCoreSpend(db, s.kind, s.tick, s.amount, s.unitType, s.unitId);
+      for (const n of lc.notables) {
+        summary.notables += recordNotableEvent(db, { tenant, tick, eventType: n.eventType, actorId: n.actorId, targetId: n.targetId, x: n.pos?.x ?? null, y: n.pos?.y ?? null, amount: n.amount, unitType: n.unitType });
+      }
       if (tick > maxTick) maxTick = tick;
       casesInRun += 1;
     }

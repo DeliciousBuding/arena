@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS units_seen (
   unit_type TEXT NOT NULL,
   controlled INTEGER NOT NULL,
   tick INTEGER NOT NULL,
+  x INTEGER,
+  y INTEGER,
   PRIMARY KEY (cell, tick)
 );
 CREATE TABLE IF NOT EXISTS sync_meta (
@@ -104,6 +106,10 @@ CREATE TABLE IF NOT EXISTS sync_meta (
 );
 CREATE INDEX IF NOT EXISTS idx_resources_last_seen ON resources(last_seen_tick);
 CREATE INDEX IF NOT EXISTS idx_core_hunts_last_seen ON core_hunts(last_seen_tick);
+-- 单位目击热区查询索引（2026-08-08，数据架构审计 A3）：敌情热区
+-- 按 controlled=0 全表扫（t1 15 万行）——加 (controlled, tick) 索引；
+-- CREATE INDEX IF NOT EXISTS 幂等，下次 openSurveyDb 自动生效。
+CREATE INDEX IF NOT EXISTS idx_units_seen_controlled_tick ON units_seen(controlled, tick);
 
 -- 矿物生命周期事件（2026-08-08）：矿格 × tick 的采集/失败序列
 CREATE TABLE IF NOT EXISTS resource_events (
@@ -155,7 +161,24 @@ CREATE TABLE IF NOT EXISTS chunks (
   chunk_key TEXT PRIMARY KEY,
   last_seen_tick INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_chunks_last_seen ON chunks(last_seen_tick);`;
+CREATE INDEX IF NOT EXISTS idx_chunks_last_seen ON chunks(last_seen_tick);
+
+-- 稀有事迹持久化（2026-08-08，数据架构审计 A4）：CORE_DESTROYED/夺取/信标/
+-- 自爆/阵亡等——calibration run 轮换后历史事迹不再丢，deeds 查库替代回扫。
+CREATE TABLE IF NOT EXISTS notable_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT NOT NULL,
+  tick INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  actor_id TEXT,
+  target_id TEXT,
+  x INTEGER,
+  y INTEGER,
+  amount INTEGER,
+  unit_type TEXT,
+  UNIQUE(tenant, tick, event_type, actor_id, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notable_events_tick ON notable_events(tick);`;
 
 /** 打开（或创建）某租户的测绘库。write=true 时确保目录存在。 */
 export function openSurveyDb(dataRoot: string, tenant: string, write = false): DatabaseSync {
@@ -164,7 +187,46 @@ export function openSurveyDb(dataRoot: string, tenant: string, write = false): D
   const db = new DatabaseSync(join(dir, `${tenant}.db`));
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
+  if (write) {
+    migrateUnitsSeenXY(db); // 数据架构审计 A2：旧库补 x/y 列 + 回填
+    migrateCoreHuntSanity(db); // 数据质量 A5：核心时间戳倒挂修复（first<=last）
+  }
   return db;
+}
+
+/** 旧库迁移（2026-08-08，数据架构审计 A2）：units_seen 补 x/y INTEGER 列并
+ *  从 cell 回填（热区查询不再依赖 substr/instr 解析字符串）。
+ *  幂等：列存在则跳过 ALTER；回填 WHERE x IS NULL 只跑一次。
+ *  仅 write 打开时执行（面板只读连接不触发 DDL）。 */
+function migrateUnitsSeenXY(db: DatabaseSync): void {
+  try {
+    const cols = db.prepare("PRAGMA table_info(units_seen)").all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("x")) db.exec("ALTER TABLE units_seen ADD COLUMN x INTEGER;");
+    if (!names.has("y")) db.exec("ALTER TABLE units_seen ADD COLUMN y INTEGER;");
+    db.exec(
+      "UPDATE units_seen SET x = CAST(substr(cell, 1, instr(cell, ',') - 1) AS INTEGER), " +
+      "y = CAST(substr(cell, instr(cell, ',') + 1) AS INTEGER) WHERE x IS NULL;"
+    );
+    db.exec("CREATE INDEX IF NOT EXISTS idx_units_seen_xy_type ON units_seen(controlled, x, y, unit_type);");
+  } catch {
+    // 并发 write 开打碰撞时容错；下次 sync 重试即可
+  }
+}
+
+/** 旧库健康迁移（2026-08-08，数据质量 A5）：core_hunts 时间戳倒挂
+ *  修复（first_seen_tick > last_seen_tick）——旧 upsert 无条件覆盖 last 导致
+ *  run 处理顺序不一时间戳回退。幂等：WHERE first > last 只触发一次。
+ *  注：SQLite UPDATE 多列 SET 右侧表达式基于旧值计算，MIN/MAX 交换正确。 */
+function migrateCoreHuntSanity(db: DatabaseSync): void {
+  try {
+    db.exec(
+      "UPDATE core_hunts SET first_seen_tick = MIN(first_seen_tick, last_seen_tick), " +
+      "last_seen_tick = MAX(first_seen_tick, last_seen_tick) WHERE first_seen_tick > last_seen_tick;"
+    );
+  } catch {
+    // 容错；下次 sync 重试
+  }
 }
 
 /** upsert 一组可见矿（服务端投影：资源存在）。返回受影响行数。 */
@@ -223,7 +285,8 @@ export function upsertCoreHunt(
     VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(cell) DO UPDATE SET
       owner = COALESCE(excluded.owner, core_hunts.owner),
-      last_seen_tick = excluded.last_seen_tick
+      first_seen_tick = MIN(core_hunts.first_seen_tick, excluded.first_seen_tick),
+      last_seen_tick = MAX(core_hunts.last_seen_tick, excluded.last_seen_tick)
   `).run(key, position.x, position.y, owner, source, tick, tick).changes);
 }
 
@@ -237,10 +300,32 @@ export function upsertUnitSeen(
 ): void {
   const key = `${cell.x},${cell.y}`;
   db.prepare(`
-    INSERT INTO units_seen (cell, unit_type, controlled, tick)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO units_seen (cell, unit_type, controlled, tick, x, y)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(cell, tick) DO NOTHING
-  `).run(key, unitType, controlled ? 1 : 0, tick);
+  `).run(key, unitType, controlled ? 1 : 0, tick, cell.x, cell.y);
+}
+
+/** 稀有事迹写入（幂等：UNIQUE(tenant,tick,event_type,actor_id,target_id)
+ *  INSERT OR IGNORE——force 重跑不重复。位置/金额/单位类型供 deeds 叙事。 */
+export function recordNotableEvent(
+  db: DatabaseSync,
+  e: {
+    tenant: string;
+    tick: number;
+    eventType: string;
+    actorId: string | null;
+    targetId: string | null;
+    x: number | null;
+    y: number | null;
+    amount: number | null;
+    unitType: string | null;
+  },
+): number {
+  return Number(db.prepare(`
+    INSERT OR IGNORE INTO notable_events (tenant, tick, event_type, actor_id, target_id, x, y, amount, unit_type)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(e.tenant, e.tick, e.eventType, e.actorId, e.targetId, e.x, e.y, e.amount, e.unitType).changes);
 }
 
 /** 已知矿查询（跨 run 累积；可过滤状态/新鲜度）。 */

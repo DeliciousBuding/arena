@@ -79,10 +79,10 @@ function loadTenantEnemyHeat(tenant: string): { buckets: Map<string, HeatAgg>; c
     const meta = db.prepare("SELECT MAX(last_tick) AS m FROM sync_meta").get() as { m: number | null };
     const currentTick = num(meta?.m);
     const rows = db.prepare(
-      `SELECT CAST(substr(cell, 1, instr(cell, ',') - 1) AS INTEGER) AS x,
-              CAST(substr(cell, instr(cell, ',') + 1) AS INTEGER) AS y,
-              unit_type AS type, COUNT(*) AS n, MAX(tick) AS last_tick
-       FROM units_seen WHERE controlled = 0 GROUP BY x, y, type`,
+      `SELECT x, y, unit_type AS type, COUNT(*) AS n, MAX(tick) AS last_tick
+       FROM units_seen WHERE controlled = 0 AND x IS NOT NULL GROUP BY x, y, type`,
+      // 2026-08-08 审计 A2：units_seen 已补 x/y 列（迁移+回填），不再
+      // substr/instr 解析 cell 字符串；AND x IS NOT NULL 兼容未迁移旧库
     ).all() as Array<{ x: number; y: number; type: string; n: number; last_tick: number }>;
     for (const r of rows) {
       const bx = Math.floor(num(r.x) / BUCKET);
