@@ -27,8 +27,11 @@ import { homedir } from "node:os";
 const HOME = homedir();
 const LOG = join(HOME, "arena-watchdog.log");
 const SUPERVISOR_LOG = join(HOME, "arena-supervisor.log");
-const REPO = "/d/Code/Projects/arena/arena-ts/.worktrees/production-runtime-v3";
-const DATA_ROOT = "/d/Code/Projects/arena/data";
+// 注意：必须用 Windows 风格路径（正斜杠可）。MSYS 风格 "/d/Code/..." 在
+// Windows node 的 fs 操作里解析为 "D:\d\Code\..."（不存在）——v4 曾因此
+// 静默失效：stall 检测全跳过、lease 永不生效、重启以错误 data-root 启动。
+const REPO = "D:/Code/Projects/arena/arena-ts/.worktrees/production-runtime-v3";
+const DATA_ROOT = "D:/Code/Projects/arena/data";
 const RUNTIME_ROOT = join(DATA_ROOT, "runtime");
 const READY_URL = "http://127.0.0.1:8120/ready";
 const SHUTDOWN_URL = "http://127.0.0.1:8120/shutdown";
@@ -41,7 +44,6 @@ const BOOT_GRACE_MS = 30_000;
 /** 优雅关停后等待秒数，仍监听则 taskkill 兜底（与旧版一致）。 */
 const GRACEFUL_WAIT_S = 8;
 const SUPERVISOR_ARGS = [
-  "run", "arena:supervisor", "--",
   `--data-root=${DATA_ROOT}`,
   "--configs=t1,t2,t3,t4",
   "--mode=deterministic",
@@ -54,6 +56,11 @@ const SUPERVISOR_ARGS = [
   "--alliance-director-max-skew-ticks=2",
   "--port=8120",
 ];
+/** 本机 node（watchdog 自身运行时）——不依赖 npm/pnpm 包装（pnpm 化后
+ *  npm run 已不可靠；v4 曾用 npm run arena:supervisor，workspace 布局下
+ *  无法解析）。 */
+const NODE_EXE = process.execPath;
+const TSX_CLI = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
 
 function now() {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
@@ -219,10 +226,11 @@ function stalledTenant() {
   return null;
 }
 
-/** 重启 live supervisor（nohup 语义：detached、日志 append 到 SUPERVISOR_LOG）。 */
+/** 重启 live supervisor（nohup 语义：detached、日志 append 到 SUPERVISOR_LOG）。
+ *  直接 node + tsx 启动（v5 修复）：pnpm 布局下不依赖 npm 包装。 */
 function restartSupervisor() {
   const out = openSync(SUPERVISOR_LOG, "a");
-  const child = spawn("npm", SUPERVISOR_ARGS, {
+  const child = spawn(NODE_EXE, [TSX_CLI, "packages/arena-agent/src/cli/run-supervisor.ts", ...SUPERVISOR_ARGS], {
     cwd: REPO,
     detached: true,
     stdio: ["ignore", out, out],
@@ -272,9 +280,10 @@ async function main() {
   }
 
   restartSupervisor();
-  // 测绘库增量同步（幂等；供下次启动 seed + 面板 /api/survey）
+  // 测绘库增量同步（幂等；供下次启动 seed + 面板 /api/survey）——直接
+  // node + tsx（v5 修复：pnpm 布局下 npm run survey:sync 已不可用）。
   try {
-    spawn("npm", ["run", "survey:sync", "--silent", "--", `--data-root=${DATA_ROOT}`, "--tenants=t1,t2,t3,t4", "--latest-only"], {
+    spawn(NODE_EXE, [TSX_CLI, "packages/arena-agent/scripts/run-survey-sync.mts", `--data-root=${DATA_ROOT}`, "--tenants=t1,t2,t3,t4", "--latest-only"], {
       cwd: REPO,
       detached: true,
       stdio: ["ignore", "ignore", "ignore"],
