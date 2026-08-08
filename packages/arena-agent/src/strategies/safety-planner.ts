@@ -1348,12 +1348,28 @@ export class SafetyPlanner {
       const occupancy = occupancyCounts(state);
       let exit: Position | null = null;
       const cardinals: readonly Position[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      // 空邻格优先（2026-08-08，t2 生产实证修复）：旧实现选「第一个 occ<2」的
+      // 邻格——若 RIGHT 有 worker(occ=1) 但 LEFT 空(occ=0)，会选 RIGHT →
+      // MOVE 到有单位格触发 MOVE_CONTESTED 卡死（空 worker 占核心格 130+ tick、
+      // 隔 tick 挡 SPAWN 8 次的根因）。两遍扫描：先 occ=0 物理空邻格（无冲突），
+      // 无空位再退 occ=1 可挤入（容量 2）、最后外圈守位点。
       for (const direction of cardinals) {
         const cand: Position = [home[0] + direction[0], home[1] + direction[1]];
         if (state.obstacleCells.has(cellKey(cand))) continue;
-        if ((occupancy.get(cellKey(cand)) ?? 0) >= 2) continue;
-        exit = cand;
-        break;
+        if ((occupancy.get(cellKey(cand)) ?? 0) === 0) {
+          exit = cand;
+          break;
+        }
+      }
+      if (exit === null) {
+        for (const direction of cardinals) {
+          const cand: Position = [home[0] + direction[0], home[1] + direction[1]];
+          if (state.obstacleCells.has(cellKey(cand))) continue;
+          if ((occupancy.get(cellKey(cand)) ?? 0) < 2) {
+            exit = cand;
+            break;
+          }
+        }
       }
       exit ??= yieldAnchor(home, movementObstacles, occupancy, state.visibleEnemies);
       exit ??= this.coreGuardFallback(home, movementObstacles, index);
