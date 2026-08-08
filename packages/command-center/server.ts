@@ -163,7 +163,20 @@ app.get("/api/deeds/journal", async (c) => {
 app.get("/api/alliance/survey", (c) => {
   // 联盟共享测绘（2026-08-08）：四租户 survey-db 聚合（敌核/矿/障碍/探索分区
   // + 生命周期 + 租户色）——地图「全联盟」层数据源，30s 聚合缓存。
-  return c.json(loadAllianceSurvey());
+  const full = loadAllianceSurvey();
+  // ?view=consensus 轻量模式（2026-08-08 消费优化）：只返回摘要 + 冲突 +
+  // 共识三视图（跳过 raw resources/obstacles/chunks/lifecycle，payload 大幅减小）。
+  if (c.req.query("view") !== "consensus") return c.json(full);
+  return c.json({
+    generatedAt: full.generatedAt,
+    colors: full.colors,
+    tenantSummaries: full.tenantSummaries,
+    conflicts: full.conflicts,
+    consensusResources: full.consensusResources,
+    consensusCores: full.consensusCores,
+    consensusChunks: full.consensusChunks,
+    cachedAt: full.cachedAt,
+  });
 });
 app.get("/api/alliance/snapshot", (c) => {
   // 联盟态势快照（2026-08-08）：canonical 联盟域模型 + survey-db 敌核 +
