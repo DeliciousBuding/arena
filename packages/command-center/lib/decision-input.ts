@@ -14,6 +14,7 @@ import { TENANTS } from "./fs-jsonl.ts";
 import { TtlCache } from "./cache.ts";
 import { loadMinePatterns, type MineRefillPrediction } from "./mine-patterns.ts";
 import { loadTenantSurveyCached } from "./survey-cache.ts";
+import { loadConsensusMining } from "./consensus-mining.ts";
 
 const TTL_MS = 30_000;
 const cache = new TtlCache<DecisionInputPayload>(TTL_MS);
@@ -26,6 +27,10 @@ export interface RefillPredictionInput {
   dueInTicks: number | null;
   predictedNextTick: number | null;
   lastSeenTick: number;
+  /** 敌情威胁（2026-08-08）：consensus-mining 同格 threatLevel 0-3 / threatCombat
+   *  目击数——mission 层 Phase 2 单调用即可规避 threatLevel>=2 高危格。 */
+  threatLevel: 0 | 1 | 2 | 3;
+  threatCombat: number;
 }
 
 export interface ChunkCoverageInput {
@@ -52,17 +57,23 @@ export function buildDecisionInput(
   currentTick: number | null,
   predictions: readonly MineRefillPrediction[],
   chunks: readonly { key?: unknown; cx?: unknown; cy?: unknown; lastSeenTick?: unknown }[],
+  threatByCell?: ReadonlyMap<string, { threatLevel: 0 | 1 | 2 | 3; threatCombat: number }>,
 ): DecisionInputPayload {
   const refillPredictions: RefillPredictionInput[] = (predictions ?? [])
     .filter((p) => p && p.cell)
-    .map((p) => ({
-      cell: p.cell,
-      x: num(p.x),
-      y: num(p.y),
-      dueInTicks: p.dueInTicks ?? null,
-      predictedNextTick: p.predictedNextTick ?? null,
-      lastSeenTick: num(p.lastSeenTick),
-    }))
+    .map((p) => {
+      const th = threatByCell?.get(p.cell);
+      return {
+        cell: p.cell,
+        x: num(p.x),
+        y: num(p.y),
+        dueInTicks: p.dueInTicks ?? null,
+        predictedNextTick: p.predictedNextTick ?? null,
+        lastSeenTick: num(p.lastSeenTick),
+        threatLevel: th?.threatLevel ?? 0,
+        threatCombat: th?.threatCombat ?? 0,
+      };
+    })
     .sort((a, b) => (a.dueInTicks ?? 1e9) - (b.dueInTicks ?? 1e9)); // 即将刷新优先
   const chunkCoverage: ChunkCoverageInput[] = (chunks ?? [])
     .map((c) => ({
@@ -97,7 +108,14 @@ export function loadDecisionInput(tenant: string): DecisionInputPayload {
       cy: num(c.cy),
       lastSeenTick: c.lastSeenTick ?? c.tick ?? null,
     }));
-  const payload = buildDecisionInput(tenant, currentTick, patterns.tenants?.[tenant]?.predictions ?? [], chunkRows);
+  // 威胁表：consensus-mining 按 cell 加入 threatLevel/threatCombat（30s 缓存，无触网）
+  const threatByCell = new Map<string, { threatLevel: 0 | 1 | 2 | 3; threatCombat: number }>();
+  try {
+    for (const r of loadConsensusMining().resources ?? []) {
+      if (r.cell && typeof r.threatLevel === "number") threatByCell.set(r.cell, { threatLevel: r.threatLevel as 0 | 1 | 2 | 3, threatCombat: Number(r.threatCombat ?? 0) });
+    }
+  } catch { /* 威胁数据不可用不阻断（refill/chunk 仍返回） */ }
+  const payload = buildDecisionInput(tenant, currentTick, patterns.tenants?.[tenant]?.predictions ?? [], chunkRows, threatByCell);
   cache.set(key, payload);
   return payload;
 }
