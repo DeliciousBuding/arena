@@ -441,3 +441,55 @@ test("squadContactThisTick：仅我方战斗单位受击计入", () => {
     combatIds,
   ), false);
 });
+
+
+/** 2026-08-08 t4 压制停产实证修复：威胁只由敌方战斗单位驱动——
+ *  敌核（静态目标）+ 敌方 WORKER（无攻击）不触发 ALERT 全体停产；
+ *  敌方 VANGUARD 12 格内 / 移动仍按原口径触发（回归保护）。 */
+test("威胁评估：12 格内敌核（CORE）不触发 ALERT（静态目标非威胁源）", () => {
+  const enemyCore: VisibleEntity = {
+    id: "ec1", kind: "CORE", position: [8, 0], hp: 5,
+  };
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemyCore],
+    enemyHints: [],
+    coreDamagedThisTick: false,
+  });
+  assert.equal(result.level, "NORMAL");
+  assert.equal(result.closingEnemies, 0);
+});
+
+test("威胁评估：12 格内敌方 WORKER 不触发 ALERT（无攻击，Vanguard 清剿）", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("w1", [6, 0], "WORKER")],
+    enemyHints: [hint("w1", [6, 0], [6, 0])],
+    coreDamagedThisTick: false,
+  });
+  assert.equal(result.level, "NORMAL");
+  assert.equal(result.closingEnemies, 0);
+});
+
+test("威胁评估：12 格内敌方 VANGUARD 仍触发 ALERT（战斗单位回归保护）", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("v1", [8, 0])],
+    enemyHints: [hint("v1", [8, 0], [8, 0])],
+    coreDamagedThisTick: false,
+  });
+  assert.equal(result.level, "ALERT");
+  assert.equal(result.reason, "enemy_near");
+  assert.equal(result.closingEnemies, 1);
+});
+
+test("威胁评估：敌方 VANGUARD 移动仍触发 ALERT enemy_moving（12 格外）", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("v1", [15, 0])],
+    enemyHints: [hint("v1", [15, 0], [14, 0])],
+    coreDamagedThisTick: false,
+  });
+  assert.equal(result.level, "ALERT");
+  assert.equal(result.reason, "enemy_moving");
+});
