@@ -651,6 +651,7 @@ body {
 @keyframes ctlPop { 0% { transform: scale(1); } 40% { transform: scale(1.18); } 100% { transform: scale(1); } }
 .stream-line .st-tenant { width: 26px; color: var(--tc); font-weight: 700; flex: none; }
 .stream-line .st-tick { color: var(--text-dim); flex: none; width: 64px; text-align: right; }
+.stream-line .st-ico { flex: none; width: 18px; text-align: center; color: var(--text-dim); font-size: 11px; opacity: .92; }
 .stream-line .st-kind { flex: none; font-weight: 600; }
 .stream-line .st-detail { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stream-line.st-quiet { opacity: .48; }

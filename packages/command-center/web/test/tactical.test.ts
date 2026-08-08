@@ -8,7 +8,7 @@ import {
   tactUnitCost, tactCoreCapacity, intentLabelCn,
   tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets,
   tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability,
-  TACT_ACTION_CN, TACT_ACTION_ICON,
+  TACT_ACTION_CN, TACT_ACTION_ICON, EVENT_KIND_CN, EVENT_ICON, DEED_ICON,
 } from "../src/engine/tactical.ts";
 
 const mkWorld = (objects: any[]): any => ({ state: { objects } });
@@ -183,5 +183,24 @@ test("action-icon: 图标密集覆盖所有动作且非空（与右键/批量/�
   // 反向：图标表不应含未知动作（防乱定义）
   for (const k of Object.keys(TACT_ACTION_ICON)) {
     assert.ok(TACT_ACTION_CN[k] !== undefined, `图标表含未知动作 ${k}`);
+  }
+});
+
+test("event-icon: 图标密集覆盖所有事件 kind 且非空（事件标签页行首图标）", () => {
+  for (const [k, cn] of Object.entries(EVENT_KIND_CN)) {
+    assert.ok(EVENT_ICON[k] !== undefined && EVENT_ICON[k] !== "", `${k}(${cn}) 缺图标`);
+  }
+  for (const k of Object.keys(EVENT_ICON)) {
+    assert.ok(EVENT_KIND_CN[k] !== undefined, `图标表含未知事件 kind ${k}`);
+  }
+});
+
+test("deed-icon: 事迹类别图标齐全（里程碑/采集/交付/产兵/阵亡/冲突/经济/其他）", () => {
+  const cats = ["milestone", "harvest", "deposit", "spawn", "death", "conflict", "economy", "other"];
+  for (const c of cats) {
+    assert.ok(DEED_ICON[c] !== undefined && DEED_ICON[c] !== "", `${c} 缺图标`);
+  }
+  for (const k of Object.keys(DEED_ICON)) {
+    assert.ok(cats.includes(k), `DEED_ICON 含未知类别 ${k}`);
   }
 });
