@@ -42,7 +42,8 @@ type stripping）+ React 19 + Vite 8 + TS（Bun/Node 工具链），浏览器访
 ```bash
 cd arena-ts/packages/command-center
 npm run check:all        # ① server tsc → ② web typecheck → ③ web build（一键全绿）
-npm run test:regression  # ④ Playwright 回归 12 项（需本机 8787 + chromium；高 CPU 下自动放宽超时）
+npm run test:regression  # ④ Playwright 回归 16 项（需本机 8787 + chromium；高 CPU 下自动放宽超时）
+#    覆盖：页面零错误 / 六 tab / 威胁玫瑰 / 决策流 / 聚焦 HUD / 计划层像素 / 人类指挥链 / 跳图定位标记 jumpPins / API 健康
 ```
 
 - CI（`.github/workflows/ci.yml` `command-center` job）：server tsc + web typecheck + web build，
@@ -120,6 +121,9 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
   - 单位/核心官方细节：WORKER 载货条、受伤 HP 条、同格堆叠 ×2 徽章、选中波纹、
     核心 @拥有者标签 + 盾条/血条（携带冠军信标盾上限 10）；
   - Esc 取消选择/模式。
+  - 手操审计（HUMAN AUDIT）：联盟态势 tab 底部展示 /api/audit/human 流水——
+    每次手操（指令/目标/模式/清空/删除）的时间/类型/租户/动作，15s 随态势刷新；
+    空态「暂无手操——agent 全自动运行中」，复盘"什么时候手操了什么"。
 - **官方商店兑换码**：代理 `https://linuxdoshop.arenahero.io`（公开 `/api/v1/products` 动态价格/库存；`me`/`orders` 需登录 Cookie）。
   - 商品卡片显示**库存徽章**（`available_stock`）：`库存 N`（绿）/ `仅剩 ≤5`（琥珀警告）/ `缺货`（红 + 卡片灰化 + 按钮禁用），并标注限购数（`purchase_limit`）；面板可手动刷新，兑换后自动刷新库存与账户资源。
   - Cookie 在浏览器 localStorage 保存，请求时经 `X-Shop-Cookie` 头内存转发，**不落盘服务器、不进日志**。

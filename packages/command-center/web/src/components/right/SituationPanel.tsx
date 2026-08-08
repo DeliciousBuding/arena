@@ -24,6 +24,10 @@ interface SnapshotData {
 }
 interface Deed { id: string; tick: number; tenant: string; star: number; kind: string; title: string; detail: string; position: number[] | null; actor: string | null; target: string | null }
 interface JournalData { generatedAt?: string; currentTick?: number; headline?: Deed | null; narrative?: string; counts?: Record<string, number> }
+/** 人类指挥审计（后端 /api/audit/human）：手操流水——复盘"什么时候手操了什么"。 */
+interface HumanAuditEntry { at: string; tenant: string; kind: string; unitId?: string; action?: string; note?: string }
+interface AuditPayload { generatedAt?: string; records?: HumanAuditEntry[] }
+const AUDIT_KIND_CN: Record<string, string> = { command: "指令", goal: "目标", mode: "模式", clear: "清空", delete: "删除" };
 
 const fmt = (n: number | null | undefined): string => {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
@@ -113,6 +117,7 @@ export function SituationPanel() {
   const [journal, setJournal] = useState<JournalData | null>(null);
   const [err, setErr] = useState("");
   const [at, setAt] = useState("");
+  const [audit, setAudit] = useState<HumanAuditEntry[]>([]);
 
   const focusTenant = (t: string) => { if (!engine) return; engine.toggleSolo(t); }; // 完整聚焦：solo 态 + HUD/资产 + 徽章（再点退出，引擎自带返回提示）
   /** 扇区点击 → 定位该方向最近敌情：优先目击列表精确敌核坐标，回退方向+距离估点。 */
@@ -150,7 +155,10 @@ export function SituationPanel() {
         if (!s.ok) throw new Error("快照 HTTP " + s.status);
         const sd = (await s.json()) as SnapshotData;
         const jd = s.ok && j.ok ? (await j.json()) as JournalData : null;
-        if (!stop) { setData(sd); setJournal(jd); setAt(sd.generatedAt ?? sd.cachedAt ?? ""); setErr(""); }
+        // 人类手操审计：独立拉取（失败不影响态势主数据）
+        let ad: AuditPayload | null = null;
+        try { const a = await fetch("/api/audit/human", { cache: "no-store" }); if (a.ok) ad = (await a.json()) as AuditPayload; } catch { /* 忽略 */ }
+        if (!stop) { setData(sd); setJournal(jd); setAt(sd.generatedAt ?? sd.cachedAt ?? ""); setErr(""); setAudit(ad?.records ?? []); }
       } catch (e) { if (!stop) setErr(String((e as Error).message ?? e)); }
     };
     load();
@@ -239,6 +247,25 @@ export function SituationPanel() {
           })}
         </div>
       ) : null}
+
+      <div className="sit-sight">
+        <div className="sit-sight-head">
+          <span className="eyebrow">HUMAN AUDIT · 手操记录</span>
+          <span className="mono dim">{audit.length ? audit.length + " 条" : ""}</span>
+        </div>
+        {audit.length ? (
+          <ul className="sit-sight-list">
+            {audit.slice(0, 20).map((a, i) => (
+              <li key={i} className="sit-sight-row" title={a.note ?? ""}>
+                <span className="mono dim">{new Date(a.at).toLocaleTimeString("zh-CN", { hour12: false })}</span>
+                <span className="sit-sight-kind">{AUDIT_KIND_CN[a.kind] ?? a.kind}</span>
+                <span className="sit-sight-src dot" style={{ background: TENANT_COLORS[a.tenant] ?? "#999" }} title={a.tenant.toUpperCase()} />
+                <span className="sit-sight-name">{a.action ?? a.note ?? "—"}</span>
+              </li>
+            ))}
+          </ul>
+        ) : <div className="sv-empty dim">暂无手操——agent 全自动运行中</div>}
+      </div>
     </div>
   );
 }

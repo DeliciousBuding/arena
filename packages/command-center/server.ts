@@ -34,6 +34,7 @@ import { loadLeaderboardIntel, loadOurUsernames, maybeRefreshLeaderboardLazy, re
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
 import { shopProducts, shopCookie, shopMe, shopOrders, shopOrder } from "./lib/shop.ts";
 import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/redeem-log.ts";
+import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
@@ -279,6 +280,15 @@ app.get("/api/commands", (c) => {
   const store = reconcileHumanStore(tenant);
   return c.json({ ...store, telemetry: latestHumanOverride(tenant), stuck: stuckRecord(tenant) });
 });
+app.get("/api/audit/human", (c) => {
+  // 人类指挥审计（2026-08-08）：手操流水（指令/目标/模式/清空/删除），
+  // 重启不丢——复盘"什么时候手操了什么"。?tenant=tN&limit=100。
+  const tenant = c.req.query("tenant") ?? "";
+  const l = Number(c.req.query("limit") ?? 100);
+  const limit = Number.isFinite(l) ? Math.round(l) : 100;
+  const records = loadHumanAudit(tenant && validTenant(tenant) ? tenant : undefined, limit);
+  return c.json({ generatedAt: new Date().toISOString(), tenant: tenant || "all", count: records.length, records });
+});
 app.post("/api/command", async (c) => {
   const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const tenant = String(b.tenant ?? "");
@@ -298,6 +308,7 @@ app.post("/api/command", async (c) => {
   store.commands = store.commands.filter((x) => x.unitId !== b.unitId).concat(cmd);
   const out = writeHumanStore(tenant, store);
   console.log(`[human-cmd] ${tenant} ${b.unitId} ${JSON.stringify(b.action)}`);
+  appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "command", unitId: b.unitId, action: String((b.action as { type?: unknown }).type ?? "?"), note: typeof b.note === "string" ? b.note : undefined });
   return c.json({ ok: true, command: cmd, mode: out.mode, total: out.commands.length });
 });
 app.post("/api/command/goal", async (c) => {
@@ -321,6 +332,7 @@ app.post("/api/command/goal", async (c) => {
   store.goals = store.goals.filter((g) => g.unitId !== b.unitId).concat(goal);
   const out = writeHumanStore(tenant, store);
   console.log(`[human-goal] ${tenant} ${b.unitId} ${b.kind} [${b.target[0]}, ${b.target[1]}]`);
+  appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "goal", unitId: b.unitId, action: `${b.kind} [${b.target[0]},${b.target[1]}]`, note: typeof b.note === "string" ? b.note : undefined });
   return c.json({ ok: true, goal, mode: out.mode, total: out.goals.length });
 });
 app.delete("/api/command", async (c) => {
@@ -333,6 +345,7 @@ app.delete("/api/command", async (c) => {
   if (scope === "all" || scope === "action") store.commands = store.commands.filter((x) => x.unitId !== b.unitId);
   if (scope === "all" || scope === "goal") store.goals = store.goals.filter((g) => g.unitId !== b.unitId);
   const out = writeHumanStore(tenant, store);
+  appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "delete", unitId: b.unitId, action: `scope=${scope}` });
   return c.json({ ok: true, mode: out.mode, total: out.commands.length + out.goals.length });
 });
 app.post("/api/command/clear", async (c) => {
@@ -342,6 +355,7 @@ app.post("/api/command/clear", async (c) => {
   const store = readHumanStore(tenant);
   store.commands = []; store.goals = [];
   const out = writeHumanStore(tenant, store);
+  appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "clear" });
   return c.json({ ok: true, mode: out.mode, total: 0 });
 });
 app.post("/api/command/mode", async (c) => {
@@ -352,6 +366,7 @@ app.post("/api/command/mode", async (c) => {
   const store = readHumanStore(tenant);
   store.mode = mode;
   writeHumanStore(tenant, store);
+  appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "mode", action: mode });
   return c.json({ ok: true, mode, message: mode === "override" ? "人类指挥已启用（手操优先于 agent）" : "人类指挥已停用（交还 agent 全权）" });
 });
 

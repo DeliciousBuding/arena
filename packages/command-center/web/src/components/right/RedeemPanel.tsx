@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  shopCookieValue, saveShopCookie, shopRequest, loadRedeemHistory, pushRedeemHistory,
+  shopCookieValue, saveShopCookie, shopRequest, loadRedeemHistory, pushRedeemHistory, clearRedeemHistory,
   type ShopProduct, type ShopMe,
 } from "../../lib/shopApi";
 import { RedeemCard } from "./RedeemCard";
@@ -88,7 +88,11 @@ export function RedeemPanel() {
       {result && <div id="redeemResult" className={`redeem-result ${result.cls}`}>{result.msg}</div>}
 
       <div className="dialog-history">
-        <h3>我的兑换订单</h3>
+        <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>我的兑换订单
+          {history.length > 0 && (
+            <button type="button" className="btn ghost" style={{ marginLeft: "auto", padding: "2px 8px", fontSize: 10 }} title="清空本地兑换记录" onClick={() => { clearRedeemHistory(); setHistory([]); }}>清空</button>
+          )}
+        </h3>
         <ul id="redeemHistory">
           {history.length ? history.map((h) => (
             <li key={h.at}>
@@ -96,7 +100,7 @@ export function RedeemPanel() {
               <span>{h.code}</span>
               <span className="h-status">{h.status}</span>
             </li>
-          )) : <li style={{ color: "#56626c" }}>暂无本地记录</li>}
+          )) : <li style={{ color: "var(--text-faint)" }}>暂无本地记录</li>}
         </ul>
       </div>
       <p className="dialog-note">价格与库存来自官方商店（动态变化），可手动刷新。Cookie 仅保存在本机浏览器，请求时经内存转发，不落盘服务器。</p>

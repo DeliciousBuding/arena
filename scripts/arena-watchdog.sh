@@ -6,6 +6,10 @@
 set -u
 
 LOG="$HOME/arena-watchdog.log"
+# supervisor 运行输出独立日志（2026-08-08）：watchdog 状态行与 supervisor stdout
+# 并发 append 同一文件会把行写坏（实测 {"shuttingDown":true} 嵌进行、STALL/NOT
+# ready 触发行丢失）——分开后 watchdog 触发原因可查、supervisor 输出可回看。
+SUPERVISOR_LOG="$HOME/arena-supervisor.log"
 REPO="/d/Code/Projects/arena/arena-ts/.worktrees/production-runtime"
 DATA_ROOT="/d/Code/Projects/arena/data"
 RUNTIME_ROOT="$DATA_ROOT/runtime"
@@ -122,7 +126,8 @@ arena_pids() {
     return 1
   fi
   printf '%s
-' "$OUT" | tr -d '' | grep -E '^[0-9]+$' | sort -u
+' "$OUT" | tr -d '
+' | grep -E '^[0-9]+$' | sort -u
 }
 for ATTEMPT in 1 2 3; do
   STRAYS=$(arena_pids)
@@ -148,7 +153,7 @@ rm -f "$RUNTIME_ROOT/t1/locks/"*.lock "$RUNTIME_ROOT/t2/locks/"*.lock "$RUNTIME_
 # 4) 重启 live supervisor（脱离当前会话，日志追加；--record-calibration 旁路
 #    只记录 raw Runtime-Golden dataset；后续校准严格离线执行）
 cd "$REPO" || exit 1
-nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --record-alliance-shadow --alliance-shadow-interval-ticks=3 --port=8120 >> "$LOG" 2>&1 &
+nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --record-alliance-shadow --alliance-shadow-interval-ticks=3 --port=8120 >> "$SUPERVISOR_LOG" 2>&1 &
 echo "$(now) supervisor restarted (pid $!, alliance-shadow interval=3)" >> "$LOG"
 # 测绘库增量同步（2026-08-08，survey-db 联动）：重启后同步最新 run 的
 # calibration case → 测绘库（幂等；供下次启动 seed + 面板 /api/survey）。
