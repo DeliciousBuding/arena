@@ -8,7 +8,7 @@
 
 import { describe, it } from "node:test";
 import * as assert from "node:assert";
-import { computeRefillPredictions, REFILL_PREDICTION_WINDOW_TICKS } from "../../src/intel/refill-predictions.js";
+import { computeRefillPredictions, REFILL_PREDICTION_WINDOW_TICKS } from "../../src/intel/refill-predictions.ts";
 
 describe("refill-predictions bounded load (P0 regression)", () => {
   it("REFILL_PREDICTION_WINDOW_TICKS is defined and within bounds", () => {
