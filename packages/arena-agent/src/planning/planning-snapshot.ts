@@ -39,7 +39,7 @@ export interface ResourceCellInfo {
 
 export interface BeaconInfo {
   readonly position: Position;
-  readonly status: "GROUND" | "CARRIED";
+  readonly status: "GROUND" | "CARRIED" | null;
   readonly carrierId: string | null;
 }
 
