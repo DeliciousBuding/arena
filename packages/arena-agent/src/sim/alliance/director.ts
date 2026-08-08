@@ -12,6 +12,7 @@
 import type { AllianceRole, AllianceDirective } from "../../alliance/control-types.ts";
 import type { AllianceSnapshot } from "../../alliance/types.ts";
 import { decideAllianceShadowPolicy, type ShadowDirectorPolicyConfig } from "../../alliance/director-policy.ts";
+import type { StrategicPolicySelector } from "../../alliance/strategic-policy.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { AllianceDirector } from "./types.ts";
 
@@ -88,16 +89,30 @@ export class FixedAllianceDirector implements AllianceDirector {
 
 // ── ShadowPolicyAllianceDirector ───────────────────────────────
 
+export interface ShadowPolicyDirectorOptions {
+  /** 可选 StrategicPolicySelector——存在时每次 replan 在边界 select()（hot-switch 入口）。 */
+  readonly selector?: StrategicPolicySelector;
+  /** 显式 profile 覆盖名（operator 指令）；无效名 → selector sticky 保持当前。 */
+  readonly overrideName?: string;
+}
+
 /** Real Director v1 policy adapter for simulator/shadow evaluation only. */
 export class ShadowPolicyAllianceDirector implements AllianceDirector {
   readonly kind = "shadow-policy-v1";
   private readonly config: Partial<ShadowDirectorPolicyConfig>;
+  private readonly selector: StrategicPolicySelector | null;
+  private readonly overrideName: string | null;
 
-  constructor(config: Partial<ShadowDirectorPolicyConfig> = {}) {
+  constructor(config: Partial<ShadowDirectorPolicyConfig> = {}, options: ShadowPolicyDirectorOptions = {}) {
     this.config = { ...config };
+    this.selector = options.selector ?? null;
+    this.overrideName = options.overrideName ?? null;
   }
 
   decide(snapshot: AllianceSnapshot, _rng: () => number) {
-    return decideAllianceShadowPolicy(snapshot, this.config);
+    const profile = this.selector === null
+      ? undefined
+      : this.selector.select(snapshot.tickWindow[1], this.overrideName ?? undefined).profile;
+    return decideAllianceShadowPolicy(snapshot, this.config, profile);
   }
 }
