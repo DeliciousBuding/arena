@@ -31,7 +31,6 @@ function makeState(opts: {
   obstacleCells?: Position[];
   visibleEnemies?: VisibleEntity[];
   events?: { eventType: string; actorId: string | null; reasonCode: string | null; position: Position }[];
-  visibleEnemies?: VisibleEntity[];
 }): TickState {
   return {
     tick: opts.tick ?? 1,
