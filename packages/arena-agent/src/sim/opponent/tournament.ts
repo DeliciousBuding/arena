@@ -17,6 +17,7 @@ import { runEpisode, type EpisodeTenant } from "../../sim/harness/episode.ts";
 import type { SimWorld } from "../../sim/world/types.ts";
 import type { PlanProvider } from "../../runtime/decision-types.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../../strategies/safety-planner.ts";
+import { createEpisodeRecorder } from "./recorder.ts";
 
 /** 比赛结果（规范化，供横向对比）。 */
 export interface MatchResult {
@@ -84,14 +85,49 @@ interface ScenarioPlayerSeed {
   readonly units: readonly unknown[];
 }
 
-/** 由一个"己方玩家位置 + 一个固定最小资源盘"构造 1v1 场景。 */
-export function makeArenaScenario(playerA: ScenarioPlayerSeed, playerB: ScenarioPlayerSeed): unknown {
+/** 资源盘变体池：不同 seed 取不同布局（确定性——同 seed 恒同场景）。
+ *  每个变体围绕双方核心（[0,0] / [30,0]）对称放置资源，保证公平对打。 */
+const RESOURCE_LAYOUTS: readonly (readonly (readonly [number, number])[])[] = [
+  [[5, 0], [0, 3], [-3, 0], [0, -3]],
+  [[6, 0], [0, 4], [-4, 0], [0, -4], [3, 2]],
+  [[5, 1], [1, 4], [-4, 1], [-1, -3], [2, -3]],
+  [[7, 0], [0, 5], [-5, 0], [0, -5], [35, 2], [28, 3]],
+  [[5, 0], [3, 3], [-3, 3], [0, -3], [32, 0], [27, -3]],
+  [[4, 2], [-2, 4], [-4, -2], [2, -4], [33, 2], [27, 4]],
+];
+
+/** 为一方玩家生成 3 个初始 worker（id 确定性派生，跨 seed 稳定，满足 canonical UUID）。 */
+function initialWorkers(
+  ownerId: string,
+  idPrefix: string,
+  ...positions: readonly (readonly [number, number])[]
+): readonly { id: string; position: [number, number]; hp: number; unitType: "WORKER"; cargo: number }[] {
+  const base = idPrefix.slice(0, 8);
+  return positions.map((position, index) => {
+    const marker = `${index}${ownerId.length % 10}`.padStart(2, "0");
+    return {
+      id: `${base}-0000-0000-0000-${"0".repeat(10)}${marker}`,
+      position: [position[0], position[1]] as [number, number],
+      hp: 2,
+      unitType: "WORKER" as const,
+      cargo: 0,
+    };
+  });
+}
+
+/** 由一个"玩家位置 + seed 派生资源盘"构造 1v1 场景（确定性）。 */
+export function makeArenaScenario(
+  playerA: ScenarioPlayerSeed,
+  playerB: ScenarioPlayerSeed,
+  seed = 1,
+): unknown {
+  const layout = RESOURCE_LAYOUTS[Math.abs(seed) % RESOURCE_LAYOUTS.length];
   return {
     rulesVersion: "v0.14",
     tick: 1,
-    seed: 1,
+    seed,
     players: [playerA, playerB],
-    terrain: { obstacles: [], resources: [[5, 0], [0, 3], [-3, 0], [0, -3]] },
+    terrain: { obstacles: [], resources: [...layout] },
     beacon: { position: [100, 100], status: "GROUND", carrierId: null },
   };
 }
@@ -145,6 +181,7 @@ export function decideWinner(
 /**
  * 跑一场 1v1 对打，返回规范化结果。内部用 runEpisode + 提供的 PlanProviders。
  * 第三方对手需能 feed 同一 rules/manifest。
+ * 场景给双方 3 初始 worker + refill（65 ticks 近似），保证对局能发育、有区分度。
  */
 export function runMatch(
   a: TournEntry,
@@ -152,36 +189,78 @@ export function runMatch(
   seed: number,
   ticks: number,
   rulesPath: string,
-  opts?: { validatePlans?: boolean },
+  opts?: {
+    validatePlans?: boolean;
+    recordTo?: string;
+    /** refill 节奏（近似再生，见 episode.ts）：undefined=65（现状默认，向后兼容）；
+     *  null=关闭；N=每 N tick 补回采空原格。 */
+    refillEveryTicks?: number | null;
+    /** 自定义场景（真实测绘窗口等）；缺省用 makeArenaScenario 合成布局。
+     *  场景 players 必须与 a/b 的 id 一致。 */
+    scenario?: unknown;
+  },
 ): MatchResult {
-  const scenario = makeArenaScenario(
-    { id: a.id, username: a.id, resources: 20, core: { id: "491977e4-d3db-417b-8d82-2f5f3b5c8006", position: [0, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: [] },
-    { id: b.id, username: b.id, resources: 20, core: { id: "9fe0ca6d-53cb-4dd5-a8f8-2e6925f19e72", position: [30, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: [] },
+  const refillConfig =
+    opts?.refillEveryTicks === undefined
+      ? { everyTicks: 65 }
+      : opts.refillEveryTicks === null
+        ? null
+        : { everyTicks: opts.refillEveryTicks };
+  const scenario = opts?.scenario ?? makeArenaScenario(
+    { id: a.id, username: a.id, resources: 25, core: { id: "491977e4-d3db-417b-8d82-2f5f3b5c8006", position: [0, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(a.id, "22222222-2222-2222-2222-2222222222", [1, 0], [0, 1], [-1, 0]) },
+    { id: b.id, username: b.id, resources: 25, core: { id: "9fe0ca6d-53cb-4dd5-a8f8-2e6925f19e72", position: [30, 0], hp: 5, shield: 5, state: "NORMAL", moveDirection: null, moveProgress: null, moveRequiredTicks: null, destination: null }, units: initialWorkers(b.id, "33333333-3333-3333-3333-3333333333", [29, 0], [30, 1], [31, 0]) },
+    seed,
   );
   const providerA = a.build();
   const providerB = b.build();
-  const result = runEpisode({
-    scenario,
-    rulesPath,
-    seed,
-    ticks,
-    tenants: [
-      { id: a.id, planner: "safety", plannerConfig: {}, policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" } },
-      { id: b.id, planner: "safety", plannerConfig: {}, policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" } },
-    ],
-    // 关键：注入我们两个条目的 provider，而不是用内置 deterministic/safety
-    plannerFactory: (tenant: EpisodeTenant): PlanProvider => (tenant.id === a.id ? providerA : providerB),
-    validatePlans: opts?.validatePlans ?? true,
-  } as never);
-  const { winner: w, coreAlive, finalResources, finalPopulation } = decideWinner([a.id, b.id], undefined as never, result.finalWorld);
-  return {
-    players: [a.id, b.id],
-    winner: w,
-    tick: 0,
-    tickCount: ticks,
-    coreAlive,
-    finalResources,
-    finalPopulation,
-    eventCount: result.records.reduce((n, r) => n + r.events.length, 0),
-  };
+  const recorder =
+    opts?.recordTo === undefined
+      ? null
+      : createEpisodeRecorder(opts.recordTo, {
+          seed,
+          rulesVersion: "v0.14",
+          rulesPath,
+          ticks,
+          players: [a.id, b.id],
+          descs: { [a.id]: a.desc, [b.id]: b.desc },
+          refill: refillConfig ?? undefined,
+        });
+  try {
+    const result = runEpisode({
+      scenario,
+      rulesPath,
+      seed,
+      ticks,
+      ...(refillConfig === null ? {} : { refill: refillConfig }),
+      tenants: [
+        { id: a.id, planner: "safety", plannerConfig: {}, policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" } },
+        { id: b.id, planner: "safety", plannerConfig: {}, policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" } },
+      ],
+      // 关键：注入我们两个条目的 provider，而不是用内置 deterministic/safety
+      plannerFactory: (tenant: EpisodeTenant): PlanProvider => (tenant.id === a.id ? providerA : providerB),
+      validatePlans: opts?.validatePlans ?? true,
+      onTickRecorded: recorder?.onTickRecorded,
+    } as never);
+    const { winner: w, coreAlive, finalResources, finalPopulation } = decideWinner([a.id, b.id], undefined as never, result.finalWorld);
+    return {
+      players: [a.id, b.id],
+      winner: w,
+      tick: 0,
+      tickCount: ticks,
+      coreAlive,
+      finalResources,
+      finalPopulation,
+      eventCount: result.records.reduce((n, r) => n + r.events.length, 0),
+    };
+  } finally {
+    recorder?.close();
+    // 对局结束必须释放对手资源（常驻子进程桥：close worker + 清 state-slot），
+    // 否则 worker 线程泄漏导致进程无法退出（鸭子类型：非子进程 provider 无 close）。
+    for (const provider of [providerA, providerB]) {
+      const closer = (provider as { close?: () => void }).close;
+      if (typeof closer === "function") {
+        closer.call(provider);
+      }
+    }
+  }
 }

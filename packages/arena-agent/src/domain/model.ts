@@ -19,6 +19,11 @@ export interface CoreSnapshot {
   readonly shield: number;
   readonly state: CoreState;
   readonly ownerUsername: string;
+  /** 迁移字段：仅 state=MOVING 时有值（官方 wire 要求 MOVING Core 全字段投影）。 */
+  readonly moveDirection?: Direction | null;
+  readonly moveProgress?: number | null;
+  readonly moveRequiredTicks?: number | null;
+  readonly destination?: Position | null;
 }
 
 export interface VisibleEntity {
@@ -28,11 +33,17 @@ export interface VisibleEntity {
   readonly hp: number;
   readonly unitType?: UnitType;
   readonly ownerUsername?: string;
+  /** 敌方核心迁移字段（官方 wire：MOVING Core 全字段投影，避免状态折叠）。 */
+  readonly moveDirection?: Direction | null;
+  readonly moveProgress?: number | null;
+  readonly moveRequiredTicks?: number | null;
+  readonly destination?: Position | null;
 }
 
 export interface BeaconSnapshot {
   readonly position: Position;
-  readonly status: "GROUND" | "CARRIED";
+  /** null = Beacon 格不在本玩家视野内（官方：坐标恒知，状态仅格子可见时可知）。 */
+  readonly status: "GROUND" | "CARRIED" | null;
   readonly carrierId: string | null;
 }
 

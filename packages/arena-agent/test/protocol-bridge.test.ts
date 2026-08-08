@@ -11,6 +11,8 @@ import {
   tickStateToProto,
   unitActionToProto,
   coreActionToProto,
+  toDeterministicUuid,
+  normalizeOwnerUsername,
   type ProtoCommandPlan,
 } from "../src/sim/opponent/protocol-bridge.ts";
 import type { TickState } from "../src/domain/model.ts";
@@ -64,7 +66,8 @@ test("tickStateToProto：可控/不可控/地形/beacon 全转换", () => {
   const cores = proto.objects.filter((o): o is Extract<typeof o, { kind: "CORE" }> => o.kind === "CORE");
   const mineCore = cores.find((c) => c.controlled);
   assert.ok(mineCore, "应有受控核心");
-  assert.equal(mineCore.owner_username, SELF);
+  // owner_username 归一化：player-a → player_a（官方 pattern `^[a-z0-9_]+$`）
+  assert.equal(mineCore.owner_username, "player_a");
   assert.equal(mineCore.state, "NORMAL");
   // 己方单位
   const units = proto.objects.filter((o): o is Extract<typeof o, { kind: "UNIT" }> => o.kind === "UNIT");
@@ -83,6 +86,48 @@ test("tickStateToProto：可控/不可控/地形/beacon 全转换", () => {
   assert.ok(proto.objects.some((o) => o.kind === "RESOURCE"));
   // beacon
   assert.equal(proto.champion_beacon.position[0], 100);
+});
+
+test("事件 ID 适配：sim 内部格式转合法 UUID", () => {
+  const state = makeState({
+    events: [
+      {
+        eventId: "sim:10:0:HARVEST_SUCCEEDED:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+        tick: 10,
+        eventType: "HARVEST_SUCCEEDED",
+        reasonCode: null,
+        actorId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+        targetId: null,
+        position: [3, 0],
+        values: { amount: 1 },
+      },
+    ],
+  });
+  const proto = tickStateToProto(state, SELF);
+  assert.equal(proto.events.length, 1);
+  const event = proto.events[0];
+  assert.match(event.event_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.notEqual(event.event_id, "sim:10:0:HARVEST_SUCCEEDED:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1");
+  // actor_id 已是 UUID 原样保留
+  assert.equal(event.actor_id, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1");
+  // 确定性：同 eventId 恒同 UUID
+  const again = tickStateToProto(state, SELF);
+  assert.equal(again.events[0].event_id, event.event_id);
+});
+
+test("toDeterministicUuid：确定性且合法", () => {
+  const first = toDeterministicUuid("sim:1:0:HARVEST");
+  assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.equal(toDeterministicUuid("sim:1:0:HARVEST"), first);
+  assert.notEqual(toDeterministicUuid("sim:1:1:HARVEST"), first);
+  // 已是 UUID 形状则原样（asOfficialUuid 内部逻辑经事件测试覆盖）
+});
+
+test("normalizeOwnerUsername：非法字符/过短补位", () => {
+  assert.equal(normalizeOwnerUsername("player-a"), "player_a");
+  assert.equal(normalizeOwnerUsername("p1"), "p1_");
+  assert.equal(normalizeOwnerUsername("t1"), "t1_");
+  assert.equal(normalizeOwnerUsername("player_1"), "player_1");
 });
 
 test("protoPlanToPlan：官方动作 ↔ 模拟器动作 无损往返", () => {
