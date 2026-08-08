@@ -13,6 +13,7 @@
 import { TENANTS } from "./fs-jsonl.ts";
 import { TtlCache } from "./cache.ts";
 import { loadMinePatterns, type MineRefillPrediction } from "./mine-patterns.ts";
+import { loadAllianceExploration } from "./exploration-coverage.ts";
 import { loadTenantSurveyCached } from "./survey-cache.ts";
 import { loadConsensusMining } from "./consensus-mining.ts";
 
@@ -40,12 +41,27 @@ export interface ChunkCoverageInput {
   lastSeenTick: number | null;
 }
 
+/** 补测目标（2026-08-08，探索线输入）：已探索但观测过旧的 chunk——refill 模型
+ *  证伪后的替代勘探信号（不预测刷新，而是"哪块旧观测区最该先补测"）。
+ *  mission 层可据此派 EXPLORE worker 定向补测。 */
+export interface ResurveyInput {
+  key: string;
+  cx: number;
+  cy: number;
+  lastSeenTick: number;
+  /** currentTick - lastSeenTick（越大越旧，越该补测）。 */
+  stalenessTicks: number;
+  distChunks: number;
+}
+
 export interface DecisionInputPayload {
   generatedAt: string;
   tenant: string;
   currentTick: number | null;
   refillPredictions: RefillPredictionInput[];
   chunkCoverage: ChunkCoverageInput[];
+  /** 补测目标（2026-08-08）：旧观测区按陈旧度降序——勘探方向直接输入。 */
+  resurveyTargets: ResurveyInput[];
   cachedAt: string;
 }
 
@@ -58,6 +74,7 @@ export function buildDecisionInput(
   predictions: readonly MineRefillPrediction[],
   chunks: readonly { key?: unknown; cx?: unknown; cy?: unknown; lastSeenTick?: unknown }[],
   threatByCell?: ReadonlyMap<string, { threatLevel: 0 | 1 | 2 | 3; threatCombat: number }>,
+  resurvey?: readonly { key?: unknown; cx?: unknown; cy?: unknown; lastSeenTick?: unknown; stalenessTicks?: unknown; distChunks?: unknown }[],
 ): DecisionInputPayload {
   const refillPredictions: RefillPredictionInput[] = (predictions ?? [])
     .filter((p) => p && p.cell)
@@ -84,12 +101,25 @@ export function buildDecisionInput(
     }))
     .filter((c) => c.key.length > 0)
     .sort((a, b) => (a.lastSeenTick ?? -1) - (b.lastSeenTick ?? -1)); // 最老分区优先（勘探方向）
+  // 补测目标（2026-08-08）：旧观测区按陈旧度降序——mission 层勘探方向直接输入。
+  const resurveyTargets: ResurveyInput[] = (resurvey ?? [])
+    .filter((r) => r && (r.key !== undefined || (r.cx !== undefined && r.cy !== undefined)))
+    .map((r) => ({
+      key: String(r.key ?? "" + num(r.cx) + "," + num(r.cy)),
+      cx: num(r.cx),
+      cy: num(r.cy),
+      lastSeenTick: num(r.lastSeenTick),
+      stalenessTicks: num(r.stalenessTicks),
+      distChunks: num(r.distChunks),
+    }))
+    .sort((a, b) => b.stalenessTicks - a.stalenessTicks); // 最旧优先
   return {
     generatedAt: new Date().toISOString(),
     tenant,
     currentTick,
     refillPredictions,
     chunkCoverage,
+    resurveyTargets,
     cachedAt: new Date().toISOString(),
   };
 }
@@ -115,7 +145,15 @@ export function loadDecisionInput(tenant: string): DecisionInputPayload {
       if (r.cell && typeof r.threatLevel === "number") threatByCell.set(r.cell, { threatLevel: r.threatLevel as 0 | 1 | 2 | 3, threatCombat: Number(r.threatCombat ?? 0) });
     }
   } catch { /* 威胁数据不可用不阻断（refill/chunk 仍返回） */ }
-  const payload = buildDecisionInput(tenant, currentTick, patterns.tenants?.[tenant]?.predictions ?? [], chunkRows, threatByCell);
+  // 补测目标（2026-08-08）：exploration 的旧观测区（refill 模型证伪后替代勘探信号）
+  // ——mission 层据此定向补测（读 30s 缓存，无触网）。
+  let resurveyRows: Array<{ key: string; cx: number; cy: number; lastSeenTick: number; stalenessTicks: number; distChunks: number }> = [];
+  try {
+    resurveyRows = loadAllianceExploration().resurveyTargets.map((r) => ({
+      key: r.key, cx: r.cx, cy: r.cy, lastSeenTick: r.lastSeenTick, stalenessTicks: r.stalenessTicks, distChunks: r.distChunks,
+    }));
+  } catch { /* 探索数据不可用不阻断 */ }
+  const payload = buildDecisionInput(tenant, currentTick, patterns.tenants?.[tenant]?.predictions ?? [], chunkRows, threatByCell, resurveyRows);
   cache.set(key, payload);
   return payload;
 }
