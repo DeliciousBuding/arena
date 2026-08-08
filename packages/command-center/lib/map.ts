@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TENANTS, calibrationDir, cellKey, latestRunDir, listCases, parseTick } from "./fs-jsonl.ts";
-import { loadBeaconTrail, loadCoreTrails, type TrailPoint } from "./trails.ts";
+import { loadBeaconTrail, loadCoreTrails, loadCoreTrailsFromSurveyDb, type TrailPoint } from "./trails.ts";
 
 const SURVEY_CASE_LIMIT = 24; // 每个租户累积测绘最多取最近 N 个 case（覆盖与新鲜度平衡）
 
@@ -99,9 +99,18 @@ function loadMergedMapInner(): MergedMap {
       if (afterTick > latestTick) latestTick = afterTick;
       const after = lastCaseRaw?.after?.state;
       if (after?.objects) {
-        unitById.clear(); coreById.clear();
+        // 地形重建（2026-08-08，数据质量 A7）：after 是全量世界状态（含
+        // OBSTACLE/RESOURCE，资源点动态 2-6 tick 消失）——此前只清单位/核心，
+        // terrain 是 before 循环累积（run 内出现过即保留），已消失的矿/障碍仍
+        // 显示在地图上（"绿色残留"地图层根因）。after 存在时重建地形为当前态。
+        terrain.clear(); unitById.clear(); coreById.clear();
         for (const obj of after.objects) {
-          if (obj.kind === "UNIT" && obj.id) {
+          if (obj.kind === "OBSTACLE" || obj.kind === "RESOURCE") {
+            const type = obj.kind === "OBSTACLE" ? "obstacle" : "resource";
+            for (const [x, y] of (obj.positions as number[][] | undefined) ?? []) {
+              terrain.set(cellKey(x, y), { x, y, type, tick: latestTick });
+            }
+          } else if (obj.kind === "UNIT" && obj.id) {
             const [x, y] = (obj.position as number[] | undefined) ?? [0, 0];
             unitById.set(obj.id as string, { x, y, type: "unit", tick: latestTick, hp: obj.hp as number, unitType: (obj.unit_type as string | undefined) ?? "WORKER", cargo: (obj.cargo as number | undefined) ?? 0, controlled: obj.controlled as boolean, id: obj.id as string });
           } else if (obj.kind === "CORE") {
@@ -135,7 +144,10 @@ function loadMergedMapInner(): MergedMap {
     let beacon: MergedMap["tenants"][number]["beacon"] = null;
     if (caseFiles.length > 0) {
       const cb = lastCaseRaw?.after?.state?.champion_beacon ?? lastCaseRaw?.before?.state?.champion_beacon;
-      if (cb?.position) beacon = { x: cb.position[0], y: cb.position[1], status: cb.status ?? "GROUND", carrier_id: cb.carrier_id ?? null, trail: loadBeaconTrail(tenant) };
+      // 无信标占位（2026-08-08 数据质量 A10）：官方无信标时返回
+      // {position:[0,0], status:null, carrier_id:null}——status 为空即无信标，
+      // 此前误报为 (0,0) GROUND 假信标。
+      if (cb?.position && cb.status) beacon = { x: cb.position[0], y: cb.position[1], status: cb.status, carrier_id: cb.carrier_id ?? null, trail: loadBeaconTrail(tenant) };
     }
     perTenant.push({ tenant, runId: runDir, caseCount: caseFiles.length, latestTick: latestTick === 0 ? null : latestTick, beacon });
   }
@@ -149,7 +161,9 @@ function loadMergedMapInner(): MergedMap {
   // 敌方核心轨迹（跨租户按 username 去重，保留最长轨迹——同一敌核被多租户目击）
   const coreTrailByUser = new Map<string, { username: string; trail: TrailPoint[]; tenant: string }>();
   for (const t of perTenant) {
-    for (const ct of loadCoreTrails(t.tenant)) {
+    // survey-db core_hunts 全量历史优先（A9，敌核目击稀疏时不空），
+    // case 扫描（最近 N run）作补充；长轨迹胜。
+    for (const ct of [...loadCoreTrailsFromSurveyDb(t.tenant), ...loadCoreTrails(t.tenant)]) {
       const cur = coreTrailByUser.get(ct.username);
       if (!cur || ct.trail.length > cur.trail.length) coreTrailByUser.set(ct.username, { ...ct, tenant: t.tenant });
     }

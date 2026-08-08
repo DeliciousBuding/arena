@@ -3,8 +3,10 @@ import { StreamPane } from "../StreamPane";
 import { IntelPanel } from "./IntelPanel";
 import { RedeemPanel } from "./RedeemPanel";
 import { SurveyPanel } from "./SurveyPanel";
+import { AdvicePanel } from "./AdvicePanel";
+import { SituationPanel } from "./SituationPanel";
 
-/** 右栏：VSCode 风格 tab 容器（决策流 / 威胁情报 / 测绘 / 兑换码）。
+/** 右栏：VSCode 风格 tab 容器（决策流 / 威胁情报 / 参谋建议 / 测绘 / 联盟态势 / 兑换码）。
  *  激活面板随 tab 切换；切回时重挂载 → 数据自动刷新。 */
 export function RightPanel() {
   const { rightTab, setRightTab } = useShell();
@@ -29,7 +31,9 @@ export function RightPanel() {
       <div className="rp-body">
         {rightTab === "logs" ? <StreamPane embedded />
           : rightTab === "intel" ? <IntelPanel />
+          : rightTab === "advice" ? <AdvicePanel />
           : rightTab === "survey" ? <SurveyPanel />
+          : rightTab === "situation" ? <SituationPanel />
           : <RedeemPanel />}
       </div>
     </div>

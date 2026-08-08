@@ -4,9 +4,10 @@
  * 信标：全玩家共享同一对象，位置随携带者迁移（实测 1 格/4-5 tick）；
  * 敌核：按 username 收集（controlled=false），展示谁在迁移/逼近。
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { calibrationDir, listCases, parseTick, runsByMaxTick } from "./fs-jsonl.ts";
+import { DatabaseSync } from "node:sqlite";
+import { calibrationDir, listCases, parseTick, runsByMaxTick, DATA_ROOT } from "./fs-jsonl.ts";
 
 export interface TrailPoint { x: number; y: number; tick: number }
 
@@ -175,4 +176,42 @@ export function loadCoreTrails(tenant: string): Array<{ username: string; trail:
   const list = [...byUser.entries()].map(([username, rec]) => ({ username, trail: rec.pts }));
   coreTrailCache.set(tenant, { latestRun, lastFile: latestFile, byUser, list });
   return list;
+}
+
+/** 敌核轨迹（survey-db core_hunts 全量历史，2026-08-08 数据质量 A9）：
+ *  core_hunts 每格一条（owner 迁移多格），按 owner 分组 + last_seen 升序
+ *  = 轨迹序列。跨 run 积累比 case 扫描（最近 N run）完整——敌核
+ *  目击稀疏时轨迹不再空（近 500+ tick 无敌核但历史轨迹完整）。
+ *  注：轨迹包含已摧毁的敌核（历史轨迹层）；对每租户独立计算，联盟层合并任主。 */
+export function loadCoreTrailsFromSurveyDb(tenant: string, maxPoints = 48): Array<{ username: string; trail: TrailPoint[] }> {
+  const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(file)) return [];
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+  } catch {
+    return [];
+  }
+  try {
+    const rows = db.prepare(
+      "SELECT owner, x, y, last_seen_tick FROM core_hunts WHERE owner IS NOT NULL AND owner != '' ORDER BY last_seen_tick ASC",
+    ).all() as Array<{ owner: string; x: number; y: number; last_seen_tick: number }>;
+    const byUser = new Map<string, TrailPoint[]>();
+    for (const r of rows) {
+      const list = byUser.get(r.owner) ?? [];
+      const last = list[list.length - 1];
+      if (last && last.x === r.x && last.y === r.y) continue; // 连续同格去重
+      list.push({ x: r.x, y: r.y, tick: r.last_seen_tick });
+      byUser.set(r.owner, list);
+    }
+    const out: Array<{ username: string; trail: TrailPoint[] }> = [];
+    for (const [username, pts] of byUser) {
+      if (pts.length >= 2) out.push({ username, trail: pts.length > maxPoints ? pts.slice(-maxPoints) : pts });
+    }
+    return out.sort((a, b) => b.trail.length - a.trail.length);
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
 }

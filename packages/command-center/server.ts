@@ -27,6 +27,7 @@ import { loadAllianceAdvice, refreshAllianceAdvice } from "./lib/alliance-advice
 import { loadEnemyHeat, refreshEnemyHeat } from "./lib/enemy-heat.ts";
 import { loadPipelineHealth, refreshPipelineHealth } from "./lib/pipeline-health.ts";
 import { loadAllianceDeeds, refreshAllianceDeeds } from "./lib/alliance-deeds.ts";
+import { loadDeedsJournal, refreshDeedsJournal } from "./lib/deeds-journal.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
 import { loadLeaderboardIntel, loadOurUsernames } from "./lib/leaderboard.ts";
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
@@ -148,10 +149,34 @@ app.get("/api/deeds", async (c) => {
   }
   return c.json({ generatedAt: new Date().toISOString(), tenant, limit, allianceMerged: tenant === "all", deeds });
 });
+app.get("/api/deeds/journal", async (c) => {
+  // 事迹日记摘要（2026-08-08）：把事迹流聚合成"日记"层——tick 窗口头条/
+  // 分租户统计/中文叙事段落。?tenant=all|tN&window=5000。30s 缓存。
+  const tenant = c.req.query("tenant") ?? "all";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  const w = Number(c.req.query("window") ?? 5000);
+  const windowTicks = Number.isFinite(w) ? Math.min(Math.max(w, 500), 50_000) : 5000;
+  return c.json(await loadDeedsJournal(tenant, windowTicks));
+});
 app.get("/api/alliance/survey", (c) => {
   // 联盟共享测绘（2026-08-08）：四租户 survey-db 聚合（敌核/矿/障碍/探索分区
   // + 生命周期 + 租户色）——地图「全联盟」层数据源，30s 聚合缓存。
-  return c.json(loadAllianceSurvey());
+  const full = loadAllianceSurvey();
+  // ?view=consensus 轻量模式（2026-08-08 消费优化）：只返回摘要 + 冲突 +
+  // 共识三视图（跳过 raw resources/obstacles/chunks/lifecycle，payload 大幅减小）。
+  if (c.req.query("view") !== "consensus") return c.json(full);
+  return c.json({
+    generatedAt: full.generatedAt,
+    colors: full.colors,
+    tenantSummaries: full.tenantSummaries,
+    conflicts: full.conflicts,
+    consensusResources: full.consensusResources,
+    consensusCores: full.consensusCores,
+    consensusChunks: full.consensusChunks,
+    cachedAt: full.cachedAt,
+  });
 });
 app.get("/api/alliance/snapshot", (c) => {
   // 联盟态势快照（2026-08-08）：canonical 联盟域模型 + survey-db 敌核 +
@@ -401,6 +426,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
       refreshEnemyHeat(); // 敌情热区 30s 缓存（读 units_seen 聚合，快）
       refreshPipelineHealth(); // 数据管线健康 15s 缓存（读 survey 水位/世界，快）
       refreshAllianceDeeds(); // 联盟事迹 45s 缓存（读快照/共享测绘/热区缓存，快）
+      void refreshDeedsJournal(); // 事迹日记摘要 30s 缓存（读 deeds 缓存，快）
       void supervisorState(); // 8120 健康状态 5s 缓存（/api/overview、/api/tenants 首开即快）
     } catch { /* 数据缺失/临时 IO 失败不阻塞启动 */ }
   };

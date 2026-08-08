@@ -262,6 +262,93 @@ function collectMilestoneDeeds(tenant: string): Deed[] {
   return out;
 }
 
+/** 稀有事迹去重键（notable 表与扫描双源时避免重复条目；★1 噪声不去重）。 */
+function dedupeKey(d: Deed): string | null {
+  if (d.star < 2) return null;
+  if (!NOTABLE_KINDS.has(d.kind)) return null;
+  return `${d.tick}:${d.kind}:${d.actor ?? ""}:${d.target ?? ""}`;
+}
+
+/** notable_events 表持久化的事件类型（★2-4；与 arena-agent NOTABLE_TYPES 同口径）。 */
+const NOTABLE_KINDS = new Set([
+  "CORE_DESTROYED",
+  "CORE_RESOURCES_CAPTURED",
+  "CORE_RESOURCE_OVERFLOW_DESTROYED",
+  "PICKUP_BEACON_SUCCEEDED",
+  "DROP_BEACON_SUCCEEDED",
+  "SELF_DESTRUCT",
+  "UNIT_DESTROYED",
+]);
+
+/** survey-db notable_events 行 -> 叙事 Deed（★2-4）。 */
+function deedFromNotableRow(r: {
+  tick: number; event_type: string; actor_id: string | null; target_id: string | null;
+  x: number | null; y: number | null; amount: number | null; unit_type: string | null;
+}, tenant: string): Deed | null {
+  const kind = r.event_type;
+  if (!NOTABLE_KINDS.has(kind)) return null;
+  const position: Position | null = r.x !== null && r.y !== null ? [r.x, r.y] : null;
+  const id = `${tenant}:${r.tick}:${kind}:${r.actor_id ?? ""}:${r.target_id ?? ""}`;
+  const base = { id, tick: r.tick, tenant, position, actor: r.actor_id, target: r.target_id };
+  switch (kind) {
+    case "CORE_DESTROYED": {
+      const tag = r.target_id ? r.target_id.slice(0, 8) : null;
+      return { ...base, star: 4, kind, title: "敌方核心被摧毁", detail: tag ? `敌方核心 ${tag} 被摧毁` : "敌方核心被摧毁", target: tag };
+    }
+    case "CORE_RESOURCES_CAPTURED":
+      return { ...base, star: 3, kind, title: "夺取核心资源", detail: `夺取敌方核心资源 ${r.amount ?? "?"}` };
+    case "CORE_RESOURCE_OVERFLOW_DESTROYED":
+      return { ...base, star: 3, kind, title: "核心资源溢出自毁", detail: "资源溢出导致核心自毁" };
+    case "PICKUP_BEACON_SUCCEEDED":
+      return { ...base, star: 3, kind, title: "拾取信标", detail: position ? `在 (${position[0]},${position[1]}) 拾取信标` : "拾取信标" };
+    case "DROP_BEACON_SUCCEEDED":
+      return { ...base, star: 3, kind, title: "放置信标", detail: position ? `在 (${position[0]},${position[1]}) 放置信标` : "放置信标" };
+    case "SELF_DESTRUCT":
+      return { ...base, star: 3, kind, title: "单位自爆", detail: "单位自爆" };
+    case "UNIT_DESTROYED":
+      return { ...base, star: 2, kind, title: "单位阵亡", detail: position ? `单位在 (${position[0]},${position[1]}) 阵亡` : "单位阵亡" };
+    default:
+      return null;
+  }
+}
+
+/** 从 survey-db notable_events 查稀有事迹（★2-4，历史全量；防 run 轮换丢失）。
+ *  只读打开；表不存在/无数据返回空（扫描兜底）。 */
+function collectNotableDeeds(tenant: string): Deed[] {
+  const file = join(DATA_ROOT, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(file)) return [];
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+  } catch {
+    return [];
+  }
+  const out: Deed[] = [];
+  try {
+    const rows = db.prepare(
+      "SELECT tick, event_type, actor_id, target_id, x, y, amount, unit_type FROM notable_events ORDER BY tick DESC LIMIT 300",
+    ).all() as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      const d = deedFromNotableRow({
+        tick: Number(row.tick),
+        event_type: String(row.event_type),
+        actor_id: typeof row.actor_id === "string" ? row.actor_id : null,
+        target_id: typeof row.target_id === "string" ? row.target_id : null,
+        x: num(row.x),
+        y: num(row.y),
+        amount: num(row.amount),
+        unit_type: typeof row.unit_type === "string" ? row.unit_type : null,
+      }, tenant);
+      if (d) out.push(d);
+    }
+  } catch {
+    // 旧库无 notable_events 表：扫描兜底（loadDeeds 仍走 collectEventDeeds）
+  } finally {
+    db.close();
+  }
+  return out;
+}
+
 /** 事迹聚合入口：tenant=all 合并四租户；按 tick 倒序；内存缓存 45s。
  *  异步：缓存命中立即返回；未命中分批扫描（让出事件循环）。 */
 export async function loadDeeds(tenant: string, limit: number): Promise<Deed[]> {
@@ -281,7 +368,21 @@ export async function loadDeeds(tenant: string, limit: number): Promise<Deed[]> 
   for (const t of tenants) {
     let regular = 0;
     let moves = 0;
+    const seenNotable = new Set<string>();
+    // ★2-4 稀有/里程碑：查库优先（历史全量，2026-08-08 审计 A4，
+    // calibration run 轮换后历史稀有叙事不丢）；扫描仅兜底
+    // 近期窗口（survey:sync lag 期间）。
+    for (const d of collectNotableDeeds(t)) {
+      const k = dedupeKey(d);
+      if (k !== null) seenNotable.add(k);
+      out.push(d);
+    }
     for (const d of await collectEventDeeds(t)) {
+      const k = dedupeKey(d);
+      if (k !== null) {
+        if (seenNotable.has(k)) continue; // 查库已含，扫描重复跳过
+        seenNotable.add(k);
+      }
       if (d.star === 1) {
         if (d.kind === "CORE_MOVE_SUCCEEDED") {
           if (moves >= MOVE_CAP) continue;

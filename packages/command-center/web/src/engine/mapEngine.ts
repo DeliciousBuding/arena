@@ -76,6 +76,10 @@ interface ArenaState extends Jsonish {
   intel: Jsonish | null;
   enemyMemoryHits: Jsonish[];
   surveyHits: Map<string, Jsonish>;
+  enemyHeat: Jsonish | null;
+  enemyHeatMax: number;
+  threatRose: Jsonish | null;
+  threatRoseAt: number;
   bounds: { minX: number; minY: number; maxX: number; maxY: number } | null;
   lastRefresh: number;
   unitPrev: Map<string, Jsonish>;
@@ -100,7 +104,7 @@ const state: ArenaState = {
   streams: {},          // tenant -> rows
   events: {},           // tenant -> events
   view: { cx: 0, cy: 0, scale: 8, ready: false },
-  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true, beaconTrail: true, survey: true, patrol: true, plan: true, trail: true, beaconEdge: true, coreTrail: true, enemyMemory: true },
+  layers: { obstacle: true, resource: true, unit: true, core: true, beacon: true, beaconTrail: true, survey: true, patrol: true, plan: true, trail: true, beaconEdge: true, coreTrail: true, enemyMemory: true, enemyHeat: true },
   tenantsOn: { t1: true, t2: true, t3: true, t4: true },
   soloTenant: null,     // null=全局联盟；'t1'..'t4'=单租户
   tab: 'all',           // all | t1 | t2 | t3 | t4 | events
@@ -110,6 +114,10 @@ const state: ArenaState = {
   coreTrails: [],
   intel: null,
   enemyMemoryHits: [],  // 敌情记忆命中点（drawEnemyMemory 构建，hover 用）：{sx,sy,kind,...}
+  enemyHeat: null,      // 敌情热区（/api/intel/heat）：16×16 桶敌方目击密度/兵力构成
+  enemyHeatMax: 0,      // 热区桶 count 最大值（归一化强度）
+  threatRose: null,     // 威胁扇区玫瑰（/api/alliance/snapshot threatSummaries，全局联盟）
+  threatRoseAt: 0,      // 上次拉取时间戳（20s 节流）
   surveyHits: new Map(), // 测绘记忆命中（tactSurveyLayer 构建）：cellKey -> {kind,tick,state,seenCount,firstSeen}
   bounds: null,
   lastRefresh: 0,
@@ -338,6 +346,7 @@ async function poll() {
   try {
     if (overview) state.overview = overview;
     if (intel) { state.intel = intel; emit('intel', intel); }
+    loadEnemyHeat();
     if (!map) {
       // 地图端点失败：保留上一轮 cells 继续渲染（插值/动画不中断），下轮 poll 恢复
       captureUnitPrev();
@@ -389,7 +398,7 @@ async function poll() {
     emit('overview', state.overview);
     draw();
     if (state.soloTenant) tactRefreshLive(state.soloTenant);
-    else { loadGlobalPlans(); refreshAllCommands(); }
+    else { loadGlobalPlans(); refreshAllCommands(); loadThreatRose(); }
   } catch (err) {
     emit('refresh', false);
     console.warn('poll failed', err);
@@ -572,6 +581,7 @@ function draw() {
   LQ = animating;
   if (!LQ) drawGridLabels(w, h); // 坐标刻度（动态层：动画期间跳过）
   const replayActive = replay.data && replay.loadedFor === state.soloTenant;
+  if (state.layers.enemyHeat !== false) drawEnemyHeat(s); // 敌情热区（单位之下，威胁先验）
   tactPatrolLayer(s);
   tactPlanLayer(s);
   tactDrawEventFx(s);
@@ -586,6 +596,7 @@ function draw() {
   if (!replayActive) drawCores(buckets.core, s);
   if (!replayActive && state.layers.coreTrail !== false) drawEnemyCoreTrails(s);
   if (!replayActive && state.layers.coreTrail !== false) drawThreatArrows(s);
+  if (!replayActive && !state.soloTenant && state.layers.enemyHeat !== false) drawThreatRose(s); // 威胁扇区玫瑰（全局，敌情热区层同开关）
   if (state.layers.enemyMemory !== false) drawEnemyMemory(s); // 敌情记忆 = 情报层：回放模式也画（非当前帧实体）
   if (!replayActive) drawLiveTrails(s);
   drawBeacons(s);
@@ -1455,6 +1466,98 @@ function enemyMemAlpha(age: any, freshAlpha: any, minAlpha: any) {
   if (age >= ENEMY_MEM_MAX_AGE) return minAlpha;
   const t = (age - ENEMY_MEM_FRESH_WINDOW) / (ENEMY_MEM_MAX_AGE - ENEMY_MEM_FRESH_WINDOW);
   return freshAlpha - (freshAlpha - minAlpha) * t;
+}
+/** 敌情热区层（2026-08-08）：survey-db units_seen 聚合的 16×16 桶敌方活动密度——
+ *  桶强度 = count/maxCount（红 alpha 0.04-0.34 渐变），战斗单位占比高的桶更红更亮；
+ *  最后目击越旧越淡（新鲜度）。画在单位之下，一眼看出"哪片区域敌方活动最密集"。
+ *  数据源 /api/intel/heat?tenant=all&window=2000（服务端 30s 缓存，前端 30s 节流）。 */
+const HEAT_CHUNK = 16;
+let heatLastLoad = 0;
+/** 威胁扇区玫瑰（全局联盟，数据 /api/alliance/snapshot threatSummaries）：每个己方核心
+ *  周围按 8 方向画敌情扇区条（长度/透明度 ∝ score），<32 格显示最近距离（黄）、<18 红。
+ *  一眼看出"哪个方向敌核在逼近我方哪颗核心"。随敌情热区层开关显示。 */
+const ROSE_DIRS: Record<string, [number, number]> = { N: [0, -1], NE: [1, -1], E: [1, 0], SE: [1, 1], S: [0, 1], SW: [-1, 1], W: [-1, 0], NW: [-1, -1] };
+async function loadThreatRose() {
+  const now = Date.now();
+  if (now - state.threatRoseAt < 20_000 && state.threatRose) return; // 服务端缓存 + 前端同频节流
+  state.threatRoseAt = now;
+  try {
+    const r = await getJSON('/api/alliance/snapshot', 20000);
+    if (Array.isArray(r?.threatSummaries)) state.threatRose = r.threatSummaries;
+  } catch { /* 端点暂不可用：保留上次玫瑰 */ }
+}
+function drawThreatRose(s: any) {
+  const rose = state.threatRose;
+  if (!Array.isArray(rose) || !rose.length) return;
+  const k = Math.max(0.55, Math.min(1.4, s / 12));
+  const w = W(), h = H();
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (const ts of rose) {
+    const color = TENANT_COLORS[ts.tenantId] ?? '#999';
+    const cp = ts.corePosition;
+    if (!Array.isArray(cp) || cp.length < 2) continue;
+    const p = project(cp[0], cp[1]);
+    if (p.sx < -140 || p.sx > w + 140 || p.sy < -140 || p.sy > h + 140) continue;
+    for (const sec of ts.sectors ?? []) {
+      const dir = ROSE_DIRS[sec.direction];
+      if (!dir || !sec.entityCount) continue;
+      const len = Math.max(6, Math.min(64, 8 + (sec.score ?? 0) * 90)) * k;
+      const nx = p.sx + dir[0] * len, ny = p.sy + dir[1] * len;
+      const alpha = Math.max(0.12, Math.min(0.55, 0.15 + (sec.score ?? 0) * 0.5));
+      ctx.strokeStyle = color; ctx.globalAlpha = alpha; ctx.lineWidth = Math.max(1.2, s * 0.03);
+      ctx.beginPath(); ctx.moveTo(p.sx + dir[0] * 3, p.sy + dir[1] * 3); ctx.lineTo(nx, ny); ctx.stroke();
+      ctx.globalAlpha = Math.min(1, alpha + 0.25);
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(nx, ny, Math.max(1.5, s * 0.045), 0, Math.PI * 2); ctx.fill();
+      const nd = sec.nearestDistance;
+      if (typeof nd === 'number' && nd < 32) {
+        ctx.globalAlpha = 0.95; ctx.fillStyle = nd < 18 ? '#dd626d' : '#d3ad55';
+        ctx.font = '600 9px ' + CANVAS_FONT;
+        ctx.fillText(String(nd), nx + 2, ny - 2);
+      }
+    }
+  }
+  ctx.restore();
+}
+async function loadEnemyHeat() {
+  if (state.layers.enemyHeat === false) return;
+  const now = Date.now();
+  if (now - heatLastLoad < 30_000 && state.enemyHeat) return; // 服务端 30s 缓存，前端同频节流
+  heatLastLoad = now;
+  try {
+    const r = await getJSON('/api/intel/heat?tenant=all&window=2000', 20000);
+    const buckets = Array.isArray(r?.buckets) ? r.buckets : [];
+    state.enemyHeat = buckets;
+    state.enemyHeatMax = buckets.reduce((m: number, b: any) => Math.max(m, Number(b.count) || 0), 0) || 1;
+  } catch { /* 端点暂不可用：保留上次热区 */ }
+}
+function drawEnemyHeat(s: any) {
+  const buckets = state.enemyHeat;
+  if (!Array.isArray(buckets) || !buckets.length || !state.enemyHeatMax) return;
+  const w = W(), h = H();
+  const cell = HEAT_CHUNK * s; // 16×16 世界格 → 屏幕尺寸
+  const baseTick = state.tickMeter.lastTick || 0;
+  ctx.save();
+  for (const b of buckets) {
+    const p = project(b.bx * HEAT_CHUNK, b.by * HEAT_CHUNK);
+    if (p.sx + cell < 0 || p.sy + cell < 0 || p.sx > w || p.sy > h) continue; // 视口外跳过
+    const intensity = Math.max(0, Math.min(1, (Number(b.count) || 0) / state.enemyHeatMax));
+    // 新鲜度：最后目击距今越远越淡（2000 tick 窗口内线性衰减）
+    const age = Math.max(0, baseTick - (Number(b.lastTick) || 0));
+    const fresh = Math.max(0.25, 1 - age / 2000);
+    const combatRatio = (Number(b.combatCount) || 0) / Math.max(1, Number(b.count) || 1);
+    const alpha = (0.05 + 0.29 * intensity) * fresh;
+    ctx.fillStyle = `rgba(198, ${Math.round(80 + combatRatio * 60)}, ${Math.round(88 + (1 - combatRatio) * 20)}, ${alpha.toFixed(3)})`;
+    ctx.fillRect(p.sx, p.sy, cell, cell);
+    // 高密度桶加细描边（读图辅助，非装饰）
+    if (intensity > 0.6) {
+      ctx.strokeStyle = `rgba(221,98,109,${(0.18 * fresh).toFixed(3)})`;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(p.sx + 0.5, p.sy + 0.5, cell - 1, cell - 1);
+    }
+  }
+  ctx.restore();
 }
 function drawEnemyMemory(s: any) {
   state.enemyMemoryHits = [];
