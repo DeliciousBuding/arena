@@ -3,7 +3,9 @@
  * 组装，领域逻辑在 lib/ 各模块；TypeScript，Node 24 type stripping 直接执行）。
  *
  * 只读：不写 data/runtime、不连接 Arena、不启动任何 writer（人类指挥写
- * data/runtime/human-commands 除外，见 lib/store.ts）。数据源：
+ * data/runtime/human-commands 除外，见 lib/store.ts；测绘保鲜例外：面板可惰性
+ * 触发 survey:sync CLI 补同步——写库仍是该 CLI（单一 writer），见
+ * lib/survey-sync-bridge.ts）。数据源：
  *  - ARENA_DATA_ROOT（缺省 = 仓库同级 data/）下 runtime/{t1..t4}/calibration
  *    最新 run 的 calibration case + telemetry JSONL；
  *  - supervisor Debug API（127.0.0.1:8120 /ready，探测在线状态）；
@@ -27,6 +29,7 @@ import { loadAllianceSnapshot, refreshAllianceSnapshot } from "./lib/alliance-sn
 import { loadAllianceAdvice, refreshAllianceAdvice } from "./lib/alliance-advice.ts";
 import { loadEnemyHeat, refreshEnemyHeat } from "./lib/enemy-heat.ts";
 import { loadPipelineHealth, refreshPipelineHealth } from "./lib/pipeline-health.ts";
+import { maybeTriggerSurveySync, surveySyncBridgeState } from "./lib/survey-sync-bridge.ts";
 import { loadAllianceDeeds, refreshAllianceDeeds } from "./lib/alliance-deeds.ts";
 import { loadDeedsJournal, refreshDeedsJournal } from "./lib/deeds-journal.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
@@ -247,7 +250,11 @@ app.get("/api/intel", (c) => c.json(loadAllianceIntel()));
 app.get("/api/health/pipeline", (c) => {
   // 数据管线健康（2026-08-08）：survey-db 同步水位 vs live tick 滞后/数据量/
   // 缓存新鲜度——测绘记录层是否健康前进一眼可读。15s 缓存。
-  return c.json(loadPipelineHealth());
+  const payload = loadPipelineHealth();
+  // 惰性同步桥（2026-08-08，无计划任务）：滞后 > 阈值 → 后台补一次
+  // survey:sync --latest-only（防抖 + 单实例锁），请求路径触发不阻塞返回。
+  maybeTriggerSurveySync(payload.global.maxLagTicks, TENANTS);
+  return c.json({ ...payload, surveySync: surveySyncBridgeState() });
 });
 app.get("/api/intel/heat", (c) => {
   // 敌情热区（2026-08-08）：survey-db units_seen 聚合为敌方活动热力图
