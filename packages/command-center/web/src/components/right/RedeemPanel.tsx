@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   shopCookieValue, saveShopCookie, shopRequest, loadRedeemHistory, pushRedeemHistory, clearRedeemHistory,
   type ShopProduct, type ShopMe,
@@ -20,6 +20,8 @@ export function RedeemPanel() {
   const [history, setHistory] = useState(loadRedeemHistory);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [priceNote, setPriceNote] = useState("");
+  const prevPrices = useRef<Record<string, number | null | undefined> | null>(null);
 
   const refresh = useCallback(() => {
     setResult(null);
@@ -27,7 +29,18 @@ export function RedeemPanel() {
     Promise.all([
       shopRequest<{ products?: ShopProduct[] }>("/api/shop"),
       shopCookieValue() ? shopRequest<ShopMe>("/api/shop/me").then((m) => { setAccount(m); setAccErr(""); }).catch((e) => { setAccount(null); setAccErr(String((e as Error).message ?? e)); }) : Promise.resolve(),
-    ]).then(([shop]) => setProducts(shop.products ?? [])).catch((e) => setResult({ cls: "err", msg: `商品加载失败：${String((e as Error).message ?? e)}` })).finally(() => setLoading(false));
+    ]).then(([shop]) => {
+      const list = shop.products ?? [];
+      setProducts(list);
+      // 价格变动提示（官方价格动态变化）：仅首次加载不提示，之后刷新有变化才提示
+      const next = Object.fromEntries(list.map((p) => [p.id, p.resource_cost]));
+      const prev = prevPrices.current;
+      if (prev) {
+        const changed = list.filter((p) => prev[p.id] !== undefined && prev[p.id] !== p.resource_cost).length;
+        if (changed > 0) setPriceNote(`商品价格已更新：${changed} 项（自动刷新）`);
+      }
+      prevPrices.current = next;
+    }).catch((e) => setResult({ cls: "err", msg: `商品加载失败：${String((e as Error).message ?? e)}` })).finally(() => setLoading(false));
   }, []);
 
   // 面板每次激活（tab 切入）重新挂载 → 自动拉取最新价格与库存
@@ -79,6 +92,7 @@ export function RedeemPanel() {
         {account ? <span className="acc-name">@{account.username ?? "?"} · 资源 <b>{fmt(account.resources)}</b></span> : <span className="acc-err">连接失败：{accErr}（Cookie 可能已失效）</span>}
       </div>
 
+      {priceNote ? <div id="priceNote" className="redeem-result pending">{priceNote}</div> : null}
       <div id="shopList" className="shop-list">
         {loading ? <div className="stream-empty">加载官方商品…</div>
           : !products.length ? <div className="stream-empty">官方商店暂无商品</div>
