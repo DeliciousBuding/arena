@@ -396,13 +396,17 @@ function cmdRelocate(tenant: string, target: [number, number], unitIds: string[]
     createdAt: new Date().toISOString(),
   }));
   const existing = existsSync(join(DATA_ROOT, "runtime", "human-commands", `${tenant}.json`))
-    ? (() => { try { return JSON.parse(readFileSync(join(DATA_ROOT, "runtime", "human-commands", `${tenant}.json`), "utf-8")) as { version?: number; mode?: string; goals?: unknown[] }; } catch { return {}; } })()
+    ? (() => { try { return JSON.parse(readFileSync(join(DATA_ROOT, "runtime", "human-commands", `${tenant}.json`), "utf-8")) as { version?: number; mode?: string; goals?: { unitId?: string; kind?: string; target?: [number, number] }[] }; } catch { return {}; } })()
     : {};
+  // 幂等：目标 worker 的旧 goals 先移除（同 worker 重复部署 = 刷新盯守，不堆积）
+  const oldGoals = (existing.goals ?? []).filter(
+    (g) => !(g.unitId && goals.some((ng) => ng.unitId === g.unitId)),
+  );
   writeHumanStore(tenant, {
     version: existing.version ?? 1,
     mode: existing.mode ?? "override",
     commands: [],
-    goals: [...(existing.goals ?? []), ...goals],
+    goals: [...oldGoals, ...goals],
     updatedAt: new Date().toISOString(),
   });
   appendAuditEvent(DATA_ROOT, tenant, { tenant, issuer: "codex", sessionId: "arena-ctl", intentId: `intent-${Date.now()}-relocate`, kind: "worker_relocate", action: "accepted", evidence: { unitIds: units.map((u) => u.id), target } });
@@ -429,13 +433,17 @@ function cmdMine(tenant: string, target: [number, number], unitIds: string[], ho
     createdAt: new Date().toISOString(),
   }));
   const existing = existsSync(join(DATA_ROOT, "runtime", "human-commands", `${tenant}.json`))
-    ? (() => { try { return JSON.parse(readFileSync(join(DATA_ROOT, "runtime", "human-commands", `${tenant}.json`), "utf-8")) as { version?: number; mode?: string; goals?: unknown[] }; } catch { return {}; } })()
+    ? (() => { try { return JSON.parse(readFileSync(join(DATA_ROOT, "runtime", "human-commands", `${tenant}.json`), "utf-8")) as { version?: number; mode?: string; goals?: { unitId?: string; kind?: string; target?: [number, number] }[] }; } catch { return {}; } })()
     : {};
+  // 幂等：目标 worker 的旧 goals 先移除（同 worker 重复部署 = 刷新盯守，不堆积）
+  const oldGoals = (existing.goals ?? []).filter(
+    (g) => !(g.unitId && goals.some((ng) => ng.unitId === g.unitId)),
+  );
   writeHumanStore(tenant, {
     version: existing.version ?? 1,
     mode: existing.mode ?? "override",
     commands: [],
-    goals: [...(existing.goals ?? []), ...goals],
+    goals: [...oldGoals, ...goals],
     updatedAt: new Date().toISOString(),
   });
   appendAuditEvent(DATA_ROOT, tenant, { tenant, issuer: "codex", sessionId: "arena-ctl", intentId: `intent-${Date.now()}-mine`, kind: "worker_mine", action: "accepted", evidence: { unitIds: units.map((u) => u.id), target } });
