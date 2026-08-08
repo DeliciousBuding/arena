@@ -103,3 +103,21 @@ test("run-supervisor: env shadow+Director config passes validation and reaches d
     await new Promise<void>((done) => blocker.close(() => done()));
   }
 });
+
+
+test("production watchdog launcher follows active release worktree and enables Director shadow", () => {
+  const watchdog = readFileSync(resolve(REPO_ROOT, "scripts", "arena-watchdog.sh"), "utf8");
+  const hidden = readFileSync(resolve(REPO_ROOT, "scripts", "arena-watchdog-hide.vbs"), "utf8");
+  const bat = readFileSync(resolve(REPO_ROOT, "scripts", "arena-watchdog.bat"), "utf8");
+  assert.match(watchdog, /SCRIPT_DIR=.*BASH_SOURCE/);
+  assert.match(watchdog, /REPO=.*SCRIPT_DIR/);
+  assert.doesNotMatch(watchdog, /\.worktrees\/production-runtime/);
+  assert.match(watchdog, /--record-alliance-shadow/);
+  assert.match(watchdog, /--alliance-director-shadow/);
+  assert.match(watchdog, /--alliance-director-period-ticks=4/);
+  assert.match(watchdog, /--alliance-director-max-skew-ticks=2/);
+  assert.match(hidden, /WScript\.ScriptFullName/);
+  assert.match(hidden, /arena-watchdog\.sh/);
+  assert.doesNotMatch(hidden, /production-runtime/);
+  assert.match(bat, /%~dp0arena-watchdog-hide\.vbs/);
+});
