@@ -34,6 +34,12 @@ export const TACT_ACTION_CN: Record<string, string> = {
   HEAL: "维修", WAIT: "等待", REPAIR_SHIELD: "修复护盾",
   START_MOVE: "开始移动", CANCEL_MOVE: "取消移动",
 };
+/** 动作图标（右键菜单/批量菜单，几何符号，无需素材）。 */
+export const TACT_ACTION_ICON: Record<string, string> = {
+  MOVE: "➤", HARVEST: "⛏", DEPOSIT: "▣", SWEEP: "✸", SHOOT: "⚔",
+  PICKUP_BEACON: "⚑", DROP_BEACON: "⚑", SELF_DESTRUCT: "✕", HEAL: "✚",
+  WAIT: "◷", REPAIR_SHIELD: "◈", START_MOVE: "➤", CANCEL_MOVE: "✕",
+};
 /** 提交时需要方向参数的动作（点地图选方向），其余为一键动作直接提交。 */
 export const TACT_DIRECTION_ACTIONS = new Set(["MOVE", "SWEEP", "START_MOVE"]);
 /** 提交时需要目标参数的动作（点地图选敌方目标）。 */

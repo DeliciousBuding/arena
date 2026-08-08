@@ -1683,3 +1683,6 @@ body {
   padding: 1px 5px; background: rgba(95,212,232,.06);
 }
 .asset-cmd.human { color: #fff; border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.08); }
+
+/* 右键/批量菜单动作图标（2026-08-08） */
+.ctx-item .ctx-ico { flex: none; width: 16px; margin-right: 7px; display: inline-block; text-align: center; font-size: 11px; line-height: 1; opacity: .85; }
