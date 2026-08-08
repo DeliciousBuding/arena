@@ -8,7 +8,7 @@ import { loadDeeds, type Deed } from "./deeds.ts";
 import { loadAllianceDeeds } from "./alliance-deeds.ts";
 import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
 import { loadAllianceExploration, type AllianceExplorationPayload } from "./exploration-coverage.ts";
-import { loadAuditOverview } from "./audit-overview.ts";
+import { loadAuditOverview, type AuditOverviewPayload } from "./audit-overview.ts";
 import { loadAllianceMining } from "./alliance-mining.ts";
 import { loadMiningEffectiveness } from "./mining-effectiveness.ts";
 import { loadShopHistoryEntries, buildShopJournalLine } from "./shop-history.ts";
@@ -118,6 +118,9 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
       // 联盟测绘覆盖（2026-08-08，共享测绘日记）：覆盖% + 各租户区块 + 核心旁盲区。
       const covLine = buildAllianceCoverageLine(loadAllianceExploration());
       if (covLine) narrative = narrative ? narrative + " " + covLine : covLine;
+      // 决策健康（2026-08-08，综合决策日记）：逐租户质量分 + 联盟平均 + 最差归因。
+      const healthLine = buildDecisionHealthLine(loadAuditOverview());
+      if (healthLine) narrative = narrative ? narrative + " " + healthLine : healthLine;
     } catch { /* 商店数据不可用不阻断 */ }
   }
   const windowDelta = buildWindowDelta(windowed, prevWindowed);
@@ -139,6 +142,23 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
   };
   journalCache.set(key, payload);
   return payload;
+}
+
+/** 决策健康摘要（2026-08-08，日记层）：综合决策质量分逐租户 + 联盟平均 + 最差归因。
+ *  读 audit/overview（30s 缓存，已在日记路径加载），无触网。 */
+export function buildDecisionHealthLine(ov: AuditOverviewPayload | null): string | null {
+  if (!ov) return null;
+  const parts: string[] = [];
+  for (const t of TENANTS) {
+    const q = ov.tenants?.[t]?.quality;
+    if (!q) continue;
+    parts.push(`${t.toUpperCase()} ${q.score}${q.grade}`);
+  }
+  const gq = ov.global?.quality;
+  if (parts.length === 0 && !gq) return null;
+  const suffix = gq ? `（联盟 ${gq.score}${gq.grade}）` : "";
+  const worst = gq ? gq.reasons.slice(0, 3).join("/") : "";
+  return `决策健康：${parts.join("·")}${suffix}${worst ? "——" + worst : ""}。`;
 }
 
 /** 联盟测绘覆盖摘要（2026-08-08，日记层）：共享测绘覆盖%（区块数）+ 各租户探索区块 +
