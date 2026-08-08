@@ -274,6 +274,24 @@ test("sim:dataset derives ml-sample rows, labels and manifest from a MATCH chain
     assert.equal(result.report.counts.inconclusiveSamples, 0);
     assert.deepEqual(result.report.quarantineByReason, {});
 
+    // 2026-08-08 契约两维：MISMATCH 发布样本 sampleStatus=null →
+    // simReplayConfidence=unsupported；sim 源 observed=false →
+    // usableForSupervisedLearning=false（真实监督资格只看 observed && complete）。
+    assert.equal((first.provenance as Record<string, unknown>).simReplayConfidence, "unsupported");
+    assert.deepEqual((first.provenance as Record<string, unknown>).realLabelValidity, {
+      observed: false,
+      lineageValid: true,
+      windowComplete: (first.label as Record<string, unknown>).windowComplete,
+      usableForSupervisedLearning: false,
+    });
+    assert.deepEqual(result.report.simReplayConfidenceCounts, {
+      match: 0, expectedUnknown: 0, mismatch: 0, unsupported: 60,
+    });
+    assert.equal(result.report.realLabelValidity.observedSamples, 0);
+    assert.equal(result.report.realLabelValidity.lineageValidSamples, 60);
+    assert.equal(result.report.realLabelValidity.windowCompleteSamples, 10);
+    assert.equal(result.report.realLabelValidity.usableForSupervisedLearning, 0);
+
     // Manifest consistency.
     const manifest = readJson(join(result.datasetDir, "manifest.json"));
     assert.equal(manifest.schema, "dataset-manifest-v1");
@@ -472,11 +490,67 @@ test("sim:dataset publishes INCONCLUSIVE EXPECTED_UNKNOWN-only cases with sample
       const expectedStatus = provenance.runId === "run-inconclusive" ? "inconclusive" : "conclusive";
       assert.equal(provenance.sampleStatus, expectedStatus);
     }
+    // 2026-08-08 契约两维：conclusive → match；INCONCLUSIVE(EXPECTED_UNKNOWN)
+    // → expectedUnknown——两者都是可发布的真实监督样本。
+    for (const sample of samples) {
+      const provenance = sample.provenance as Record<string, unknown>;
+      const expectedConfidence = provenance.runId === "run-inconclusive"
+        ? "expectedUnknown"
+        : "match";
+      assert.equal(provenance.simReplayConfidence, expectedConfidence);
+    }
+    assert.deepEqual(result.report.simReplayConfidenceCounts, {
+      match: 3, expectedUnknown: 3, mismatch: 0, unsupported: 0,
+    });
     // Calibration taxonomy recorded in the report.
     assert.equal(result.report.calibration.statusCounts.INCONCLUSIVE, 3);
     assert.equal(result.report.calibration.statusCounts.MATCH, 3);
     assert.ok(result.report.calibration.taxonomyCounts.EXPECTED_UNKNOWN > 0);
     assert.ok(result.report.calibration.expectedUnknownCount > 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sim:dataset realLabelValidity: live-recorder 源 observed=true、usable 跟随完整窗口", () => {
+  const root = mkdtempSync(join(tmpdir(), "sim-dataset-rlv-live-"));
+  try {
+    const processRunId = "p1";
+    // live-recorder 源 60 tick 连续链：完整窗口 10（t+50<=60），其余 50 不完整。
+    // 不传 afterResources（无硬差异）→ tick%4==0 处产生 EXPECTED_UNKNOWN
+    // INCONCLUSIVE，验证"EXPECTED_UNKNOWN 不否决真实监督资格"。
+    const cases = chain(processRunId, "run-live", Array.from({ length: 60 }, (_, index) => index + 1), {
+      source: "live-recorder",
+    });
+    const dataset = writeDataset(root, processRunId, cases);
+    const result = buildDataset(buildOptions(dataset));
+    assert.equal(result.gatePassed, true);
+    const samples = readJsonl(join(result.datasetDir, "samples.jsonl"));
+    assert.equal(samples.length, 60);
+    for (const sample of samples) {
+      const provenance = sample.provenance as Record<string, unknown>;
+      assert.equal(provenance.source, "live");
+      const validity = provenance.realLabelValidity as Record<string, boolean>;
+      assert.equal(validity.observed, true, "live 源标签由真实服务器后续观测计算");
+      assert.equal(validity.lineageValid, true);
+      assert.equal(validity.windowComplete, (sample.label as Record<string, unknown>).windowComplete);
+      assert.equal(
+        validity.usableForSupervisedLearning,
+        (sample.label as Record<string, unknown>).windowComplete === true,
+        "usable = observed && lineageValid && windowComplete",
+      );
+    }
+    // report 两维统计：live 全部 observed；usable = 完整窗口数。
+    assert.equal(result.report.realLabelValidity.observedSamples, 60);
+    assert.equal(result.report.realLabelValidity.lineageValidSamples, 60);
+    assert.equal(result.report.realLabelValidity.windowCompleteSamples, 10);
+    assert.equal(result.report.realLabelValidity.usableForSupervisedLearning, 10);
+    assert.equal(
+      result.report.realLabelValidity.usableForSupervisedLearning,
+      result.report.counts.completeLabelWindows,
+    );
+    // 真实监督资格与 simReplayConfidence 正交：EXPECTED_UNKNOWN 不否决 usable。
+    assert.ok(result.report.simReplayConfidenceCounts.expectedUnknown > 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -135,6 +135,22 @@
       "type": ["string", "null"],
       "enum": ["conclusive", "inconclusive", null]
     },
+    "realLabelValidity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observed", "lineageValid", "windowComplete", "usableForSupervisedLearning"],
+      "properties": {
+        "observed": { "type": "boolean", "description": "label 由真实服务器后续观测计算（live 样本）" },
+        "lineageValid": { "type": "boolean", "description": "(processRunId, tick) 可回溯到 case/telemetry" },
+        "windowComplete": { "type": "boolean", "description": "label 窗口完整（与 label.windowComplete 一致）" },
+        "usableForSupervisedLearning": { "type": "boolean", "description": "observed && lineageValid && windowComplete" }
+      }
+    },
+    "simReplayConfidence": {
+      "type": ["string", "null"],
+      "enum": ["match", "expectedUnknown", "mismatch", "unsupported", null],
+      "description": "Simulator 对 transition 的证明强度；EXPECTED_UNKNOWN 不使真实监督样本失效（2026-08-08 契约两维）"
+    },
     "provenance": {
       "type": "object",
       "additionalProperties": false,
@@ -165,6 +181,8 @@
         "observationScope": { "const": "private-player-projection" },
         "opponentPlans": { "const": "not-included" },
         "sampleStatus": { "$ref": "#/$defs/sampleStatus" },
+        "realLabelValidity": { "$ref": "#/$defs/realLabelValidity" },
+        "simReplayConfidence": { "$ref": "#/$defs/simReplayConfidence" },
         "sourceRefs": {
           "type": "array",
           "minItems": 1,
