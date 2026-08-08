@@ -32,13 +32,15 @@ import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
 import { loadLeaderboardIntel, loadOurUsernames } from "./lib/leaderboard.ts";
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
 import { shopProducts, shopCookie, shopMe, shopOrders, shopOrder } from "./lib/shop.ts";
+import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/redeem-log.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
 const WEB_DIR = join(HERE, "web", "dist"); // React 构建产物（vite build --base=/app/）
 const PORT = Number(process.env.COMMAND_CENTER_PORT ?? 8787);
 
-const redeemLog: Array<{ code: string; at: string; ip: string }> = []; // 兑换申请内存记录（重启即清空）
+// 兑换申请记录：落盘 JSONL 持久化（2026-08-08，重启不丢），内存只做最近窗口缓存
+const redeemLog: RedeemRecord[] = loadRedeemHistory();
 
 const app = new Hono();
 
@@ -351,14 +353,21 @@ app.post("/api/redeem", async (c) => {
   if (!code) return c.json({ status: "error", message: "兑换码不能为空" }, 400);
   // 兑换通道设计：接入官方 Arena API 时，用用户提供的 session cookie 在此完成
   // POST { code } -> official /api/v1/redeem（等待 cookie 配置）。当前只记录申请，不触碰外部。
-  redeemLog.push({ code, at: new Date().toISOString(), ip: c.req.header("x-forwarded-for") ?? "local" });
-  console.log(`[redeem] code=${code.slice(0, 6)}... at=${new Date().toISOString()}`);
+  const rec: RedeemRecord = { codeMask: code.slice(0, 6) + "***", at: new Date().toISOString(), ip: c.req.header("x-forwarded-for") ?? "local", status: "pending" };
+  redeemLog.push(rec);
+  appendRedeemRecord(rec); // 落盘 JSONL（重启不丢，只存掩码不存完整码）
+  console.log(`[redeem] code=${code.slice(0, 6)}... at=${rec.at}`);
   return c.json({
     status: "pending",
     message: "兑换通道待 cookie 配置：申请已记录，接入官方 API 后即可完成兑换。",
-    receivedAt: new Date().toISOString(),
+    receivedAt: rec.at,
     historyLength: redeemLog.length,
   });
+});
+// 兑换历史查询（2026-08-08）：面板可回看已提交的兑换申请（掩码/时间/来源），
+// 重启不丢——审计与联调用，只返回最近窗口。
+app.get("/api/redeem/history", (c) => {
+  return c.json({ generatedAt: new Date().toISOString(), records: loadRedeemHistory(), count: redeemLog.length });
 });
 
 // ---------- 静态文件 ----------
