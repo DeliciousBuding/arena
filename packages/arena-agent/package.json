@@ -9,7 +9,8 @@
   },
   "scripts": {
     "check": "tsc --noEmit && node scripts/check-sim-isolation.ts && node scripts/check-test-count.mts",
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "test:fast": "node --test \"test/**/*.test.ts\"",
     "arena:doctor": "tsx src/cli/run-tenant.ts --doctor",
     "arena:shadow": "tsx src/cli/run-tenant.ts",
     "arena:live": "tsx src/cli/run-tenant.ts --live",

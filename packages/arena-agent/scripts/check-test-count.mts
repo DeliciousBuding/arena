@@ -24,8 +24,9 @@ const PKG_ROOT = resolve(here, "..");
  *  "全量 1911/1912 pass" 矛盾（可能计入了未提交 WIP 测试），已修正。 */
 const MIN_TEST_COUNT = 1966;
 
-/** 与 package.json 的 test 脚本保持同一 glob 模式（node --test 自带 glob 展开）。 */
+/** 与 package.json 的 certifying test 脚本保持一致：串行 file-level 执行，避免墙钟 benchmark 被并行负载污染。 */
 const TEST_GLOB = "test/**/*.test.ts";
+const TEST_ARGS = ["--test", "--test-concurrency=1", TEST_GLOB] as const;
 
 interface TestSummary {
   total: number;
@@ -53,7 +54,7 @@ function parseSummary(output: string): TestSummary {
 const minArg = process.argv.find((arg) => arg.startsWith("--min="));
 const minTestCount = minArg !== undefined ? Number(minArg.slice("--min=".length)) : MIN_TEST_COUNT;
 
-const run = spawnSync(process.execPath, ["--test", TEST_GLOB], {
+const run = spawnSync(process.execPath, TEST_ARGS, {
   cwd: PKG_ROOT,
   encoding: "utf8",
 });
