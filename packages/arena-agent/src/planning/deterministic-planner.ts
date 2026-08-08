@@ -103,6 +103,27 @@ export function stepTowardAvoiding(
   return pathStepToward(from, target, obstacles, options);
 }
 
+/** 迁移方向勘探（2026-08-08，migration-scout）：核心 MOVING 时，EXPLORE worker
+ *  朝核心迁移方向前方 scoutRange 格探路（为落点测绘），而非随机老分区。
+ *  返回该方向的下一步 Direction；无迁移/无方向/已在目标附近返回 null（fallback 巡逻）。
+ *  纯函数可测；核心 NORMAL 时 previousCorePosition 不匹配 → null 零影响。 */
+export function migrationScoutDirection(
+  workerPosition: Position,
+  corePosition: Position,
+  previousCorePosition: Position | null,
+  obstacles: ReadonlySet<string>,
+  scoutRange = 24,
+): Direction | null {
+  if (previousCorePosition === null) return null;
+  const dx = corePosition[0] - previousCorePosition[0];
+  const dy = corePosition[1] - previousCorePosition[1];
+  if (dx === 0 && dy === 0) return null;
+  const sx = Math.sign(dx), sy = Math.sign(dy);
+  const target: Position = [corePosition[0] + sx * scoutRange, corePosition[1] + sy * scoutRange];
+  if (workerPosition[0] === target[0] && workerPosition[1] === target[1]) return null;
+  return stepTowardAvoiding(workerPosition, target, obstacles);
+}
+
 /** 满载 Worker 资源满时让出 Core 格的移动方向：Core 四邻中第一个非障碍格
  *  （确定性 UP→RIGHT→DOWN→LEFT，与守家锚点 homeCell 同序）。
  *  资源满时 DEPOSIT 不合法，原地等待会永久占住 Core 格（SPAWN 被拒 → 资源
@@ -527,6 +548,8 @@ export class DeterministicPlanner implements PlanProvider {
   private spawnReserve: number;
   /** 使命层配置（worker-mission-v1）：值层置信 + SURVEYOR 角色仲裁。 */
   private missionConfig: MissionConfig;
+  /** 矿刷新预测（Phase 2，G3）：cellKey → dueInTicks；tenant-runtime 周期刷新注入。 */
+  private refillPredictions: ReadonlyMap<string, number> = new Map();
   /** 迁移后测绘期截止 tick（核心位置变化时刷新为 tick + surveyBurstTicks）。 */
   private surveyBurstUntilTick = 0;
   private previousCorePosition: Position | null = null;
@@ -596,6 +619,12 @@ export class DeterministicPlanner implements PlanProvider {
     this.patrolPlanner.replaceThreatProfiles(profiles);
   }
 
+  /** 热刷新矿刷新预测（Phase 2，G3 数据管道）：替换式更新（tenant-runtime 周期
+   *  重读 survey-db），decide() 并入快照——死矿剔除 + 即将刷新格加成即时生效。 */
+  replaceRefillPredictions(predictions: ReadonlyMap<string, number>): void {
+    this.refillPredictions = predictions;
+  }
+
   /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
    *  保留 World/巡逻/攻坚记忆（不重建 planner）。调用方先校验变体合法性。 */
   updateConfig(
@@ -650,6 +679,8 @@ export class DeterministicPlanner implements PlanProvider {
     const snapshot: PlanningSnapshot = {
       ...rawSnapshot,
       obstacleCells: this.fallbackPlanner.world.obstacles(rawSnapshot.obstacleCells),
+      // Phase 2（G3 数据管道）：矿刷新预测并入快照——死矿剔除 + 即将刷新加成。
+      refillPredictions: this.refillPredictions,
     };
     // 迁移后测绘期（worker-mission-v1）：核心位置变化 → 未来 surveyBurstTicks 内
     // 保证 ≥ surveyWorkerFloor 个勘探者（新家园先测绘再采集，防搬进 0 资源区空转）。
@@ -690,6 +721,24 @@ export class DeterministicPlanner implements PlanProvider {
     const intents: Record<string, string> = { ...(fallback.intents ?? {}) };
     for (const assignment of assignments) {
       if (assignment.task.type === "EXPLORE") {
+        // migration-scout（2026-08-08，worker-mission-v1 延伸）：核心 MOVING 时
+        // 勘探 worker 朝核心迁移方向探路（为落点测绘），不随机巡老分区——
+        // t3 迁移期"worker 探索测绘"直接服务新家园；核心 NORMAL 时零影响。
+        if (
+          this.missionConfig.migrationScout === true &&
+          snapshot.coreState === "MOVING" &&
+          snapshot.corePosition !== null
+        ) {
+          const worker = snapshot.units.find((u: any) => u.id === assignment.unitId);
+          const dir = worker
+            ? migrationScoutDirection(worker.position, snapshot.corePosition, this.previousCorePosition, snapshot.obstacleCells)
+            : null;
+          if (dir !== null) {
+            unitActions[assignment.unitId] = { type: "MOVE", direction: dir };
+            intents[assignment.unitId] = "worker_migration_scout";
+            continue;
+          }
+        }
         // SURVEYOR 角色（worker-mission-v1）：勘探动作落 patrolFallback 基线
         // （覆盖感知方向由 patrolPlanner 的 frontier-priority 逻辑提供）。
         unitActions[assignment.unitId] = patrolFallback.unitActions[assignment.unitId] ?? { type: "WAIT" };

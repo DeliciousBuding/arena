@@ -22,9 +22,13 @@ export interface SurveyData {
   chunks?: Array<Record<string, unknown>>;
 }
 
-/** 矿新鲜度窗口（2026-08-08，数据质量 A6）：last_seen 超过该 tick 数视为历史残留（state=stale）。
- *  游戏矿 2-6 tick 就消失但会刷新；跨 run 积累的矿多数为早期记忆，前端默认只应看活跃矿。 */
-export const RESOURCE_FRESH_WINDOW_TICKS = 2000;
+/**
+ * 矿新鲜度窗口（2026-08-08，数据质量 A6）：last_seen 超过该 tick 数视为历史残留（state=stale）。
+ * 窗口按 refill 周期实证（同格 re-appear gap：最短 2 tick、均值 ~37 tick）取 200：
+ * 矿被采后 2-6 tick 消失、4 tick 结算后可能 refill——200 tick 内未再目击 ≈ 该格
+ * 已长期不在视野（可能被采空或 agent 已离开），标 stale 待确认，不再当活跃矿。
+ */
+export const RESOURCE_FRESH_WINDOW_TICKS = 200;
 
 /** 测绘库（survey-db）：优先于 calibration 扫描——calibration case 只覆盖
  *  "最新 run 已同步 tick"，测绘库累积全部历史 run 的资源/障碍/敌核心
@@ -70,17 +74,23 @@ export function loadSurveyDb(tenant: string): SurveyData | null {
       cores.push(r);
     }
     const meta = db.prepare("SELECT MAX(last_tick) AS m, SUM(cases_synced) AS c FROM sync_meta").get() as { m: number | null; c: number | null };
-    // 矿新鲜度动态分级（2026-08-08，数据质量 A6）：跨 run 积累的矿按最后目击计算
-    // ageTicks/fresh，state 动态修正（超窗口→stale）——此前全部 visible
-    // 导致地图绿色残留。前端默认应只看 visible（?states=visible）。
+    // 矿新鲜度动态分级（2026-08-08，数据质量 A6 → 生命周期闭环）：state 优先级 =
+    // 持久化负态（harvested/empty，survey-sync 事件回写）> 新鲜度派生
+    // （visible 窗口内 / stale 超窗口）。此前用 fresh 窗口无条件覆盖 DB state，
+    // 采空/确认空的矿永远显示 visible（"过时矿"根因）。前端默认只看 visible。
     const tickMax = Number(meta?.m ?? 0);
     const resources: Array<Record<string, unknown>> = (resourcesRaw as Array<Record<string, unknown>>).map((r) => {
       const lastSeen = Number(r.tick ?? 0);
       const ageTicks = tickMax > 0 && Number.isFinite(lastSeen) ? Math.max(0, tickMax - lastSeen) : 0;
       const fresh = ageTicks <= RESOURCE_FRESH_WINDOW_TICKS;
       const harvest = harvestByCell.get(`${String(r.x)},${String(r.y)}`);
+      // 持久化负态优先（survey-sync 由采集事件回写）；仅当 DB 无负态时才按新鲜度派生
+      const dbState = String(r.state ?? "");
+      const state = dbState === "harvested" || dbState === "empty"
+        ? dbState
+        : fresh ? "visible" : "stale";
       return {
-        ...r, ageTicks, fresh, state: fresh ? "visible" : "stale",
+        ...r, ageTicks, fresh, state,
         harvestCount: harvest?.n ?? 0,
         lastHarvestTick: harvest?.lastTick ?? null,
       };

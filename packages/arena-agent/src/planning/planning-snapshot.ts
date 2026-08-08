@@ -68,6 +68,9 @@ export interface PlanningSnapshot {
   readonly beacon: BeaconInfo;
   /** 敌人距离衰减风险：key "x,y" → 威胁值（无敌人覆盖的格查不到，视为 0）。 */
   readonly threatMap: ReadonlyMap<string, number>;
+  /** 矿刷新预测（Phase 2，G3 数据管道）：key "x,y" → dueInTicks（正=还有多久预计
+   *  刷新，负=已过预期——疑似采空）。缺省 undefined = 无预测（零回归）。 */
+  readonly refillPredictions?: ReadonlyMap<string, number>;
 }
 
 /** 威胁衰减半径：只在该半径内落 threatMap 条目（之外视为 0）。 */

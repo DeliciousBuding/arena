@@ -266,3 +266,48 @@ mapEngine.ts 对应函数。
     + 失败诊断；`getState` 暴露 cells/multi/mode/selected 投影。
 - **验证**：完整 22 项回归全绿（含编队多选、命令队列、右键菜单、人类指挥链、tick 读条）；
   `check:all`（server tsc + alliance-sync + web typecheck + build）全绿。
+
+
+### 9.11 移动渲染 20fps→60fps（2026-08-08 高刷丝滑）
+- **背景**：单位插值移动动画窗口贯穿整个 15s tick，但调度器对移动态 draw 节流 50ms
+  （20fps）——175Hz 显示器上单位移动/虚线流动发虚跳帧（"不够丝滑"残留点）。
+- **实测**：全局视图拖拽采样 draw() 单帧中位 2.0ms / p99 3.8ms（6515 格），余量充足；
+  solo 视图 1.7ms。20fps 纯属节流浪费。
+- **修复**：animLoop 移动 draw 节流 50ms → 16ms（60fps）；idle 仍 120ms 降频省电。
+- **同轮修复**：右键菜单偶发红——`openCtxMenu` 原内联实时命中半径 1（左键已统一 3），
+  单位位移后渲染格脱靶；重构为与左键共用 `resolveLiveTarget`（半径 3 + 写回真实坐标 +
+  solo 兜底），右键空白仍保持取消选中语义。
+- **验证**：`#map` 画布实例 clearRect 计数（=draw 次数），solo 移动态 **20→61fps**；
+  右键菜单定向 3/3 + 完整回归 22/22 全绿（连跑两轮）+ check:all 全绿。
+
+
+### 9.12 前端架构化：战术规则层抽取 tactical.ts（2026-08-08）
+- **背景**：mapEngine.ts 单文件 4925 行（256KB）——目标"架构化/不屎山"最大技术债。
+  已有 utils.ts（纯工具/素材）与 api.ts 基础；本轮抽取**战术规则层**。
+- **抽取** `web/src/engine/tactical.ts`（117 行纯常量 + 纯函数，无 DOM/state 依赖）：
+  租户色/中文映射（TENANT_COLORS、TACT_UNIT_CN、EVENT_KIND_CN 等）、单位成本/核心容量、
+  意图短标签、近邻命中/精确格/障碍地形/敌情判定/移动可达方向。mapEngine 改为导入，删除内联副本
+  （4925→4863 行）。
+- **收益**：纯函数可单测——新增 `test/tactical.test.ts` 7 项（成本阶梯/容量/标签/命中/地形/敌情/可达），
+  verify 单测 59+10 全绿。
+- **验证**：web typecheck 0 / build 0 / 完整回归 22/22 全绿（零行为变化）。
+
+
+### 9.13 点击链三连根治：右键竞态 + 单位站矿点不到 + 寻路模块化（2026-08-08）
+- **① 右键菜单竞态（偶发红真根因）**：canvas pointerup 未校验 `e.button`——右键的
+  pointerup 也触发 `handleCanvasClick`（当左键），与 contextmenu 的 openCtxMenu 异步竞态，
+  时而关掉刚开的菜单。修复：pointerdown/pointerup 增加 `e.button !== 0` 守卫，右键全权交给
+  contextmenu。诊断实证：右键菜单回归偶发红（4 轮里 3 轮），定向隔离却 5/5 绿——全回归
+  才触发的异步竞态。
+- **② 单位站矿点不到（"点工人没反应"真实 UX bug）**：/api/map 实证 4 格 unit+resource 同格
+  （工人站在矿上）；nearestCell 返回资源格 → 弹资源卡而非选中单位。修复：resolveLiveTarget
+  重构为 **live 单位优先**——单位格半径 3（插值移位）、地形格半径 0（单位恰在该格才抢）、
+  空白半径 1（solo 兜底），点单位永远选中单位（RTS 语义）。
+- **③ 回归 6f 重写**：候选取 st.cells 的 id，点击前按 live world 重解析单位当前位置
+  （诊断实证点旧渲染位 → hit=resource 脱靶）。
+- **④ 寻路模块化**：`tactFindPath` BFS 核心抽到 `web/src/engine/pathfind.ts`（纯函数
+  `findPath(world, from, to, extraObstacles)`，测绘记忆由调用方注入），mapEngine 保留薄包装
+  合并 survey 障碍；新增 `test/pathfind.test.ts` 6 项（直达/绕障/目标为障/动态单位不可穿/
+  记忆障碍/不可达）。
+- **验证**：回归 **22/22 连跑两轮全绿** + verify（server tsc + alliance + web typecheck +
+  build + 单测 61+16）全绿。

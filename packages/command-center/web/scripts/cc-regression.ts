@@ -393,60 +393,54 @@ async function main() {
       await waitViewStable();
       const cvF = await page.$("#map");
       const boxF = await cvF.boundingBox();
-      const picks = await page.evaluate(async ({ boxX, boxY, boxW, boxH }) => {
+      // 候选：引擎已渲染格（与画布同源）同租户受控单位——只取 id，点击前再按 live world
+      // 解析当前位置（App 侧 resolveLiveTarget 半径 3 实时命中；测试点 live 坐标避免
+      // "点旧渲染位→命中资源格"脱靶——2026-08-08 诊断实证 hit=resource）。
+      const cands = await page.evaluate(({ boxX, boxY, boxW, boxH }) => {
         const eng = window.__arenaEngine;
         if (!eng) return { err: "no engine" };
         const st = eng.getState();
-        // 用引擎已渲染格（与画布同源，位置即所见）——不依赖 /api/world 快照
-        // 聚焦租户时只取该租户单位 + 屏幕内候选（跨租户/越界单位点击会脱靶）
         const solo = st.soloTenant || null;
         const inTenant = (o) => !solo || o.tenant === solo;
         let us = (st.cells ?? []).filter((o) => inTenant(o) && o.type === "unit" && o.unitType === "VANGUARD" && o.controlled === true);
         if (us.length < 2) us = (st.cells ?? []).filter((o) => inTenant(o) && o.type === "unit" && o.controlled === true);
-        if (us.length < 2) { const cnt: Record<string, number> = {}; for (const c of (st.cells ?? [])) cnt[c.type] = (cnt[c.type] || 0) + 1; return { err: "units<2: " + us.length + " cells=" + (st.cells || []).length + " types=" + JSON.stringify(cnt) + " solo=" + st.soloTenant + " mapCells=" + (st.map ? (st.map.cells || []).length : "none") }; }
-        // 选两个不同位置的单位（同格则找下一个不同格）；越界候选跳过（相机可能已移走）
+        if (us.length < 2) { const cnt: Record<string, number> = {}; for (const c of (st.cells ?? [])) cnt[c.type] = (cnt[c.type] || 0) + 1; return { err: "units<2: " + us.length + " cells=" + (st.cells || []).length + " types=" + JSON.stringify(cnt) + " solo=" + st.soloTenant }; }
         const v = st.view;
-        const pt = (u) => ({ sx: boxX + (u.x - v.cx) * v.scale + boxW / 2, sy: boxY + (u.y - v.cy) * v.scale + boxH / 2 });
-        const onScreen = (p) => p.sx >= boxX - 4 && p.sx <= boxX + boxW + 4 && p.sy >= boxY - 4 && p.sy <= boxY + boxH + 4;
-        const cands = us.filter((u) => onScreen(pt(u)));
+        const onScreen = (u) => { const sx = boxX + (u.x - v.cx) * v.scale + boxW / 2, sy = boxY + (u.y - v.cy) * v.scale + boxH / 2; return sx >= boxX - 4 && sx <= boxX + boxW + 4 && sy >= boxY - 4 && sy <= boxY + boxH + 4; };
+        const cands = us.filter(onScreen);
         if (cands.length < 2) return { err: "onscreen<2: " + cands.length + "/" + us.length + " solo=" + solo };
         const a = cands[0], b = cands.find((u) => u.id !== a.id && (u.x !== a.x || u.y !== a.y)) ?? cands[1];
-        return { a: pt(a), b: pt(b), ids: [a.id, b.id] };
+        return { a: { id: a.id, tenant: a.tenant }, b: { id: b.id, tenant: b.tenant } };
       }, { boxX: boxF.x, boxY: boxF.y, boxW: boxF.width, boxH: boxF.height });
-      if (picks.err) return { ok: false, why: picks.err };
-      await page.keyboard.down("Shift");
-      await page.mouse.click(picks.a.sx, picks.a.sy);
-      const t1 = await waitToast(page, "编队 +1", 3000);
-      await sleep(150);
-      await page.mouse.click(picks.b.sx, picks.b.sy);
-      const t2 = await waitToast(page, "共 2", 3000);
-      await page.keyboard.up("Shift");
-      let diag = "";
-      if (!(t1.includes("编队 +1") && t2.includes("共 2"))) {
-        diag = await page.evaluate(({ bx, by }) => {
+      if (cands.err) return { ok: false, why: cands.err };
+      const livePt = async (id: string, tenant: string) => {
+        return page.evaluate(async ({ id, tenant, boxX, boxY, boxW, boxH }) => {
           const eng = window.__arenaEngine;
           const st = eng ? eng.getState() : null;
-          const d = document.getElementById("actionDialog");
-          const dr = d && !d.hidden ? d.getBoundingClientRect() : null;
-          const hit = (() => {
-            if (!st) return null;
-            const wx = Math.round(st.view.cx + (bx - window.innerWidth / 2) / st.view.scale);
-            const wy = Math.round(st.view.cy + (by - window.innerHeight / 2) / st.view.scale);
-            const cell = (st.cells ?? []).find((cc) => cc.x === wx && cc.y === wy);
-            return cell ? { x: wx, y: wy, type: cell.type, unitType: cell.unitType, tenant: cell.tenant } : { x: wx, y: wy, type: "none" };
-          })();
-          const cv = document.getElementById("map");
-          const cvr = cv ? cv.getBoundingClientRect() : null;
-          const elAt = document.elementFromPoint(bx, by);
-          return { solo: st ? st.soloTenant : null, cells: st ? (st.cells || []).length : 0, scale: st ? st.view.scale : 0,
-            canvas: cvr ? { x: Math.round(cvr.x), y: Math.round(cvr.y), w: Math.round(cvr.width), h: Math.round(cvr.height) } : null,
-            elAtClickB: elAt ? (elAt.id || elAt.className || elAt.tagName) : null,
-            dialog: dr ? { x: Math.round(dr.x), y: Math.round(dr.y), w: Math.round(dr.width), h: Math.round(dr.height) } : null,
-            clickB: { x: Math.round(bx), y: Math.round(by) }, hit,
-            clickLog: ((window as any).__clickLog || []).slice(-4).map((e: any) => ({ px: Math.round(e.px), py: Math.round(e.py), cell: e.hit && e.hit.cell ? e.hit.cell : null, obj: e.hit ? e.hit.obj : null, ghost: e.hit ? e.hit.ghost : null })) };
-        }, { bx: picks.b.sx, by: picks.b.sy });
-      }
-      return { ok: t1.includes("编队 +1") && t2.includes("共 2"), t1, t2, diag };
+          if (!st) return { err: "no engine" };
+          let w = null;
+          for (let r = 0; r < 5 && !w; r++) { try { w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json(); } catch { await new Promise((s) => setTimeout(s, 800)); } }
+          const o = (w?.state?.objects ?? []).find((x) => x.id === id && Array.isArray(x.position));
+          if (!o) return { err: "unit-gone:" + String(id).slice(0, 6) };
+          const v = st.view;
+          return { sx: boxX + (o.position[0] - v.cx) * v.scale + boxW / 2, sy: boxY + (o.position[1] - v.cy) * v.scale + boxH / 2, pos: o.position };
+        }, { id, tenant, boxX: boxF.x, boxY: boxF.y, boxW: boxF.width, boxH: boxF.height });
+      };
+      const clickShift = async (target: { id: string; tenant: string }, needle: string) => {
+        const pt = await livePt(target.id, target.tenant);
+        if (pt.err) return { ok: false, why: pt.err, t: "" };
+        await page.keyboard.down("Shift");
+        await page.mouse.click(pt.sx, pt.sy);
+        const t = await waitToast(page, needle, 3000);
+        await page.keyboard.up("Shift");
+        return { ok: t.includes(needle), why: "toast=" + JSON.stringify(t), t };
+      };
+      const r1 = await clickShift(cands.a, "编队 +1");
+      if (!r1.ok) return { ok: false, why: "a " + (r1.why ?? ""), t1: r1.t, t2: "" };
+      await sleep(150);
+      const r2 = await clickShift(cands.b, "共 2");
+      if (!r2.ok) return { ok: false, why: "b " + (r2.why ?? ""), t1: r1.t, t2: r2.t };
+      return { ok: true, t1: r1.t, t2: r2.t };
     };
     let multiOk = null;
     for (let attempt = 0; attempt < 2 && multiOk === null; attempt++) {

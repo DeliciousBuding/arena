@@ -38,6 +38,16 @@ export interface MissionConfig {
   readonly visibleBonus: number;
   /** seeded 种子随龄衰减系数：score −= seedAgeDecay × age。 */
   readonly seedAgeDecay: number;
+  /** 矿刷新预测加成（Phase 2）：dueInTicks ≤ refillLookahead 的格 +refillBonus
+   *  （提前占位即将刷新矿）。 */
+  readonly refillLookahead: number;
+  readonly refillBonus: number;
+  /** 死矿剔除阈值（Phase 2）：dueInTicks < −deadMineOverdueTicks 视为永久采空，
+   *  不入采集池（t1 实证：14 worker 循环近核死种子、cargo=0 冻结）。 */
+  readonly deadMineOverdueTicks: number;
+  /** 迁移方向勘探（2026-08-08，migration-scout）：核心 MOVING 时 EXPLORE worker 朝
+   *  核心迁移方向探路（为落点测绘），而非随机老分区。核心 NORMAL 时零影响。 */
+  readonly migrationScout: boolean;
 }
 
 /** 缺省 = 关闭（全部保守值，逐字节复现现行为）。 */
@@ -49,6 +59,10 @@ export const DEFAULT_MISSION_CONFIG: MissionConfig = Object.freeze({
   surveyWorkerFloor: 0,
   visibleBonus: 0,
   seedAgeDecay: 0,
+  refillLookahead: 0,
+  refillBonus: 0,
+  deadMineOverdueTicks: 0,
+  migrationScout: false,
 });
 
 /** 目标置信项（G1）：可见加成 + seeded 随龄衰减。独立于距离/威胁，便于单测。 */
@@ -65,17 +79,37 @@ export function targetConfidence(
   return confidence;
 }
 
-/** 采集池过滤（G1+G2 门槛）：不满足门槛/距离的格不可采集。
- *  返回 false = 该格不可达/不值得，worker 应转勘探。 */
+/** 采集池过滤（G1+G2 门槛 + Phase 2 死矿剔除）：不满足门槛/距离的格不可采集。
+ *  返回 false = 该格不可达/不值得，worker 应转勘探。
+ *  refillPredictions（cellKey → dueInTicks）：dueInTicks < −deadMineOverdueTicks
+ *  的格疑似永久采空 → 不可采（t1 实证死种子循环）。 */
 export function isCollectable(
   score: number,
   worker: PlanningUnit,
   cellPosition: readonly [number, number],
   config: MissionConfig,
+  refillPredictions?: ReadonlyMap<string, number>,
 ): boolean {
   if (score < config.collectionValueFloor) return false;
+  const key = cellKey(cellPosition[0], cellPosition[1]);
+  const dueInTicks = refillPredictions?.get(key);
+  if (dueInTicks !== undefined && dueInTicks < -config.deadMineOverdueTicks) return false;
   const distance = Math.abs(worker.position[0] - cellPosition[0]) + Math.abs(worker.position[1] - cellPosition[1]);
   return distance <= config.maxCollectionDistance;
+}
+
+/** 矿刷新预测加成（Phase 2）：dueInTicks ≤ refillLookahead（即将刷新）→ +refillBonus，
+ *  提前占位即将刷新矿。无预测/缺省 = 0（零回归）。 */
+export function refillBonusOf(
+  key: string,
+  refillPredictions: ReadonlyMap<string, number> | undefined,
+  config: MissionConfig,
+): number {
+  const dueInTicks = refillPredictions?.get(key);
+  if (dueInTicks === undefined) return 0;
+  if (dueInTicks > config.refillLookahead) return 0;
+  if (dueInTicks < -config.deadMineOverdueTicks) return 0; // 死矿不加成
+  return config.refillBonus;
 }
 
 /** SURVEYOR 名额（G2）：未分配 worker 中取前 cap 个（按 id 升序，确定性）；

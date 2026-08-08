@@ -29,6 +29,10 @@ const MISSION: MissionConfig = {
   surveyWorkerFloor: 3,
   visibleBonus: 0.3,
   seedAgeDecay: 0.02,
+  refillLookahead: 0,
+  refillBonus: 0,
+  deadMineOverdueTicks: 0,
+  migrationScout: false,
 };
 
 /** 造快照：资源格可带置信元数据（visible/lastSeenTick/seeded）。 */

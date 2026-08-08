@@ -24,7 +24,7 @@ export interface CompiledRuntimeStrategy {
   readonly configHash: string;
   /** Hash of only the strategy surface that can be swapped without rebuilding the writer. */
   readonly strategyHash: string;
-  /** Hash of all restart-required config fields (everything except `variants`). */
+  /** Hash of all restart-required config fields (everything except the strategy surface). */
   readonly restartHash: string;
 }
 
@@ -32,6 +32,7 @@ export interface HotReloadCompatibility {
   readonly compatible: boolean;
   readonly restartRequiredFields: readonly string[];
   readonly variantsChanged: boolean;
+  readonly missionChanged: boolean;
 }
 
 function hash(value: unknown): string {
@@ -42,9 +43,26 @@ function comparableHash(value: unknown): string {
   return value === undefined ? "<undefined>" : hash(value);
 }
 
+/** Registry constants may intentionally use ±Infinity as an explicit disabled/unbounded sentinel.
+ * Keep the global integrity canonicalizer strict; encode those sentinels only for strategy identity. */
+function strategyHashable(value: unknown): unknown {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    if (value === Number.POSITIVE_INFINITY) return { $number: "+Infinity" };
+    if (value === Number.NEGATIVE_INFINITY) return { $number: "-Infinity" };
+    return { $number: "NaN" };
+  }
+  if (Array.isArray(value)) return value.map(strategyHashable);
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, strategyHashable(nested)]));
+  }
+  return value;
+}
+
+const HOT_STRATEGY_KEYS = new Set(["variants", "mission"]);
+
 function restartSurface(config: TenantRuntimeConfig): Readonly<Record<string, unknown>> {
   return Object.freeze(Object.fromEntries(
-    Object.entries(config).filter(([key]) => key !== "variants"),
+    Object.entries(config).filter(([key]) => !HOT_STRATEGY_KEYS.has(key)),
   ));
 }
 
@@ -59,9 +77,20 @@ export function compileRuntimeStrategy(config: TenantRuntimeConfig): CompiledRun
   // resolveVariantsConfig is the canonical registry validation boundary. Every production id must
   // exist on the safety registry even when its runtime effect is deterministic-only.
   const safetyOverrides = Object.freeze({ ...resolveVariantsConfig(variants) });
-  const deterministicOverrides = Object.freeze({ ...resolveDeterministicVariantsConfig(variants) });
+  const registryDeterministic = resolveDeterministicVariantsConfig(variants);
+  if (config.mission !== undefined && registryDeterministic.mission === undefined) {
+    throw new Error("mission config requires a registered mission strategy variant (worker-mission-v1)");
+  }
+  const deterministicOverrides: Readonly<DeterministicVariantConfig> = Object.freeze(
+    config.mission === undefined
+      ? { ...registryDeterministic }
+      : {
+          ...registryDeterministic,
+          mission: Object.freeze({ ...registryDeterministic.mission!, ...config.mission }),
+        },
+  );
   const configHash = hash(config);
-  const strategyHash = hash({ variants, safetyOverrides, deterministicOverrides });
+  const strategyHash = hash(strategyHashable({ variants, safetyOverrides, deterministicOverrides }));
   const restartHash = hash(restartSurface(config));
 
   return Object.freeze({
@@ -80,8 +109,8 @@ export function compileRuntimeStrategyFile(path: string): CompiledRuntimeStrateg
 }
 
 /**
- * The current live-reload contract intentionally supports only `variants`.
- * Any other config change must go through an immutable release restart so we never claim a partial
+ * The current live-reload strategy surface is explicit: `variants` + `mission` tuning.
+ * Every other config change goes through an immutable release restart so we never claim a partial
  * reload for writer ownership, model/runtime, deadlines, policy orchestration or filesystem roots.
  */
 export function hotReloadCompatibility(
@@ -89,7 +118,7 @@ export function hotReloadCompatibility(
   candidate: TenantRuntimeConfig,
 ): HotReloadCompatibility {
   const keys = new Set([...Object.keys(active), ...Object.keys(candidate)]);
-  keys.delete("variants");
+  for (const key of HOT_STRATEGY_KEYS) keys.delete(key);
   const activeRecord = active as unknown as Record<string, unknown>;
   const candidateRecord = candidate as unknown as Record<string, unknown>;
   const restartRequiredFields = [...keys]
@@ -98,9 +127,11 @@ export function hotReloadCompatibility(
   const activeVariants = active.variants ?? [];
   const candidateVariants = candidate.variants ?? [];
   const variantsChanged = hash(activeVariants) !== hash(candidateVariants);
+  const missionChanged = comparableHash(active.mission) !== comparableHash(candidate.mission);
   return Object.freeze({
     compatible: restartRequiredFields.length === 0,
     restartRequiredFields: Object.freeze(restartRequiredFields),
     variantsChanged,
+    missionChanged,
   });
 }

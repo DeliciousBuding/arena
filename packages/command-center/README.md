@@ -41,14 +41,15 @@ type stripping）+ React 19 + Vite 8 + TS（Bun/Node 工具链），浏览器访
 
 ```bash
 cd arena-ts/packages/command-center
-npm run check:all        # ① server tsc → ② web typecheck → ③ web build（一键全绿）
-npm run test:regression  # ④ Playwright 回归 16 项（需本机 8787 + chromium；高 CPU 下自动放宽超时）
-#    覆盖：页面零错误 / 六 tab / 威胁玫瑰 / 决策流 / 聚焦 HUD / 计划层像素 / 人类指挥链 / 跳图定位标记 jumpPins / API 健康
+npm run verify         # 一键门禁：server tsc → alliance-sync → web typecheck → web build → 单测 58+3 项（无需服务）
+npm run verify:full    # verify + Playwright 回归 22 项（需本机 8787 + chromium）
+#    回归覆盖：页面零错误 / 六 tab / 威胁玫瑰 / 决策流 / 聚焦 HUD / 计划层像素 / 人类指挥链 /
+#              跳图定位标记 / 手操审计 / tick 读条 / 右键菜单 / 编队多选 / 命令队列 / API 健康
 ```
 
 - CI（`.github/workflows/ci.yml` `command-center` job）：server tsc + web typecheck + web build，
   与 `check:all` 等价；回归（依赖 live 数据）在本地跑。
-- 改动地图/引擎/API 后：`npm run check:all` 全绿再提交；涉及渲染行为再跑回归。
+- 改动地图/引擎/API 后：`npm run verify` 全绿再提交；涉及渲染行为再跑 `npm run verify:full`（回归）。
 - 回归在并行 agent 高 CPU 时会变慢（API 达 8-25s）：已把超时放宽到 25s 可覆盖
   （`CC_API_TIMEOUT_MS`）、关键项改轮询等待，不再误报。
 
@@ -135,7 +136,7 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
 | 端点 | 说明 |
 |---|---|
 | `GET /api/overview` | 4 租户 outcome 最新快照 + 60 tick 均值 |
-| `GET /api/map` | 同一 run 校准 case 合并 → 全局 cells（含 fresh 新鲜度）/bounds/beacons |
+| `GET /api/map` | 全局联盟测绘地图：survey-db 累积地形为主源（障碍全量永久 + 矿带状态 visible/stale/harvested/empty）＋最新 case 当前帧动态层（单位/核心）＋跨租户探索分区 chunks/bounds/beacons（2026-08-08 数据链路打通） |
 | `GET /api/stream?tenant=&n=` | runtime.jsonl 尾部（决策流） |
 | `GET /api/audit/workers?tenant=all&window=4000` | Worker 局部活性审计：假活/无效 MOVE/振荡/拥挤饥饿 + targeted recovery 证据 |
 | `GET /api/events?tenant=&n=` | calibration case 结构化事件聚合（`after.state.events`，2026-08-08 修复） |

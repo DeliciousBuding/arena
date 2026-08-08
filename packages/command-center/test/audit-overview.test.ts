@@ -58,7 +58,7 @@ const mu = (t: string, total: number, never: number, visNever: number): MineTena
 const exploration: AllianceExplorationPayload = {
   generatedAt: "", world: { exploredChunks: 100, coveragePct: 0.25, lastSeenTick: 1000 } as never,
   perTenant: { t1: { tenant: "t1", exploredChunks: 54, recentChunks: 54, lastSeenTick: 999, bbox: null as never, exclusiveChunks: 54 } },
-  alliance: {} as never, gaps: [], cachedAt: "",
+  alliance: {} as never, gaps: [], resurveyTargets: [], cachedAt: "",
 } as AllianceExplorationPayload;
 
 const pipeline: PipelineHealthPayload = {

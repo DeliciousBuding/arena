@@ -189,6 +189,48 @@ test("survey-sync: latestRunOnly 按目录 mtime 选最新 run（UUID 字典序 
   }
 });
 
+test("survey-sync: 矿生命周期状态回写——采集/耗尽事件 → harvested/empty，refill 恢复 visible", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-sync-lifecycle-"));
+  try {
+    const cal = join(dir, "runtime", "t1", "calibration", "runA", "cases");
+    mkdirSync(cal, { recursive: true });
+    // t100：矿可见（基础测绘）
+    writeFileSync(join(cal, "0000000100.json"), JSON.stringify({
+      before: { state: { objects: [{ kind: "RESOURCE", positions: [[1, 2]] }] } },
+      after: { state: { events: [] } },
+    }));
+    // t101：矿被采（HARVEST_SUCCEEDED → harvested）
+    writeFileSync(join(cal, "0000000101.json"), JSON.stringify({
+      before: { state: { objects: [] } },
+      after: { state: { events: [{ event_type: "HARVEST_SUCCEEDED", position: [1, 2], actor_id: "w1", values: { amount: 1 } }] } },
+    }));
+    // t102：他人采空（HARVEST_FAILED RESOURCE_DEPLETED → empty）
+    writeFileSync(join(cal, "0000000102.json"), JSON.stringify({
+      before: { state: { objects: [] } },
+      after: { state: { events: [{ event_type: "HARVEST_FAILED", position: [1, 2], actor_id: "w2", reason_code: "RESOURCE_DEPLETED" }] } },
+    }));
+    syncTenantSurvey(dir, "t1");
+    let db = openSurveyDb(dir, "t1", false);
+    const row = knownResources(db, { states: ["harvested", "empty"] }).find((r) => r.x === 1 && r.y === 2);
+    assert.ok(row, "采空矿进入 harvested/empty 集合");
+    assert.ok(["harvested", "empty"].includes(row!.state), `状态为负态（实际 ${row!.state}）`);
+    assert.equal(knownResources(db, { states: ["visible"] }).find((r) => r.x === 1 && r.y === 2), undefined, "负态矿默认不按 visible 返回");
+    // t103：refill 后矿重新可见 → upsertResources 恢复 visible（生命周期闭环）
+    writeFileSync(join(cal, "0000000103.json"), JSON.stringify({
+      before: { state: { objects: [{ kind: "RESOURCE", positions: [[1, 2]] }] } },
+      after: { state: { events: [] } },
+    }));
+    syncTenantSurvey(dir, "t1");
+    db.close();
+    db = openSurveyDb(dir, "t1", false);
+    const revived = knownResources(db).find((r) => r.x === 1 && r.y === 2);
+    assert.equal(revived?.state, "visible", "refill 后恢复 visible（发现→采→空→refill 闭环）");
+    db.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("World: seedResourceMemory 恒进 hints（不受新鲜度窗口滤除）", () => {
   const world = new World();
   // 现实：seed 在 tick 0 注入，首个真实 observe 在 68000——若受 maxAge 窗口

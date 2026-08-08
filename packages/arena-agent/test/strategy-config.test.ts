@@ -38,13 +38,21 @@ test("strategy compiler: unknown and duplicate variant fail before runtime owner
   );
 });
 
-test("hot reload contract: variants are hot; writer/model/deadline/policy fields require restart", () => {
+test("hot reload contract: variants+mission are hot; writer/model/deadline/policy fields require restart", () => {
   const active = base({ variants: ["worker-mission-v1"] });
   const variantsOnly = base({ variants: ["worker-mission-v1", "alliance-no-fire-v1"] });
   const hot = hotReloadCompatibility(active, variantsOnly);
   assert.equal(hot.compatible, true);
   assert.equal(hot.variantsChanged, true);
+  assert.equal(hot.missionChanged, false);
   assert.deepEqual(hot.restartRequiredFields, []);
+
+  const missionTune = base({ variants: active.variants, mission: { collectionValueFloor: -20 } });
+  const missionHot = hotReloadCompatibility(active, missionTune);
+  assert.equal(missionHot.compatible, true);
+  assert.equal(missionHot.missionChanged, true);
+  assert.deepEqual(missionHot.restartRequiredFields, []);
+  assert.equal(compileRuntimeStrategy(missionTune).deterministicOverrides.mission?.collectionValueFloor, -20);
 
   for (const candidate of [
     base({ variants: active.variants, submitEnabled: true }),

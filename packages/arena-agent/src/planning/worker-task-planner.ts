@@ -19,6 +19,7 @@ import type { PlanningSnapshot, PlanningUnit } from "./planning-snapshot.ts";
 import {
   DEFAULT_MISSION_CONFIG,
   isCollectable,
+  refillBonusOf,
   surveyorIds,
   targetConfidence,
   type MissionConfig,
@@ -160,9 +161,9 @@ export class WorkerTaskPlanner {
         for (const key of availableCells) {
           const net = this.netValue(worker, key, snapshot, previousAssignments, claimedCells);
           const cell = snapshot.resourceCells.get(key);
-          // 使命层（worker-mission-v1）：门槛/距离过滤——该 worker 对此格不值得
-          // （陈旧种子/超距）则跳过；无任何可采格时 worker 自然留在 pool → 转勘探。
-          if (cell !== undefined && !isCollectable(net, worker, cell.position, this.mission)) {
+          // 使命层（worker-mission-v1）：门槛/距离/死矿过滤——该 worker 对此格不值得
+          // （陈旧种子/超距/预测采空）则跳过；无任何可采格时 worker 自然留在 pool → 转勘探。
+          if (cell !== undefined && !isCollectable(net, worker, cell.position, this.mission, snapshot.refillPredictions)) {
             continue;
           }
           if (best === null || net > best.net) {
@@ -230,9 +231,12 @@ export class WorkerTaskPlanner {
     const sticky = applyStickyBonus(worker.id, key, previousAssignments, this.stickyBonus);
     // 使命层值层（G1）：目标置信项（可见加成 / seeded 随龄衰减）。
     const confidence = targetConfidence(cell, snapshot.tick, this.mission);
+    // 使命层值层（Phase 2，G3）：矿刷新预测加成（即将刷新格提前占位）。
+    const refillBonus = refillBonusOf(key, snapshot.refillPredictions, this.mission);
     return (
       RESOURCE_VALUE +
-      confidence -
+      confidence +
+      refillBonus -
       travelTime -
       returnTime -
       threatRisk -
