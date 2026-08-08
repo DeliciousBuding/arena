@@ -89,7 +89,7 @@ interface BestEffortObservation {
   readonly tick: number;
   readonly core: ConductorCoreSnapshot | null;
   readonly events: readonly { readonly type?: string }[];
-  readonly units: readonly { readonly id: string; readonly unitType: string; readonly cargo: number }[];
+  readonly units: readonly { readonly id: string; readonly unitType: string; readonly cargo: number; readonly position: readonly [number, number] | null }[];
   readonly survey: ConductorStepInput["survey"];
 }
 
@@ -111,7 +111,7 @@ function parseObservation(raw: unknown): BestEffortObservation | null {
 
   let core: ConductorCoreSnapshot | null = null;
   const enemyCores: { readonly x: number; readonly y: number; readonly lastSeenTick: number }[] = [];
-  const units: { readonly id: string; readonly unitType: string; readonly cargo: number }[] = [];
+  const units: { readonly id: string; readonly unitType: string; readonly cargo: number; readonly position: readonly [number, number] | null }[] = [];
   const resources: { readonly x: number; readonly y: number; readonly lastSeenTick: number }[] = [];
 
   for (const objectValue of objects) {
@@ -140,7 +140,15 @@ function parseObservation(raw: unknown): BestEffortObservation | null {
     } else if (kind === "UNIT" && isControlled) {
       if (coreId(object.id) && typeof object.unit_type === "string") {
         const cargo = typeof object.cargo === "number" && Number.isFinite(object.cargo) ? object.cargo : 0;
-        units.push({ id: object.id, unitType: object.unit_type, cargo });
+        // M6：单位坐标（清空验证用，migration-assist-v1 §5）
+        units.push({
+          id: object.id,
+          unitType: object.unit_type,
+          cargo,
+          position: position !== null && Number.isFinite(position[0]) && Number.isFinite(position[1])
+            ? position
+            : null,
+        });
       }
     } else if (kind === "RESOURCE" && Array.isArray(object.positions)) {
       // 资源对象携带 positions 数组（可能多格）

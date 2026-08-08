@@ -43,11 +43,12 @@ const MOVE_TICKS_PER_CELL = 4;
 interface SimWorld {
   readonly resources: readonly { readonly x: number; readonly y: number; readonly lastSeenTick: number }[];
   readonly enemyCores: readonly { readonly x: number; readonly y: number; readonly lastSeenTick: number }[];
-  /** 每 tick 单位快照（默认空；cargo 阻滞注入用）。 */
+  /** 每 tick 单位快照（默认空；cargo 阻滞/清路验证注入用）。 */
   readonly unitsAt?: (tick: number, plan: MigrationPlanV1) => readonly {
     readonly id: string;
     readonly unitType: string;
     readonly cargo: number;
+    readonly position?: readonly [number, number] | null;
   }[];
   /** 引擎事件注入（默认空）。 */
   readonly eventsAt?: (tick: number, plan: MigrationPlanV1) => readonly { readonly type?: string }[];
@@ -234,7 +235,12 @@ class MigrationSim {
         hp: this.world.hpAt?.(this.tick, plan!) ?? this.hp,
       },
       events: this.world.eventsAt?.(this.tick, plan!) ?? [],
-      units: this.world.unitsAt?.(this.tick, plan!) ?? [],
+      units: (this.world.unitsAt?.(this.tick, plan!) ?? []).map((unit) => ({
+        id: unit.id,
+        unitType: unit.unitType,
+        cargo: unit.cargo,
+        position: unit.position ?? null,
+      })),
       survey: this.survey(),
       config: this.config,
       held: this.held,
@@ -541,7 +547,7 @@ test("场景7b：170 格路径 → 按 legMaxCells(150) 分 2 腿，legIndex 跨
 // ---------------------------------------------------------------------------
 
 test("场景8：无计划输入 → plan=null、无转移、held 不变、reasons 注明 IDLE", () => {
-  const held: ConductorHeldState = { holdEntryCount: 2, holdFirstTick: 700, holdTicks: 3, settleElapsed: 12 };
+  const held: ConductorHeldState = { holdEntryCount: 2, holdFirstTick: 700, holdTicks: 3, settleElapsed: 12, stallTicks: 0, clearRetries: 0 };
   const input: ConductorStepInput = {
     tick: 500,
     nowMs: NOW_BASE_MS,

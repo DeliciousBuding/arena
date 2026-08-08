@@ -36,8 +36,11 @@
  *   hp 未知（null）按满血处理（fail-safe 恢复方向）。
  * - **THREAT_ESCALATED 未接线**：M5 行为清单不含"敌核贴脸持续→ABORT"；
  *   活跃敌核持续 → 无限期 HOLD 直至目击陈旧（安全侧），后续里程碑接入。
- * - **停滞检测未接线**：核心长时间不推进（引擎异常）→ 挂起等待；§2 列示的
- *   停滞检测属 runtime driver 细节，留 M6。
+ * - **停滞检测已接线（M6，migration-assist-v1 §4-D）**：LEG_MOVE 中核心
+ *   NORMAL 未推进 ≥2 tick = 迁移失败签名（引擎拒：占位者不移走/争抢/容量
+ *   R3/R4）→ 写 plan.clearRequests（destination + 前瞻）→ runtime 清路订单
+ *   执行 → 清空验证（单位坐标观测）→ 复位续走；连续 3 次清路未果 → REPLAN
+ *   （换路绕开占用带）；MOVING/推进即复位 stall 计数。
  */
 
 import type { MigrationPhase } from "./state-machine.ts";
@@ -103,6 +106,8 @@ export interface ConductorStepInput {
     readonly id: string;
     readonly unitType: string;
     readonly cargo: number;
+    /** M6（migration-assist-v1 §4-D/§5）：单位坐标（清空验证用）；缺失 = null。 */
+    readonly position: readonly [number, number] | null;
   }[];
   /** 走廊审计输入（与 M3 corridor.ts 对齐）。 */
   readonly survey: {
@@ -127,6 +132,10 @@ export interface ConductorHeldState {
   readonly holdTicks: number;
   /** 当前 SETTLE 已过 tick（HOLD 中断期间冻结）。 */
   readonly settleElapsed: number;
+  /** M6（migration-assist-v1 §4-D）：LEG_MOVE 中 NORMAL 未推进的连续 tick（MOVING/推进即复位）。 */
+  readonly stallTicks: number;
+  /** M6：清路重试计数（≥3 次仍未清空 → REPLAN）。 */
+  readonly clearRetries: number;
 }
 
 export interface ConductorTransitionRecord {
@@ -152,6 +161,8 @@ export const INITIAL_CONDUCTOR_HELD_STATE: ConductorHeldState = {
   holdFirstTick: 0,
   holdTicks: 0,
   settleElapsed: 0,
+  stallTicks: 0,
+  clearRetries: 0,
 };
 
 const chebyshev = (first: readonly [number, number], second: { readonly x: number; readonly y: number }): number =>
@@ -463,7 +474,9 @@ function legMoveStep(
     return waitStep(input, plan, held, transitions, reasons, "LEG_MOVE：核心状态未知，等待（fail-closed）");
   }
   if (core.state === "MOVING") {
-    return waitStep(input, plan, held, transitions, reasons, "LEG_MOVE：核心 MOVING 中（引擎 4 tick/格），等待到达");
+    // M6：MOVING = 引擎正在推进，不算停滞（失败签名 = MOVING→NORMAL 位置未变，
+    // 由下方 NORMAL 未推进分支从 0 重新计数捕获）。
+    return waitStep(input, plan, { ...held, stallTicks: 0 }, transitions, reasons, "LEG_MOVE：核心 MOVING 中（引擎 4 tick/格），等待到达");
   }
   const position = core.position;
   if (position === null) {
@@ -502,7 +515,99 @@ function legMoveStep(
     };
   }
   if (pathIndex <= legStartIndex) {
-    return waitStep(input, plan, held, transitions, reasons, "LEG_MOVE：核心在腿起点，等待引擎移动（overlay 已发 START_MOVE）");
+    // M6 停滞检测（migration-assist-v1 §4-D）：NORMAL 且未推进持续 ≥2 tick
+    // = 迁移失败签名（引擎拒：占位者不移走/争抢/容量，R3/R4）→ 生成清路请求。
+    const stallTicks = held.stallTicks + 1;
+    if (stallTicks < 2) {
+      return waitStep(
+        input,
+        plan,
+        { ...held, stallTicks },
+        transitions,
+        reasons,
+        `LEG_MOVE：核心在腿起点 NORMAL 未推进（stall ${stallTicks}/2，等待引擎/清路）`,
+      );
+    }
+    // 已有清路请求：验证目标格是否已清空（单位坐标观测，M6 §5）。
+    if (plan.clearRequests !== undefined && plan.clearRequests.length > 0) {
+      const cleared = plan.clearRequests.every((request) =>
+        !input.units.some(
+          (unit) =>
+            unit.position !== null &&
+            unit.position[0] === request.x &&
+            unit.position[1] === request.y,
+        ),
+      );
+      if (cleared) {
+        return waitStep(
+          input,
+          { ...plan, clearRequests: undefined },
+          { ...held, stallTicks: 0, clearRetries: 0 },
+          transitions,
+          reasons,
+          `LEG_MOVE：清路完成（clearRequests 已清空）→ 复位 stall，等待 overlay 重发 START_MOVE`,
+        );
+      }
+      if (held.clearRetries >= 2) {
+        // 连续 3 次清路未果 → REPLAN（换路绕开占用带，migration-assist-v1 §4-D）
+        const replan = transition(plan.state, { type: "REPLAN_REQUESTED" });
+        void replan;
+        return {
+          plan: refreshLease(
+            { ...plan, state: "PLAN", revision: plan.revision + 1, clearRequests: undefined },
+            input,
+          ),
+          held: { ...held, stallTicks: 0, clearRetries: 0 },
+          transitions: [...transitions, {
+            from: plan.state,
+            to: "PLAN",
+            event: "REPLAN_REQUESTED",
+            tick: input.tick,
+          }],
+          reasons: [
+            ...reasons,
+            `LEG_MOVE：清路 ${held.clearRetries + 1} 次未清空（单位占 destination）→ REPLAN（换路绕开占用带）`,
+          ],
+        };
+      }
+      return waitStep(
+        input,
+        plan,
+        { ...held, stallTicks, clearRetries: held.clearRetries + 1 },
+        transitions,
+        reasons,
+        `LEG_MOVE：清路重试 ${held.clearRetries + 1}/3（destination 仍有我方单位，runtime 清路订单执行中）`,
+      );
+    }
+    // 首次失败：写 clearRequests（destination + 前瞻 1 格），runtime 执行让路。
+    const destinationIndex = legStartIndex + 1;
+    const destination = plan.path.cells[destinationIndex];
+    if (destination === undefined) {
+      return waitStep(input, plan, held, transitions, reasons, "LEG_MOVE：路径无下一格（计划损坏，fail-closed 等待）");
+    }
+    const clearRequests: { x: number; y: number; reason?: string }[] = [
+      { x: destination[0], y: destination[1], reason: "destination" },
+    ];
+    const ahead = plan.path.cells[destinationIndex + 1];
+    if (ahead !== undefined) {
+      clearRequests.push({ x: ahead[0], y: ahead[1], reason: "ahead" });
+    }
+    return {
+      plan: refreshLease(
+        {
+          ...plan,
+          clearRequests,
+          assist: { clearAheadCells: clearRequests.length, clearAheadReason: "blocked-retry" },
+        },
+        input,
+      ),
+      held: { ...held, stallTicks, clearRetries: 1 },
+      transitions,
+      reasons: [
+        ...reasons,
+        `LEG_MOVE：核心 NORMAL 未推进 ≥2 tick（迁移失败签名）→ 写 clearRequests（${clearRequests.length} 格：destination + 前瞻），runtime 清路订单执行中`,
+      ],
+    };
   }
 
   const nextCellsThisLeg = Math.max(plan.legProgress.cellsThisLeg, pathIndex - legStartIndex);
@@ -514,7 +619,7 @@ function legMoveStep(
         { ...plan, state: "LEG_SETTLE", legProgress: { ...plan.legProgress, cellsThisLeg: nextCellsThisLeg } },
         input,
       ),
-      held: { ...held, settleElapsed: 0 },
+      held: { ...held, settleElapsed: 0, stallTicks: 0 },
       transitions: [...transitions, {
         from: plan.state,
         to: "LEG_SETTLE",
@@ -528,7 +633,7 @@ function legMoveStep(
     return waitStep(
       input,
       { ...plan, legProgress: { ...plan.legProgress, cellsThisLeg: nextCellsThisLeg } },
-      held,
+      { ...held, stallTicks: 0 },
       transitions,
       reasons,
       `LEG_MOVE：burst 推进 ${nextCellsThisLeg}/${input.config.pace.burstCells}（已到 (${position[0]},${position[1]})）`,

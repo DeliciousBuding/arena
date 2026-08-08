@@ -14,7 +14,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { conductorStep, CONDUCTOR_LEASE_HORIZON_TICKS } from "../src/migration/conductor.ts";
+import { conductorStep, CONDUCTOR_LEASE_HORIZON_TICKS, type ConductorHeldState } from "../src/migration/conductor.ts";
 import {
   migrationPlanPath,
   readMigrationPlan,
@@ -102,9 +102,9 @@ class EngineSim {
     this.moveRemaining = 0;
   }
 
-  step(held: Readonly<{ readonly holdEntryCount: number; readonly holdFirstTick: number; readonly holdTicks: number; readonly settleElapsed: number }> | null): {
+  step(held: Readonly<ConductorHeldState> | null): {
     readonly plan: MigrationPlanV1 | null;
-    readonly held: { readonly holdEntryCount: number; readonly holdFirstTick: number; readonly holdTicks: number; readonly settleElapsed: number };
+    readonly held: ConductorHeldState;
     readonly transitions: readonly { readonly from: string; readonly to: string; readonly event: string; readonly tick: number }[];
     readonly reasons: readonly string[];
   } {
@@ -185,7 +185,7 @@ test("故障1：崩溃重启 —— 计划从磁盘读回（held=null）续传�
   const planPath = migrationPlanPath(dir, "t1");
   try {
     const sim = new EngineSim(makePlan(1000), {}, 1000);
-    let held: Readonly<{ readonly holdEntryCount: number; readonly holdFirstTick: number; readonly holdTicks: number; readonly settleElapsed: number }> | null = null;
+    let held: Readonly<ConductorHeldState> | null = null;
 
     // 第一进程：推进 ~80 tick（进入第 2 个 burst），每步原子写盘
     for (let count = 0; count < 80; count += 1) {
@@ -254,7 +254,7 @@ test("故障2：lease 过期 → isMigrationLeaseFresh=false；step 拒绝续迁
 
   assert.equal(isMigrationLeaseFresh(plan.lease, expiredTick, NOW_BASE_MS), false, "lease 应判定不新鲜");
 
-  const held = { holdEntryCount: 1, holdFirstTick: 5_500, holdTicks: 2, settleElapsed: 0 };
+  const held = { holdEntryCount: 1, holdFirstTick: 5_500, holdTicks: 2, settleElapsed: 0, stallTicks: 0, clearRetries: 0 };
   const result = conductorStep({
     tick: expiredTick,
     nowMs: NOW_BASE_MS,
