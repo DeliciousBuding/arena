@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { computeSourceFreshness } from "../lib/pipeline-health.ts";
+import { computeSourceFreshness, computeLifecycleFlow, type PipelineTenantHealth } from "../lib/pipeline-health.ts";
 
 test("pipeline-health: 数据源新鲜度（world/surveyDb/leaderboard/shop/humanAudit）", () => {
   const root = mkdtempSync(join(tmpdir(), "arena-ph-"));
@@ -38,4 +38,16 @@ test("pipeline-health: 数据源新鲜度（world/surveyDb/leaderboard/shop/huma
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("pipeline-health: 矿生命周期闭环守卫——采集事件 + 负态 → OK", () => {
+  const t = (harvest: number, neg: number): PipelineTenantHealth => ({
+    tenant: "t1", dbExists: true, dbBytes: 1, syncTick: 1, liveTick: 1, lagTicks: 0, syncedCases: 1,
+    counts: { resources: 10, obstacles: 1, cores: 0, unitsSeen: 1, chunks: 1, harvestEvents: harvest, spends: 0, lifecycleUnits: 1, lifecycleNegative: neg, lifecycleStates: null },
+    surveyCachedAt: null, health: "OK",
+  });
+  assert.equal(computeLifecycleFlow([t(10, 3)]), "OK", "有采集事件且负态>0 → 回写生效");
+  assert.equal(computeLifecycleFlow([t(10, 0)]), "STALLED", "有采集事件但负态=0 → 静默空跑（--data-root 类回归）");
+  assert.equal(computeLifecycleFlow([t(0, 0)]), "NO_DATA", "无采集事件 → 数据不足不算故障");
+  assert.equal(computeLifecycleFlow([]), "NO_DATA", "空租户 → NO_DATA");
 });
