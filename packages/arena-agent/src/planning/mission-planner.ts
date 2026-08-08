@@ -52,6 +52,10 @@ export interface MissionConfig {
    *  全部转 SURVEYOR（EXPLORE 外出测绘/打探），不再守家 WAIT——矿工不守家，
    *  守家是军事单位职责。surveyWorkerCap 仅限制"非全量外出"模式的勘探名额。 */
   readonly alwaysSurvey: boolean;
+  /** 分配滞回阈值（2026-08-08，t2 生产实证 planChurn=1.0 根治）：上一 tick 目标格
+   *  仍可采时，新目标净收益必须高于原目标该阈值才切换——低于阈值保持原目标
+   *  （worker 路程不浪费、分配稳定）。缺省 0 = 关闭（现行为零回归）。 */
+  readonly switchThreshold: number;
 }
 
 /** 缺省 = 关闭（全部保守值，逐字节复现现行为）。 */
@@ -68,6 +72,7 @@ export const DEFAULT_MISSION_CONFIG: MissionConfig = Object.freeze({
   deadMineOverdueTicks: 0,
   migrationScout: false,
   alwaysSurvey: false,
+  switchThreshold: 0,
 });
 
 /** 目标置信项（G1）：可见加成 + seeded 随龄衰减。独立于距离/威胁，便于单测。 */

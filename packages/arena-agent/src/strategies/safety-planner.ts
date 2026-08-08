@@ -1346,6 +1346,12 @@ export class SafetyPlanner {
       // fallback 选被占 LEFT → MOVE_CONTESTED → 空 worker 永远走不出核心格）。
       // 无物理空位再退单占用邻格（容量 2 可挤入）、再退外圈守位点。
       const occupancy = occupancyCounts(state);
+      // 敌占格视为不可疏散目标（2026-08-08 审查修复）：occ 扫描只看我方单位，
+      // 敌格显示 occ=0 → 空 worker 可能朝敌疏散送死。把可见敌占格提升为
+      // occ=2（满），两遍扫描与 yieldAnchor 都不会选它。
+      for (const enemy of state.visibleEnemies) {
+        occupancy.set(cellKey(enemy.position), 2);
+      }
       let exit: Position | null = null;
       const cardinals: readonly Position[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
       // 空邻格优先（2026-08-08，t2 生产实证修复）：旧实现选「第一个 occ<2」的

@@ -5,14 +5,21 @@
  * 测绘累积：矿/障碍/敌核心基地/单位目击，从 calibration case 增量同步写入。
  *
  * 位置：<data-root>/runtime/survey/<tenant>.db（runtime 不提交）。
- * 数据源 = calibration case before.state.objects（服务端全量投影）——
- * 比 agent 视野权威：资源存在即标注，跨 run 不丢。
+ * 数据源 = calibration case before.state.objects——官方语义是"自有实体 +
+ * 当前可见地形与敌人"（arena-hero-doc state-model.md：Owned entities plus
+ * currently visible terrain and enemies），即**单玩家视野投影**，不是服务端
+ * 全量地图。因此：
+ *  - resources 表 = 我方视野跨 run 累积的已知矿（可见过即标注），不是全图；
+ *  - resource_absences 表补足负观测：视野覆盖内确认无矿（collectResourceAbsences
+ *    用我方观察者位置 + supercover 视线判定），是真实缺席而非观测中断——
+ *    refill 周期实证的正确数据源（resource_seen_history 只是观测记录，
+ *    观测间隔 ≠ 缺席，refill 预测 0/401 实证证伪的原因）。
  *
  * 只读约定：本模块只写 survey 库，不碰 telemetry/calibration/生产数据。
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export type SurveyResourceState = "visible" | "stale" | "harvested" | "empty";
@@ -111,6 +118,28 @@ CREATE INDEX IF NOT EXISTS idx_core_hunts_last_seen ON core_hunts(last_seen_tick
 -- CREATE INDEX IF NOT EXISTS 幂等，下次 openSurveyDb 自动生效。
 CREATE INDEX IF NOT EXISTS idx_units_seen_controlled_tick ON units_seen(controlled, tick);
 
+-- 共享记忆分层（2026-08-08，A13）：units_seen 旧目击归档聚合（enemy-heat full
+-- 读 archive∪近期，原始行清理防无限膨胀）。每格×类型一行，跨 run 累积。
+CREATE TABLE IF NOT EXISTS heat_archive (
+  x INTEGER NOT NULL,
+  y INTEGER NOT NULL,
+  unit_type TEXT NOT NULL,
+  count INTEGER NOT NULL,
+  first_tick INTEGER NOT NULL,
+  last_tick INTEGER NOT NULL,
+  PRIMARY KEY (x, y, unit_type)
+);
+
+-- 格级负观测（2026-08-08，A15）：我方视野覆盖内「确认无矿」的已知矿格 × tick——
+-- resource_seen_history 只记观测（视野离开=假消失），无法区分真实缺席与观测中断；
+-- 本表记「看得到且没有矿」的真实缺席，供矿刷新周期实证。survey-sync 写入。
+CREATE TABLE IF NOT EXISTS resource_absences (
+  cell TEXT NOT NULL,
+  tick INTEGER NOT NULL,
+  PRIMARY KEY (cell, tick)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_absences_cell ON resource_absences(cell);
+
 -- 矿物生命周期事件（2026-08-08）：矿格 × tick 的采集/失败序列
 CREATE TABLE IF NOT EXISTS resource_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,6 +205,9 @@ CREATE TABLE IF NOT EXISTS notable_events (
   y INTEGER,
   amount INTEGER,
   unit_type TEXT,
+  reason_code TEXT,
+  destroyed_by TEXT,
+  is_our_core INTEGER,
   UNIQUE(tenant, tick, event_type, actor_id, target_id)
 );
 CREATE INDEX IF NOT EXISTS idx_notable_events_tick ON notable_events(tick);
@@ -202,6 +234,10 @@ export function openSurveyDb(dataRoot: string, tenant: string, write = false): D
   if (write) {
     migrateUnitsSeenXY(db); // 数据架构审计 A2：旧库补 x/y 列 + 回填
     migrateCoreHuntSanity(db); // 数据质量 A5：核心时间戳倒挂修复（first<=last）
+    migrateResourceSanity(db); // 数据质量 A10：矿时间戳倒挂 + seen_count 重建（force 重跑污染）
+    migrateNotableSanity(db, dataRoot, tenant); // 叙事 A11：CORE_DESTROYED 敌我/摧毁者回填（旧库）
+    migrateUnitsSeenArchive(db); // 共享记忆分层 A13：旧目击归档 heat_archive + 清理原始行
+    migrateDropControlledSeen(db); // 记忆收敛 A14：清理我方目击行（units_seen 纯敌方记忆）
   }
   return db;
 }
@@ -241,7 +277,207 @@ function migrateCoreHuntSanity(db: DatabaseSync): void {
   }
 }
 
+/** 矿表健康迁移（2026-08-08，数据质量 A10）：resources 时间戳倒挂
+ *  + seen_count 重建。与 core_hunts A5 同因：旧 upsert 无条件覆盖 last 导致
+ *  run 处理顺序不一时间戳回退；seen_count 被 force 重跑污染
+ *  （每次重处理 +1，但 resource_seen_history 是 INSERT OR IGNORE (cell,tick)
+ *  幂等记录——是 seen_count 的准确重建源）。幂等：只触发有异常行。 */
+function migrateResourceSanity(db: DatabaseSync): void {
+  try {
+    // resources 倒挂修复
+    db.exec(
+      "UPDATE resources SET first_seen_tick = MIN(first_seen_tick, last_seen_tick), " +
+      "last_seen_tick = MAX(first_seen_tick, last_seen_tick) WHERE first_seen_tick > last_seen_tick;"
+    );
+    // obstacles 倒挂修复（同因：旧 upsert 无条件覆盖 last）
+    db.exec(
+      "UPDATE obstacles SET first_seen_tick = MIN(first_seen_tick, last_seen_tick), " +
+      "last_seen_tick = MAX(first_seen_tick, last_seen_tick) WHERE first_seen_tick > last_seen_tick;"
+    );
+    // seen_count 重建为 resource_seen_history 计数（仅异常行）
+    db.exec(
+      "UPDATE resources SET seen_count = " +
+      "(SELECT COUNT(*) FROM resource_seen_history h WHERE h.cell = resources.cell) " +
+      "WHERE seen_count != " +
+      "(SELECT COUNT(*) FROM resource_seen_history h WHERE h.cell = resources.cell);"
+    );
+  } catch {
+    // 容错；下次 sync 重试
+  }
+}
+
+/** 叙事表健康迁移（2026-08-08，叙事 A11）：notable_events 补
+ *  reason_code / destroyed_by / is_our_core 三列（新库 SCHEMA 已含，旧库 ALTER），
+ *  并对历史 CORE_DESTROYED 回填——deeds 需区分"我方核心被打爆 vs 敌方核心被摧毁
+ *  vs 自爆"，且 destroyed_by 真实值是数组（combat.ts ATTACK 事件），旧解析只认
+ *  string 导致摧毁者丢失。回填源 = calibration case（按 tick 匹配，扫描该租户
+ *  calibration 全量 case；CORE_DESTROYED 稀有，仅一次迁移可接受）。
+ *  幂等：只处理 reason_code IS NULL 的行；已回填行不再触发全扫。
+ *  叙事 A11b（2026-08-08）：重复行去重 + 表达式唯一索引——SQLite UNIQUE 约束
+ *  中 NULL≠NULL，CORE_DESTROYED 的 actor_id 恒 NULL 导致 UNIQUE(tenant,tick,
+ *  event_type,actor_id,target_id) 完全不去重（force 重跑/水位回退重复插入，
+ *  实测 t2/t3/t4 各有 1 对同 tick 同 target 重复行）。修复：按 COALESCE 归一
+ *  键删重复（保留最小 id）+ 表达式唯一索引根治未来写入（INSERT OR IGNORE 生效）。 */
+function migrateNotableSanity(db: DatabaseSync, dataRoot: string, tenant: string): void {
+  try {
+    const cols = db.prepare("PRAGMA table_info(notable_events)").all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("reason_code")) db.exec("ALTER TABLE notable_events ADD COLUMN reason_code TEXT;");
+    if (!names.has("destroyed_by")) db.exec("ALTER TABLE notable_events ADD COLUMN destroyed_by TEXT;");
+    if (!names.has("is_our_core")) db.exec("ALTER TABLE notable_events ADD COLUMN is_our_core INTEGER;");
+    // 去重：按 COALESCE 归一键（NULL 参与唯一性）保留最小 id；幂等——无重复行时 DELETE 0 行。
+    db.exec(
+      "DELETE FROM notable_events WHERE id NOT IN (" +
+      "SELECT MIN(id) FROM notable_events GROUP BY tenant, tick, event_type, COALESCE(actor_id, ''), COALESCE(target_id, '')" +
+      ")",
+    );
+    // 表达式唯一索引：NULL 归一后唯一（根治 CORE_DESTROYED actor_id=NULL 不去重）。
+    // 先删重复后建，索引创建幂等；历史重复已清。
+    db.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_notable_events_dedup ON notable_events(" +
+      "tenant, tick, event_type, COALESCE(actor_id, ''), COALESCE(target_id, ''))",
+    );
+    const pending = db.prepare(
+      "SELECT id, tick, target_id FROM notable_events WHERE event_type = 'CORE_DESTROYED' AND reason_code IS NULL",
+    ).all() as Array<{ id: number; tick: number; target_id: string | null }>;
+    if (pending.length === 0) return;
+    const byTick = coreDestroyedByTick(dataRoot, tenant);
+    if (byTick.size === 0) return;
+    const upd = db.prepare(
+      "UPDATE notable_events SET reason_code = ?, destroyed_by = ?, is_our_core = ? WHERE id = ?",
+    );
+    for (const row of pending) {
+      const info = byTick.get(Number(row.tick));
+      if (!info) continue;
+      upd.run(
+        info.reason,
+        info.destroyedBy.length > 0 ? JSON.stringify(info.destroyedBy) : null,
+        info.ourCore ? 1 : 0,
+        row.id,
+      );
+    }
+  } catch {
+    // 容错；下次 sync 重试
+  }
+}
+
+/** 扫描某租户 calibration cases，收集 CORE_DESTROYED 的
+ *  reason_code / destroyed_by / 是否我方核心（target ∈ before.state 受控核心）。
+ *  与 survey-sync.parseCaseLifecycle / builder.coreRiskAt 同判据。 */
+function coreDestroyedByTick(dataRoot: string, tenant: string): Map<number, { reason: string | null; destroyedBy: string[]; ourCore: boolean }> {
+  const out = new Map<number, { reason: string | null; destroyedBy: string[]; ourCore: boolean }>();
+  const cal = join(dataRoot, "runtime", tenant, "calibration");
+  if (!existsSync(cal)) return out;
+  for (const run of readdirSync(cal, { withFileTypes: true })) {
+    if (!run.isDirectory()) continue;
+    const casesDir = join(cal, run.name, "cases");
+    if (!existsSync(casesDir)) continue;
+    for (const f of readdirSync(casesDir)) {
+      if (!f.endsWith(".json")) continue;
+      let raw: { before?: { state?: { objects?: unknown } }; after?: { state?: { events?: unknown } } } | null = null;
+      try {
+        raw = JSON.parse(readFileSync(join(casesDir, f), "utf8")) as { before?: { state?: { objects?: unknown } }; after?: { state?: { events?: unknown } } } | null;
+      } catch {
+        continue;
+      }
+      const events = raw?.after?.state?.events;
+      if (!Array.isArray(events)) continue;
+      const coreIds = new Set<string>();
+      const objects = raw?.before?.state?.objects;
+      if (Array.isArray(objects)) {
+        for (const o of objects) {
+          if (o && typeof o === "object") {
+            const obj = o as { kind?: unknown; controlled?: unknown; id?: unknown };
+            if (obj.kind === "CORE" && obj.controlled && typeof obj.id === "string") coreIds.add(obj.id);
+          }
+        }
+      }
+      for (const ev of events) {
+        if (!ev || typeof ev !== "object") continue;
+        const e = ev as { event_type?: unknown; tick?: unknown; target_id?: unknown; reason_code?: unknown; values?: unknown };
+        if (e.event_type !== "CORE_DESTROYED") continue;
+        const tick = typeof e.tick === "number" ? e.tick : Number(e.tick);
+        if (!Number.isFinite(tick)) continue;
+        const vals = (e.values ?? {}) as Record<string, unknown>;
+        const rawBy = vals.destroyed_by;
+        const destroyedBy = Array.isArray(rawBy)
+          ? rawBy.filter((u): u is string => typeof u === "string")
+          : typeof rawBy === "string" && rawBy.trim() !== ""
+            ? [rawBy]
+            : [];
+        out.set(tick, {
+          reason: typeof e.reason_code === "string" ? e.reason_code : null,
+          destroyedBy,
+          ourCore: typeof e.target_id === "string" && coreIds.has(e.target_id),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/** 共享记忆分层阈值（tick）：units_seen 目击超过此龄（相对最新 tick）归档到
+ *  heat_archive 聚合表并删除原始行——enemy-heat full 读 archive∪近期语义不变，
+ *  防 units_seen 无限膨胀（t1 20 万行/16k tick 实测）。与 enemy-heat recent
+ *  窗口（2000）略大，保守保留近期完整目击。 */
+export const ARCHIVE_CUTOFF_TICKS = 3000;
+
+/** 记忆收敛迁移（2026-08-08，A14）：units_seen 定位为纯敌方目击记忆表——
+ *  我方单位生命周期由 unit_lifecycle 追踪（touchUnitSeen），我方目击行
+ *  （controlled=1）无任何消费方（enemy-heat/deeds/advice 全部只读
+ *  controlled=0），却占表 99% 行数（t1 实测 205,014/205,165）。此迁移
+ *  一次性 DELETE 历史我方行；写入侧 survey-sync 同步改为仅敌方写 units_seen
+ *  （A14）。幂等：删完 controlled=1 行数为 0，重复跑无效果。仅 write 执行。 */
+function migrateDropControlledSeen(db: DatabaseSync): void {
+  try {
+    db.prepare("DELETE FROM units_seen WHERE controlled = 1").run();
+  } catch {
+    // 容错；下次 sync 重试
+  }
+}
+
+
+/** 共享记忆分层迁移（2026-08-08，记忆生命周期 A13）：units_seen 旧目击
+ *  （controlled=0 且 tick ≤ 最新-3000）聚合写入 heat_archive（每格×类型计数 +
+ *  first/last tick），随后删除原始旧行。enemy-heat full 改读 archive∪近期——
+ *  「近期原始 + 历史聚合」两层记忆，跨 run 不丢历史强度。幂等：DELETE 后旧行
+ *  不在 units_seen，重复跑 SELECT 选不到旧行不重复累加。仅 write 打开执行。 */
+function migrateUnitsSeenArchive(db: DatabaseSync): void {
+  try {
+    const row = db.prepare("SELECT MAX(tick) - ? AS c FROM units_seen").get(ARCHIVE_CUTOFF_TICKS) as { c: number | null };
+    if (row.c === null || row.c <= 0) return;
+    db.prepare(`
+      INSERT INTO heat_archive (x, y, unit_type, count, first_tick, last_tick)
+      SELECT x, y, unit_type, COUNT(*), MIN(tick), MAX(tick)
+      FROM units_seen
+      WHERE controlled = 0 AND x IS NOT NULL AND tick <= ?
+      GROUP BY x, y, unit_type
+      ON CONFLICT(x, y, unit_type) DO UPDATE SET
+        count = heat_archive.count + excluded.count,
+        first_tick = MIN(heat_archive.first_tick, excluded.first_tick),
+        last_tick = MAX(heat_archive.last_tick, excluded.last_tick)
+    `).run(row.c);
+    db.prepare(
+      "DELETE FROM units_seen WHERE controlled = 0 AND x IS NOT NULL AND tick <= ?",
+    ).run(row.c);
+  } catch {
+    // 容错；下次 sync 重试
+  }
+}
+
 /** upsert 一组可见矿（服务端投影：资源存在）。返回受影响行数。 */
+/** 格级负观测写入（2026-08-08，A15）：视野覆盖内确认无矿的已知矿格。
+ *  (cell, tick) 幂等（UNIQUE）。由 survey-sync 每 case 判定后批量调用。 */
+export function upsertResourceAbsences(db: DatabaseSync, rows: ReadonlyArray<{ cell: string; tick: number }>): number {
+  if (rows.length === 0) return 0;
+  const stmt = db.prepare(
+    "INSERT OR IGNORE INTO resource_absences (cell, tick) VALUES (?, ?)",
+  );
+  let n = 0;
+  for (const r of rows) n += Number(stmt.run(r.cell, r.tick).changes);
+  return n;
+}
+
 export function upsertResources(
   db: DatabaseSync,
   cells: readonly { x: number; y: number }[],
@@ -251,7 +487,8 @@ export function upsertResources(
     INSERT INTO resources (cell, x, y, first_seen_tick, last_seen_tick, state, last_state_tick, seen_count)
     VALUES (?, ?, ?, ?, ?, 'visible', ?, 1)
     ON CONFLICT(cell) DO UPDATE SET
-      last_seen_tick = excluded.last_seen_tick,
+      -- 2026-08-08 数据质量修复：MAX 保护 last_seen 单调递增（旧无条件覆盖导致 run 处理顺序不一时间戳回退→ first>last 倒挂）
+      last_seen_tick = MAX(resources.last_seen_tick, excluded.last_seen_tick),
       state = 'visible',
       last_state_tick = excluded.last_state_tick,
       seen_count = resources.seen_count + 1
@@ -277,7 +514,9 @@ export function upsertObstacles(
   const stmt = db.prepare(`
     INSERT INTO obstacles (cell, x, y, first_seen_tick, last_seen_tick)
     VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(cell) DO UPDATE SET last_seen_tick = excluded.last_seen_tick
+    ON CONFLICT(cell) DO UPDATE SET
+      -- 2026-08-08 数据质量 A10：MAX 保护 last_seen 单调递增（旧无条件覆盖导致 run 顺序不一时 tick 回退 → first>last 倒挂）
+      last_seen_tick = MAX(obstacles.last_seen_tick, excluded.last_seen_tick)
   `);
   let n = 0;
   for (const cell of cells) {
@@ -323,7 +562,9 @@ export function upsertUnitSeen(
 }
 
 /** 稀有事迹写入（幂等：UNIQUE(tenant,tick,event_type,actor_id,target_id)
- *  INSERT OR IGNORE——force 重跑不重复。位置/金额/单位类型供 deeds 叙事。 */
+ *  INSERT OR IGNORE——force 重跑不重复。位置/金额/单位类型供 deeds 叙事。
+ *  叙事 A11（2026-08-08）：CORE_DESTROYED 补 reason_code / destroyed_by（JSON 数组）
+ *  / is_our_core——deeds 需区分"我方核心被打爆 vs 敌方核心被摧毁 vs 自爆"。 */
 export function recordNotableEvent(
   db: DatabaseSync,
   e: {
@@ -336,12 +577,19 @@ export function recordNotableEvent(
     y: number | null;
     amount: number | null;
     unitType: string | null;
+    reasonCode?: string | null;
+    destroyedBy?: readonly string[] | null;
+    isOurCore?: boolean | null;
   },
 ): number {
+  const destroyedByJson = e.destroyedBy && e.destroyedBy.length > 0 ? JSON.stringify(e.destroyedBy) : null;
   return Number(db.prepare(`
-    INSERT OR IGNORE INTO notable_events (tenant, tick, event_type, actor_id, target_id, x, y, amount, unit_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(e.tenant, e.tick, e.eventType, e.actorId, e.targetId, e.x, e.y, e.amount, e.unitType).changes);
+    INSERT OR IGNORE INTO notable_events (tenant, tick, event_type, actor_id, target_id, x, y, amount, unit_type, reason_code, destroyed_by, is_our_core)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    e.tenant, e.tick, e.eventType, e.actorId, e.targetId, e.x, e.y, e.amount, e.unitType,
+    e.reasonCode ?? null, destroyedByJson, e.isOurCore == null ? null : (e.isOurCore ? 1 : 0),
+  ).changes);
 }
 
 /** 已知矿查询（跨 run 累积；可过滤状态/新鲜度）。 */
@@ -415,6 +663,52 @@ export function knownCoreHunts(db: DatabaseSync): readonly SurveyCoreHuntRow[] {
     firstSeenTick: Number(r.first_seen_tick),
     lastSeenTick: Number(r.last_seen_tick),
   }));
+}
+
+/** 已知矿格的缺席统计（2026-08-08，seed 死格过滤）：返回近 absentWindowTicks 内
+ *  每个已知矿格的缺席次数——缺席是"我方视野覆盖内确认无矿"的负观测（A15），
+ *  高频缺席 = 长期死格（矿补充在 chunk 内别处生成，官方规则：Replenishment
+ *  may later create a natural replacement elsewhere in the chunk；t2 实证
+ *  缺席→恢复中位 133 tick，多数格缺席后长期不恢复）。 */
+export function knownResourceAbsenceCounts(
+  db: DatabaseSync,
+  sinceTick: number,
+): ReadonlyMap<string, number> {
+  const rows = db.prepare(
+    "SELECT cell, COUNT(*) AS absent FROM resource_absences WHERE tick > ? GROUP BY cell",
+  ).all(sinceTick) as Array<Record<string, unknown>>;
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    counts.set(String(row.cell), Number(row.absent));
+  }
+  return counts;
+}
+
+/** 缺席分级冷却（2026-08-08，动态冷却分级）：缺席计数 → 失败冷却时长分级。
+ *  分级依据（t2 实证，absentWindowTicks=20000 内）：p50=246 / p90=1378 次——
+ *  缺席 256+ 次 ≈ 持续 1000+ tick 视野确认无矿（采样每 4 tick 一次），长期死格
+ *  信号；缺席 < 64 次可能是活跃矿的短暂采空，保持默认 32 tick。分档保守：
+ *  只升级"确认死"的格，不拦 refill 后重新可见（visible 优先于冷却）。 */
+export function cooldownTierForAbsenceCount(absenceCount: number): number {
+  if (absenceCount >= 2048) return 384;
+  if (absenceCount >= 512) return 192;
+  if (absenceCount >= 128) return 96;
+  return 32;
+}
+
+/** 已知矿格的分级冷却表（cell → cooldownTicks；仅含缺席 ≥ 128 次的升级格）。
+ *  seed/运行期注入 World.seedFailedCooldownTiers 用。空表 = 零回归。 */
+export function knownResourceCooldownTiers(
+  db: DatabaseSync,
+  sinceTick: number,
+): ReadonlyMap<string, number> {
+  const counts = knownResourceAbsenceCounts(db, sinceTick);
+  const tiers = new Map<string, number>();
+  for (const [cell, absent] of counts) {
+    const cooldown = cooldownTierForAbsenceCount(absent);
+    if (cooldown > 32) tiers.set(cell, cooldown);
+  }
+  return tiers;
 }
 
 /** 读某 run 的同步水位（无记录 = 未同步）。 */

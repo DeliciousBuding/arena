@@ -24,6 +24,7 @@ const MISSION: MissionConfig = {
   deadMineOverdueTicks: 100,
   migrationScout: false,
   alwaysSurvey: false,
+  switchThreshold: 0,
 };
 
 function worker(id: string, x: number, y: number) {
