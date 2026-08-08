@@ -72,7 +72,13 @@ test("audit-overview: 单租户折叠 + 全局汇总", () => {
   const decisions: Record<string, DecisionAuditPayload> = { t1: dec("t1", 50, 100, 5) };
   const lifecycles: Record<string, LifecycleAuditPayload> = { t1: lc("t1") };
   const mines: Record<string, MineTenantUtilization> = { t1: mu("t1", 100, 20, 5) };
-  const a = aggregateAuditOverview(decisions, lifecycles, mines, exploration, pipeline);
+  const conflicts = { t1: {
+    generatedAt: "", tenant: "t1", window: 100, currentTick: 1000,
+    applied: 3, rejected: 6, rejectedRate: 0.667,
+    topRejectedReasons: [{ reason: "Core is already moving", count: 6, share: 1 }],
+    commandKinds: { goal: 2 }, cachedAt: "",
+  } } as unknown as Record<string, import("../lib/human-conflict.ts").HumanConflictPayload>;
+  const a = aggregateAuditOverview(decisions, lifecycles, mines, exploration, pipeline, conflicts);
   const t1 = a.tenants.t1;
   assert.ok(t1);
   assert.equal(t1.decisions?.stallTicks, 50);
@@ -99,14 +105,19 @@ test("audit-overview: 单租户折叠 + 全局汇总", () => {
   assert.equal(a.global.totalCoreDelta, 5);
   assert.equal(a.global.coveragePct, 0.25);
   assert.equal(a.global.currentTick, 1000);
+  assert.equal(t1.conflict?.applied, 3);
+  assert.equal(t1.conflict?.rejected, 6);
+  assert.equal(t1.conflict?.rejectedRate, 0.667);
+  assert.equal(t1.conflict?.topRejectedReason, "Core is already moving");
 });
 
 test("audit-overview: 空输入兜底", () => {
-  const a = aggregateAuditOverview({}, {}, {}, null, null);
+  const a = aggregateAuditOverview({}, {}, {}, null, null, {});
   assert.equal(a.tenants.t1.decisions, null);
   assert.equal(a.tenants.t1.lifecycle, null);
   assert.equal(a.tenants.t1.mines, null);
   assert.equal(a.global.maxLagTicks, null);
   assert.equal(a.global.totalUnits, 0);
   assert.equal(a.global.coveragePct, null);
+  assert.equal(a.tenants.t1.conflict, null);
 });

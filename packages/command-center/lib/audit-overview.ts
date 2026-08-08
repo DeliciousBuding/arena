@@ -13,6 +13,7 @@ import { loadLifecycleAudit, type LifecycleAuditPayload } from "./lifecycle-audi
 import { loadMineUtilization, type MineUtilizationPayload } from "./mine-utilization.ts";
 import { loadAllianceExploration, type AllianceExplorationPayload } from "./exploration-coverage.ts";
 import { loadPipelineHealth, type PipelineHealthPayload } from "./pipeline-health.ts";
+import { loadHumanConflict, type HumanConflictPayload } from "./human-conflict.ts";
 
 const TTL_MS = 30_000;
 
@@ -46,6 +47,12 @@ export interface TenantAuditOverview {
   } | null;
   exploration: { exploredChunks: number | null; lastSeenTick: number | null } | null;
   pipeline: { lagTicks: number | null; healthy: boolean } | null;
+  conflict: {
+    applied: number;
+    rejected: number;
+    rejectedRate: number | null;
+    topRejectedReason: string | null;
+  } | null;
 }
 
 export interface AuditOverviewPayload {
@@ -78,6 +85,7 @@ export function aggregateAuditOverview(
   mines: Record<string, MineUtilizationPayload["tenants"][string]>,
   exploration: AllianceExplorationPayload | null,
   pipeline: PipelineHealthPayload | null,
+  conflicts: Record<string, HumanConflictPayload> = {},
 ): AuditOverviewPayload {
   const tenants: Record<string, TenantAuditOverview> = {};
   let maxLag: number | null = null;
@@ -136,6 +144,12 @@ export function aggregateAuditOverview(
       } : null,
       exploration: explorationByTenant.get(t) ?? null,
       pipeline: pipelineByTenant.get(t) ?? null,
+      conflict: conflicts[t] ? {
+        applied: num(conflicts[t].applied),
+        rejected: num(conflicts[t].rejected),
+        rejectedRate: conflicts[t].rejectedRate,
+        topRejectedReason: conflicts[t].topRejectedReasons[0]?.reason ?? null,
+      } : null,
     };
   }
 
@@ -163,7 +177,8 @@ export function loadAuditOverview(): AuditOverviewPayload {
   const mines = loadMineUtilization("all") as MineUtilizationPayload;
   const exploration = loadAllianceExploration();
   const pipeline = loadPipelineHealth();
-  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline);
+  const conflicts = loadHumanConflict("all") as Record<string, HumanConflictPayload>;
+  const payload = aggregateAuditOverview(decisions, lifecycles, mines.tenants, exploration, pipeline, conflicts);
   cache.set("overview", payload);
   return payload;
 }
