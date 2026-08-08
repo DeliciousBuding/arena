@@ -10,6 +10,11 @@ import type { Plan, TickState } from "../../domain/model.ts";
 import { DeterministicPlanner } from "../../planning/deterministic-planner.ts";
 import type { PlanProvider } from "../../runtime/decision-types.ts";
 import type { MacroPolicy } from "../../runtime/macro-policy.ts";
+import {
+  FitnessLedgerCollector,
+  type EventLedgerFitnessDetail,
+  type EventLedgerFitnessWeights,
+} from "../opponent/fitness.ts";
 import { opponentEntry, type OpponentSpec } from "../opponent/registry.ts";
 import { runFreeForAll, type MatchResult, type TournEntry } from "../opponent/tournament.ts";
 
@@ -52,8 +57,18 @@ export interface MacroPolicyTournamentFitnessOptions {
   readonly opponents: readonly (OpponentSpec | TournEntry)[];
   readonly subjectId?: string;
   readonly validatePlans?: boolean;
+  /** Legacy terminal-margin weights; only used when fitnessMode="legacy". */
   readonly weights?: TournamentFitnessWeights;
+  /** GA/search defaults to the richer W51 event ledger; legacy keeps historical KPI semantics. */
+  readonly fitnessMode?: "event-ledger" | "legacy";
+  readonly eventLedgerWeights?: EventLedgerFitnessWeights;
   readonly refillEveryTicks?: number | null;
+}
+
+export interface MacroPolicyTournamentFitnessDetail extends TournamentFitnessDetail {
+  readonly fitnessMode: "event-ledger" | "legacy";
+  readonly legacyScore: number;
+  readonly ledger: EventLedgerFitnessDetail | null;
 }
 
 class PolicyBoundPlanner implements PlanProvider {
@@ -122,11 +137,13 @@ export function evaluateMacroPolicyTournament(
   policy: MacroPolicy,
   seed: number,
   options: MacroPolicyTournamentFitnessOptions,
-): { readonly score: number; readonly detail: TournamentFitnessDetail } {
+): { readonly score: number; readonly detail: MacroPolicyTournamentFitnessDetail } {
   const subjectId = options.subjectId ?? "evolve-candidate";
   if (options.opponents.length === 0) throw new Error("macro-policy tournament fitness requires at least one opponent");
   const opponents = options.opponents.map((spec) => "build" in spec ? spec : opponentEntry(spec, seed));
   if (opponents.some((entry) => entry.id === subjectId)) throw new Error(`subjectId collides with opponent: ${subjectId}`);
+  const fitnessMode = options.fitnessMode ?? "event-ledger";
+  const ledgerCollector = fitnessMode === "event-ledger" ? new FitnessLedgerCollector() : null;
   const match = runFreeForAll(
     [macroPolicyEntry(subjectId, policy), ...opponents],
     seed,
@@ -135,8 +152,22 @@ export function evaluateMacroPolicyTournament(
     {
       validatePlans: options.validatePlans ?? true,
       refillEveryTicks: options.refillEveryTicks,
+      observer: ledgerCollector ?? undefined,
     },
   );
-  const detail = scoreTournamentMatch(match, subjectId, options.weights);
-  return Object.freeze({ score: detail.score, detail });
+  const legacy = scoreTournamentMatch(match, subjectId, options.weights);
+  ledgerCollector?.finalize(match);
+  const ledger = ledgerCollector?.detail(subjectId) ?? null;
+  const score =
+    fitnessMode === "event-ledger"
+      ? ledgerCollector!.score(subjectId, options.ticks, options.eventLedgerWeights)
+      : legacy.score;
+  const detail: MacroPolicyTournamentFitnessDetail = Object.freeze({
+    ...legacy,
+    score,
+    fitnessMode,
+    legacyScore: legacy.score,
+    ledger,
+  });
+  return Object.freeze({ score, detail });
 }

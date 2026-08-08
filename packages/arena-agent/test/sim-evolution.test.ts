@@ -146,8 +146,24 @@ test("tournament fitness scores relative resources/population and runs through F
     validatePlans: true,
   });
   assert.ok(Number.isFinite(evaluated.score));
+  assert.equal(evaluated.detail.fitnessMode, "event-ledger");
+  assert.ok(evaluated.detail.ledger !== null);
+  assert.ok(evaluated.detail.ledger!.aliveTicks > 0);
+  assert.ok(Number.isFinite(evaluated.detail.legacyScore));
   assert.equal(evaluated.detail.match.tickCount, 12);
   assert.deepEqual(evaluated.detail.match.players, ["candidate", "baseline"]);
+
+  const legacyEvaluated = evaluateMacroPolicyTournament(DEFAULT_MACRO_POLICY, 3, {
+    rulesPath: RULES,
+    ticks: 12,
+    opponents: [makeSafetyEntry("baseline")],
+    subjectId: "candidate",
+    validatePlans: true,
+    fitnessMode: "legacy",
+  });
+  assert.equal(legacyEvaluated.detail.fitnessMode, "legacy");
+  assert.equal(legacyEvaluated.detail.ledger, null);
+  assert.equal(legacyEvaluated.score, legacyEvaluated.detail.legacyScore);
 });
 
 test("MacroPolicy evolution runs end-to-end on the official tournament stack", () => {

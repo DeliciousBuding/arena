@@ -16,6 +16,7 @@ import type { Plan } from "../../domain/model.ts";
 import { runEpisode, type EpisodeTenant } from "../../sim/harness/episode.ts";
 import type { SimWorld } from "../../sim/world/types.ts";
 import type { PlanProvider } from "../../runtime/decision-types.ts";
+import type { ResolutionEvent } from "../engine/phase.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../../strategies/safety-planner.ts";
 import { createEpisodeRecorder } from "./recorder.ts";
 
@@ -46,7 +47,15 @@ export interface TournEntry {
 
 /** 一个纯协议别的比赛 runner（供"记忆型对手我在多局间保留状态"等可复用场景）。 */
 export interface MatchObserver {
-  onTick?(args: { tick: number; before: SimWorld; plans: Readonly<Record<string, Plan>> }): void;
+  onTick?(args: MatchTickObservation): void;
+}
+
+export interface MatchTickObservation {
+  readonly tick: number;
+  readonly before: SimWorld;
+  readonly after: SimWorld;
+  readonly plans: Readonly<Record<string, Plan>>;
+  readonly events: readonly ResolutionEvent[];
 }
 
 export interface TournConfig {
@@ -313,6 +322,8 @@ export function runMatch(
     /** 自定义场景（真实测绘窗口等）；缺省用 makeArenaScenario 合成布局。
      *  场景 players 必须与 a/b 的 id 一致。 */
     scenario?: unknown;
+    /** 只读逐 tick 观察器（评估/统计用），不参与计划生成或 settlement。 */
+    observer?: MatchObserver;
   },
 ): MatchResult {
   const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
@@ -347,7 +358,13 @@ export function runMatch(
       // 关键：注入我们两个条目的 provider，而不是用内置 deterministic/safety
       plannerFactory: (tenant: EpisodeTenant): PlanProvider => (tenant.id === a.id ? providers[0] : providers[1]),
       validatePlans: opts?.validatePlans ?? true,
-      onTickRecorded: recorder?.onTickRecorded,
+      onTickRecorded:
+        recorder === null && opts?.observer === undefined
+          ? undefined
+          : (args: MatchTickObservation) => {
+              recorder?.onTickRecorded(args);
+              opts?.observer?.onTick?.(args);
+            },
     } as never);
     const { winner: w, coreAlive, finalResources, finalPopulation } = decideWinner([a.id, b.id], undefined as never, result.finalWorld);
     return {
@@ -445,6 +462,8 @@ export function runFreeForAll(
     refillEveryTicks?: number | null;
     /** 自定义场景；缺省用 makeArenaScenarioN 圆周布局。场景 players 必须与 entries id 一致。 */
     scenario?: unknown;
+    /** 只读逐 tick 观察器（评估/统计用），不参与计划生成或 settlement。 */
+    observer?: MatchObserver;
   },
 ): MatchResult {
   const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
@@ -481,7 +500,13 @@ export function runFreeForAll(
       // 注入各条目的 provider（按参与序对齐 id）
       plannerFactory: (tenant: EpisodeTenant): PlanProvider => providers[ids.indexOf(tenant.id)],
       validatePlans: opts?.validatePlans ?? true,
-      onTickRecorded: recorder?.onTickRecorded,
+      onTickRecorded:
+        recorder === null && opts?.observer === undefined
+          ? undefined
+          : (args: MatchTickObservation) => {
+              recorder?.onTickRecorded(args);
+              opts?.observer?.onTick?.(args);
+            },
     } as never);
     const { winner, coreAlive, finalResources, finalPopulation } = decideWinner(
       ids,
