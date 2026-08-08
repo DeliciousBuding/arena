@@ -10,6 +10,7 @@ import { getJSON } from './api.js';
 import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, TACT_ACTION_ICON, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets, tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability } from './tactical.js';
 import { findPath } from './pathfind.ts';
 import { createReplayState, replayAdvance, replayLoad, replayStep, replayToggle, replayCycleSpeed, updateReplayUI, replayDrawLayer as replayDrawImpl } from './replay.js';
+import { renderStars, renderVignette, renderGrid, renderGridLabels, renderGlobalChunks, renderTenantRegions, type EnvRenderDeps } from './render.ts';
 import { spawnEventFx, drawEventFx } from './fx.js';
 import { commandTelemetryDeltas as teleDeltas, commandGoalOf as cmdGoalOf, commandActionOf as cmdActionOf, unitHumanCommandOf as cmdHumanOf, commandStatusText as cmdStatusText, unitTelemetryOf as cmdUnitTelemetry, unitCommandLabel as cmdLabel, squadSummary as cmdSquad } from './commands.js';
 
@@ -221,6 +222,24 @@ function syncLayerToggles() {
 }
 
 let ctx: any = null; // createMapEngine 时初始化（CanvasRenderingContext2D；legacy 动态数据流，宽松标注）
+/** 环境渲染层依赖（render.ts 注入）：ctx/state.view 在静态缓存渲染期间会被
+ *  临时替换，故全部经 getter 调用时解析；state 为模块级对象（const），
+ *  闭包直接引用，无 per-instance 拷贝。 */
+let envDeps: EnvRenderDeps | null = null;
+function envDepsOf(): EnvRenderDeps {
+  if (!envDeps) {
+    envDeps = {
+      getCtx: () => ctx,
+      W, H, project,
+      getView: () => state.view,
+      getCells: () => state.cells,
+      getChunks: () => state.chunks,
+      getTenantsOn: () => state.tenantsOn,
+      lq: () => LQ,
+    };
+  }
+  return envDeps;
+}
 const images: Record<string, HTMLImageElement> = {};
 /* 地图提示自动淡出：交互时重现，闲置 4.5s 后淡出（画布更干净） */
 let hintTimer: ReturnType<typeof setTimeout> | null = null;
@@ -269,9 +288,9 @@ function renderStaticCache(bs: any) {
   state.view = { ...prevView, cx: ax, cy: ay, scale: bs, vw: w, vh: h };
   try {
     const s = bs;
-    if (!state.soloTenant) drawTenantRegions(s);
-    drawGlobalChunks(s); // 全局探索分区底纹（/api/map chunks，跨租户合并）
-    drawGrid(W(), H()); // 网格线并入静态缓存：平移/缩放重建一次，不再每帧画
+    if (!state.soloTenant) renderTenantRegions(envDepsOf(), s);
+    renderGlobalChunks(envDepsOf(), s); // 全局探索分区底纹（/api/map chunks，跨租户合并）
+    renderGrid(envDepsOf(), W(), H()); // 网格线并入静态缓存：平移/缩放重建一次，不再每帧画
     if (!LQ) tactSurveyLayer(s); else surveySkipped = true; // 动画期间跳过最贵的测绘记忆层，结束补建
     const cells = visibleCells();
     const buckets: Record<string, any[]> = { obstacle: [], resource: [] };
@@ -577,7 +596,7 @@ if (typeof window !== 'undefined') {
 function draw() {
   const w = W(), h = H();
   ctx.clearRect(0, 0, w, h);
-  drawStars(w, h); // 氛围层（星点+暗角）离屏缓存 blit
+  renderStars(envDepsOf(), w, h); // 氛围层（星点+暗角）离屏缓存 blit
   const s = state.view.scale;
   const animating = !!state.viewAnim || state.zoom.active;
   LQ = animating; // 动画/缩放阻尼期间降级：静态缓存跳过测绘记忆层，动态层关 shadowBlur
@@ -586,7 +605,7 @@ function draw() {
   if (staticNeedsRebuild(bs)) renderStaticCache(bs);
   blitStatic();
   LQ = animating;
-  if (!LQ) drawGridLabels(w, h); // 坐标刻度（动态层：动画期间跳过）
+  if (!LQ) renderGridLabels(envDepsOf(), w, h); // 坐标刻度（动态层：动画期间跳过）
   const replayActive = replay.data && replay.loadedFor === state.soloTenant;
   if (state.layers.enemyHeat !== false) drawEnemyHeat(s); // 敌情热区（单位之下，威胁先验）
   tactPatrolLayer(s);
@@ -622,7 +641,7 @@ function draw() {
     void els.zoomLevel.offsetWidth;
     els.zoomLevel.classList.add('pop');
   }
-  drawVignette(w, h); // 最后画暗角：收拢视觉焦点
+  renderVignette(envDepsOf(), w, h); // 最后画暗角：收拢视觉焦点
   if (!state.cells.length) {
     ctx.fillStyle = '#56626c'; ctx.font = '600 12px ' + CANVAS_FONT;
     ctx.textAlign = 'center';
@@ -648,187 +667,6 @@ function draw() {
   minimap?.draw();
 }
 
-/** 全局联盟地图：每租户疆域色晕 + 核心标签（大联盟地图"完全设计"：一眼区分 4 租户领地）。 */
-/** 全局探索分区底纹（/api/map chunks，跨租户合并）：已探索 16×16 分区淡蓝底——
- *  全局视图也能一眼看出"探索过的范围"（solo 视图由 tactSurveyLayer 画同款底纹）。
- *  只画视口内 chunk（性能）；无数据（survey-db 未同步）时静默跳过。 */
-function drawGlobalChunks(s: any) {
-  if (!state.chunks || !state.chunks.length) return;
-  ctx.save();
-  const chunkPx = 16 * s;
-  const cap = Math.min(state.chunks.length, 500);
-  for (let i = 0; i < cap; i++) {
-    const ch = state.chunks[i];
-    const cx = Number(ch.cx), cy = Number(ch.cy);
-    if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
-    const p = project(cx * 16, cy * 16);
-    if (p.sx + chunkPx < 0 || p.sy + chunkPx < 0 || p.sx > W() || p.sy > H()) continue;
-    ctx.fillStyle = 'rgba(64,110,160,.09)';
-    ctx.fillRect(p.sx, p.sy, chunkPx, chunkPx);
-  }
-  ctx.restore();
-}
-function drawTenantRegions(s: any) {
-  const groups: Record<string, any[]> = {};
-  for (const c of state.cells) {
-    if (state.tenantsOn[c.tenant] === false) continue;
-    (groups[c.tenant] = groups[c.tenant] || []).push(c);
-  }
-  ctx.save();
-  for (const t of TENANTS) {
-    const cells = groups[t];
-    if (!cells || !cells.length) continue;
-    const color = TENANT_COLORS[t];
-    const xs = cells.map((c: any) => c.x), ys = cells.map((c: any) => c.y);
-    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-    const span = Math.max(30, Math.max(maxX - minX, maxY - minY));
-    const p = project(cx, cy);
-    const radius = Math.max(60, span * s * 0.62);
-    // 疆域色晕（2026-08-08 弱化）：用户反馈"诡异绿色球/绿色区域"——原 alpha .10 的
-    // 径向色晕在缩放后像一团实色球。降为 .045/.02 极淡打底 + 虚线疆域环（结构化
-    // "领地边界"，不再是一团实心色球）；租户色只作身份语义，不装饰性铺满。
-    const grad = ctx.createRadialGradient(p.sx, p.sy, 0, p.sx, p.sy, radius);
-    grad.addColorStop(0, hexA(color, 0.045));
-    grad.addColorStop(0.55, hexA(color, 0.02));
-    grad.addColorStop(1, hexA(color, 0));
-    ctx.fillStyle = grad;
-    ctx.beginPath(); ctx.arc(p.sx, p.sy, radius, 0, Math.PI * 2); ctx.fill();
-    // 疆域边界环：虚线细环（alpha .16，随缩放 1.2-2px），一眼圈出领地但不抢内容层
-    ctx.strokeStyle = hexA(color, 0.16);
-    ctx.lineWidth = Math.min(2, Math.max(1.2, s * 0.07));
-    ctx.setLineDash([6, 5]);
-    ctx.beginPath(); ctx.arc(p.sx, p.sy, radius, 0, Math.PI * 2); ctx.stroke();
-    ctx.setLineDash([]);
-    // 疆域标签：贴在核心/最密点上方
-    const core = cells.find((c: any) => c.type === 'core');
-    const lx = core ? core.x : cx, ly = core ? core.y : cy;
-    const lp = project(lx, ly);
-    if (s >= 2.5) {
-      const label = `${t.toUpperCase()} · ${TENANT_LABEL[t]}`;
-      ctx.font = '600 ' + Math.max(9, Math.min(13, s * 0.34)) + 'px ' + CANVAS_FONT;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      const tw = ctx.measureText(label).width;
-      const pad = 6, hh = 13;
-      const bx = lp.sx, by = lp.sy - Math.max(22, s * 0.9);
-      ctx.fillStyle = 'rgba(5,6,8,.78)';
-      ctx.beginPath(); ctx.roundRect(bx - tw / 2 - pad, by - hh / 2, tw + pad * 2, hh, 5); ctx.fill();
-      ctx.strokeStyle = hexA(color, 0.5); ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 6;
-      ctx.fillText(label, bx, by + 0.5);
-      ctx.shadowBlur = 0;
-    }
-  }
-  ctx.restore();
-}
-/** 画布氛围层（极淡星点 + 边缘暗角）：确定性伪随机。
- *  高刷优化：星点/暗角合并预渲染到离屏 canvas，仅 resize 重建一次，
- *  draw 时单次 drawImage blit——不再每帧画 ~N 个 arc + radial gradient
- *  （175Hz 下省掉每帧 canvas 状态切换与渐变创建）。 */
-const bgStars: { canvas: HTMLCanvasElement | null; cctx: CanvasRenderingContext2D | null; w: number; h: number } = { canvas: null, cctx: null, w: 0, h: 0 };
-const bgVignette: { canvas: HTMLCanvasElement | null; cctx: CanvasRenderingContext2D | null; w: number; h: number } = { canvas: null, cctx: null, w: 0, h: 0 };
-function ensureAtmosphere(w: any, h: any) {
-  // 星点层（内容之下）
-  if (!bgStars.canvas) { bgStars.canvas = document.createElement('canvas'); bgStars.cctx = bgStars.canvas.getContext('2d', { alpha: true }) ?? bgStars.canvas.getContext('2d'); }
-  if (bgStars.w !== w || bgStars.h !== h) {
-    bgStars.w = w; bgStars.h = h;
-    bgStars.canvas.width = Math.max(1, Math.round(w));
-    bgStars.canvas.height = Math.max(1, Math.round(h));
-    const cctx = bgStars.cctx!;
-    cctx.clearRect(0, 0, w, h);
-    let seed = 0x9e3779b9;
-    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
-    const n = Math.max(40, Math.floor(w * h / 9000));
-    cctx.save();
-    cctx.fillStyle = '#cfe0ff';
-    for (let i = 0; i < n; i++) {
-      const x = rnd() * w, y = rnd() * h, r = rnd() * 1.1 + 0.3, a = rnd() * 0.10 + 0.04;
-      cctx.globalAlpha = a;
-      cctx.beginPath(); cctx.arc(x, y, r, 0, Math.PI * 2); cctx.fill();
-    }
-    cctx.restore();
-  }
-  // 暗角层（内容之上，收拢视觉焦点）
-  if (!bgVignette.canvas) { bgVignette.canvas = document.createElement('canvas'); bgVignette.cctx = bgVignette.canvas.getContext('2d', { alpha: true }) ?? bgVignette.canvas.getContext('2d'); }
-  if (bgVignette.w !== w || bgVignette.h !== h) {
-    bgVignette.w = w; bgVignette.h = h;
-    bgVignette.canvas.width = Math.max(1, Math.round(w));
-    bgVignette.canvas.height = Math.max(1, Math.round(h));
-    const vc = bgVignette.cctx!;
-    vc.clearRect(0, 0, w, h);
-    const r0 = Math.min(w, h) * 0.34, r1 = Math.max(w, h) * 0.74;
-    const g = vc.createRadialGradient(w / 2, h / 2, r0, w / 2, h / 2, r1);
-    g.addColorStop(0, 'rgba(0,0,0,0)');
-    g.addColorStop(1, 'rgba(0,0,0,.34)');
-    vc.fillStyle = g;
-    vc.fillRect(0, 0, w, h);
-  }
-}
-function drawStars(w: any, h: any) {
-  ensureAtmosphere(w, h);
-  ctx.drawImage(bgStars.canvas, 0, 0, w, h);
-}
-function drawVignette(w: any, h: any) {
-  ensureAtmosphere(w, h);
-  ctx.drawImage(bgVignette.canvas, 0, 0, w, h);
-}
-/** 背景坐标系网格（2026-08-08 升级）：细格 + 粗格 + 坐标轴（x=0/y=0）。
- *  并入静态缓存（平移/缩放重建一次），坐标数字由 drawGridLabels 动态画。 */
-function drawGrid(w: any, h: any) {
-  const s = state.view.scale;
-  const minor = gridStepFor(s, 22);
-  const major = minor * 4;
-  const x0 = state.view.cx - w / 2 / s, x1 = state.view.cx + w / 2 / s;
-  const y0 = state.view.cy - h / 2 / s, y1 = state.view.cy + h / 2 / s;
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = 'rgba(148,163,200,.06)';
-  ctx.beginPath();
-  for (let x = Math.floor(x0 / minor) * minor; x <= x1; x += minor) { const p = project(x, y0); ctx.moveTo(p.sx, 0); ctx.lineTo(p.sx, h); }
-  for (let y = Math.floor(y0 / minor) * minor; y <= y1; y += minor) { const p = project(x0, y); ctx.moveTo(0, p.sy); ctx.lineTo(w, p.sy); }
-  ctx.stroke();
-  ctx.strokeStyle = 'rgba(180,192,224,.13)';
-  ctx.beginPath();
-  for (let x = Math.floor(x0 / major) * major; x <= x1; x += major) { const p = project(x, y0); ctx.moveTo(p.sx, 0); ctx.lineTo(p.sx, h); }
-  for (let y = Math.floor(y0 / major) * major; y <= y1; y += major) { const p = project(x0, y); ctx.moveTo(0, p.sy); ctx.lineTo(w, p.sy); }
-  ctx.stroke();
-  if (x0 <= 0 && 0 <= x1) {
-    ctx.strokeStyle = 'rgba(222,230,255,.30)';
-    const p = project(0, y0);
-    ctx.beginPath(); ctx.moveTo(p.sx, 0); ctx.lineTo(p.sx, h); ctx.stroke();
-  }
-  if (y0 <= 0 && 0 <= y1) {
-    ctx.strokeStyle = 'rgba(222,230,255,.30)';
-    const p = project(x0, 0);
-    ctx.beginPath(); ctx.moveTo(0, p.sy); ctx.lineTo(w, p.sy); ctx.stroke();
-  }
-}
-/** 坐标刻度标签（动态层）：顶边 X 世界坐标 + 左边 Y 世界坐标。动画降级期间跳过。 */
-function drawGridLabels(w: any, h: any) {
-  if (LQ) return;
-  const s = state.view.scale;
-  const major = gridStepFor(s, 22) * 4;
-  if (major * s < 52) return;
-  const x0 = state.view.cx - w / 2 / s, x1 = state.view.cx + w / 2 / s;
-  const y0 = state.view.cy - h / 2 / s, y1 = state.view.cy + h / 2 / s;
-  ctx.save();
-  ctx.font = `500 ${Math.max(10, Math.min(13, s * 0.3))}px ${CANVAS_FONT}`;
-  ctx.fillStyle = 'rgba(196,206,235,.5)';
-  ctx.textBaseline = 'alphabetic';
-  ctx.textAlign = 'left';
-  for (let x = Math.floor(x0 / major) * major; x <= x1; x += major) {
-    const p = project(x, y0);
-    if (p.sx < 12 || p.sx > w - 12) continue;
-    ctx.fillText(String(x), p.sx + 4, 13);
-  }
-  ctx.textAlign = 'right';
-  for (let y = Math.floor(y0 / major) * major; y <= y1; y += major) {
-    const p = project(x0, y);
-    if (p.sy < 14 || p.sy > h - 12) continue;
-    ctx.fillText(String(y), 6, p.sy - 5);
-  }
-  ctx.restore();
-}
 function sprite(img: any, sx: any, sy: any, size: any) {
   if (!img) return;
   const dw = size, dh = size * (img.height / Math.max(1, img.width));
