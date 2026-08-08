@@ -173,6 +173,109 @@ const DEFAULT_TENANT_ID = "unknown";
 const DEFAULT_TICK = 0;
 
 /**
+ * outcome.jsonl 经济计数器事件名单（单源常量，防命名漂移）。
+ * sim 引擎与线上 wire 都用这些字面量；switch 案例标签直接引用此处常量，
+ * 任何事件名变更（如 SELF_DESTRUCT vs UNIT_SELF_DESTRUCTED）在此一处拦截。
+ */
+export const OUTCOME_COUNT_EVENT_TYPES = {
+  DEPOSIT_SUCCEEDED: "DEPOSIT_SUCCEEDED",
+  CORE_SPAWN_SUCCEEDED: "CORE_SPAWN_SUCCEEDED",
+  UNIT_HEAL_SUCCEEDED: "UNIT_HEAL_SUCCEEDED",
+  CORE_HEAL_SUCCEEDED: "CORE_HEAL_SUCCEEDED",
+  UNIT_DESTROYED: "UNIT_DESTROYED",
+  UNIT_SELF_DESTRUCTED: "UNIT_SELF_DESTRUCTED",
+} as const;
+
+/**
+ * 计数器输入的最小结构契约：同时兼容 {@link ResolutionEvent}（values 可为 null）
+ * 与 {@link ResolutionEventSnapshot}（values 必填）。只读 eventType/values 两字段，
+ * 避免把 sim 内部类型泄漏进 telemetry 层。
+ */
+export interface OutcomeCountEvent {
+  readonly eventType: string;
+  readonly actorId?: string | null;
+  readonly targetId?: string | null;
+  readonly values?: Readonly<Record<string, unknown>> | null;
+}
+
+export interface OutcomeCountOwnershipContext {
+  readonly priorUnitIds: ReadonlySet<string>;
+  readonly currentUnitIds?: ReadonlySet<string>;
+  readonly priorCoreId?: string | null;
+  readonly currentCoreId?: string | null;
+}
+
+/** outcome.jsonl 经济计数器聚合（W50；W51 fitness 硬前置）。 */
+export interface OutcomeEventCounts {
+  /** Σ DEPOSIT_SUCCEEDED.values.amount（本 tick 卸货总量，经济真值）。 */
+  readonly grossDeposit: number;
+  /** CORE_SPAWN_SUCCEEDED 计数（产出节奏）。 */
+  readonly spawnCount: number;
+  /** UNIT_HEAL_SUCCEEDED + CORE_HEAL_SUCCEEDED 计数（含 Core 自愈，不含 REPAIR）。 */
+  readonly healCount: number;
+  /** UNIT_DESTROYED + UNIT_SELF_DESTRUCTED 计数（显式名单，防溢出误计）。 */
+  readonly unitLossCount: number;
+}
+
+/**
+ * 纯函数：从结算事件流聚合 outcome.jsonl 四计数器（W50）。
+ *
+ * - grossDeposit = Σ DEPOSIT_SUCCEEDED.values.amount（amount 缺失/非有限数 → 0 贡献）
+ * - spawnCount = CORE_SPAWN_SUCCEEDED 计数
+ * - healCount = UNIT_HEAL_SUCCEEDED + CORE_HEAL_SUCCEEDED 计数（REPAIR 不算 heal）
+ * - unitLossCount = UNIT_DESTROYED + UNIT_SELF_DESTRUCTED 计数
+ *
+ * 显式名单防 CORE_RESOURCE_OVERFLOW_DESTROYED（W45 容量溢出销毁资源，非单位损失）
+ * 与 CORE_DESTROYED 误计 unitLoss——名单漂移时 switch 案例标签即拦截。
+ * 输入数组不被修改（透传只读引用）。
+ */
+export function countOutcomeEvents(
+  events: readonly OutcomeCountEvent[],
+  ownership?: OutcomeCountOwnershipContext,
+): OutcomeEventCounts {
+  let grossDeposit = 0;
+  let spawnCount = 0;
+  let healCount = 0;
+  let unitLossCount = 0;
+  const ownedActor = (actorId: string | null | undefined): boolean => {
+    if (ownership === undefined) return true;
+    if (actorId === null || actorId === undefined) return false;
+    return actorId === ownership.priorCoreId || actorId === ownership.currentCoreId ||
+      ownership.priorUnitIds.has(actorId) || ownership.currentUnitIds?.has(actorId) === true;
+  };
+  for (const event of events) {
+    switch (event.eventType) {
+      case OUTCOME_COUNT_EVENT_TYPES.DEPOSIT_SUCCEEDED: {
+        if (!ownedActor(event.actorId)) break;
+        const amount = event.values?.amount;
+        if (typeof amount === "number" && Number.isFinite(amount) && (ownership === undefined || amount >= 0)) {
+          grossDeposit += amount;
+        }
+        break;
+      }
+      case OUTCOME_COUNT_EVENT_TYPES.CORE_SPAWN_SUCCEEDED:
+        if (!ownedActor(event.actorId)) break;
+        spawnCount += 1;
+        break;
+      case OUTCOME_COUNT_EVENT_TYPES.UNIT_HEAL_SUCCEEDED:
+      case OUTCOME_COUNT_EVENT_TYPES.CORE_HEAL_SUCCEEDED:
+        if (!ownedActor(event.actorId)) break;
+        healCount += 1;
+        break;
+      // 显式只计 UNIT_DESTROYED + UNIT_SELF_DESTRUCTED；CORE_RESOURCE_OVERFLOW_DESTROYED
+      // 与 CORE_DESTROYED 不计入 unitLoss（前者是资源销毁，后者是核心摧毁，均非单位损失）。
+      case OUTCOME_COUNT_EVENT_TYPES.UNIT_DESTROYED:
+      case OUTCOME_COUNT_EVENT_TYPES.UNIT_SELF_DESTRUCTED:
+        if (ownership === undefined || (event.actorId !== null && event.actorId !== undefined && ownership.priorUnitIds.has(event.actorId))) {
+          unitLossCount += 1;
+        }
+        break;
+    }
+  }
+  return { grossDeposit, spawnCount, healCount, unitLossCount };
+}
+
+/**
  * 工厂函数：自动填 processRunId/tenantId 默认值，tick 由调用方显式传（遥测关联键，
  * 默认 0 是危险默认）；结果立即做 schema 校验（缺必填字段即抛错，fail-fast）。
  */

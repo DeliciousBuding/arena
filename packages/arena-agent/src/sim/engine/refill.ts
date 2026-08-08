@@ -5,16 +5,23 @@
  * - 每第 4 个 resolved tick，对每个含自然点的 32×32 chunk 数"仍可用自然点数"，
  *   补回缺失槽至配额（quota = max(2, floor(16*8/(8+ring)))，ring = axis(cx)+axis(cy)）；
  * - 补点位置 = chunk 内确定性随机空槽（排除：现有自然点、障碍、结算后 Core
- *   占据格；允许单位脚下与地面信标之下——官方约束为可通行/非障碍/非主干/非 Core）；
+ *   占据格、chunk 边界主干通道；允许单位脚下与地面信标之下——官方约束为
+ *   可通行/非障碍/非主干/非 Core）；
  * - 官方 placement seed 是 server-secret（单玩家视野不可逆向），模拟器实现
  *   自洽确定性：同一 (worldHash, tick, chunkId, missingSlots) → 同一位置。
+ *
+ * backbone 排除（map-and-vision.md:62-63 "outside chunk's backbone passages"）：
+ * chunk 边界格（x 或 y 对 32 取模为 0）视为主干通道候选排除集。官方精确
+ * backbone 形状是 server-secret，模拟器采用保守的"全边界格"近似（归
+ * EXPECTED_UNKNOWN：与官方差异不构成确定性 Golden，需 unknown 标注）。
+ * REFILL_BACKBONE_EXCLUDED=true 启用排除；置 false 可关闭用于实验对照。
  */
 
 import { createHash } from "node:crypto";
 import { cellKey, type Position } from "../../domain/model.ts";
 import { createSeededRng } from "../deterministic/rng.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
-import { chunkBounds, chunkKey, chunkOf, chunkQuota, parseChunkKey } from "../world/chunks.ts";
+import { chunkBounds, chunkKey, chunkOf, chunkQuota, parseChunkKey, CHUNK_SIZE } from "../world/chunks.ts";
 import type { SimWorld } from "../world/types.ts";
 
 export interface ChunkRefillSummary {
@@ -29,10 +36,27 @@ export interface RefillSummary {
   readonly perChunk: readonly ChunkRefillSummary[];
 }
 
+/**
+ * chunk 边界主干通道排除开关（map-and-vision.md:62-63）。
+ * true = 补点候选排除 x%32===0 或 y%32===0 的格（保守全边界近似）；
+ * false = 不排除（实验对照 / 旧行为复现）。
+ */
+export const REFILL_BACKBONE_EXCLUDED = true;
+
 /** "x,y" → Position（补位节点构造用）。 */
 function parsePosition(key: string): Position {
   const [x, y] = key.split(",").map((part) => Number.parseInt(part, 10));
   return [x, y];
+}
+
+/**
+ * 是否位于 chunk 边界主干通道（x 或 y 对 CHUNK_SIZE(=32) 取模为 0）。
+ * JS 负模修正：((n % 32) + 32) % 32 === 0 等价于 n 是 32 的整数倍。
+ */
+function isChunkBackbonePassage(x: number, y: number): boolean {
+  const modX = ((x % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+  const modY = ((y % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+  return modX === 0 || modY === 0;
 }
 
 /**
@@ -94,6 +118,7 @@ export function refillChunkQuota(
         }
         if (draft.terrain.obstacles.has(key)) continue;
         if (coreCells.has(key)) continue;
+        if (REFILL_BACKBONE_EXCLUDED && isChunkBackbonePassage(x, y)) continue;
         candidates.push(key);
       }
     }

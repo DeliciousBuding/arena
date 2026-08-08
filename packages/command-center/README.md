@@ -27,7 +27,7 @@ type stripping）+ React 19 + Vite 8 + TS（Bun/Node 工具链），浏览器访
   阴影代边框、单一白色强调、3 档圆角、字重体系、动效规格、红线）。
 - 基调：黑白灰 achromatic（Vercel/Geist 理念）——近黑 `#030303` 背景、低透明度白边框
   （`rgba(255,255,255,.06-.15)`）、阴影代替实体边框、单一白色强调（主按钮白底黑字）。
-- 圆角收敛 3 档 `--radius-sm/md/lg`（6/10/14px）；语义色 `success/warn/danger` 仅用于
+- 圆角收敛 3 档 `--radius-sm/md/lg`（5/8/12px）；语义色 `success/warn/danger` 仅用于
   数据与状态；租户色 t1-t4 保留为地图/卡片身份标识（降饱和 muted 版）。
 - 微动效：租户卡数值闪烁、决策流/事件新行 slide-in、按钮按压缩放、右栏面板入场
   `rpFadeUp`、侧栏折叠 width 过渡；`prefers-reduced-motion` 全量降级。
@@ -68,6 +68,7 @@ node scripts/start-cc.mjs --stop    # 停止上次 --hidden 实例
 
 > 注：旧 `public/index.html` + `public/app.js`（零依赖原生 JS 面板）已被 React 前端取代，
 > 根 `/` 重定向到 `/app/`；`public/` 现仅作静态素材（美术/字体）+ `style.css` 单一视觉源。
+> legacy app.js/index.html/js/ 已于 2026-08-09 neat-freek 删除（React `web/` 完全替代）。
 
 环境变量：
 
@@ -161,7 +162,7 @@ command-center/
 │                         #   leaderboard/store/shop/supervisor，全 TS）
 ├── scripts/start-cc.mjs  # 前台/后台/停止启动器（--hidden/--stop）
 ├── package.json
-├── public/               # 静态素材 + style.css（单一视觉源）；app.js/index.html 为已退役 legacy 面板
+├── public/               # 静态素材 + style.css（单一视觉源）；legacy app.js/index.html/js/ 已删除（2026-08-09）
 │   └── assets/           # 官方 Arena Hero 美术素材（自 reference/arena-hero-web 拷贝）
 ├── web/                  # React + Vite + TS 前端（web/src；构建到 dist，/app/* 托管）
 └── docs/command-center-preview.png
@@ -190,8 +191,8 @@ command-center/
 通用组件，折叠后地图自动 resize）。所有弹窗/对话框已移入右栏面板（`right/IntelPanel`、
 `right/RedeemPanel`、`right/AdvicePanel`、`right/SurveyPanel`、`right/SituationPanel`、`right/RedeemCard`），
 不再模态遮挡地图。布局状态经 `lib/shell.tsx`（ShellContext：折叠/tab，localStorage 持久化）。
-画布引擎 `src/engine/mapEngine.ts`（全 TS：`ArenaState` 接口 + legacy JSON 宽松标注；由 public/app.js
-移植，React 挂载到 main#layout，引擎管理地图/战术/回放/覆盖层）。视觉单一源 = public/style.css
+画布引擎 `src/engine/mapEngine.ts`（全 TS：`ArenaState` 接口 + legacy JSON 宽松标注；由 legacy app.js
+移植（2026-08-09 删除），React 挂载到 main#layout，引擎管理地图/战术/回放/覆盖层）。视觉单一源 = public/style.css
 （React 直接 import，不复制）。
 
 ## 人类最高控制权（真实指挥，Manual 优先于 Agent 优先于 Safety）

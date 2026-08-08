@@ -445,6 +445,16 @@ export interface SafetyPlannerConfig {
   /** beacon sweep 最大半径（默认 36，对齐 BEACON_RESOURCE_SWEEP_MAX :121）。 */
   readonly beaconSweepMax?: number;
   /**
+   * chunk 配额复察队（2026-08-09，chunk-resurvey-v1，W7）：worker 无可见资源
+   *  且无活跃采集目标时，调用 planChunkResurvey（intel/refill-predictions.ts）
+   *  按"刷新预测 dueInTicks 升序 + chunk 配额"分配 worker 去即将刷新的空矿
+   *  提前占位（与 harvest-memory-mine 正交——后者走"已知矿记忆可见/fresh
+   *  hint"，W7 走"刷新预测 due"）。需要 refill-predictions Map 注入（SafetyPlanner
+   *  .setRefillPredictions）；无注入/空预测 = 不执行（零回归）。默认 false =
+   *  历史行为（worker 直接进入 patrol，零回归）。
+   */
+  readonly chunkResurvey?: boolean;
+  /**
    * 近核入侵观察（2026-08-08，core-threat-watch-v1）：敌单位距我方 Core
    * ≤ coreThreatWatchRadius（Chebyshev 默认 18）即入长 TTL 观察记忆
    * （coreThreatWatchTicks，默认 60）——短 TTL（enemyHints 6 / stationary 12）
@@ -578,6 +588,36 @@ export interface SafetyPlannerConfig {
   /** cargoBlockedSelfHeal 的"cargo 不变"持续 tick 阈值（默认 6）：满载 worker
    *  连续 N tick cargo 不变视为"被堵"（与 liveness 6 tick 无限循环同口径）。 */
   readonly cargoBlockedSelfHealStallCargoTicks?: number;
+  /**
+   * 冲突退避时间窗兜底（2026-08-09，W37，挂 W5，默认关）：单位连续 ≥
+   * conflictBackoffThreshold 次 MOVE_FAILED 且 detourDirection 垂直绕行也无路
+   * 时，原地 WAIT conflictBackoffTicks tick（短停）——打破"两单位互挡且绕行格
+   * 互占"的互等锁死（我方"空间换路"哲学的时间维兜底：空间绕行失败 → 时间
+   * 等待让敌方先移）。参考 arena-evolve heuristic.py:519-533（MOVE_BLOCKED
+   * 连续 ≥3 → _move_backoff = tick+2 短停 2 tick；MOVED 即清零）。与 W5 接缝
+   * 互补：W5 封锁目标格冷却（恢复后防重派），W37 单位级时间窗退避（恢复前
+   * 破互等锁死）——不重叠。默认 false = 历史行为（无时间维兜底，零回归）。
+   */
+  readonly conflictBackoff?: boolean;
+  /** 冲突退避触发阈值（连续 MOVE_FAILED 次数，默认 3，对齐 ref _move_backoff）。 */
+  readonly conflictBackoffThreshold?: number;
+  /** 冲突退避短停 tick 数（默认 2，对齐 ref _move_backoff = tick+2）。 */
+  readonly conflictBackoffTicks?: number;
+  /**
+   * 饥饿门控侦察环带（2026-08-09，W38，挂 W8 explore-radius-wide，默认关）：
+   * 巡逻环恒外扩是现状缺陷——资源充足时宽环低效无解（替代路径只在供给已断
+   * 时动作）。启用后：worker 在 hungerGateTicks 内有采集（HARVEST_SUCCEEDED）
+   * → patrolRing 锁在 hungerNearRingCap（近环）；超过 hungerGateTicks 无采集
+   * → 判定饥饿，放开 patrolRing 外扩到 EXPLORE_RING_COUNT。参考 arena-evolve
+   * heuristic.py:510-514（_hunger_since）、:1595-1601（hungry = tick - anchor
+   * > 200；max_ring = 5 if hungry else 3）。默认 false = 历史行为（巡逻环恒外扩，
+   * 零回归）。
+   */
+  readonly hungerGate?: boolean;
+  /** 饥饿判定 tick 阈值（默认 200，对齐 ref hungry = tick - anchor > 200）。 */
+  readonly hungerGateTicks?: number;
+  /** 非饥饿期 patrolRing 上限（默认 2：覆盖近程 2 环，饥饿时放开到 5 环）。 */
+  readonly hungerNearRingCap?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

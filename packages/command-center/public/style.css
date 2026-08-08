@@ -66,6 +66,75 @@
   --t3: #a892d6;
   --t4: #dd626d;
 }
+
+/* ---------- Design Token 扩展（2026-08-09）：spacing / font-size scale ---------- */
+:root {
+  /* spacing scale（4px 基线网格，垂直对齐规范） */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
+  --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  /* font-size scale（层级分明，可读性） */
+  --fs-xs: 10px; --fs-sm: 11px; --fs-base: 13px;
+  --fs-md: 14px; --fs-lg: 16px;  --fs-xl: 20px; --fs-2xl: 26px;
+  /* line-height */
+  --lh-tight: 1.2; --lh-base: 1.5; --lh-relaxed: 1.65;
+}
+
+/* ---------- 浅色主题（2026-08-09）：暖灰白底，Canvas 地图保持暗色场景 ---------- */
+/* 设计理念：柔和暖灰（#f7f7f5）非纯白，减少视觉疲劳；深色强调（浅底深字）；
+   语义色更深饱和保证 WCAG AA 对比度；阴影更淡。Canvas 地图是太空暗色场景，
+   主题切换只影响 React UI 层（顶栏/侧栏/面板），地图渲染不变。 */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f7f7f5;
+  --bg-deep: #ffffff;
+  --surface: rgba(255, 255, 255, .88);
+  --surface-solid: #ffffff;
+  --surface-raised: rgba(255, 255, 255, .96);
+  --border: rgba(0, 0, 0, .09);
+  --border-strong: rgba(0, 0, 0, .16);
+  --border-faint: rgba(0, 0, 0, .05);
+  --text: #1a1a1c;
+  --text-dim: #5c5c64;
+  --text-faint: #8e8e96;
+  --accent: #1a1a1c;
+  --success: #2d8a4f;
+  --warn: #c2671a;
+  --danger: #b8423d;
+  --green-resource: #2d8a4f;
+  --cyan-signal: #2a8a9e;
+  --coral-hostile: #b8423d;
+  --amber: #c2671a;
+  --coral: #b8423d;
+  --violet: #6b5a9a;
+  --blue-soft: #3a7ab0;
+  --shadow-panel: 0 0 0 1px rgba(0,0,0,.04), 0 12px 36px rgba(0,0,0,.12);
+  --shadow-card: 0 0 0 1px rgba(0,0,0,.03), 0 6px 18px rgba(0,0,0,.10);
+  --shadow-float: 0 20px 48px rgba(0,0,0,.16), 0 0 0 1px rgba(0,0,0,.08);
+}
+/* 浅色主题：覆盖硬编码深色 rgba 段（顶栏渐变/侧栏底色，保持与变量一致） */
+[data-theme="light"] #topbar {
+  background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(247,247,245,.82));
+  box-shadow: 0 1px 0 rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.08);
+}
+[data-theme="light"] .side-panel.left { background: rgba(247,247,245,.72); }
+[data-theme="light"] .side-panel.right { background: linear-gradient(180deg, rgba(255,255,255,.94), rgba(247,247,245,.97)); }
+[data-theme="light"] .btn { background: rgba(0,0,0,.04); border-color: var(--border-strong); }
+[data-theme="light"] .btn:hover { background: rgba(0,0,0,.07); border-color: rgba(0,0,0,.35); }
+[data-theme="light"] .btn.primary { background: linear-gradient(180deg, #2a2a2c, #1a1a1c); color: #fafafa; }
+[data-theme="light"] .empire-cell { background: rgba(0,0,0,.04); border-color: var(--border-faint); }
+[data-theme="light"] .empire-cell:hover { background: rgba(0,0,0,.07); }
+[data-theme="light"] .tick-bar { background: rgba(0,0,0,.10); }
+[data-theme="light"] .rb-track { background: rgba(0,0,0,.10); }
+[data-theme="light"] .skeleton { background: rgba(0,0,0,.06); }
+[data-theme="light"] .skeleton::after { background: linear-gradient(90deg, transparent, rgba(0,0,0,.08), transparent); }
+
+/* ---------- 主题切换平滑过渡（2026-08-09）：UI 层 color/bg/border 0.3s 缓动 ---------- */
+/* Canvas 地图不参与（避免重绘开销）；仅 UI 容器/按钮/卡片平滑切换 */
+#topbar, .side-panel, .side-panel-body, .empire-cell, .badge, .tick-bar, .rb-track,
+.panel, .tenant-card, .btn, .health-chip, .ar-item, .ds-v, .skeleton {
+  transition: background-color .3s var(--ease), color .3s var(--ease), border-color .3s var(--ease);
+}
+
 /* ---------- 本地字体（Geist / Geist Mono，Vercel 官方，SIL OFL） ---------- */
 @font-face { font-family: "Geist"; src: url('/assets/fonts/Geist-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
 @font-face { font-family: "Geist"; src: url('/assets/fonts/Geist-Medium.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
@@ -1233,7 +1302,9 @@ body {
 .rb-track {
   flex: 1; height: 5px; border-radius: 4px;
   background: rgba(255,255,255,.08); overflow: hidden; position: relative;
+  cursor: pointer; /* 可拖拽 seek（2026-08-09） */
 }
+.rb-track:hover { background: rgba(255,255,255,.12); }
 .rb-track::after {
   content: ""; position: absolute; inset: 0;
   background: linear-gradient(90deg, transparent, rgba(255,255,255,.06), transparent);

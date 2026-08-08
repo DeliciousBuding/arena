@@ -25,6 +25,7 @@ import {
   type RulesManifestV014,
   type RulesVersion,
 } from "../src/sim/contracts/rules-manifest.ts";
+import { phaseOfficialMap, phaseOrder } from "../src/sim/engine/settlement.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CONTRACT_DIR = join(here, "..", "src", "sim", "contracts");
@@ -43,9 +44,9 @@ function findCoordinationRoot(start: string): string {
 }
 const COORDINATION_ROOT = findCoordinationRoot(REPO_ROOT);
 const localMirrorCandidates = [
-  // arena-hero-python is a standard src-layout package.
+  // Canonical src-layout under the discovered coordination root (works in main + worktrees).
   join(COORDINATION_ROOT, "reference", "arena-hero-python", "src", "arena_hero"),
-  // Legacy layout kept as a compatibility fallback for older mirrors.
+  // Legacy root-layout compatibility only; discovery above remains the source of truth.
   join(COORDINATION_ROOT, "reference", "arena-hero-python", "arena_hero"),
 ];
 const MIRROR_DIR = process.env.ARENA_SDK_MIRROR_DIR
@@ -197,4 +198,95 @@ test("S0 v0.14: 动态价格参数只接受已核对组合（fail closed）", ()
   const missingBase = structuredClone(readBase());
   delete (missingBase.rules as Record<string, any>).unitCosts;
   assert.throws(() => parseRulesManifest(missingBase), RulesManifestError);
+});
+
+/* ---------------- W44：settlement 契约对齐断言 ---------------- */
+
+test("W44: phaseOrder() 长度 == rules.settlement.localPhaseCount", () => {
+  const manifest = loadRulesManifest(MANIFEST_PATH);
+  const order = phaseOrder();
+  assert.equal(order.length, manifest.rules.settlement.localPhaseCount);
+  assert.equal(order.length, 16);
+  assert.equal(manifest.rules.settlement.officialPhaseCount, 15);
+});
+
+test("W44: 本地 phase id 唯一（P01-P16 各一次，按运行序连续）", () => {
+  const order = phaseOrder();
+  const ids = new Set(order);
+  assert.equal(ids.size, order.length, "phase ids must be unique");
+  const numbers = order.map((id) => Number.parseInt(id.slice(1, 3), 10));
+  assert.deepEqual(numbers, Array.from({ length: 16 }, (_, i) => i + 1), "ids must run P01..P16 in order");
+});
+
+test("W44: officialPhase 映射表对齐官方 15 步重标", () => {
+  const map = phaseOfficialMap();
+  // 官方步号：lock 1 / self-destruct 2 / movement 3 / core-migration 4 /
+  // beacon 5 / harvest 6 / combat 7 / upkeep(v0.14 no-op) 8 / core-SD 9 /
+  // unit-heal 10 / core-action 11 / respawn 12 / refill 13 / commit 14 /
+  // next-observation 15；capacity-shrink 并入 combat(7)。
+  const expected: ReadonlyArray<readonly [string, number]> = [
+    ["P01-lock-final-plans", 1],
+    ["P02-self-destruct", 2],
+    ["P03-capacity-shrink-after-removal", 7],
+    ["P04-upkeep-and-deficit", 8],
+    ["P05-global-movement", 3],
+    ["P06-core-migration-actions", 4],
+    ["P07-beacon", 5],
+    ["P08-harvest-and-deposit", 6],
+    ["P09-combat", 7],
+    ["P10-core-self-destruct", 9],
+    ["P11-unit-heal", 10],
+    ["P12-stationary-core-action", 11],
+    ["P13-respawn", 12],
+    ["P14-refill-policy", 13],
+    ["P15-invariant-check-and-commit", 14],
+    ["P16-next-observation", 15],
+  ];
+  assert.equal(map.size, expected.length);
+  for (const [id, official] of expected) {
+    assert.equal(map.get(id), official, `officialPhase mismatch for ${id}`);
+  }
+});
+
+test("W44: settlementOrder 字符串与官方 15 步对齐（含 upkeep no-op 槽位）", () => {
+  const manifest = loadRulesManifest(MANIFEST_PATH);
+  const steps = manifest.constraints.settlementOrder.split(" -> ");
+  assert.equal(steps.length, manifest.rules.settlement.officialPhaseCount);
+  assert.equal(steps[0], "lock");
+  assert.equal(steps[steps.length - 1], "next-observation");
+  assert.equal(steps.indexOf("combat") + 1, steps.indexOf("upkeep(v0.14 no-op)"));
+  assert.equal(steps.indexOf("upkeep(v0.14 no-op)") + 1, steps.indexOf("core-self-destruct"));
+  // capacity-shrink 不再作为独立官方步出现（并入 combat）
+  assert.ok(!steps.includes("capacity-shrink"));
+  // lock / next-observation 不再缺失
+  assert.ok(steps.includes("lock"));
+  assert.ok(steps.includes("next-observation"));
+});
+
+test("W44: granularityNote 注明 P03 并入 combat、P04 v0.14 no-op", () => {
+  const manifest = loadRulesManifest(MANIFEST_PATH);
+  const note = manifest.rules.settlement.granularityNote;
+  assert.match(note, /P03/);
+  assert.match(note, /combat/);
+  assert.match(note, /P04/);
+  assert.match(note, /no-op/);
+});
+
+/* ---------------- W48：动态定价声明更新断言 ---------------- */
+
+test("W48: discrepancies 不再含 NOT-VERIFIED-LIVE 字样", () => {
+  const manifest = loadRulesManifest(MANIFEST_PATH);
+  for (const entry of manifest.evidence.discrepancies) {
+    assert.ok(!entry.includes("NOT-VERIFIED-LIVE"), `discrepancy still marked NOT-VERIFIED-LIVE: ${entry}`);
+  }
+});
+
+test("W48: discrepancies 标注 k=1 tier 已实机核验、k>=2 与 .5 边界仍外推", () => {
+  const manifest = loadRulesManifest(MANIFEST_PATH);
+  const pricing = manifest.evidence.discrepancies.find((entry) => entry.includes("dynamic pricing")) ?? "";
+  assert.match(pricing, /k=1 tier verified in production/);
+  assert.match(pricing, /RANGER 16/);
+  assert.match(pricing, /VANGUARD 13/);
+  assert.match(pricing, /not observed live/);
+  assert.match(pricing, /SDK 183\/183/);
 });

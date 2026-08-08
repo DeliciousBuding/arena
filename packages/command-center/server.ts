@@ -789,11 +789,11 @@ app.get("/app/*", (c) => {
   return serveFile(c, join(WEB_DIR, "index.html")); // SPA fallback
 });
 app.get("/", (c) => c.redirect("/app/"));
-// legacy public/ 仅作样式/素材源
+// public/ 仅 assets（字体/图，React 引用）+ style.css（Vite 构建打包，dev 兜底）
 app.get("/assets/*", (c) => servePublic(c, c.req.path.slice(1)));
-app.get("/styles/*", (c) => servePublic(c, c.req.path.slice(1)));
-app.get("/js/*", (c) => servePublic(c, c.req.path.slice(1)));
-app.notFound((c) => servePublic(c, c.req.path.slice(1)));
+app.get("/style.css", (c) => serveFile(c, join(PUBLIC_DIR, "style.css")));
+// legacy /styles/* /js/* 路由随 app.js/index.html 退役删除（2026-08-09 neat-freak）
+app.notFound((c) => c.json({ error: "not found", path: c.req.path }, 404));
 
 // 全局错误兜底：异常响应 500（商店/读取失败等，前端已有降级展示）
 app.onError((err, c) => {
