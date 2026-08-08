@@ -467,3 +467,10 @@ mapEngine.ts 对应函数。
 - showTooltip 受控单位追加「编队 编队成员 · 共 N」行
   （multi 命中时，琥珀色），与编队连接线呼应——hover 即知所属编队。
 - 探针实测：tooltip 含「编队 编队成员 · 共 1」；回归 22/22 全绿。
+
+### 9.30 tick 读条显示剩余秒数（2026-08-08）
+- mapEngine tickClock emit 补 remain（距下一 tick 剩余秒数，按
+  周期-已用计算）；TopBar tickLabel 追加「剩 Xs」
+  （每秒刷新，tick/周期/剩余同条显示）。
+- 探针实测：tickLabel = 'tick 73293 · 15s · 剩 8s'；
+  回归 22/22 全绿（回归 15s tick 读条断言自然覆盖新字段）。
