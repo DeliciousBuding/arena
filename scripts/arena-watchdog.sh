@@ -111,15 +111,18 @@ fi
 # 尚有其他 child 存活，就会制造“writer 仍在写、single-writer lock 被删”的危险
 # 假恢复（2026-08-08 生产实证）。现在循环清完整个集合，并在删锁前做最终硬门禁。
 arena_pids() {
-  # fail-closed（2026-08-08）：wmic 探测失败（环境异常，日志反复出现
-  # "Could not determine Node.js install directory"）时返回 WMIC_UNAVAILABLE，
-  # 让门禁走 ABORT 保锁——绝不在"探测不到进程"时清锁（防双 writer 假恢复）。
-  if ! wmic process where "name='node.exe'" get processid >/dev/null 2>&1; then
-    echo "WMIC_UNAVAILABLE"
+  # fail-closed（2026-08-08）：wmic 在本机已不可用（Win11 移除，实测
+  # "wmic: command not found"）——旧版盲放行会删锁重启造成双 writer 假恢复，
+  # 补丁版 fail-closed 又会让看护永远 ABORT（失去自动恢复）。改用 PowerShell
+  # CIM 精确枚举 run-tenant/run-supervisor（排除 pm2/MCP 等无关 node 进程）。
+  # 枚举失败（PS 不可用等）仍 fail-closed 保锁：绝不在"探测不到进程"时清锁。
+  local OUT
+  if ! OUT=$(powershell -NoProfile -ExecutionPolicy Bypass -File "$REPO/scripts/arena-pids.ps1" 2>/dev/null); then
+    echo "PID_SCAN_UNAVAILABLE"
     return 1
   fi
-  wmic process where "name='node.exe'" get processid,commandline 2>/dev/null \
-    | grep -E 'run-tenant|run-supervisor' | grep -oE '[0-9]+$' | tr -d '\r' | sort -u
+  printf '%s
+' "$OUT" | tr -d '' | grep -E '^[0-9]+$' | sort -u
 }
 for ATTEMPT in 1 2 3; do
   STRAYS=$(arena_pids)
@@ -130,8 +133,8 @@ for ATTEMPT in 1 2 3; do
   sleep 3
 done
 STRAYS=$(arena_pids)
-if [ "$STRAYS" = "WMIC_UNAVAILABLE" ]; then
-  echo "$(now) ABORT recovery: wmic unavailable, cannot verify process absence; locks preserved" >> "$LOG"
+if [ "$STRAYS" = "PID_SCAN_UNAVAILABLE" ]; then
+  echo "$(now) ABORT recovery: process enumeration unavailable, cannot verify process absence; locks preserved" >> "$LOG"
   exit 1
 fi
 if [ -n "$STRAYS" ]; then
