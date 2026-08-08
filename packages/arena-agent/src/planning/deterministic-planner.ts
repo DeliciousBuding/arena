@@ -544,6 +544,9 @@ export class DeterministicPlanner implements PlanProvider {
   /** 官方排行榜威胁画像（2026-08-07，威胁自适应）：透传内部 SafetyPlanner。 */
   private readonly threatProfiles: ReadonlyMap<string, ThreatProfile>;
   private previousAssignments: readonly Assignment[] = [];
+  /** Worker 局部活性恢复冷却：冷却内从 economicSnapshot 排除，强制沿 Safety patrol
+   *  探索一段时间，防 reset 后下一 Tick 又被 Hungarian 分回同一 stale mine。 */
+  private readonly workerRecoveryUntilTick = new Map<string, number>();
 
   constructor(
     planner: WorkerTaskPlanner = new WorkerTaskPlanner(),
@@ -632,6 +635,19 @@ export class DeterministicPlanner implements PlanProvider {
     }
   }
 
+  /** Worker 局部活性恢复：清 sticky economic assignment，并同步恢复两套 Safety World。 */
+  recoverWorker(
+    unitId: string,
+    currentTick?: number,
+  ): { readonly previousDirection: number; readonly nextDirection: number; readonly clearedMoveFailures: number; readonly cooldownUntilTick: number | null } {
+    this.previousAssignments = this.previousAssignments.filter((assignment) => assignment.unitId !== unitId);
+    const fallback = this.fallbackPlanner.recoverWorker(unitId, currentTick);
+    // patrol planner 独立持有 World；也必须清，否则下一 Tick fallback 仍可能从旧状态回灌。
+    this.patrolPlanner.recoverWorker(unitId, currentTick);
+    if (fallback.cooldownUntilTick !== null) this.workerRecoveryUntilTick.set(unitId, fallback.cooldownUntilTick);
+    return fallback;
+  }
+
   decide(input: DeterministicPlannerInput): Plan {
     // SafetyPlanner 已包含跨 Tick World（障碍/资源线索/Worker 巡逻状态）。先生成完整
     // 基线计划，再用 WorkerTaskPlanner 覆盖可见资源的全局唯一分配。这样 deterministic
@@ -642,6 +658,11 @@ export class DeterministicPlanner implements PlanProvider {
       state: { ...input.state, resourceCells: new Set<string>() },
       policy: input.policy,
     });
+    for (const [unitId, untilTick] of this.workerRecoveryUntilTick) {
+      if (untilTick <= input.state.tick || !input.state.workers.some((worker) => worker.id === unitId)) {
+        this.workerRecoveryUntilTick.delete(unitId);
+      }
+    }
     const rawSnapshot = extractPlanningSnapshot(input.state);
     const snapshot: PlanningSnapshot = {
       ...rawSnapshot,
@@ -665,7 +686,26 @@ export class DeterministicPlanner implements PlanProvider {
       this.surveyBurstUntilTick = input.state.tick + this.missionConfig.surveyBurstTicks;
     }
     this.previousCorePosition = corePosition;
-    const { assignments } = this.planner.plan(snapshot, this.previousAssignments, {
+
+    // 局部 Worker 自愈与使命分配共用一个排除面：Safety veto（回仓/撤离/清核心等）
+    // 和 liveness recovery cooldown 中的 Worker 均不参与经济目标匹配；但仍由
+    // patrol/safety 基线继续产生合法行动。这样不会让 mission 层重新吸回旧矿，
+    // 也不会覆盖更高优先级的生存/通道动作。
+    const safetyVetoIds = new Set(
+      snapshot.units
+        .filter((unit) => unit.unitType === "WORKER" && isSafetyVetoIntent(fallback.intents?.[unit.id]))
+        .map((unit) => unit.id),
+    );
+    const economicExcludedIds = new Set([
+      ...safetyVetoIds,
+      ...[...this.workerRecoveryUntilTick.entries()]
+        .filter(([, untilTick]) => untilTick > input.state.tick)
+        .map(([unitId]) => unitId),
+    ]);
+    const economicSnapshot: PlanningSnapshot = economicExcludedIds.size === 0
+      ? snapshot
+      : { ...snapshot, units: snapshot.units.filter((unit) => !economicExcludedIds.has(unit.id)) };
+    const { assignments } = this.planner.plan(economicSnapshot, this.previousAssignments, {
       surveyBurstActive: input.state.tick <= this.surveyBurstUntilTick,
     });
     this.previousAssignments = assignments;
