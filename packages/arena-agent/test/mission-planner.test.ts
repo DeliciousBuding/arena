@@ -128,18 +128,21 @@ test("mission: WorkerTaskPlanner 陈旧种子低于门槛 → 转 EXPLORE（SURV
 
 test("mission: 默认配置（缺省）行为与现架构一致——剩余 worker 全部 WAIT", () => {
   const workers = [worker("w1", 0, 0), worker("w2", 0, 1)];
+  // 记忆矿放在 40 格边界内（30 格）：40 格外记忆矿不可采是 route-aware
+  // Hungarian 的独立边界（t1 实证 14 worker 扑 100+ 格陈旧种子），由
+  // resource-routing.test.ts 专项覆盖；此处验证缺省配置下边界内陈旧种子照采。
   const snapshot = makeSnapshot(
     workers,
     [
       { key: "5,0", visible: true, lastSeenTick: 10 },
-      { key: "100,0", visible: false, seeded: true, lastSeenTick: 5 },
+      { key: "30,0", visible: false, seeded: true, lastSeenTick: 5 },
     ],
     10,
   );
   const planner = new WorkerTaskPlanner(); // 缺省 = 现行为
   const plan = planner.plan(snapshot, []);
   const byType = (type: string) => plan.assignments.filter((a) => a.task.type === type);
-  assert.equal(byType("GO_RESOURCE").length, 2, "缺省：陈旧种子也照采（与现架构一致）");
+  assert.equal(byType("GO_RESOURCE").length, 2, "缺省：边界内陈旧种子也照采（与现架构一致）");
   assert.equal(byType("EXPLORE").length, 0);
   assert.equal(byType("WAIT").length, 0);
 });

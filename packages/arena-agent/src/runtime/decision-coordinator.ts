@@ -82,7 +82,9 @@ export class DecisionCoordinator {
   private readonly budgetConfig: DeadlineConfig;
   private readonly tenantId: string;
   private readonly rulesVersion: string;
-  private readonly configHash: string;
+  /** Active runtime config hash. Variants may hot-reload between ticks; the next DecisionContext
+   * must carry the applied hash rather than the process-start manifest hash. */
+  private configHash: string;
   private readonly arbiter: PlanArbiter;
   private readonly sleepUntil: (deadlineMs: number, clock: Clock) => Promise<void>;
   private readonly onRunSettled: DecisionCoordinatorOptions["onRunSettled"];
@@ -117,6 +119,14 @@ export class DecisionCoordinator {
     this.sink = (envelope) => this.registry.submit(envelope.runId, envelope);
     // 契约绑定（GPT 审核）：bindCandidateSink 是必选方法，runtime 忘记实现时编译失败
     this.runtime.bindCandidateSink(this.sink);
+  }
+
+  /** Apply an already-validated config hash between ticks. No planner/runtime state is rebuilt. */
+  updateConfigHash(configHash: string): void {
+    if (typeof configHash !== "string" || configHash.length === 0) {
+      throw new RangeError("configHash must be non-empty");
+    }
+    this.configHash = configHash;
   }
 
   /** 每 Tick 决策：永远在 selection deadline 前 resolve（启动失败/runId 违规则立即）。 */

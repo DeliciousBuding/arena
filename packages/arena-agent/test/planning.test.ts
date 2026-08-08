@@ -202,6 +202,20 @@ test("贪心选最近：Worker[0,0] 在 [1,0] 与 [10,10] 之间选 [1,0]", () =
   assert.deepEqual(task.target, [1, 0]);
 });
 
+test("最小费用匹配：避免 greedy 局部最优导致第二 Worker 跨图", () => {
+  // greedy 按稳定顺序会先拿 w1-r1（cost 1），w2 被迫去 r2（cost 4），总代价 5；
+  // Hungarian 应给 w1-r2 + w2-r1，总代价 3（w1 去 [-2,0] 只要 2 步）。
+  const snap = snapshotOf(makeTurn([worker("w1", 0, 0), worker("w2", 2, 0)], {
+    resourceCells: new Set(["1,0", "-2,0"]),
+    core: null,
+  }));
+  const plan = new WorkerTaskPlanner().plan(snap);
+  const byWorker = new Map(plan.assignments.map((a) => [a.unitId, a.task] as const));
+  assert.equal(byWorker.get("w1")?.targetCellKey, "-2,0");
+  assert.equal(byWorker.get("w2")?.targetCellKey, "1,0");
+  assertUniqueCells(plan);
+});
+
 test("sticky：上一 Tick 同目标格给净收益加成后改变选择（防抖动机制）", () => {
   const snap = snapshotOf(
     makeTurn([worker("w1", 0, 0)], { resourceCells: new Set(["1,1", "2,0"]) }),

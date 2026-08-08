@@ -258,6 +258,9 @@ const BLOCKADE_ENV_MAX_DIST = 24;
  *  站桩锁龄 20（到达拦截点后目标未到 → 放弃，防 Vanguard 长期闲置）。 */
 const VANGUARD_BLOCKADE_CAP = 1;
 const VANGUARD_BLOCKADE_MAX_TICKS = 20;
+/** Worker 局部活性恢复后，短期禁止再次领取历史矿任务，强制进入 patrol/explore。
+ *  8 tick 足够离开原死锁小环，又远短于资源记忆 TTL；当前可见矿仍由主流程直接采。 */
+const WORKER_LIVENESS_RECOVERY_TICKS = 8;
 /** B10 worker 遭遇撤离（竞品 Scout And Observer Response）：撤离触发半径。 */
 const SCOUT_EVADE_RADIUS = 3;
 /** 到 Core 3 格内后的冷却 tick（竞品 three-Tick cooldown）。 */
@@ -322,6 +325,42 @@ export class SafetyPlanner {
   updateConfig(config: SafetyPlannerConfig): void {
     this.configValue = config;
   }
+
+  /**
+   * Worker 局部活性恢复：只清这个 Worker 的短期任务/导航状态，并把下一次巡逻方向
+   * 旋转到另一个扇区。不会清全局资源/障碍/敌情，也不会修改其他单位。
+   *
+   * 8 方位用 +3、16 方位用 +5（均与方向数互质），连续恢复不会在两个方向之间
+   * 来回摆动；这是 WorkerLivenessTracker 的执行端，检测逻辑不塞回 SafetyPlanner。
+   */
+  recoverWorker(
+    unitId: string,
+    currentTick?: number,
+  ): { readonly previousDirection: number; readonly nextDirection: number; readonly clearedMoveFailures: number; readonly cooldownUntilTick: number | null } {
+    const memory = this.world.unitMemory(unitId);
+    const directionCount = this.config.workerDenseScan === true ? 16 : EXPLORE_DIRECTION_COUNT;
+    const jump = directionCount === 16 ? 5 : 3;
+    const previousDirection = ((memory.patrolDirection % directionCount) + directionCount) % directionCount;
+    const nextDirection = (previousDirection + jump) % directionCount;
+    memory.workerMode = "patrol";
+    memory.harvestTarget = null;
+    memory.patrolDirection = nextDirection;
+    memory.patrolRing = 0;
+    memory.patrolStarted = false;
+    memory.patrolReturning = false;
+    this.harvestMemStuck.delete(unitId);
+    this.moveFailedStreak.delete(unitId);
+    this.spawnYieldStreak.delete(unitId);
+    this.blockadeAssignment.delete(unitId);
+    this.coreLockHands.delete(unitId);
+    this.blockadeLockedSince.delete(unitId);
+    this.scoutEvadeState.delete(unitId);
+    this.lastWorkerPos.delete(unitId);
+    const cooldownUntilTick = currentTick === undefined ? null : currentTick + WORKER_LIVENESS_RECOVERY_TICKS;
+    if (cooldownUntilTick !== null) this.workerLivenessRecoveryUntil.set(unitId, cooldownUntilTick);
+    const clearedMoveFailures = this.world.clearUnitMoveFailures(unitId);
+    return { previousDirection, nextDirection, clearedMoveFailures, cooldownUntilTick };
+  }
   /** 本 decide 生效的 aggression（policy 优先，其次 config.aggression）。 */
   private effectiveAggression: AggressionLevel = "defensive";
   /** 本 decide 生效的 workerTarget（policy 优先，其次 config.workerTarget）。 */
@@ -376,7 +415,10 @@ export class SafetyPlanner {
   private harvestMemStuck = new Map<string, number>();
   /** 上 tick worker 位置（记忆矿卡死检测：位置未变 = 未推进）。 */
   private lastWorkerPos = new Map<string, Position>();
-  /** 本 tick 记忆矿分配计数（cellKey -> worker 数；容量感知防 10 抢 1）。 */
+  /** Worker 活性恢复冷却：unitId → 截止 tick。冷却内不主动领取 stale memory mine，
+   *  让 reset+rotate 真正获得一段探索窗口，防下一 Tick 又被同一历史任务吸回去。 */
+  private workerLivenessRecoveryUntil = new Map<string, number>();
+  /** 本 tick 记忆矿采集槽占用（cellKey -> worker 数；自然节点吞吐=1，与实体格容量解耦）。 */
   private allocatedMines = new Map<string, number>();
   /** 本 tick 威胁评估（threatBreakout 用）：decide 入口计算一次供 worker 消费。 */
   private currentThreat: ThreatAssessment | null = null;
@@ -672,6 +714,42 @@ export class SafetyPlanner {
       (this.config.raidDefense === true && this.raidUnitDistance(state) <= watchRadius);
     if (homeThreat) this.reinforceUntil.set(unit.id, state.tick + REINFORCE_HOLD_TICKS);
     return (this.reinforceUntil.get(unit.id) ?? 0) >= state.tick;
+  }
+
+  /** 资源分配/巡逻最大距离（生产回流 99b4ba2，threatRecall/raidDefense/
+   *  threatBreakout 统一口径）：召回激活时缩到守家圈 RECALL_PATROL_RADIUS，
+   *  否则不限制（Infinity）。DeterministicPlanner.decide() 用其过滤 Hungarian
+   *  候选资源格（threat recall 过滤远资源），workerDecision 用其收缩巡逻半径
+   *  ——单一事实源，防双实现漂移。 */
+  resourceAssignmentMaxDistanceFromCore(state: TickState): number {
+    const home = state.core?.position ?? null;
+    if (home === null) return Number.POSITIVE_INFINITY;
+    // 威胁召回（threatRecall，v0.3 实验）：12 格内可见敌（确认接触）时 worker
+    // 巡逻/探索半径缩到守家圈（RECALL_PATROL_RADIUS），不放远探/远采。
+    // BREAKOUT 全面收缩（threatBreakout，v0.3 实验）：多轴包围（无逃逸方向）
+    // 时同样缩家——被包围时外出即送死，等包围解除再恢复。
+    const recallActive =
+      this.config.threatRecall === true &&
+      (state.visibleEnemies.some(
+        // 只对敌方战斗单位（Vanguard/Ranger）召回（2026-08-08，t4 被 majorcycle
+        // 敌核 + 1 worker 压制 25+ tick 全体停产实证）：敌核是攻击目标、敌方
+        // worker 无攻击不升级核心级威胁——与 threat.ts 同款语义，worker 采矿
+        // 路径仍由 threatMap 避开敌占格。
+        (enemy) =>
+          enemy.kind === "UNIT" &&
+          enemy.unitType !== undefined &&
+          enemy.unitType !== "WORKER" &&
+          home !== null &&
+          manhattan(enemy.position, home) <= THREAT_RECALL_DISTANCE,
+      ) ||
+        // 快攻防御（raid-defense-v1，2026-08-07）：警戒半径放宽到 18——小股
+        // 部队更早进入防区即召回 worker 缩家圈（不等贴脸）。
+        (this.config.raidDefense === true &&
+          home !== null &&
+          this.raidUnitDistance(state) <= (this.config.raidWatchRadius ?? RAID_UNIT_WATCH_RADIUS)));
+    const breakoutActive =
+      this.config.threatBreakout === true && this.currentThreat?.level === "BREAKOUT";
+    return recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
   }
 
   /** 快攻单位压力（raid-defense-v1，2026-08-07）：敌方战斗单位（Vanguard/Ranger）
@@ -984,12 +1062,15 @@ export class SafetyPlanner {
     if (!blockadeActive) {
       this.blockadeAssignment = new Map();
     }
-    // 清理已死亡单位的状态残留（spawn-yield-v1）：worker 死亡/重生 id 变化，
-    // 旧 id 的让位计数永远不会再命中——逐 tick 清理防止 Map 无限增长。
-    if (this.spawnYieldStreak.size > 0) {
+    // 清理已死亡单位的短期状态残留：worker 死亡/重生 id 变化，旧 id 永不再命中。
+    // 活性恢复冷却同时按 tick 到期删除，避免长期运行 Map 增长。
+    if (this.spawnYieldStreak.size > 0 || this.workerLivenessRecoveryUntil.size > 0) {
       const alive = new Set(state.workers.map((worker) => worker.id));
       for (const unitId of this.spawnYieldStreak.keys()) {
         if (!alive.has(unitId)) this.spawnYieldStreak.delete(unitId);
+      }
+      for (const [unitId, untilTick] of this.workerLivenessRecoveryUntil) {
+        if (!alive.has(unitId) || untilTick <= state.tick) this.workerLivenessRecoveryUntil.delete(unitId);
       }
     }
     if (blockadeActive) {
@@ -1195,33 +1276,7 @@ export class SafetyPlanner {
     const home = state.core?.position ?? null;
     const memory = this.world.unitMemory(unit.id, this.workerPatrolDirection(index, home));
     const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
-    // 威胁召回（threatRecall，v0.3 实验）：12 格内可见敌（确认接触）时 worker
-    // 巡逻/探索半径缩到守家圈（RECALL_PATROL_RADIUS），不放远探/远采。
-    // BREAKOUT 全面收缩（threatBreakout，v0.3 实验）：多轴包围（无逃逸方向）
-    // 时同样缩家——被包围时外出即送死，等包围解除再恢复。
-    const recallActive =
-      this.config.threatRecall === true &&
-      (state.visibleEnemies.some(
-        // 只对敌方战斗单位（Vanguard/Ranger）召回（2026-08-08，t4 被 majorcycle
-        // 敌核 + 1 worker 压制 25+ tick 全体停产实证）：敌核是攻击目标、敌方
-        // worker 无攻击不升级核心级威胁——与 threat.ts 同款语义，worker 采矿
-        // 路径仍由 threatMap 避开敌占格。
-        (enemy) =>
-          enemy.kind === "UNIT" &&
-          enemy.unitType !== undefined &&
-          enemy.unitType !== "WORKER" &&
-          home !== null &&
-          manhattan(enemy.position, home) <= THREAT_RECALL_DISTANCE,
-      ) ||
-        // 快攻防御（raid-defense-v1，2026-08-07）：警戒半径放宽到 18——小股
-        // 部队更早进入防区即召回 worker 缩家圈（不等贴脸）。
-        (this.config.raidDefense === true &&
-          home !== null &&
-          this.raidUnitDistance(state) <= (this.config.raidWatchRadius ?? RAID_UNIT_WATCH_RADIUS)));
-    const breakoutActive =
-      this.config.threatBreakout === true && this.currentThreat?.level === "BREAKOUT";
-    const maxPatrolRadius =
-      recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
+    const maxPatrolRadius = this.resourceAssignmentMaxDistanceFromCore(state);
 
     if (unit.cargo > 0) {
       // 产兵让位（spawn-yield-v1，2026-08-08）：核心本 tick 计划 SPAWN 时，
@@ -1415,8 +1470,14 @@ export class SafetyPlanner {
     const visibleResources = [...state.resourceCells].map((cell) => parseCell(cell));
     if (visibleResources.length > 0) {
       const target = nearest(visibleResources, unit.position);
-      // 召回期间只采守家圈内的矿（远矿等威胁解除再采）
-      if (recallActive && target !== null && home !== null && manhattan(target, home) > maxPatrolRadius) {
+      // 召回期间只采守家圈内的矿（远矿等威胁解除再采；breakout 全面收缩同口径，
+      // 生产回流 99b4ba2 与 resourceAssignmentMaxDistanceFromCore 统一）
+      if (
+        Number.isFinite(maxPatrolRadius) &&
+        target !== null &&
+        home !== null &&
+        manhattan(target, home) > maxPatrolRadius
+      ) {
         memory.workerMode = "patrol";
         memory.harvestTarget = null;
       } else {
@@ -1476,7 +1537,11 @@ export class SafetyPlanner {
     // 无可见资源且无活跃目标时，从已知矿记忆（含跨 run 测绘 seed）挑最近的
     // 去挖——修复"矿发现了但永远不被主动去挖"（生产实证：worker 只在可见时
     // 采，巡逻错过已知矿后永不回头）。距离上限防追 70+ 格远矿（t4 实证）。
-    if (this.config.harvestMemoryMine === true && memory.harvestTarget === null) {
+    if (
+      this.config.harvestMemoryMine === true &&
+      memory.harvestTarget === null &&
+      (this.workerLivenessRecoveryUntil.get(unit.id) ?? 0) <= state.tick
+    ) {
       const maxDist = this.config.harvestMemoryMaxDist ?? HARVEST_MEMORY_MAX_DIST;
       let best: Position | null = null;
       let bestDist = Number.POSITIVE_INFINITY;
@@ -2005,9 +2070,12 @@ export class SafetyPlanner {
         }
         const dense = this.config.militarySearchDense === true;
         const directionCount = dense ? 16 : EXPLORE_DIRECTION_COUNT;
-        const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % directionCount);
         const home = state.core.position;
         const beacon = state.beacon.position ?? home;
+        const memory = this.world.unitMemory(
+          unit.id,
+          this.militaryScavengeDirection(home, beacon, 0, index, directionCount),
+        );
         let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
         let patrolPoint = dense
           ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
@@ -2030,7 +2098,16 @@ export class SafetyPlanner {
               : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
           } else {
             memory.patrolRing = 0;
-            memory.patrolDirection = (memory.patrolDirection + 3) % directionCount;
+            memory.patrolDirection = this.config.militaryScavengeFrontier === true
+              ? this.world.staleDirection(
+                  home,
+                  beacon,
+                  memory.patrolRing,
+                  this.config.exploreRadius,
+                  directionCount,
+                  (index * 3 + 7) % directionCount,
+                )
+              : (memory.patrolDirection + 3) % directionCount;
             patrolPoint = dense
               ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
               : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
@@ -2487,6 +2564,28 @@ export class SafetyPlanner {
         // 已展开或环上无空位：原地待机（保持射程）
       }
     }
+  }
+
+  /** 军事打野方位：开启 frontier 模式时，按候选探测点所在 chunk 的陈旧度选方位；
+   * deterministic offset 只改变并列候选起点，用来分散多单位。关闭时保持历史固定序。 */
+  private militaryScavengeDirection(
+    home: Position,
+    beacon: Position,
+    ringIndex: number,
+    index: number,
+    directionCount: number,
+  ): number {
+    if (this.config.militaryScavengeFrontier === true) {
+      return this.world.staleDirection(
+        home,
+        beacon,
+        ringIndex,
+        this.config.exploreRadius,
+        directionCount,
+        (index * 3 + 7) % directionCount,
+      );
+    }
+    return (index * 3 + 7) % directionCount;
   }
 
   /** 产兵让位预判（spawn-yield-v1，2026-08-08）：核心本 tick 是否计划 SPAWN——

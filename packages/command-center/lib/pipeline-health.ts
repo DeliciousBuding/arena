@@ -10,7 +10,7 @@
 import { existsSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { DATA_ROOT, TENANTS, calibrationDir, latestRunDir, listCases } from "./fs-jsonl.ts";
+import { DATA_ROOT, TENANTS } from "./fs-jsonl.ts";
 import { loadWorld } from "./streams.ts";
 import { loadTenantSurveyCached } from "./survey-cache.ts";
 import { TtlCache } from "./cache.ts";
@@ -67,10 +67,7 @@ export interface PipelineHealthPayload {
     lagTrend: { direction: "narrowing" | "widening" | "stable"; delta: number; samples: number } | null;
     /** 数据源新鲜度表（2026-08-08）。 */
     sources: readonly SourceFreshness[];
-    /** 决策数据新鲜度（2026-08-08，管线→决策链路）：decision-input/地图/日记
-     *  依赖 survey-db（refill/chunkCoverage/coreThreats/miningCandidates）——
-     *  其数据年龄 = 同步水位滞后（lagTicks × 15s/tick）。指挥者可判断"决策
-     *  是否基于最新测绘"。 */
+    /** 决策数据新鲜度：survey-db 同步水位是 planner/advice 的真实数据龄，而不仅是文件 mtime。 */
     decisionFreshness: { lagTicks: number; lagSeconds: number; healthy: boolean } | null;
     /** 矿生命周期闭环状态（2026-08-08）：OK=负态在流动（采集事件正确回写）/
      *  STALLED=有采集事件但负态为 0（survey-sync 静默空跑——如 --data-root 缺失
@@ -80,12 +77,10 @@ export interface PipelineHealthPayload {
   cachedAt: string;
 }
 
-/** 滞后阈值：超过视为 STALE（约 8 分钟，tick≈0.8s 量级）。 */
+/** 滞后阈值：超过视为 STALE。 */
 const STALE_LAG_TICKS = 600;
-/** 生产 tick 间隔（秒）：world stale 90s/6 tick 同口径——决策数据滞后换算。 */
+/** Command Center 的 survey/decision freshness 换算口径；与主线 UI 契约保持一致。 */
 export const TICK_SECONDS = 15;
-/** 决策数据滞后健康阈值（tick）：≤ 60 ≈ 1 分钟内决策数据即算新鲜（与
- *  survey-sync-bridge LAG_TRIGGER_TICKS 对齐——超过会触发补同步）。 */
 export const DECISION_FRESH_TICKS = 60;
 
 const HEALTH_TTL_MS = 15_000;
@@ -189,19 +184,41 @@ function fileAgeSeconds(path: string): number | null {
   }
 }
 
-/** 数据源新鲜度（2026-08-08）：取各源最新文件 mtime → 年龄 + 陈旧标记。纯文件读取。
- *  surveyLagTicks：survey-db 同步水位滞后（tick），非必传——传入时 surveyDb
- *  detail 显示双指标「lag N tick / age s 前同步」（age 只反映距上次同步，数据
- *  实际滞后看 lag；避免 254s 被误读为 4 分钟旧数据）。 */
+/** 指定 dataRoot 下某租户最新 calibration case 年龄。先按 cases 目录 mtime 选最新
+ * run，再只扫描该 run 的 JSON case，避免 source-health 重新变成全历史 O(runs×cases)。 */
+function latestCaseAgeSeconds(dataRoot: string, tenant: string): number | null {
+  try {
+    const calibrationRoot = join(dataRoot, "runtime", tenant, "calibration");
+    if (!existsSync(calibrationRoot)) return null;
+    const candidates = readdirSync(calibrationRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const casesDir = join(calibrationRoot, entry.name, "cases");
+        return existsSync(casesDir) ? { casesDir, mtime: statSync(casesDir).mtimeMs } : null;
+      })
+      .filter((entry): entry is { casesDir: string; mtime: number } => entry !== null)
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const candidate of candidates) {
+      const cases = readdirSync(candidate.casesDir)
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => join(candidate.casesDir, name));
+      if (cases.length === 0) continue;
+      let newest = 0;
+      for (const file of cases) newest = Math.max(newest, statSync(file).mtimeMs);
+      return Math.max(0, Math.round((Date.now() - newest) / 1000));
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** 数据源新鲜度：mtime 是写入年龄；surveyLagTicks 是同步水位的真实决策滞后。 */
 export function computeSourceFreshness(dataRoot: string = DATA_ROOT, surveyLagTicks?: number | null): SourceFreshness[] {
-  // live world：各租户最新 calibration case 文件（取最年轻）
+  // live world：严格使用调用方传入的数据根；不同 release/worktree 可独立 preflight。
   let worldAge: number | null = null;
   for (const t of TENANTS) {
-    const runDir = latestRunDir(t);
-    if (!runDir) continue;
-    const cases = listCases(t, runDir);
-    if (cases.length === 0) continue;
-    const age = fileAgeSeconds(join(calibrationDir(t), runDir, "cases", cases[cases.length - 1]));
+    const age = latestCaseAgeSeconds(dataRoot, t);
     if (age !== null) worldAge = worldAge === null ? age : Math.min(worldAge, age);
   }
   let dbAge: number | null = null;
