@@ -21,6 +21,7 @@ import { runTenant } from "../app/tenant-runtime.ts";
 import { loadDotEnv } from "../app/dotenv.ts";
 import { resolveArenaDataRoot, resolveArenaRuntimeRoot } from "../app/data-root.ts";
 import { registerShutdownRequest } from "../app/process-shutdown.ts";
+import { createTenantAllianceIpcBridge } from "../alliance/runtime/tenant-bridge.ts";
 
 async function main(): Promise<void> {
   const { values } = parseArgs({
@@ -100,18 +101,32 @@ async function main(): Promise<void> {
   const decisionMode = values.mode === undefined
     ? undefined
     : (values.mode as "safety" | "deterministic" | "agent-shadow" | "hybrid");
-  const result = await runTenant(configPath, repoRoot, {
-    dataRoot,
-    submissionMode: values.live ? "live" : values.shadow ? "disabled" : undefined,
-    decisionMode,
-    maxTicks,
-    maxLiveTicks,
-    startupSyncTurns,
-    recordCalibration: values["record-calibration"] === true,
-    recordAllianceShadow: values["record-alliance-shadow"] === true,
-    allianceShadowIntervalTicks,
-    onSignal: registerShutdownRequest,
-  });
+  const allianceBridge = values["record-alliance-shadow"] === true && typeof process.send === "function"
+    ? createTenantAllianceIpcBridge((message) => {
+        if (process.connected && typeof process.send === "function") process.send(message);
+      })
+    : null;
+  const onAllianceIpc = (message: unknown): void => allianceBridge?.onMessage(message);
+  if (allianceBridge !== null) process.on("message", onAllianceIpc);
+  const result = await (async () => {
+    try {
+      return await runTenant(configPath, repoRoot, {
+        dataRoot,
+        submissionMode: values.live ? "live" : values.shadow ? "disabled" : undefined,
+        decisionMode,
+        maxTicks,
+        maxLiveTicks,
+        startupSyncTurns,
+        recordCalibration: values["record-calibration"] === true,
+        recordAllianceShadow: values["record-alliance-shadow"] === true,
+        allianceShadowIntervalTicks,
+        onAllianceShadowFrame: allianceBridge === null ? undefined : (frame) => allianceBridge.onFrame(frame),
+        onSignal: registerShutdownRequest,
+      });
+    } finally {
+      if (allianceBridge !== null) process.off("message", onAllianceIpc);
+    }
+  })();
   console.log(
     `run 结束：processRunId=${result.processRunId} tenant=${result.tenantId} ` +
       `decisionMode=${result.decisionMode} submissionMode=${result.submissionMode} ` +
