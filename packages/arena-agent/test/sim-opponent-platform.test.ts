@@ -11,7 +11,12 @@ import { Worker } from "node:worker_threads";
 
 import { resolveOpponent, opponentEntry } from "../src/sim/opponent/registry.ts";
 import { HttpBridge } from "../src/sim/opponent/http-decider.ts";
-import { makeArenaScenarioN, makeSafetyEntry, runFreeForAll } from "../src/sim/opponent/tournament.ts";
+import {
+  makeArenaScenarioN,
+  makeSafetyEntry,
+  resolveTournamentRefillConfig,
+  runFreeForAll,
+} from "../src/sim/opponent/tournament.ts";
 import {
   inWindow,
   makeSurveyScenario,
@@ -22,13 +27,16 @@ import {
 
 // ---------- 注册中心 ----------
 
-test("registry: 内置名解析 farmer/core", () => {
+test("registry: 内置名解析 farmer/core/arena-evolve", () => {
   const farmer = resolveOpponent("farmer");
   assert.equal(farmer.kind, "reference-python");
   assert.equal(farmer.pythonAgent, "farmer");
   const core = resolveOpponent("core");
   assert.equal(core.kind, "reference-python");
   assert.equal(core.pythonAgent, "core");
+  const evolve = resolveOpponent("arena-evolve");
+  assert.equal(evolve.kind, "reference-python");
+  assert.equal(evolve.pythonAgent, "arena-evolve");
 });
 
 test("registry: http:// 前缀 → HTTP spec，端点透传", () => {
@@ -38,7 +46,7 @@ test("registry: http:// 前缀 → HTTP spec，端点透传", () => {
 });
 
 test("registry: 未知对手名报错并列出可用项", () => {
-  assert.throws(() => resolveOpponent("nope"), /unknown opponent nope.*farmer, core/);
+  assert.throws(() => resolveOpponent("nope"), /unknown opponent nope.*arena-evolve/u);
 });
 
 test("registry: opponentEntry 的 id 约定 name-s<seed>", () => {
@@ -46,6 +54,14 @@ test("registry: opponentEntry 的 id 约定 name-s<seed>", () => {
   assert.equal(http.id, "http://127.0.0.1:1/decide-s3");
   const farmer = opponentEntry(resolveOpponent("farmer"), 7);
   assert.equal(farmer.id, "farmer-s7");
+});
+
+test("tournament: 1v1/FFA 共用官方 4-tick refill 默认，非法 cadence fail-fast", () => {
+  assert.deepEqual(resolveTournamentRefillConfig(undefined), { everyTicks: 4 });
+  assert.equal(resolveTournamentRefillConfig(null), null);
+  assert.deepEqual(resolveTournamentRefillConfig(8), { everyTicks: 8 });
+  assert.throws(() => resolveTournamentRefillConfig(0), /positive safe integer/u);
+  assert.throws(() => resolveTournamentRefillConfig(1.5), /positive safe integer/u);
 });
 
 // ---------- survey 场景纯函数 ----------
