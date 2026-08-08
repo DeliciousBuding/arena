@@ -21,21 +21,32 @@
       "population_tier": 0,
       "upkeep_next_tick": 0,
       "champion_beacon": {
-        "position": [100, 100],
+        "position": [
+          3,
+          1
+        ],
         "status": "GROUND",
         "carrier_id": null
       },
       "objects": [
         {
           "kind": "RESOURCE",
-          "positions": [[2, 0]]
+          "positions": [
+            [
+              2,
+              0
+            ]
+          ]
         },
         {
           "kind": "CORE",
           "id": "11111111-1111-1111-1111-111111111111",
           "controlled": true,
           "owner_username": "p1",
-          "position": [0, 0],
+          "position": [
+            0,
+            0
+          ],
           "hp": 5,
           "shield": 5,
           "state": "NORMAL",
@@ -48,7 +59,10 @@
           "kind": "UNIT",
           "id": "22222222-2222-2222-2222-222222222222",
           "controlled": true,
-          "position": [1, 0],
+          "position": [
+            1,
+            0
+          ],
           "hp": 2,
           "unit_type": "WORKER",
           "cargo": 0
@@ -60,7 +74,9 @@
   "plan": {
     "tick": 1,
     "unitActions": {
-      "22222222-2222-2222-2222-222222222222": { "type": "WAIT" }
+      "22222222-2222-2222-2222-222222222222": {
+        "type": "WAIT"
+      }
     },
     "coreAction": null,
     "intents": {}
@@ -75,21 +91,32 @@
       "population_tier": 0,
       "upkeep_next_tick": 0,
       "champion_beacon": {
-        "position": [100, 100],
+        "position": [
+          3,
+          1
+        ],
         "status": "GROUND",
         "carrier_id": null
       },
       "objects": [
         {
           "kind": "RESOURCE",
-          "positions": [[2, 0]]
+          "positions": [
+            [
+              2,
+              0
+            ]
+          ]
         },
         {
           "kind": "CORE",
           "id": "11111111-1111-1111-1111-111111111111",
           "controlled": true,
           "owner_username": "p1",
-          "position": [0, 0],
+          "position": [
+            0,
+            0
+          ],
           "hp": 5,
           "shield": 5,
           "state": "NORMAL",
@@ -102,7 +129,10 @@
           "kind": "UNIT",
           "id": "22222222-2222-2222-2222-222222222222",
           "controlled": true,
-          "position": [1, 0],
+          "position": [
+            1,
+            0
+          ],
           "hp": 2,
           "unit_type": "WORKER",
           "cargo": 0

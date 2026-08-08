@@ -1,6 +1,6 @@
 # Arena Agent 协作说明
 
-最后更新：2026-08-07。
+最后更新：2026-08-08。
 
 （TS 线）与 `arena-rs`（Rust 线）曾各自独立实现引擎与策略，共享数据层
 （`ARENA_DATA_ROOT`、共享 schema、calibration case、数据集），在同一套
@@ -16,7 +16,7 @@
 - 运维：`../docs/ops/supervisor-runbook.md`
 - 服务器：`../docs/ops/server-deployment.md`
 - 架构：`../docs/ts-architecture.md`
-- 迁移边界：`../docs/migration-plan.md`
+- 迁移系统：`../docs/design/migration-system-v1.md`（模块设计/M1-M5 实现状态）+ `../docs/design/core-rejoin-v1.md`（t1/t2 会合应用计划）；红线：`data/runtime/migration/` 唯一 writer = conductor 进程，旧 `core-migrate-driver` 直写 human-commands 路径已淘汰（存在计划时拒绝运行）
 - 测试数字：`../docs/generated/status.md`
 - 外部参考（第二名，经常更新，涉及策略追赶先拉）：`../reference/arena-hero-agent`——同步 `git -C ../reference/arena-hero-agent pull`；差距清单与版本差异见共享 MASTER.md「外部参考仓库」章节
 - 官方参考源（规则更新追踪）：`../reference/arena-hero-doc`——同步 `git -C ../reference/arena-hero-doc pull && git -C ../reference/arena-hero-doc log --oneline -3`；官方版本事实与对照见共享 MASTER.md「外部参考仓库」首段
@@ -67,6 +67,8 @@ npm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --live --
 ## 模拟器真实性（稳定知识）
 
 - 官方 refill 是 **server-secret**（rules manifest `constraints.refill.status=server-secret`，永久 seed 不可预测）——模拟器默认不实现（unknown-by-design，绝不伪装 MATCH）；实验可用 `EpisodeConfig.refill`（近似：按 cadence 补回原始资源格，unknown note 标注 approximate）。
+- **Beacon fog 语义**（官方协议 "Public position and, when visible, carrier state"）：视野外 beacon 的 status/carrier_id 投影为 null。**校准 fixture 的 beacon 必须放核心视野内**（Manhattan ≤ core.visionRadius=5），否则 before.status=null → beaconUnknown 吞掉全部差异分类（校准测试全变 INCONCLUSIVE——2026-08-08 实证）。详见 `../docs/simulator.md` §11.6。
+- **对抗平台**（2026-08-08 平台化）：对手接入走注册中心 `src/sim/opponent/registry.ts`（reference-python 内置 farmer/core + `http://` 端点）；Python 新对手 = `scripts/python-agents.json` 加条目（契约：decide 用官方 SDK turn 方法填 builder）；通用对抗矩阵用 `scripts/vs-arena.mts`（--opponents/--seeds/--refill/--scenario/--record-dir）；真实测绘场景 `src/sim/opponent/survey-scenario.ts`。详见 `../docs/simulator.md` §11。
 - 策略约束（模拟器实证 + prompt 已落地）：**militaryRatio 0.3-0.4 是拐点、>0.5 纯损耗禁止**；**workerTarget 8 是平衡区**（6 保守、10 upkeep 负担）。
 - 策略搜索工具：`packages/arena-agent/scripts/strategy-search.mts`（两阶段：单人全网格 + top4 对打）、`scripts/military-ratio-experiment.mts`（结果文件落盘）。
 

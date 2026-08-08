@@ -16,10 +16,10 @@
       "caseId": "fixture-dataset-move-match",
       "tick": 1,
       "file": "case.json",
-      "caseSha256": "e2d6b46a58cd5745ddaa12eab089c2070479ecf26a58d020ade4c94260423456",
-      "beforeSha256": "f4fc3c693d51a1a65855241fef7e3d4171241f012487f46a7d2533895153da1e",
+      "caseSha256": "1a45e1ea4ffbb56075cd1e194d5ac11084a5283702cab9b0431472c0c9af4f55",
+      "beforeSha256": "0ab92670f79eb855634799a2646985ce8229e10e8613198f5f49ba2e03c8d474",
       "planSha256": "492272ca1099e4a468ce9b110ddf636cebdf11f0e9ec48fd08ca5cf74a8c7ad6",
-      "afterSha256": "dab846f5bd23fcd2ea474e506e10cfd23edd7be84359686c1debd0e124ea143f",
+      "afterSha256": "c8f9317bd2892b7ec0473abdf6d58b83ea463a42e7b884c71d0f27eb5f140b8a",
       "receipt": {
         "accepted": true,
         "tick": 1,

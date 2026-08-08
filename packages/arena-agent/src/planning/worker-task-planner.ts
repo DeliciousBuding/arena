@@ -291,6 +291,10 @@ export class WorkerTaskPlanner {
       // alwaysSurvey=true 时无矿可采（dummy WAIT 列）的剩余 worker 全部 EXPLORE
       // （外出测绘/打探，永不守家 WAIT）——守家是军事单位职责；特殊卡位
       // （blockade）与核心迁移持货由 SafetyPlanner 显式例外。
+      // 供给缺口勘探（surveyOnSupplyGap，2026-08-08，t2 生产实证）：候选可采格
+      // 数量 < 未分配 worker 数（dummyWorkers 非空）时缺口全部转 SURVEYOR——
+      // 矿工供给过剩时边际矿工应去测绘新矿源，而不是守家 WAIT 空耗（t2 实证
+      // 12 空 worker 抢 1-8 可见矿、近核全死种子、守家 WAIT 零产出）。
       const realTargets = new Map<string, string>(); // workerId → cellKey
       const dummyWorkers: PlanningUnit[] = [];
       for (let rowIndex = 0; rowIndex < pool.length; rowIndex += 1) {
@@ -303,9 +307,15 @@ export class WorkerTaskPlanner {
         }
       }
       const alwaysOutbound = this.mission.alwaysSurvey === true;
-      const leftoverSurveyors = options.surveyBurstActive === true
-        ? new Set<string>()
-        : surveyorIds(dummyWorkers, this.mission, false);
+      const supplyGapSurvey = this.mission.surveyOnSupplyGap === true && dummyWorkers.length > 0;
+      // 测绘期也适用供给缺口（2026-08-08 审查修复）：burst 分支原恒返回空集 →
+      // 测绘期（恰是迁移后最缺矿期）缺口 worker 仍守家 WAIT。缺口判断只看
+      // dummy 是否非空，测绘期同样生效。
+      const leftoverSurveyors = supplyGapSurvey
+        ? new Set(dummyWorkers.map((worker) => worker.id))
+        : options.surveyBurstActive === true
+          ? new Set<string>()
+          : surveyorIds(dummyWorkers, this.mission, false);
       for (const worker of pool) {
         const key = realTargets.get(worker.id);
         if (key !== undefined) {
@@ -327,9 +337,15 @@ export class WorkerTaskPlanner {
       }
     } else if (pool.length > 0) {
       // 无候选格（资源全被强制任务占用/全 invisible 被站/无资源）：走角色仲裁。
+      // 供给缺口勘探（surveyOnSupplyGap）：候选格为 0 = 供给完全不足——全部
+      // 转 SURVEYOR 外出测绘，不守家 WAIT（t2 生产实证：近核全死种子时守家
+      // WAIT 零产出，勘探才能找到新矿源）。
+      const supplyGapSurvey = this.mission.surveyOnSupplyGap === true;
       const leftoverSurveyors = options.surveyBurstActive === true
         ? new Set<string>()
-        : surveyorIds(pool, this.mission, false);
+        : supplyGapSurvey
+          ? new Set(pool.map((worker) => worker.id))
+          : surveyorIds(pool, this.mission, false);
       for (const worker of pool) {
         assignments.push({
           unitId: worker.id,
@@ -392,6 +408,10 @@ export class WorkerTaskPlanner {
         ? BEACON_BONUS
         : 0;
     const sticky = applyStickyBonus(worker.id, key, previousAssignments, this.stickyBonus, travelDistance);
+    // 分配滞回（2026-08-08，t2 生产实证 planChurn=1.0 根治）：上一 tick 目标格
+    // 仍可采时额外加 switchThreshold——只有新目标净收益显著更高才切换，worker
+    // 路程不浪费、分配跨 tick 稳定。缺省 0 = 零回归（sticky 0.5 基础保留）。
+    const hysteresis = applyStickyBonus(worker.id, key, previousAssignments, this.mission.switchThreshold, travelDistance);
     // 使命层值层（G1）：目标置信项（可见加成 / seeded 随龄衰减）。
     const confidence = targetConfidence(cell, snapshot.tick, this.mission);
     // 使命层值层（Phase 2，G3）：矿刷新预测加成（即将刷新格提前占位）。
@@ -407,7 +427,8 @@ export class WorkerTaskPlanner {
       stalePenalty +
       explorationGain +
       beaconBonus +
-      sticky
+      sticky +
+      hysteresis
     );
   }
 }

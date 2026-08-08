@@ -54,7 +54,7 @@ function stateAt(resources: number, opts: { workerAlive?: boolean; opponent?: bo
     // v0.14 起服务器不再下发 maintenance 字段，normalize 后为 null；case
     // 契约允许 integer|null，与模拟器 v0.14 投影一致（避免伪 MISMATCH）。
     population: opts.workerAlive === false ? 0 : 1, population_tier: null, upkeep_next_tick: null,
-    champion_beacon: { position: [20, 20], status: "GROUND", carrier_id: null },
+    champion_beacon: { position: [3, 1], status: "GROUND", carrier_id: null },
     objects,
     events: [],
   };

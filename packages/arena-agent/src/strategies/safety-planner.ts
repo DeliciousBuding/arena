@@ -1393,12 +1393,15 @@ export class SafetyPlanner {
       return;
     }
 
-    // 核心通道清障（core-clearance-v1 扩展，2026-08-08）：空载 worker 占核心格
-    // 且不在此刻回血（主循环 HEAL 已处理）→ 疏散到最近空邻格/外圈，让位给满载
-    // worker 卸货。生产 t2 实证：同一空 worker 占核心格 130+ tick（无资源任务
-    // WAIT），4 满载 worker + 4 Vanguard 围死卸货通道，deposit=0 经济冻结——原有
-    // coreClearance 只疏散军事/满载占核心格，漏了空载 idle worker。快照里的
-    // worker 均非本 tick 刚产（出生 tick 不可行动由服务器裁决），疏散合法。
+    // 核心通道清障（core-clearance-v1 扩展，2026-08-08，v3 eddb4f5 移植）：
+    // 空载 worker 占核心格且不在此刻回血（主循环 HEAL 已处理）→ 疏散到最近
+    // 空邻格/外圈，让位给满载 worker 卸货。生产 t2 实证：同一空 worker 占
+    // 核心格 130+ tick（无资源任务 WAIT），4 满载 worker + 4 Vanguard 围死
+    // 卸货通道，deposit=0 经济冻结——原有 coreClearance 只疏散军事/满载占
+    // 核心格，漏了空载 idle worker。疏散目标优先「物理空邻格」（occ=0，无
+    // MOVE_CONTESTED 冲突），无空位再退单占用邻格（容量 2 可挤入）、最后
+    // 外圈守位点。快照里的 worker 均非本 tick 刚产（出生 tick 不可行动由
+    // 服务器裁决），疏散合法。
     if (
       this.config.coreClearance === true &&
       home !== null &&
@@ -1411,13 +1414,14 @@ export class SafetyPlanner {
       // fallback 选被占 LEFT → MOVE_CONTESTED → 空 worker 永远走不出核心格）。
       // 无物理空位再退单占用邻格（容量 2 可挤入）、再退外圈守位点。
       const occupancy = occupancyCounts(state);
+      // 敌占格视为不可疏散目标（2026-08-08 审查修复）：occ 扫描只看我方单位，
+      // 敌格显示 occ=0 → 空 worker 可能朝敌疏散送死。把可见敌占格提升为
+      // occ=2（满），两遍扫描与 yieldAnchor 都不会选它。
+      for (const enemy of state.visibleEnemies) {
+        occupancy.set(cellKey(enemy.position), 2);
+      }
       let exit: Position | null = null;
       const cardinals: readonly Position[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-      // 空邻格优先（2026-08-08，t2 生产实证修复）：旧实现选「第一个 occ<2」的
-      // 邻格——若 RIGHT 有 worker(occ=1) 但 LEFT 空(occ=0)，会选 RIGHT →
-      // MOVE 到有单位格触发 MOVE_CONTESTED 卡死（空 worker 占核心格 130+ tick、
-      // 隔 tick 挡 SPAWN 8 次的根因）。两遍扫描：先 occ=0 物理空邻格（无冲突），
-      // 无空位再退 occ=1 可挤入（容量 2）、最后外圈守位点。
       for (const direction of cardinals) {
         const cand: Position = [home[0] + direction[0], home[1] + direction[1]];
         if (state.obstacleCells.has(cellKey(cand))) continue;
