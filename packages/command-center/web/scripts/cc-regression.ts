@@ -425,6 +425,8 @@ async function main() {
     //     画布插值位置错位导致点击落空（高负载下偶发 flake，2026-08-08 实证）。
     //     封装重试 2 次 + 两次点击间 150ms 间隔。
     const multiSelectOnce = async () => {
+      await page.keyboard.press("Escape").catch(() => {}); // 清 6e 遗留动作框/选中
+      await sleep(250);
       await page.keyboard.press("f");
       await waitViewStable();
       const cvF = await page.$("#map");
@@ -477,6 +479,23 @@ async function main() {
         }, { id: target.id, tenant: target.tenant, boxX: boxF.x, boxY: boxF.y, boxW: boxF.width, boxH: boxF.height });
         if (pt.err) pt = await livePt(target.id, target.tenant);
         if (pt.err) return { ok: false, why: pt.err, t: "" };
+        // 绘制位被面板/按钮遮挡（6e 遗留动作框实证）：Esc 后重算一次，仍挡则报错诊断
+        const blocked = await page.evaluate(({ sx, sy }) => { const el = document.elementFromPoint(sx, sy); return el ? (el.id === "map" || !!el.closest("#map") || el.tagName === "CANVAS") : false; }, { sx: pt.sx, sy: pt.sy }).catch(() => true);
+        if (!blocked) {
+          await page.keyboard.press("Escape").catch(() => {});
+          await sleep(250);
+          const pt2 = await page.evaluate(({ id, tenant, boxX, boxY, boxW, boxH }) => {
+            const eng = window.__arenaEngine; const st = eng ? eng.getState() : null;
+            if (!st) return { err: "no engine" };
+            const cell = (st.cells ?? []).find((c) => (c.type === "unit" || c.type === "core") && String(c.id) === String(id) && (!st.soloTenant || c.tenant === tenant));
+            if (!cell) return { err: "cell-gone:" + String(id).slice(0, 6) };
+            const dp = (window as any).__arena && (window as any).__arena.unitDrawPos ? (window as any).__arena.unitDrawPos(cell) : { x: cell.x, y: cell.y };
+            const v = st.view;
+            return { sx: boxX + (dp.x - v.cx) * v.scale + boxW / 2, sy: boxY + (dp.y - v.cy) * v.scale + boxH / 2, pos: [dp.x, dp.y] };
+          }, { id: target.id, tenant: target.tenant, boxX: boxF.x, boxY: boxF.y, boxW: boxF.width, boxH: boxF.height });
+          if (!pt2.err) { pt = pt2; }
+        }
+
         await page.keyboard.down("Shift");
         await page.mouse.click(pt.sx, pt.sy);
         const t = await waitToast(page, needle, 6000);

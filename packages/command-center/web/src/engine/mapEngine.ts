@@ -2,7 +2,7 @@
 /* Arena 指挥面板前端引擎 — 由 React（command-center/web）挂载到地图宿主容器。
  * 由 public/app.js 移植：chrome（顶栏/侧栏/决策流/对话框）剥离到 React 组件，
  * 地图/战术/回放/覆盖层保持原生 Canvas + DOM。入口 createMapEngine(host)。 */
-import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos } from './utils.js';
+import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos, bucketScale, gridStepFor, extendScreen, replayInterp } from './utils.js';
 import { getJSON } from './api.js';
 import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets, tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability } from './tactical.js';
 import { findPath } from './pathfind.ts';
@@ -239,10 +239,6 @@ const staticCache: { canvas: HTMLCanvasElement | null; cctx: CanvasRenderingCont
 let staticDirty = true;
 let LQ = false; // 动画/缩放阻尼期间降级渲染
 let surveySkipped = false; // 动画期间跳过测绘层后，结束需补一次全质量重建 // 缩放/平移动画期间：低质量模式（关 shadowBlur / 高成本细节）
-function bucketScale(s: number): number {
-  const k = Math.round(Math.log2(Math.max(0.05, Math.min(64, s))) * 2) / 2;
-  return Math.pow(2, k);
-}
 function invalidateStatic() { staticDirty = true; }
 function staticNeedsRebuild(bs: number): boolean {
   if (staticDirty || !staticCache.ready || staticCache.scale !== bs) return true;
@@ -890,11 +886,6 @@ function drawVignette(w: any, h: any) {
 }
 /** 背景坐标系网格（2026-08-08 升级）：细格 + 粗格 + 坐标轴（x=0/y=0）。
  *  并入静态缓存（平移/缩放重建一次），坐标数字由 drawGridLabels 动态画。 */
-function gridStepFor(s: any, targetPx: any) {
-  let step = 4;
-  while (step * s < targetPx && step < 2048) step *= 2;
-  return step;
-}
 function drawGrid(w: any, h: any) {
   const s = state.view.scale;
   const minor = gridStepFor(s, 22);
@@ -1181,13 +1172,6 @@ async function loadGlobalPlans() {
 /** 单位移动方向虚线（实时 + 算法决策）：单位在 poll 之间插值移动时，
  *  从上一轮位置到当前插值位置画虚线 + 箭头，直观显示"正在往哪走"。 */
 /** 屏幕线段保底长度：低缩放时太短的线段按方向拉长到 minLen（方向夸张但保持语义）。 */
-function extendScreen(a: any, b: any, minLen: any) {
-  const dx = b.sx - a.sx, dy = b.sy - a.sy;
-  const len = Math.hypot(dx, dy);
-  if (len >= minLen || len < 1e-3) return b;
-  const k = minLen / len;
-  return { sx: a.sx + dx * k, sy: a.sy + dy * k };
-}
 /** 是否有单位正在 poll 间插值移动（提升 idle 重绘帧率 → 插值/虚线流更丝滑）。 */
 function anyUnitsMoving() {
   const now = performance.now();
@@ -3398,15 +3382,6 @@ function replayCycleSpeed() {
   updateReplayUI();
 }
 /** 插值：frame-1 → frame 之间按 progress(0-1) 平滑移动 */
-function replayInterp(obj: any, frame: any, progress: any) {
-  if (!obj.trail || !obj.trail.length) return null;
-  const b = obj.trail[Math.min(frame, obj.trail.length - 1)];
-  const a = obj.trail[Math.max(0, frame - 1)];
-  if (!b) return null;
-  const x = a ? a.x + (b.x - a.x) * progress : b.x;
-  const y = a ? a.y + (b.y - a.y) * progress : b.y;
-  return { x, y, hp: b.hp, shield: b.shield, cargo: b.cargo, t: b.t };
-}
 function replayDrawLayer(s: any) {
   const f = replay.frame;
   const prog = replay.playing ? replay.progress : 1;

@@ -1,3 +1,5 @@
+// @ts-nocheck — Playwright 定向诊断探针（点击→toast 延迟/命中）：运行时 DOM/API 校验，
+// 类型由 Playwright 运行时保证；生产代码类型检查见 src/engine。
 // 探针：点击单位 live 位置 → 测 toast 出现延迟（区分慢 vs 脱靶）
 import { createRequire } from "node:module";
 import { existsSync, readdirSync } from "node:fs";

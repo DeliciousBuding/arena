@@ -57,3 +57,33 @@ export function escapeHtml(str: unknown): string {
 export type Position = [number, number];
 export const pKey = (p: Position): string => `${p[0]},${p[1]}`;
 export const samePos = (a: Position | null | undefined, b: Position | null | undefined): boolean => !!(a && b && a[0] === b[0] && a[1] === b[1]);
+
+/** 缩放桶：2 的幂（半档）——静态缓存按缩放桶重建，避免每帧重建。 */
+export function bucketScale(s: number): number {
+  const k = Math.round(Math.log2(Math.max(0.05, Math.min(64, s))) * 2) / 2;
+  return Math.pow(2, k);
+}
+/** 网格步长：2 的幂，满足 step*s ≥ targetPx（坐标刻度密度自适应缩放）。 */
+export function gridStepFor(s: number, targetPx: number): number {
+  let step = 4;
+  while (step * s < targetPx && step < 2048) step *= 2;
+  return step;
+}
+/** 屏幕线段保底长度：低缩放太短时按方向拉长到 minLen（方向夸张但保持语义）。 */
+export function extendScreen(a: { sx: number; sy: number }, b: { sx: number; sy: number }, minLen: number) {
+  const dx = b.sx - a.sx, dy = b.sy - a.sy;
+  const len = Math.hypot(dx, dy);
+  if (len >= minLen || len < 1e-3) return b;
+  const k = minLen / len;
+  return { sx: a.sx + dx * k, sy: a.sy + dy * k };
+}
+/** 回放插值：frame-1 → frame 按 progress(0-1) 平滑移动（trail 数组）。 */
+export function replayInterp(obj: any, frame: number, progress: number) {
+  if (!obj.trail || !obj.trail.length) return null;
+  const b = obj.trail[Math.min(frame, obj.trail.length - 1)];
+  const a = obj.trail[Math.max(0, frame - 1)];
+  if (!b) return null;
+  const x = a ? a.x + (b.x - a.x) * progress : b.x;
+  const y = a ? a.y + (b.y - a.y) * progress : b.y;
+  return { x, y, hp: b.hp, shield: b.shield, cargo: b.cargo, t: b.t };
+}
