@@ -74,8 +74,13 @@ async function main() {
     JSON.stringify(tabs) === JSON.stringify(want) ? ok("右栏六 tab", tabs.join(",")) : bad("右栏六 tab", "got " + tabs.join(","));
 
     // 2b) 全局威胁玫瑰数据管道：/api/alliance/snapshot 被页面拉取（威胁扇区玫瑰数据源）
-    const snapReq = await page.evaluate(() => performance.getEntriesByType("resource").some((e) => e.name.includes("/api/alliance/snapshot")));
-    snapReq ? ok("全局威胁玫瑰数据管道", "snapshot 已拉取") : bad("全局威胁玫瑰数据管道", "未发现 snapshot 请求");
+    // 首次拉取可能恰逢服务重启/慢请求 → 轮询等待（最多 12s），而非单点检查
+    let snapReq = false;
+    for (let i = 0; i < 12 && !snapReq; i++) {
+      snapReq = await page.evaluate(() => performance.getEntriesByType("resource").some((e) => e.name.includes("/api/alliance/snapshot")));
+      if (!snapReq) await sleep(1000);
+    }
+    snapReq ? ok("全局威胁玫瑰数据管道", "snapshot 已拉取") : bad("全局威胁玫瑰数据管道", "12s 内未发现 snapshot 请求");
 
     // 3) 决策流有数据
     for (const tab of ["logs", "intel", "advice", "survey", "situation", "redeem"]) {
@@ -129,40 +134,57 @@ async function main() {
     // 6) 人类指挥 UI 链（写后必清）
     let goalOk = false;
     try {
-      let workerRow = -1;
-      for (let i = 0; i < 10 && workerRow < 0; i++) {
-        workerRow = await page.evaluate(() => {
-          const rows = Array.from(document.querySelectorAll("#assetList .asset-row"));
-          const w = rows.find((r) => (r.innerText ?? "").includes("工人") || (r.querySelector(".asset-icon img")?.src ?? "").includes("worker"));
-          return w ? rows.indexOf(w) : -1;
-        });
-        if (workerRow < 0) await sleep(1000);
+      // 世界状态抖动（t1 可能无工人）→ 探测首个有 MOVE 动作的受控单位资产行
+      let rowSel = -1;
+      const rowProbeStart = Date.now();
+      while (rowSel < 0 && Date.now() - rowProbeStart < 20000) {
+        const cnt = await page.locator("#assetList .asset-row").count();
+        for (let j = 0; j < cnt && rowSel < 0; j++) {
+          await page.click(`#assetList .asset-row:nth-child(${j + 1})`, { timeout: 3000 }).catch(() => {});
+          await sleep(600);
+          if (await page.locator('#actionDialog [data-action="MOVE"]').count() > 0) rowSel = j;
+        }
+        if (rowSel < 0) await sleep(1500);
       }
-      if (workerRow >= 0) {
-        await page.click(`#assetList .asset-row:nth-child(${workerRow + 1})`, { timeout: 4000 });
-        // 等动作框出现（点资产行→选中→渲染动作框有竞态，必须显式等待而非 .catch 吞错）
-        await page.waitForSelector('#actionDialog [data-action="MOVE"]', { timeout: 6000 });
+      if (rowSel >= 0) {
         await page.click('#actionDialog [data-action="MOVE"]', { timeout: 4000 });
-        // 等目标模式条出现（证明已进入 MOVE 模式）
         await page.waitForSelector('.act-targeting', { timeout: 4000 });
-        // 点击目标格：地图任意点可能落在障碍/不可达（MOVE 正确反馈并保持模式），
-        // 故多点尝试直到 goal 落盘（最多 6 点，覆盖不同相机位置）。
+        // 用 __arenaEngine 读相机变换 + 世界障碍，选受控单位旁可达格，精确点击（确定性，不赌固定视口点）
         const cv = await page.$("#map");
         const box = await cv.boundingBox();
-        const pts = [[0.55,0.5],[0.5,0.42],[0.62,0.56],[0.44,0.52],[0.52,0.62],[0.58,0.44]];
-        for (const [fx, fy] of pts) {
-          await page.mouse.click(box.x + box.width * fx, box.y + box.height * fy);
-          await sleep(900);
+        const hit = await page.evaluate(async ({ boxX, boxY, boxW, boxH }) => {
+          const eng = window.__arenaEngine;
+          if (!eng) return { err: "无 __arenaEngine 调试钩子" };
+          const st = eng.getState();
+          const tenant = st.soloTenant || "t1";
+          const w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json();
+          const objs = w?.state?.objects ?? [];
+          const unit = objs.find((o) => o.kind === "UNIT" && o.controlled === true && o.position);
+          if (!unit) return { err: "无受控单位" };
+          const [ux, uy] = unit.position;
+          const blocked = new Set();
+          for (const o of objs) if (o.kind === "OBSTACLE" && Array.isArray(o.positions)) for (const pp of o.positions) blocked.add(pp[0] + "," + pp[1]);
+          let tx = ux + 2, ty = uy;
+          for (const [dx, dy] of [[2,0],[-2,0],[0,2],[0,-2],[2,1],[-2,-1],[1,2],[-1,-2]]) {
+            if (!blocked.has((ux + dx) + "," + (uy + dy))) { tx = ux + dx; ty = uy + dy; break; }
+          }
+          const v = st.view;
+          return { sx: boxX + (tx - v.cx) * v.scale + boxW / 2, sy: boxY + (ty - v.cy) * v.scale + boxH / 2, tx, ty };
+        }, { boxX: box.x, boxY: box.y, boxW: box.width, boxH: box.height });
+        if (hit.err) { bad("人类指挥 UI 链", hit.err); }
+        else {
+          await page.mouse.click(hit.sx, hit.sy);
+          await sleep(1000);
           const cmds = await page.evaluate(async () => {
             const r = await fetch("/api/commands?tenant=t1", { cache: "no-store" });
             const j = await r.json();
             return { goals: (j.goals ?? []).length, commands: (j.commands ?? []).length };
           });
-          if (cmds.goals > 0 || cmds.commands > 0) { goalOk = true; ok("人类指挥 UI 链（goal 落盘）", JSON.stringify(cmds)); break; }
+          if (cmds.goals > 0 || cmds.commands > 0) { goalOk = true; ok("人类指挥 UI 链（goal 落盘）", JSON.stringify(cmds)); }
+          else bad("人类指挥 UI 链（goal 落盘）", `点击可达格 (${hit.tx},${hit.ty}) 未落盘`);
         }
-        if (!goalOk) bad("人类指挥 UI 链（goal 落盘）", "6 个点击点均未落盘");
       } else {
-        bad("人类指挥 UI 链", "未找到 worker 资产行");
+        bad("人类指挥 UI 链", "未找到有 MOVE 动作的单位资产行");
       }
     } catch (e) {
       bad("人类指挥 UI 链", e.message);
