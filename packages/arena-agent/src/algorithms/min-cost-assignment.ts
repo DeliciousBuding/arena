@@ -1,85 +1,77 @@
-/**
- * Rectangular Hungarian (Kuhn-Munkres) minimum-cost assignment — O(n³)。
+/** Deterministic rectangular Hungarian assignment (rows <= columns).
  *
- * Input: cost matrix M[r][c] where columns ≥ rows (padding columns cost 0).
- * Output: assignment[rows] = column index or -1 (unassigned)。
+ * 生产回流（99b4ba2，production-runtime-v3 原样）：全局 worker→资源格分配的
+ * 求解器——替代贪心在"局部最优≠全局最优"场景的短板（如 2 worker 抢近矿、
+ * 远端矿没人去）。返回每行选中一列，总有限代价最小。经典 O(rows² × columns)
+ * potential/slack 形式；等 slack 时取较低列索引，跨 run 输出稳定。
  *
- * Pure function, deterministic, no I/O。
- * 最后更新：2026-08-08
+ * 约束：矩阵必须矩形且 rows <= columns（worker 数 ≤ 资源格 + dummy 列）；
+ * 所有代价必须有限——不可选组合用大哨兵值（调用方拼 forbid 列）而非 Infinity。
  */
 
-export function minimumCostAssignment(matrix: readonly (readonly number[])[]): readonly number[] {
-  const rows = matrix.length;
-  if (rows === 0) return [];
-  const cols = Math.max(...matrix.map((row) => row.length), rows);
-  if (cols === 0) return Array.from<number>({ length: rows }).fill(-1);
-
-  // Clone into mutable working arrays, padding with 0-cost dummy columns.
-  const cost: number[][] = [];
-  for (let r = 0; r < rows; r += 1) {
-    cost[r] = [];
-    for (let c = 0; c < cols; c += 1) {
-      cost[r]![c] = c < matrix[r]!.length ? matrix[r]![c]! : 0;
-    }
+export function minimumCostAssignment(costs: readonly (readonly number[])[]): readonly number[] {
+  if (costs.length === 0) return [];
+  const rows = costs.length;
+  const cols = costs[0]!.length;
+  if (cols < rows || costs.some((row) => row.length !== cols)) {
+    throw new Error("assignment matrix must be rectangular with rows <= columns");
+  }
+  if (costs.some((row) => row.some((cost) => !Number.isFinite(cost)))) {
+    throw new Error("assignment matrix costs must be finite");
   }
 
+  // 1-indexed Hungarian arrays: u=row potential, v=column potential,
+  // p=matched row for column, way=augmenting predecessor column.
   const u = new Array<number>(rows + 1).fill(0);
   const v = new Array<number>(cols + 1).fill(0);
   const p = new Array<number>(cols + 1).fill(0);
   const way = new Array<number>(cols + 1).fill(0);
 
-  for (let r = 1; r <= rows; r += 1) {
-    p[0] = r;
+  for (let i = 1; i <= rows; i += 1) {
+    p[0] = i;
     let j0 = 0;
     const minv = new Array<number>(cols + 1).fill(Number.POSITIVE_INFINITY);
     const used = new Array<boolean>(cols + 1).fill(false);
-    let currentCol = 0;
     do {
-      used[currentCol] = true;
-      const i0 = p[currentCol]!;
-      const rowCost = cost[i0 - 1]!;
-      const ui = u[i0]!;
+      used[j0] = true;
+      const i0 = p[j0]!;
       let delta = Number.POSITIVE_INFINITY;
       let j1 = 0;
       for (let j = 1; j <= cols; j += 1) {
         if (used[j]) continue;
-        const cur = rowCost[j - 1]! - ui - v[j]!;
-        if (cur < minv[j]!) {
+        const cur = costs[i0 - 1]![j - 1]! - u[i0]! - v[j]!;
+        if (cur < minv[j]! - Number.EPSILON) {
           minv[j] = cur;
-          way[j] = currentCol;
+          way[j] = j0;
         }
-        if (minv[j]! < delta) {
+        if (minv[j]! < delta - Number.EPSILON || (Math.abs(minv[j]! - delta) <= Number.EPSILON && j < j1)) {
           delta = minv[j]!;
           j1 = j;
         }
       }
       for (let j = 0; j <= cols; j += 1) {
         if (used[j]) {
-          u[p[j]!]! += delta;
-          v[j]! -= delta;
+          u[p[j]!] += delta;
+          v[j] -= delta;
         } else {
-          minv[j]! -= delta;
+          minv[j] -= delta;
         }
       }
-      currentCol = j1;
-    } while (p[currentCol] !== 0);
+      j0 = j1;
+    } while (p[j0] !== 0);
 
-    // Augmenting path
     do {
-      const j1 = way[currentCol]!;
-      p[currentCol] = p[j1]!;
-      currentCol = j1;
-    } while (currentCol !== 0);
+      const j1 = way[j0]!;
+      p[j0] = p[j1]!;
+      j0 = j1;
+    } while (j0 !== 0);
   }
 
-  // Extract assignment: p[col] = row
   const assignment = new Array<number>(rows).fill(-1);
   for (let j = 1; j <= cols; j += 1) {
     const row = p[j]!;
-    if (row > 0 && row <= rows) {
-      assignment[row - 1] = j - 1;
-    }
+    if (row !== 0) assignment[row - 1] = j - 1;
   }
-
-  return Object.freeze(assignment);
+  if (assignment.some((column) => column < 0)) throw new Error("assignment incomplete");
+  return assignment;
 }
