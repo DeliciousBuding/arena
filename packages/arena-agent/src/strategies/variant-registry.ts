@@ -14,6 +14,15 @@ import type { SafetyPlannerConfig } from "./safety-planner.ts";
 export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlannerConfig>>> =
   Object.freeze({
     "clear-path-v1": Object.freeze({ clearPath: true }),
+    /**
+     * 近核入侵观察（2026-08-08，core-threat-watch-v1）：敌单位距我方 Core
+     * ≤18（Chebyshev）入长 TTL（60）观察——短记忆（6-12 tick）漏掉"盘踞/
+     * 间歇可见"的近核敌情（t2 实证敌 WORKER 离核心 2 格盘踞 600+ tick，记忆
+     * 过期后威胁归零、无军事响应）。观察内敌战斗单位 → 威胁 ALERT
+     * （invasion_watch）+ 远端回援（reinforce-home-v1 同路径）；静止 WORKER
+     * camp / 战斗单位 camp → 最近 Vanguard 回访清剿（vanguard_watch_clear）。
+     */
+    "core-threat-watch-v1": Object.freeze({ coreThreatWatch: true }),
     "threat-recall-v1": Object.freeze({ threatRecall: true }),
     /**
      * 远端军事回援（2026-08-07，竞品 "敌方战斗单位已经进入 Core 防区时，

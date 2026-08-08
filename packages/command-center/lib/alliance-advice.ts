@@ -44,6 +44,8 @@ export interface AllianceAdvicePayload {
     medium: number;
     info: number;
   };
+  /** 去重掉的重复建议条数（2026-08-08）：跨租户目击同一敌核/同格冲突会重复生成。 */
+  dedupCount: number;
   cachedAt: string;
 }
 
@@ -56,7 +58,7 @@ const NO_COMBAT_CORE_RADIUS = 24;
 export function loadAllianceAdvice(): AllianceAdvicePayload {
   const hit = adviceCache.get("latest");
   if (hit !== undefined) return hit;
-  const out: AllianceAdvice[] = [];
+  let out: AllianceAdvice[] = [];
   const snap = loadAllianceSnapshot();
   const survey = loadAllianceSurvey();
   const lb = loadLeaderboardIntel();
@@ -197,9 +199,23 @@ export function loadAllianceAdvice(): AllianceAdvicePayload {
   }
 
   out.sort((a, b) => ORDER[a.severity] - ORDER[b.severity] || a.weight - b.weight);
+  // 2026-08-08 建议去重：同一 (category, tenant, title) 只保留一条（跨租户目击
+  // 同一敌核/同格冲突/多租户同态建议会重复生成，面板叠罗汉）。sort 后取首条
+  // = severity 最高、weight 最小者。
+  const seen = new Set<string>();
+  const deduped: AllianceAdvice[] = [];
+  for (const a of out) {
+    const key = `${a.category}|${a.tenant ?? "all"}|${a.title}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(a);
+  }
+  const dedupCount = out.length - deduped.length;
+  out = deduped;
   const payload: AllianceAdvicePayload = {
     generatedAt: new Date().toISOString(),
     advice: out.slice(0, 15),
+    dedupCount,
     summary: {
       critical: out.filter((a) => a.severity === "CRITICAL").length,
       high: out.filter((a) => a.severity === "HIGH").length,

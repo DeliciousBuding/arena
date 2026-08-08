@@ -334,3 +334,46 @@ test("威胁评估：低分路过（score 1 且 12 格外）不算确认追击",
   assert.equal(result.level, "ALERT");
   assert.equal(result.reason, "enemy_moving", "单次逼近不算确认追击（防路过误报）");
 });
+
+test("威胁评估：无可见敌但近核观察有战斗单位 → ALERT invasion_watch（长 TTL 入侵观察）", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [],
+    enemyHints: [],
+    coreDamagedThisTick: false,
+    coreWatch: [
+      { id: "e-camp", position: [4, 4], kind: "UNIT", unitType: "VANGUARD", stationary: true, coreDistance: 4, lastSeenTick: 10 },
+    ],
+  });
+  assert.equal(result.level, "ALERT");
+  assert.equal(result.reason, "invasion_watch");
+  assert.equal(result.closingEnemies, 1);
+});
+
+test("威胁评估：近核观察只有 WORKER → 不升级 ALERT（由 Vanguard 回访清剿，非 Core 级威胁）", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [],
+    enemyHints: [],
+    coreDamagedThisTick: false,
+    coreWatch: [
+      { id: "w-camp", position: [2, 0], kind: "UNIT", unitType: "WORKER", stationary: true, coreDistance: 2, lastSeenTick: 10 },
+    ],
+  });
+  assert.equal(result.level, "NORMAL");
+});
+
+test("威胁评估：可见敌存在时近核观察不覆盖（可见敌路径优先）", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("e1", [15, 0])], // 12 格外、静止 → 走 NORMAL，观察内战斗单位不重复升级
+    enemyHints: [hint("e1", [15, 0], [15, 0])],
+    coreDamagedThisTick: false,
+    coreWatch: [
+      { id: "e-camp", position: [4, 4], kind: "UNIT", unitType: "VANGUARD", stationary: true, coreDistance: 4, lastSeenTick: 10 },
+    ],
+  });
+  // 可见敌静止 12 格外 + 观察战斗单位 → ALERT（入侵观察仍生效：家边有战斗单位盘踞）
+  assert.equal(result.level, "ALERT");
+  assert.equal(result.reason, "invasion_watch");
+});
