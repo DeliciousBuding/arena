@@ -54,6 +54,20 @@ graph LR
 | WorldCanvas | mapEngine canvas | ✅ |
 | account/（API keys/GitHub） | 不需要（本地只读 + 兑换码 Cookie） | ⏭ |
 
+官方 `lib/` 逻辑映射（2026-08-08 核对）：
+
+| 官方 lib | 本面板对应 | 状态 |
+|---|---|---|
+| combatAnimation / combatPreview | tactDrawEventFx + drawResolvedShotFx/SweepFx + debris 碎片（SHOT_HIT/MISSED/SWEEP_RESOLVED/CORE_DESTROYED） | ✅ |
+| movementAnimation / movementPreview | drawMovementDashes（起点/终点/虚线/箭头）+ routePreview 悬停预览 | ✅ |
+| pathfinding | tactFindPath（BFS + 测绘记忆障碍合并） | ✅ |
+| commandPlans | plan 层（tactPlanLayer + 意图标签 + drawHumanGoalPaths） | ✅ |
+| exploration / visibility | tactSurveyLayer（测绘记忆 + 新鲜度淡出）+ 敌情记忆（drawEnemyMemory） | ✅ |
+| destruction | CORE_DESTROYED 扩散环 + 碎片外抛物理 | ✅ |
+| resourceActivity / statArt | 资源活动面板 + 消费条形图 | ✅ |
+| beaconArt / obstacleArt / unitArt / worldArt | SPRITE 精灵映射 + 画布绘制 | ✅ |
+| gameRules / actionAvailability | tactActionTypes + tactAvailability（动作可用性） | ✅ |
+
 ## 4. 质量门（生产级稳定基线）
 
 ```bash
