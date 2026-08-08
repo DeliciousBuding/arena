@@ -84,7 +84,7 @@ export function adaptivePathOptions(distance: number): PathSearchOptions {
   if (distance <= DEFAULT_PATH_SEARCH_OPTIONS.searchRadius) return DEFAULT_PATH_SEARCH_OPTIONS;
   const searchRadius = Math.min(64, distance + 2);
   return {
-    nodeBudget: searchRadius * searchRadius * 4,
+    nodeBudget: (2 * searchRadius + 1) ** 2, // 全盒覆盖（(2r+1)²）：旧 4r² 少 4r+1 格，超 24 格斜线目标跑不满预算即 null（2026-08-08 t4 深探实证）
     searchRadius,
     abandonFactor: DEFAULT_PATH_SEARCH_OPTIONS.abandonFactor,
   };

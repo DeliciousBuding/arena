@@ -20,7 +20,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { cellKey, type CoreAction, type Direction, type Plan, type Position, type TickState, type UnitAction, type UnitSnapshot, type UnitType } from "../domain/model.ts";
-import { stepTowardPath } from "../domain/nav.ts";
+import { adaptivePathOptions, chebyshev, stepTowardPath } from "../domain/nav.ts";
 import { validatePlan } from "../domain/plan-validator.ts";
 
 export interface HumanCommand {
@@ -255,7 +255,34 @@ function goalActionForUnit(state: TickState, unit: UnitSnapshot, goal: HumanGoal
   // goto
   const atTarget = unit.position[0] === target[0] && unit.position[1] === target[1];
   if (atTarget) return null;
-  const dir = stepTowardPath(unit.position, target, obstacles);
+  // 远距目标插值（2026-08-08，t4 NE 深探 240 格实证）：stepTowardPath 的
+  // searchRadius 硬上限 64 格——超距目标 BFS 半径内不可达 → WAIT 卡死。
+  // 目标 Chebyshev > FAR_STEP 时先向"距当前 ≤FAR_STEP 的插值中间点"移动（沿主轴线性插值），
+  // 到达后再次插值，逐步逼近远目标（低成本替代单次长距 BFS）。
+  // 插值点若落在障碍格则逐步减半步长重插（防永久 WAIT 卡死）。
+  const goalChebyshev = Math.max(Math.abs(target[0] - unit.position[0]), Math.abs(target[1] - unit.position[1]));
+  const FAR_STEP = 60;
+  let pathTarget: Position = target;
+  if (goalChebyshev > FAR_STEP) {
+    let step = FAR_STEP;
+    while (step >= 8) {
+      const mid: Position = [
+        unit.position[0] + Math.trunc((target[0] - unit.position[0]) * (step / goalChebyshev)),
+        unit.position[1] + Math.trunc((target[1] - unit.position[1]) * (step / goalChebyshev)),
+      ];
+      if (!obstacles.has(cellKey(mid))) {
+        pathTarget = mid;
+        break;
+      }
+      step = Math.trunc(step / 2);
+    }
+  }
+  const dir = stepTowardPath(
+    unit.position,
+    pathTarget,
+    obstacles,
+    adaptivePathOptions(chebyshev(unit.position, pathTarget)),
+  );
   return dir === null ? { type: "WAIT" } : { type: "MOVE", direction: dir };
 }
 
