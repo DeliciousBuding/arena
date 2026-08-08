@@ -5,6 +5,7 @@ import { TenantSupervisor } from "../app/tenant-supervisor.ts";
 import { DebugServer } from "../app/debug-server.ts";
 import { loadDotEnv } from "../app/dotenv.ts";
 import { resolveArenaDataRoot } from "../app/data-root.ts";
+import { createCentralAllianceShadowRuntime, type CentralAllianceShadowRuntime } from "../alliance/runtime/central-shadow-runtime.ts";
 
 const ENV_DEFAULTS = {
   "repo-root": "ARENA_REPO_ROOT",
@@ -16,6 +17,9 @@ const ENV_DEFAULTS = {
   "max-ticks": "ARENA_MAX_TICKS",
   "startup-sync-ticks": "ARENA_STARTUP_SYNC_TICKS",
   "alliance-shadow-interval-ticks": "ARENA_ALLIANCE_SHADOW_INTERVAL_TICKS",
+  "alliance-director-period-ticks": "ARENA_ALLIANCE_DIRECTOR_PERIOD_TICKS",
+  "alliance-director-max-skew-ticks": "ARENA_ALLIANCE_DIRECTOR_MAX_SKEW_TICKS",
+  "alliance-strategy-profile": "ARENA_ALLIANCE_STRATEGY_PROFILE",
   "shutdown-timeout-ms": "ARENA_SHUTDOWN_TIMEOUT_MS",
   port: "ARENA_DEBUG_PORT",
   "debug-host": "ARENA_DEBUG_HOST",
@@ -38,6 +42,10 @@ async function main(): Promise<void> {
       "record-calibration": { type: "boolean" },
       "record-alliance-shadow": { type: "boolean" },
       "alliance-shadow-interval-ticks": { type: "string" },
+      "alliance-director-shadow": { type: "boolean" },
+      "alliance-director-period-ticks": { type: "string" },
+      "alliance-director-max-skew-ticks": { type: "string" },
+      "alliance-strategy-profile": { type: "string" },
       "shutdown-timeout-ms": { type: "string" },
       port: { type: "string" },
       "debug-host": { type: "string" },
@@ -82,6 +90,23 @@ async function main(): Promise<void> {
     if (!allianceShadowEnabled) throw new Error("--alliance-shadow-interval-ticks requires --record-alliance-shadow");
     tenantArgs.push(`--alliance-shadow-interval-ticks=${allianceShadowInterval}`);
   }
+  // Central Alliance Director v3 remains observation/ASSIST-only. It requires full shadow frames.
+  const allianceDirectorEnabled = values["alliance-director-shadow"] === true
+    || /^(1|true)$/i.test(process.env.ARENA_ALLIANCE_DIRECTOR_SHADOW ?? "");
+  if (allianceDirectorEnabled && !allianceShadowEnabled) {
+    throw new Error("--alliance-director-shadow requires --record-alliance-shadow");
+  }
+  const directorPeriodRaw = option("alliance-director-period-ticks");
+  const directorSkewRaw = option("alliance-director-max-skew-ticks");
+  const allianceStrategyProfile = option("alliance-strategy-profile");
+  if (!allianceDirectorEnabled && (directorPeriodRaw !== undefined || directorSkewRaw !== undefined)) {
+    throw new Error("Alliance Director timing options require --alliance-director-shadow");
+  }
+  if (!allianceDirectorEnabled && allianceStrategyProfile !== undefined) {
+    throw new Error("Alliance strategy profile requires --alliance-director-shadow");
+  }
+  const allianceDirectorPeriodTicks = parseInteger(directorPeriodRaw, 4, 1, "--alliance-director-period-ticks");
+  const allianceDirectorMaxSkewTicks = parseInteger(directorSkewRaw, 4, 0, "--alliance-director-max-skew-ticks");
   for (const [key, flag] of [
     ["live-ticks", "--live-ticks"],
     ["max-ticks", "--max-ticks"],
@@ -98,6 +123,7 @@ async function main(): Promise<void> {
 
   const shutdownTimeoutMs = parseInteger(option("shutdown-timeout-ms"), 8000, 1, "--shutdown-timeout-ms");
   const port = parseInteger(option("port"), 8120, 0, "--port");
+  let centralAlliance: CentralAllianceShadowRuntime | null = null;
   const supervisor = new TenantSupervisor({
     repoRoot,
     dataRoot,
@@ -106,13 +132,30 @@ async function main(): Promise<void> {
     configs: configNames,
     tenantArgs,
     shutdownTimeoutMs,
+    onChildMessage: (tenantId, message) => centralAlliance?.onChildMessage(tenantId, message),
     onEvent: (event) => {
       console.log(`[supervisor] ${event.at} ${event.type} ${event.tenantId}${event.detail ? `: ${event.detail}` : ""}`);
     },
   });
+  const unavailableStrategyResult = () => ({
+    accepted: false as const,
+    error: "Alliance strategic runtime is not initialized",
+    strategy: { available: false, mode: "ASSIST_ONLY", actionOwnership: "none" },
+  });
   const debugServer = new DebugServer({
     repoRoot,
     supervisor,
+    allianceDirectorView: () => centralAlliance?.view() ?? {
+      enabled: false, mode: "ASSIST_ONLY", actionOwnership: "none", available: false,
+    },
+    ...(allianceDirectorEnabled ? {
+      allianceStrategyControl: {
+        view: () => centralAlliance?.view().strategy ?? { available: false, mode: "ASSIST_ONLY", actionOwnership: "none" },
+        requestProfile: (name: string) => centralAlliance?.requestStrategicProfile(name) ?? unavailableStrategyResult(),
+        requestRollback: () => centralAlliance?.requestStrategicRollback() ?? unavailableStrategyResult(),
+        markLastGood: () => centralAlliance?.markStrategicLastGood() ?? unavailableStrategyResult(),
+      },
+    } : {}),
     port,
     ...(option("debug-host") !== undefined ? { host: option("debug-host") } : {}),
   });
@@ -121,6 +164,21 @@ async function main(): Promise<void> {
   await debugServer.listen();
   const addr = debugServer.address();
   console.log(`[supervisor] debug API: http://${addr?.host ?? "127.0.0.1"}:${addr?.port ?? port}`);
+
+  if (allianceDirectorEnabled) {
+    // Preflight happens only after the debug port is bound, preserving the existing zero-child
+    // behavior on port conflict. The Director itself has no Arena credentials or writer path.
+    const expectedTenants = supervisor.preflight().map((spec) => spec.tenantId);
+    centralAlliance = createCentralAllianceShadowRuntime({
+      enabled: true,
+      expectedTenants,
+      periodTicks: allianceDirectorPeriodTicks,
+      maxSkewTicks: allianceDirectorMaxSkewTicks,
+      ...(allianceStrategyProfile !== undefined ? { initialStrategicProfile: allianceStrategyProfile } : {}),
+      send: (tenantId, message) => supervisor.sendToTenant(tenantId, message),
+    });
+    console.log(`[supervisor] Alliance Director shadow enabled: tenants=${expectedTenants.join(",")} period=${allianceDirectorPeriodTicks} skew<=${allianceDirectorMaxSkewTicks} strategy=${allianceStrategyProfile ?? "balanced"} actionOwnership=none`);
+  }
 
   let signalResolve: ((signal: string) => void) | null = null;
   const signalPromise = new Promise<string>((resolve) => { signalResolve = resolve; });

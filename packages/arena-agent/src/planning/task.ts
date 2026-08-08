@@ -54,7 +54,11 @@ export function forcedTaskFor(unit: PlanningUnit, snapshot: PlanningSnapshot): T
   if (unit.cargo > 0 && core !== null) {
     return { type: "DEPOSIT", target: core };
   }
-  if (unit.cargo === 0 && snapshot.resourceCells.has(cellKey(unit.position))) {
+  const currentResource = snapshot.resourceCells.get(cellKey(unit.position));
+  // visible !== false：记忆/seed 矿（visible=false）不强制 HARVEST_CURRENT——
+  // 矿实际不在格上，强派只会反复 HARVEST 失败（生产回流 99b4ba2 freeze fix，
+  // 2026-08-08 t4：worker 站 invisible 记忆矿格被重派该格 → 到达后 WAIT 死锁）。
+  if (unit.cargo === 0 && currentResource !== undefined && currentResource.visible !== false) {
     return {
       type: "HARVEST_CURRENT",
       target: unit.position,

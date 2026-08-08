@@ -133,6 +133,52 @@ export function stepTowardPath(
   return null;
 }
 
+/** 多目标障碍感知最短路距离场（确定性 BFS，生产回流 99b4ba2/d2fe2f6）。
+ *
+ * 用于任务分配代价，而不是动作执行：一次从 start 展开即可同时得到多个目标的
+ * shortest-path distance，避免 Worker×Resource 每一对都各跑一次 BFS。目标未在
+ * 搜索预算/半径内找到时不返回该 key，调用方可按"未知路径"降级而不是误判永久不可达。
+ * 邻居按 DIRECTION_ORDER 固定顺序展开、FIFO 首达即最优——确定性。 */
+export function shortestPathDistances(
+  start: Position,
+  targets: readonly Position[],
+  obstacles: ReadonlySet<string>,
+  options?: PathSearchOptions,
+): ReadonlyMap<string, number> {
+  const targetKeys = new Set(targets.map((target) => cellKey(target)));
+  const result = new Map<string, number>();
+  if (targetKeys.size === 0) return result;
+  const startKey = cellKey(start);
+  if (targetKeys.has(startKey)) result.set(startKey, 0);
+  if (result.size === targetKeys.size) return result;
+
+  const maxDirect = Math.max(
+    1,
+    ...targets.map((target) => manhattan(start, target)),
+  );
+  const search = options ?? adaptivePathOptions(maxDirect);
+  const queue: Array<{ position: Position; depth: number }> = [{ position: start, depth: 0 }];
+  const visited = new Set<string>([startKey]);
+  let head = 0;
+  while (head < queue.length && head < search.nodeBudget) {
+    const current = queue[head++]!;
+    for (const direction of DIRECTION_ORDER) {
+      const next = move(current.position, direction);
+      if (chebyshev(start, next) > search.searchRadius) continue;
+      const key = cellKey(next);
+      if (visited.has(key) || obstacles.has(key)) continue;
+      visited.add(key);
+      const depth = current.depth + 1;
+      if (targetKeys.has(key)) {
+        result.set(key, depth);
+        if (result.size === targetKeys.size) return result;
+      }
+      queue.push({ position: next, depth });
+    }
+  }
+  return result;
+}
+
 export function stepToward(
   position: Position,
   target: Position,

@@ -19,6 +19,7 @@ import { updateSightingsTick } from "./sightings.ts";
 import { isCombatUnit, type AllianceMemberState, type EntitySighting } from "./types.ts";
 import type { AllianceShadowFrameV1 } from "./shadow-frame.ts";
 import { EMPTY_ROSTER, registerAlliedEntities, type AllianceRoster } from "./roster.ts";
+import { activeFleetIds } from "./local-fleet.ts";
 
 export const ALLIANCE_SHADOW_INTERVAL_DEFAULT = 4;
 /** 快照内敌情明细上限（防 JSONL 行过大；威胁场/统计是全量）。 */
@@ -61,7 +62,7 @@ export function memberStateFromState(
     resources: state.resources, resourceCapacity: state.resourceCapacity, population: state.population,
     workers: state.workers.length, vanguards: state.vanguards.length, rangers: state.rangers.length,
     carriedResources: state.workers.reduce((sum, worker) => sum + worker.cargo, 0),
-    activeFleetIds: [],
+    activeFleetIds: activeFleetIds(state.units, tenantId),
     localThreat: state.visibleEnemies.filter((enemy) => enemy.kind === "UNIT" && isCombatUnit(enemy.unitType)).length,
     localHarvestRate: 0,
     status: state.status === "RESPAWNING" ? "RESPAWNING" : "READY",

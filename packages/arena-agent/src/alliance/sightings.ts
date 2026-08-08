@@ -32,6 +32,13 @@ export const CORE_SPATIAL_GATE = 8;
 /** 置信度下限：陈旧目击不归零，保留弱记忆（防"重启即全忘"）。 */
 export const CONFIDENCE_FLOOR = 0.05;
 
+/**
+ * 无 id ephemeral UNIT 目击的最大存活 tick 数（P0 修复：防 per-tick 无界累积）。
+ * 超过此龄且当前不可见的条目在 updateSightingsTick 末尾被驱逐。
+ * 值 48 ≈ 8× 典型战斗单位 tau (6)，过期后不再有军事参考价值。
+ */
+export const EPHEMERAL_UNIT_MAX_AGE_TICKS = 48;
+
 /** 敌战斗单位衰减 tau（spec §5.3 初始量级 4-8，取中值 6）。 */
 export const UNIT_TAU = 6;
 /** 敌 Core 衰减 tau（spec §5.3 初始量级 64-128，取中值 96）。 */
@@ -246,11 +253,19 @@ export function updateSightingsTick(
 ): EntitySighting[] {
   const merged = mergeSightings(existing, observations, nowTick);
   const visibleKeys = new Set(observations.map((o) => mergeKey({ ...o, tick: o.tick })));
-  return merged.map((s) =>
+  const updated = merged.map((s) =>
     s.currentlyVisible && !visibleKeys.has(s.key)
       ? { ...s, currentlyVisible: false, confidence: currentConfidence({ ...s, currentlyVisible: false }, nowTick) }
       : s,
   );
+  // P0 修复：驱逐过期的无 id ephemeral UNIT 条目，防 per-tick 无界累积。
+  // 有稳定 entityId 或 CORE/RESOURCE/OBSTACLE 的条目不受此驱逐（由各自的 tau/合并规则管理）。
+  return updated.filter((s) => {
+    if (s.currentlyVisible) return true;
+    if (s.entityId !== undefined && s.entityId.length > 0) return true;
+    if (s.kind !== "UNIT") return true;
+    return nowTick - s.lastSeenTick <= EPHEMERAL_UNIT_MAX_AGE_TICKS;
+  });
 }
 
 /** 把陈旧目击标记为非可见（跨 tick 衰减用：调用方每个 tick 把 not-currently-seen 的

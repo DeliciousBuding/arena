@@ -43,6 +43,7 @@ import { unitSpawnCosts } from "../domain/pricing.ts";
 import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snapshot.ts";
 import { WorkerTaskPlanner, type Assignment } from "./worker-task-planner.ts";
 import { DEFAULT_MISSION_CONFIG, type MissionConfig } from "./mission-planner.ts";
+import type { WorkerProgressExpectation, WorkerProgressExpectations } from "./progress-contract.ts";
 
 const CELL_ENTITY_CAPACITY = 2;
 const REROUTE_ORDER: Readonly<Record<Direction, readonly Direction[]>> = {
@@ -319,6 +320,11 @@ function compareWorstMoveFirst(a: MoveCandidate, b: MoveCandidate): number {
 }
 
 const WORKER_RECOVERY_FLOOR = 2;
+// RECOVERY 早期防御（ref lifecycle overlay，2026-08-08）：重生/弱小期 worker 起步
+// （>= EARLY_MILITARY_WORKER_FLOOR）且军事=0 时，先产 1 个 Vanguard 自卫（防野怪/入侵），
+// 不等 workerTarget=12——裸奔期被拆的教训（t3 重生后无军事）。
+const EARLY_MILITARY_WORKER_FLOOR = 4;
+const EARLY_MILITARY_COUNT = 1;
 /** 冷启动 worker 扩编目标（2026-08-07，t3/t4 生产实证）：worker 数未达该值
  *  时产 worker 豁免 spawnReserve——资源刚够成本就扩编（t4 实证：2W res 5 <
  *  WORKER 5 + reserve 2 = 7 → 永不产第 3 个 worker → 经济停滞）。v3.0
@@ -390,6 +396,10 @@ export function selectDeterministicCoreAction(
    *  产兵、res 留存治疗）25 tick——**更差**；官方有 heal/repair/迁移
    *  多重防御垫底，我们只有治疗。未证明净收益 → 默认关闭（候选）。 */
   threatDefenseSpawn = false,
+  /** RECOVERY 早期防御产兵（2026-08-08，ref lifecycle overlay 对照）：军事=0 且
+   *  worker >= EARLY_MILITARY_WORKER_FLOOR 时先产 1 Vanguard 自卫——重生/弱小期裸奔
+   *  被野怪/入侵拆核的兜底（t3 重生后无军事实证）。默认开启（纯防御，不挤占采集）。 */
+  recoveryEarlyMilitary = false,
 ): { readonly action: CoreAction | null; readonly intent: string | null; readonly surgeActive: boolean } {
   if (fallbackAction?.type === "HEAL") {
     return { action: fallbackAction, intent: "core_heal", surgeActive };
@@ -476,6 +486,21 @@ export function selectDeterministicCoreAction(
             surgeActive: active,
           };
         }
+      } else if (recoveryEarlyMilitary && military === 0 &&
+                 state.workers.length >= EARLY_MILITARY_WORKER_FLOOR && militaryRatio > 0) {
+        // RECOVERY 早期防御（ref 4W→1V 语义）：worker 已起步但无军事 → 产 1 Vanguard 自卫，
+        // 不等 workerTarget=12（裸奔期被拆教训）。产 1 个后回到正常扩编。
+        if (state.vanguards.length + state.rangers.length < EARLY_MILITARY_COUNT &&
+            // 防御产兵豁免 spawnReserve（2026-08-08，与 threatDefenseSpawn 同语义：
+            // 生存行为只看纯成本——t4 生产实证 res 0-2 裸奔 7W/0 军事，res<cost+reserve
+            // 永远产不起 Vanguard；豁免后 res>=10 即可自卫，防裸奔期被拆）。
+            state.resources >= spawnCosts.VANGUARD) {
+          return {
+            action: { type: "SPAWN", unitType: "VANGUARD" },
+            intent: "spawn_vanguard_recovery",
+            surgeActive: active,
+          };
+        }
       } else if (state.workers.length < workerTarget && !needMilitary) {
         // 冷启动扩编（2026-08-07）：worker < BOOTSTRAP_WORKER_TARGET 时豁免
         // spawnReserve——资源刚够成本就产 worker，打破"res < cost+reserve
@@ -514,6 +539,18 @@ export function selectDeterministicCoreAction(
   return { action: null, intent: null, surgeActive: active };
 }
 
+/** Safety owns survival/evacuation/core-clearance decisions; economic/mission overlays must not
+ * replace these intents. This is the explicit veto boundary between Safety and Worker missions. */
+function isSafetyVetoIntent(intent: string | undefined): boolean {
+  return (
+    intent === "heal" ||
+    intent === "worker_heal_return" ||
+    intent === "worker_clear_core" ||
+    intent === "worker_clear_core_empty" ||
+    intent?.startsWith("worker_evade_") === true
+  );
+}
+
 export interface DeterministicPlannerInput {
   readonly state: TickState;
   readonly policy?: MacroPolicy;
@@ -528,6 +565,10 @@ export class DeterministicPlanner implements PlanProvider {
   /** 军事配比（实验）：VANGUARD 目标占比 [0,1]；undefined = 交替产兵（历史行为）。
    *  热加载（2026-08-08）：updateConfig 原子替换，不重建 planner、不丢记忆。 */
   private vanguardRatio: number | undefined;
+  /** RECOVERY 早期防御产兵（recovery-early-military-v1）：军事=0 且 worker 起步
+   *  （>=4）时先产 1 Vanguard 自卫（防野怪/入侵），不等 workerTarget——裸奔期
+   *  被拆的兜底（t3 重生后无军事实证）。默认关（零回归），变体显式开启。 */
+  private recoveryEarlyMilitary = false;
   /** 爆兵阈值（2026-08-06）：resources 达标前只产 Worker 积累、达标后持续爆兵。 */
   private accumulateThreshold: number;
   /** 爆兵状态（跨 tick 保持：达标后持续爆兵直到资源耗尽回积累期）。 */
@@ -544,6 +585,12 @@ export class DeterministicPlanner implements PlanProvider {
   /** 官方排行榜威胁画像（2026-08-07，威胁自适应）：透传内部 SafetyPlanner。 */
   private readonly threatProfiles: ReadonlyMap<string, ThreatProfile>;
   private previousAssignments: readonly Assignment[] = [];
+  /** Last task-progress contract emitted with the most recent plan. Runtime liveness consumes this
+   * read-only snapshot on the following observation; generic Safety patrol has no contract. */
+  private lastWorkerProgressExpectations: WorkerProgressExpectations = new Map();
+  /** Worker 局部活性恢复冷却：冷却内从 economicSnapshot 排除，强制沿 Safety patrol
+   *  探索一段时间，防 reset 后下一 Tick 又被 Hungarian 分回同一 stale mine。 */
+  private readonly workerRecoveryUntilTick = new Map<string, number>();
 
   constructor(
     planner: WorkerTaskPlanner = new WorkerTaskPlanner(),
@@ -571,6 +618,8 @@ export class DeterministicPlanner implements PlanProvider {
     /** 使命层配置（worker-mission-v1，2026-08-08）：值层置信 + SURVEYOR 角色仲裁。
      *  缺省 DEFAULT_MISSION_CONFIG = 关闭（现行为零回归）。 */
     missionConfig: MissionConfig = DEFAULT_MISSION_CONFIG,
+    /** RECOVERY 早期防御产兵开关（recovery-early-military-v1，默认关零回归）。 */
+    recoveryEarlyMilitary = false,
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
@@ -579,6 +628,7 @@ export class DeterministicPlanner implements PlanProvider {
     this.accumulateThreshold = accumulateThreshold;
     this.spawnReserve = spawnReserve;
     this.missionConfig = missionConfig;
+    this.recoveryEarlyMilitary = recoveryEarlyMilitary;
     this.threatProfiles = threatProfiles;
     if (initialCoreHuntTargets.length > 0) {
       fallbackPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
@@ -594,6 +644,10 @@ export class DeterministicPlanner implements PlanProvider {
     }
     fallbackPlanner.seedThreatProfiles(threatProfiles);
     patrolPlanner.seedThreatProfiles(threatProfiles);
+    // patrol planner 只用于“资源格已被其他 Worker 占用时继续探索”——永远看不到
+    // resourceCells，因此不得拥有第二套 memory-mine 分配权（生产回流 99b4ba2：
+    // 否则未分配 worker 会经 patrol 基线的 go_harvest_mem 绕过 Hungarian 唯一性）。
+    patrolPlanner.updateConfig({ ...patrolPlanner.config, harvestMemoryMine: false });
     this.planner.updateConfig({ mission: missionConfig });
   }
 
@@ -610,6 +664,10 @@ export class DeterministicPlanner implements PlanProvider {
     this.refillPredictions = predictions;
   }
 
+  workerProgressExpectations(): WorkerProgressExpectations {
+    return this.lastWorkerProgressExpectations;
+  }
+
   /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
    *  保留 World/巡逻/攻坚记忆（不重建 planner）。调用方先校验变体合法性。 */
   updateConfig(
@@ -618,18 +676,34 @@ export class DeterministicPlanner implements PlanProvider {
       readonly vanguardRatio?: number;
       readonly accumulateThreshold?: number;
       readonly spawnReserve?: number;
+      readonly recoveryEarlyMilitary?: boolean;
       readonly mission?: MissionConfig;
     },
   ): void {
     this.fallbackPlanner.updateConfig(safetyConfig);
-    this.patrolPlanner.updateConfig(safetyConfig);
+    // patrol 永远不消费 World 记忆矿（单一分配权威在 Hungarian，生产回流 99b4ba2）。
+    this.patrolPlanner.updateConfig({ ...safetyConfig, harvestMemoryMine: false });
     this.vanguardRatio = deterministicConfig.vanguardRatio;
     this.accumulateThreshold = deterministicConfig.accumulateThreshold ?? 0;
     this.spawnReserve = deterministicConfig.spawnReserve ?? WORKER_SPAWN_RESERVE;
+    this.recoveryEarlyMilitary = deterministicConfig.recoveryEarlyMilitary ?? false;
     if (deterministicConfig.mission !== undefined) {
       this.missionConfig = { ...DEFAULT_MISSION_CONFIG, ...deterministicConfig.mission };
       this.planner.updateConfig({ mission: this.missionConfig });
     }
+  }
+
+  /** Worker 局部活性恢复：清 sticky economic assignment，并同步恢复两套 Safety World。 */
+  recoverWorker(
+    unitId: string,
+    currentTick?: number,
+  ): { readonly previousDirection: number; readonly nextDirection: number; readonly clearedMoveFailures: number; readonly cooldownUntilTick: number | null } {
+    this.previousAssignments = this.previousAssignments.filter((assignment) => assignment.unitId !== unitId);
+    const fallback = this.fallbackPlanner.recoverWorker(unitId, currentTick);
+    // patrol planner 独立持有 World；也必须清，否则下一 Tick fallback 仍可能从旧状态回灌。
+    this.patrolPlanner.recoverWorker(unitId, currentTick);
+    if (fallback.cooldownUntilTick !== null) this.workerRecoveryUntilTick.set(unitId, fallback.cooldownUntilTick);
+    return fallback;
   }
 
   decide(input: DeterministicPlannerInput): Plan {
@@ -642,9 +716,45 @@ export class DeterministicPlanner implements PlanProvider {
       state: { ...input.state, resourceCells: new Set<string>() },
       policy: input.policy,
     });
+    for (const [unitId, untilTick] of this.workerRecoveryUntilTick) {
+      if (untilTick <= input.state.tick || !input.state.workers.some((worker) => worker.id === unitId)) {
+        this.workerRecoveryUntilTick.delete(unitId);
+      }
+    }
     const rawSnapshot = extractPlanningSnapshot(input.state);
+    const resourceCells = new Map(rawSnapshot.resourceCells);
+    // 记忆矿合并（生产回流 99b4ba2，harvest-memory-mine-v1 联动）：deterministic
+    // 模式下该配置只负责"允许消费 World 记忆"；实际 worker→资源分配统一交给
+    // WorkerTaskPlanner/Hungarian，不再由 Safety 自己做第二套最近矿分配。
+    // 本 Tick 可见事实优先于 memory 元数据（visible 键不覆盖）；stale/seeded
+    // 元数据（visible=false + lastSeenTick + seeded）由 planner 的随龄惩罚、
+    // seed 惩罚与 40 格边界消费。World 侧 timestamp/data-quality 修复
+    // （tick 回滚清空、TTL 64、vision 失效、失败冷却）保持原样不动。
+    if (this.fallbackPlanner.config.harvestMemoryMine === true) {
+      for (const candidate of this.fallbackPlanner.world.resourceCandidates()) {
+        const key = cellKey(candidate.cell);
+        if (resourceCells.has(key)) continue;
+        resourceCells.set(key, {
+          position: candidate.cell,
+          visible: false,
+          lastSeenTick: candidate.lastSeenTick,
+          seeded: candidate.seeded,
+        });
+      }
+    }
+    // threat recall / raid defense / breakout 激活时资源分配收缩到守家圈
+    // （生产回流 99b4ba2）：召回期不派 worker 长途奔矿，超距候选从矩阵剔除。
+    const maxResourceDistanceFromCore = this.fallbackPlanner.resourceAssignmentMaxDistanceFromCore(input.state);
+    if (Number.isFinite(maxResourceDistanceFromCore) && rawSnapshot.corePosition !== null) {
+      for (const [key, resource] of resourceCells) {
+        if (manhattan(resource.position, rawSnapshot.corePosition) > maxResourceDistanceFromCore) {
+          resourceCells.delete(key);
+        }
+      }
+    }
     const snapshot: PlanningSnapshot = {
       ...rawSnapshot,
+      resourceCells,
       obstacleCells: this.fallbackPlanner.world.obstacles(rawSnapshot.obstacleCells),
       // Phase 2（G3 数据管道）：矿刷新预测并入快照——死矿剔除 + 即将刷新加成。
       refillPredictions: this.refillPredictions,
@@ -665,7 +775,26 @@ export class DeterministicPlanner implements PlanProvider {
       this.surveyBurstUntilTick = input.state.tick + this.missionConfig.surveyBurstTicks;
     }
     this.previousCorePosition = corePosition;
-    const { assignments } = this.planner.plan(snapshot, this.previousAssignments, {
+
+    // 局部 Worker 自愈与使命分配共用一个排除面：Safety veto（回仓/撤离/清核心等）
+    // 和 liveness recovery cooldown 中的 Worker 均不参与经济目标匹配；但仍由
+    // patrol/safety 基线继续产生合法行动。这样不会让 mission 层重新吸回旧矿，
+    // 也不会覆盖更高优先级的生存/通道动作。
+    const safetyVetoIds = new Set(
+      snapshot.units
+        .filter((unit) => unit.unitType === "WORKER" && isSafetyVetoIntent(fallback.intents?.[unit.id]))
+        .map((unit) => unit.id),
+    );
+    const economicExcludedIds = new Set([
+      ...safetyVetoIds,
+      ...[...this.workerRecoveryUntilTick.entries()]
+        .filter(([, untilTick]) => untilTick > input.state.tick)
+        .map(([unitId]) => unitId),
+    ]);
+    const economicSnapshot: PlanningSnapshot = economicExcludedIds.size === 0
+      ? snapshot
+      : { ...snapshot, units: snapshot.units.filter((unit) => !economicExcludedIds.has(unit.id)) };
+    const { assignments } = this.planner.plan(economicSnapshot, this.previousAssignments, {
       surveyBurstActive: input.state.tick <= this.surveyBurstUntilTick,
     });
     this.previousAssignments = assignments;
@@ -749,9 +878,43 @@ export class DeterministicPlanner implements PlanProvider {
       // 动态定价配套：deterministic 产兵尊重 Safety 配置的人口上限（默认 20
       // = v0.14 动态价线）；strike-core-v1 的 SafetyPlanner 用默认 20。
       this.fallbackPlanner.config.populationCeiling,
+      this.recoveryEarlyMilitary,
     );
     this.surgeActive = coreDecision.surgeActive;
     if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;
+
+    const progressExpectations = new Map<string, WorkerProgressExpectation>();
+    for (const assignment of assignments) {
+      switch (assignment.task.type) {
+        case "GO_RESOURCE":
+          if (assignment.task.target !== undefined) {
+            progressExpectations.set(assignment.unitId, {
+              kind: "target",
+              taskType: "GO_RESOURCE",
+              target: assignment.task.target,
+            });
+          }
+          break;
+        case "DEPOSIT":
+          if (snapshot.corePosition !== null) {
+            progressExpectations.set(assignment.unitId, {
+              kind: "target",
+              taskType: "DEPOSIT",
+              target: snapshot.corePosition,
+            });
+          }
+          break;
+        case "HARVEST_CURRENT":
+          progressExpectations.set(assignment.unitId, { kind: "cargo_change", taskType: "HARVEST_CURRENT" });
+          break;
+        case "EXPLORE":
+          progressExpectations.set(assignment.unitId, { kind: "novel_coverage", taskType: "EXPLORE" });
+          break;
+        default:
+          break;
+      }
+    }
+    this.lastWorkerProgressExpectations = progressExpectations;
 
     return {
       tick: input.state.tick,

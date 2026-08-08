@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arena.tokendancelab.com/schemas/offline-learning/trajectory-v1",
+  "title": "TrajectoryV1",
+  "description": "Episode-level trajectory for offline RL. Each trajectory is a complete episode with sequential (state, action, label) steps.",
+  "type": "object",
+  "required": ["schema", "trajectoryId", "metadata", "steps"],
+  "properties": {
+    "schema": { "type": "string", "const": "trajectory-v1" },
+    "trajectoryId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "metadata": {
+      "type": "object",
+      "required": ["episodeId", "tenantId", "rulesVersion", "seed", "tickCount", "source"],
+      "properties": {
+        "episodeId": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "rulesVersion": { "type": "string" },
+        "rulesManifestHash": { "type": "string" },
+        "seed": { "type": "integer" },
+        "tickCount": { "type": "integer", "minimum": 1 },
+        "source": { "type": "string", "enum": ["sim", "live"] },
+        "sourceCommit": { "type": "string" },
+        "engineVersion": { "type": "string" },
+        "startedAt": { "type": "string" },
+        "completedAt": { "type": "string" }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["state", "action", "label"],
+        "properties": {
+          "state": { "$ref": "#/$defs/stepState" },
+          "action": { "$ref": "#/$defs/stepAction" },
+          "label": { "$ref": "#/$defs/stepLabel" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "stepState": {
+      "type": "object",
+      "required": ["tick", "resources", "population", "corePosition", "threatLevel"],
+      "properties": {
+        "tick": { "type": "integer", "minimum": 1 },
+        "resources": { "type": "integer", "minimum": 0 },
+        "resourceCapacity": { "type": "integer", "minimum": 0 },
+        "population": { "type": "integer", "minimum": 0 },
+        "workers": { "type": "integer", "minimum": 0 },
+        "vanguards": { "type": "integer", "minimum": 0 },
+        "rangers": { "type": "integer", "minimum": 0 },
+        "coreHp": { "type": "integer", "minimum": 0 },
+        "coreShield": { "type": "integer", "minimum": 0 },
+        "corePosition": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "integer" } },
+        "coreState": { "type": "string" },
+        "visibleResourceCells": { "type": "integer", "minimum": 0 },
+        "carriedResources": { "type": "integer", "minimum": 0 },
+        "visibleEnemyUnits": { "type": "integer", "minimum": 0 },
+        "visibleEnemyCombat": { "type": "integer", "minimum": 0 },
+        "visibleEnemyCores": { "type": "integer", "minimum": 0 },
+        "nearestEnemyCoreDist": { "type": ["integer", "null"] },
+        "nearestEnemyCombatDist": { "type": ["integer", "null"] },
+        "threatLevel": { "type": "string", "enum": ["NORMAL", "ALERT", "ENGAGED", "BREAKOUT"] }
+      }
+    },
+    "stepAction": {
+      "type": "object",
+      "required": ["actionCounts", "coreAction", "planHash"],
+      "properties": {
+        "actionCounts": { "type": "object", "additionalProperties": { "type": "integer" } },
+        "coreAction": { "type": ["string", "null"] },
+        "spawnUnitType": { "type": ["string", "null"] },
+        "intents": { "type": "array", "items": { "type": "string" } },
+        "planHash": { "type": "string" }
+      }
+    },
+    "stepLabel": {
+      "type": "object",
+      "required": ["immediateResourceDelta", "deaths", "netResourceDelta20", "deathProb20", "coreRisk50", "windowComplete"],
+      "properties": {
+        "immediateResourceDelta": { "type": "integer" },
+        "immediatePopulationDelta": { "type": "integer" },
+        "deaths": { "type": "integer", "minimum": 0 },
+        "netResourceDelta20": { "type": "integer" },
+        "deathProb20": { "type": "number", "minimum": 0, "maximum": 1 },
+        "coreRisk50": { "type": "integer", "enum": [0, 1] },
+        "windowComplete": { "type": "boolean" }
+      }
+    }
+  }
+}

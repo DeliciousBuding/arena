@@ -56,6 +56,7 @@ import { loadConsensusMining, warmConsensusMining } from "./lib/consensus-mining
 import { loadShopHistory, refreshShopHistory } from "./lib/shop-history.ts";
 import { loadAlignmentAudit, warmAlignmentAudit } from "./lib/alignment-audit.ts";
 import { loadDecisionInput, warmDecisionInput } from "./lib/decision-input.ts";
+import { loadWorkerLivenessAudit, warmWorkerLivenessAudit } from "./lib/worker-liveness-audit.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 import { applyGoalMutation } from "./lib/goal-store.ts";
 import { loadCoreMovingGuard } from "./lib/human-command-guard.ts";
@@ -467,6 +468,17 @@ app.get("/api/audit/decisions/trend", (c) => {
   const steps = Number.isFinite(s) ? Math.min(Math.max(s, 2), 12) : 6;
   return c.json(loadDecisionTrend(tenant, window, steps));
 });
+app.get("/api/audit/workers", (c) => {
+  // Worker 局部活性审计：静态假活/MOVE 无效果/小环振荡/拥挤饥饿。
+  // ?tenant=all|tN&window=4000；只读 runtime.jsonl，5s cache。
+  const tenant = c.req.query("tenant") ?? "all";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  const w = Number(c.req.query("window") ?? 4000);
+  const window = Number.isFinite(w) ? Math.min(Math.max(Math.floor(w), 200), 20_000) : 4000;
+  return c.json(loadWorkerLivenessAudit(tenant, window));
+});
 app.get("/api/audit/lifecycle", (c) => {
   // 生命周期审计（2026-08-08）：单位/矿物/核心生命周期标注 + 消费汇总。
   // 读最新 run 的 calibration 事件（只读），30s 缓存 + 启动预热，不进周期循环。
@@ -793,6 +805,8 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { warmAuditOverview(); } catch { /* 忽略 */ } }, 80);
   // 人机冲突审计（尾部只读）：启动预热一次，不进周期循环。
   setTimeout(() => { try { warmHumanConflict(); } catch { /* 忽略 */ } }, 90);
+  // Worker 活性审计（runtime.jsonl 异常尾读）：启动预热一次，5s 惰性缓存。
+  setTimeout(() => { try { warmWorkerLivenessAudit(); } catch { /* 忽略 */ } }, 95);
   // 联盟采矿分工（只读组合）：启动预热一次，不进周期循环。
   setTimeout(() => { try { warmAllianceMining(); } catch { /* 忽略 */ } }, 100);
   setTimeout(() => { try { warmMiningEffectiveness(); } catch { /* 忽略 */ } }, 105);

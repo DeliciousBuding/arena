@@ -135,6 +135,18 @@ export interface ResourceMemory {
   seeded?: boolean;
 }
 
+/** 资源任务候选（生产回流 99b4ba2，resourceCandidates 单一事实源）：可见 +
+ * 合法 stale/seeded 记忆，携带新鲜度/seed 元数据供全局任务分配器做置信代价
+ * （visible=false 时按 age 惩罚、seeded 额外惩罚、超 40 格边界不入池）。
+ * 返回复制快照，调用方不能修改 World 内部记忆。 */
+export interface ResourceCandidate {
+  readonly cell: Position;
+  readonly state: "visible" | "stale";
+  readonly firstSeenTick: number;
+  readonly lastSeenTick: number;
+  readonly seeded: boolean;
+}
+
 export interface EnemyMemory {
   readonly id: string;
   position: Position;
@@ -342,6 +354,19 @@ export class World {
     return count;
   }
 
+  /**
+   * Worker 局部活性恢复时清掉该单位的短期 MOVE 失败避让缓存。
+   * 这些缓存本来只有数 Tick TTL，但若正好与旧 patrol/矿目标形成反馈环，恢复后继续
+   * 携带会把单位再次推回同一小环；局部恢复只清该 unit，不影响全局障碍事实。
+   */
+  clearUnitMoveFailures(unitId: string): number {
+    const failures = this.unitMoveFailures.get(unitId);
+    if (failures === undefined) return 0;
+    const count = failures.size;
+    this.unitMoveFailures.delete(unitId);
+    return count;
+  }
+
   observe(state: TickState): void {
     // 世界重置检测：tick 回退（服务器世界重置/异常）→ 全清本地记忆，避免幽灵障碍/资源
     if (this.tick > state.tick) {
@@ -524,6 +549,10 @@ export class World {
             ) {
               this.coreHuntMemory.delete(oldKey);
               this.coreHuntMissingCount.delete(oldKey);
+              // P0 修复：Core 迁移时同步清理旧位置的 enemyCoreForceRecords，
+              // 防旧 key 的 unit-ID Set 永久 orphan（旧位置不再在 coreHuntMemory
+              // 中，confirmCoreHuntMissing 永远查不到、永不清理）。
+              this.enemyCoreForceRecords.delete(oldKey);
             }
           }
         }
@@ -720,13 +749,18 @@ export class World {
     }
     return n;
   }
-  resourceHints(options: { maxAge?: number; failedCooldown?: number } = {}): readonly Position[] {
-    // maxAge 8→32、failedCooldown 4→32（2026-08-06 生产实证配对）：
-    // - 记忆窗口 32 tick：巡逻环升级需要数十 tick（8 worker 分头巡逻一圈），
-    //   stale 记忆 8 tick 就过期导致"刚见过就忘"（t1 生产 40 格矿测绘不到）；
-    // - 耗尽冷却 32 tick：RESOURCE_DEPLETED 确认的矿 32 tick 内不再提示——
-    //   否则 worker 反复试近处空矿（t1 生产 maxDist 12-17 空转近处、巡逻环
-    //   永不推进的证据），冷却与记忆窗口同量级防空转。
+  /** 资源任务候选的单一事实源（生产回流 99b4ba2）：返回可见 + 合法 stale/seeded
+   *  记忆，并保留新鲜度/seed 元数据给全局任务分配器做置信代价。harvested 与
+   *  失败冷却中的格永远不进入候选。返回值是复制快照，调用方不能修改 World
+   *  内部记忆。
+   *
+   *  maxAge 8→32、failedCooldown 4→32（2026-08-06 生产实证配对）：
+   *  - 记忆窗口 32 tick：巡逻环升级需要数十 tick（8 worker 分头巡逻一圈），
+   *    stale 记忆 8 tick 就过期导致"刚见过就忘"（t1 生产 40 格矿测绘不到）；
+   *  - 耗尽冷却 32 tick：RESOURCE_DEPLETED 确认的矿 32 tick 内不再提示——
+   *    否则 worker 反复试近处空矿（t1 生产 maxDist 12-17 空转近处、巡逻环
+   *    永不推进的证据），冷却与记忆窗口同量级防空转。 */
+  resourceCandidates(options: { maxAge?: number; failedCooldown?: number } = {}): readonly ResourceCandidate[] {
     const maxAge = options.maxAge ?? 32;
     const failedCooldown = options.failedCooldown ?? 32;
     const visible: ResourceMemory[] = [];
@@ -739,7 +773,17 @@ export class World {
     }
     const compare = (a: ResourceMemory, b: ResourceMemory) =>
       b.lastSeenTick - a.lastSeenTick || a.cell[0] - b.cell[0] || a.cell[1] - b.cell[1];
-    return [...visible.sort(compare), ...recent.sort(compare)].map((memory) => memory.cell);
+    return [...visible.sort(compare), ...recent.sort(compare)].map((memory) => ({
+      cell: [memory.cell[0], memory.cell[1]] as Position,
+      state: memory.state as "visible" | "stale",
+      firstSeenTick: memory.firstSeenTick,
+      lastSeenTick: memory.lastSeenTick,
+      seeded: memory.seeded === true,
+    }));
+  }
+
+  resourceHints(options: { maxAge?: number; failedCooldown?: number } = {}): readonly Position[] {
+    return this.resourceCandidates(options).map((candidate) => candidate.cell);
   }
 
   enemyHints(maxAge = 6): readonly EnemyMemory[] {
