@@ -106,10 +106,12 @@ export interface ProtoPlayerState {
   readonly events: readonly ProtoResolutionEvent[];
 }
 
-/** 官方 CommandPlan —— 一个租户单 tick 的完整计划。 */
+/** 官方 CommandPlan —— 一个租户单 tick 的完整计划。
+ *  unit_actions 值可为 null：外部 agent 是黑盒，官方 SDK 序列化偶发 null
+ *  action（等价无指令），平台层跳过不翻译。 */
 export interface ProtoCommandPlan {
   readonly tick: number;
-  readonly unit_actions: Readonly<Record<string, ProtoUnitAction>>;
+  readonly unit_actions: Readonly<Record<string, ProtoUnitAction | null>>;
   readonly core_action: ProtoCoreAction | null;
 }
 
@@ -374,6 +376,8 @@ export function protoPlanToPlan(plan: ProtoCommandPlan, sourceIntent = "external
   const unitActions: Record<string, UnitAction> = {};
   const intents: Record<string, string> = {};
   for (const [unitId, action] of Object.entries(plan.unit_actions)) {
+    // 外部 agent 是黑盒：官方 SDK 序列化偶发 null action（等于无指令），跳过。
+    if (action === null || action === undefined) continue;
     unitActions[unitId] = protoToUnitAction(action, unitId, intents);
     intents[unitId] = sourceIntent;
   }

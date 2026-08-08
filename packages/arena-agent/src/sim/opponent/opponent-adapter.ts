@@ -35,6 +35,11 @@ import {
   type ProtoPlayerState,
   type ProtoUnitAction,
 } from "./protocol-bridge.ts";
+import {
+  createReferenceBridge,
+  PersistentSyncBridge,
+  type SyncBridgeConfig,
+} from "./sync-bridge.ts";
 
 /** 对手决策器端口：输入官方玩家观察 → 输出官方计划（纯协议，无模拟器依赖）。 */
 export interface ExternalDecider {
@@ -168,7 +173,7 @@ export class ReferenceSubprocessDecider implements ExternalDecider {
     }
     const parsed = JSON.parse(line) as {
       readonly tick?: number;
-      readonly unit_actions?: Readonly<Record<string, ProtoUnitAction>>;
+      readonly unit_actions?: Readonly<Record<string, ProtoUnitAction | null>>;
       readonly core_action?: ProtoCoreAction | null;
     };
     return {
@@ -179,6 +184,88 @@ export class ReferenceSubprocessDecider implements ExternalDecider {
   }
 
   close(): void {
+    if (this.slotIsDefault && existsSync(this.stateSlot)) {
+      try {
+        unlinkSync(this.stateSlot);
+      } catch {
+        // 槽清理失败不阻断（临时目录会被系统回收）。
+      }
+    }
+  }
+}
+
+/* ============================================================
+ * Persistent bridge — 常驻子进程决策器（路线 A，2026-08-08）
+ * 用 PersistentSyncBridge（worker + Atomics）做同步 RPC：每 tick 不再
+ * 重建 Python 进程（省掉 ~300ms import），热往返 ~12ms。协议与
+ * one-shot 版完全一致；state-slot 语义相同（确定性不变）。
+ * ============================================================ */
+
+export interface PersistentReferenceConfig {
+  /** Python 解释器路径（默认 "python"）。 */
+  readonly python?: string;
+  /** arena_farmer 所在仓库根（arena-hero-agent），传给 bridge 的 --farmer-repo。 */
+  readonly farmerRepoDir: string;
+  /** 官方 SDK 仓库根（arena-hero-python），传给 bridge 的 --sdk-repo。 */
+  readonly sdkRepoDir?: string;
+  /** arena_farmer 的源码路径（.py，兼容旧接口；当前仅作校验占位）。 */
+  readonly farmerPath: string;
+  /** CoreFarmer 记忆 pickle 槽路径；缺省用 os.tmpdir() 下随机名（对局结束清理）。 */
+  readonly stateSlot?: string;
+  /** bridge 脚本路径（scripts/opponent-bridge.py），缺省按本文件相对定位。 */
+  readonly bridgeScript?: string;
+  /** 参考对手：farmer=榜二（默认）；core=官方完整参考 agent。 */
+  readonly agent?: "farmer" | "core";
+}
+
+/** 常驻子进程决策器：对局级生命周期（随用随起），close() 释放进程与槽。 */
+export class PersistentSubprocessDecider implements ExternalDecider {
+  readonly bridge: PersistentSyncBridge;
+  readonly stateSlot: string;
+  readonly slotIsDefault: boolean;
+  readonly agent: "farmer" | "core";
+  ready = true;
+
+  constructor(config: PersistentReferenceConfig) {
+    const created = createReferenceBridge({
+      python: config.python,
+      farmerRepoDir: config.farmerRepoDir,
+      sdkRepoDir: config.sdkRepoDir,
+      stateSlot: config.stateSlot,
+      bridgeScript: config.bridgeScript,
+      agent: config.agent,
+    });
+    this.bridge = created.bridge;
+    this.stateSlot = created.stateSlot;
+    this.slotIsDefault = config.stateSlot === undefined;
+    this.agent = config.agent ?? "farmer";
+  }
+
+  decide(player: ProtoPlayerState, tick: number): ProtoCommandPlan {
+    const request = JSON.stringify({ tick, state: player });
+    const line = this.bridge.exchange(request);
+    try {
+      const parsed = JSON.parse(line) as {
+        readonly tick?: number;
+        readonly unit_actions?: Readonly<Record<string, ProtoUnitAction | null>>;
+        readonly core_action?: ProtoCoreAction | null;
+      };
+      return {
+        tick: parsed.tick ?? tick,
+        unit_actions: parsed.unit_actions ?? {},
+        core_action: parsed.core_action ?? null,
+      };
+    } catch (error) {
+      // 把原始行带进错误（外部 agent 是黑盒——stdout 被污染时必须有原文可查）。
+      throw new Error(
+        `opponent plan JSON parse failed (tick ${tick}): ${String(error)}` +
+          `\nraw: ${line.slice(0, 2000)}`,
+      );
+    }
+  }
+
+  close(): void {
+    this.bridge.close();
     if (this.slotIsDefault && existsSync(this.stateSlot)) {
       try {
         unlinkSync(this.stateSlot);

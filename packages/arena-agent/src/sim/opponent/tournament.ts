@@ -197,29 +197,40 @@ export function runMatch(
   );
   const providerA = a.build();
   const providerB = b.build();
-  const result = runEpisode({
-    scenario,
-    rulesPath,
-    seed,
-    ticks,
-    refill: { everyTicks: 65 },
-    tenants: [
-      { id: a.id, planner: "safety", plannerConfig: {}, policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" } },
-      { id: b.id, planner: "safety", plannerConfig: {}, policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" } },
-    ],
-    // 关键：注入我们两个条目的 provider，而不是用内置 deterministic/safety
-    plannerFactory: (tenant: EpisodeTenant): PlanProvider => (tenant.id === a.id ? providerA : providerB),
-    validatePlans: opts?.validatePlans ?? true,
-  } as never);
-  const { winner: w, coreAlive, finalResources, finalPopulation } = decideWinner([a.id, b.id], undefined as never, result.finalWorld);
-  return {
-    players: [a.id, b.id],
-    winner: w,
-    tick: 0,
-    tickCount: ticks,
-    coreAlive,
-    finalResources,
-    finalPopulation,
-    eventCount: result.records.reduce((n, r) => n + r.events.length, 0),
-  };
+  try {
+    const result = runEpisode({
+      scenario,
+      rulesPath,
+      seed,
+      ticks,
+      refill: { everyTicks: 65 },
+      tenants: [
+        { id: a.id, planner: "safety", plannerConfig: {}, policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" } },
+        { id: b.id, planner: "safety", plannerConfig: {}, policy: { posture: "aggressive", workerTarget: 8, militaryRatio: 0.4, focusRegion: null, attackPriority: "core" } },
+      ],
+      // 关键：注入我们两个条目的 provider，而不是用内置 deterministic/safety
+      plannerFactory: (tenant: EpisodeTenant): PlanProvider => (tenant.id === a.id ? providerA : providerB),
+      validatePlans: opts?.validatePlans ?? true,
+    } as never);
+    const { winner: w, coreAlive, finalResources, finalPopulation } = decideWinner([a.id, b.id], undefined as never, result.finalWorld);
+    return {
+      players: [a.id, b.id],
+      winner: w,
+      tick: 0,
+      tickCount: ticks,
+      coreAlive,
+      finalResources,
+      finalPopulation,
+      eventCount: result.records.reduce((n, r) => n + r.events.length, 0),
+    };
+  } finally {
+    // 对局结束必须释放对手资源（常驻子进程桥：close worker + 清 state-slot），
+    // 否则 worker 线程泄漏导致进程无法退出（鸭子类型：非子进程 provider 无 close）。
+    for (const provider of [providerA, providerB]) {
+      const closer = (provider as { close?: () => void }).close;
+      if (typeof closer === "function") {
+        closer.call(provider);
+      }
+    }
+  }
 }
