@@ -32,10 +32,10 @@ graph LR
 |---|---|---|
 | 设计 token SSOT | `public/style.css` `:root` | 颜色/字体/圆角/阴影/动效 token |
 | React 附加 | `web/src/styles/theme.css` | 仅 React 布局 + feature-panel（49 行，无同名冲突） |
-| 引擎画布 | `mapEngine.ts` | canvas 绘制（当前为硬编码语义色，**待对齐 CSS token**） |
+| 引擎画布 | `mapEngine.ts` | canvas 绘制（语义色已对齐 CSS token，2026-08-08） |
 
 - `main.tsx` 经 vite 把 `style.css` + `theme.css` 统一打进 dist —— 单一视觉源成立。
-- 引擎语义色与 CSS 尚未单一源（见 §6 接力清单）。
+- 引擎语义色已对齐 CSS token（success/warn/cyan，2026-08-08）；`public/style.css` 残留旧色已清理（7055b22）。
 
 ## 3. 官方子集映射（arena-hero-web → 本面板）
 
@@ -74,11 +74,13 @@ npm run test:regression    # Playwright 回归 16 项（web/scripts/cc-regressio
 
 ## 6. 接力清单（并行重构提交后）
 
-1. **build + 回归（进行中 2026-08-08）**：`npm run check:all` 全绿（server tsc + web typecheck + build）；
-   `npm run test:regression` 在面板重启后补跑。
+1. **build + 回归 ✅（2026-08-08）**：`npm run check:all` 全绿（server tsc 0 错 + web typecheck 0 错 + build）；
+   `npm run test:regression` **18/18 全绿**（含前置健康/六 tab/威胁玫瑰/决策流/HUD/计划层/人类指挥链/jumpPins/手操审计/API）。
 2. **引擎颜色对齐 ✅（2026-08-08，本轮提交）**：`mapEngine.ts` 语义色已对齐新 token——
    success `#7fd8a5→#8fce9f`、warn/信标 `#e0b94f→#f0883e`（含 rgba 环）、cyanSignal `#1fe0ca→#5fd4e8`。
 3. **回归脚本适配**：组件重构若改选择器/类名，回归需跟随（data-rp-tab/tenant-card 等通用选择器优先）。
+   **健壮化 ✅（1004faa）**：前置健康改 `node:http` 直连（绕 HTTP_PROXY/undici 劫持）；失败打印结果后退出（不再被 `return` 吞输出）；
+   人类指挥链点击后轮询等落盘（≤4s）消 flaky。
 4. **jumpPins 命中排除 shift ✅（2026-08-08）**：`handleCanvasClick` 已补 `!shift`——Shift+点 pin 不进清除，走框选。
 5. **手操审计 UI 上线 ✅（`1cbc5ef`）**：SituationPanel「HUMAN AUDIT」区块已随 dist 生效。
 6. **arena-agent 迁移收尾 ✅（2026-08-08，`3f3290c`）**：联盟纯函数从 git HEAD 复制进
@@ -86,4 +88,8 @@ npm run test:regression    # Playwright 回归 16 项（web/scripts/cc-regressio
    `lib/alliance-snapshot.ts` 5 处 import 改 `./alliance/*`，server tsc 恢复、面板已重启（pid 44952）。
    **遗留（并行 agent 收尾）**：arena-agent/arena-hero-ts 包删除 + 根 `package.json` workspaces/CI 同步未提交——
    root workspaces 仍引用这两个包，删除未提交前勿动。
-4. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
+7. **人类指挥链修复 ✅（1004faa）**：MOVE 点击目标非实时障碍必提交——测绘记忆寻路失败不再吞命令
+   （服务端权威导航）；实时障碍才 toast 拒绝。修复"点了没反应"类交互。
+8. **全局旧色残留清理 ✅（7055b22）**：`public/style.css` 信标渐变/HP 条/tick 信号青统一到 DESIGN token。
+
+9. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
