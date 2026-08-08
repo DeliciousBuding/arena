@@ -59,6 +59,7 @@ import { planHashOf } from "../telemetry/decision-trace.ts";
 import type { DecisionTraceRecord, OutcomeTraceRecord, RuntimeTraceRecord } from "../telemetry/decision-trace.ts";
 import { sha256Canonical } from "../domain/integrity.ts";
 import { AllianceShadowWriter } from "../alliance/shadow.ts";
+import { EMPTY_ROSTER_ID_SET, loadAllianceRosterFile, type AllianceRosterRef } from "../alliance/roster-file.ts";
 import type { AllianceShadowFrameV1 } from "../alliance/shadow-frame.ts";
 import {
   RuntimeGoldenRecorder,
@@ -76,6 +77,11 @@ export const STALL_WARNING_TICKS = 16;
  *  拉取（ArenaLeaderboardIntel → docs/progress/leaderboard-intel.py），四线每 5
  *  分钟重读一次（间隔 < 快照间隔，保证拉取后 5 分钟内生效；内容不变零抖动）。 */
 const THREAT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+
+/** 联盟 no-fire roster 热刷新间隔（2026-08-08，alliance-no-fire-v1）：supervisor
+ *  聚合帧写入 <dataRoot>/runtime/alliance/roster.json，租户每 30s 重读——
+ *  比威胁画像更实时（roster 影响 no-fire 安全边界）。 */
+const ALLIANCE_ROSTER_REFRESH_INTERVAL_MS = 30 * 1000;
 
 /** 威胁评估诊断字段（v0.3-lite，2026-08-06）：从 outcome state 计算 tick 级威胁
  *  （可见敌/受击基础版；enemyHints 记忆增强——moving/pursuit——待 planner 侧
@@ -527,14 +533,18 @@ export async function runTenant(
     const surveyResourceCells = loadSurveyResourceSeed(dataRoot, config.tenantId);
     const surveyObstacleCells = loadSurveyObstacleSeed(dataRoot, config.tenantId);
     const surveyChunks = loadSurveyChunkSeed(dataRoot, config.tenantId);
+    // 联盟 no-fire 花名册（2026-08-08，alliance-no-fire-v1）：可变引用对象——
+    // 构造时注入 SafetyPlanner，刷新时原子替换引用（World/巡逻/攻坚记忆不丢）。
+    // 变体关闭或文件缺失 = 空集合（零回归）；只加载受信 supervisor 聚合产物。
+    const allianceRosterRef: AllianceRosterRef = { allyEntityIds: new Set(EMPTY_ROSTER_ID_SET) };
     const planner: DeterministicPlanner | SafetyPlanner =
       decisionMode === "deterministic"
         ? Object.keys(variantConfig).length === 0
           ? new DeterministicPlanner(undefined, undefined, undefined, undefined, undefined, undefined, [], new Map(), surveyResourceCells, surveyObstacleCells)
           : new DeterministicPlanner(
               new WorkerTaskPlanner(),
-              new SafetyPlanner(baseSafetyConfig),
-              new SafetyPlanner(baseSafetyConfig),
+              new SafetyPlanner(baseSafetyConfig, undefined, undefined, allianceRosterRef),
+              new SafetyPlanner(baseSafetyConfig, undefined, undefined, allianceRosterRef),
               deterministicVariantConfig.vanguardRatio,
               deterministicVariantConfig.accumulateThreshold ?? 0,
               deterministicVariantConfig.spawnReserve,
@@ -543,7 +553,7 @@ export async function runTenant(
               surveyResourceCells,
               surveyObstacleCells,
             )
-        : new SafetyPlanner(baseSafetyConfig, undefined, threatProfiles);
+        : new SafetyPlanner(baseSafetyConfig, undefined, threatProfiles, allianceRosterRef);
     if (planner instanceof SafetyPlanner) {
       if (surveyResourceCells.length > 0) planner.world.seedResourceMemory(surveyResourceCells, 0);
       if (surveyObstacleCells.length > 0) planner.world.seedObstacleMemory(surveyObstacleCells);
@@ -632,6 +642,46 @@ export async function runTenant(
     const threatRefreshTimer = setInterval(refreshThreatProfiles, THREAT_REFRESH_INTERVAL_MS);
     refreshThreatProfiles(); // 启动立即检查一次（避免首次快照缺失导致长空窗）
     cleanupStack.push(() => clearInterval(threatRefreshTimer));
+
+    // 联盟 no-fire roster 热刷新（2026-08-08，alliance-no-fire-v1）：supervisor
+    // 每周期把聚合 roster 原子写入 data/runtime/alliance/roster.json，本进程每
+    // 30s 重读；revision 变化才替换引用（内容不变零抖动）。变体关闭 = 不加载
+    // （SafetyPlanner 保持空集合零回归）；文件缺失/损坏 = 保持 last-good 或空。
+    let lastRosterRevision = -1;
+    const refreshAllianceRoster = (): void => {
+      if (variantConfig.allianceNoFire !== true) return;
+      try {
+        const next = loadAllianceRosterFile(dataRoot);
+        const revision = next?.revision ?? -1;
+        if (revision === lastRosterRevision) return;
+        lastRosterRevision = revision;
+        allianceRosterRef.allyEntityIds = next === null ? new Set(EMPTY_ROSTER_ID_SET) : new Set(next.allyEntityIds);
+        appendJsonlLine(
+          join(dirs.telemetryDir, "runtime.jsonl"),
+          JSON.stringify(sanitizeValue({
+            processRunId,
+            tenantId: config.tenantId,
+            telemetryType: "alliance_roster_refreshed",
+            revision,
+            allyIds: allianceRosterRef.allyEntityIds.size,
+          })),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        appendJsonlLine(
+          join(dirs.telemetryDir, "runtime.jsonl"),
+          JSON.stringify(sanitizeValue({
+            processRunId,
+            tenantId: config.tenantId,
+            telemetryType: "alliance_roster_refresh_failed",
+            message,
+          })),
+        );
+      }
+    };
+    const allianceRosterTimer = setInterval(refreshAllianceRoster, ALLIANCE_ROSTER_REFRESH_INTERVAL_MS);
+    refreshAllianceRoster(); // 启动立即检查一次
+    cleanupStack.push(() => clearInterval(allianceRosterTimer));
 
     // 触发源 1：文件监听（父目录 + 400ms debounce，兼容编辑器原子替换/重命名）。
     let configWatch: ReturnType<typeof watch> | null = null;
