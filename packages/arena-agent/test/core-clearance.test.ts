@@ -26,6 +26,7 @@ function makeState(opts: {
   units: UnitSnapshot[];
   vanguards: UnitSnapshot[];
   workers: UnitSnapshot[];
+  rangers?: UnitSnapshot[];
   resourceSpace?: number;
   obstacleCells?: Position[];
   events?: { eventType: string; actorId: string | null; reasonCode: string | null; position: Position }[];
@@ -41,7 +42,7 @@ function makeState(opts: {
     units: opts.units,
     workers: opts.workers,
     vanguards: opts.vanguards,
-    rangers: [],
+    rangers: opts.rangers ?? [],
     visibleEnemies: [],
     resourceCells: new Set(),
     obstacleCells: new Set((opts.obstacleCells ?? []).map((c) => `${c[0]},${c[1]}`)),
@@ -161,5 +162,86 @@ test("核心通道清障扩展：空载 worker 需回血（hp<满）留在核心
   assert.ok(
     intents.includes("heal"),
     `受伤空 worker 在核心格应 HEAL 而非疏散，实际 intents=${JSON.stringify(intents)}`,
+  );
+});
+
+
+test("ring 疏散：核心格被空 worker 占用 + cheb-1 Vanguard → vanguard_ring_clear 让位（t2 卸货死锁实证）", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  // t2 核心 (-30,38) 现场复刻：空 worker 占核心格，UP 2 满载、LEFT 1 守卫+1 满载、
+  // RIGHT/DOWN 真障碍 → 空 worker 4 邻全堵。cheb-1 Vanguard 必须让位腾出核心邻格。
+  const empty = worker("w-empty", [0, 0], 0);
+  const loaded1 = worker("w-l1", [0, -1], 1);
+  const loaded2 = worker("w-l2", [0, -1], 1);
+  const v = vanguard("v00", [1, 0]);
+  const plan = planner.decide({
+    state: makeState({
+      units: [empty, loaded1, loaded2, v],
+      vanguards: [v],
+      workers: [empty, loaded1, loaded2],
+      obstacleCells: [[0, 1], [-1, 0]],
+    }),
+    policy: undefined,
+  });
+  assert.equal(
+    plan.intents[v.id],
+    "vanguard_ring_clear",
+    `cheb-1 Vanguard 应让位到 cheb-2，实际=${plan.intents[v.id] ?? "(none)"}`,
+  );
+});
+
+test("ring 疏散：核心格被空 worker 占用 + cheb-1 Ranger → ranger_ring_clear 让位", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  const empty = worker("w-empty", [0, 0], 0);
+  const r = { id: "r00", position: [1, 0] as Position, hp: 2, unitType: "RANGER" as const, cargo: 0 };
+  const plan = planner.decide({
+    state: makeState({
+      units: [empty, r],
+      vanguards: [],
+      workers: [empty],
+      rangers: [r],
+      obstacleCells: [[0, 1], [-1, 0]],
+    }),
+    policy: undefined,
+  });
+  assert.equal(
+    plan.intents[r.id],
+    "ranger_ring_clear",
+    `cheb-1 Ranger 应让位到 cheb-2，实际=${plan.intents[r.id] ?? "(none)"}`,
+  );
+});
+
+test("ring 疏散：核心格未被 worker 占用 = 正常守位（零回归，无 vanguard_ring_clear）", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  const v = vanguard("v00", [1, 0]);
+  const plan = planner.decide({
+    state: makeState({ units: [v], vanguards: [v], workers: [] }),
+    policy: undefined,
+  });
+  assert.ok(
+    !Object.values(plan.intents).includes("vanguard_ring_clear"),
+    `核心格无 worker 时军事不强制让位，实际 intents=${JSON.stringify(intentsOf(plan))}`,
+  );
+});
+
+test("ring 疏散：空 worker 全邻被堵/占满仍持续发疏散意图（coreGuardFallback 外圈锚点）", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  const empty = worker("w-empty", [0, 0], 0);
+  const loaded1 = worker("w-l1", [0, -1], 1);
+  const loaded2 = worker("w-l2", [0, -1], 1);
+  const v = vanguard("v00", [1, 0]);
+  const plan = planner.decide({
+    state: makeState({
+      units: [empty, loaded1, loaded2, v],
+      vanguards: [v],
+      workers: [empty, loaded1, loaded2],
+      obstacleCells: [[0, 1], [-1, 0], [1, 1], [-1, 1], [-1, -1], [1, -1]],
+    }),
+    policy: undefined,
+  });
+  assert.equal(
+    plan.intents[empty.id],
+    "worker_clear_core_empty",
+    `空 worker 全堵时仍应发疏散意图，实际=${plan.intents[empty.id] ?? "(none)"}`,
   );
 });

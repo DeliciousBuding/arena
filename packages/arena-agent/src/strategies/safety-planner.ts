@@ -926,10 +926,25 @@ export class SafetyPlanner {
       samePosition(unit.position, home) &&
       !(unit.hp < UNIT_MAX_HP[unit.unitType])
     ) {
-      const exit = homeCell(home, movementObstacles, index)
-        ?? this.coreGuardFallback(home, movementObstacles, index);
+      // 疏散目标优先「物理空邻格」：用真实障碍 + 实时占用判定，忽略 move-failed
+      // 瞬时标记（标记可能来自别的单位/旧条件——生产 t2 实证：核心 4 邻中
+      // RIGHT/DOWN 物理空（occ=0）却被瞬时标记成障碍，yieldAnchor 返回 null，
+      // fallback 选被占 LEFT → MOVE_CONTESTED → 空 worker 永远走不出核心格）。
+      // 无物理空位再退单占用邻格（容量 2 可挤入）、再退外圈守位点。
+      const occupancy = occupancyCounts(state);
+      let exit: Position | null = null;
+      const cardinals: readonly Position[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      for (const direction of cardinals) {
+        const cand: Position = [home[0] + direction[0], home[1] + direction[1]];
+        if (state.obstacleCells.has(cellKey(cand))) continue;
+        if ((occupancy.get(cellKey(cand)) ?? 0) >= 2) continue;
+        exit = cand;
+        break;
+      }
+      exit ??= yieldAnchor(home, movementObstacles, occupancy, state.visibleEnemies);
+      exit ??= this.coreGuardFallback(home, movementObstacles, index);
       if (exit !== null && !samePosition(unit.position, exit)) {
-        const direction = stepToward(unit.position, exit, movementObstacles);
+        const direction = stepToward(unit.position, exit, state.obstacleCells);
         if (direction !== null) { set(unit, { type: "MOVE", direction }, "worker_clear_core_empty"); return; }
       }
     }
@@ -1216,6 +1231,11 @@ export class SafetyPlanner {
       if (
         home !== null &&
         target !== home &&
+        // 核心格上的 worker 豁免错峰（2026-08-08，t2 卸货通道死锁实证）：
+        // 占核心格 = 占死卸货唯一通道，必须离开让位——错峰 WAIT 会让它永远
+        // 卡在核心格（4 满载 worker 围死 ring 时 hasOuter 恒真 → worker_hold_crowded
+        // 恒 WAIT → deposit=0 经济冻结）。
+        !samePosition(unit.position, home) &&
         chebyshev(unit.position, home) <= PATROL_DEPARTURE_RADIUS
       ) {
         const crowded = state.workers.filter(
@@ -1259,12 +1279,22 @@ export class SafetyPlanner {
       : new Set([...movementObstacles, cellKey(state.core.position)]);
     // 核心通道清障（core-clearance-v1）：homeCell 四邻全堵时历史行为回退到核心
     // 格（占死卸货通道）——coreClearance 下回退到外圈守位点，军事绝不落核心格。
+    // ring 疏散（2026-08-08，t2 卸货通道死锁实证）：核心格被 worker 占用（空载
+    // idle 或满载待卸）= 卸货通道已被占死，守位退到 Chebyshev 2（coreGuardFallback
+    // 优先）腾出 cheb-1 ring——否则 4 Vanguard 挤满 ring，被困空 worker 4 邻全堵
+    // 永远走不出核心格，deposit=0 经济冻结。
+    const coreOccupiedByWorker = state.core !== null && state.units.some(
+      (u) => u.unitType === "WORKER" && samePosition(u.position, state.core!.position),
+    );
     const approachTarget = state.core === null
       ? null
-      : homeCell(state.core.position, militaryObstacles, index)
-        ?? (this.config.coreClearance === true
-          ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
-          : state.core.position);
+      : this.config.coreClearance === true && coreOccupiedByWorker
+        ? (this.coreGuardFallback(state.core.position, militaryObstacles, index)
+           ?? homeCell(state.core.position, militaryObstacles, index))
+        : homeCell(state.core.position, militaryObstacles, index)
+          ?? (this.config.coreClearance === true
+            ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
+            : state.core.position);
     const adjacent = enemies.find((enemy) => manhattan(unit.position, enemy.position) === 1);
     if (adjacent !== undefined) {
       const direction = directionToAdjacent(unit.position, adjacent.position);
@@ -1287,6 +1317,31 @@ export class SafetyPlanner {
       if (exit !== null && !samePosition(unit.position, exit)) {
         const direction = stepToward(unit.position, exit, movementObstacles);
         if (direction !== null) { set(unit, { type: "MOVE", direction }, "vanguard_clear_core"); return; }
+      }
+    }
+
+    // ring 疏散（core-clearance-v1 补强，2026-08-08，t2 卸货通道死锁实证）：核心格
+    // 被 worker 占用（空载 idle 或满载待卸）= 卸货通道被占死。cheb-1 ring 上的
+    // 军事单位退到 Chebyshev 2（coreGuardFallback）让出核心邻格——否则 Vanguard
+    // 守位锚点 homeCell 就是 cheb-1（四邻轮转把自己钉在 ring 上），被困空 worker
+    // 4 邻全堵永远走不出核心格 → deposit=0 经济冻结（生产 t2 实证 130+ tick）。
+    // 邻接敌由上方 SWEEP 分支优先反击（战斗不丢）；仅核心格被 worker 占用时
+    // 触发，正常守位零回归。
+    if (
+      this.config.coreClearance === true &&
+      state.core !== null &&
+      coreOccupiedByWorker &&
+      chebyshev(unit.position, state.core.position) === 1 &&
+      !samePosition(unit.position, state.core.position)
+    ) {
+      const post = this.coreGuardFallback(state.core.position, militaryObstacles, index);
+      if (
+        post !== null &&
+        !samePosition(post, state.core.position) &&
+        !samePosition(unit.position, post)
+      ) {
+        const direction = stepToward(unit.position, post, militaryObstacles);
+        if (direction !== null) { set(unit, { type: "MOVE", direction }, "vanguard_ring_clear"); return; }
       }
     }
 
@@ -1757,6 +1812,11 @@ export class SafetyPlanner {
         ?? (this.config.coreClearance === true
           ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
           : state.core.position);
+    // ring 疏散（与 Vanguard 同，2026-08-08）：核心格被 worker 占用 = 卸货通道占死，
+    // cheb-1 Ranger 退到 Chebyshev 2 让位（射击分支优先在上方已处理——有敌就打）。
+    const rangerCoreOccupiedByWorker = state.core !== null && state.units.some(
+      (u) => u.unitType === "WORKER" && samePosition(u.position, state.core!.position),
+    );
 
     // 核心通道清障（core-clearance-v1，2026-08-07）：本 Ranger 站在核心格上
     // → 疏散到最近空邻格/外圈（与 Vanguard 同，核心格只留给卸货 worker）。
@@ -1838,6 +1898,28 @@ export class SafetyPlanner {
           "ranger_memory_shot",
         );
         return;
+      }
+    }
+
+    // ring 疏散（core-clearance-v1 补强，2026-08-08，与 Vanguard 同）：核心格被
+    // worker 占用 = 卸货通道占死，cheb-1 Ranger 退到 Chebyshev 2 让出核心邻格
+    // （守位锚点 homeCell 即 cheb-1，会把自己钉在 ring 上堵死被困空 worker 的
+    // 出口）。射击分支在上方已优先（射程内有敌就开火）；仅核心格被占时触发。
+    if (
+      this.config.coreClearance === true &&
+      state.core !== null &&
+      rangerCoreOccupiedByWorker &&
+      chebyshev(unit.position, state.core.position) === 1 &&
+      !samePosition(unit.position, state.core.position)
+    ) {
+      const post = this.coreGuardFallback(state.core.position, militaryObstacles, index);
+      if (
+        post !== null &&
+        !samePosition(post, state.core.position) &&
+        !samePosition(unit.position, post)
+      ) {
+        const direction = stepToward(unit.position, post, militaryObstacles);
+        if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_ring_clear"); return; }
       }
     }
 
