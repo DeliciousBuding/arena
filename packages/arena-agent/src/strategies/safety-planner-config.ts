@@ -261,6 +261,12 @@ export interface SafetyPlannerConfig {
    */
   readonly militaryHunt?: boolean;
   /**
+   * 军事打野陈旧区块优先：Vanguard 无显式攻坚目标时，按当前环探测点所在
+   * chunk 的观察老化选择方位（最旧优先），而不是永远固定方位轮转。多单位
+   * 通过 deterministic offset 分散候选顺序。默认 false = 历史固定序。
+   */
+  readonly militaryScavengeFrontier?: boolean;
+  /**
    * worker 空闲回血（2026-08-07，B13 候选，竞品 heal priority 对照）：
    * 空 worker（无 cargo、无资源任务、未撤离）HP 未满且 Core 资源足够
    * 补满时回 Core 补血——在 Core 上由主循环 HEAL 分支结算（1 HP=1 资源，

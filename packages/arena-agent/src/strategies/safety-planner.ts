@@ -2054,9 +2054,12 @@ export class SafetyPlanner {
         }
         const dense = this.config.militarySearchDense === true;
         const directionCount = dense ? 16 : EXPLORE_DIRECTION_COUNT;
-        const memory = this.world.unitMemory(unit.id, (index * 3 + 7) % directionCount);
         const home = state.core.position;
         const beacon = state.beacon.position ?? home;
+        const memory = this.world.unitMemory(
+          unit.id,
+          this.militaryScavengeDirection(home, beacon, 0, index, directionCount),
+        );
         let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
         let patrolPoint = dense
           ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
@@ -2079,7 +2082,16 @@ export class SafetyPlanner {
               : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
           } else {
             memory.patrolRing = 0;
-            memory.patrolDirection = (memory.patrolDirection + 3) % directionCount;
+            memory.patrolDirection = this.config.militaryScavengeFrontier === true
+              ? this.world.staleDirection(
+                  home,
+                  beacon,
+                  memory.patrolRing,
+                  this.config.exploreRadius,
+                  directionCount,
+                  (index * 3 + 7) % directionCount,
+                )
+              : (memory.patrolDirection + 3) % directionCount;
             patrolPoint = dense
               ? exploreTargetDense(home, beacon, memory.patrolDirection, patrolRadius)
               : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
@@ -2532,6 +2544,28 @@ export class SafetyPlanner {
         // 已展开或环上无空位：原地待机（保持射程）
       }
     }
+  }
+
+  /** 军事打野方位：开启 frontier 模式时，按候选探测点所在 chunk 的陈旧度选方位；
+   * deterministic offset 只改变并列候选起点，用来分散多单位。关闭时保持历史固定序。 */
+  private militaryScavengeDirection(
+    home: Position,
+    beacon: Position,
+    ringIndex: number,
+    index: number,
+    directionCount: number,
+  ): number {
+    if (this.config.militaryScavengeFrontier === true) {
+      return this.world.staleDirection(
+        home,
+        beacon,
+        ringIndex,
+        this.config.exploreRadius,
+        directionCount,
+        (index * 3 + 7) % directionCount,
+      );
+    }
+    return (index * 3 + 7) % directionCount;
   }
 
   /** 产兵让位预判（spawn-yield-v1，2026-08-08）：核心本 tick 是否计划 SPAWN——
