@@ -516,7 +516,9 @@ export function loadAllianceAdvice(): AllianceAdvicePayload {
           if (dist > CORE_PROXIMITY_RADIUS) continue;
           const stale = age !== null && age > 5000;
           threats.push({
-            severity: dist < 15 ? "HIGH" : dist < 25 ? "MEDIUM" : "INFO",
+            // 陈旧目击（可能已离开）统一 INFO：幽灵威胁不占 HIGH/MEDIUM 高槽位，
+            // 免把高价值建议（金牌矿/补测）挤出 15 条上限。
+            severity: stale ? "INFO" : dist < 15 ? "HIGH" : dist < 25 ? "MEDIUM" : "INFO",
             category: "THREAT",
             tenant: t,
             title: t + " 敌核近距目击（" + tr.username + " 距 " + dist + " 格）",
