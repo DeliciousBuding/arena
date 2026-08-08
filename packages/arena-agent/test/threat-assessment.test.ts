@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import type { Position, TickState, VisibleEntity } from "../src/domain/model.ts";
-import { advanceRecentAttack, assessThreat, coreDamagedThisTick, damagedThisTick } from "../src/domain/threat.ts";
+import { advanceRecentAttack, assessThreat, coreDamagedThisTick, damagedThisTick, squadContactThisTick } from "../src/domain/threat.ts";
 import { World } from "../src/domain/world.ts";
 
 const CORE: Position = [0, 0];
@@ -408,4 +408,36 @@ test("advanceRecentAttack：受击刷新到期、未受击保留、过期自然�
   assert.equal(advanceRecentAttack(12, false, 15), 15); // 保留
   assert.equal(advanceRecentAttack(12, false, 0), 0); // 从未受击保持 0
   assert.equal(advanceRecentAttack(12, true, 10), 17); // 受击刷新 max
+});
+
+test("前线接敌：本 tick 我方 Vanguard 受击 → ENGAGED squad_contact", () => {
+  const result = assessThreat({
+    core: CORE,
+    visibleEnemies: [enemy("e1", [8, 0])],
+    enemyHints: [hint("e1", [8, 0], [8, 0])],
+    coreDamagedThisTick: false,
+    squadContactThisTick: true,
+  });
+  assert.equal(result.level, "ENGAGED");
+  assert.equal(result.reason, "squad_contact");
+});
+
+test("squadContactThisTick：仅我方战斗单位受击计入", () => {
+  const combatIds = new Set(["v1", "r1"]);
+  assert.equal(squadContactThisTick(
+    [{ eventType: "UNIT_DAMAGED", actorId: "v1" }],
+    combatIds,
+  ), true);
+  assert.equal(squadContactThisTick(
+    [{ eventType: "UNIT_DAMAGED", actorId: "w1" }],
+    combatIds,
+  ), false); // worker 受击不升级
+  assert.equal(squadContactThisTick(
+    [{ eventType: "UNIT_DAMAGED", actorId: null }],
+    combatIds,
+  ), false);
+  assert.equal(squadContactThisTick(
+    [{ eventType: "CORE_DAMAGED", actorId: "v1" }],
+    combatIds,
+  ), false);
 });
