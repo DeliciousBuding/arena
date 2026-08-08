@@ -16,6 +16,7 @@ import { TtlCache } from "./cache.ts";
 import { TENANTS } from "./fs-jsonl.ts";
 import { loadLeaderboardIntel, type LeaderboardIntel } from "./leaderboard.ts";
 import { buildEncounteredIndex, type EncounterEntry } from "./intel.ts";
+import { loadPipelineHealth, type PipelineHealthPayload } from "./pipeline-health.ts";
 
 export interface DeedsJournalPayload {
   generatedAt: string;
@@ -131,6 +132,10 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
       // audit/overview（已在日记路径加载），无触网/无定时任务。
       const miningLine = buildMiningExecutionLine(loadAuditOverview());
       if (miningLine) narrative = narrative ? narrative + " " + miningLine : miningLine;
+      // 管线健康（2026-08-08，日记层第 7 层）：同步滞后 + 生命周期闭环 + 数据源新鲜度
+      // ——读 pipeline-health（15s 缓存，纯文件），无触网/无定时任务。
+      const phLine = buildPipelineHealthLine(loadPipelineHealth());
+      if (phLine) narrative = narrative ? narrative + " " + phLine : phLine;
     } catch { /* 商店数据不可用不阻断 */ }
   }
   const windowDelta = buildWindowDelta(windowed, prevWindowed);
@@ -196,6 +201,22 @@ export function buildMiningExecutionLine(ov: AuditOverviewPayload | null): strin
     line += `；分工 ${mf.assigned} 已采 ${mf.harvested} 在途 ${mf.open}（兑现率 ${eff}）`;
   }
   return line + "。";
+}
+/** 管线健康摘要（2026-08-08，日记层 · 第 7 层）：同步滞后 + 生命周期闭环 + 数据源
+ *  新鲜度——"测绘记录层在不在健康前进"一眼可读。读 pipeline-health（15s 缓存，纯文件），无触网。 */
+export function buildPipelineHealthLine(ph: PipelineHealthPayload | null): string | null {
+  if (!ph?.global) return null;
+  const g = ph.global;
+  const lag = g.avgLagTicks ?? 0;
+  const trend = g.lagTrend ? (g.lagTrend.direction === "narrowing" ? "收窄" : g.lagTrend.direction === "widening" ? "扩大" : "平稳") : null;
+  const parts = [`同步滞后 ${lag} tick${trend ? `（${trend}）` : ""}`];
+  const stale = (g.staleTenants ?? []).concat(g.missingTenants ?? []);
+  if (stale.length > 0) parts.push(`滞后租户 ${stale.join("/")}`);
+  if (g.lifecycleFlow === "STALLED") parts.push("矿生命周期闭环 STALLED（采集事件在但负态=0——survey-sync 疑似静默空跑）");
+  else if (g.lifecycleFlow === "OK") parts.push("矿生命周期闭环正常");
+  const staleSources = (g.sources ?? []).filter((s) => s.stale).map((s) => s.name);
+  if (staleSources.length > 0) parts.push(`陈旧源 ${staleSources.join("/")}`);
+  return `管线健康：${parts.join("，")}。`;
 }
 /** 敌情威胁摘要（2026-08-08，日记层 · 第 5 层）：高威胁遭遇（CRITICAL/HIGH + 距核距离）
  *  + 排行榜猛攻蛆（ELITE_AGGRESSOR = 伤害 top10）——联盟日记叙事追加一行，让"谁在
