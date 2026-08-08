@@ -270,6 +270,27 @@ async function main() {
     if (auditOk === true) ok("手操审计 UI", "HUMAN AUDIT 记录可见");
     else if (auditOk === false) bad("手操审计 UI", "手操记录区块缺失/异常");
     else results.push("  ⚠ 手操审计 UI — 暂无手操记录，跳过");
+
+    // 6d) 15s tick 读条可视化：tickFill 存在且随 tick 推进（两次采样 transform 变化）
+    let tickOk = null; // true | false | null(跳过)
+    let tickDetail = "";
+    try {
+      const t1 = await page.evaluate(() => {
+        const el = document.getElementById("tickFill");
+        return { exists: !!el, transform: el ? (el.style.transform || getComputedStyle(el).transform) : null, label: document.getElementById("tickLabel")?.innerText ?? null };
+      });
+      await sleep(4000);
+      const t2 = await page.evaluate(() => {
+        const el = document.getElementById("tickFill");
+        return { exists: !!el, transform: el ? (el.style.transform || getComputedStyle(el).transform) : null };
+      });
+      if (t1.exists && t2.exists && t1.transform && t1.transform !== t2.transform) { tickOk = true; tickDetail = (t1.label ?? "") + " 推进 " + t1.transform + "→" + t2.transform; }
+      else if (!t1.exists) tickOk = false;
+      else tickOk = null;
+    } catch (e) { tickOk = false; }
+    if (tickOk === true) ok("15s tick 读条", tickDetail);
+    else if (tickOk === false) bad("15s tick 读条", "tickFill 缺失");
+    else results.push("  ⚠ 15s tick 读条 — 采样窗口内未推进，跳过");
     // 7) API 健康
     for (const path of ["/api/overview", "/api/stream?tenant=t1&n=5", "/api/survey?tenant=t1"]) {
       const t0 = Date.now();
