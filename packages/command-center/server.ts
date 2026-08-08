@@ -43,6 +43,7 @@ import { loadDecisionAudit, warmDecisionAudit } from "./lib/decision-audit.ts";
 import { loadLifecycleAudit, warmLifecycleAudit } from "./lib/lifecycle-audit.ts";
 import { loadMineUtilization, warmMineUtilization } from "./lib/mine-utilization.ts";
 import { loadAuditOverview, warmAuditOverview } from "./lib/audit-overview.ts";
+import { loadHumanConflict, warmHumanConflict } from "./lib/human-conflict.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -354,6 +355,18 @@ app.get("/api/audit/mines", (c) => {
   }
   return c.json(loadMineUtilization(tenant));
 });
+app.get("/api/audit/human/conflicts", (c) => {
+  // 人机协同冲突审计（2026-08-08）：手操 vs 自动的冲突量化——applied/rejected、
+  // 拒绝原因 top（t3 "Core is already moving" 404 次实证）、手操类型构成。
+  // outcome 尾部 + human-command-audit 只读；30s 缓存 + 启动预热，不进周期循环。
+  const tenant = c.req.query("tenant") ?? "all";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  const w = Number(c.req.query("window") ?? 3000);
+  const window = Number.isFinite(w) ? Math.min(Math.max(w, 200), 20_000) : 3000;
+  return c.json(loadHumanConflict(tenant, window));
+});
 app.get("/api/audit/human", (c) => {
   // 人类指挥审计（2026-08-08）：手操流水（指令/目标/模式/清空/删除），
   // 重启不丢——复盘"什么时候手操了什么"。?tenant=tN&limit=100。
@@ -555,6 +568,8 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { warmMineUtilization(); } catch { /* 忽略 */ } }, 70);
   // 综合审计总览（复用子审计缓存）：启动预热一次，不进周期循环。
   setTimeout(() => { try { warmAuditOverview(); } catch { /* 忽略 */ } }, 80);
+  // 人机冲突审计（尾部只读）：启动预热一次，不进周期循环。
+  setTimeout(() => { try { warmHumanConflict(); } catch { /* 忽略 */ } }, 90);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
