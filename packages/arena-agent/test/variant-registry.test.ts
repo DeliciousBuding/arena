@@ -77,6 +77,15 @@ test("variant registry: multiple variants merge into one config", () => {
   assert.deepEqual(merged, { threatRecall: true, coreEvade: true });
 });
 
+test("variant registry: population-ceiling-30-v1 raises the spawn ceiling", () => {
+  assert.deepEqual(resolveSafetyVariantConfig("population-ceiling-30-v1"), { populationCeiling: 30 });
+  assert.equal(isSafetyVariant("population-ceiling-30-v1"), true);
+  // 与 strike-core-v1 叠加（t1 生产组合）：天花板 30 生效，其余配置不变
+  const merged = resolveVariantsConfig(["strike-core-v1", "population-ceiling-30-v1"]);
+  assert.equal(merged.populationCeiling, 30);
+  assert.equal(merged.aggression, "aggressive");
+});
+
 test("runtime config schema: accepts variants field and rejects malformed values", () => {
   const base = {
     tenantId: "t9",
