@@ -31,6 +31,8 @@ test("alliance shadow CLI wiring: supervisor child args + tenant runtime options
   assert.match(tenant, /onAllianceShadowFrame:/);
   assert.match(supervisor, /createCentralAllianceShadowRuntime/);
   assert.match(supervisor, /allianceDirectorView:/);
+  assert.match(supervisor, /allianceStrategyControl:/);
+  assert.match(supervisor, /initialStrategicProfile/);
   assert.match(supervisor, /actionOwnership:\s*"none"/);
 });
 
@@ -80,6 +82,12 @@ test("run-supervisor: Director timing options without Director enable fail fast"
   assert.match(result.output, /timing options require --alliance-director-shadow/);
 });
 
+test("run-supervisor: strategic profile without Director enable fails fast", async () => {
+  const result = await runCli("run-supervisor.ts", [`--repo-root=${REPO_ROOT}`, "--alliance-strategy-profile=aggressive"]);
+  assert.equal(result.code, 1);
+  assert.match(result.output, /Alliance strategy profile requires --alliance-director-shadow/);
+});
+
 test("run-supervisor: env shadow+Director config passes validation and reaches debug bind", async () => {
   const blocker = createServer();
   await new Promise<void>((done) => blocker.listen(0, "127.0.0.1", done));
@@ -94,6 +102,7 @@ test("run-supervisor: env shadow+Director config passes validation and reaches d
       ARENA_ALLIANCE_DIRECTOR_SHADOW: "true",
       ARENA_ALLIANCE_DIRECTOR_PERIOD_TICKS: "4",
       ARENA_ALLIANCE_DIRECTOR_MAX_SKEW_TICKS: "2",
+      ARENA_ALLIANCE_STRATEGY_PROFILE: "defend-only",
       ARENA_DEBUG_PORT: String((address as { port: number }).port),
     });
     assert.equal(result.code, 1);

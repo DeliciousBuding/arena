@@ -43,3 +43,23 @@ export type {
   SupervisorAllianceDirectorRuntime,
 } from "./supervisor-director.ts";
 export { createSupervisorAllianceDirectorRuntime } from "./supervisor-director.ts";
+
+// Central shadow control plane
+export type {
+  CentralAllianceShadowOptions,
+  CentralAllianceShadowRuntime,
+  CentralAllianceShadowView,
+} from "./central-shadow-runtime.ts";
+export { createCentralAllianceShadowRuntime } from "./central-shadow-runtime.ts";
+
+export type {
+  ShadowPolicyAdapter,
+  ShadowPolicyAdapterOptions,
+  ShadowPolicyAdapterView,
+  StrategicPolicyControlResult,
+  StrategicPolicyRuntimeView,
+} from "./shadow-policy-adapter.ts";
+export { createShadowPolicyAdapter } from "./shadow-policy-adapter.ts";
+
+export type { TenantAllianceIpcBridge } from "./tenant-bridge.ts";
+export { createTenantAllianceIpcBridge } from "./tenant-bridge.ts";

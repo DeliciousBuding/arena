@@ -19,6 +19,7 @@ const ENV_DEFAULTS = {
   "alliance-shadow-interval-ticks": "ARENA_ALLIANCE_SHADOW_INTERVAL_TICKS",
   "alliance-director-period-ticks": "ARENA_ALLIANCE_DIRECTOR_PERIOD_TICKS",
   "alliance-director-max-skew-ticks": "ARENA_ALLIANCE_DIRECTOR_MAX_SKEW_TICKS",
+  "alliance-strategy-profile": "ARENA_ALLIANCE_STRATEGY_PROFILE",
   "shutdown-timeout-ms": "ARENA_SHUTDOWN_TIMEOUT_MS",
   port: "ARENA_DEBUG_PORT",
   "debug-host": "ARENA_DEBUG_HOST",
@@ -44,6 +45,7 @@ async function main(): Promise<void> {
       "alliance-director-shadow": { type: "boolean" },
       "alliance-director-period-ticks": { type: "string" },
       "alliance-director-max-skew-ticks": { type: "string" },
+      "alliance-strategy-profile": { type: "string" },
       "shutdown-timeout-ms": { type: "string" },
       port: { type: "string" },
       "debug-host": { type: "string" },
@@ -96,8 +98,12 @@ async function main(): Promise<void> {
   }
   const directorPeriodRaw = option("alliance-director-period-ticks");
   const directorSkewRaw = option("alliance-director-max-skew-ticks");
+  const allianceStrategyProfile = option("alliance-strategy-profile");
   if (!allianceDirectorEnabled && (directorPeriodRaw !== undefined || directorSkewRaw !== undefined)) {
     throw new Error("Alliance Director timing options require --alliance-director-shadow");
+  }
+  if (!allianceDirectorEnabled && allianceStrategyProfile !== undefined) {
+    throw new Error("Alliance strategy profile requires --alliance-director-shadow");
   }
   const allianceDirectorPeriodTicks = parseInteger(directorPeriodRaw, 4, 1, "--alliance-director-period-ticks");
   const allianceDirectorMaxSkewTicks = parseInteger(directorSkewRaw, 4, 0, "--alliance-director-max-skew-ticks");
@@ -131,12 +137,25 @@ async function main(): Promise<void> {
       console.log(`[supervisor] ${event.at} ${event.type} ${event.tenantId}${event.detail ? `: ${event.detail}` : ""}`);
     },
   });
+  const unavailableStrategyResult = () => ({
+    accepted: false as const,
+    error: "Alliance strategic runtime is not initialized",
+    strategy: { available: false, mode: "ASSIST_ONLY", actionOwnership: "none" },
+  });
   const debugServer = new DebugServer({
     repoRoot,
     supervisor,
     allianceDirectorView: () => centralAlliance?.view() ?? {
       enabled: false, mode: "ASSIST_ONLY", actionOwnership: "none", available: false,
     },
+    ...(allianceDirectorEnabled ? {
+      allianceStrategyControl: {
+        view: () => centralAlliance?.view().strategy ?? { available: false, mode: "ASSIST_ONLY", actionOwnership: "none" },
+        requestProfile: (name: string) => centralAlliance?.requestStrategicProfile(name) ?? unavailableStrategyResult(),
+        requestRollback: () => centralAlliance?.requestStrategicRollback() ?? unavailableStrategyResult(),
+        markLastGood: () => centralAlliance?.markStrategicLastGood() ?? unavailableStrategyResult(),
+      },
+    } : {}),
     port,
     ...(option("debug-host") !== undefined ? { host: option("debug-host") } : {}),
   });
@@ -155,9 +174,10 @@ async function main(): Promise<void> {
       expectedTenants,
       periodTicks: allianceDirectorPeriodTicks,
       maxSkewTicks: allianceDirectorMaxSkewTicks,
+      ...(allianceStrategyProfile !== undefined ? { initialStrategicProfile: allianceStrategyProfile } : {}),
       send: (tenantId, message) => supervisor.sendToTenant(tenantId, message),
     });
-    console.log(`[supervisor] Alliance Director shadow enabled: tenants=${expectedTenants.join(",")} period=${allianceDirectorPeriodTicks} skew<=${allianceDirectorMaxSkewTicks} actionOwnership=none`);
+    console.log(`[supervisor] Alliance Director shadow enabled: tenants=${expectedTenants.join(",")} period=${allianceDirectorPeriodTicks} skew<=${allianceDirectorMaxSkewTicks} strategy=${allianceStrategyProfile ?? "balanced"} actionOwnership=none`);
   }
 
   let signalResolve: ((signal: string) => void) | null = null;

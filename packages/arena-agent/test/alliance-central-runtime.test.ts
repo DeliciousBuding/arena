@@ -157,3 +157,75 @@ test("central shadow: wrong transport identity/malformed input fail open; ACK re
   assert.equal(view.runtime.ackRecords.at(-1).state, "accepted");
   assert.equal(view.actionOwnership, "none");
 });
+
+test("central strategic profile: request is pending until next coherent replan; last-good rollback is also boundary-applied", () => {
+  const sends: Array<{ tenantId: string; message: any }> = [];
+  const central = createCentralAllianceShadowRuntime({
+    enabled: true,
+    expectedTenants: ["t1"],
+    periodTicks: 1,
+    maxSkewTicks: 0,
+    send: (tenantId, message) => { sends.push({ tenantId, message }); return true; },
+  });
+
+  central.onChildMessage("t1", createFrameMessage(frame("t1", 100, 0)));
+  let view = central.view();
+  assert.equal(view.strategy.active.name, "balanced");
+  assert.equal(view.strategy.active.selectionRevision, 1);
+  assert.equal(view.strategy.pending, null);
+
+  const invalid = central.requestStrategicProfile("does-not-exist");
+  assert.equal(invalid.accepted, false);
+  assert.equal(central.view().strategy.pending, null);
+
+  const queued = central.requestStrategicProfile("aggressive");
+  assert.equal(queued.accepted, true);
+  view = central.view();
+  assert.equal(view.strategy.active.name, "balanced", "operator request must not mutate an in-flight policy epoch");
+  assert.deepEqual(view.strategy.pending, { action: "select", profile: "aggressive" });
+
+  central.onChildMessage("t1", createFrameMessage(frame("t1", 101, 0)));
+  view = central.view();
+  assert.equal(view.strategy.active.name, "aggressive");
+  assert.equal(view.strategy.active.selectionRevision, 2);
+  assert.equal(view.strategy.pending, null);
+  assert.equal(view.mode, "ASSIST_ONLY");
+  assert.equal(view.actionOwnership, "none");
+  assert.ok(sends.every((entry) => entry.message.directive?.mode === "ASSIST"));
+
+  central.markStrategicLastGood();
+  assert.equal(central.view().strategy.lastGood?.name, "aggressive");
+  central.requestStrategicProfile("defend-only");
+  central.onChildMessage("t1", createFrameMessage(frame("t1", 102, 0)));
+  assert.equal(central.view().strategy.active.name, "defend-only");
+
+  central.requestStrategicRollback();
+  assert.deepEqual(central.view().strategy.pending, { action: "rollback" });
+  central.onChildMessage("t1", createFrameMessage(frame("t1", 103, 0)));
+  view = central.view();
+  assert.equal(view.strategy.active.name, "aggressive");
+  assert.equal(view.strategy.pending, null);
+  assert.equal(view.strategy.lastGood?.name, "aggressive");
+});
+
+test("central strategic profile: configured initial profile is validated at construction and applies on first replan", () => {
+  assert.throws(() => createCentralAllianceShadowRuntime({
+    enabled: true,
+    expectedTenants: ["t1"],
+    initialStrategicProfile: "missing-profile",
+    send: () => true,
+  }), /unknown Alliance strategic profile/);
+
+  const central = createCentralAllianceShadowRuntime({
+    enabled: true,
+    expectedTenants: ["t1"],
+    periodTicks: 1,
+    maxSkewTicks: 0,
+    initialStrategicProfile: "defend-only",
+    send: () => true,
+  });
+  assert.equal(central.view().strategy.active.name, "balanced", "initial profile is queued, not applied outside replan");
+  assert.deepEqual(central.view().strategy.pending, { action: "select", profile: "defend-only" });
+  central.onChildMessage("t1", createFrameMessage(frame("t1", 50, 0)));
+  assert.equal(central.view().strategy.active.name, "defend-only");
+});

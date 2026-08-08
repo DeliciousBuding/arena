@@ -7,6 +7,7 @@ import {
   BALANCED_PROFILE,
   AGGRESSIVE_PROFILE,
   DEFEND_PROFILE,
+  STRATEGIC_REGISTRY,
 } from "../src/alliance/strategic-policy.ts";
 
 test("strategic-policy: contentHash 稳定且区分 profile", () => {
@@ -29,6 +30,14 @@ test("strategic-policy: registry 静态注册——重复/未知/默认约束", 
   assert.equal(registry.get("balanced")?.name, "balanced");
   assert.equal(registry.get("missing"), undefined);
   assert.equal(registry.list().length, 2);
+});
+
+test("strategic-policy: built-in production registry is sealed; runtime may select but not register code/data dynamically", () => {
+  assert.equal(STRATEGIC_REGISTRY.sealed, true);
+  assert.deepEqual(STRATEGIC_REGISTRY.list().map((profile) => profile.name), ["aggressive", "balanced", "defend-only"]);
+  assert.throws(() => STRATEGIC_REGISTRY.register(BALANCED_PROFILE), /sealed/);
+  assert.throws(() => STRATEGIC_REGISTRY.unregister("balanced"), /sealed/);
+  assert.throws(() => STRATEGIC_REGISTRY.setDefault("aggressive"), /sealed/);
 });
 
 test("strategic-policy: selector 首次 select → default；后续 sticky", () => {
