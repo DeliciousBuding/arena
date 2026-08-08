@@ -252,6 +252,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "population-ceiling-35-v1": Object.freeze({ populationCeiling: 35 }),
     /**
+     * 人口上限 35→40（2026-08-09 用户裁决"资源拿来造、更多工人士兵"，激进扩张）：
+     * v0.14 动态定价 k=4 档（pop 36-40：Vanguard 29/Ranger 34，成本高但用户
+     * 明确"不计成本要更多兵"）；pop 40 资源容量 200。配合 lean-spend-v1
+     * （spawnReserve=0）+ workerTarget 16 + militaryRatio 0.5 实现"资源就是
+     * 拿来造的"激进产兵。默认关；生产 config 显式声明启用。
+     */
+    "population-ceiling-40-v1": Object.freeze({ populationCeiling: 40 }),
+    /**
      * Worker 使命层（2026-08-08，worker-mission-v1）：只影响 deterministic 侧
      * 分配（值层置信 + SURVEYOR 角色，见 DETERMINISTIC_VARIANT_CONFIG），
      * safety 侧无开关——空覆盖注册以满足 resolveVariantsConfig 的
@@ -277,6 +285,30 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * （缺注册 = 生产重启 fail-fast）。
      */
     "lean-spend-v1": Object.freeze({}),
+    /**
+     * 冲突退避时间窗（2026-08-09，conflict-backoff-v1，W37）：单位连续 ≥3 次
+     * MOVE_FAILED 且垂直绕行也无路 → 原地 WAIT 2 tick（短停打破互等锁死）。
+     * 参考 arena-evolve heuristic.py:519-533（_move_backoff = tick+2）。与 W5
+     * 互补：W5 封锁目标格冷却（恢复后防重派），W37 单位级时间退避（恢复前
+     * 破互等锁死）。默认 false 零回归。
+     */
+    "conflict-backoff-v1": Object.freeze({
+      conflictBackoff: true,
+      conflictBackoffThreshold: 3,
+      conflictBackoffTicks: 2,
+    }),
+    /**
+     * 饥饿门控侦察环带（2026-08-09，hunger-gate-v1，W38）：worker 200 tick
+     * 内有采集 → patrolRing 锁近环（cap=2）；超 200 tick 无采集 → 判定饥饿
+     * 放开远环（5 环）。参考 arena-evolve heuristic.py:510-514/1595-1601
+     * （_hunger_since/hungry = tick-anchor > 200；max_ring = 5 if hungry else 3）。
+     * 默认 false 零回归。
+     */
+    "hunger-gate-v1": Object.freeze({
+      hungerGate: true,
+      hungerGateTicks: 200,
+      hungerNearRingCap: 2,
+    }),
     /**
      * 打转封锁闭环（2026-08-09，spin-blockade-v1，W5）：WorkerLivenessTracker
      * 检测 oscillation/moveNoEffect 后把目标格写入 temporary_blocks（penalty

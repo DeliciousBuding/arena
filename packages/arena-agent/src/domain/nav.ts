@@ -378,3 +378,27 @@ export function beaconSweepRadius(): {
 export function returnTolerance(): number {
   return RETURN_TOLERANCE;
 }
+
+/* ---------- W38 饥饿门控侦察环带（2026-08-09）----------
+ * 纯函数判定 worker 是否进入饥饿状态（无采集时间超过阈值）。
+ * 参考 arena-evolve heuristic.py:510-514（_hunger_since = tick - last_harvest）、
+ * :1595-1601（hungry = tick - anchor > 200；max_ring = 5 if hungry else 3）。
+ * 消费侧（safety-planner.ts decideWorker）按本函数结果截断/放开 patrolRing。
+ */
+
+/** 饥饿门控判定：lastHarvestTick 距当前 tick 超过 gateTicks 即饥饿。
+ *  纯函数（无状态、确定性），供 safety-planner.ts 巡逻环截断消费。
+ *  @param lastHarvestTick 该 worker 上次 HARVEST_SUCCEEDED 的 tick（0 = 从未采集）
+ *  @param tick            当前 tick
+ *  @param gateTicks       饥饿阈值（默认 200，对齐 ref hungry > 200）
+ *  @returns true = 饥饿（放开远环），false = 饱足（锁近环） */
+export function hungerGateActive(
+  lastHarvestTick: number,
+  tick: number,
+  gateTicks: number,
+): boolean {
+  if (!Number.isFinite(lastHarvestTick) || !Number.isFinite(tick) || !Number.isFinite(gateTicks)) {
+    return false;
+  }
+  return tick - lastHarvestTick > gateTicks;
+}

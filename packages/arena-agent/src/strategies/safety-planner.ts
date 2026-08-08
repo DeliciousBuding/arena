@@ -17,6 +17,7 @@ import {
   EXPLORE_RING_COUNT,
   exploreRadiusForRing,
   exploreTarget,
+  hungerGateActive,
   lineBlocked,
   manhattan,
   move,
@@ -299,6 +300,20 @@ const CARGO_RESCUE_STALL_CARGO_TICKS = 6;
 const CARGO_QUEUE_HOLD_RADIUS = 2;
 const CARGO_QUEUE_ENTRY_LIMIT = 2;
 
+/** W37 冲突退避时间窗兜底（2026-08-09，挂 W5，默认关）：
+ *  连续 ≥CONFLICT_BACKOFF_THRESHOLD 次 MOVE_FAILED 且 detourDirection 垂直绕行
+ *  也无路时，原地 WAIT CONFLICT_BACKOFF_TICKS tick——打破"两单位互挡且绕行格
+ *  互占"的互等锁死。参考 arena-evolve heuristic.py:519-533（_move_backoff=tick+2）。 */
+const CONFLICT_BACKOFF_THRESHOLD = 3;
+const CONFLICT_BACKOFF_TICKS = 2;
+
+/** W38 饥饿门控侦察环带（2026-08-09，挂 W8 explore-radius-wide，默认关）：
+ *  非饥饿期 patrolRing 锁在 HUNGER_NEAR_RING_CAP（近程 2 环），饥饿
+ *  （>HUNGER_GATE_TICKS 无采集）放开到 EXPLORE_RING_COUNT。参考
+ *  arena-evolve heuristic.py:510-514 / :1595-1601（hungry > 200）。 */
+const HUNGER_GATE_TICKS = 200;
+const HUNGER_NEAR_RING_CAP = 2;
+
 /** moveFailedAvoidance 绕行（v0.3 实验）：单位连续 MOVE_FAILED 后不再盲目重试
  *  同格——沿主方向垂直的候选方向探路（先 UP/DOWN 再 LEFT/RIGHT，排除障碍格）；
  *  垂直全堵再退一格反向（远离目标后 BFS 自然换路）。模拟器实证根因：进攻方与
@@ -397,6 +412,7 @@ export class SafetyPlanner {
     memory.patrolReturning = false;
     this.harvestMemStuck.delete(unitId);
     this.moveFailedStreak.delete(unitId);
+    this.conflictBackoffUntil.delete(unitId);
     this.spawnYieldStreak.delete(unitId);
     this.blockadeAssignment.delete(unitId);
     this.coreLockHands.delete(unitId);
@@ -435,6 +451,14 @@ export class SafetyPlanner {
   /** MOVE_FAILED 连续失败计数（moveFailedAvoidance）：单位连续 N tick 移动被
    *  结算拒绝时改走垂直绕行格，避免无反馈重试同格死循环。 */
   private moveFailedStreak = new Map<string, number>();
+  /** W37 冲突退避冷却截止 tick（conflictBackoff，unitId → tick）：连续 ≥3 次
+   *  MOVE_FAILED 且 detourDirection 无路时触发，cooldown 内原地 WAIT——打破
+   *  两单位互挡且绕行格互占的互等锁死（空间绕行失败 → 时间等待）。 */
+  private readonly conflictBackoffUntil = new Map<string, number>();
+  /** W38 饥饿门控上次采集 tick（hungerGate，unitId → lastHarvestTick）：
+   *  decide() 事件循环消费 HARVEST_SUCCEEDED 更新；patrolRing 截断时读取——
+   *  非饥饿期（tick - lastHarvest ≤ gateTicks）锁近环，饥饿放开远环。 */
+  private readonly lastHarvestTick = new Map<string, number>();
   /** 产兵让位连续计数（spawn-yield-v1）：满载 worker 连续让位 tick 数——超过
    *  spawnYieldMaxTicks 强制卸货，防"核心永远想产兵、worker 永远卸不了"。 */
   private spawnYieldStreak = new Map<string, number>();
@@ -1229,9 +1253,11 @@ export class SafetyPlanner {
     if (this.config.sortieQuota === true) {
       this.pruneSorties(state);
     }
-    // MOVE_FAILED 反馈（moveFailedAvoidance）：上 tick 结算拒绝的单位计连续失败，
-    // 其余清零——连续失败 ≥2 时单位改走垂直绕行格探路（见 detourDirection）。
-    if (this.config.moveFailedAvoidance === true) {
+    // MOVE_FAILED 反馈（moveFailedAvoidance / W37 conflictBackoff）：
+    // 上 tick 结算拒绝的单位计连续失败，其余清零——连续失败 ≥2 时单位改走
+    // 垂直绕行格探路（见 detourDirection），连续 ≥3 且绕行无路时 W37 短停
+    // WAIT（见消费点 return_home / go_harvest）。
+    if (this.config.moveFailedAvoidance === true || this.config.conflictBackoff === true) {
       const failed = new Set<string>();
       for (const event of state.events) {
         if (event.eventType === "UNIT_MOVE_FAILED" && event.actorId !== null) failed.add(event.actorId);
@@ -1241,6 +1267,16 @@ export class SafetyPlanner {
           this.moveFailedStreak.set(unit.id, (this.moveFailedStreak.get(unit.id) ?? 0) + 1);
         } else {
           this.moveFailedStreak.delete(unit.id);
+        }
+      }
+    }
+    // W38 饥饿门控事件消费（hungerGate）：HARVEST_Succeeded 更新该 worker 的
+    // lastHarvestTick——patrolRing 截断时读取判定饥饿（tick - lastHarvest >
+    // gateTicks = 饥饿放开远环，否则锁近环）。未启用时 Map 永空（零回归）。
+    if (this.config.hungerGate === true) {
+      for (const event of state.events) {
+        if (event.eventType === "HARVEST_SUCCEEDED" && event.actorId !== null) {
+          this.lastHarvestTick.set(event.actorId, state.tick);
         }
       }
     }
@@ -1689,11 +1725,36 @@ export class SafetyPlanner {
           }
         }
         const stuckTicks = this.moveFailedStreak.get(unit.id) ?? 0;
+        // W37 冲突退避时间窗（conflictBackoff）：冷却内原地 WAIT——打破两单位
+        // 互挡且绕行格互占的互等锁死（空间绕行失败 → 时间等待让敌方先移）。
+        if (this.config.conflictBackoff === true) {
+          const backoffUntil = this.conflictBackoffUntil.get(unit.id);
+          if (backoffUntil !== undefined) {
+            if (backoffUntil > state.tick) {
+              set(unit, { type: "WAIT" }, "conflict_backoff");
+              return;
+            }
+            this.conflictBackoffUntil.delete(unit.id);
+          }
+        }
         const direction =
           this.config.moveFailedAvoidance === true && stuckTicks >= 2
             ? detourDirection(unit.position, home, movementObstacles)
             : stepToward(unit.position, home, movementObstacles);
-        if (direction !== null) set(unit, { type: "MOVE", direction }, "return_home");
+        if (direction !== null) {
+          set(unit, { type: "MOVE", direction }, "return_home");
+        } else if (
+          this.config.conflictBackoff === true &&
+          stuckTicks >= (this.config.conflictBackoffThreshold ?? CONFLICT_BACKOFF_THRESHOLD)
+        ) {
+          // detour/stepToward 均无路且连续失败 ≥ 阈值 → 短停 WAIT（对齐 ref
+          // _move_backoff = tick+2；MOVED 即清零已由 moveFailedStreak 维护）。
+          this.conflictBackoffUntil.set(
+            unit.id,
+            state.tick + (this.config.conflictBackoffTicks ?? CONFLICT_BACKOFF_TICKS),
+          );
+          set(unit, { type: "WAIT" }, "conflict_backoff");
+        }
       }
       return;
     }
@@ -1891,11 +1952,33 @@ export class SafetyPlanner {
         memory.harvestTarget = target;
         if (target !== null && !samePosition(target, unit.position)) {
           const stuckTicks = this.moveFailedStreak.get(unit.id) ?? 0;
+          // W37 冲突退避时间窗（conflictBackoff）：冷却内原地 WAIT。
+          if (this.config.conflictBackoff === true) {
+            const backoffUntil = this.conflictBackoffUntil.get(unit.id);
+            if (backoffUntil !== undefined) {
+              if (backoffUntil > state.tick) {
+                set(unit, { type: "WAIT" }, "conflict_backoff");
+                return;
+              }
+              this.conflictBackoffUntil.delete(unit.id);
+            }
+          }
           const direction =
             this.config.moveFailedAvoidance === true && stuckTicks >= 2
               ? detourDirection(unit.position, target, movementObstacles)
               : stepToward(unit.position, target, movementObstacles);
-          if (direction !== null) set(unit, { type: "MOVE", direction }, "go_harvest");
+          if (direction !== null) {
+            set(unit, { type: "MOVE", direction }, "go_harvest");
+          } else if (
+            this.config.conflictBackoff === true &&
+            stuckTicks >= (this.config.conflictBackoffThreshold ?? CONFLICT_BACKOFF_THRESHOLD)
+          ) {
+            this.conflictBackoffUntil.set(
+              unit.id,
+              state.tick + (this.config.conflictBackoffTicks ?? CONFLICT_BACKOFF_TICKS),
+            );
+            set(unit, { type: "WAIT" }, "conflict_backoff");
+          }
         }
       }
       return;
@@ -2017,6 +2100,20 @@ export class SafetyPlanner {
       // 全部按 16 口径；默认 8 方位（EXPLORE_DIRECTION_COUNT）零回归。
       const directionCount = this.config.workerDenseScan === true ? 16 : EXPLORE_DIRECTION_COUNT;
       let patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
+      // W38 饥饿门控侦察环带（hungerGate，2026-08-09）：非饥饿期（tick -
+      // lastHarvest ≤ gateTicks）patrolRing 锁在 hungerNearRingCap——资源充足
+      // 时宽环低效无解；饥饿（>gateTicks 无采集）放开远环到 EXPLORE_RING_COUNT。
+      // 参考 heuristic.py:1595-1601（max_ring = 5 if hungry else 3）。
+      if (this.config.hungerGate === true) {
+        const gateTicks = this.config.hungerGateTicks ?? HUNGER_GATE_TICKS;
+        const nearCap = this.config.hungerNearRingCap ?? HUNGER_NEAR_RING_CAP;
+        const lastHarvest = this.lastHarvestTick.get(unit.id) ?? 0;
+        const hungry = hungerGateActive(lastHarvest, state.tick, gateTicks);
+        if (!hungry && memory.patrolRing > nearCap) {
+          memory.patrolRing = nearCap;
+          patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
+        }
+      }
       if (maxPatrolRadius < patrolRadius) patrolRadius = maxPatrolRadius;
       let patrolPoint = this.workerPatrolPoint(home, beacon, memory.patrolDirection, patrolRadius);
       const patrolPointBlocked = obstacles.has(cellKey(patrolPoint));
@@ -2027,10 +2124,25 @@ export class SafetyPlanner {
       // 直接延伸（8→16→24→32→40）；最外环才回家换方位。返回途中（被资源
       // 拉回等）不重新外扩——保持回家。
       if (!memory.patrolReturning && chebyshev(unit.position, home) >= patrolRadius) {
-        if (memory.patrolRing < EXPLORE_RING_COUNT - 1) {
+        // W38 升环门控：非饥饿期且已达 nearCap → 不升环（锁近环），保持当前
+        // 巡逻点；饥饿期正常升环（放开远环覆盖）。
+        const hungerGateBlocksRingUp =
+          this.config.hungerGate === true &&
+          memory.patrolRing >=
+            (this.config.hungerNearRingCap ?? HUNGER_NEAR_RING_CAP) &&
+          !hungerGateActive(
+            this.lastHarvestTick.get(unit.id) ?? 0,
+            state.tick,
+            this.config.hungerGateTicks ?? HUNGER_GATE_TICKS,
+          );
+        if (!hungerGateBlocksRingUp && memory.patrolRing < EXPLORE_RING_COUNT - 1) {
           memory.patrolRing += 1;
           patrolRadius = exploreRadiusForRing(this.config.exploreRadius, memory.patrolRing);
           patrolPoint = this.workerPatrolPoint(home, beacon, memory.patrolDirection, patrolRadius);
+          target = patrolPoint;
+        } else if (hungerGateBlocksRingUp) {
+          // W38：饥饿门控阻止升环 → 保持在当前环继续巡逻（不回家，资源充足
+          // 时近环覆盖已足够，无需远征）。
           target = patrolPoint;
         } else {
           memory.patrolReturning = true;
