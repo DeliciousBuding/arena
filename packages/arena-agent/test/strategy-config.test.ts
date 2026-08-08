@@ -46,6 +46,15 @@ test("hot reload contract: variants are hot; writer/model/deadline/policy fields
   assert.equal(hot.variantsChanged, true);
   assert.deepEqual(hot.restartRequiredFields, []);
 
+  const missionOnly = base({
+    variants: ["worker-mission-v1"],
+    mission: { collectionValueFloor: -12 },
+  });
+  const missionHot = hotReloadCompatibility(active, missionOnly);
+  assert.equal(missionHot.compatible, true);
+  assert.equal(missionHot.missionChanged, true);
+  assert.deepEqual(missionHot.restartRequiredFields, []);
+
   for (const candidate of [
     base({ variants: active.variants, submitEnabled: true }),
     base({ variants: active.variants, model: { provider: "test", id: "other-model" } }),
@@ -64,4 +73,11 @@ test("strategy hash changes only with strategy surface; restart hash ignores var
   assert.notEqual(a.strategyHash, b.strategyHash);
   assert.equal(a.restartHash, b.restartHash);
   assert.notEqual(a.configHash, b.configHash);
+
+  const c = compileRuntimeStrategy(base({
+    variants: ["worker-mission-v1"],
+    mission: { collectionValueFloor: -12 },
+  }));
+  assert.notEqual(a.strategyHash, c.strategyHash, "mission tuning is part of the hot strategy identity");
+  assert.equal(a.restartHash, c.restartHash, "mission tuning must not require immutable runtime restart");
 });

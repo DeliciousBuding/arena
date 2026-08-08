@@ -43,6 +43,7 @@ import { unitSpawnCosts } from "../domain/pricing.ts";
 import { extractPlanningSnapshot, type PlanningSnapshot } from "./planning-snapshot.ts";
 import { WorkerTaskPlanner, type Assignment } from "./worker-task-planner.ts";
 import { DEFAULT_MISSION_CONFIG, type MissionConfig } from "./mission-planner.ts";
+import type { WorkerProgressExpectation, WorkerProgressExpectations } from "./progress-contract.ts";
 
 const CELL_ENTITY_CAPACITY = 2;
 const REROUTE_ORDER: Readonly<Record<Direction, readonly Direction[]>> = {
@@ -556,6 +557,9 @@ export class DeterministicPlanner implements PlanProvider {
   /** 官方排行榜威胁画像（2026-08-07，威胁自适应）：透传内部 SafetyPlanner。 */
   private readonly threatProfiles: ReadonlyMap<string, ThreatProfile>;
   private previousAssignments: readonly Assignment[] = [];
+  /** Last task-progress contract emitted with the most recent plan. Runtime liveness consumes this
+   * read-only snapshot on the following observation; generic Safety patrol has no contract. */
+  private lastWorkerProgressExpectations: WorkerProgressExpectations = new Map();
   /** Worker 局部活性恢复冷却：冷却内从 economicSnapshot 排除，强制沿 Safety patrol
    *  探索一段时间，防 reset 后下一 Tick 又被 Hungarian 分回同一 stale mine。 */
   private readonly workerRecoveryUntilTick = new Map<string, number>();
@@ -623,6 +627,10 @@ export class DeterministicPlanner implements PlanProvider {
    *  重读 survey-db），decide() 并入快照——死矿剔除 + 即将刷新格加成即时生效。 */
   replaceRefillPredictions(predictions: ReadonlyMap<string, number>): void {
     this.refillPredictions = predictions;
+  }
+
+  workerProgressExpectations(): WorkerProgressExpectations {
+    return this.lastWorkerProgressExpectations;
   }
 
   /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
@@ -804,6 +812,39 @@ export class DeterministicPlanner implements PlanProvider {
     );
     this.surgeActive = coreDecision.surgeActive;
     if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;
+
+    const progressExpectations = new Map<string, WorkerProgressExpectation>();
+    for (const assignment of assignments) {
+      switch (assignment.task.type) {
+        case "GO_RESOURCE":
+          if (assignment.task.target !== undefined) {
+            progressExpectations.set(assignment.unitId, {
+              kind: "target",
+              taskType: "GO_RESOURCE",
+              target: assignment.task.target,
+            });
+          }
+          break;
+        case "DEPOSIT":
+          if (snapshot.corePosition !== null) {
+            progressExpectations.set(assignment.unitId, {
+              kind: "target",
+              taskType: "DEPOSIT",
+              target: snapshot.corePosition,
+            });
+          }
+          break;
+        case "HARVEST_CURRENT":
+          progressExpectations.set(assignment.unitId, { kind: "cargo_change", taskType: "HARVEST_CURRENT" });
+          break;
+        case "EXPLORE":
+          progressExpectations.set(assignment.unitId, { kind: "novel_coverage", taskType: "EXPLORE" });
+          break;
+        default:
+          break;
+      }
+    }
+    this.lastWorkerProgressExpectations = progressExpectations;
 
     return {
       tick: input.state.tick,

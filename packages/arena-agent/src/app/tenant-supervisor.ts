@@ -547,7 +547,7 @@ export class TenantSupervisor {
         const message = replaced
           ? "config reload target child was replaced before ACK"
           : `config reload ACK timeout after ${timeoutMs}ms`;
-        entry.lastConfigError = message;
+        if (!replaced) entry.lastConfigError = message;
         finish(this.reloadResult(entry, true, false, replaced ? "ipc_unavailable" : "ack_timeout", message));
       }, timeoutMs);
       timer.unref?.();
@@ -556,12 +556,12 @@ export class TenantSupervisor {
         targetChild.send(request, (error) => {
           if (error === null) return;
           const message = error.message;
-          entry.lastConfigError = message;
+          if (entry.child === targetChild) entry.lastConfigError = message;
           finish(this.reloadResult(entry, false, false, "ipc_unavailable", message));
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        entry.lastConfigError = message;
+        if (entry.child === targetChild) entry.lastConfigError = message;
         finish(this.reloadResult(entry, false, false, "ipc_unavailable", message));
       }
     });
