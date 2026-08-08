@@ -1,15 +1,17 @@
 /**
- * 全局联盟测绘地图：合并 4 租户最新 calibration case →
+ * 全局联盟测绘地图：合并 4 租户的累积测绘（survey-db）与最新 calibration case →
  * 全局 cells/bounds/beacons/coreTrails（只读）。
- * 测绘语义：障碍/资源 = 静态地形累积（lastSeen 新鲜度）；单位/核心 = 动态层
+ * 测绘语义：障碍/资源 = 共享世界静态地形，以 survey-db 跨 run 累积为主源
+ * （障碍永久、矿带状态），当前帧 after 只做新鲜度刷新；单位/核心 = 动态层
  * 按 object id 保留最新 tick 快照（以 after.state 为准，已摧毁的不残留）。
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { TENANTS, calibrationDir, cellKey, latestRunDir, listCases, parseTick } from "./fs-jsonl.ts";
+import { DATA_ROOT, TENANTS, calibrationDir, cellKey, latestRunDir, listCases, parseTick } from "./fs-jsonl.ts";
+import { loadTenantSurveyCached } from "./survey-cache.ts";
 import { loadBeaconTrail, loadCoreTrails, loadCoreTrailsFromSurveyDb, type TrailPoint } from "./trails.ts";
 
-const SURVEY_CASE_LIMIT = 24; // 每个租户累积测绘最多取最近 N 个 case（覆盖与新鲜度平衡）
+const SURVEY_CASE_LIMIT = 24; // before 兜底循环最多取最近 N 个 case（主源已切 survey-db）
 
 export interface MapCell {
   x: number;
@@ -23,6 +25,11 @@ export interface MapCell {
   id?: string | null;
   unitType?: string;
   cargo?: number;
+  /** 矿状态（survey-db）：visible=活跃 / stale=待确认 / harvested=采过 / empty=确认空。 */
+  state?: string;
+  seenCount?: number;
+  harvestCount?: number;
+  ageTicks?: number;
   tenant: string;
   fresh: boolean;
 }
@@ -32,16 +39,19 @@ export interface MergedMap {
   bounds: { minX: number; maxX: number; minY: number; maxY: number };
   cellCount: number;
   cells: MapCell[];
+  /** 探索分区（16×16 chunk，跨租户合并）：全局视图"探索过的范围"底纹。 */
+  chunks: Array<{ key: string; cx: number; cy: number; lastSeenTick: number }>;
   beacons: Array<{ tenant: string; x: number; y: number; status: string; carrier_id: string | null; trail: TrailPoint[] }>;
   coreTrails: Array<{ username: string; trail: TrailPoint[]; tenant?: string }>;
 }
 
-interface TerrainEntry { x: number; y: number; type: "obstacle" | "resource"; tick: number }
+interface TerrainEntry { x: number; y: number; type: "obstacle" | "resource"; tick: number; state?: string; seenCount?: number; harvestCount?: number; ageTicks?: number }
 interface DynamicEntry { x: number; y: number; type: "unit" | "core"; tick: number; hp?: number; shield?: number; controlled?: boolean; owner?: string | null; id?: string | null; unitType?: string; cargo?: number }
 
 function loadMergedMapInner(): MergedMap {
   const cells = new Map<string, MapCell>();
   const perTenant: MergedMap["tenants"] = [];
+  const chunkByKey = new Map<string, { key: string; cx: number; cy: number; lastSeenTick: number }>(); // 探索分区（跨租户按 key 合并）
   for (const tenant of TENANTS) {
     const runDir = latestRunDir(tenant);
     if (runDir === null) {
@@ -50,12 +60,45 @@ function loadMergedMapInner(): MergedMap {
     }
     const caseFiles = listCases(tenant, runDir).slice(-SURVEY_CASE_LIMIT);
     let latestTick = 0;
-    const terrain = new Map<string, TerrainEntry>(); // key -> { type, tick }（obstacle/resource 累积）
+    // 地形主源：survey-db 跨 run 累积测绘（30s 内存缓存）。
+    // 障碍 = 永久地形全量；矿 = 带状态（visible/stale/harvested/empty）。
+    // 当前帧 after 只做新鲜度刷新（可见障碍/矿 → 最新 tick + state=visible）。
+    const survey = loadTenantSurveyCached(tenant).survey;
+    const terrain = new Map<string, TerrainEntry>();
+    if (survey) {
+      for (const o of survey.obstacleCells ?? []) {
+        const x = Number(o.x), y = Number(o.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        terrain.set(cellKey(x, y), { x, y, type: "obstacle", tick: Number(o.tick ?? 0) });
+      }
+      for (const r of survey.resourceCells ?? []) {
+        const x = Number(r.x), y = Number(r.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        // 确认空的矿（survey-sync 事件回写 empty）不作为矿点显示——可能 refill，
+        // 但当前无矿；前端只对非 empty 渲染（drawResources 已过滤，这里减少传输）
+        if (String(r.state ?? "") === "empty") continue;
+        terrain.set(cellKey(x, y), {
+          x, y, type: "resource", tick: Number(r.tick ?? 0),
+          state: typeof r.state === "string" ? r.state : undefined,
+          seenCount: typeof r.seenCount === "number" ? r.seenCount : undefined,
+          harvestCount: typeof r.harvestCount === "number" ? r.harvestCount : undefined,
+          ageTicks: typeof r.ageTicks === "number" ? r.ageTicks : undefined,
+        });
+      }
+      for (const ch of survey.chunks ?? []) {
+        const cx = Number(ch.cx), cy = Number(ch.cy), last = Number(ch.lastSeenTick ?? 0);
+        if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+        const key = `${cx},${cy}`;
+        const cur = chunkByKey.get(key);
+        if (!cur || last > cur.lastSeenTick) chunkByKey.set(key, { key, cx, cy, lastSeenTick: last });
+      }
+      if (survey.tickMax > latestTick) latestTick = survey.tickMax;
+    }
     const coreById = new Map<string, DynamicEntry>(); // id -> 最新快照
     const unitById = new Map<string, DynamicEntry>(); // id -> 最新快照
     let lastCaseRaw: { after?: { tick?: number; state?: { objects?: Array<Record<string, unknown>>; champion_beacon?: { position?: number[]; status?: string; carrier_id?: string | null } } }; before?: { state?: { champion_beacon?: { position?: number[]; status?: string; carrier_id?: string | null } } } } | null = null;
-    let afterValid = false; // 2026-08-08 结构性优化：after 全量世界状态直接重建地形/动态层，
-    // 跳过 before 循环 24 case parse（其结果本就被 clear 丢弃——重建 ~300ms → ~30ms，地图卡根治）
+    let afterValid = false; // 2026-08-08 结构性优化：after 全量世界状态直接重建动态层 + 刷新地形，
+    // 跳过 before 循环 24 case parse（重建 ~300ms → ~30ms，地图卡根治）
     if (caseFiles.length > 0) {
       const lastPath = join(calibrationDir(tenant), runDir, "cases", caseFiles[caseFiles.length - 1]);
       try { lastCaseRaw = JSON.parse(readFileSync(lastPath, "utf8")); } catch { lastCaseRaw = null; }
@@ -64,15 +107,16 @@ function loadMergedMapInner(): MergedMap {
       if (afterTick > latestTick) latestTick = afterTick;
       if (after?.objects) {
         afterValid = true;
-        // 地形重建（2026-08-08，数据质量 A7）：after 是全量世界状态（含
-        // OBSTACLE/RESOURCE，资源点动态 2-6 tick 消失）——已消失的矿/障碍不残留
-        //（"绿色残留"地图层根因）；单位/核心以 after 为准，已摧毁的不残留。
-        terrain.clear(); unitById.clear(); coreById.clear();
+        // 动态层（单位/核心）以 after 为准，已摧毁的不残留。
+        // 地形：after 可见障碍/矿刷新为最新 tick（矿 state=visible）；已消失的
+        // 矿/障碍不删除——survey-db 累积记忆保留（全局地图 = 完整探索地图）。
         for (const obj of after.objects) {
           if (obj.kind === "OBSTACLE" || obj.kind === "RESOURCE") {
             const type = obj.kind === "OBSTACLE" ? "obstacle" : "resource";
             for (const [x, y] of (obj.positions as number[][] | undefined) ?? []) {
-              terrain.set(cellKey(x, y), { x, y, type, tick: latestTick });
+              const key = cellKey(x, y);
+              const cur = terrain.get(key);
+              terrain.set(key, { x, y, type, tick: latestTick, ...(type === "resource" ? { state: "visible", ...(cur && cur.type === "resource" ? { seenCount: cur.seenCount, harvestCount: cur.harvestCount, ageTicks: cur.ageTicks } : {}) } : {}) });
             }
           } else if (obj.kind === "UNIT" && obj.id) {
             const [x, y] = (obj.position as number[] | undefined) ?? [0, 0];
@@ -85,8 +129,9 @@ function loadMergedMapInner(): MergedMap {
         }
       }
     }
-    // —— after 缺失（异常 case）时 before 循环兜底：24 case 累积地形/单位/核心 ——
-    if (!afterValid) {
+    // —— after 缺失且无 survey-db（异常 case / 未同步租户）时 before 循环兜底：
+    // 24 case 累积地形/单位/核心 ——
+    if (!afterValid && terrain.size === 0) {
       for (const file of caseFiles) {
         const tick = parseTick(file);
         if (tick > latestTick) latestTick = tick;
@@ -121,12 +166,14 @@ function loadMergedMapInner(): MergedMap {
             if (!cur || tick >= cur.tick) unitById.set(id, { x, y, type: "unit", tick, hp: obj.hp as number, unitType: (obj.unit_type as string | undefined) ?? "WORKER", cargo: (obj.cargo as number | undefined) ?? 0, controlled: obj.controlled as boolean, id });
           }
         }
-  
-    }    }
+      }
+    }
     // 组装：地形在下，动态在上。
     // 地形（障碍/资源）按格去重（priority：obstacle < resource，一格只能一种）；
-    // 单位/核心按对象 id 各自保留——同租户多单位可同格（如 worker 叠 core），
-    // 此前按格去重会吞掉同格单位，表现为"单位数少于实际/时有时无"。
+    // 单位/核心按对象 id 各自保留——同租户多单位可同格（如 worker 叠 core）。
+    // 地形是共享世界（4 租户看到同一障碍/矿），合并键 = `type:x,y` 全局去重，
+    // 跨租户同格取最新 tick（后处理租户如更新则覆盖）。tenant 字段保留最后观测
+    // 租户（hover/图层归属显示用）。单位/核心仍按租户独立（`tenant:type:id`）。
     const byCell = new Map<string, MapCell & { prio: number }>();
     const put = (c: Omit<MapCell, "tenant" | "fresh">, prio: number): void => {
       const key = cellKey(c.x, c.y);
@@ -135,11 +182,12 @@ function loadMergedMapInner(): MergedMap {
       byCell.set(key, { ...c, tenant, fresh: c.tick === latestTick, prio });
     };
     for (const c of terrain.values()) put({ ...c }, c.type === "obstacle" ? 1 : 2);
-    // 全局合并键 = `tenant:kind:id`（2026-08-08 修复）：
-    //  - 地形/单位/核心都带上租户，多租户同格各自保留（此前按 `x,y` 去重，
-    //    后处理的租户整格覆盖前面租户，表现为"某租户单位看不到"）；
-    //  - 单位/核心再带对象 id，同租户同格多对象不互吞。
-    for (const { prio, ...c } of byCell.values()) cells.set(`${tenant}:${c.type}:${c.x},${c.y}`, c);
+    // 全局合并：地形按 (x,y) 去重（共享世界）；单位/核心按 `tenant:type:id`。
+    for (const { prio, ...c } of byCell.values()) {
+      const key = `${c.type}:${c.x},${c.y}`;
+      const cur = cells.get(key);
+      if (!cur || c.tick >= cur.tick) cells.set(key, c);
+    }
     for (const c of unitById.values()) cells.set(`${tenant}:unit:${c.id}`, { ...c, tenant, fresh: c.tick === latestTick });
     for (const c of coreById.values()) cells.set(`${tenant}:core:${c.id}`, { ...c, tenant, fresh: c.tick === latestTick });
     // 最新 case 的冠军信标（用于全局测绘 beacon 图层）
@@ -159,6 +207,7 @@ function loadMergedMapInner(): MergedMap {
   const bounds = list.length === 0
     ? { minX: 0, maxX: 0, minY: 0, maxY: 0 }
     : { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+  const chunks = [...chunkByKey.values()].sort((a, b) => b.lastSeenTick - a.lastSeenTick);
   const beacons = perTenant.map((t) => t.beacon ? { tenant: t.tenant, ...(t.beacon as { x: number; y: number; status: string; carrier_id: string | null; trail: TrailPoint[] }) } : null).filter((b): b is { tenant: string; x: number; y: number; status: string; carrier_id: string | null; trail: TrailPoint[] } => b !== null);
   // 敌方核心轨迹（跨租户按 username 去重，保留最长轨迹——同一敌核被多租户目击）
   const coreTrailByUser = new Map<string, { username: string; trail: TrailPoint[]; tenant: string }>();
@@ -171,7 +220,7 @@ function loadMergedMapInner(): MergedMap {
     }
   }
   const coreTrails = [...coreTrailByUser.values()];
-  return { generatedAt: new Date().toISOString(), tenants: perTenant, bounds, cellCount: list.length, cells: list, beacons, coreTrails };
+  return { generatedAt: new Date().toISOString(), tenants: perTenant, bounds, cellCount: list.length, cells: list, chunks, beacons, coreTrails };
 }
 
 /** 合并地图缓存（2026-08-08 结构性优化）：/api/map 每 3s poll 一次，原每次重扫
@@ -184,6 +233,21 @@ function loadMergedMapInner(): MergedMap {
  *  重建完成前所有请求命中旧缓存，地图每 tick 平滑更新。无缓存（首屏）才同步全量。 */
 const mergedCache: { sig: string; payload: MergedMap | null } = { sig: "", payload: null };
 let mapRebuilding = false;
+/** survey-db 文件 mtime：地形主源（累积测绘）由 watchdog survey:sync 增量写入，
+ *  case 文件签名无法反映 db 更新（case 同步滞后独立于 case 写入），加入 mtime
+ *  保证 /api/map 在测绘库更新后重建。文件缺失（未同步）→ mtime=0。 */
+function surveyDbSig(): string {
+  const parts: string[] = [];
+  for (const tenant of TENANTS) {
+    try {
+      const st = statSync(join(DATA_ROOT, "runtime", "survey", `${tenant}.db`));
+      parts.push(`${tenant}:${st.mtimeMs}:${st.size}`);
+    } catch {
+      parts.push(`${tenant}:0:0`);
+    }
+  }
+  return parts.join("|");
+}
 export function loadMergedMap(): MergedMap {
   const parts: string[] = [];
   for (const tenant of TENANTS) {
@@ -192,7 +256,7 @@ export function loadMergedMap(): MergedMap {
     const files = listCases(tenant, runDir);
     parts.push(`${tenant}:${runDir}:${files.length}:${files[files.length - 1] ?? ""}`);
   }
-  const sig = parts.join("|");
+  const sig = `${parts.join("|")}#${surveyDbSig()}`;
   if (mergedCache.sig === sig && mergedCache.payload) return mergedCache.payload;
   if (mergedCache.payload) {
     if (!mapRebuilding) {
