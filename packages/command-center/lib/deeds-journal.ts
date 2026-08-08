@@ -8,6 +8,7 @@ import { loadDeeds, type Deed } from "./deeds.ts";
 import { loadAllianceDeeds } from "./alliance-deeds.ts";
 import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
 import { loadAuditOverview } from "./audit-overview.ts";
+import { loadAllianceMining } from "./alliance-mining.ts";
 import { TtlCache } from "./cache.ts";
 import { TENANTS } from "./fs-jsonl.ts";
 
@@ -150,6 +151,18 @@ function buildAuditDeeds(currentTick: number): Deed[] {
         position: null, actor: null, target: null });
     }
   }
+  // 联盟采矿分工（2026-08-08）：已就近分配的待开采矿——共享记忆→执行清单可读化
+  try {
+    const mining = loadAllianceMining();
+    for (const [t, p] of Object.entries(mining.perTenant ?? {})) {
+      const n = Number(p?.assigned ?? 0);
+      if (n >= 10) {
+        out.push({ id: `audit-mining-${t}`, tick: now, tenant: t, star: 2, kind: "AUDIT_INSIGHT",
+          title: `${t} 已分工 ${n} 矿待开采`, detail: `联盟就近分配（avg ${p?.avgDistance ?? "-"} 格）——按 audit/mines + alliance/mining 候选格派 worker。`,
+          position: null, actor: null, target: null });
+      }
+    }
+  } catch { /* 分工数据不可用不阻断 */ }
   return out;
 }
 
