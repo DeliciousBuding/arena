@@ -172,13 +172,13 @@ body {
 .tick-bar i {
   position: absolute; left: 0; top: 0; bottom: 0; width: 100%;
   border-radius: 999px; transform-origin: left center; transform: scaleX(0);
-  background: linear-gradient(90deg, rgba(31,224,202,.4), rgba(31,224,202,.95));
-  box-shadow: 0 0 8px rgba(31,224,202,.55);
+  background: linear-gradient(90deg, rgba(95,212,232,.4), rgba(95,212,232,.95));
+  box-shadow: 0 0 8px rgba(95,212,232,.55);
   transition: transform .5s var(--ease);
 }
 .tick-label-flash { animation: tickFlash .7s var(--ease); }
 @keyframes tickFlash {
-  0% { color: #fff; text-shadow: 0 0 10px rgba(31,224,202,.5); }
+  0% { color: #fff; text-shadow: 0 0 10px rgba(95,212,232,.5); }
   100% { color: inherit; text-shadow: none; }
 }
 .tick-meter.warn .tick-bar i { background: linear-gradient(90deg, rgba(240,136,62,.4), rgba(240,136,62,.95)); box-shadow: 0 0 8px rgba(240,136,62,.55); }
@@ -435,7 +435,7 @@ body {
 .legend .sw.obstacle { background: repeating-linear-gradient(45deg, #3a4046 0 3px, #23272c 3px 6px); }
 .legend .sw.memory { background: repeating-linear-gradient(45deg, rgba(125,140,155,.35) 0 2px, transparent 2px 5px); }
 .legend .sw.enemy-mem { background: radial-gradient(circle at 50% 40%, rgba(255,150,150,.55) 0%, rgba(198,99,112,.35) 60%, transparent 80%); box-shadow: inset 0 0 0 1px rgba(255,140,140,.35); }
-.legend .sw.beacon { background: radial-gradient(circle at 50% 40%, #fff2c0 0%, #e0b94f 55%, #8a6a1e 100%); }
+.legend .sw.beacon { background: radial-gradient(circle at 50% 40%, #ffe9b0 0%, #f0883e 55%, #8a4a1e 100%); }
 .legend .sw.memory { background: rgba(150,162,174,.22); box-shadow: inset 0 0 0 1px rgba(255,255,255,.2); }
 .toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
 .toggles label {
@@ -935,7 +935,7 @@ body {
   flex: none; width: 52px; height: 4px; border-radius: 2px;
   background: rgba(255,255,255,.14); overflow: hidden;
 }
-.asset-hpfill { display: block; height: 100%; border-radius: 2px; background: linear-gradient(90deg, #7fd8a5, #a8e6c1); transition: width .4s var(--ease); }
+.asset-hpfill { display: block; height: 100%; border-radius: 2px; background: linear-gradient(90deg, #8fce9f, #b9e9cb); transition: width .4s var(--ease); }
 .asset-hpfill.low { background: linear-gradient(90deg, #fc5646, #ff8d84); }
 /* 人类指挥中标记（2026-08-08）：舰队索引里被人工接管的单位——金色描边行 + H 徽章，
    一眼看出哪些单位不是 agent 全自动（金色 = 指挥中状态语义，群星命令板同款） */
@@ -1106,7 +1106,7 @@ body {
 }
 .beacon-arrow::before {
   content: ""; position: absolute; inset: 0;
-  background: radial-gradient(circle at 50% 42%, #ffe29a 0%, #d9a62e 55%, #8a6a1e 100%);
+  background: radial-gradient(circle at 50% 42%, #ffe29a 0%, #f0883e 55%, #8a4a1e 100%);
   clip-path: polygon(50% 0%, 100% 55%, 62% 55%, 62% 100%, 38% 100%, 38% 55%, 0% 55%);
   filter: drop-shadow(0 0 7px rgba(217,166,46,.55));
   transition: filter .2s ease;
