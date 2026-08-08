@@ -135,6 +135,31 @@ function buildAuditDeeds(currentTick: number): Deed[] {
         title: `${t} ${mu.visibleNever} 个可见矿未开采`, detail: `已发现但从未采集（分配缺口）——优先派 worker，候选格见 audit/mines。`,
         position: null, actor: null, target: null });
     }
+    // 趋势方向（2026-08-08，闭环叙事）：缺口扩大/收窄、经济转负/转正——
+    // 读 audit/overview 的 trend 字段（最新 vs 前一窗口），把"变化"写进日记。
+    const tr = x.trend;
+    if (tr && typeof tr.visibleNever === "number" && typeof tr.visibleNeverPrev === "number") {
+      if (tr.visibleNever > tr.visibleNeverPrev && tr.visibleNever >= 10) {
+        out.push({ id: `audit-unmined-trend-${t}`, tick: now, tenant: t, star: 4, kind: "AUDIT_INSIGHT",
+          title: `${t} 矿缺口扩大 ${tr.visibleNeverPrev}→${tr.visibleNever}`, detail: `可见未开采缺口仍在扩大——兑现率见 audit/mining-effectiveness，优先派 worker。`,
+          position: null, actor: null, target: null });
+      } else if (tr.visibleNever < tr.visibleNeverPrev && tr.visibleNeverPrev > 0) {
+        out.push({ id: `audit-unmined-trend-${t}`, tick: now, tenant: t, star: 2, kind: "AUDIT_INSIGHT",
+          title: `${t} 矿缺口收窄 ${tr.visibleNeverPrev}→${tr.visibleNever}`, detail: `可见未开采缺口缩小——分工/采集生效，保持节奏。`,
+          position: null, actor: null, target: null });
+      }
+    }
+    if (tr && typeof tr.coreDelta === "number" && typeof tr.coreDeltaPrev === "number") {
+      if (tr.coreDelta < 0 && tr.coreDeltaPrev >= 0) {
+        out.push({ id: `audit-eco-trend-${t}`, tick: now, tenant: t, star: 4, kind: "AUDIT_INSIGHT",
+          title: `${t} 经济转负（core ${tr.coreDeltaPrev}→${tr.coreDelta}）`, detail: `核心净增（最新窗口）由非负转负——手操/自动冲突或经济失血，需专项复盘。`,
+          position: null, actor: null, target: null });
+      } else if (tr.coreDelta > 0 && tr.coreDeltaPrev <= 0) {
+        out.push({ id: `audit-eco-trend-${t}`, tick: now, tenant: t, star: 2, kind: "AUDIT_INSIGHT",
+          title: `${t} 经济转正（core ${tr.coreDeltaPrev}→${tr.coreDelta}）`, detail: `核心净增（最新窗口）由非正转正——经济恢复，保持。`,
+          position: null, actor: null, target: null });
+      }
+    }
     if (dec && dec.stallRate !== null && dec.stallRate >= 0.9) {
       out.push({ id: `audit-stall-${t}`, tick: now, tenant: t, star: 3, kind: "AUDIT_INSIGHT",
         title: `${t} 决策空转率 ${Math.round(dec.stallRate * 100)}%`, detail: `wait 空转占主导（停摆 tick 占比）——搬运/目标链需优化。`,
