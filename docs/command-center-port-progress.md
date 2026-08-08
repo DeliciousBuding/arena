@@ -462,3 +462,8 @@ mapEngine.ts 对应函数。
 - 并手核对：原本地两参 unitHumanCommandOf 走本地包装，归位后
   直接调用 commands.ts 三参（tac, tenant, unitId）语义等价。
 - 验证：typecheck + build 全绿，web 单测 46/46，完整回归 22/22 全绿。
+
+### 9.29 hover 编队成员标签（2026-08-08）
+- showTooltip 受控单位追加「编队 编队成员 · 共 N」行
+  （multi 命中时，琥珀色），与编队连接线呼应——hover 即知所属编队。
+- 探针实测：tooltip 含「编队 编队成员 · 共 1」；回归 22/22 全绿。
