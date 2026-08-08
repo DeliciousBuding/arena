@@ -9,6 +9,7 @@ import { loadAllianceDeeds } from "./alliance-deeds.ts";
 import { loadAllianceSnapshot } from "./alliance-snapshot.ts";
 import { loadAuditOverview } from "./audit-overview.ts";
 import { loadAllianceMining } from "./alliance-mining.ts";
+import { loadMiningEffectiveness } from "./mining-effectiveness.ts";
 import { TtlCache } from "./cache.ts";
 import { TENANTS } from "./fs-jsonl.ts";
 
@@ -27,6 +28,12 @@ export interface DeedsJournalPayload {
   groups: Record<string, readonly Deed[]>;
   /** 生效的筛选（回显，前端可显示当前过滤状态）。 */
   filters: { categories: readonly string[]; minStar: number };
+  /** 窗口对比（2026-08-08，复盘日记）：本窗口 vs 上一窗口各类别变化。 */
+  delta: {
+    prevWindowStartTick: number;
+    counts: Record<string, { cur: number; prev: number; delta: number }>;
+    narrative: string;
+  } | null;
   deeds: readonly Deed[];
   cachedAt: string;
 }
@@ -69,17 +76,23 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
   const snap = loadAllianceSnapshot();
   const currentTick = snap.currentTick;
   const windowStart = currentTick - windowTicks;
+  const prevWindowStart = currentTick - windowTicks * 2;
   const all = tenant === "all"
     ? [...(await loadDeeds("all", 500)), ...loadAllianceDeeds(), ...buildAuditDeeds(currentTick)]
     : [...(await loadDeeds(tenant, 500)), ...buildAuditDeeds(currentTick).filter((d) => d.tenant === tenant)];
-  let windowed = all
-    .filter((d) => d.tick >= windowStart && d.tick <= currentTick)
-    .sort((a, b) => b.star - a.star || b.tick - a.tick);
-  // 2026-08-08 折叠/筛选：minStar 与 category（KIND_GROUP 类别）过滤，供前端
-  // 日记分组折叠/只看某类；counts/perTenant/narrative 基于过滤后集合，语义一致。
-  if (minStar > 0) windowed = windowed.filter((d) => d.star >= minStar);
   const catSet = new Set(cats);
-  if (catSet.size > 0) windowed = windowed.filter((d) => catSet.has(KIND_GROUP[d.kind] ?? "other"));
+  // 2026-08-08 折叠/筛选：minStar 与 category 过滤，供前端分组折叠/只看某类；
+  // counts/perTenant/narrative/delta 基于过滤后集合，语义一致。
+  const applyFilter = (ds: readonly Deed[]): Deed[] => {
+    let out = ds.slice();
+    if (minStar > 0) out = out.filter((d) => d.star >= minStar);
+    if (catSet.size > 0) out = out.filter((d) => catSet.has(KIND_GROUP[d.kind] ?? "other"));
+    return out;
+  };
+  const curRaw = all.filter((d) => d.tick >= windowStart && d.tick <= currentTick);
+  const prevRaw = all.filter((d) => d.tick >= prevWindowStart && d.tick < windowStart);
+  const windowed = applyFilter(curRaw).sort((a, b) => b.star - a.star || b.tick - a.tick);
+  const prevWindowed = applyFilter(prevRaw);
   const headline = windowed[0] ?? null;
   const counts: Record<string, number> = {};
   const perTenant: Record<string, { count: number; topStar: number }> = {};
@@ -94,6 +107,7 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
     perTenant[d.tenant] = t;
   }
   const narrative = buildNarrative(windowed, counts, perTenant, tenant);
+  const windowDelta = buildWindowDelta(windowed, prevWindowed);
   const payload: DeedsJournalPayload = {
     generatedAt: new Date().toISOString(),
     tenant,
@@ -106,6 +120,7 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
     narrative,
     groups: Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, v.slice(0, 20)])),
     filters: { categories: cats, minStar },
+    delta: { prevWindowStartTick: prevWindowStart, ...windowDelta },
     deeds: windowed.slice(0, 30),
     cachedAt: new Date().toISOString(),
   };
@@ -135,6 +150,31 @@ function buildAuditDeeds(currentTick: number): Deed[] {
         title: `${t} ${mu.visibleNever} 个可见矿未开采`, detail: `已发现但从未采集（分配缺口）——优先派 worker，候选格见 audit/mines。`,
         position: null, actor: null, target: null });
     }
+    // 趋势方向（2026-08-08，闭环叙事）：缺口扩大/收窄、经济转负/转正——
+    // 读 audit/overview 的 trend 字段（最新 vs 前一窗口），把"变化"写进日记。
+    const tr = x.trend;
+    if (tr && typeof tr.visibleNever === "number" && typeof tr.visibleNeverPrev === "number") {
+      if (tr.visibleNever > tr.visibleNeverPrev && tr.visibleNever >= 10) {
+        out.push({ id: `audit-unmined-trend-${t}`, tick: now, tenant: t, star: 4, kind: "AUDIT_INSIGHT",
+          title: `${t} 矿缺口扩大 ${tr.visibleNeverPrev}→${tr.visibleNever}`, detail: `可见未开采缺口仍在扩大——兑现率见 audit/mining-effectiveness，优先派 worker。`,
+          position: null, actor: null, target: null });
+      } else if (tr.visibleNever < tr.visibleNeverPrev && tr.visibleNeverPrev > 0) {
+        out.push({ id: `audit-unmined-trend-${t}`, tick: now, tenant: t, star: 2, kind: "AUDIT_INSIGHT",
+          title: `${t} 矿缺口收窄 ${tr.visibleNeverPrev}→${tr.visibleNever}`, detail: `可见未开采缺口缩小——分工/采集生效，保持节奏。`,
+          position: null, actor: null, target: null });
+      }
+    }
+    if (tr && typeof tr.coreDelta === "number" && typeof tr.coreDeltaPrev === "number") {
+      if (tr.coreDelta < 0 && tr.coreDeltaPrev >= 0) {
+        out.push({ id: `audit-eco-trend-${t}`, tick: now, tenant: t, star: 4, kind: "AUDIT_INSIGHT",
+          title: `${t} 经济转负（core ${tr.coreDeltaPrev}→${tr.coreDelta}）`, detail: `核心净增（最新窗口）由非负转负——手操/自动冲突或经济失血，需专项复盘。`,
+          position: null, actor: null, target: null });
+      } else if (tr.coreDelta > 0 && tr.coreDeltaPrev <= 0) {
+        out.push({ id: `audit-eco-trend-${t}`, tick: now, tenant: t, star: 2, kind: "AUDIT_INSIGHT",
+          title: `${t} 经济转正（core ${tr.coreDeltaPrev}→${tr.coreDelta}）`, detail: `核心净增（最新窗口）由非正转正——经济恢复，保持。`,
+          position: null, actor: null, target: null });
+      }
+    }
     if (dec && dec.stallRate !== null && dec.stallRate >= 0.9) {
       out.push({ id: `audit-stall-${t}`, tick: now, tenant: t, star: 3, kind: "AUDIT_INSIGHT",
         title: `${t} 决策空转率 ${Math.round(dec.stallRate * 100)}%`, detail: `wait 空转占主导（停摆 tick 占比）——搬运/目标链需优化。`,
@@ -154,16 +194,59 @@ function buildAuditDeeds(currentTick: number): Deed[] {
   // 联盟采矿分工（2026-08-08）：已就近分配的待开采矿——共享记忆→执行清单可读化
   try {
     const mining = loadAllianceMining();
+    let miningEff: ReturnType<typeof loadMiningEffectiveness> | null = null;
+    try { miningEff = loadMiningEffectiveness(); } catch { /* 兑现数据不可用不阻断 */ }
     for (const [t, p] of Object.entries(mining.perTenant ?? {})) {
       const n = Number(p?.assigned ?? 0);
       if (n >= 10) {
-        out.push({ id: `audit-mining-${t}`, tick: now, tenant: t, star: 2, kind: "AUDIT_INSIGHT",
-          title: `${t} 已分工 ${n} 矿待开采`, detail: `联盟就近分配（avg ${p?.avgDistance ?? "-"} 格）——按 audit/mines + alliance/mining 候选格派 worker。`,
+        const e = miningEff?.perTenant?.[t];
+        const closed = (e?.harvested ?? 0) + (e?.stale ?? 0);
+        const detail = e && closed > 0
+          ? `联盟就近分配 ${n} 矿（avg ${p?.avgDistance ?? "-"} 格）——已采 ${e.harvested}/失效 ${e.stale}/在途 ${e.open}，兑现率见 audit/mining-effectiveness。`
+          : `联盟就近分配 ${n} 矿（avg ${p?.avgDistance ?? "-"} 格）——尚 0 兑现（全在途），按 audit/mines + alliance/mining 候选格派 worker。`;
+        out.push({ id: `audit-mining-${t}`, tick: now, tenant: t, star: e && e.harvested > 0 ? 2 : 3, kind: "AUDIT_INSIGHT",
+          title: `${t} 已分工 ${n} 矿${e ? `（0 兑现 ${e.open} 在途）` : "待开采"}`, detail,
           position: null, actor: null, target: null });
       }
     }
   } catch { /* 分工数据不可用不阻断 */ }
   return out;
+}
+
+/** 窗口对比（2026-08-08，复盘日记）：本窗口 vs 上一窗口各类别计数变化 +
+ *  中文叙事（新增/归零/±N）。纯函数可测，两窗口已按同一筛选口径。 */
+export function buildWindowDelta(
+  cur: readonly Deed[],
+  prev: readonly Deed[],
+): { counts: Record<string, { cur: number; prev: number; delta: number }>; narrative: string } {
+  const tally = (deeds: readonly Deed[]): Record<string, number> => {
+    const c: Record<string, number> = {};
+    for (const d of deeds) {
+      // AUDIT_INSIGHT 是当前态洞察（tick=now，非历史事件流）——不进窗口对比，避免"新增 N"假象
+      if (d.kind === "AUDIT_INSIGHT") continue;
+      const g = KIND_GROUP[d.kind] ?? "other";
+      c[g] = (c[g] ?? 0) + 1;
+    }
+    return c;
+  };
+  const curC = tally(cur);
+  const prevC = tally(prev);
+  const cats = new Set([...Object.keys(curC), ...Object.keys(prevC)]);
+  const counts: Record<string, { cur: number; prev: number; delta: number }> = {};
+  for (const k of cats) counts[k] = { cur: curC[k] ?? 0, prev: prevC[k] ?? 0, delta: (curC[k] ?? 0) - (prevC[k] ?? 0) };
+  const LABEL: Record<string, string> = {
+    harvest: "采集", deposit: "交付", spawn: "产兵", death: "阵亡", milestone: "里程碑",
+    newCore: "新敌核", heatZone: "热区", conflict: "抢矿冲突", economy: "资源濒危", audit: "审计",
+  };
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(counts)) {
+    if (v.delta === 0) continue;
+    const label = LABEL[k] ?? k;
+    if (v.cur > 0 && v.prev === 0) parts.push(`${label} 新增 ${v.cur}`);
+    else if (v.cur === 0 && v.prev > 0) parts.push(`${label} 归零（-${v.prev}）`);
+    else if (Math.abs(v.delta) >= 2) parts.push(`${label} ${v.delta > 0 ? "+" : ""}${v.delta}（${v.prev}→${v.cur}）`);
+  }
+  return { counts, narrative: parts.length > 0 ? `较上一窗口：${parts.join("，")}。` : "较上一窗口无显著变化。" };
 }
 
 function buildNarrative(

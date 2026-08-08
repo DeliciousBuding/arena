@@ -58,6 +58,15 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "assault-overmatch-v1": Object.freeze({ assaultOvermatch: true }),
     /**
+     * 联盟 no-fire 硬规则（2026-08-08，alliance-no-fire-v1）：租户加载联盟
+     *  roster（supervisor 聚合受控实体 id 并集 → data/runtime/alliance/roster.json）
+     *  后，SafetyPlanner 将联盟友军从可见敌人/威胁/打击目标剔除——
+     *  knownAllianceEntityId => never deliberate target（spec §5.5），防抱团联防
+     *  时误伤自家账号（UNIT 视图无 owner_username，只能按实体 id）。默认关闭；
+     *  四线统一启用后联盟单位互相接近不再互打。
+     */
+    "alliance-no-fire-v1": Object.freeze({ allianceNoFire: true }),
+    /**
      * 攻坚集结（2026-08-08，guide "有护卫 Core 先退到安全集结点、全员到齐再共同
      * 出击"对照，t2 jerkman 二轮 5R 全灭实证）：aggressive 无可见敌人对已知敌 Core
      * 记忆攻坚时，军事单位先到敌核外圈安全集结位（Chebyshev 5，Vanguard 射程 1 /
@@ -72,6 +81,12 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * rally 管进攻集结，这里管遭遇战止损。默认关闭零回归。
      */
     "outnumbered-retreat-v1": Object.freeze({ outnumberedRetreat: true }),
+    /**
+     * 弱核优先攻坚（2026-08-08，guide "已知核心优先选无护卫"对照）：多敌核时优先
+     * 打守军少的（击杀概率高）；无兵力记忆 = 无护卫（弱目标优先）。与 overmatch/
+     * rally 互补：选对目标 + 兵力够 + 到齐再上。默认关闭零回归。
+     */
+    "weak-core-first-v1": Object.freeze({ weakCoreFirst: true }),
     /**
      * 威胁方向侦察（2026-08-07，t2 生产实证）：worker 巡逻方位向已知敌核心
      * 方向（coreHuntTargets 首个 CORE）加权——前 4 worker 覆盖威胁扇区 ±1，

@@ -85,10 +85,14 @@ test("audit-overview: 单租户折叠 + 全局汇总", () => {
       t3: { assigned: 3, avgDistance: 11.7, workers: 12 }, t4: { assigned: 1, avgDistance: 14, workers: 3 } },
     global: { totalCandidates: 57, assigned: 57, shared: 0, conflict: 0, unassigned: 0 },
   } as unknown as import("../lib/alliance-mining.ts").AllianceMiningPayload;
-  const a = aggregateAuditOverview(decisions, lifecycles, mines, exploration, pipeline, conflicts, mining);
+  const trends = { t1: { coreDelta: 5, coreDeltaPrev: -3, visibleNever: 6, visibleNeverPrev: 12, stallRate: 0.5 } };
+  const miningEff = { global: { assigned: 3, harvested: 1, harvestedByOther: 0, open: 2, stale: 0, effectiveRate: 1 } } as unknown as import("../lib/mining-effectiveness.ts").MiningEffectivenessPayload;
+  const a = aggregateAuditOverview(decisions, lifecycles, mines, exploration, pipeline, conflicts, mining, miningEff, trends);
   const t1 = a.tenants.t1;
   assert.ok(t1);
   assert.equal(t1.decisions?.stallTicks, 50);
+  // miningEff 传入后 global 暴露兑现汇总
+  assert.equal(a.global.miningFulfillment?.assigned, 3);
   assert.equal(t1.decisions?.stallRate, 0.5, "50/100");
   assert.equal(t1.decisions?.coreDelta, 5);
   assert.equal(t1.decisions?.humanApplied, 3);
@@ -118,6 +122,11 @@ test("audit-overview: 单租户折叠 + 全局汇总", () => {
   assert.equal(t1.conflict?.topRejectedReason, "Core is already moving");
   assert.equal(t1.mining?.assigned, 5);
   assert.equal(t1.mining?.avgDistance, 29.2);
+  assert.equal(t1.trend?.coreDelta, 5);
+  assert.equal(t1.trend?.coreDeltaPrev, -3);
+  assert.equal(t1.trend?.visibleNever, 6);
+  assert.equal(t1.trend?.visibleNeverPrev, 12);
+  assert.equal(t1.trend?.stallRate, 0.5);
 });
 
 test("audit-overview: 空输入兜底", () => {
@@ -130,4 +139,5 @@ test("audit-overview: 空输入兜底", () => {
   assert.equal(a.global.coveragePct, null);
   assert.equal(a.tenants.t1.conflict, null);
   assert.equal(a.tenants.t1.mining, null);
+  assert.equal(a.tenants.t1.trend, null);
 });

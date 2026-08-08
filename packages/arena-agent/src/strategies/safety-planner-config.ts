@@ -439,6 +439,21 @@ export interface SafetyPlannerConfig {
   readonly outnumberedRetreat?: boolean;
   /** 寡不敌众判定半径（Chebyshev，默认 aggressive 10 / defensive 6）。 */
   readonly outnumberedRetreatRadius?: number;
+  /**
+   * 弱核优先攻坚（2026-08-08，weak-core-first-v1，guide "已知核心优先选无护卫"
+   * 对照）：多敌核时攻坚/狩猎优先打守军少的（击杀概率高，防攻坚守军堆叠送死）；
+   * 无兵力记忆的核视为无护卫（弱目标优先）。tie-break：新鲜度 → 距我方 Core 近。
+   * 默认 false = 历史行为（CORE 优先→最新→坐标，零回归）。
+   */
+  readonly weakCoreFirst?: boolean;
+  /** 弱核优先的守军记忆窗口（默认 20 tick，enemyCoreForces maxAge）。 */
+  readonly weakCoreFirstForceTicks?: number;
+  /** 联盟 no-fire 硬规则（2026-08-08，alliance-no-fire-v1）：租户加载联盟
+   *  roster（受控实体 id 并集）后，decide 将联盟友军从可见敌人/威胁/打击目标
+   *  中剔除——knownAllianceEntityId => never deliberate target（spec §5.5），
+   *  防抱团联防时误伤自家账号单位（UNIT 视图无 owner_username，只能按 id）。
+   *  默认 false；true 时 tenant-runtime 才会加载 roster 文件。 */
+  readonly allianceNoFire?: boolean;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

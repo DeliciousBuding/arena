@@ -46,6 +46,11 @@ import { loadAuditOverview, warmAuditOverview } from "./lib/audit-overview.ts";
 import { loadHumanConflict, warmHumanConflict } from "./lib/human-conflict.ts";
 import { loadAllianceMining, warmAllianceMining } from "./lib/alliance-mining.ts";
 import { loadWorkerLivenessAudit, warmWorkerLivenessAudit } from "./lib/worker-liveness-audit.ts";
+import { loadMiningEffectiveness, warmMiningEffectiveness } from "./lib/mining-effectiveness.ts";
+import { loadAuditTrail, warmAuditTrail } from "./lib/audit-trail.ts";
+import { loadConsensusMining, warmConsensusMining } from "./lib/consensus-mining.ts";
+import { loadShopHistory, refreshShopHistory } from "./lib/shop-history.ts";
+import { loadAlignmentAudit, warmAlignmentAudit } from "./lib/alignment-audit.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 import { loadCoreMovingGuard } from "./lib/human-command-guard.ts";
 
@@ -383,6 +388,40 @@ app.get("/api/alliance/mining", (c) => {
   // 只读组合（快照核心位置 + 共享测绘 observers + 冲突），30s 缓存 + 启动预热。
   return c.json(loadAllianceMining());
 });
+app.get("/api/audit/alignment", (c) => {
+  // 决策-分配对齐审计（2026-08-08，综合决策 + 执行闭环）：决策采集动作占比 vs
+  // 矿缺口/分工兑现——一次调用看出"分配了为什么没人采"（采集占比低=决策脱节，
+  // 分工 0 兑现=执行没派）。只读组合 30s 缓存 + 预热，不进周期循环。
+  return c.json(loadAlignmentAudit());
+});
+app.get("/api/audit/trail", (c) => {
+  // 统一审计流水（2026-08-08，综合调试）：human + command + arbitration + supervisor
+  // 四源 jsonl 归一 → 时间倒序 "什么时候发生了什么"。?tenant=&source=&limit= 过滤。
+  // 只读（readJsonlTail 尾读），30s 惰性缓存 + 启动预热，不进周期循环。
+  const tenant = c.req.query("tenant") ?? undefined;
+  const src = c.req.query("source") ?? undefined;
+  if (tenant !== undefined && tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  if (src !== undefined && !["human", "command", "arbitration", "supervisor"].includes(src)) {
+    return c.json({ error: "非法来源" }, 400);
+  }
+  const l = Number(c.req.query("limit") ?? 200);
+  const limit = Number.isFinite(l) ? Math.min(Math.max(Math.round(l), 1), 500) : 200;
+  return c.json(loadAuditTrail({ tenant: tenant === "all" ? undefined : tenant, source: src as never, limit }));
+});
+app.get("/api/alliance/survey/mining", (c) => {
+  // 全联盟矿 + 分工兑现标注（2026-08-08，共享测绘设计增强）：共识矿 join
+  // 分工兑现状态（assignedTenant/miningStatus/gapAgeTicks）+ 积压 topStale——
+  // 前端"全联盟矿"地图层一次拿齐，标"已分工未采"。只读组合，30s 缓存 + 预热。
+  return c.json(loadConsensusMining());
+});
+app.get("/api/audit/mining-effectiveness", (c) => {
+  // 分工矿兑现校验（2026-08-08，闭环反馈）：alliance/mining 分配 → 实际是否被采。
+  // 每分配格状态 harvested/harvestedByOther/open/stale + 首采耗时 + 兑现率；
+  // 只读组合（30s 缓存），供决策线修正分配模型（距离不是唯一因素）。不进周期循环。
+  return c.json(loadMiningEffectiveness());
+});
 app.get("/api/audit/overview", (c) => {
   // 综合审计总览（2026-08-08）：决策-结果 + 生命周期 + 矿利用 + 联盟探索 + 管线健康
   // 单调用合成——前端"综合态势"面板一次拉取。纯组合（复用各 30s 缓存），只读。
@@ -525,6 +564,20 @@ app.post("/api/command/mode", async (c) => {
 });
 
 // ---------- 官方商店代理 ----------
+app.get("/api/shop/history", (c) => {
+  // 商店价格历史（2026-08-08，数据记录层）：products 快照落盘 → 涨跌/库存变化
+  // 趋势（不依赖登录 cookie，请求驱动刷新）。只读，30s 缓存。
+  return c.json(loadShopHistory());
+});
+app.post("/api/shop/history/refresh", async (c) => {
+  // 手动/请求驱动快照（无计划任务）：拉官方 products，有变化才追加落盘。
+  try {
+    const r = await refreshShopHistory();
+    return c.json(r);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : "刷新失败" }, 502);
+  }
+});
 app.get("/api/shop", async (c) => {
   const data = await shopProducts();
   return c.json({ generatedAt: new Date().toISOString(), ...(data as Record<string, unknown>) });
@@ -645,6 +698,10 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { warmWorkerLivenessAudit(); } catch { /* 忽略 */ } }, 95);
   // 联盟采矿分工（只读组合）：启动预热一次，不进周期循环。
   setTimeout(() => { try { warmAllianceMining(); } catch { /* 忽略 */ } }, 100);
+  setTimeout(() => { try { warmMiningEffectiveness(); } catch { /* 忽略 */ } }, 105);
+  setTimeout(() => { try { warmAuditTrail(); } catch { /* 忽略 */ } }, 108);
+  setTimeout(() => { try { warmConsensusMining(); } catch { /* 忽略 */ } }, 110);
+  setTimeout(() => { try { warmAlignmentAudit(); } catch { /* 忽略 */ } }, 115);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）

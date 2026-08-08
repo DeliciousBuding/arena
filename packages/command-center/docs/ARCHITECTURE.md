@@ -117,6 +117,13 @@ npm run test:regression    # Playwright 回归 22 项（web/scripts/cc-regressio
     check-alliance-sync/start-cc/survey-server）+ root 2 个（healthcheck/check-shared-schemas）→ .ts。
     Node 24 type stripping（type:module）或 tsx（root 无 type:module，top-level await 包进 async main）运行；
     tsconfig include 覆盖 scripts/test/survey-server（strict 0 错误）；cc-regression 为 Playwright e2e 加 @ts-nocheck。
-    **遗留交接**：arena-agent/scripts/check-sim-isolation.mjs（arena-agent 线，check 引用）、
-    arena-hero-ts/scripts/generate-schemas.mjs（待删包，schema:check 引用）——迁移模式同 command-center。
+    **收尾 ✅（2026-08-08）**：arena-agent check-sim-isolation（4948ef9）+ arena-hero-ts generate-schemas（本次）→ .ts，
+    全仓自有脚本 mjs 清零；arena-agent 71 个 .mts 为 TS 官方 ESM（tsx 跑），合规保留。
+10. **单位/核心实时命中 ✅（2026-08-08）**：handleCanvasClick 命中不再只依赖合并地图
+    3s 轮询的 cellIndex——tick 边界单位移位后点击落空且静默 	actClear（"点了没反应"
+    根因，编队多选/右键菜单 flaky 同源）。现在命中单位/核心格时按点击世界坐标用
+    live world（	actLoadWorld(force)）重定位；完全无命中时用聚焦租户 live world 兜底
+    （覆盖刚出生/刚移位尚未进 cells 的单位）。回归 22/22 全绿。
 9. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
+
+

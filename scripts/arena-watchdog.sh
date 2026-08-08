@@ -10,8 +10,9 @@ LOG="$HOME/arena-watchdog.log"
 # 并发 append 同一文件会把行写坏（实测 {"shuttingDown":true} 嵌进行、STALL/NOT
 # ready 触发行丢失）——分开后 watchdog 触发原因可查、supervisor 输出可回看。
 SUPERVISOR_LOG="$HOME/arena-supervisor.log"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Scheduled Task 从协调仓脚本进入，但生产代码固定绑定经过晋级的 v3 worktree；
+# main/临时开发 worktree 的脏 WIP 永远不能被 watchdog 拉进 live supervisor。
+REPO="/d/Code/Projects/arena/arena-ts/.worktrees/production-runtime-v3"
 DATA_ROOT="/d/Code/Projects/arena/data"
 RUNTIME_ROOT="$DATA_ROOT/runtime"
 READY_URL="http://127.0.0.1:8120/ready"
@@ -187,7 +188,7 @@ rm -f "$RUNTIME_ROOT/t1/locks/"*.lock "$RUNTIME_ROOT/t2/locks/"*.lock "$RUNTIME_
 #    只记录 raw Runtime-Golden dataset；后续校准严格离线执行）
 cd "$REPO" || exit 1
 nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --record-alliance-shadow --alliance-shadow-interval-ticks=3 --alliance-director-shadow --alliance-director-period-ticks=4 --alliance-director-max-skew-ticks=2 --port=8120 >> "$SUPERVISOR_LOG" 2>&1 &
-echo "$(now) supervisor restarted (pid $!, alliance-shadow=3 director=ASSIST_ONLY/period4/skew2)" >> "$LOG"
+echo "$(now) supervisor restarted (pid $!, release=production-runtime-v3 alliance-shadow=3 director=ASSIST_ONLY/period4/skew2)" >> "$LOG"
 # 测绘库增量同步（2026-08-08，survey-db 联动）：重启后同步最新 run 的
 # calibration case → 测绘库（幂等；供下次启动 seed + 面板 /api/survey）。
 # 只读 calibration + 写 survey 库，与 supervisor 无 writer 冲突。

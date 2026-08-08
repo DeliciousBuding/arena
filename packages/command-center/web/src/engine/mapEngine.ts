@@ -4294,7 +4294,28 @@ function tactShowFeature(cell: any, px: any, py: any) {
       return;
     }
   }
-  const cell = nearestCell(px, py);
+  let cell = nearestCell(px, py);
+  // 单位/核心实时命中（2026-08-08）：合并地图轮询 3s，tick 边界单位已移位——
+  // 陈旧 cellIndex 点击落空且静默 tactClear（"点了没反应"根因）。以 live world 校正：
+  // 命中单位/核心格时按点击世界坐标重定位；完全无命中时用聚焦租户 live world 兜底
+  //（覆盖刚出生/刚移位尚未进 cells 的单位）。
+  if (cell && (cell.type === 'unit' || cell.type === 'core')) {
+    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+    const world = await tactLoadWorld(cell.tenant, true);
+    const liveObj = world ? tactObjectAt(world, wx, wy) : null;
+    if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
+      cell = { ...cell, x: wx, y: wy, fresh: true, id: liveObj.id };
+    }
+  } else if (!cell && state.soloTenant) {
+    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+    const world = await tactLoadWorld(state.soloTenant, true);
+    const liveObj = world ? tactObjectAt(world, wx, wy) : null;
+    if (liveObj && (liveObj.kind === 'UNIT' || liveObj.kind === 'CORE')) {
+      cell = { tenant: state.soloTenant, type: liveObj.kind === 'CORE' ? 'core' : 'unit', x: wx, y: wy, fresh: true, id: liveObj.id, controlled: liveObj.controlled };
+    }
+  }
   // 批量目标模式：点目标整组前往/开火；Shift 点击 = 入队（批量移动）
   if ((tac.mode === 'BATCH_MOVE' || tac.mode === 'BATCH_SHOOT') && tac.multi.size) {
     const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
