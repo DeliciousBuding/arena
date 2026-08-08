@@ -10,10 +10,10 @@
   "scripts": {
     "check": "npm run check -w packages/arena-hero-ts -w packages/arena-agent",
     "test": "npm run test -w packages/arena-hero-ts -w packages/arena-agent",
-    "schema:check": "node packages/arena-hero-ts/scripts/generate-schemas.mjs && git diff --exit-code -- packages/arena-hero-ts/contracts/ && node scripts/check-shared-schemas.mjs",
+    "schema:check": "node packages/arena-hero-ts/scripts/generate-schemas.mjs && git diff --exit-code -- packages/arena-hero-ts/contracts/ && tsx scripts/check-shared-schemas.ts",
     "replay:ts": "npx tsx packages/arena-agent/scripts/replay-ts.ts --manifest fixtures/differential/burnin-20260802-a/manifest.json --fixture-dir fixtures/differential/burnin-20260802-a --out /tmp/replay-ts.jsonl",
     "arena:supervisor": "tsx packages/arena-agent/src/cli/run-supervisor.ts",
-    "server:healthcheck": "node scripts/server/healthcheck.mjs"
+    "server:healthcheck": "tsx scripts/server/healthcheck.ts"
   },
   "engines": {
     "node": ">=24.0.0"
