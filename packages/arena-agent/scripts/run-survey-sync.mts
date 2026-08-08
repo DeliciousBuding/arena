@@ -41,7 +41,7 @@ for (const tenant of tenants) {
   const summary = syncTenantSurvey(dataRoot, tenant, { latestRunOnly: latestOnly, force });
   const line =
     `[survey] ${tenant}: runs=${summary.runs} cases=${summary.cases} ` +
-    `resources=${summary.resources} obstacles=${summary.obstacles} coreHunts=${summary.coreHunts}`;
+    `resources=${summary.resources} obstacles=${summary.obstacles} coreHunts=${summary.coreHunts} notables=${summary.notables}`;
   lines.push(line);
   console.log(line);
 }
