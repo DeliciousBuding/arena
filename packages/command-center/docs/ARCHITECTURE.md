@@ -117,6 +117,7 @@ npm run test:regression    # Playwright 回归 22 项（web/scripts/cc-regressio
     check-alliance-sync/start-cc/survey-server）+ root 2 个（healthcheck/check-shared-schemas）→ .ts。
     Node 24 type stripping（type:module）或 tsx（root 无 type:module，top-level await 包进 async main）运行；
     tsconfig include 覆盖 scripts/test/survey-server（strict 0 错误）；cc-regression 为 Playwright e2e 加 @ts-nocheck。
-    **遗留交接**：arena-agent/scripts/check-sim-isolation.mjs（arena-agent 线，check 引用）、
-    arena-hero-ts/scripts/generate-schemas.mjs（待删包，schema:check 引用）——迁移模式同 command-center。
+    **收尾 ✅（2026-08-08）**：arena-agent check-sim-isolation（4948ef9）+ arena-hero-ts generate-schemas（本次）→ .ts，
+    全仓自有脚本 mjs 清零；arena-agent 71 个 .mts 为 TS 官方 ESM（tsx 跑），合规保留。
 9. **临时脚本清理**：web/ 下临时 *.mjs 用完即删（当前无遗留）。
+

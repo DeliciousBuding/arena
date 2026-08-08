@@ -1,10 +1,10 @@
 /**
- * Arena 指挥面板启动器（start-cc.mjs）— 随用随起，无计划任务/管理员。
+ * Arena 指挥面板启动器（start-cc.ts）— 随用随起，无计划任务/管理员。
  *
  * 用法（在 packages/command-center 下）：
- *   node scripts/start-cc.mjs            前台启动：当前终端可见日志，同时落 logs/cc-server.log
- *   node scripts/start-cc.mjs --hidden   后台启动：无终端窗口，日志落 logs/cc-server.log（写 pid）
- *   node scripts/start-cc.mjs --stop     停止上次 --hidden 启动的实例（读 pid 文件）
+ *   node scripts/start-cc.ts            前台启动：当前终端可见日志，同时落 logs/cc-server.log
+ *   node scripts/start-cc.ts --hidden   后台启动：无终端窗口，日志落 logs/cc-server.log（写 pid）
+ *   node scripts/start-cc.ts --stop     停止上次 --hidden 启动的实例（读 pid 文件）
  */
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync, appendFileSync, existsSync, rmSync, readFileSync } from "node:fs";
@@ -58,7 +58,7 @@ env.ARENA_DATA_ROOT = process.env.ARENA_DATA_ROOT ?? resolve(join(CC, "..", ".."
 if (hidden) {
   if (await portBusy(PORT)) {
     console.error(`端口 ${PORT} 已有指挥面板实例在服务——拒绝双开（防双写/pid 混乱）。`);
-    console.error(`  停止旧实例：node scripts/start-cc.mjs --stop；若 pid 文件陈旧，先删 logs/cc-server.pid 再启动。`);
+    console.error(`  停止旧实例：node scripts/start-cc.ts --stop；若 pid 文件陈旧，先删 logs/cc-server.pid 再启动。`);
     process.exit(1);
   }
   const child = spawn(process.execPath, [SERVER], {
@@ -84,7 +84,7 @@ if (hidden) {
   console.log(`指挥面板后台启动（无终端窗口）pid=${child.pid}`);
   console.log(`  访问：http://127.0.0.1:${PORT}`);
   console.log(`  日志：${LOG}`);
-  console.log(`  停止：node scripts/start-cc.mjs --stop`);
+  console.log(`  停止：node scripts/start-cc.ts --stop`);
 } else {
   console.log(`指挥面板前台启动（Ctrl+C 停止）· 日志同时写入 ${LOG}`);
   const child = spawn(process.execPath, [SERVER], {
