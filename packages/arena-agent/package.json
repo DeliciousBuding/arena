@@ -26,6 +26,7 @@
     "arena:supervisor": "tsx src/cli/run-supervisor.ts",
     "arena:config-preflight": "tsx scripts/config-preflight.ts",
     "sim:variant-window": "tsx scripts/variant-window.mts",
+    "sim:evolve:macro": "tsx scripts/evolve-macro-policy.mts",
     "survey:sync": "tsx scripts/run-survey-sync.mts"
   },
   "dependencies": {
