@@ -837,11 +837,11 @@ function drawMeterBar(s: any, x: any, y: any, cell: any, value: any, maximum: an
 }
 function drawUnitHealth(s: any, x: any, y: any, cell: any, hp: any, maxHp: any) {
   if (maxHp <= 0 || hp >= maxHp) return;
-  drawMeterBar(s, x, y, cell, hp, maxHp, hp > 1 ? '#7fd8a5' : '#e0625d', '#e4e4e7', `${hp}/${maxHp}`);
+  drawMeterBar(s, x, y, cell, hp, maxHp, hp > 1 ? '#8fce9f' : '#e0625d', '#e4e4e7', `${hp}/${maxHp}`);
 }
 function drawWorkerCargo(s: any, x: any, y: any, cell: any, cargo: any) {
   if (!cargo) return;
-  drawMeterBar(s, x, y, cell, cargo, 2, '#7fd8a5', '#b2d2ba', `×${cargo}`);
+  drawMeterBar(s, x, y, cell, cargo, 2, '#8fce9f', '#b2d2ba', `×${cargo}`);
 }
 function drawCoreOwnerLabel(s: any, x: any, y: any, cell: any, username: any, controlled: any) {
   const label = '@' + (username || '?');
@@ -974,7 +974,7 @@ function drawResources(cells: any, s: any) {
       if (!LQ) { ctx.shadowColor = 'rgba(87,189,132,.35)'; ctx.shadowBlur = 3; }
       const path = SPRITE.crystal[hash2(c.x, c.y, 13) % SPRITE.crystal.length];
       if (images[path]) sprite(images[path], p.sx, p.sy, Math.max(7, s * 0.92));
-      else { ctx.fillStyle = '#7fd8a5'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.3), 0, Math.PI * 2); ctx.fill(); }
+      else { ctx.fillStyle = '#8fce9f'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.3), 0, Math.PI * 2); ctx.fill(); }
       ctx.restore();
     }
     return;
@@ -1290,7 +1290,7 @@ function drawCoreSprite(c: any, s: any) {
     drawMeterBar(s, p.sx, p.sy + size * 0.56, s, c.shield, shieldMax, '#8f91c7', '#c7c8e7', `${c.shield} SHD`);
   }
   if (typeof c.hp === 'number' && s >= 8 && !LQ) {
-    const color2 = c.hp > 3 ? '#7fd8a5' : c.hp > 1 ? '#ffffff' : '#e0625d';
+    const color2 = c.hp > 3 ? '#8fce9f' : c.hp > 1 ? '#ffffff' : '#e0625d';
     drawMeterBar(s, p.sx, p.sy + size * 0.72, s, c.hp, 5, color2, '#d4d4d8', `${c.hp}/${5}`);
   }
 }
@@ -1332,13 +1332,13 @@ function drawBeaconAt(s: any, b: any) {
   const size = Math.max(14, s * (b.status === 'CARRIED' ? 0.58 : 0.98));
   if (state.soloTenant && state.layers.beacon) {
     const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 420);
-    ring(p.sx, p.sy, size * 0.9, `rgba(224,185,79,${0.18 + 0.22 * pulse})`, 1.6);
+    ring(p.sx, p.sy, size * 0.9, `rgba(240,136,62,${0.18 + 0.22 * pulse})`, 1.6);
   } else {
-    ring(p.sx, p.sy, size * 0.9, 'rgba(224,185,79,.14)', 1.2);
+    ring(p.sx, p.sy, size * 0.9, 'rgba(240,136,62,.14)', 1.2);
   }
   if (images[SPRITE.beacon]) sprite(images[SPRITE.beacon], p.sx, p.sy, size);
   else {
-    ctx.fillStyle = '#e0b94f';
+    ctx.fillStyle = '#f0883e';
     ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(3, size * 0.3), 0, Math.PI * 2); ctx.fill();
   }
 }
@@ -1348,7 +1348,7 @@ function drawBeaconAt(s: any, b: any) {
 function drawBeaconTrail(s: any, b: any) {
   const trail = Array.isArray(b.trail) ? b.trail : null;
   if (!trail || trail.length < 2) return;
-  const color = TENANT_COLORS[b.tenant] ?? '#e0b94f';
+  const color = TENANT_COLORS[b.tenant] ?? '#f0883e';
   const w = W(), h = H();
   const pts = [];
   for (const pt of trail) {
@@ -1752,9 +1752,9 @@ function drawEdgeBeacon(b: any, p: any) {
   const k = Math.min((w / 2 - margin) / Math.abs(ux || 1e-9), (h / 2 - margin) / Math.abs(uy || 1e-9));
   const ex = cx + ux * k, ey = cy + uy * k;
   const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
-  ctx.fillStyle = `rgba(224,185,79,${0.4 + 0.45 * pulse})`;
+  ctx.fillStyle = `rgba(240,136,62,${0.4 + 0.45 * pulse})`;
   ctx.beginPath(); ctx.arc(ex, ey, 5, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = 'rgba(224,185,79,.6)';
+  ctx.strokeStyle = 'rgba(240,136,62,.6)';
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(cx + ux * 12, cy + uy * 12); ctx.lineTo(ex - ux * 4, ey - uy * 4); ctx.stroke();
 }
@@ -3268,7 +3268,7 @@ function tactRenderHud(tenant: any) {
     <span class="hud-label">测绘${survey.fromDb ? '·库' : ''}</span>
     <span class="hud-val">${survey.obstacleCells.length} 障碍</span>
     <span class="hud-val" style="color:var(--green-resource)">${resCount} 矿</span>
-    <span class="hud-val" style="color:#7fd8a5" title="活跃（最近确认存在）">${activeMines}●</span>
+    <span class="hud-val" style="color:#8fce9f" title="活跃（最近确认存在）">${activeMines}●</span>
     <span class="hud-val" style="color:#5a7a64" title="待确认（见过但未确认）">${staleMines}◐</span>
     <span class="hud-val" style="color:#6b7280" title="采空/已确认空">${minedOut}○</span>
     <span class="hud-val">${survey.coreCells.length} 敌核</span>
@@ -3394,7 +3394,7 @@ function replayDrawLayer(s: any) {
       const bw = Math.max(14, size * 1.1), bh = 3;
       const bx = pr.sx - bw / 2, by = pr.sy + size * 0.62 + 4;
       ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(bx, by, bw, bh);
-      ctx.fillStyle = p.hp > 3 ? '#7fd8a5' : p.hp > 1 ? '#ffffff' : '#e0625d';
+      ctx.fillStyle = p.hp > 3 ? '#8fce9f' : p.hp > 1 ? '#ffffff' : '#e0625d';
       ctx.fillRect(bx, by, bw * Math.max(0, Math.min(1, p.hp / 5)), bh);
     }
     // 人类指挥中标记（聚焦=回放接管单位绘制，需在此补画）
@@ -3418,7 +3418,7 @@ function replayDrawLayer(s: any) {
     }
     // 载货小点
     if ((p.cargo ?? 0) > 0 && s >= 8) {
-      ctx.fillStyle = '#7fd8a5';
+      ctx.fillStyle = '#8fce9f';
       ctx.beginPath(); ctx.arc(pr.sx, pr.sy - size * 0.62, Math.max(1.6, s * 0.14), 0, Math.PI * 2); ctx.fill();
     }
     // 人类指挥中标记（聚焦=回放接管单位绘制，需在此补画）
@@ -3452,8 +3452,8 @@ function tactDrawRoute(path: any, opts: Record<string, any> = {}) {
   const C = opts.human === 'mine'
     ? { line: '#ffffff', lineA: 'rgba(255,255,255,.9)', flag: '#ffffff', pulse: '#ffffff', glow: '#ffffff', eta: '#ffffff' }
     : opts.human === 'goto'
-      ? { line: '#1fe0ca', lineA: 'rgba(95,200,232,.9)', flag: '#8fdcf5', pulse: '#e8f9ff', glow: '#1fe0ca', eta: '#8fdcf5' }
-      : { line: '#7fd8a5', lineA: 'rgba(118,184,137,.9)', flag: '#8fd6a3', pulse: '#eafff1', glow: '#7fd8a5', eta: '#8fd6a3' };
+      ? { line: '#5fd4e8', lineA: 'rgba(95,200,232,.9)', flag: '#8fdcf5', pulse: '#e8f9ff', glow: '#5fd4e8', eta: '#8fdcf5' }
+      : { line: '#8fce9f', lineA: 'rgba(118,184,137,.9)', flag: '#8fd6a3', pulse: '#eafff1', glow: '#8fce9f', eta: '#8fd6a3' };
   ctx.save();
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   const seg = (i: any, color: any, width: any, dash: any) => {
@@ -3770,7 +3770,7 @@ function drawHumanGoalPaths(s: any) {
       const end = rec.path[rec.path.length - 1];
       const p = project(end[0], end[1]);
       const label = rec.kind === 'mine' ? '采矿' : '移动';
-      const color = rec.kind === 'mine' ? '#ffffff' : '#1fe0ca';
+      const color = rec.kind === 'mine' ? '#ffffff' : '#5fd4e8';
       ctx.save();
       ctx.font = '600 11px ' + CANVAS_FONT;
       const tw = ctx.measureText(label).width;
@@ -4020,14 +4020,14 @@ function tactRenderPending() {
 /** 回放事件特效：当前回放帧的事件（战斗/资源活动）弹出浮字+光晕，2.5s 淡出上浮。 */
 const FX_LIFE_MS = 2500;
 const FX_KIND_CN: Record<string, { text: string; color: string; size: number }> = {
-  HARVEST_SUCCEEDED: { text: '+', color: '#7fd8a5', size: 13 },
+  HARVEST_SUCCEEDED: { text: '+', color: '#8fce9f', size: 13 },
   DEPOSIT_SUCCEEDED: { text: '¥', color: '#5fd4e8', size: 13 },
   SHOT_HIT: { text: '✚', color: '#e0625d', size: 13 },
   SWEEP_RESOLVED: { text: '⚔', color: '#ffffff', size: 13 },
   CORE_DAMAGED: { text: '⚔', color: '#ff6b6b', size: 14 },
   CORE_DESTROYED: { text: '摧毁!', color: '#e0625d', size: 18 },
   CORE_SPAWN_SUCCEEDED: { text: '产', color: '#5fd4e8', size: 12 },
-  UNIT_HEAL_SUCCEEDED: { text: '✚', color: '#7fd8a5', size: 12 },
+  UNIT_HEAL_SUCCEEDED: { text: '✚', color: '#8fce9f', size: 12 },
 };
 function tactSpawnEventFx(frameTick: any) {
   const d = replay.data;
@@ -4231,13 +4231,13 @@ function tactShowFeature(cell: any, px: any, py: any) {
     }
   }
   if (!kind) { el.hidden = true; return; }
-  const color = TENANT_COLORS[tenant] ?? '#e0b94f';
+  const color = TENANT_COLORS[tenant] ?? '#f0883e';
   const icon = kind === '信标' ? SPRITE.beacon : kind === '资源' ? SPRITE.crystal[0] : null;
   const rows = [];
   rows.push(`<div class="fp-row"><span>坐标</span><b>[${pos[0]}, ${pos[1]}]</b></div>`);
   if (kind === '信标') {
     const st = status === 'CARRIED' ? '被携带' : status === 'GROUND' ? '在地面' : '未知';
-    rows.push(`<div class="fp-row"><span>状态</span><b><span class="fp-tag" style="background:${hexA('#d9a62e', 0.16)};color:#e0b94f">${st}</span></b></div>`);
+    rows.push(`<div class="fp-row"><span>状态</span><b><span class="fp-tag" style="background:${hexA('#d9a62e', 0.16)};color:#f0883e">${st}</span></b></div>`);
     rows.push(`<div class="fp-row"><span>归属租户</span><b style="color:${color}">${tenant.toUpperCase()}</b></div>`);
     rows.push(`<div class="fp-row"><span>冠军奖励</span><b>持续占位 +奖励</b></div>`);
   } else if (kind === '资源') {
@@ -4278,7 +4278,7 @@ function tactShowFeature(cell: any, px: any, py: any) {
 }async function handleCanvasClick(px: any, py: any, shift = false) {
   const tac = T();
   // 定位标记命中：非命令模式下点击 pin 清除单个（看到即清除，不再卡住关不掉）
-  if (!tac.mode && state.jumpPins.length) {
+  if (!tac.mode && !shift && state.jumpPins.length) {
     const hitIdx = state.jumpPins.findIndex((pin: any) => {
       const pp = project(pin.x, pin.y);
       return Math.hypot(pp.sx - px, pp.sy - py) < Math.max(10, state.view.scale * 0.3);
