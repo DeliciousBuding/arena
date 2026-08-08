@@ -22,7 +22,7 @@ import { performance } from "node:perf_hooks";
 
 import { loadRuntimeConfig, resolveCircuitBreaker, resolveDeadlines, type TenantRuntimeConfig } from "./runtime-config.ts";
 import { loadPersistentEnemyIntel } from "./enemy-intel.ts";
-import type { CoreHuntTarget } from "../domain/world.ts";
+import type { CoreHuntTarget, CoreWatchMemory } from "../domain/world.ts";
 import { loadThreatProfiles, threatProfilesEqual } from "./official-intel.ts";
 import { resolveArenaDataRoot, resolveTenantBaseDir } from "./data-root.ts";
 import { SingleWriterLock } from "./single-writer-lock.ts";
@@ -80,7 +80,10 @@ const THREAT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 /** 威胁评估诊断字段（v0.3-lite，2026-08-06）：从 outcome state 计算 tick 级威胁
  *  （可见敌/受击基础版；enemyHints 记忆增强——moving/pursuit——待 planner 侧
  *  暴露 world 后补全）。写入 decision.jsonl 供 replay/威胁分析。 */
-function threatDiagnosticsOf(state: TickState): Pick<
+function threatDiagnosticsOf(
+  state: TickState,
+  coreWatch: readonly CoreWatchMemory[] = [],
+): Pick<
   DecisionTraceRecord,
   "threatLevel" | "threatReason" | "threatClosingEnemies" | "threatMovingEnemies" | "threatAxes"
 > {
@@ -91,6 +94,7 @@ function threatDiagnosticsOf(state: TickState): Pick<
     coreDamagedThisTick: coreDamagedThisTick(state.events),
     obstacles: state.obstacleCells,
     resourceCells: state.resourceCells,
+    coreWatch,
   });
   return {
     threatLevel: assessment.level,
@@ -765,9 +769,15 @@ export async function runTenant(
           waitCount: actionCounts.waitCount,
           intentCounts,
           planHash: planHashOf(outcome.plan),
-          // 威胁评估诊断（v0.3-lite）：outcome.state 可见敌/受击计算基础版；
-          // enemyHints 记忆（moving/pursuit）待 planner 侧暴露后补全。
-          ...threatDiagnosticsOf(outcome.state),
+          // 威胁评估诊断（v0.3-lite）：outcome.state 可见敌/受击 + 近核入侵观察
+          // （core-threat-watch-v1）长 TTL 记忆——威胁遥测持续显示入侵（ALERT
+          // invasion_watch），指挥面板可实时看到"敌贴脸但当前不可见"。
+          ...threatDiagnosticsOf(
+            outcome.state,
+            planner instanceof SafetyPlanner
+              ? planner.world.coreWatchTargets(planner.config.coreThreatWatchTicks ?? 60)
+              : [],
+          ),
         };
         decisionWriter.write(decisionRecord);
       }
