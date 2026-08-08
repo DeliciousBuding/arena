@@ -347,6 +347,12 @@ export interface SafetyPlannerConfig {
    */
   readonly coreMovingHold?: boolean;
   /**
+   * 迁移期 worker 集结带（migration-system-v1 §3.3，评审 P1 定稿）：迁移中
+   * 把资源候选权威上限收为 min(既有上限, migrationWorkerBand)——visible/
+   * memory/Hungarian 共用同一权威，不建第二套矿工 planner。undefined = 不限制。
+   */
+  readonly migrationWorkerBand?: number;
+  /**
    * 核心通道清障（2026-08-07，core-clearance-v1）：核心格容量 = 2（含 Core，
    * 仅余 1 槽）且是 worker 卸货/SPAWN 唯一通道——军事守位回退到核心格会把
    * 通道占死（生产 t2 实证：Vanguard 站核心格 → 满载 worker 4 邻格全 WAIT、

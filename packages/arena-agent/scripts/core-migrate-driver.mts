@@ -19,7 +19,7 @@ import { writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createNavState, notePosition, planDirection, chebyshev, mergeObstacleSets, DIRECTIONS, DELTA, type Dir, type Pos } from "../src/app/core-migrate-nav.ts";
+import { createNavState, notePosition, planDirection, chebyshev, mergeObstacleSets, DIRECTIONS, type Dir, type Pos } from "../src/app/core-migrate-nav.ts";
 import { auditMigrationTarget } from "../src/domain/migration-audit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -32,12 +32,7 @@ interface Args {
   readonly intervalMs: number;
   readonly maxSteps: number;
   readonly beaconSafe: number;
-  readonly force: boolean;
   readonly dataRoot: string;
-  /** 不用 survey 累积障碍（长距离开阔地误判绕障 2026-08-08 t1 实证）；只信实时视野障碍。 */
-  readonly noSurveyObstacles: boolean;
-  /** 军事护航（2026-08-08）：最近 VANGUARD goto 核心前方 2 格开路，防止被围+发现敌核。 */
-  readonly escort: boolean;
 }
 
 function parseArgs(argv: readonly string[]): Args {
@@ -54,8 +49,6 @@ function parseArgs(argv: readonly string[]): Args {
     beaconSafe: Number(get("beacon-safe") ?? 60),
     force: argv.includes("--force"),
     dataRoot: get("data-root") ?? DATA_ROOT,
-    noSurveyObstacles: get("no-survey-obstacles") === "1" || get("no-survey-obstacles") === "true",
-    escort: argv.includes("--escort"),
   };
 }
 
@@ -63,12 +56,6 @@ interface CalibCase {
   readonly tick: number;
   readonly core: { id: string; position: [number, number]; state: string };
   readonly obstacles: ReadonlySet<string>;
-  /** 核心 4 邻单位占用：key="dx,dy" -> unit 列表。核心被自己 worker 围死是
-   *  START_MOVE CELL_UNIT_LIMIT 根因（2026-08-08 t1 实证：RIGHT 2 worker、UP 1、
-   *  DOWN 2，核心无法移动）。driver 需先让位目标格 worker 再启动核心移动。 */
-  readonly coreNeighborUnits: ReadonlyMap<string, { readonly id: string; readonly type: string }[]>;
-  /** 全部我方单位（护航找最近 VANGUARD 用）。 */
-  readonly units: readonly { id: string; type: string; position: [number, number]; hp: number }[];
 }
 
 function calibrationDir(tenant: string): string {
@@ -112,32 +99,6 @@ function readLatestCore(tenant: string): CalibCase | null {
         for (const p of o.positions ?? []) obstacles.add(p.join(","));
       }
     }
-    // 核心 4 邻单位占用（含敌我；核心迁移只让位自己单位，敌方占据格本身在
-    // planDirection 障碍判定外——若目标格有敌核/敌单位，START_MOVE 会被服务端
-    // CORE_DESTINATION_OCCUPIED 拒绝，停滞检测换向兜底）。
-    const neighborUnits = new Map<string, { readonly id: string; readonly type: string }[]>();
-    const [cx, cy] = core.position;
-    for (const o of objs) {
-      if (o.kind !== "UNIT" || !Array.isArray(o.position)) continue;
-      const dx = o.position[0] - cx;
-      const dy = o.position[1] - cy;
-      if (Math.abs(dx) + Math.abs(dy) !== 1) continue;
-      const key = `${dx},${dy}`;
-      const list = neighborUnits.get(key) ?? [];
-      list.push({ id: o.id, type: String(o.unit_type ?? "?") });
-      neighborUnits.set(key, list);
-    }
-    const units = objs
-      .filter((o) => o.kind === "UNIT")
-      .map((o) => {
-        const u = o as { id?: string; unit_type?: string; position?: [number, number]; hp?: number };
-        return {
-          id: String(u.id ?? ""),
-          type: String(u.unit_type ?? "?"),
-          position: [u.position?.[0] ?? 0, u.position?.[1] ?? 0] as [number, number],
-          hp: Number(u.hp ?? 0),
-        };
-      });
     // 合并 survey 全局测绘障碍（2026-08-08 修复）：calibration 视野障碍只有十几个且
     // 不稳定（t4 x=400 峡谷实证——(399,-155) 实为可走格却被视野障碍困住），
     // survey 库是全量累积测绘，路径规划更准。返回完整 CalibCase（Set 会被
@@ -145,11 +106,7 @@ function readLatestCore(tenant: string): CalibCase | null {
     return {
       tick: j.after.tick,
       core: { id: core.id, position: [core.position[0], core.position[1]], state: core.state ?? 'NORMAL' },
-      obstacles: args.noSurveyObstacles
-        ? obstacles
-        : mergeObstacleSets(loadSurveyObstacles(args.tenant), obstacles),
-      coreNeighborUnits: neighborUnits,
-      units,
+      obstacles: mergeObstacleSets(loadSurveyObstacles(args.tenant), obstacles),
     };
   } catch {
     return null;
@@ -239,17 +196,22 @@ function storePath(tenant: string): string {
   return join(args.dataRoot, "runtime", "human-commands", `${tenant}.json`);
 }
 
-interface WireCommand {
-  readonly unitId: string;
-  readonly action: Record<string, unknown>;
-  readonly note?: string;
+/** 迁移系统计划文件（migration-system-v1 P0-2 护栏）：存在 = conductor 已接管
+ *  本租户迁移，driver 直写 human-commands 属双 writer（评审实证竞态），必须拒绝。 */
+function migrationPlanExists(tenant: string): boolean {
+  return existsSync(join(args.dataRoot, "runtime", "migration", `${tenant}.json`));
 }
 
-function writeCommands(
-  tenant: string,
-  commands: readonly WireCommand[],
-  escortGoal?: { unitId: string; kind: "goto"; target: [number, number]; note: string; createdAt: string } | null,
-): void {
+function writeMoveCommand(tenant: string, coreId: string, direction: Dir): void {
+  // P0-2 护栏（2026-08-08）：迁移计划存在时 driver 直写路径已淘汰——旧实现
+  // 整文件覆盖 human-commands（commands 重建成一条、goals 清空）与 store 模块
+  // 独占声明构成真实双 writer。conductor 上线后由 overlay 提交链接管。
+  if (migrationPlanExists(tenant)) {
+    throw new Error(
+      `[migration-system-v1 P0-2] ${tenant} 存在迁移计划（runtime/migration/${tenant}.json），` +
+        "driver 直写 human-commands 路径已淘汰；请先取消计划（migration_cancel）或改用 conductor。",
+    );
+  }
   const path = storePath(tenant);
   const existing = existsSync(path)
     ? (() => { try { return JSON.parse(readFileSync(path, "utf8")) as { mode?: string; version?: number }; } catch { return {}; } })()
@@ -258,22 +220,17 @@ function writeCommands(
   const store = {
     version: existing.version ?? 1,
     mode: existing.mode ?? "override",
-    commands: commands.map((c, i) => ({
-      id: `cmd-migrate-${now}-${i}-${Math.floor(Math.random() * 1e6)}`,
-      unitId: c.unitId,
-      action: c.action,
-      note: c.note ?? "core-migrate-driver 直迁",
+    commands: [{
+      id: `cmd-migrate-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+      unitId: coreId,
+      action: { type: "START_MOVE", direction },
+      note: "core-migrate-driver v2 西迁",
       createdAt: now,
-    })),
-    // 保留已有持续意图（goals：worker 疏散）+ 可选护航 goal
-    goals: [...(existing.goals ?? []), ...(escortGoal ? [escortGoal] : [])],
+    }],
+    goals: [],
     updatedAt: now,
   };
   writeFileSync(path, JSON.stringify(store, null, 2), "utf-8");
-}
-
-function writeMoveCommand(tenant: string, coreId: string, direction: Dir): void {
-  writeCommands(tenant, [{ unitId: coreId, action: { type: "START_MOVE", direction } }]);
 }
 
 function clearCommand(tenant: string): void {
@@ -291,8 +248,6 @@ const nav = createNavState();
 const recentlyFailed = new Set<string>(); // "dir:x,y" 短时回避
 
 log(`start tenant=${args.tenant} target=(${args.targetX},${args.targetY}) interval=${args.intervalMs}ms maxSteps=${args.maxSteps} beaconSafe=${args.beaconSafe}`);
-
-auditPreflight(args.tenant);
 
 for (let step = 0; step < args.maxSteps; step += 1) {
   const live = readLatestCore(args.tenant);
@@ -316,6 +271,24 @@ for (let step = 0; step < args.maxSteps; step += 1) {
     continue;
   }
 
+  // 停滞检测：位置与上次相同且上次方向已尝试过 → 强制换方向
+  if (notePosition(nav, core, 2) && nav.lastDir !== null) {
+    recentlyFailed.add(`${nav.lastDir}:${core.join(",")}`);
+    log(`停滞 ${nav.stuckStreak} 轮，记录 ${nav.lastDir}@(${core.join(",")}) 失败，换方向`);
+    nav.detourDir = null; // 换向时重置绕障记忆
+    // 失败记忆有界（2026-08-08 t2 (-30,38) 死锁实证）：CORE_DESTINATION_TERRAIN_BLOCKED
+    // 是服务端真值（我们的障碍数据可能失真）；CELL_UNIT_LIMIT 是 worker 占位（瞬态，
+    // worker 让开即恢复）。若失败方向无界累积，四方向全进失败集 → "无可行方向" →
+    // 永不重试，核心永久冻结。四方向全失败或条目超限 → 清空重评（瞬态阻塞自愈）。
+    const cellFailures = DIRECTIONS.filter((d) => recentlyFailed.has(`${d}:${core.join(",")}`)).length;
+    if (cellFailures >= 4 || recentlyFailed.size >= 16) {
+      recentlyFailed.clear();
+      log(`失败记忆超限（${cellFailures}/4），清空重评`);
+    }
+  } else if (nav.stuckStreak === 0) {
+    recentlyFailed.clear();
+  }
+
   const plan = planDirection(core, target, live.obstacles, args.beaconSafe, nav, recentlyFailed);
 
   if (plan.dir === null) {
@@ -324,80 +297,8 @@ for (let step = 0; step < args.maxSteps; step += 1) {
     continue;
   }
 
-  // 目标格被自己单位占 → 持续让位（不算停滞）：P05 单位先 MOVE 空出目标格，
-  // P06 核心 START_MOVE 才通过 CELL_UNIT_LIMIT 校验（t1 实证核心被 worker+军事
-  // 围死）。让位目标 = 核心沿 dir 前进 2 格（core+3*dir，走更远不立刻回堵）；
-  // 该格被占/障碍则选垂直方向/后退方向。
-  const delta = DELTA[plan.dir];
-  const targetKey = `${core[0] + delta[0]},${core[1] + delta[1]}`;
-  const blockers = live.coreNeighborUnits.get(`${delta[0]},${delta[1]}`) ?? [];
-  const ownBlockers = blockers.filter((u) => u.type !== "?" && u.type !== "CORE");
-  const cmds: WireCommand[] = [];
-  if (ownBlockers.length > 0) {
-    // freeExit(ox, oy)：让位 worker（在 core+delta）的 1 格偏移目标。MOVE 只走
-    // 1 格——2026-08-08 t1 卡 (-602,-146) 实证：旧版用 2 格偏移导致方向分量
-    // 变 2、dirName 映射错乱（dy=2 → UP），worker 往核心方向挪，让位永不生效。
-    const freeExit = (ox: number, oy: number): string | null => {
-      const nx = core[0] + delta[0] + ox;
-      const ny = core[1] + delta[1] + oy;
-      const key = `${nx},${ny}`;
-      if (live.obstacles.has(key)) return null;
-      // 不让位单位挪回核心邻格（避免原地打转）
-      if (Math.abs(nx - core[0]) + Math.abs(ny - core[1]) <= 1) return null;
-      return key;
-    };
-    for (const b of ownBlockers) {
-      // 沿 delta 继续 1 格优先（远离核心），其次垂直/反方向 1 格
-      const ex = freeExit(delta[0], delta[1])
-        ?? freeExit(0, 1)
-        ?? freeExit(0, -1)
-        ?? freeExit(-delta[0], -delta[1]);
-      if (ex === null) continue;
-      const [exx, exy] = ex.split(",").map(Number);
-      const dx = exx - core[0] - delta[0];
-      const dy = exy - core[1] - delta[1];
-      const dirName = dx === 1 ? "RIGHT" : dx === -1 ? "LEFT" : dy === 1 ? "DOWN" : "UP";
-      cmds.push({ unitId: b.id, action: { type: "MOVE", direction: dirName }, note: "core-migrate 让位" });
-    }
-    if (cmds.length > 0) {
-      log(`目标格 ${targetKey} 被 ${ownBlockers.length} 单位占，持续让位（${cmds.map((c) => c.unitId.slice(0, 8)).join(",")}）`);
-    }
-    // 让位期间不判停滞（让位需时间），重置停滞计数
-    nav.lastPos = null;
-    nav.stuckStreak = 0;
-  } else {
-    // 目标格空才做停滞检测：位置与上次相同且上次方向已尝试过 → 强制换向。
-    // 阈值 6 轮（18s）：核心移动 1 格需 4 tick（~60s@15s/tick），2 轮太敏感
-    // 会在 MOVING 完成前误判（t1 实证核心被带偏 NW）。
-    if (notePosition(nav, core, 6) && nav.lastDir !== null) {
-      recentlyFailed.add(`${nav.lastDir}:${core.join(",")}`);
-      log(`停滞 ${nav.stuckStreak} 轮，记录 ${nav.lastDir}@(${core.join(",")}) 失败，换方向`);
-      nav.detourDir = null;
-      const cellFailures = DIRECTIONS.filter((d) => recentlyFailed.has(`${d}:${core.join(",")}`)).length;
-      if (cellFailures >= 4 || recentlyFailed.size >= 16) {
-        recentlyFailed.clear();
-        log(`失败记忆超限（${cellFailures}/4），清空重评`);
-      }
-    } else if (nav.stuckStreak === 0) {
-      recentlyFailed.clear();
-    }
-  }
-
-  cmds.push({ unitId: live.core.id, action: { type: "START_MOVE", direction: plan.dir }, note: "core-migrate-driver 直迁" });
-  // 军事护航：最近 VANGUARD goto 核心前方 2 格（占位开路、发现敌核；不挡核心 4 邻）
-  let escortGoal: { unitId: string; kind: "goto"; target: [number, number]; note: string; createdAt: string } | null = null;
-  if (args.escort) {
-    const vanguards = live.units.filter((u) => u.type === "VANGUARD");
-    if (vanguards.length > 0) {
-      vanguards.sort((a, b) => chebyshev(a.position, core) - chebyshev(b.position, core));
-      const v = vanguards[0];
-      const fx = core[0] + delta[0] * 2;
-      const fy = core[1] + delta[1] * 2;
-      escortGoal = { unitId: v.id, kind: "goto", target: [fx, fy], note: "core-migrate 护航", createdAt: new Date().toISOString() };
-    }
-  }
-  writeCommands(args.tenant, cmds, escortGoal);
-  log(`发出 START_MOVE ${plan.dir}（候选: ${plan.candidates.join(" > ")}${plan.detour ? " [绕障]" : ""}${ownBlockers.length > 0 ? ` +${ownBlockers.length} 让位` : ""}）`);
+  writeMoveCommand(args.tenant, live.core.id, plan.dir);
+  log(`发出 START_MOVE ${plan.dir}（候选: ${plan.candidates.join(" > ")}${plan.detour ? " [绕障]" : ""}）`);
   nav.lastDir = plan.dir;
   await new Promise((r) => setTimeout(r, args.intervalMs));
 }
