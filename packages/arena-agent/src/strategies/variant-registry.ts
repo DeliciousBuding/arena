@@ -9,6 +9,7 @@
  */
 
 import type { SafetyPlannerConfig } from "./safety-planner.ts";
+import type { MissionConfig } from "../planning/mission-planner.ts";
 
 /** 候选变体 → SafetyPlanner 配置开关（全部默认 false 的历史行为零回归）。 */
 export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlannerConfig>>> =
@@ -230,6 +231,13 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * Ranger 20；31 起 k=3 跳 22+），继续扩张但不过度进入高溢价档。仅 t1 启用。
      */
     "population-ceiling-30-v1": Object.freeze({ populationCeiling: 30 }),
+    /**
+     * Worker 使命层（2026-08-08，worker-mission-v1）：只影响 deterministic 侧
+     * 分配（值层置信 + SURVEYOR 角色，见 DETERMINISTIC_VARIANT_CONFIG），
+     * safety 侧无开关——空覆盖注册以满足 resolveVariantsConfig 的
+     * 全量 safety 校验（缺注册 = 生产重启 fail-fast）。
+     */
+    "worker-mission-v1": Object.freeze({}),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要
@@ -243,6 +251,9 @@ export interface DeterministicVariantConfig {
   readonly accumulateThreshold?: number;
   /** 补员 reserve（缺省 2 = 生产行为零回归）。 */
   readonly spawnReserve?: number;
+  /** 使命层配置（worker-mission-v1，2026-08-08）：值层置信 + SURVEYOR 角色仲裁。
+   *  缺省 undefined = 关闭（现行为零回归）。 */
+  readonly mission?: MissionConfig;
 }
 
 export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, DeterministicVariantConfig>> =
@@ -257,6 +268,29 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
      * accumulateThreshold=30 爆兵节奏。
      */
     "vanguard-heavy-v1": Object.freeze({ vanguardRatio: 0.75 }),
+    /**
+     * Worker 使命层（2026-08-08，架构设计 docs/design/worker-mission-layer-v1.md，
+     * t1 实证：14 worker 全扑陈旧测绘种子、30+ tick 零采集零巡逻）：
+     * - 值层：目标置信项（visible 加成 / seeded 随龄衰减）并入采集评分——
+     *   陈旧种子自然低于门槛，不再长途空跑；
+     * - 使命层：低于门槛/超距的 worker 转 SURVEYOR（勘探，落 patrol 基线，
+     *   覆盖感知方向由 frontier-priority 提供），超 cap 守家 WAIT；
+     * - 迁移后测绘期：核心位置变化后 surveyBurstTicks 内保证 ≥ floor 个勘探者。
+     * 参数保守起步（cap 3 / 门槛 -0.5 / 距 24 / burst 100×floor 3），热加载可调。
+     */
+    "worker-mission-v1": Object.freeze({
+      mission: {
+        // netValue 量纲：RESOURCE_VALUE=1.0，每格 travel+return 成本 2.0——
+        // 陈旧种子（龄 300 衰减 −6）在 12 格外即低于门槛；可见矿 15 格内可采。
+        collectionValueFloor: -30,
+        maxCollectionDistance: 24,
+        surveyWorkerCap: 3,
+        surveyBurstTicks: 100,
+        surveyWorkerFloor: 3,
+        visibleBonus: 0.3,
+        seedAgeDecay: 0.02,
+      },
+    }),
   });
 
 /** 解析变体 id → SafetyPlanner 配置覆盖；未知 id 抛错（fail-fast）。 */

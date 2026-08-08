@@ -23,10 +23,18 @@ export interface EnemyUnit {
   readonly unitType?: UnitType;
 }
 
-/** 已知资源格信息（kind 可选：未来可从事件/探测补充矿种）。 */
+/** 已知资源格信息（kind 可选：未来可从事件/探测补充矿种；
+ *  visible/lastSeenTick/seeded：目标置信元数据——可见格由快照提取标注，
+ *  记忆/测绘种子格由 decide() 合并 World.resourceCandidates 时标注。 */
 export interface ResourceCellInfo {
   readonly position: Position;
   readonly kind?: string;
+  /** 本 Tick 可见（快照提取时置 true；记忆合并格为 false）。 */
+  readonly visible?: boolean;
+  /** 最近一次看到该格的 tick（visible 格 = 当前 tick）。 */
+  readonly lastSeenTick?: number;
+  /** 跨 run 测绘种子（survey-db seed）：无真实观察，置信低于可见/新鲜记忆。 */
+  readonly seeded?: boolean;
 }
 
 export interface BeaconInfo {
@@ -109,7 +117,11 @@ export function extractPlanningSnapshot(state: TickState): PlanningSnapshot {
   const enemyCells = new Set(state.visibleEnemies.map((enemy) => cellKey(enemy.position)));
   const resourceCells = new Map<string, ResourceCellInfo>();
   for (const key of state.resourceCells) {
-    resourceCells.set(key, { position: parseCellKey(key) });
+    resourceCells.set(key, {
+      position: parseCellKey(key),
+      visible: true,
+      lastSeenTick: state.tick,
+    });
   }
   return {
     tick: state.tick,
