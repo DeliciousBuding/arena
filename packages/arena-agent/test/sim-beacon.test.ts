@@ -370,3 +370,118 @@ test("S11: 迁移 Core 携带 Beacon——真实移动前保持逻辑位置，�
   assert.equal(world6.players.get("p1")!.core!.position[0], 1, "Core 完成迁移");
   assert.equal(world6.beacon?.position[0], 1, "Beacon 跟随到新位置");
 });
+
+// W46: Beacon carrier 移动坐标同步回归测试。
+// 实现已存在于 movement.ts:357-365（carrier 移动成功 → resolution.positions
+// 命中 carrierId → Beacon position 同步；移动失败不命中 → Beacon 不漂移）。
+// 以下 3 用例覆盖 unit carrier 成功/失败与 Core carrier 4-tick 迁移；
+// 反向验证：删除 movement.ts 的同步块会使"成功同步"用例转红。
+
+test("S11 (W46): unit carrier 移动成功 → Beacon position 同步到新格", () => {
+  // p1 Worker A 携带 Beacon 在 [2,2]；MOVE UP → [2,1]（空、非障碍）
+  const world = makeWorld({ beaconStatus: "CARRIED", beaconCarrierId: P1_WORKER_A });
+  const result = settleTick(
+    world,
+    new Map([["p1", planOf(world, { [P1_WORKER_A]: { type: "MOVE", direction: "UP" } })]]),
+    ctx,
+  );
+  const carrier = result.world.players.get("p1")!.units.find((u) => u.id === P1_WORKER_A)!;
+  assert.equal(carrier.position[0], 2, "carrier 移动到 [2,1]");
+  assert.equal(carrier.position[1], 1);
+  assert.equal(result.world.beacon!.status, "CARRIED", "仍携带");
+  assert.equal(result.world.beacon!.carrierId, P1_WORKER_A);
+  assert.equal(result.world.beacon!.position[0], 2, "Beacon 跟随 carrier 到 [2,1]");
+  assert.equal(result.world.beacon!.position[1], 1);
+  assert.ok(
+    result.events.some((e) => e.eventType === "UNIT_MOVE_SUCCEEDED" && e.actorId === P1_WORKER_A),
+    "carrier MOVE 成功事件存在",
+  );
+});
+
+test("S11 (W46): unit carrier 移动失败 → Beacon position 不漂移", () => {
+  // p1 Worker A 携带 Beacon 在 [2,2]；MOVE RIGHT 目标 [3,2] 被 p2 Worker 占据
+  // 且 p2 Worker 不离开 → 跨玩家占位失败 → carrier 不动，Beacon 保持 [2,2]。
+  const world = makeWorld({ beaconStatus: "CARRIED", beaconCarrierId: P1_WORKER_A });
+  const result = settleTick(
+    world,
+    new Map([
+      ["p1", planOf(world, { [P1_WORKER_A]: { type: "MOVE", direction: "RIGHT" } })],
+      ["p2", planOf(world, { [P2_WORKER]: { type: "WAIT" } })],
+    ]),
+    ctx,
+  );
+  const carrier = result.world.players.get("p1")!.units.find((u) => u.id === P1_WORKER_A)!;
+  assert.equal(carrier.position[0], 2, "carrier 移动失败保持 [2,2]");
+  assert.equal(carrier.position[1], 2);
+  assert.equal(result.world.beacon!.status, "CARRIED");
+  assert.equal(result.world.beacon!.carrierId, P1_WORKER_A);
+  assert.equal(result.world.beacon!.position[0], 2, "Beacon 不漂移，保持 [2,2]");
+  assert.equal(result.world.beacon!.position[1], 2);
+  assert.ok(
+    result.events.some((e) => e.eventType === "UNIT_MOVE_FAILED" && e.actorId === P1_WORKER_A),
+    "carrier MOVE 失败事件存在",
+  );
+});
+
+test("S11 (W46): Core carrier 4-tick 迁移——进度 tick 保持逻辑位置，完成落位同步", () => {
+  // 官方 champion-beacon.md:56-58：迁移中 Core 逻辑位置不变，Beacon 保持该
+  // 逻辑位置；第 4 tick 真实移动 → Beacon 跟随到新格。
+  // 时间线（moveRequiredTicks=4，progress 起始 1，progress+1>=4 时到期）：
+  //   tick1 START_MOVE → MOVING(progress1)；tick2/3 progress(2,3) 仍 MOVING；
+  //   tick4 progress4 到期 → 真实移动 → NORMAL、Core/Beacon 落位 [1,0]。
+  const baseWorld = worldFromScenario({
+    rulesVersion: "v0.11",
+    tick: 1,
+    seed: 7,
+    players: [
+      {
+        id: "p1",
+        username: "p1",
+        resources: 5,
+        core: { id: P1_CORE, position: [0, 0], hp: 5, shield: 5, state: "NORMAL" },
+        units: [],
+      },
+    ],
+    terrain: { obstacles: [], resources: [] },
+    beacon: { position: [0, 0], status: "CARRIED", carrierId: P1_CORE },
+  });
+  // tick1：START_MOVE RIGHT（4-tick 迁移，目的地 [1,0]）
+  const world2 = settleTick(
+    baseWorld,
+    new Map([["p1", { tick: 1, unitActions: {}, coreAction: { type: "START_MOVE", direction: "RIGHT" }, intents: {} }]]),
+    ctx,
+  ).world;
+  assert.equal(world2.players.get("p1")!.core!.state, "MOVING");
+  assert.deepEqual(world2.beacon!.position, [0, 0], "START_MOVE 后 Beacon 仍在 [0,0]");
+  // tick2-3：进度推进，Core 逻辑位置不变 → Beacon 保持 [0,0]
+  let progressWorld = world2;
+  for (let tick = 2; tick <= 3; tick += 1) {
+    progressWorld = settleTick(
+      progressWorld,
+      new Map([["p1", { tick, unitActions: {}, coreAction: null, intents: {} }]]),
+      ctx,
+    ).world;
+    const core = progressWorld.players.get("p1")!.core!;
+    assert.equal(core.state, "MOVING", `tick ${tick} 仍 MOVING`);
+    assert.equal(core.position[0], 0, `tick ${tick} Core 逻辑位置不变`);
+    assert.equal(core.position[1], 0);
+    assert.deepEqual(
+      progressWorld.beacon!.position,
+      [0, 0],
+      `tick ${tick} Beacon 保持逻辑位置 [0,0]`,
+    );
+    assert.equal(progressWorld.beacon!.carrierId, P1_CORE, "carrier 不变");
+  }
+  // tick4：progress 到期 → 第 4 tick 真实移动 → Core 到 [1,0]，Beacon 跟随
+  const finalWorld = settleTick(
+    progressWorld,
+    new Map([["p1", { tick: 4, unitActions: {}, coreAction: null, intents: {} }]]),
+    ctx,
+  ).world;
+  const finalCore = finalWorld.players.get("p1")!.core!;
+  assert.equal(finalCore.state, "NORMAL", "迁移完成回 NORMAL");
+  assert.equal(finalCore.position[0], 1, "Core 完成迁移到 [1,0]");
+  assert.equal(finalCore.position[1], 0);
+  assert.deepEqual(finalWorld.beacon!.position, [1, 0], "Beacon 最终落位同步到 [1,0]");
+  assert.equal(finalWorld.beacon!.carrierId, P1_CORE);
+});

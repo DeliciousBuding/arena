@@ -332,7 +332,7 @@ function resetCoreAfterAttempt(core: SimCore, position: Position): SimCore {
 /** P05: apply the shared Unit/Core movement graph. */
 export const movementPhase: Phase = {
   id: "P05-global-movement",
-  officialPhase: 5,
+  officialPhase: 3,
   run: (draft, ctx) => {
     const resolution = resolveMovement(draft, ctx.plans);
     if (resolution.moves.length > 0 || resolution.coreMoves.length > 0) {

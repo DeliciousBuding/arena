@@ -319,6 +319,26 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      * _choose_beacon :3550）留后续。默认关零回归（非持标 shieldCap=5）。
      */
     "beacon-hold-v1": Object.freeze({ beaconHold: true }),
+    /**
+     * 斩首配额会计（2026-08-09，sortie-quota-v1，W10）：家防余量 ≥3V+3R 才
+     * 借调 1V+2R 攻坚编成（W 源码 _beacon_local_core_sortie_assignments :5816）；
+     * 距离 ≤28 + 目击 ≤96 tick + 生命周期 72 tick + 4 种取消回收（超时/目击过期/
+     * 家防被袭/目标摧毁）。coreSorties Map 持久化跨 tick。默认关零回归。
+     * W 线 C2/C7/C8 候选（Drew-Z 斩首侦察 + guide 敌核彻查/集结协同）参考。
+     */
+    "sortie-quota-v1": Object.freeze({ sortieQuota: true }),
+    /**
+     * cargo 三件套消费已注册（cargo-rescue-v1，批次 2）；decideWorker 排队
+     * hold + 清旧目标 + decideCore 靠拢救援消费接线 P2 待后续。
+     */
+    /**
+     * 饿死迁移兜底（2026-08-09，starve-migration-v1，W40）：600 tick 无采集 +
+     * 无新鲜资源目击 → 触发 Core 迁移（只写 plan 不 START_MOVE，绕过 overlay
+     * 契约/单写者纪律）；冷却 400 tick；兜底方向远离 [0,0] 死亡区。migration 层
+     * starveTriggerTicks/starveCooldownTicks/starveMinAreaSeen 配置。默认关零
+     * 回归。safety 侧空覆盖（消费由 migration/conductor 处理）。
+     */
+    "starve-migration-v1": Object.freeze({}),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要
@@ -339,6 +359,9 @@ export interface DeterministicVariantConfig {
    *  3V+3R 底线渐进补编（1V → 1V+2R → 3V+3R），豁免 reserve、不受 workerTarget
    *  前置门。默认关（零回归），变体显式开启。 */
   readonly homeDefenseBottom?: boolean;
+  /** W12 按类型替补队列（replacement-queue-v1，2026-08-09）：阵亡军事单位按
+   *  类型计数，产兵优先补缺口 + 价格窗口等待。缺省 false = 历史产兵顺序（零回归）。 */
+  readonly replacementQueueEnabled?: boolean;
   /** 使命层配置（worker-mission-v1，2026-08-08）：值层置信 + SURVEYOR 角色仲裁。
    *  缺省 undefined = 关闭（现行为零回归）。 */
   readonly mission?: MissionConfig;
@@ -421,6 +444,13 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
      * 兵力/军事。
      */
     "lean-spend-v1": Object.freeze({ spawnReserve: 1 }),
+    /**
+     * 按类型替补队列（2026-08-09，replacement-queue-v1，W12）：阵亡军事单位
+     * 按类型计数（VANGUARD/RANGER），产兵优先补缺口；价格窗口等待（资源不够
+     * 目标兵种时等不产低档替代品）。replacementQueue 队列由 state-reducer
+     * 纯函数维护，selectDeterministicCoreAction 消费。默认关零回归。
+     */
+    "replacement-queue-v1": Object.freeze({ replacementQueueEnabled: true }),
   });
 
 /** 解析变体 id → SafetyPlanner 配置覆盖；未知 id 抛错（fail-fast）。 */

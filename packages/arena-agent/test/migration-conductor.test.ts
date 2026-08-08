@@ -547,7 +547,7 @@ test("场景7b：170 格路径 → 按 legMaxCells(150) 分 2 腿，legIndex 跨
 // ---------------------------------------------------------------------------
 
 test("场景8：无计划输入 → plan=null、无转移、held 不变、reasons 注明 IDLE", () => {
-  const held: ConductorHeldState = { holdEntryCount: 2, holdFirstTick: 700, holdTicks: 3, settleElapsed: 12, stallTicks: 0, clearRetries: 0, threatStallTicks: 0, threatFirstTick: 0, threatReplanCount: 0, gapTicks: 0 };
+  const held: ConductorHeldState = { holdEntryCount: 2, holdFirstTick: 700, holdTicks: 3, settleElapsed: 12, stallTicks: 0, clearRetries: 0, threatStallTicks: 0, threatFirstTick: 0, threatReplanCount: 0, gapTicks: 0, starveSince: 0, starveCooldownUntil: 0 };
   const input: ConductorStepInput = {
     tick: 500,
     nowMs: NOW_BASE_MS,

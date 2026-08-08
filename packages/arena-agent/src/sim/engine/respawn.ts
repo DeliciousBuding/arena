@@ -1,8 +1,8 @@
 /**
- * Respawn resolver（P12）：v0.11 Core 摧毁后的确定性重生。
+ * Respawn resolver（P13）：v0.11 Core 摧毁后的确定性重生。
  *
  * 规则来源：docs/game-rules.md §Core destruction and respawn（官方 resolution
- * order 第 13 步 "immediately attempt to respawn newly destroyed Cores and
+ * order 第 12 步 "immediately attempt to respawn newly destroyed Cores and
  * process any previously delayed spawn retries"）。
  *
  * 语义要点：
@@ -291,9 +291,9 @@ export function resolveRespawn(world: SimWorld, rules: RulesManifest): RespawnRe
   return { events, unknownEffects, updatedPlayers };
 }
 
-/** P12 respawn phase：把重生结算应用到 draft。 */
+/** P13 respawn phase：把重生结算应用到 draft。 */
 export const respawnPhase: Phase = {
-  id: "P12-respawn",
+  id: "P13-respawn",
   officialPhase: 12,
   run: (draft, ctx) => {
     const resolution = resolveRespawn(draft, ctx.rules);

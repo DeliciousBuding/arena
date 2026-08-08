@@ -1,7 +1,7 @@
 /**
  * Beacon resolver（S11）：v0.11 Champion Beacon 拾取/丢弃结算。
  *
- * 规则来源：docs/game-rules.md §Champion Beacon（官方 15-phase order 第 7 步，
+ * 规则来源：docs/game-rules.md §Champion Beacon（官方 15-phase order 第 5 步，
  * 在 movement 之后、harvest/deposit 之前）。
  *
  * 语义要点：
@@ -184,7 +184,7 @@ export function resolveBeacon(
 /** P07 beacon phase：把 Beacon 结算应用到 draft，并处理失去 Beacon 的盾 clamp。 */
 export const beaconPhase: Phase = {
   id: "P07-beacon",
-  officialPhase: 7,
+  officialPhase: 5,
   run: (draft, ctx) => {
     if (!ctx.features.has("beacon")) return outcome({});
     const beforeBeacon = draft.beacon;
