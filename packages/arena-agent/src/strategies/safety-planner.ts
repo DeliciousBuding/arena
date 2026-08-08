@@ -1623,7 +1623,15 @@ export class SafetyPlanner {
           memory.patrolReturning = true;
           target = home;
         }
-      } else if (samePosition(unit.position, home)) {
+      // 返航空载 worker 不踏入核心格（2026-08-08，t4 振荡复现）：旧逻辑
+      // patrolReturning 时 target=home → stepToward 直穿核心格 → 与
+      // worker_clear_core_empty 对穿振荡（t4 实证 res 冻 2、deposit=0）。
+      // 空载返航到 home 邻格（chebyshev<=1）即视为已到家 → 直接换方位出发；
+      // 满载卸货走 cargo 分支（不经此处），不受影响。
+      } else if (
+        samePosition(unit.position, home) ||
+        (memory.patrolReturning && (unit.cargo ?? 0) === 0 && chebyshev(unit.position, home) <= 1)
+      ) {
         if (memory.patrolStarted) {
           // 方位步进 1→3（2026-08-06 生产实证）：t1 资源枯竭时 40 格矿在正东，
           // 旧连续步进（+1）按 beacon 方位基（东南）逐格推进，第 8 圈才轮到正东
