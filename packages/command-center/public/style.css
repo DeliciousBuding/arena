@@ -642,6 +642,10 @@ body::after {
 .st-badge.rejected, .st-badge.timeout, .st-badge.missed { color: var(--danger); border-color: rgba(221,98,109,.45); background: rgba(221,98,109,.08); }
 .st-badge.aborted { color: var(--warn); border-color: rgba(211,173,85,.45); background: rgba(211,173,85,.07); }
 .st-badge.warn { color: var(--warn); border-color: rgba(211,173,85,.4); }
+.st-badge.deed { color: var(--warn); border-color: rgba(211,173,85,.4); }
+.st-badge.deed-hot { color: var(--danger); border-color: rgba(221,98,109,.45); background: rgba(221,98,109,.08); }
+.stream-line.clickable { cursor: pointer; }
+.stream-line.clickable:hover { background: rgba(255,255,255,.05); }
 .stream-empty { color: var(--text-faint); font-family: var(--font-mono); font-size: 12px; padding: 18px; text-align: center; }
 
 /* ---------- 滚动条 ---------- */
@@ -1437,6 +1441,14 @@ body::after {
 }
 .sit-status.ok { color: var(--success); border-color: rgba(87,189,132,.4); background: rgba(87,189,132,.08); }
 .sit-m-pos { margin-left: auto; font-size: 10px; }
+.sit-focus {
+  margin-left: 6px; flex: none;
+  font-family: var(--font-sans); font-size: 10px; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: rgba(255,255,255,.04); color: var(--text-dim);
+  cursor: pointer; transition: all .2s var(--ease);
+}
+.sit-focus:hover { color: #fff; background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.3); }
 .sit-m-stats { display: flex; gap: 18px; margin-bottom: 8px; }
 .sit-stat { display: flex; flex-direction: column; gap: 1px; }
 .sit-stat-label { font-size: 9.5px; color: var(--text-faint); letter-spacing: .05em; }
@@ -1461,6 +1473,7 @@ body::after {
   padding: 4px 2px 3px; min-height: 40px; transition: all .18s var(--ease);
 }
 .sit-sec:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+.sit-sec.clickable { cursor: pointer; }
 .sit-sec.empty { background: transparent !important; opacity: .45; }
 .sit-sec.danger { border-color: rgba(221,98,109,.55); }
 .sit-sec.warn { border-color: rgba(211,173,85,.45); }

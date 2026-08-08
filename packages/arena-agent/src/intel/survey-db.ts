@@ -187,7 +187,10 @@ export function openSurveyDb(dataRoot: string, tenant: string, write = false): D
   const db = new DatabaseSync(join(dir, `${tenant}.db`));
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
-  if (write) migrateUnitsSeenXY(db); // 数据架构审计 A2：旧库补 x/y 列 + 回填
+  if (write) {
+    migrateUnitsSeenXY(db); // 数据架构审计 A2：旧库补 x/y 列 + 回填
+    migrateCoreHuntSanity(db); // 数据质量 A5：核心时间戳倒挂修复（first<=last）
+  }
   return db;
 }
 
@@ -208,6 +211,21 @@ function migrateUnitsSeenXY(db: DatabaseSync): void {
     db.exec("CREATE INDEX IF NOT EXISTS idx_units_seen_xy_type ON units_seen(controlled, x, y, unit_type);");
   } catch {
     // 并发 write 开打碰撞时容错；下次 sync 重试即可
+  }
+}
+
+/** 旧库健康迁移（2026-08-08，数据质量 A5）：core_hunts 时间戳倒挂
+ *  修复（first_seen_tick > last_seen_tick）——旧 upsert 无条件覆盖 last 导致
+ *  run 处理顺序不一时间戳回退。幂等：WHERE first > last 只触发一次。
+ *  注：SQLite UPDATE 多列 SET 右侧表达式基于旧值计算，MIN/MAX 交换正确。 */
+function migrateCoreHuntSanity(db: DatabaseSync): void {
+  try {
+    db.exec(
+      "UPDATE core_hunts SET first_seen_tick = MIN(first_seen_tick, last_seen_tick), " +
+      "last_seen_tick = MAX(first_seen_tick, last_seen_tick) WHERE first_seen_tick > last_seen_tick;"
+    );
+  } catch {
+    // 容错；下次 sync 重试
   }
 }
 
@@ -267,7 +285,8 @@ export function upsertCoreHunt(
     VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(cell) DO UPDATE SET
       owner = COALESCE(excluded.owner, core_hunts.owner),
-      last_seen_tick = excluded.last_seen_tick
+      first_seen_tick = MIN(core_hunts.first_seen_tick, excluded.first_seen_tick),
+      last_seen_tick = MAX(core_hunts.last_seen_tick, excluded.last_seen_tick)
   `).run(key, position.x, position.y, owner, source, tick, tick).changes);
 }
 

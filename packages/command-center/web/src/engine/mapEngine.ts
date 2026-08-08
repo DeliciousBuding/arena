@@ -78,6 +78,9 @@ interface ArenaState extends Jsonish {
   surveyHits: Map<string, Jsonish>;
   enemyHeat: Jsonish | null;
   enemyHeatMax: number;
+  threatRose: Jsonish | null;
+  threatRoseAt: number;
+  jumpMark: { x: number; y: number; at: number } | null;
   bounds: { minX: number; minY: number; maxX: number; maxY: number } | null;
   lastRefresh: number;
   unitPrev: Map<string, Jsonish>;
@@ -114,6 +117,9 @@ const state: ArenaState = {
   enemyMemoryHits: [],  // 敌情记忆命中点（drawEnemyMemory 构建，hover 用）：{sx,sy,kind,...}
   enemyHeat: null,      // 敌情热区（/api/intel/heat）：16×16 桶敌方目击密度/兵力构成
   enemyHeatMax: 0,      // 热区桶 count 最大值（归一化强度）
+  threatRose: null,     // 威胁扇区玫瑰（/api/alliance/snapshot threatSummaries，全局联盟）
+  threatRoseAt: 0,      // 上次拉取时间戳（20s 节流）
+  jumpMark: null,       // 跳转定位标记（目击/扇区/事迹跳图后短暂脉冲圈，防丢失目标）
   surveyHits: new Map(), // 测绘记忆命中（tactSurveyLayer 构建）：cellKey -> {kind,tick,state,seenCount,firstSeen}
   bounds: null,
   lastRefresh: 0,
@@ -394,7 +400,7 @@ async function poll() {
     emit('overview', state.overview);
     draw();
     if (state.soloTenant) tactRefreshLive(state.soloTenant);
-    else { loadGlobalPlans(); refreshAllCommands(); }
+    else { loadGlobalPlans(); refreshAllCommands(); loadThreatRose(); }
   } catch (err) {
     emit('refresh', false);
     console.warn('poll failed', err);
@@ -592,11 +598,13 @@ function draw() {
   if (!replayActive) drawCores(buckets.core, s);
   if (!replayActive && state.layers.coreTrail !== false) drawEnemyCoreTrails(s);
   if (!replayActive && state.layers.coreTrail !== false) drawThreatArrows(s);
+  if (!replayActive && !state.soloTenant && state.layers.enemyHeat !== false) drawThreatRose(s); // 威胁扇区玫瑰（全局，敌情热区层同开关）
   if (state.layers.enemyMemory !== false) drawEnemyMemory(s); // 敌情记忆 = 情报层：回放模式也画（非当前帧实体）
   if (!replayActive) drawLiveTrails(s);
   drawBeacons(s);
   if (state.hover && !state.drag) drawHoverCell(state.hover, s);
   tactDrawLayer(s);
+  drawJumpMark(s);
   if (replayActive) replayDrawLayer(s);
   const ztxt = `×${state.view.scale.toFixed(1)}`;
   if (!state.tactical.mode && els.hint.dataset.zoom !== ztxt) { els.hint.dataset.zoom = ztxt; els.hint.textContent = `拖拽/方向键平移 · 滚轮缩放 · 双击适应 · G 全局 · ${ztxt}`; }
@@ -1468,6 +1476,83 @@ function enemyMemAlpha(age: any, freshAlpha: any, minAlpha: any) {
  *  数据源 /api/intel/heat?tenant=all&window=2000（服务端 30s 缓存，前端 30s 节流）。 */
 const HEAT_CHUNK = 16;
 let heatLastLoad = 0;
+/** 威胁扇区玫瑰（全局联盟，数据 /api/alliance/snapshot threatSummaries）：每个己方核心
+ *  周围按 8 方向画敌情扇区条（长度/透明度 ∝ score），<32 格显示最近距离（黄）、<18 红。
+ *  一眼看出"哪个方向敌核在逼近我方哪颗核心"。随敌情热区层开关显示。 */
+const ROSE_DIRS: Record<string, [number, number]> = { N: [0, -1], NE: [1, -1], E: [1, 0], SE: [1, 1], S: [0, 1], SW: [-1, 1], W: [-1, 0], NW: [-1, -1] };
+async function loadThreatRose() {
+  const now = Date.now();
+  if (now - state.threatRoseAt < 20_000 && state.threatRose) return; // 服务端缓存 + 前端同频节流
+  state.threatRoseAt = now;
+  try {
+    const r = await getJSON('/api/alliance/snapshot', 20000);
+    if (Array.isArray(r?.threatSummaries)) state.threatRose = r.threatSummaries;
+  } catch { /* 端点暂不可用：保留上次玫瑰 */ }
+}
+/** 跳转定位标记：jumpTo 后目标位置画短暂脉冲定位圈（3.2s 淡出+外扩），
+ *  让"点击目击/扇区/事迹跳图"后不丢失目标。数据/状态语义，白描边 + 琥珀脉冲。 */
+function drawJumpMark(s: any) {
+  const jm = state.jumpMark;
+  if (!jm) return;
+  const age = performance.now() - jm.at;
+  const LIFE = 3200;
+  if (age >= LIFE) { state.jumpMark = null; return; }
+  const p = project(jm.x, jm.y);
+  const pr = Math.max(3, s * 0.14);
+  const a = 1 - age / LIFE;
+  const pulse = 0.5 + 0.5 * Math.sin(age / 90);
+  const grow = 1 + (age / LIFE) * 0.7;
+  ctx.save();
+  ctx.globalAlpha = a * (0.5 + 0.4 * pulse);
+  ctx.strokeStyle = 'rgba(211,173,85,.9)';
+  ctx.lineWidth = Math.max(1.2, s * 0.03);
+  ctx.beginPath(); ctx.arc(p.sx, p.sy, pr * grow, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = a * 0.85;
+  ctx.strokeStyle = 'rgba(255,255,255,.9)';
+  ctx.lineWidth = 1.2;
+  const r2 = pr * (0.55 + 0.15 * pulse);
+  ctx.beginPath(); ctx.arc(p.sx, p.sy, r2, 0, Math.PI * 2); ctx.stroke();
+  const cr = pr * 0.22;
+  ctx.beginPath();
+  ctx.moveTo(p.sx - cr, p.sy); ctx.lineTo(p.sx + cr, p.sy);
+  ctx.moveTo(p.sx, p.sy - cr); ctx.lineTo(p.sx, p.sy + cr);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawThreatRose(s: any) {
+  const rose = state.threatRose;
+  if (!Array.isArray(rose) || !rose.length) return;
+  const k = Math.max(0.55, Math.min(1.4, s / 12));
+  const w = W(), h = H();
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (const ts of rose) {
+    const color = TENANT_COLORS[ts.tenantId] ?? '#999';
+    const cp = ts.corePosition;
+    if (!Array.isArray(cp) || cp.length < 2) continue;
+    const p = project(cp[0], cp[1]);
+    if (p.sx < -140 || p.sx > w + 140 || p.sy < -140 || p.sy > h + 140) continue;
+    for (const sec of ts.sectors ?? []) {
+      const dir = ROSE_DIRS[sec.direction];
+      if (!dir || !sec.entityCount) continue;
+      const len = Math.max(6, Math.min(64, 8 + (sec.score ?? 0) * 90)) * k;
+      const nx = p.sx + dir[0] * len, ny = p.sy + dir[1] * len;
+      const alpha = Math.max(0.12, Math.min(0.55, 0.15 + (sec.score ?? 0) * 0.5));
+      ctx.strokeStyle = color; ctx.globalAlpha = alpha; ctx.lineWidth = Math.max(1.2, s * 0.03);
+      ctx.beginPath(); ctx.moveTo(p.sx + dir[0] * 3, p.sy + dir[1] * 3); ctx.lineTo(nx, ny); ctx.stroke();
+      ctx.globalAlpha = Math.min(1, alpha + 0.25);
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(nx, ny, Math.max(1.5, s * 0.045), 0, Math.PI * 2); ctx.fill();
+      const nd = sec.nearestDistance;
+      if (typeof nd === 'number' && nd < 32) {
+        ctx.globalAlpha = 0.95; ctx.fillStyle = nd < 18 ? '#dd626d' : '#d3ad55';
+        ctx.font = '600 9px ' + CANVAS_FONT;
+        ctx.fillText(String(nd), nx + 2, ny - 2);
+      }
+    }
+  }
+  ctx.restore();
+}
 async function loadEnemyHeat() {
   if (state.layers.enemyHeat === false) return;
   const now = Date.now();
@@ -3992,7 +4077,7 @@ export function createMapEngine(host) {
     setLayer: (name, on) => { state.layers[name] = on; invalidateStatic(); draw(); savePrefs(); emit('layers', { ...state.layers }); },
     setTenantOn: (t, on) => { state.tenantsOn[t] = on; invalidateStatic(); draw(); },
     setTab: (tab) => { state.tab = tab; savePrefs(); pollStreams(); },
-    jumpTo: (x, y) => { state.view.cx = x; state.view.cy = y; state.viewAnim = null; state.zoom.active = false; draw(); },
+    jumpTo: (x, y) => { state.view.cx = x; state.view.cy = y; state.viewAnim = null; state.zoom.active = false; state.jumpMark = { x, y, at: performance.now() }; draw(); },
     resize: () => { resizeCanvas(); draw(); },
     getState: () => ({ soloTenant: state.soloTenant, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length }),
     subscribe: (cb) => { _subs.add(cb); return () => _subs.delete(cb); },

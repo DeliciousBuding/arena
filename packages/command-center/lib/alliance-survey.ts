@@ -41,6 +41,16 @@ export interface AllianceSurveyPayload {
     resourceOverlaps: Array<Record<string, unknown>>;
     obstacleResourceConflicts: Array<Record<string, unknown>>;
   };
+  /** 共识矿视图（2026-08-08，共享测绘设计）：同格多租户矿归一化为一条
+   *  共识条目（winner 仲裁 + observers 全部观测租户 + consensus 数），
+   *  前端“全联盟矿”层可选去重视图；agent 仲裁输入同源。 */
+  consensusResources: Array<Record<string, unknown>>;
+  /** 共识核心视图（2026-08-08）：同 owner 敌核被多租户目击→取最新位置
+   *  + observers 全部观测租户（对称于 consensusResources）。 */
+  consensusCores: Array<Record<string, unknown>>;
+  /** 联盟探索覆盖（2026-08-08）：四租户 chunks 并集（同 chunk 保留最新
+   *  探索 tick + observers）——前端全联盟 Fog 层可用。 */
+  consensusChunks: Array<Record<string, unknown>>;
   cachedAt: string;
 }
 
@@ -84,14 +94,85 @@ export function loadAllianceSurvey(): AllianceSurveyPayload {
     list.push(r);
     resByCell.set(k, list);
   }
+  // 仲裁规则（2026-08-08，蓝图 §2 同口径）：同格矿，lastSeenTick 最新者胜
+  // （记忆新鲜=占矿）；同 tick 平局按租户序 t1<t2<t3<t4。败者该格应写入负记忆
+  // （HARVEST_FAILED NOT_RESOURCE_CELL 同类机制），worker 不再追。
+  const pickResourceWinner = (rows: Array<Record<string, unknown>>): Record<string, unknown> =>
+    [...rows].sort((a, b) => {
+      const ta = Number(a.tick ?? 0);
+      const tb = Number(b.tick ?? 0);
+      if (ta !== tb) return tb - ta;
+      return String(a.tenant).localeCompare(String(b.tenant));
+    })[0];
+  // 共识矿视图（去重归一化）：单租户原样 + observers；多租户重叠
+  // 按仲裁取 winner 为代表，observers 列全部观测租户，consensus=观测数。
+  const consensusResources: Array<Record<string, unknown>> = [...resByCell.entries()]
+    .map(([, rows]): Record<string, unknown> => {
+      if (rows.length === 1) {
+        const single = rows[0];
+        return { ...single, observers: [single.tenant], consensus: 1 };
+      }
+      const winner = pickResourceWinner(rows);
+      return { ...winner, observers: rows.map((r) => r.tenant), consensus: rows.length };
+    })
+    .sort((a, b) => Number(a.x ?? 0) - Number(b.x ?? 0) || Number(a.y ?? 0) - Number(b.y ?? 0));
+  // 共识核心（同 owner 多租户目击合并，取最新位置 + observers）
+  const coreByOwner = new Map<string, Record<string, unknown>>();
+  for (const k of enemyCores) {
+    const owner = String(k.owner ?? "");
+    if (!owner) continue;
+    const cur = coreByOwner.get(owner);
+    if (!cur) {
+      coreByOwner.set(owner, { ...k, observers: [k.tenant] });
+    } else {
+      const obs = new Set([...(cur.observers as string[] ?? []), String(k.tenant)]);
+      if (Number(k.tick ?? 0) > Number(cur.tick ?? 0)) {
+        coreByOwner.set(owner, { ...k, observers: [...obs] });
+      } else {
+        cur.observers = [...obs];
+      }
+    }
+  }
+  const consensusCores = [...coreByOwner.values()];
+  // 联盟探索覆盖：chunks 并集（同 key 保留最新探索 tick + observers）
+  const chunkByKey = new Map<string, Record<string, unknown>>();
+  for (const ch of chunks) {
+    const key = String(ch.key ?? `${String(ch.cx)},${String(ch.cy)}`);
+    const cur = chunkByKey.get(key);
+    if (!cur) {
+      chunkByKey.set(key, { ...ch, observers: [ch.tenant] });
+    } else {
+      const obs = new Set([...(cur.observers as string[] ?? []), String(ch.tenant)]);
+      if (Number(ch.lastSeenTick ?? 0) > Number(cur.lastSeenTick ?? 0)) {
+        chunkByKey.set(key, { ...ch, observers: [...obs] });
+      } else {
+        cur.observers = [...obs];
+      }
+    }
+  }
+  const consensusChunks = [...chunkByKey.values()];
   const resourceOverlaps = [...resByCell.entries()]
     .filter(([, rows]) => rows.length > 1)
-    .map(([cell, rows]) => ({
-      cell,
-      tenants: rows.map((r) => r.tenant),
-      states: rows.map((r) => r.state),
-      lastSeenTicks: rows.map((r) => r.tick),
-    }))
+    .map(([cell, rows]) => {
+      const winner = pickResourceWinner(rows);
+      const losers = rows.filter((r) => r !== winner).map((r) => r.tenant);
+      const tieBroken = rows.every((r) => Number(r.tick) === Number(winner.tick));
+      return {
+        cell,
+        tenants: rows.map((r) => r.tenant),
+        states: rows.map((r) => r.state),
+        lastSeenTicks: rows.map((r) => r.tick),
+        // 共享测绘仲裁建议：winner 占矿，losers 该格作负记忆
+        arbitration: {
+          winner: String(winner.tenant),
+          losers,
+          tieBroken,
+          reason: tieBroken
+            ? `同 tick 平局，租户序 ${String(winner.tenant)} 胜`
+            : `lastSeen ${String(winner.tick)} 最新，${String(winner.tenant)} 占矿`,
+        },
+      };
+    })
     .sort((a, b) => String(a.cell).localeCompare(String(b.cell)));
   const obstacleCells = new Map<string, string[]>();
   for (const o of obstacles) {
@@ -122,6 +203,9 @@ export function loadAllianceSurvey(): AllianceSurveyPayload {
     chunks,
     lifecycle,
     conflicts: { resourceOverlaps, obstacleResourceConflicts },
+    consensusResources,
+    consensusCores,
+    consensusChunks,
     cachedAt,
   };
   allianceSurveyCache.set("all", payload);

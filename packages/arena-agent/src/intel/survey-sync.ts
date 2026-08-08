@@ -49,6 +49,7 @@ export interface SyncSummary {
   resources: number;
   obstacles: number;
   coreHunts: number;
+  notables: number;
 }
 
 interface CaseObjects {
@@ -219,7 +220,7 @@ export function syncTenantSurvey(
 ): SyncSummary {
   const db = options.db ?? openSurveyDb(dataRoot, tenant, true);
   const calDir = join(dataRoot, "runtime", tenant, "calibration");
-  const summary: Mutable<SyncSummary> = { tenant, runs: 0, cases: 0, resources: 0, obstacles: 0, coreHunts: 0 };
+  const summary: Mutable<SyncSummary> = { tenant, runs: 0, cases: 0, resources: 0, obstacles: 0, coreHunts: 0, notables: 0 };
   if (!existsSync(calDir)) return summary;
   const runDirs = readdirSync(calDir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
@@ -285,7 +286,7 @@ export function syncTenantSurvey(
       for (const f of lc.harvestFails) recordResourceEvent(db, f.cell, f.tick, "HARVEST_FAILED", f.reason, null, f.actorId);
       for (const s of lc.spends) recordCoreSpend(db, s.kind, s.tick, s.amount, s.unitType, s.unitId);
       for (const n of lc.notables) {
-        recordNotableEvent(db, { tenant, tick, eventType: n.eventType, actorId: n.actorId, targetId: n.targetId, x: n.pos?.x ?? null, y: n.pos?.y ?? null, amount: n.amount, unitType: n.unitType });
+        summary.notables += recordNotableEvent(db, { tenant, tick, eventType: n.eventType, actorId: n.actorId, targetId: n.targetId, x: n.pos?.x ?? null, y: n.pos?.y ?? null, amount: n.amount, unitType: n.unitType });
       }
       if (tick > maxTick) maxTick = tick;
       casesInRun += 1;

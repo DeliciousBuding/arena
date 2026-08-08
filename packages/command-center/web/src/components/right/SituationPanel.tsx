@@ -8,6 +8,7 @@ import { useEngine } from "../../lib/bridge";
 
 const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
 const DIRS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+const DIR_VEC: Record<string, [number, number]> = { N: [0, -1], NE: [1, -1], E: [1, 0], SE: [1, 1], S: [0, 1], SW: [-1, 1], W: [-1, 0], NW: [-1, -1] };
 const KIND_CN: Record<string, string> = { CORE: "敌核", UNIT: "单位", WORKER: "工", VANGUARD: "锋", RANGER: "射" };
 
 interface Sector { direction: string; score: number; entityCount: number; nearestDistance: number | null; entityKeys: string[] }
@@ -40,7 +41,7 @@ const near = (d: number | null | undefined, f: number): number => {
   return Math.max(0.62, Math.min(1.6, f * 1.6 / Math.sqrt(d)));
 };
 
-function MemberCard({ t, m, ts }: { t: string; m: Member; ts?: ThreatSummary }) {
+function MemberCard({ t, m, ts, onFocus, onSector }: { t: string; m: Member; ts?: ThreatSummary; onFocus?: (t: string) => void; onSector?: (t: string, sec: Sector, corePos: number[] | undefined) => void }) {
   const hpPct = Math.max(0, Math.min(100, (m.core.hp / 5) * 100));
   const shPct = Math.max(0, Math.min(100, (m.core.shield / 5) * 100));
   const sectors = ts?.sectors ?? [];
@@ -51,6 +52,7 @@ function MemberCard({ t, m, ts }: { t: string; m: Member; ts?: ThreatSummary }) 
         <b>{t.toUpperCase()}</b>
         <span className={`sit-status${m.status === "READY" ? " ok" : ""}`}>{m.status ?? "—"}</span>
         <span className="sit-m-pos mono dim">({fmt(m.core.position?.[0])},{fmt(m.core.position?.[1])})</span>
+        <button type="button" className="sit-focus" title={`地图聚焦 ${t.toUpperCase()} 核心`} onClick={(e) => { e.stopPropagation(); onFocus?.(t); }}>聚焦</button>
       </div>
       <div className="sit-m-stats">
         <div className="sit-stat">
@@ -92,7 +94,7 @@ function MemberCard({ t, m, ts }: { t: string; m: Member; ts?: ThreatSummary }) 
             const dCls = distCls(s.nearestDistance);
             const tip = `${d} · 敌核 ${s.entityCount} · 最近 ${s.nearestDistance ?? "—"} 格 · 分数 ${(s.score ?? 0).toFixed(2)}${s.entityKeys.length ? "\n" + s.entityKeys.join(", ") : ""}`;
             return (
-              <div key={d} className={`sit-sec${dCls ? " " + dCls : ""}`} style={{ background: `rgba(255,255,255,${intensity.toFixed(3)})` }} title={tip}>
+              <div key={d} data-sector={`${t}:${d}`} className={`sit-sec${dCls ? " " + dCls : ""} clickable`} style={{ background: `rgba(255,255,255,${intensity.toFixed(3)})` }} title={tip + " · 点击定位该方向最近敌情"} onClick={(e) => { e.stopPropagation(); onSector?.(t, s, m.core.position); }}>
                 <span className="sit-sec-dir mono">{d}</span>
                 <span className="sit-sec-n" style={{ fontSize: `${near(s.nearestDistance, 9.5).toFixed(1)}px` }}>{s.entityCount}</span>
                 <span className="sit-sec-d mono">{s.nearestDistance ?? "—"}</span>
@@ -111,6 +113,25 @@ export function SituationPanel() {
   const [journal, setJournal] = useState<JournalData | null>(null);
   const [err, setErr] = useState("");
   const [at, setAt] = useState("");
+
+  const focusTenant = (t: string) => { if (!engine) return; engine.toggleSolo(t); }; // 完整聚焦：solo 态 + HUD/资产 + 徽章（再点退出，引擎自带返回提示）
+  /** 扇区点击 → 定位该方向最近敌情：优先目击列表精确敌核坐标，回退方向+距离估点。 */
+  const focusSector = (t: string, sec: Sector, corePos: number[] | undefined) => {
+    if (!engine) return;
+    const keys = sec.entityKeys ?? [];
+    const sight = keys.length
+      ? (data?.sightings ?? []).find((sg) => keys.includes(sg.ownerUsername) && Array.isArray(sg.position) && sg.position.length >= 2)
+      : undefined;
+    if (sight) {
+      engine.jumpTo(sight.position[0], sight.position[1]);
+      engine.toast(`定位 ${t.toUpperCase()} ${sec.direction} 方向敌核「${sight.ownerUsername}」`);
+      return;
+    }
+    const dir = DIR_VEC[sec.direction] ?? [0, 0];
+    const dist = sec.nearestDistance ?? 20;
+    engine.jumpTo((corePos?.[0] ?? 0) + dir[0] * dist, (corePos?.[1] ?? 0) + dir[1] * dist);
+    engine.toast(`${t.toUpperCase()} ${sec.direction} 方向最近敌情约 ${dist} 格（估算）`);
+  };
 
   const jump = (x: number | null | undefined, y: number | null | undefined, label: string) => {
     if (typeof x !== "number" || typeof y !== "number" || !engine) return;
@@ -193,7 +214,7 @@ export function SituationPanel() {
 
       <div className="sit-members">
         {(["t1", "t2", "t3", "t4"] as const).map((t) => members[t] ? (
-          <MemberCard key={t} t={t} m={members[t]} ts={summaries.find((x) => x.tenantId === t)} />
+          <MemberCard key={t} t={t} m={members[t]} ts={summaries.find((x) => x.tenantId === t)} onFocus={focusTenant} onSector={focusSector} />
         ) : null)}
       </div>
 
