@@ -437,3 +437,11 @@ mapEngine.ts 对应函数。
   不需逐个 hover。style.css 新增 .asset-cmd（单行截断/mono/语义色）。
 - 探针实测：聚焦 t1 见 30 行决策标签 + 2 行人类指挥标签；回归 22/22 全绿
   （首次右键菜单 flake 为已知高负载抖动，重跑即绿）。
+
+### 9.26 编队连接线 + 右键菜单图标化（2026-08-08）
+- **编队连接线**：drawMultiSelection 增强——Shift 多选后主选中 → 各成员
+  画星形淡白虚线（编队拓扑地图直观可见，一眼看出编队锚点与成员分布）。
+- **右键/批量菜单图标化**：tactical.ts 新增 TACT_ACTION_ICON（MOVE➤/
+  HARVEST⛏/DEPOSIT▣/SWEEP✸/SHOOT⚔/HEAL✚/信标⚑/维修◈ 等几何符号），
+  菜单项加 .ctx-ico 图标列（零素材、更精致）。
+- 探针实测：右键工人菜单 6 图标；回归 22/22 全绿。
