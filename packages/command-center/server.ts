@@ -26,6 +26,7 @@ import { loadTenantSurveyCached, startSurveyCacheLoop } from "./lib/survey-cache
 import { loadDeeds, startDeedsCacheLoop } from "./lib/deeds.ts";
 import { loadAllianceSurvey, refreshAllianceSurvey, TENANT_COLORS } from "./lib/alliance-survey.ts";
 import { loadAllianceSnapshot, refreshAllianceSnapshot } from "./lib/alliance-snapshot.ts";
+import { loadAllianceCluster, refreshAllianceCluster } from "./lib/alliance-cluster.ts";
 import { loadAllianceAdvice, refreshAllianceAdvice } from "./lib/alliance-advice.ts";
 import { loadEnemyHeat, refreshEnemyHeat } from "./lib/enemy-heat.ts";
 import { loadAllianceExploration, refreshAllianceExploration } from "./lib/exploration-coverage.ts";
@@ -237,6 +238,11 @@ app.post("/api/alliance/survey/arbitrate/clear", async (c) => {
   clearArbitration(cell);
   refreshAllianceSurvey();
   return c.json({ ok: true, cell, arbitrations: listArbitrations() });
+});
+app.get("/api/alliance/cluster", (c) => {
+  // 联盟集群态势（2026-08-08，抱团 Phase 1 观测层）：四租户核心/兵力集群识别
+  // + 抱团指数 + 联防圈（西集群 t1+t3 / 东集群 t2+t4 可视化）。30s 缓存。
+  return c.json(loadAllianceCluster());
 });
 app.get("/api/alliance/snapshot", (c) => {
   // 联盟态势快照（2026-08-08）：canonical 联盟域模型 + survey-db 敌核 +
@@ -687,6 +693,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
       refreshAllianceSnapshot(); // 联盟态势快照 30s 缓存（读 survey/世界缓存，快）
+      refreshAllianceCluster(); // 联盟集群态势 30s 缓存（抱团观测）
       refreshAllianceAdvice(); // 联盟参谋建议 30s 缓存（读快照/共享测绘缓存，快）
       refreshEnemyHeat(); // 敌情热区 30s 缓存（读 units_seen 聚合，快）
       refreshPipelineHealth(); // 数据管线健康 15s 缓存（读 survey 水位/世界，快）
