@@ -339,6 +339,53 @@ async function main() {
     } catch (e) { ctxOk = false; }
     if (ctxOk === true) ok("右键指挥菜单", "选中→右键打开→Esc 关闭");
     else if (ctxOk === false) bad("右键指挥菜单", "菜单未打开或 Esc 未关闭");
+
+    // 6f) 编队多选：Shift 点击两个不同受控单位 → toast 计数（编队 +1 共 N）→ Esc 清理
+    let multiOk = null; // true | false
+    try {
+      await page.keyboard.press("f");
+      await sleep(800);
+      const cvF = await page.$("#map");
+      const boxF = await cvF.boundingBox();
+      const picks = await page.evaluate(async ({ boxX, boxY, boxW, boxH }) => {
+        const eng = window.__arenaEngine;
+        if (!eng) return { err: "no engine" };
+        const st = eng.getState();
+        const tenant = st.soloTenant || "t1";
+        const w = await (await fetch("/api/world?tenant=" + tenant, { cache: "no-store" })).json();
+        // 优先 VANGUARD（非 worker 无 cargo toast 干扰）；不足则任意 UNIT
+        let us = (w?.state?.objects ?? []).filter((o) => o.kind === "UNIT" && o.unit_type === "VANGUARD" && o.controlled === true && o.position);
+        if (us.length < 2) us = (w?.state?.objects ?? []).filter((o) => o.kind === "UNIT" && o.controlled === true && o.position);
+        if (us.length < 2) return { err: "units<2" };
+        // 选两个不同位置的单位（同格则找下一个不同格）
+        const a = us[0], b = us.find((u) => u.id !== a.id && (u.position[0] !== a.position[0] || u.position[1] !== a.position[1])) ?? us[1];
+        const v = st.view;
+        const pt = (u) => ({ sx: boxX + (u.position[0] - v.cx) * v.scale + boxW / 2, sy: boxY + (u.position[1] - v.cy) * v.scale + boxH / 2 });
+        return { a: pt(a), b: pt(b), ids: [a.id, b.id] };
+      }, { boxX: boxF.x, boxY: boxF.y, boxW: boxF.width, boxH: boxF.height });
+      if (picks.err) { multiOk = false; }
+      else {
+        const readToast = async () => {
+          const el = await page.$("#uiToast");
+          if (!el) return "";
+          const cls = await el.getAttribute("class").catch(() => "");
+          return (cls || "").includes("show") ? (await el.innerText().catch(() => "")) || "" : "";
+        };
+        await page.keyboard.down("Shift");
+        await page.mouse.click(picks.a.sx, picks.a.sy);
+        await sleep(350);
+        const t1 = await readToast();
+        await page.mouse.click(picks.b.sx, picks.b.sy);
+        await sleep(350);
+        const t2 = await readToast();
+        await page.keyboard.up("Shift");
+        multiOk = t1.includes("编队 +1") && t2.includes("共 2");
+      }
+      await page.keyboard.press("Escape").catch(() => {});
+      await sleep(300);
+    } catch (e) { multiOk = false; }
+    if (multiOk === true) ok("编队多选（Shift 加选）", "两次 Shift 点击 toast 计数正确");
+    else if (multiOk === false) bad("编队多选（Shift 加选）", "toast 未出现或计数错误");
     // 7) API 健康
     for (const path of ["/api/overview", "/api/stream?tenant=t1&n=5", "/api/survey?tenant=t1"]) {
       const t0 = Date.now();
