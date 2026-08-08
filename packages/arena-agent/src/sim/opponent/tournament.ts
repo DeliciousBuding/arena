@@ -447,12 +447,7 @@ export function runFreeForAll(
     scenario?: unknown;
   },
 ): MatchResult {
-  const refillConfig =
-    opts?.refillEveryTicks === undefined
-      ? { everyTicks: 4 }
-      : opts.refillEveryTicks === null
-        ? null
-        : { everyTicks: opts.refillEveryTicks };
+  const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
   const scenario = opts?.scenario ?? makeArenaScenarioN(entries, seed);
   const ids = entries.map((entry) => entry.id);
   // build 移入 try：中途抛错时已建 provider 也走 finally close（卫生项同 runMatch）。
