@@ -20,8 +20,20 @@ export interface DeedsJournalPayload {
   counts: Record<string, number>;
   perTenant: Record<string, { count: number; topStar: number }>;
   narrative: string;
+  /** 按类别分组的 deeds（2026-08-08 折叠/筛选）：harvest/deposit/spawn/death/
+   *  milestone/newCore/heatZone/conflict/economy/status/other，每组 ≤20 条。 */
+  groups: Record<string, readonly Deed[]>;
+  /** 生效的筛选（回显，前端可显示当前过滤状态）。 */
+  filters: { categories: readonly string[]; minStar: number };
   deeds: readonly Deed[];
   cachedAt: string;
+}
+
+/** 日记查询选项（2026-08-08）：category=harvest,deposit… 按类别过滤；
+ *  minStar=N 只保留 ≥N 星级。前端折叠/筛选用，纯后端增强。 */
+export interface JournalQuery {
+  categories?: readonly string[];
+  minStar?: number;
 }
 
 const JOURNAL_TTL_MS = 30_000;
@@ -45,8 +57,10 @@ const KIND_GROUP: Record<string, string> = {
   ALLIANCE_STATUS: "status",
 };
 
-export async function loadDeedsJournal(tenant: string, windowTicks = 5000): Promise<DeedsJournalPayload> {
-  const key = `${tenant}:${windowTicks}`;
+export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query: JournalQuery = {}): Promise<DeedsJournalPayload> {
+  const cats = query.categories?.filter(Boolean) ?? [];
+  const minStar = typeof query.minStar === "number" && Number.isFinite(query.minStar) ? Math.min(Math.max(Math.round(query.minStar), 1), 4) : 0;
+  const key = `${tenant}:${windowTicks}:${cats.join(",")}:${minStar}`;
   const hit = journalCache.get(key);
   if (hit !== undefined) return hit;
   const snap = loadAllianceSnapshot();
@@ -55,15 +69,22 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000): Prom
   const all = tenant === "all"
     ? [...(await loadDeeds("all", 500)), ...loadAllianceDeeds()]
     : [...(await loadDeeds(tenant, 500))];
-  const windowed = all
+  let windowed = all
     .filter((d) => d.tick >= windowStart && d.tick <= currentTick)
     .sort((a, b) => b.star - a.star || b.tick - a.tick);
+  // 2026-08-08 折叠/筛选：minStar 与 category（KIND_GROUP 类别）过滤，供前端
+  // 日记分组折叠/只看某类；counts/perTenant/narrative 基于过滤后集合，语义一致。
+  if (minStar > 0) windowed = windowed.filter((d) => d.star >= minStar);
+  const catSet = new Set(cats);
+  if (catSet.size > 0) windowed = windowed.filter((d) => catSet.has(KIND_GROUP[d.kind] ?? "other"));
   const headline = windowed[0] ?? null;
   const counts: Record<string, number> = {};
   const perTenant: Record<string, { count: number; topStar: number }> = {};
+  const groups: Record<string, Deed[]> = {};
   for (const d of windowed) {
     const g = KIND_GROUP[d.kind] ?? "other";
     counts[g] = (counts[g] ?? 0) + 1;
+    (groups[g] = groups[g] ?? []).push(d);
     const t = perTenant[d.tenant] ?? { count: 0, topStar: 0 };
     t.count += 1;
     if (d.star > t.topStar) t.topStar = d.star;
@@ -80,6 +101,8 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000): Prom
     counts,
     perTenant,
     narrative,
+    groups: Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, v.slice(0, 20)])),
+    filters: { categories: cats, minStar },
     deeds: windowed.slice(0, 30),
     cachedAt: new Date().toISOString(),
   };
