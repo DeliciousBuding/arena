@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Stop'
 try {
   $procs = Get-CimInstance Win32_Process -Filter "name='node.exe'"
-  $procs | Where-Object { $_.CommandLine -match 'run-tenant|run-supervisor' } | ForEach-Object { $_.ProcessId }
+  $procs | Where-Object { $_.CommandLine -match 'run-tenant|run-supervisor|arena:supervisor' } | ForEach-Object { $_.ProcessId }
   exit 0
 } catch {
   exit 1
