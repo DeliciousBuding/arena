@@ -123,6 +123,16 @@ CREATE TABLE IF NOT EXISTS heat_archive (
   PRIMARY KEY (x, y, unit_type)
 );
 
+-- 格级负观测（2026-08-08，A15）：我方视野覆盖内「确认无矿」的已知矿格 × tick——
+-- resource_seen_history 只记观测（视野离开=假消失），无法区分真实缺席与观测中断；
+-- 本表记「看得到且没有矿」的真实缺席，供矿刷新周期实证。survey-sync 写入。
+CREATE TABLE IF NOT EXISTS resource_absences (
+  cell TEXT NOT NULL,
+  tick INTEGER NOT NULL,
+  PRIMARY KEY (cell, tick)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_absences_cell ON resource_absences(cell);
+
 -- 矿物生命周期事件（2026-08-08）：矿格 × tick 的采集/失败序列
 CREATE TABLE IF NOT EXISTS resource_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -449,6 +459,18 @@ function migrateUnitsSeenArchive(db: DatabaseSync): void {
 }
 
 /** upsert 一组可见矿（服务端投影：资源存在）。返回受影响行数。 */
+/** 格级负观测写入（2026-08-08，A15）：视野覆盖内确认无矿的已知矿格。
+ *  (cell, tick) 幂等（UNIQUE）。由 survey-sync 每 case 判定后批量调用。 */
+export function upsertResourceAbsences(db: DatabaseSync, rows: ReadonlyArray<{ cell: string; tick: number }>): number {
+  if (rows.length === 0) return 0;
+  const stmt = db.prepare(
+    "INSERT OR IGNORE INTO resource_absences (cell, tick) VALUES (?, ?)",
+  );
+  let n = 0;
+  for (const r of rows) n += Number(stmt.run(r.cell, r.tick).changes);
+  return n;
+}
+
 export function upsertResources(
   db: DatabaseSync,
   cells: readonly { x: number; y: number }[],

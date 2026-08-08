@@ -13,6 +13,7 @@
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { VISION_RADIUS, visionLineBlocked } from "../domain/world.ts";
 import {
   markResourceState,
   markSyncMeta,
@@ -28,6 +29,7 @@ import {
   upsertObstacles,
   upsertResources,
   upsertUnitSeen,
+  upsertResourceAbsences,
   upsertChunk,
 } from "./survey-db.ts";
 import { chunkKeyFor } from "../domain/world.ts";
@@ -51,12 +53,15 @@ export interface SyncSummary {
   obstacles: number;
   coreHunts: number;
   notables: number;
+  absences: number;
 }
 
 interface CaseObjects {
   resources: { x: number; y: number }[];
   obstacles: { x: number; y: number }[];
   coreHunts: { x: number; y: number; owner: string | null; source: "CORE" | "WORKER_INFER" }[];
+  /** 我方受控核心位置（视野覆盖观察者，A15 负观测用）。 */
+  ourCores: { x: number; y: number }[];
   unitSeen: { x: number; y: number; unitType: string; controlled: boolean; id: string | null }[];
 }
 
@@ -67,7 +72,7 @@ export function parseCaseObjects(raw: unknown): CaseObjects | null {
   if (typeof state !== "object" || state === null) return null;
   const objects = (state as { objects?: unknown }).objects;
   if (!Array.isArray(objects)) return null;
-  const out: CaseObjects = { resources: [], obstacles: [], coreHunts: [], unitSeen: [] };
+  const out: CaseObjects = { resources: [], obstacles: [], coreHunts: [], ourCores: [], unitSeen: [] };
   for (const obj of objects) {
     if (typeof obj !== "object" || obj === null) continue;
     const kind = (obj as { kind?: unknown }).kind;
@@ -82,16 +87,20 @@ export function parseCaseObjects(raw: unknown): CaseObjects | null {
       }
     } else if (kind === "CORE") {
       const o = obj as { position?: unknown; owner_username?: unknown; controlled?: unknown };
-      if (Array.isArray(o.position) && o.position.length === 2 && o.controlled === false) {
+      if (Array.isArray(o.position) && o.position.length === 2) {
         const x = Number(o.position[0]);
         const y = Number(o.position[1]);
         if (Number.isFinite(x) && Number.isFinite(y)) {
-          out.coreHunts.push({
-            x,
-            y,
-            owner: typeof o.owner_username === "string" && o.owner_username.length > 0 ? o.owner_username : null,
-            source: "CORE",
-          });
+          if (o.controlled === true) {
+            out.ourCores.push({ x, y });
+          } else {
+            out.coreHunts.push({
+              x,
+              y,
+              owner: typeof o.owner_username === "string" && o.owner_username.length > 0 ? o.owner_username : null,
+              source: "CORE",
+            });
+          }
         }
       }
     } else if (kind === "UNIT") {
@@ -262,6 +271,47 @@ function latestRunDirByMtime(calDir: string, runDirs: string[]): string {
 }
 
 /** 同步一个租户的全部（或最新）calibration run 到测绘库。返回汇总。 */
+/** 格级负观测收集（2026-08-08，A15）：我方视野（单位+Core，曼哈顿 ≤ 半径且
+ *  supercover 视线无遮挡）覆盖内、本 case 资源列表缺席的「已知矿格」→ 真实缺席
+ *  记录。区别于 resource_seen_history 的观测中断（视野离开=假消失）。已知矿格
+ *  来自 resources 表累积测绘；每 case 扫描已知格 × 观察者（曼哈顿 O(1) 预过滤，
+ *  命中才跑 supercover 视线）。返回待写 absence 行（调用方批量 upsert）。 */
+export function collectResourceAbsences(
+  db: DatabaseSync,
+  objects: CaseObjects,
+  tick: number,
+): Array<{ cell: string; tick: number }> {
+  if (objects.unitSeen.length === 0 && objects.ourCores.length === 0) return [];
+  const knownRows = db.prepare("SELECT x, y FROM resources").all() as Array<{ x: number; y: number }>;
+  if (knownRows.length === 0) return [];
+  const known = new Set<string>();
+  for (const r of knownRows) known.add(`${r.x},${r.y}`);
+  const nowRes = new Set(objects.resources.map((p) => `${p.x},${p.y}`));
+  const obstacles = new Set(objects.obstacles.map((p) => `${p.x},${p.y}`));
+  const observers: Array<{ x: number; y: number; radius: number }> = [];
+  for (const u of objects.unitSeen) {
+    if (!u.controlled) continue;
+    const radius = VISION_RADIUS[u.unitType as keyof typeof VISION_RADIUS] ?? 3;
+    observers.push({ x: u.x, y: u.y, radius });
+  }
+  for (const c of objects.ourCores) observers.push({ x: c.x, y: c.y, radius: VISION_RADIUS.CORE });
+  if (observers.length === 0) return [];
+  const out: Array<{ cell: string; tick: number }> = [];
+  for (const cell of known) {
+    if (nowRes.has(cell)) continue;
+    const [x, y] = cell.split(",").map((v) => Number(v));
+    let covered = false;
+    for (const ob of observers) {
+      if (Math.abs(ob.x - x) + Math.abs(ob.y - y) > ob.radius) continue;
+      if (visionLineBlocked([ob.x, ob.y], [x, y], obstacles)) continue;
+      covered = true;
+      break;
+    }
+    if (covered) out.push({ cell, tick });
+  }
+  return out;
+}
+
 export function syncTenantSurvey(
   dataRoot: string,
   tenant: string,
@@ -269,7 +319,7 @@ export function syncTenantSurvey(
 ): SyncSummary {
   const db = options.db ?? openSurveyDb(dataRoot, tenant, true);
   const calDir = join(dataRoot, "runtime", tenant, "calibration");
-  const summary: Mutable<SyncSummary> = { tenant, runs: 0, cases: 0, resources: 0, obstacles: 0, coreHunts: 0, notables: 0 };
+  const summary: Mutable<SyncSummary> = { tenant, runs: 0, cases: 0, resources: 0, obstacles: 0, coreHunts: 0, notables: 0, absences: 0 };
   if (!existsSync(calDir)) return summary;
   const runDirs = readdirSync(calDir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
@@ -328,6 +378,10 @@ export function syncTenantSurvey(
       for (const pos of [...objects.resources, ...objects.obstacles, ...objects.coreHunts.map((h) => ({ x: h.x, y: h.y })), ...objects.unitSeen.map((u) => ({ x: u.x, y: u.y }))]) {
         upsertChunk(db, chunkKeyFor([pos.x, pos.y]), tick);
       }
+      // 格级负观测（2026-08-08，A15）：视野覆盖内确认无矿的已知矿格 → 真实缺席
+      // 记录（resource_absences）。为矿刷新周期实证供数据，替代不可靠的出现窗口推断。
+      const absences = collectResourceAbsences(db, objects, tick);
+      if (absences.length > 0) summary.absences += upsertResourceAbsences(db, absences);
             // 生命周期事件（2026-08-08）：spawn/destroy/harvest/heal/repair
       const lc = parseCaseLifecycle(raw, tick);
       for (const b of lc.births) recordUnitBirth(db, b.unitId, b.unitType, b.tick, b.pos);
