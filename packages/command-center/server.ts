@@ -285,12 +285,14 @@ app.get("/api/alliance/defense", (c) => {
   // 缓存（members/threatSummaries），构建轻量无独立缓存（30s 快照 TTL 即上限）。
   const snap = loadAllianceSnapshot();
   const byTenant = new Map(snap.threatSummaries.map((s) => [s.tenantId, s.totalScore]));
+  const dirsByTenant = new Map(snap.threatSummaries.map((s) => [s.tenantId, s.highDirections]));
   const members = Object.values(snap.members).map((m) => ({
     tenantId: m.tenantId,
     core: m.core?.position ?? null,
     military: m.vanguards + m.rangers,
     status: m.status,
     threatScore: byTenant.get(m.tenantId) ?? 0,
+    threatDirections: dirsByTenant.get(m.tenantId) ?? [],
   }));
   return c.json(buildDefenseCoordination(members));
 });

@@ -24,6 +24,8 @@ export interface DefenseMemberInput {
   readonly status: string;
   /** 威胁摘要 totalScore（无则 0）。 */
   readonly threatScore?: number;
+  /** 高威胁扇区方向（threatSummaries.highDirections，8 向 N/NE/E/SE/S/SW/W/NW）。 */
+  readonly threatDirections?: readonly string[];
 }
 
 export interface DefenseAdvice {
@@ -43,7 +45,8 @@ export interface DefensePayload {
   readonly endangered: readonly { readonly tenantId: string; readonly military: number; readonly threatScore: number }[];
 }
 
-/** 濒危军事上限：≤1 战斗单位视为军事薄弱（无防御反击能力）。 */
+/** 濒危军事上限：≤1 战斗单位视为军事薄弱（无防御反击能力）。
+ *  military=0 无条件濒危（无兵即无法防御/无法快速补防，不能等威胁逼近才预警）。 */
 export const ENDANGERED_COMBAT_MAX = 1;
 /** 濒危威胁分阈值：8 扇区 totalScore ≥ 此值且军事薄弱 → 濒危。 */
 export const ENDANGERED_THREAT_MIN = 6;
@@ -63,10 +66,27 @@ const SEV_ORDER: Record<DefenseSeverity, number> = { CRITICAL: 0, HIGH: 1, MEDIU
 
 function endangeredOf(m: DefenseMemberInput): { endangered: boolean; reason: string } {
   if (m.status === "RESPAWNING") return { endangered: true, reason: "respawn" };
+  if (m.military === 0) return { endangered: true, reason: "zero" }; // 零军事无条件濒危
   if (m.military <= ENDANGERED_COMBAT_MAX && (m.threatScore ?? 0) >= ENDANGERED_THREAT_MIN) {
     return { endangered: true, reason: "weak" };
   }
   return { endangered: false, reason: "" };
+}
+
+/** 从 A 指向 B 的 8 向扇区（与 threat-summary.threatDirection 同构——
+ *  dy>0 = 北，dy<0 = 南；<3 格视为同点 "C"）。 */
+export function directionOf(a: Position, b: Position): string {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const ax = Math.abs(dx);
+  const ay = Math.abs(dy);
+  if (ax < 3 && ay < 3) return "C";
+  if (ax * 2 < ay) return dy > 0 ? "N" : "S";
+  if (ay * 2 < ax) return dx > 0 ? "E" : "W";
+  if (dx > 0 && dy > 0) return "NE";
+  if (dx > 0 && dy < 0) return "SE";
+  if (dx < 0 && dy < 0) return "SW";
+  return "NW";
 }
 
 /** 联盟联防建议（纯函数）。 */
@@ -93,6 +113,18 @@ export function buildDefenseCoordination(members: readonly DefenseMemberInput[])
         relatedTenants: [],
         evidence: [{ label: "状态", value: "RESPAWNING" }, { label: "军事", value: String(m.military) }],
       });
+    } else if (reason === "zero") {
+      // 零军事：无防御反击能力，任何威胁逼近都打爆（t3 73094 实证）——无条件预警。
+      advice.push({
+        id: `defense:endangered:${m.tenantId}:zero`,
+        category: "ENDANGERED",
+        severity: (m.threatScore ?? 0) >= ENDANGERED_THREAT_MIN ? "CRITICAL" : "HIGH",
+        title: `${m.tenantId.toUpperCase()} 零军事——无防御反击能力`,
+        detail: `军事=0${(m.threatScore ?? 0) > 0 ? `、威胁分=${m.threatScore}` : ""}——建议立即补 Vanguard（防御是底线，不能等威胁逼近）`,
+        tenant: m.tenantId,
+        relatedTenants: [],
+        evidence: [{ label: "军事", value: "0" }, { label: "威胁分", value: String(m.threatScore ?? 0) }],
+      });
     } else {
       advice.push({
         id: `defense:endangered:${m.tenantId}:weak`,
@@ -112,7 +144,7 @@ export function buildDefenseCoordination(members: readonly DefenseMemberInput[])
   for (const e of endangered) {
     const ec = coreOf(e.tenantId);
     if (!ec) continue;
-    let best: { tenantId: string; dist: number; military: number } | null = null;
+    let best: { tenantId: string; dist: number; military: number; nc: Position | null } | null = null;
     for (const n of members) {
       if (n.tenantId === e.tenantId || endangeredIds.has(n.tenantId)) continue;
       if (n.military < REINFORCE_COMBAT_MIN) continue;
@@ -120,21 +152,31 @@ export function buildDefenseCoordination(members: readonly DefenseMemberInput[])
       if (!nc) continue;
       const dist = chebyshev(ec, nc);
       if (dist > REINFORCE_RANGE) continue;
-      if (best === null || dist < best.dist) best = { tenantId: n.tenantId, dist, military: n.military };
+      if (best === null || dist < best.dist) best = { tenantId: n.tenantId, dist, military: n.military, nc };
     }
     if (best) {
+      // 威胁方位投影（Phase 2 深化）：援军相对濒危核心的方位，是否落在威胁锋面侧。
+      const threatDirs = byId.get(e.tenantId)?.threatDirections ?? [];
+      const flankDir = best.nc ? directionOf(ec, best.nc) : null;
+      const onFlank = flankDir !== null && flankDir !== "C" && threatDirs.includes(flankDir);
+      const flankNote = threatDirs.length > 0 && flankDir !== null
+        ? (onFlank
+            ? `；注意 ${best.tenantId.toUpperCase()} 位于威胁锋面（${threatDirs.join("/")}）侧——驰援需绕行或先清剿`
+            : `；${best.tenantId.toUpperCase()} 从 ${flankDir} 侧进入可避开威胁锋面（${threatDirs.join("/")}）`)
+        : "";
       advice.push({
         id: `defense:reinforce:${best.tenantId}:${e.tenantId}`,
         category: "REINFORCE",
         severity: "HIGH",
         title: `${best.tenantId.toUpperCase()} 可驰援 ${e.tenantId.toUpperCase()}`,
-        detail: `距 ${best.dist} 格、${best.military} 战斗单位可调配——濒危租户 ${e.tenantId.toUpperCase()} 需外援`,
+        detail: `距 ${best.dist} 格、${best.military} 战斗单位可调配——濒危租户 ${e.tenantId.toUpperCase()} 需外援${flankNote}`,
         tenant: best.tenantId,
         relatedTenants: [e.tenantId],
         evidence: [
           { label: "核距", value: `${best.dist} 格` },
           { label: "可调配", value: `${best.military} 战斗单位` },
           { label: "濒危方", value: e.tenantId.toUpperCase() },
+          ...(flankDir ? [{ label: "援军方位", value: flankDir }] : []),
         ],
       });
     }
