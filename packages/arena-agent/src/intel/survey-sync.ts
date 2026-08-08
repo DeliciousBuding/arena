@@ -10,7 +10,7 @@
  *   - 程序内：`syncTenantSurvey(dataRoot, tenant, { db })`
  */
 
-import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -212,6 +212,27 @@ const NOTABLE_TYPES = new Set([
   "UNIT_DESTROYED",
 ]);
 
+/** 选最新 run：按 run 目录 mtime（agent 只写最新 run，case 写入更新目录
+ *  mtime——2026-08-08 修复 `--latest-only` 用字符串排序选错 run 的 bug：UUID
+ *  字典序 ≠ 时间序，导致最新 run（最高 case tick）永不同步、survey-db 滞后
+ *  ~190 tick）。与面板 fs-jsonl.latestRunDirInner 同判据。 */
+function latestRunDirByMtime(calDir: string, runDirs: string[]): string {
+  let best = runDirs[0];
+  let bestM = -1;
+  for (const d of runDirs) {
+    try {
+      const m = statSync(join(calDir, d)).mtimeMs;
+      if (m > bestM) {
+        bestM = m;
+        best = d;
+      }
+    } catch {
+      /* 忽略不可 stat 的目录 */
+    }
+  }
+  return best;
+}
+
 /** 同步一个租户的全部（或最新）calibration run 到测绘库。返回汇总。 */
 export function syncTenantSurvey(
   dataRoot: string,
@@ -228,7 +249,7 @@ export function syncTenantSurvey(
     .sort();
   const targets = options.latestRunOnly
     ? runDirs.length > 0
-      ? [runDirs[runDirs.length - 1]]
+      ? [latestRunDirByMtime(calDir, runDirs)]
       : []
     : runDirs;
   for (const runDir of targets) {

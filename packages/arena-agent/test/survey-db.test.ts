@@ -8,7 +8,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -25,6 +25,7 @@ import {
   recordUnitBirth,
   recordUnitDeath,
   resourceLifecycle,
+  syncMeta,
   touchUnitSeen,
   unitLifecycleRows,
   upsertChunk,
@@ -153,6 +154,36 @@ test("survey-sync: 幂等——重复同步只补增量（sync_meta 水位）", 
     const s2 = syncTenantSurvey(dir, "t1");
     assert.equal(s2.cases - s1.cases, 1, "增量只同步新 case（水位差 = 1）");
     const db2 = openSurveyDb(dir, "t1", false); assert.equal(knownResources(db2).length, 3); db2.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("survey-sync: latestRunOnly 按目录 mtime 选最新 run（UUID 字典序 ≠ 时间序 bug）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-sync-latest-"));
+  try {
+    const calBase = join(dir, "runtime", "t1", "calibration");
+    // 旧实现 runDirs.sort() 取字符串最后（z-run），会跳过 mtime 最新的 a-run
+    // （其 case tick 更高）→ survey-db 滞后。修复：按目录 mtime 选最新。
+    for (const [run, tick, mtimeMs] of [
+      ["a-run", 200, 2_000_000],
+      ["z-run", 100, 1_000_000],
+    ] as const) {
+      const casesDir = join(calBase, run, "cases");
+      mkdirSync(casesDir, { recursive: true });
+      writeFileSync(join(casesDir, `0000000${tick}.json`), JSON.stringify({
+        before: { state: { objects: [{ kind: "RESOURCE", positions: [[1, 2]] }] } },
+      }));
+      const runDir = join(calBase, run);
+      const t = new Date(mtimeMs);
+      utimesSync(runDir, t, t);
+    }
+    const s = syncTenantSurvey(dir, "t1", { latestRunOnly: true });
+    assert.equal(s.cases, 1, "latestRunOnly 只同步最新 run");
+    const db = openSurveyDb(dir, "t1", false);
+    assert.equal(syncMeta(db, "a-run")?.lastTick, 200, "选中 mtime 最新的 a-run（tick 200）");
+    assert.equal(syncMeta(db, "z-run"), null, "旧 run z-run 不被 latestRunOnly 同步");
+    db.close();
   } finally {
     cleanup(dir);
   }
