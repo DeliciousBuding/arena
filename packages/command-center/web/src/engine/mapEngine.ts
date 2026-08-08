@@ -1,6 +1,6 @@
 // 保持 JS 语义，全量类型化列为独立迁移项（见 DESIGN.md §7 技术债）。
 /* Arena 指挥面板前端引擎 — 由 React（command-center/web）挂载到地图宿主容器。
- * 由 public/app.js 移植：chrome（顶栏/侧栏/决策流/对话框）剥离到 React 组件，
+ * 由 legacy app.js（2026-08-09 退役删除）移植：chrome（顶栏/侧栏/决策流/对话框）剥离到 React 组件，
  * 地图/战术/回放/覆盖层保持原生 Canvas + DOM。入口 createMapEngine(host)。 */
 import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos, bucketScale, gridStepFor, extendScreen, replayInterp } from './utils.js';
 import { CANVAS_FONT, setCtx, ring, drawMeterBar, drawUnitHealth, drawWorkerCargo, drawCoreOwnerLabel, drawStackBadge } from './canvas.js';
@@ -361,6 +361,7 @@ async function poll() {
   const overview = oR.status === 'fulfilled' ? oR.value : null;
   const map = mR.status === 'fulfilled' ? mR.value : null;
   const intel = iR.status === 'fulfilled' ? iR.value : null;
+  const pollOk = !!overview; // 退避信号：overview 拿到=成功（map/intel 容错降级不算失败）
   try {
     if (overview) state.overview = overview;
     if (intel) { state.intel = intel; emit('intel', intel); }
@@ -371,7 +372,7 @@ async function poll() {
       if (!state.view.ready && state.bounds && state.cells.length) fitView();
       emit('overview', state.overview);
       draw();
-      return;
+      return pollOk;
     }
     state.map = map;
     state.cells = map.cells ?? [];
@@ -426,20 +427,28 @@ async function poll() {
   } catch (err) {
     emit('refresh', false);
     console.warn('poll failed', err);
+    return false;
   }
+  return pollOk;
 }
 
+let pollStreamsTick = 0;
 async function pollStreams() {
+  pollStreamsTick++;
+  // events 降频（2026-08-09）：事件非实时决策数据，3s→15s（5 次跳 4 次）；
+  // stream 仍 3s（决策流实时性要求高）。all tab 预取 events 同步降频。
+  const shouldPollEvents = pollStreamsTick % 5 === 1;
   const active = state.tab === 'all' ? TENANTS : state.tab === 'events' ? [] : [state.tab];
   if (state.tab === 'events') {
+    if (!shouldPollEvents) return;
     const results = await Promise.allSettled(TENANTS.map((t) => getJSON(`/api/events?tenant=${t}&n=80`)));
     state.events = {};
     results.forEach((r, i) => { if (r.status === 'fulfilled') state.events[TENANTS[i]] = r.value.events ?? []; });
   } else {
     const results = await Promise.allSettled(active.map((t) => getJSON(`/api/stream?tenant=${t}&n=80`)));
     results.forEach((r, i) => { if (r.status === 'fulfilled') state.streams[active[i]] = r.value.rows ?? []; });
-    // 统一决策页预取事件：事件页徽标即时显示 + 切页秒开（本地文件读取，开销可忽略）
-    if (state.tab === 'all') {
+    // 统一决策页预取事件：事件页徽标即时显示 + 切页秒开（降频 15s，本地文件读取开销可忽略）
+    if (state.tab === 'all' && shouldPollEvents) {
       const evResults = await Promise.allSettled(TENANTS.map((t) => getJSON(`/api/events?tenant=${t}&n=80`)));
       state.events = {};
       evResults.forEach((r, i) => { if (r.status === 'fulfilled') state.events[TENANTS[i]] = r.value.events ?? []; });
@@ -2075,6 +2084,29 @@ function bindEvents() {
   els.rbPrev.addEventListener('click', () => replayStep(replay, replayDeps, -1));
   els.rbNext.addEventListener('click', () => replayStep(replay, replayDeps, 1));
   els.rbSpeed.addEventListener('click', () => replayCycleSpeed(replay, replayDeps));
+  // 回放进度条可拖拽 seek（2026-08-09）：mousedown on rb-track → ratio → replayStep。
+  // 拖拽期间 window mousemove 跟随，mouseup 解绑；复用 replayStep（写 frame + updateUI + draw）。
+  {
+    const rbTrack = els.rbFill?.parentElement;
+    if (rbTrack) {
+      const seekTo = (clientX: number) => {
+        if (!replay.data) return;
+        const rect = rbTrack.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+        const targetFrame = Math.round(ratio * (replay.data.ticks.length - 1));
+        if (targetFrame !== replay.frame) replayStep(replay, replayDeps, targetFrame - replay.frame);
+      };
+      rbTrack.addEventListener('mousedown', (e: MouseEvent) => {
+        e.preventDefault();
+        pokeHint();
+        seekTo(e.clientX);
+        const move = (ev: MouseEvent) => seekTo(ev.clientX);
+        const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+        window.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', up);
+      });
+    }
+  }
   // 聚焦徽章可点击：返回全局联盟（悬停 title 提示）
   if (els.soloBadge) {
     els.soloBadge.addEventListener('click', () => { if (state.soloTenant) exitSolo(); });
@@ -2145,10 +2177,17 @@ async function boot() {
   await poll();
   emit('refresh', true);
   pollStreams();
-  setInterval(async () => {
-    await poll();
-    emit('refresh', true);
-  }, POLL_MS);
+  // 退避调度（2026-08-09）：连续失败指数退避 3s→6→12→24→30s 上限；
+  // 成功归零。setInterval 改 setTimeout 递归，间隔随失败次数动态增长。
+  let pollFailCount = 0;
+  async function pollLoop() {
+    const ok = await poll();
+    emit('refresh', ok);
+    pollFailCount = ok ? 0 : pollFailCount + 1;
+    const delay = pollFailCount === 0 ? POLL_MS : Math.min(30000, POLL_MS * 2 ** pollFailCount);
+    setTimeout(pollLoop, delay);
+  }
+  pollLoop();
   setInterval(() => { pollStreams(); }, POLL_MS);
   // 高刷/低耗调度（175Hz 显示器）：有动画/回放/单位移动/命令倒计时时 rAF 全速
   // （~175fps），空闲时降频 setTimeout（~8fps）只做轻量检查——175Hz 下 rAF 每帧
@@ -2212,6 +2251,20 @@ async function boot() {
     if (e.key === 'f' || e.key === 'F') { state.soloTenant ? fitSolo(state.soloTenant) : fitView(); return; }
     if (e.key === 'g' || e.key === 'G') {
       exitSolo();
+      return;
+    }
+    // 快捷键补齐（2026-08-09）：数字 1-4 切租户 / 0 全局 / E 事件 / Space 回放暂停 / ? 帮助
+    if (e.key >= '1' && e.key <= '4') {
+      state.tab = `t${e.key}`; savePrefs(); pollStreams(); pokeHint(); e.preventDefault();
+      toast(`切换到 ${e.key} 号租户视图`, 'info');
+      return;
+    }
+    if (e.key === '0') { state.tab = 'all'; savePrefs(); pollStreams(); pokeHint(); e.preventDefault(); toast('切换到全局联盟视图', 'info'); return; }
+    if (e.key === 'e' || e.key === 'E') { state.tab = 'events'; savePrefs(); pollStreams(); pokeHint(); e.preventDefault(); toast('切换到事件流', 'info'); return; }
+    if (e.key === ' ') { replayToggle(replay, replayDeps); e.preventDefault(); return; }
+    if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+      toast('快捷键：1-4 租户 / 0 全局 / E 事件 / Space 回放 / F 居中 / G 返回 / T 信标 / +/- 缩放 / 方向键 平移', 'info');
+      e.preventDefault();
       return;
     }
     if (e.key === 't' || e.key === 'T') {

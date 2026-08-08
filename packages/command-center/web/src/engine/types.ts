@@ -29,6 +29,9 @@ export interface EngineState {
   readonly tenantsOn: Readonly<Record<string, boolean>>;
   readonly cellCount: number;
   readonly jumpPins: readonly { x: number; y: number; at: number; label: string | null }[];
+  /** /api/overview 快照（mapEngine poll 拉取后 emit('overview') 同步）；
+   *  暴露给 React 组件复用，避免 Sidebar/TopBar 各自独立 fetch 双拉。 */
+  readonly overview?: unknown | null;
 }
 export interface EngineHandle {
   toggleSolo(t: string): void;

@@ -756,8 +756,24 @@ const MIME: Record<string, string> = {
 };
 function serveFile(c: Context, filePath: string): Response | Promise<Response> {
   if (existsSync(filePath) && statSync(filePath).isFile()) {
+    const st = statSync(filePath);
     const ext = filePath.slice(filePath.lastIndexOf("."));
-    return new Response(readFileSync(filePath), { headers: { "content-type": MIME[ext] ?? "application/octet-stream" } });
+    const etag = `W/"${Math.floor(st.mtimeMs / 1000)}-${st.size}"`;
+    const ifNoneMatch = c.req.header("if-none-match");
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      return new Response(null, { status: 304, headers: { etag, "cache-control": "no-cache" } });
+    }
+    // 字体/位图 immutable（内容寻址或极少变更）；js/css/html 协商缓存（304 零传输）
+    const immutable = ext === ".woff2" || ext === ".png" || ext === ".webp" || ext === ".jpg" || ext === ".jpeg" || ext === ".ico" || ext === ".svg";
+    const cacheControl = immutable ? "public, max-age=31536000, immutable" : "no-cache";
+    return new Response(readFileSync(filePath), {
+      headers: {
+        "content-type": MIME[ext] ?? "application/octet-stream",
+        etag,
+        "last-modified": st.mtime.toUTCString(),
+        "cache-control": cacheControl,
+      },
+    });
   }
   return new Response("not found", { status: 404 });
 }
@@ -773,11 +789,11 @@ app.get("/app/*", (c) => {
   return serveFile(c, join(WEB_DIR, "index.html")); // SPA fallback
 });
 app.get("/", (c) => c.redirect("/app/"));
-// legacy public/ 仅作样式/素材源
+// public/ 仅 assets（字体/图，React 引用）+ style.css（Vite 构建打包，dev 兜底）
 app.get("/assets/*", (c) => servePublic(c, c.req.path.slice(1)));
-app.get("/styles/*", (c) => servePublic(c, c.req.path.slice(1)));
-app.get("/js/*", (c) => servePublic(c, c.req.path.slice(1)));
-app.notFound((c) => servePublic(c, c.req.path.slice(1)));
+app.get("/style.css", (c) => serveFile(c, join(PUBLIC_DIR, "style.css")));
+// legacy /styles/* /js/* 路由随 app.js/index.html 退役删除（2026-08-09 neat-freak）
+app.notFound((c) => c.json({ error: "not found", path: c.req.path }, 404));
 
 // 全局错误兜底：异常响应 500（商店/读取失败等，前端已有降级展示）
 app.onError((err, c) => {

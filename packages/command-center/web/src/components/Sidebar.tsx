@@ -49,23 +49,8 @@ interface OverviewTenant {
 }
 interface Overview { tenants: OverviewTenant[] }
 
-/** 与引擎同源拉取 /api/overview（本地文件读取，3s 一次，开销可忽略）。 */
-function useOverview(): Overview | null {
-  const [ov, setOv] = useState<Overview | null>(null);
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      try {
-        const res = await fetch("/api/overview", { cache: "no-store" });
-        if (res.ok) { const data = await res.json(); if (alive) setOv(data); }
-      } catch { /* 忽略，下次重试 */ }
-    };
-    load();
-    const timer = setInterval(load, 3000);
-    return () => { alive = false; clearInterval(timer); };
-  }, []);
-  return ov;
-}
+// useOverview 已去重（2026-08-09）：mapEngine poll 拉 /api/overview 后 emit('overview')
+// → bridge bump → Sidebar 重渲染，复用 engine.getState().overview，不再独立 fetch 双拉。
 
 function statusOf(t: OverviewTenant): { cls: string; label: string } {
   if (t.live) return { cls: "live", label: "在线" };
@@ -172,13 +157,29 @@ function TenantDataStrip({ a }: { a: AuditTenant | undefined }) {
 }
 
 function TenantCards() {
-  const overview = useOverview();
   const audit = useAuditOverview();
   const engine = useEngine();
+  const overview = (engine?.getState()?.overview ?? null) as Overview | null;
   const solo = engine?.getState().soloTenant ?? null;
   const tenants = overview?.tenants ?? [];
   // 目录树折叠（2026-08-08）：点折叠按钮收起详情，只留摘要行；独立于聚焦。
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // 首载骨架占位（替代黑屏空白）：overview 未到前渲染 4 张骨架卡，符合极简风
+  if (!overview) {
+    return (
+      <div id="tenantCards" className="stack" aria-busy="true">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="tenant-card skeleton" aria-hidden="true">
+            <div className="row1"><span className="skeleton-line short" /></div>
+            <div className="metrics">
+              {[0, 1, 2, 3].map((j) => <div key={j} className="skeleton-line" />)}
+            </div>
+            <div className="skeleton-line mid" />
+          </div>
+        ))}
+      </div>
+    );
+  }
   return (
     <div id="tenantCards" className="stack">
       <AllianceRoot audit={audit} />
@@ -378,7 +379,11 @@ function CommandStatusPanel() {
                 {n === 0 ? <span className="dim">—</span> : null}
               </span>
               <button type="button" className="btn cmd-clear" title={`清空 ${t.toUpperCase()} 人类指令`} disabled={n === 0}
-                onClick={async () => { await ccPostJson("/api/command/clear", { tenant: t }); setTimeout(() => window.location.reload(), 300); }}>清空</button>
+                onClick={async () => {
+                  if (!window.confirm(`确认清空 ${t.toUpperCase()} 全部人类指令（${n} 条）并交还该租户 agent 全权？`)) return;
+                  await ccPostJson("/api/command/clear", { tenant: t });
+                  setTimeout(() => window.location.reload(), 300);
+                }}>清空</button>
             </li>
           );
         })}
