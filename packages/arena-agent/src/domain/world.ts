@@ -51,7 +51,7 @@ const CHUNK_SIZE = 16;
 
 /** 官方视野半径（rules-v0.11/v0.14 钉定，sim/contracts 核对）：
  *  WORKER 3 / VANGUARD 4 / RANGER 5 / CORE 5。 */
-const VISION_RADIUS: Readonly<Record<UnitType | "CORE", number>> = {
+export const VISION_RADIUS: Readonly<Record<UnitType | "CORE", number>> = {
   WORKER: 3,
   VANGUARD: 4,
   RANGER: 5,
@@ -61,7 +61,7 @@ const VISION_RADIUS: Readonly<Record<UnitType | "CORE", number>> = {
 /** 视野遮挡判定：integer supercover 线（与官方 SDK sim/visibility/supercoverLine
  *  及 arena-hero-agent _has_vision_line 同构）。途经格（不含 origin，含 target）
  *  任一为障碍 → 遮挡；target 自身不算遮挡（目标格是资源/单位，非障碍）。 */
-function visionLineBlocked(
+export function visionLineBlocked(
   origin: Position,
   target: Position,
   obstacles: ReadonlySet<string>,

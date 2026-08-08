@@ -53,6 +53,9 @@ export interface MineTenantPattern {
     avgRefillTicks: number | null;
     recent: readonly { cell: string; gapTicks: number; lastSeenTick: number }[];
   } | null;
+  /** refill 数据源（2026-08-08 A15）：absences=视野覆盖负观测实证（真实缺席→重见
+   *  周期）；history=出现窗口（观测中断噪声，仅无缺席数据 fallback）；none=无。 */
+  refillSource: "absences" | "history" | "none";
   /** 逐矿刷新预测（2026-08-08，矿刷新规律 → 地图/决策输入）：出现过 ≥2 次出现窗口的
    *  矿格，预测下次出现 tick = 最后出现窗口起始 + 平均周期。dueInTicks 正=还有多久
    *  预计刷新，负=已过预期（历史异常/被永久采空）。按 dueInTicks 升序（即将刷新优先）。 */
@@ -127,6 +130,55 @@ function computeRefillStats(rows: readonly { cell: string; tick: number }[]): Mi
   return { samples: gaps.length, avgRefillTicks: avg, recent: gaps.slice(0, 10) };
 }
 
+/** 缺席→重见刷新周期（2026-08-08，A15 负观测）：resource_absences（我方视野覆盖内
+ *  确认无矿的真实缺席）连续段（gap≤5 合并）→ 段结束后在 resource_seen_history 首次
+ *  重见 → 周期 = 重见 − 段尾。与出现窗口 gap（观测中断噪声）不同，缺席段是「看得到且
+ *  没有矿」的真实证据。无缺席数据或全部无重见 → 返回 null（消费方回退旧逻辑）。 */
+function computeRefillStatsFromAbsences(
+  absences: readonly { cell: string; tick: number }[],
+  seenHistory: readonly { cell: string; tick: number }[],
+): MineTenantPattern["refill"] {
+  if (absences.length === 0) return null;
+  const byCell = new Map<string, number[]>();
+  for (const a of absences) {
+    const arr = byCell.get(a.cell) ?? [];
+    arr.push(num(a.tick));
+    byCell.set(a.cell, arr);
+  }
+  const seenByCell = new Map<string, number[]>();
+  for (const s of seenHistory) {
+    const arr = seenByCell.get(s.cell) ?? [];
+    arr.push(num(s.tick));
+    seenByCell.set(s.cell, arr);
+  }
+  const gaps: { cell: string; gapTicks: number; lastSeenTick: number }[] = [];
+  for (const [cell, ticks] of byCell) {
+    ticks.sort((a, b) => a - b);
+    // 缺席窗口（连续段）
+    let start = ticks[0], prevEnd = ticks[0];
+    const segs: Array<{ start: number; end: number }> = [];
+    for (let i = 1; i < ticks.length; i += 1) {
+      if (ticks[i] - prevEnd > REFILL_GAP_TICKS) {
+        segs.push({ start, end: prevEnd });
+        start = ticks[i];
+      }
+      prevEnd = ticks[i];
+    }
+    segs.push({ start, end: prevEnd });
+    const seen = seenByCell.get(cell) ?? [];
+    for (const seg of segs) {
+      const after = seen.find((x) => x > seg.end + REFILL_GAP_TICKS);
+      if (after !== undefined) gaps.push({ cell, gapTicks: after - seg.end, lastSeenTick: after });
+    }
+  }
+  if (gaps.length === 0) {
+    return { samples: 0, avgRefillTicks: null, recent: [] };
+  }
+  gaps.sort((a, b) => b.lastSeenTick - a.lastSeenTick);
+  const avg = Math.round(gaps.reduce((acc, g) => acc + g.gapTicks, 0) / gaps.length);
+  return { samples: gaps.length, avgRefillTicks: avg, recent: gaps.slice(0, 10) };
+}
+
 /** 逐矿刷新预测（2026-08-08）：resource_seen_history (cell×tick) → 每格出现窗口
  *  （连续 tick 段，gap≤REFILL_GAP_TICKS 视为同一窗口）。两个信号：
  *   - avgGapTicks：相邻窗口起始差均值 = 完整刷新周期（窗口长 + 缺席长）；
@@ -180,6 +232,70 @@ export function computeRefillPredictions(
       windows: windows.length,
       avgGapTicks: avgGap,
       lastSeenTick: prevEnd,
+      predictedNextTick: predictedNext,
+      dueInTicks: predictedNext - currentTick,
+    });
+  }
+  out.sort((a, b) => (a.dueInTicks ?? 1e9) - (b.dueInTicks ?? 1e9));
+  return out;
+}
+
+/** 逐矿刷新预测（A15 负观测版）：用缺席段→重见的真实刷新周期预测下次出现。
+ *  每格：最后缺席段结束 + avg 缺席→重见周期 = 预计下次刷新。仅对「有缺席→重见
+ *  实证周期」的格预测（其余格数据不足不预测——避免出现窗口观测噪声的假预测）。
+ *  纯函数可测。 */
+export function computeRefillPredictionsFromAbsences(
+  absences: readonly { cell: string; tick: number }[],
+  seenHistory: readonly { cell: string; tick: number }[],
+  resources: readonly { cell: string; x: number; y: number }[],
+  currentTick: number,
+): MineRefillPrediction[] {
+  const posOf = new Map<string, { x: number; y: number }>();
+  for (const r of resources) posOf.set(r.cell, { x: num(r.x), y: num(r.y) });
+  const absByCell = new Map<string, number[]>();
+  for (const a of absences) {
+    const arr = absByCell.get(a.cell) ?? [];
+    arr.push(num(a.tick));
+    absByCell.set(a.cell, arr);
+  }
+  const seenByCell = new Map<string, number[]>();
+  for (const sh of seenHistory) {
+    const arr = seenByCell.get(sh.cell) ?? [];
+    arr.push(num(sh.tick));
+    seenByCell.set(sh.cell, arr);
+  }
+  const out: MineRefillPrediction[] = [];
+  for (const [cell, ticks] of absByCell) {
+    ticks.sort((a, b) => a - b);
+    const segs: Array<{ start: number; end: number }> = [];
+    let start = ticks[0], prevEnd = ticks[0];
+    for (let i = 1; i < ticks.length; i += 1) {
+      if (ticks[i] - prevEnd > REFILL_GAP_TICKS) {
+        segs.push({ start, end: prevEnd });
+        start = ticks[i];
+      }
+      prevEnd = ticks[i];
+    }
+    segs.push({ start, end: prevEnd });
+    const seen = seenByCell.get(cell) ?? [];
+    // 每段（除最后）→ 之后首次重见 = 周期样本
+    const cycles: number[] = [];
+    for (let i = 0; i < segs.length - 1; i += 1) {
+      const after = seen.find((x) => x > segs[i].end + REFILL_GAP_TICKS);
+      if (after !== undefined) cycles.push(after - segs[i].end);
+    }
+    if (cycles.length < 1) continue; // 无实证周期不预测
+    const avgCycle = Math.round(cycles.reduce((a, b) => a + b, 0) / cycles.length);
+    const lastSeg = segs[segs.length - 1];
+    const predictedNext = lastSeg.end + avgCycle;
+    const pos = posOf.get(cell) ?? { x: 0, y: 0 };
+    out.push({
+      cell,
+      x: pos.x,
+      y: pos.y,
+      windows: segs.length,
+      avgGapTicks: avgCycle,
+      lastSeenTick: lastSeg.end,
       predictedNextTick: predictedNext,
       dueInTicks: predictedNext - currentTick,
     });
@@ -248,7 +364,7 @@ function tenantPattern(tenant: string): MineTenantPattern {
   const empty: MineTenantPattern = {
     tenant, total: 0, visible: 0, stale: 0, avgAgeTicks: 0, medianSeenCount: 0,
     harvestSuccessRate: null, harvestSucceeded: 0, harvestFailed: 0, topActive: [],
-    refill: null, predictions: [], predictionAccuracy: null,
+    refill: null, refillSource: "none", predictions: [], predictionAccuracy: null,
   };
   if (!existsSync(file)) return empty;
   let db: DatabaseSync;
@@ -302,7 +418,22 @@ function tenantPattern(tenant: string): MineTenantPattern {
     const histRows = db.prepare(
       "SELECT cell, tick FROM resource_seen_history ORDER BY tick",
     ).all() as Array<{ cell: string; tick: number }>;
-    const refill = computeRefillStats(histRows);
+    // A15 负观测：resource_absences（视野覆盖内确认无矿的真实缺席）优先——缺席→重见
+    // 周期是真实刷新周期；resource_seen_history 出现窗口含观测中断噪声（视野移开=
+    // 假消失），仅作无缺席数据时的 fallback。
+    let absRows: Array<{ cell: string; tick: number }> = [];
+    try {
+      absRows = db.prepare(
+        "SELECT cell, tick FROM resource_absences ORDER BY tick",
+      ).all() as Array<{ cell: string; tick: number }>;
+    } catch { /* 旧库无表 */ }
+    const resCells = rows.map((r) => ({ cell: r.x + "," + r.y, x: num(r.x), y: num(r.y) }));
+    const absStats = computeRefillStatsFromAbsences(absRows, histRows);
+    const refill = absStats !== null && absStats.samples > 0 ? absStats : computeRefillStats(histRows);
+    const predictions = absStats !== null && absStats.samples > 0
+      ? computeRefillPredictionsFromAbsences(absRows, histRows, resCells, currentTick)
+      : computeRefillPredictions(histRows, resCells, currentTick);
+    const predictionAccuracy = computePredictionAccuracy(predictions, histRows, currentTick);
     return {
       tenant,
       total, visible, stale,
@@ -313,20 +444,9 @@ function tenantPattern(tenant: string): MineTenantPattern {
       harvestFailed: failed,
       topActive: entries.slice(0, 20),
       refill,
-      predictions: computeRefillPredictions(
-        histRows,
-        rows.map((r) => ({ cell: r.x + "," + r.y, x: num(r.x), y: num(r.y) })),
-        currentTick,
-      ),
-      predictionAccuracy: computePredictionAccuracy(
-        computeRefillPredictions(
-          histRows,
-          rows.map((r) => ({ cell: r.x + "," + r.y, x: num(r.x), y: num(r.y) })),
-          currentTick,
-        ),
-        histRows,
-        currentTick,
-      ),
+      refillSource: absStats !== null && absStats.samples > 0 ? "absences" : (histRows.length > 0 ? "history" : "none"),
+      predictions,
+      predictionAccuracy,
     };
   } catch {
     return empty;
@@ -345,9 +465,14 @@ export function loadMinePatterns(tenant = "all"): MinePatternsPayload {
   for (const t of tenants) perTenant[t] = tenantPattern(t);
   const evaluated = Object.values(perTenant).reduce((a, p) => a + (p.predictionAccuracy?.evaluated ?? 0), 0);
   const hits = Object.values(perTenant).reduce((a, p) => a + (p.predictionAccuracy?.hits ?? 0), 0);
-  const caveat = evaluated > 0 && hits / evaluated < 0.1
-    ? `观测间隔≠资源缺席：refill 预测已过预期命中率 ${hits}/${evaluated}（${Math.round((hits / evaluated) * 100)}%）——resource_seen_history 只记观测 tick，矿格长时间未被测绘即被误判"失联/死矿"。建议按 lastSeenTick 新鲜度派工，勿按 refill 预测剔除。`
-    : "refill 预测命中率正常（样本不足或命中率高），可作刷新参考。";
+  const absTenants = Object.values(perTenant).filter((p) => p.refillSource === "absences").length;
+  const caveat = absTenants > 0
+    ? (evaluated > 0 && hits / evaluated < 0.1
+      ? `refill 预测基于视野覆盖负观测实证（${absTenants} 租户 resource_absences 缺席→重见），已过预期命中率 ${hits}/${evaluated}（${Math.round((hits / evaluated) * 100)}%）——真实刷新周期以千 tick 计且个体差异大，预测仅作低优先级参考；派工仍按 lastSeenTick 新鲜度。`
+      : `refill 预测基于视野覆盖负观测实证（${absTenants} 租户），命中率正常，可作刷新参考。`)
+    : (evaluated > 0 && hits / evaluated < 0.1
+      ? `观测间隔≠资源缺席：refill 预测已过预期命中率 ${hits}/${evaluated}（${Math.round((hits / evaluated) * 100)}%）——resource_seen_history 只记观测 tick（无 resource_absences 负观测），矿格长时间未被测绘即被误判"失联/死矿"。建议按 lastSeenTick 新鲜度派工，勿按 refill 预测剔除。`
+      : "refill 预测命中率正常（样本不足或命中率高），可作刷新参考。");
   const payload: MinePatternsPayload = {
     generatedAt: new Date().toISOString(),
     tenant,
