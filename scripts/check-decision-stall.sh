@@ -35,4 +35,14 @@ if [ -n "$ACTIVE" ]; then
   echo "OK:$TENANT"
   exit 0
 fi
+# 0 人口豁免（2026-08-08，t4 死经济实证）：全租户无单位时 intentCounts 为空
+# （{}）——0 动作是合法的（没有单位可命令），不是"决策停摆"（停摆指有单位
+# 却全 WAIT）。否则看护把 t4 死经济当 STALL → 恢复重启 → 仍 0 单位 → 无限
+# 重启循环（11:45-11:48 实证连环重启，411 次累计）。
+INTENT_EMPTY=$(echo "$LAST" | grep -c '"intentCounts":{}')
+INTENT_TOTAL=$(echo "$LAST" | grep -c '"intentCounts"')
+if [ "$INTENT_TOTAL" -gt 0 ] && [ "$INTENT_EMPTY" = "$INTENT_TOTAL" ]; then
+  echo "OK:$TENANT"
+  exit 0
+fi
 echo "STALL:$TENANT"
