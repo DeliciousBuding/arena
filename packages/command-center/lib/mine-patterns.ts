@@ -45,6 +45,13 @@ export interface MineTenantPattern {
   harvestFailed: number;
   /** 活跃度 top N 矿（采集推荐）。 */
   topActive: readonly MineActiveEntry[];
+  /** 矿刷新规律（2026-08-08，refill 周期）：resource_seen_history 出现窗口 → 相邻
+   *  窗口起始 tick 差 = 刷新周期。新表随 sync 累积；样本 <2 时 avgRefillTicks null。 */
+  refill: {
+    samples: number;
+    avgRefillTicks: number | null;
+    recent: readonly { cell: string; gapTicks: number; lastSeenTick: number }[];
+  } | null;
 }
 
 export interface MinePatternsPayload {
@@ -57,6 +64,41 @@ export interface MinePatternsPayload {
 const PATTERN_TTL_MS = 30_000;
 const patternCache = new TtlCache<MinePatternsPayload>(PATTERN_TTL_MS);
 
+/** 连续 tick 间隔 ≤ 该值视为同一出现窗口（矿可见跨 tick 抖动容忍）。 */
+const REFILL_GAP_TICKS = 5;
+
+/** 矿刷新周期统计（2026-08-08）：resource_seen_history (cell × tick) → 每格出现
+ *  窗口（连续 tick 段）→ 相邻窗口起始 tick 差 = 刷新周期。无历史/样本 <2 = null。 */
+function computeRefillStats(rows: readonly { cell: string; tick: number }[]): MineTenantPattern["refill"] {
+  if (rows.length === 0) return null;
+  const byCell = new Map<string, number[]>();
+  for (const r of rows) {
+    const arr = byCell.get(r.cell) ?? [];
+    arr.push(num(r.tick));
+    byCell.set(r.cell, arr);
+  }
+  const gaps: { cell: string; gapTicks: number; lastSeenTick: number }[] = [];
+  for (const [cell, ticks] of byCell) {
+    ticks.sort((a, b) => a - b);
+    let prevStart: number | null = null;
+    let prevEnd: number | null = null;
+    for (const t of ticks) {
+      if (prevEnd === null || t - prevEnd > REFILL_GAP_TICKS) {
+        // 新出现窗口：上一窗口起始 → 本窗口起始 = 刷新周期（两次出现的间隔）
+        if (prevStart !== null) gaps.push({ cell, gapTicks: t - prevStart, lastSeenTick: t });
+        prevStart = t;
+      }
+      prevEnd = t;
+    }
+  }
+  if (gaps.length < 2) {
+    return { samples: gaps.length, avgRefillTicks: null, recent: gaps.sort((a, b) => b.lastSeenTick - a.lastSeenTick).slice(0, 10) };
+  }
+  gaps.sort((a, b) => b.lastSeenTick - a.lastSeenTick);
+  const avg = Math.round(gaps.reduce((acc, g) => acc + g.gapTicks, 0) / gaps.length);
+  return { samples: gaps.length, avgRefillTicks: avg, recent: gaps.slice(0, 10) };
+}
+
 function num(v: unknown): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
@@ -68,6 +110,7 @@ function tenantPattern(tenant: string): MineTenantPattern {
   const empty: MineTenantPattern = {
     tenant, total: 0, visible: 0, stale: 0, avgAgeTicks: 0, medianSeenCount: 0,
     harvestSuccessRate: null, harvestSucceeded: 0, harvestFailed: 0, topActive: [],
+    refill: null,
   };
   if (!existsSync(file)) return empty;
   let db: DatabaseSync;
@@ -118,6 +161,10 @@ function tenantPattern(tenant: string): MineTenantPattern {
       else if (r.e === "HARVEST_FAILED") failed = num(r.c);
     }
     const rate = succeeded + failed > 0 ? succeeded / (succeeded + failed) : null;
+    const histRows = db.prepare(
+      "SELECT cell, tick FROM resource_seen_history ORDER BY tick",
+    ).all() as Array<{ cell: string; tick: number }>;
+    const refill = computeRefillStats(histRows);
     return {
       tenant,
       total, visible, stale,
@@ -127,6 +174,7 @@ function tenantPattern(tenant: string): MineTenantPattern {
       harvestSucceeded: succeeded,
       harvestFailed: failed,
       topActive: entries.slice(0, 20),
+      refill,
     };
   } catch {
     return empty;
