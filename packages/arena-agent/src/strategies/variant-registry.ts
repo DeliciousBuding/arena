@@ -58,6 +58,53 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
      */
     "assault-overmatch-v1": Object.freeze({ assaultOvermatch: true }),
     /**
+     * 联盟 no-fire 硬规则（2026-08-08，alliance-no-fire-v1）：租户加载联盟
+     *  roster（supervisor 聚合受控实体 id 并集 → data/runtime/alliance/roster.json）
+     *  后，SafetyPlanner 将联盟友军从可见敌人/威胁/打击目标剔除——
+     *  knownAllianceEntityId => never deliberate target（spec §5.5），防抱团联防
+     *  时误伤自家账号（UNIT 视图无 owner_username，只能按实体 id）。默认关闭；
+     *  四线统一启用后联盟单位互相接近不再互打。
+     */
+    "alliance-no-fire-v1": Object.freeze({ allianceNoFire: true }),
+    /**
+     * 攻坚集结（2026-08-08，guide "有护卫 Core 先退到安全集结点、全员到齐再共同
+     * 出击"对照，t2 jerkman 二轮 5R 全灭实证）：aggressive 无可见敌人对已知敌 Core
+     * 记忆攻坚时，军事单位先到敌核外圈安全集结位（Chebyshev 5，Vanguard 射程 1 /
+     * Ranger 射程 3 之外）汇合，≥3 到齐或首到后 40 tick 超时再成建制压上——防逐个
+     * 送死。与 assault-overmatch-v1 叠加：一个管"兵力够不够"，一个管"到齐再上"。
+     */
+    "rally-assault-v1": Object.freeze({ rallyAssault: true }),
+    /**
+     * 寡不敌众撤退（2026-08-08，guide 巡逻单位兵力不足撤退对照）：非守家军事单位
+     * 遇可见敌战斗单位且附近我方军事 < 敌 → 向家撤退（绕开敌人占位），防 1v2+
+     * 单薄送死；敌核守军（known CORE 8 格内）不计入。与 rally-assault-v1 互补：
+     * rally 管进攻集结，这里管遭遇战止损。默认关闭零回归。
+     */
+    "outnumbered-retreat-v1": Object.freeze({ outnumberedRetreat: true }),
+    /**
+     * 弱核优先攻坚（2026-08-08，guide "已知核心优先选无护卫"对照）：多敌核时优先
+     * 打守军少的（击杀概率高）；无兵力记忆 = 无护卫（弱目标优先）。与 overmatch/
+     * rally 互补：选对目标 + 兵力够 + 到齐再上。默认关闭零回归。
+     */
+    "weak-core-first-v1": Object.freeze({ weakCoreFirst: true }),
+    /**
+     * 产兵让位（2026-08-08，spawn-yield-v1）：核心本 tick 计划 SPAWN 时，
+     * 满载 worker 让位——核心格/邻格的满载 worker 不卸货（WAIT 或让出核心
+     * 格），保证 SPAWN 不被自己人占格挡掉（生产 t2 实证 112 次
+     * CORE_SPAWN_FAILED/CELL_UNIT_LIMIT：DEPOSIT Phase8 先于 SPAWN Phase10，
+     * worker 卸货成功仍占核心格 → 同 tick SPAWN 失败）。默认 false 零回归。
+     */
+    "spawn-yield-v1": Object.freeze({ spawnYield: true }),
+    /**
+     * 锁阵（2026-08-08，worker-blockade-v1，研究驱动设计见
+     * docs/design/blockade-tactics-v1.md）：主动利用格子容量 2 + 移动冲突规则
+     * 锁死敌方单位——预判敌方回程路径/环境瓶颈锁点，巡逻 worker 去目标格
+     * 站桩（WAIT 占格），敌方 MOVE_DESTINATION_OCCUPIED 进不来；脚本对手无
+     * 反馈无限重试（reference farmer 实证）。t2 日志 669 次 MOVE_CONTESTED
+     * 全是我方被动挨卡——本变体把被动变主动。默认 false 零回归。
+     */
+    "worker-blockade-v1": Object.freeze({ workerBlockade: true }),
+    /**
      * 威胁方向侦察（2026-08-07，t2 生产实证）：worker 巡逻方位向已知敌核心
      * 方向（coreHuntTargets 首个 CORE）加权——前 4 worker 覆盖威胁扇区 ±1，
      * 保证威胁来路（如 t2 NE=jerkman）始终有 ≥3 worker 侦察，小股进攻更早
@@ -177,6 +224,14 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
       // ——t1 生产实证：敌 Core 迁移后军队在旧位置空转、环搜几何近失永不接敌。
       militaryHunt: true,
     }),
+    /**
+     * 人口上限 20→30（2026-08-08 用户裁决，t1 恢复综合扩张/余额 150）：populationCeiling
+     * 是产兵硬门（deterministic selectDeterministicCoreAction 与 SafetyPlanner 共用）——
+     * t1 pop 25 时 20 上限导致 4500+ tick 零产兵、res 顶到容量上限（pop×5=125）空转。
+     * 30 = v0.14 动态定价 k=2 档末（pop 26-30：Vanguard 17/Ranger 20；31 起 k=3 跳 22+），
+     * 且 pop 30 时资源容量 = 150（目标余额）。仅 t1 启用。
+     */
+    "population-ceiling-30-v1": Object.freeze({ populationCeiling: 30 }),
   });
 
 /** DeterministicPlanner 构造参数覆盖（core 生产侧，2026-08-07）：变体同时需要

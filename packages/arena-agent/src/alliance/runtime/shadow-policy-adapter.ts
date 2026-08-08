@@ -11,10 +11,13 @@ export interface ShadowPolicyAdapterView {
   readonly frameTenants: readonly string[];
   readonly frameTicks: Readonly<Record<string, number>>;
   readonly snapshot: null | {
+    readonly revision: number;
     readonly tickWindow: readonly [number, number];
     readonly memberCount: number;
     readonly sightingCount: number;
     readonly treasuryTenant: string;
+    /** 联盟受控实体 id 并集（no-fire roster；supervisor 写共享文件用）。 */
+    readonly allyEntityIds: readonly string[];
   };
   readonly policy: null | {
     readonly treasuryTenant: string;
@@ -83,10 +86,12 @@ export function createShadowPolicyAdapter(): ShadowPolicyAdapter {
         frameTenants: frameEntries.map(([tenant]) => tenant),
         frameTicks: Object.fromEntries(frameEntries.map(([tenant, frame]) => [tenant, frame.tick])),
         snapshot: latestSnapshot === null ? null : {
+          revision: latestSnapshot.revision,
           tickWindow: latestSnapshot.tickWindow,
           memberCount: latestSnapshot.members.size,
           sightingCount: latestSnapshot.sightings.length,
           treasuryTenant: latestSnapshot.treasuryTenant,
+          allyEntityIds: [...latestSnapshot.allyEntityIds].sort(),
         },
         policy: latestDecision === null ? null : {
           treasuryTenant: latestDecision.treasuryTenant,
