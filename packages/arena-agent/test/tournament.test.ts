@@ -25,7 +25,13 @@ interface ScenarioShape {
   readonly terrain: { readonly resources: readonly (readonly [number, number])[] };
 }
 
-const player = (id: string) => ({
+const player = (id: string): {
+  id: string;
+  username: string;
+  resources: number;
+  core: { id: string; position: [number, number]; hp: number; shield: number; state: "NORMAL"; moveDirection: null; moveProgress: null; moveRequiredTicks: null; destination: null };
+  units: never[];
+} => ({
   id,
   username: id,
   resources: 25,
