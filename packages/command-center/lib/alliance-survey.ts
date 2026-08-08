@@ -45,6 +45,12 @@ export interface AllianceSurveyPayload {
    *  共识条目（winner 仲裁 + observers 全部观测租户 + consensus 数），
    *  前端“全联盟矿”层可选去重视图；agent 仲裁输入同源。 */
   consensusResources: Array<Record<string, unknown>>;
+  /** 共识核心视图（2026-08-08）：同 owner 敌核被多租户目击→取最新位置
+   *  + observers 全部观测租户（对称于 consensusResources）。 */
+  consensusCores: Array<Record<string, unknown>>;
+  /** 联盟探索覆盖（2026-08-08）：四租户 chunks 并集（同 chunk 保留最新
+   *  探索 tick + observers）——前端全联盟 Fog 层可用。 */
+  consensusChunks: Array<Record<string, unknown>>;
   cachedAt: string;
 }
 
@@ -110,6 +116,41 @@ export function loadAllianceSurvey(): AllianceSurveyPayload {
       return { ...winner, observers: rows.map((r) => r.tenant), consensus: rows.length };
     })
     .sort((a, b) => Number(a.x ?? 0) - Number(b.x ?? 0) || Number(a.y ?? 0) - Number(b.y ?? 0));
+  // 共识核心（同 owner 多租户目击合并，取最新位置 + observers）
+  const coreByOwner = new Map<string, Record<string, unknown>>();
+  for (const k of enemyCores) {
+    const owner = String(k.owner ?? "");
+    if (!owner) continue;
+    const cur = coreByOwner.get(owner);
+    if (!cur) {
+      coreByOwner.set(owner, { ...k, observers: [k.tenant] });
+    } else {
+      const obs = new Set([...(cur.observers as string[] ?? []), String(k.tenant)]);
+      if (Number(k.tick ?? 0) > Number(cur.tick ?? 0)) {
+        coreByOwner.set(owner, { ...k, observers: [...obs] });
+      } else {
+        cur.observers = [...obs];
+      }
+    }
+  }
+  const consensusCores = [...coreByOwner.values()];
+  // 联盟探索覆盖：chunks 并集（同 key 保留最新探索 tick + observers）
+  const chunkByKey = new Map<string, Record<string, unknown>>();
+  for (const ch of chunks) {
+    const key = String(ch.key ?? `${String(ch.cx)},${String(ch.cy)}`);
+    const cur = chunkByKey.get(key);
+    if (!cur) {
+      chunkByKey.set(key, { ...ch, observers: [ch.tenant] });
+    } else {
+      const obs = new Set([...(cur.observers as string[] ?? []), String(ch.tenant)]);
+      if (Number(ch.lastSeenTick ?? 0) > Number(cur.lastSeenTick ?? 0)) {
+        chunkByKey.set(key, { ...ch, observers: [...obs] });
+      } else {
+        cur.observers = [...obs];
+      }
+    }
+  }
+  const consensusChunks = [...chunkByKey.values()];
   const resourceOverlaps = [...resByCell.entries()]
     .filter(([, rows]) => rows.length > 1)
     .map(([cell, rows]) => {
@@ -163,6 +204,8 @@ export function loadAllianceSurvey(): AllianceSurveyPayload {
     lifecycle,
     conflicts: { resourceOverlaps, obstacleResourceConflicts },
     consensusResources,
+    consensusCores,
+    consensusChunks,
     cachedAt,
   };
   allianceSurveyCache.set("all", payload);
