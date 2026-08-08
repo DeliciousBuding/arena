@@ -37,6 +37,7 @@ import { isConfigReloadRequest, type ConfigReloadResult, type RuntimeConfigStatu
 import { knownChunks, knownCoreHunts, knownObstacles, knownResourceAbsenceCounts, knownResourceCooldownTiers, knownResources, openSurveyDb } from "../intel/survey-db.ts";
 import { loadRefillPredictions } from "../intel/refill-predictions.ts";
 import { migrationOverlay as applyMigrationOverlay } from "../migration/overlay.ts";
+import { migrationAssist, detectMigrationFailure, type AssistCoreSnapshot } from "../migration/assist.ts";
 import { migrationPlanPath, readMigrationPlan } from "../migration/io.ts";
 import { appendMigrationReport, migrationReportPath } from "../migration/report.ts";
 import { coreReceptiveRatio, idealEtaTicks } from "../migration/pacing.ts";
@@ -1293,6 +1294,8 @@ export async function runTenant(
     );
     let lastReportTick = 0;
     let lastReportPhase: string | null = null;
+    // M6 迁移助手（migration-assist-v1）：上一 tick 核心快照（失败签名对比用）。
+    let prevAssistCore: AssistCoreSnapshot | null = null;
     const loopPromise = runTenantLoop({
       client,
       coordinator,
@@ -1374,7 +1377,61 @@ export async function runTenant(
             }
           }
         }
-        return { plan: result.plan, active: result.active, failClosed: result.failClosed };
+        // M6 迁移助手（migration-assist-v1）：手动窗口抑制 + 清路订单 + 失败签名。
+        // 在 overlay 之后、humanOverride 之前生效（loop 内 overlay 即在此点）。
+        const assistCore: AssistCoreSnapshot = state.core === null
+          ? { position: null, state: null, destination: null, moveProgress: null, moveRequiredTicks: null }
+          : {
+              position: state.core.position ?? null,
+              state: state.core.state,
+              destination: null,
+              moveProgress: null,
+              moveRequiredTicks: null,
+            };
+        const assist = migrationAssist({
+          tick: state.tick,
+          core: assistCore,
+          units: (state.units ?? []).map((unit) => ({
+            id: unit.id,
+            unitType: unit.unitType,
+            position: unit.position,
+          })),
+          plan: read.plan,
+          planActive: result.active,
+        });
+        let assistPlan = result.plan;
+        // 手动窗口抑制（§4-E）：用户手操核心方向时 planner 不抢方向（START_MOVE → null）。
+        if (assist.suppressCoreOrder && assistPlan.coreAction?.type === "START_MOVE") {
+          assistPlan = { ...assistPlan, coreAction: null };
+        }
+        // 清路订单（§4-A）：clearRequests 格上的我方单位 → 让位 MOVE（覆盖 planner 该单位动作）。
+        if (assist.clearOrders.length > 0) {
+          const unitActions = { ...assistPlan.unitActions };
+          for (const order of assist.clearOrders) {
+            unitActions[order.unitId] = { type: "MOVE", direction: order.direction };
+          }
+          assistPlan = { ...assistPlan, unitActions };
+        }
+        // 失败签名遥测（§4-D）：MOVING→NORMAL 位置未变 = 引擎拒（占位者不移走等）。
+        if (prevAssistCore !== null && detectMigrationFailure(prevAssistCore, assistCore)) {
+          try {
+            appendJsonlLine(
+              join(baseDir, config.tenantId, "telemetry", "assist-events.jsonl"),
+              JSON.stringify({
+                schema: "migration-assist-event-v1",
+                tick: state.tick,
+                tenant: config.tenantId,
+                event: "migrate_failed",
+                position: assistCore.position,
+                reason: "MOVING→NORMAL 位置未变（引擎拒：占位者不移走/争抢/容量 R3/R4）",
+              }),
+            );
+          } catch {
+            // 遥测失败不阻断决策
+          }
+        }
+        prevAssistCore = assistCore;
+        return { plan: assistPlan, active: result.active, failClosed: result.failClosed };
       },
     });
     await Promise.race([loopPromise, stopped]);

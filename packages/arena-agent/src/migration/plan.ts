@@ -82,6 +82,16 @@ export interface MigrationPlanV1 {
   readonly roles: MigrationRoles;
   readonly conductor: { readonly pid: number };
   readonly updatedAt: string;
+  /**
+   * M6（migration-assist-v1 §5）：发下一个 START_MOVE 前需清空的格
+   * （destination 及其邻格，≤3）。缺失 = 旧行为（不清路）。
+   */
+  readonly clearRequests?: readonly { readonly x: number; readonly y: number; readonly reason?: string }[];
+  /** M6：清路前瞻格数 + 触发原因（遥测）。缺失 = 旧行为。 */
+  readonly assist?: {
+    readonly clearAheadCells: number;
+    readonly clearAheadReason: "initial" | "blocked-retry" | "replan";
+  };
 }
 
 export type MigrationPlanParseResult =
@@ -167,6 +177,28 @@ export function parseMigrationPlan(raw: unknown): MigrationPlanParseResult {
     return { ok: false, reason: "conductor 段非法" };
   if (typeof raw.updatedAt !== "string" || Number.isNaN(Date.parse(raw.updatedAt)))
     return { ok: false, reason: "updatedAt 非法" };
+
+  // M6 可选字段（migration-assist-v1 §5）：缺失 = 旧行为；存在则严格校验。
+  if (raw.clearRequests !== undefined) {
+    if (!Array.isArray(raw.clearRequests) || raw.clearRequests.length > 3)
+      return { ok: false, reason: "clearRequests 非法（最多 3 格）" };
+    for (const request of raw.clearRequests) {
+      if (!isRecord(request) || !isPosition(request))
+        return { ok: false, reason: "clearRequests 含非法项" };
+      if (request.reason !== undefined && typeof request.reason !== "string")
+        return { ok: false, reason: "clearRequests.reason 非法" };
+    }
+  }
+  if (raw.assist !== undefined) {
+    if (
+      !isRecord(raw.assist) ||
+      !isNumber(raw.assist.clearAheadCells) || raw.assist.clearAheadCells < 1 ||
+      (raw.assist.clearAheadReason !== "initial" &&
+        raw.assist.clearAheadReason !== "blocked-retry" &&
+        raw.assist.clearAheadReason !== "replan")
+    )
+      return { ok: false, reason: "assist 段非法" };
+  }
 
   return { ok: true, plan: raw as unknown as MigrationPlanV1 };
 }
