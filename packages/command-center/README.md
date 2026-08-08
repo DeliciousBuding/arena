@@ -42,7 +42,8 @@ type stripping）+ React 19 + Vite 8 + TS（Bun/Node 工具链），浏览器访
 ```bash
 cd arena-ts/packages/command-center
 npm run check:all        # ① server tsc → ② web typecheck → ③ web build（一键全绿）
-npm run test:regression  # ④ Playwright 回归 12 项（需本机 8787 + chromium；高 CPU 下自动放宽超时）
+npm run test:regression  # ④ Playwright 回归 16 项（需本机 8787 + chromium；高 CPU 下自动放宽超时）
+#    覆盖：页面零错误 / 六 tab / 威胁玫瑰 / 决策流 / 聚焦 HUD / 计划层像素 / 人类指挥链 / 跳图定位标记 jumpPins / API 健康
 ```
 
 - CI（`.github/workflows/ci.yml` `command-center` job）：server tsc + web typecheck + web build，
