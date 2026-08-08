@@ -264,6 +264,9 @@ export interface DeterministicVariantConfig {
   readonly accumulateThreshold?: number;
   /** 补员 reserve（缺省 2 = 生产行为零回归）。 */
   readonly spawnReserve?: number;
+  /** RECOVERY 早期防御产兵（recovery-early-military-v1，2026-08-08）：军事=0 且
+   *  worker 起步（>=4）时先产 1 Vanguard 自卫——重生/弱小期裸奔被拆的兜底。 */
+  readonly recoveryEarlyMilitary?: boolean;
   /** 使命层配置（worker-mission-v1，2026-08-08）：值层置信 + SURVEYOR 角色仲裁。
    *  缺省 undefined = 关闭（现行为零回归）。 */
   readonly mission?: MissionConfig;
@@ -272,6 +275,10 @@ export interface DeterministicVariantConfig {
 export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, DeterministicVariantConfig>> =
   Object.freeze({
     "strike-core-v1": Object.freeze({ vanguardRatio: 0.5, accumulateThreshold: 30 }),
+    /** RECOVERY 早期防御产兵（2026-08-08，ref lifecycle overlay 对照）：军事=0 且
+     *  worker>=4 时先产 1 Vanguard 自卫——t3 重生后裸奔被拆的兜底。仅对重生产兵
+     *  场景开启（t3/t4 配置），不影响经济优先租户。 */
+    "recovery-early-military-v1": Object.freeze({ recoveryEarlyMilitary: true }),
     /**
      * 前锋重装（2026-08-08，用户裁决"多生产前锋"）：vanguardRatio 0.5→0.75——
      * 军事单位 3/4 为 Vanguard（攻坚拆家/守家前排），Ranger 保留 1/4 远程压制。
