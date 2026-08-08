@@ -6,7 +6,7 @@ import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QU
 import { getJSON } from './api.js';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
-const TENANT_COLORS: Record<string, string> = { t1: '#69b3d8', t2: '#7fd8a5', t3: '#a892d6', t4: '#fc5646' };
+const TENANT_COLORS: Record<string, string> = { t1: '#69b3d8', t2: '#57bd84', t3: '#a892d6', t4: '#dd626d' };
 const TENANT_LABEL: Record<string, string> = { t1: '租户 1', t2: '租户 2', t3: '租户 3', t4: '租户 4' };
 const POLL_MS = 3000;
 const UNIT_ICONS: Record<string, string> = { resource: '/assets/ui/icons/resource.png', population: '/assets/ui/icons/population.png' };
@@ -47,6 +47,9 @@ interface TacticalState extends Jsonish {
   worlds: Record<string, Jsonish>;
   plans: Record<string, Jsonish>;
   selected: Jsonish | null;
+  multi: Set<string>;        // 多选：单位 id 集合（Shift 框选/点击），主选中仍在 selected
+  boxSelect: Jsonish | null; // 框选拖拽：{ x0, y0, x1, y1 }（世界坐标）
+  queues: Record<string, Jsonish[]>; // 命令队列：unitId -> [{ kind:'goto'|'mine', target:[x,y] }]
   mode: string | null;
   moveGoals: Record<string, [number, number]>;
   moveRoute: Jsonish | null;
@@ -143,6 +146,9 @@ const state: ArenaState = {
     worlds: {},       // tenant -> { state, tick }
     plans: {},        // tenant -> { tick, plan } 最新决策计划（全局联盟 4 租户算法决策虚线）
     selected: null,   // { tenant, obj }
+    multi: new Set(), // 多选单位 id（Shift 框选/点击；主选中在 selected）
+    boxSelect: null,  // 框选拖拽矩形（世界坐标）
+    queues: {},       // 命令队列：unitId -> [{ kind:'goto'|'mine', target:[x,y] }]
     mode: null,       // null | MOVE | SHOOT | SWEEP
     moveGoals: {},    // objId -> [x, y]（演练移动目标）
     moveRoute: null,  // { tenant, obj, path }
@@ -605,6 +611,8 @@ function draw() {
   drawBeacons(s);
   if (state.hover && !state.drag) drawHoverCell(state.hover, s);
   tactDrawLayer(s);
+  drawMultiSelection(s); // 多选单位环（编队可视）
+  drawBoxSelection(s);   // 框选矩形
   drawJumpMark(s);
   drawJumpPins(s);
   if (replayActive) replayDrawLayer(s);
@@ -829,7 +837,7 @@ function drawMeterBar(s: any, x: any, y: any, cell: any, value: any, maximum: an
 }
 function drawUnitHealth(s: any, x: any, y: any, cell: any, hp: any, maxHp: any) {
   if (maxHp <= 0 || hp >= maxHp) return;
-  drawMeterBar(s, x, y, cell, hp, maxHp, hp > 1 ? '#7fd8a5' : '#fc5646', '#e4e4e7', `${hp}/${maxHp}`);
+  drawMeterBar(s, x, y, cell, hp, maxHp, hp > 1 ? '#7fd8a5' : '#e0625d', '#e4e4e7', `${hp}/${maxHp}`);
 }
 function drawWorkerCargo(s: any, x: any, y: any, cell: any, cargo: any) {
   if (!cargo) return;
@@ -867,6 +875,41 @@ function drawStackBadge(s: any, x: any, y: any, cell: any, count: any, color: an
 const SELECTION_RIPPLE_MS = 900;
 const selectionRipples = new Map(); // objId -> born
 function startSelectionRipple(id: any) { if (id) selectionRipples.set(id, performance.now()); }
+/** 多选单位环（编队可视）：multi 中非主选中的单位画淡白细环。 */
+function drawMultiSelection(s: any) {
+  const tac = T();
+  if (tac.multi.size < 2) return;
+  const selId = tac.selected?.obj?.id;
+  const world = tac.selected ? tac.worlds[tac.selected.tenant] : null;
+  if (!world) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,.55)';
+  ctx.lineWidth = Math.max(1, s * 0.045);
+  ctx.setLineDash([3, 3]);
+  for (const o of world.state.objects) {
+    if (!tac.multi.has(o.id) || o.id === selId || o.kind === 'CORE' || !o.position) continue;
+    const p = project(o.position[0], o.position[1]);
+    const r = Math.max(5, s * 0.5);
+    ctx.beginPath(); ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+/** 框选矩形（Shift 拖拽中）：白线半透明填充。 */
+function drawBoxSelection(s: any) {
+  const box = T().boxSelect;
+  if (!box) return;
+  const p0 = project(box.x0, box.y0);
+  const p1 = project(box.x1, box.y1);
+  const x = Math.min(p0.sx, p1.sx), y = Math.min(p0.sy, p1.sy);
+  const w = Math.abs(p1.sx - p0.sx), h = Math.abs(p1.sy - p0.sy);
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,.08)';
+  ctx.strokeStyle = 'rgba(255,255,255,.7)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
 function drawSelectionRipple(s: any, x: any, y: any, cell: any, size: any, id: any) {
   const born = selectionRipples.get(id);
   if (born === undefined) return;
@@ -1008,7 +1051,7 @@ function drawMovementDashes(cells: any, s: any) {
     const ex = to.sx - ux * endOff, ey = to.sy - uy * endOff;
     const tipX = to.sx - ux * cell * 0.12, tipY = to.sy - uy * cell * 0.12;
     const wingX = -uy, wingY = ux;
-    const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#fc5646';
+    const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#e0625d';
     // ① 起点标记：实心点 + 白描边环（"从哪里出发"）
     ctx.save();
     ctx.globalAlpha = 0.9; ctx.fillStyle = color;
@@ -1068,7 +1111,7 @@ function drawUnits(cells: any, s: any) {
       const pos = unitDrawPos(c);
       const p = project(pos.x, pos.y);
       const size = s * (c.unitType === 'RANGER' ? 0.68 : 0.62);
-      const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#fc5646';
+      const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#e0625d';
       ctx.save();
       ctx.globalAlpha = cellAlpha(c, 0.55);
       ring(p.sx, p.sy, size * 0.72 * pulse, c.controlled ? color : 'rgba(198,99,112,.55)', c.controlled ? 1.8 : 1.2, c.controlled ? ([] as number[]) : [3, 3]);
@@ -1095,7 +1138,7 @@ function drawUnits(cells: any, s: any) {
   for (const c of cells) {
     const pos = unitDrawPos(c);
     const p = project(pos.x, pos.y);
-    const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#fc5646';
+    const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#e0625d';
     ctx.save();
     ctx.globalAlpha = cellAlpha(c, 0.55);
     ctx.fillStyle = c.controlled ? color : 'rgba(198,99,112,.7)';
@@ -1112,7 +1155,7 @@ function drawUnits(cells: any, s: any) {
 function drawHumanMarker(s: any, sx: any, sy: any, cell: any, id: any) {
   ctx.save();
   const r = Math.max(5, cell * 0.85);
-  ctx.strokeStyle = 'rgba(211,173,85,.9)';
+  ctx.strokeStyle = 'rgba(255,255,255,.9)';
   ctx.lineWidth = Math.max(1.2, cell * 0.06);
   ctx.setLineDash([Math.max(3, cell * 0.14), Math.max(2, cell * 0.1)]);
   ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.stroke();
@@ -1125,7 +1168,7 @@ function drawHumanMarker(s: any, sx: any, sy: any, cell: any, id: any) {
     const bx = sx + r + 2, by = sy - r - fs;
     ctx.fillStyle = 'rgba(8,8,8,.78)';
     ctx.beginPath(); ctx.roundRect(bx - 2, by - 1, tw + 5, fs + 4, 4); ctx.fill();
-    ctx.fillStyle = '#e4a02e';
+    ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     ctx.fillText('H', bx + 0.5, by + (fs + 4) / 2 + 0.5);
     ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
@@ -1201,7 +1244,7 @@ function drawCores(cells: any, s: any) {
 }
 function coreColor(c: any) {
   // 我方核心=租户色；敌方核心=珊瑚红（官方 hostile 语义）
-  return c.controlled ? (TENANT_COLORS[c.tenant] ?? '#69b3d8') : '#fc5646';
+  return c.controlled ? (TENANT_COLORS[c.tenant] ?? '#69b3d8') : '#e0625d';
 }
 function drawCoreSprite(c: any, s: any) {
   const p = project(c.x, c.y);
@@ -1247,7 +1290,7 @@ function drawCoreSprite(c: any, s: any) {
     drawMeterBar(s, p.sx, p.sy + size * 0.56, s, c.shield, shieldMax, '#8f91c7', '#c7c8e7', `${c.shield} SHD`);
   }
   if (typeof c.hp === 'number' && s >= 8 && !LQ) {
-    const color2 = c.hp > 3 ? '#7fd8a5' : c.hp > 1 ? '#e4a02e' : '#fc5646';
+    const color2 = c.hp > 3 ? '#7fd8a5' : c.hp > 1 ? '#ffffff' : '#e0625d';
     drawMeterBar(s, p.sx, p.sy + size * 0.72, s, c.hp, 5, color2, '#d4d4d8', `${c.hp}/${5}`);
   }
 }
@@ -1359,7 +1402,7 @@ function drawEnemyCoreTrails(s: any) {
   for (const t of trails) {
     const trail = Array.isArray(t.trail) ? t.trail : null;
     if (!trail || trail.length < 2) continue;
-    const color = '#fc5646'; // 敌红（与 enemy/contested 同色系）
+    const color = '#e0625d'; // 敌红（与 enemy/contested 同色系）
     const pts = [];
     for (const pt of trail) {
       const q = project(pt.x, pt.y);
@@ -1509,7 +1552,7 @@ function drawJumpMark(s: any) {
   const grow = 1 + (age / LIFE) * 0.7;
   ctx.save();
   ctx.globalAlpha = a * (0.5 + 0.4 * pulse);
-  ctx.strokeStyle = 'rgba(211,173,85,.9)';
+  ctx.strokeStyle = 'rgba(255,255,255,.9)';
   ctx.lineWidth = Math.max(1.2, s * 0.03);
   ctx.beginPath(); ctx.arc(p.sx, p.sy, pr * grow, 0, Math.PI * 2); ctx.stroke();
   ctx.globalAlpha = a * 0.85;
@@ -1542,7 +1585,7 @@ function drawJumpPins(s: any) {
     const isNew = age < 5000;
     const pulse = isNew ? 0.5 + 0.5 * Math.sin(age / 120) : 0;
     ctx.globalAlpha = 0.55 + 0.3 * pulse;
-    ctx.strokeStyle = 'rgba(211,173,85,.85)';
+    ctx.strokeStyle = 'rgba(255,255,255,.85)';
     ctx.lineWidth = Math.max(1.2, s * 0.03);
     ctx.beginPath(); ctx.arc(p.sx, p.sy, r * (1 + 0.12 * pulse), 0, Math.PI * 2); ctx.stroke();
     ctx.globalAlpha = 0.9;
@@ -1560,7 +1603,7 @@ function drawJumpPins(s: any) {
       const bx = p.sx + r + 5, by = p.sy - r - 4;
       ctx.fillStyle = 'rgba(10,14,18,.85)';
       ctx.beginPath(); ctx.roundRect(bx - 3, by - 12, tw + 8, 17, 4); ctx.fill();
-      ctx.fillStyle = '#e6c96a'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffffff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
       ctx.fillText(label, bx, by - 3);
       ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
     }
@@ -1593,7 +1636,7 @@ function drawThreatRose(s: any) {
       ctx.beginPath(); ctx.arc(nx, ny, Math.max(1.5, s * 0.045), 0, Math.PI * 2); ctx.fill();
       const nd = sec.nearestDistance;
       if (typeof nd === 'number' && nd < 32) {
-        ctx.globalAlpha = 0.95; ctx.fillStyle = nd < 18 ? '#dd626d' : '#d3ad55';
+        ctx.globalAlpha = 0.95; ctx.fillStyle = nd < 18 ? '#dd626d' : '#f0883e';
         ctx.font = '600 9px ' + CANVAS_FONT;
         ctx.fillText(String(nd), nx + 2, ny - 2);
       }
@@ -1662,7 +1705,7 @@ function drawEnemyMemory(s: any) {
       ctx.globalAlpha = alpha;
       ctx.translate(p.sx, p.sy);
       ctx.rotate(Math.PI / 4);
-      ctx.fillStyle = '#fc5646';
+      ctx.fillStyle = '#e0625d';
       ctx.fillRect(-r / 2, -r / 2, r, r);
       ctx.strokeStyle = 'rgba(255,160,160,.85)';
       ctx.lineWidth = 1.2;
@@ -1809,7 +1852,7 @@ function lastSeenText(lastSeenTick: any) {
 }
 /** 敌情记忆 tooltip：敌核/敌单位的最后目击详情。 */
 function showMemoryTooltip(px: any, py: any, mem: any) {
-  const color = '#fc5646';
+  const color = '#e0625d';
   const lines = [];
   if (mem.kind === 'core') {
     lines.push(`<div class="tt-title" style="color:${color}">敌核 · ${escapeHtml(mem.username ?? '未知')}</div>`);
@@ -2027,7 +2070,15 @@ function bindEvents() {
     els.canvas.setPointerCapture(e.pointerId);
     state.viewAnim = null;
     state.zoom.active = false; // 拖拽接管
-    state.drag = { x: e.clientX, y: e.clientY, cx: state.view.cx, cy: state.view.cy };
+    // shiftKey：框选模式（拖拽画矩形，不平移）；否则平移
+    state.drag = { x: e.clientX, y: e.clientY, cx: state.view.cx, cy: state.view.cy, shift: e.shiftKey };
+    if (e.shiftKey) {
+      const rect = els.canvas.getBoundingClientRect();
+      const wx = state.view.cx + (e.clientX - rect.left - rect.width / 2) / state.view.scale;
+      const wy = state.view.cy + (e.clientY - rect.top - rect.height / 2) / state.view.scale;
+      const tac = T();
+      tac.boxSelect = { x0: wx, y0: wy, x1: wx, y1: wy };
+    }
   });
   // 点击判定：抬起时位移 < 6px 视为点击（选中/战术目标），否则为拖拽
   els.canvas.addEventListener('pointerup', (e: any) => {
@@ -2035,9 +2086,26 @@ function bindEvents() {
     const d = state.drag;
     state.drag = null;
     const moved = Math.hypot(e.clientX - d.x, e.clientY - d.y);
+    const rect = els.canvas.getBoundingClientRect();
+    if (d.shift && moved >= 6) {
+      // Shift 拖拽 = 框选：矩形内同租户受控单位加入多选
+      finishBoxSelect();
+      return;
+    }
     if (moved < 6) {
+      handleCanvasClick(e.clientX - rect.left, e.clientY - rect.top, d.shift);
+    }
+  });
+  // 框选拖拽实时更新矩形（不平移）
+  els.canvas.addEventListener('pointermove', (e: any) => {
+    const tac = T();
+    if (state.drag && state.drag.shift) {
       const rect = els.canvas.getBoundingClientRect();
-      handleCanvasClick(e.clientX - rect.left, e.clientY - rect.top);
+      const wx = state.view.cx + (e.clientX - rect.left - rect.width / 2) / state.view.scale;
+      const wy = state.view.cy + (e.clientY - rect.top - rect.height / 2) / state.view.scale;
+      if (tac.boxSelect) { tac.boxSelect.x1 = wx; tac.boxSelect.y1 = wy; }
+      draw();
+      return;
     }
   });
   // 右键指挥菜单（群星式）：命中单位/核心弹命令菜单，空白处取消选中
@@ -2187,6 +2255,7 @@ function bindEvents() {
 /* ---------- 启动 ---------- */
 async function boot() {
   applyPrefs();
+  queueLoad(); // 恢复命令队列（localStorage，前端调度）
   bindEvents();
   pokeHint();
   resizeCanvas();
@@ -2281,6 +2350,14 @@ async function boot() {
     const tactKey = { m: 'MOVE', s: 'SWEEP', h: 'HEAL', d: 'DEPOSIT', c: 'HARVEST', p: 'SPAWN', a: 'SHOOT', r: 'REPAIR_SHIELD' }[e.key.toLowerCase()];
     if (tactKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       const tac = T();
+      // 编队多选：M/S/A/D/C/H 等快捷键直接走批量命令
+      if (tac.multi.size >= 2 && ['m', 's', 'a', 'd', 'c', 'h'].includes(e.key.toLowerCase())) {
+        const mapBatch: Record<string, string> = { m: 'MOVE', s: 'SWEEP', a: 'SHOOT', d: 'DEPOSIT', c: 'HARVEST', h: 'HEAL' };
+        const act = mapBatch[e.key.toLowerCase()];
+        const counts = batchActionCounts(tac.selected ? tac.selected.tenant : state.soloTenant);
+        if (counts[act]) { batchChooseAction(act); e.preventDefault(); return; }
+        else { toast(`组内没有可执行「${TACT_ACTION_CN[act]}」的单位`, 'warn'); return; }
+      }
       const sel = tac.selected;
       if (sel && !tac.mode) {
         const obj = sel.obj;
@@ -2524,6 +2601,214 @@ function tactAvailability(world: any, obj: any) {
   if (!carries) reasons.DROP_BEACON = '未携带信标';
   return { actions, spawns, reasons };
 }
+
+/* ============ 多选 + 批量命令 + 命令队列（群星式编队指挥，2026-08-08） ============ */
+const QUEUES_KEY = 'arena-cc.queues';
+function multiObjects(tenant: any): any[] {
+  const world = T().worlds[tenant];
+  if (!world) return [];
+  return world.state.objects.filter((o: any) => T().multi.has(o.id) && o.kind !== 'CORE');
+}
+function multiSync(tenant?: any) {
+  const tac = T();
+  const t = tenant ?? (tac.selected ? tac.selected.tenant : state.soloTenant);
+  if (t) { tactRenderAssets(t); tactRenderHud(t); }
+  draw();
+}
+/** 框选结算：矩形内同租户受控单位加入多选（主选中=矩形内第一个）。 */
+function finishBoxSelect() {
+  const tac = T();
+  const box = tac.boxSelect;
+  tac.boxSelect = null;
+  if (!box || !state.soloTenant) return;
+  const x0 = Math.min(box.x0, box.x1), x1 = Math.max(box.x0, box.x1);
+  const y0 = Math.min(box.y0, box.y1), y1 = Math.max(box.y0, box.y1);
+  const world = tac.worlds[state.soloTenant];
+  if (!world) return;
+  const hits = world.state.objects.filter((o: any) =>
+    o.controlled === true && o.kind === 'UNIT' && o.position &&
+    o.position[0] >= x0 - 0.5 && o.position[0] <= x1 + 0.5 &&
+    o.position[1] >= y0 - 0.5 && o.position[1] <= y1 + 0.5);
+  if (!hits.length) { multiSync(); return; }
+  for (const o of hits) tac.multi.add(o.id);
+  // 主选中 = 矩形内第一个（未选中的），保持 selected 有值
+  const first = hits[0];
+  if (!tac.selected || tac.selected.obj.id !== first.id) {
+    tac.selected = { tenant: state.soloTenant, obj: first };
+    tactRenderActionDialog(); tactRenderInspect();
+  }
+  toast(`已框选 ${hits.length} 个单位（共 ${tac.multi.size} 选中）`, 'info');
+  multiSync();
+}
+/** 批量命令菜单（多选 ≥2 时右键任意成员弹出）：组内可执行数 ×N 显示。 */
+function batchActionCounts(tenant: any) {
+  const tac = T();
+  const world = tac.worlds[tenant];
+  const objs = multiObjects(tenant);
+  if (!world || !objs.length) return {};
+  const counts: Record<string, number> = {};
+  const isCoreGroup = false;
+  for (const o of objs) {
+    const av = tactAvailability(world, o);
+    for (const [act, ok] of Object.entries(av.actions)) {
+      if (ok) counts[act] = (counts[act] ?? 0) + 1;
+    }
+  }
+  return counts;
+}
+function renderBatchCtxMenu(tenant: any, px: any, py: any) {
+  const tac = T();
+  const n = tac.multi.size;
+  const counts = batchActionCounts(tenant);
+  const items = [
+    ['MOVE', '移动', counts.MOVE ?? 0],
+    ['HARVEST', '采集', counts.HARVEST ?? 0],
+    ['DEPOSIT', '回仓', counts.DEPOSIT ?? 0],
+    ['HEAL', '维修', counts.HEAL ?? 0],
+    ['SHOOT', '攻击', counts.SHOOT ?? 0],
+    ['WAIT', '等待', counts.WAIT ?? 0],
+  ];
+  els.ctxMenu.innerHTML = `
+    <div class="ctx-head"><span class="ctx-icon">⛶</span><b>批量命令 · ${n} 个单位</b><button class="ctx-close" data-ctx-close type="button" title="关闭（Esc）">✕</button></div>
+    ${items.map(([act, cn, cnt]) => Number(cnt) > 0
+      ? `<button class="ctx-item" data-action="${act}">${cn} <span class="ctx-cnt">×${cnt}</span></button>`
+      : '').join('')}
+    <div class="ctx-foot">Shift 拖拽框选 / Shift 点击加选 · Esc 取消</div>`;
+  const rect = els.canvas.getBoundingClientRect();
+  els.ctxMenu.hidden = false;
+  const mw = els.ctxMenu.offsetWidth, mh = els.ctxMenu.offsetHeight;
+  let left = px + 12, top = py - 8;
+  if (left + mw > rect.width - 8) left = px - mw - 12;
+  if (top + mh > rect.height - 8) top = rect.height - mh - 8;
+  if (top < 8) top = 8;
+  els.ctxMenu.style.left = `${left}px`;
+  els.ctxMenu.style.top = `${top}px`;
+  ctxMenuOpenFor = '__batch__';
+  els.ctxMenu.querySelector('[data-ctx-close]')?.addEventListener('click', hideCtxMenu);
+  els.ctxMenu.querySelectorAll('[data-action]').forEach((b: any) => b.addEventListener('click', () => {
+    hideCtxMenu();
+    batchChooseAction(b.dataset.action);
+  }));
+}
+/** 批量动作入口：MOVE 走批量目标模式；其余按组内可用性过滤后逐单位提交。 */
+function batchChooseAction(type: any) {
+  const tac = T();
+  const tenant = tac.selected ? tac.selected.tenant : state.soloTenant;
+  if (!tenant) return;
+  const world = tac.worlds[tenant];
+  const objs = multiObjects(tenant);
+  if (!world || !objs.length) return;
+  if (type === 'MOVE') {
+    tac.mode = 'BATCH_MOVE';
+    enterTargetingMode('🎯 批量移动：点目标格，整组前往 · Shift+点击=排队 · Esc 取消');
+    draw(); return;
+  }
+  if (type === 'SHOOT') {
+    tac.mode = 'BATCH_SHOOT';
+    enterTargetingMode('🎯 批量攻击：点敌方目标，组内游侠开火 · Esc 取消');
+    draw(); return;
+  }
+  // 一键动作：逐单位过滤可用性后提交
+  let done = 0;
+  for (const o of objs) {
+    const av = tactAvailability(world, o);
+    if (av.actions[type] !== true) continue;
+    submitCommand(tenant, o.id, { type }, `${TACT_ACTION_CN[type] ?? type}（批量）`);
+    done++;
+  }
+  if (!done) toast('组内没有可执行该动作的单位', 'warn');
+  else toast(`批量命令已提交：${TACT_ACTION_CN[type] ?? type} ×${done}`, 'ok');
+  multiSync();
+}
+/** 批量目标落点：MOVE 组内逐个寻路提交 goto；SHOOT 组内游侠提交攻击。 */
+function batchSubmitTarget(wx: any, wy: any, enqueue: boolean) {
+  const tac = T();
+  const tenant = tac.selected ? tac.selected.tenant : state.soloTenant;
+  if (!tenant) return;
+  const world = tac.worlds[tenant];
+  const objs = multiObjects(tenant);
+  if (!world || !objs.length) return;
+  let done = 0;
+  for (const o of objs) {
+    if (tac.mode === 'BATCH_MOVE') {
+      const path = tactFindPath(world, o.position, [wx, wy], tenant);
+      if (!path) continue;
+      if (enqueue) { queuePush(tenant, o.id, 'goto', [wx, wy]); }
+      else { submitGoal(tenant, o.id, 'goto', [wx, wy], `移动 → [${wx}, ${wy}]（批量）`); }
+    } else if (tac.mode === 'BATCH_SHOOT') {
+      submitCommand(tenant, o.id, { type: 'SHOOT', targetId: null, expectedCell: [wx, wy] }, `朝 [${wx}, ${wy}] 开火（批量）`);
+    }
+    done++;
+  }
+  if (!done) toast(tac.mode === 'BATCH_MOVE' ? '组内单位均无法到达该目标' : '组内没有可射击单位', 'warn');
+  else toast(tac.mode === 'BATCH_MOVE' ? (enqueue ? `已入队 ${done} 个单位` : `批量移动 ×${done}`) : `批量攻击 ×${done}`, 'ok');
+  tac.mode = null;
+  multiSync();
+}
+/** 队列持久化：localStorage（前端调度，服务端仍单条 goal 活跃）。 */
+function queueSave() {
+  try {
+    const plain: Record<string, any[]> = {};
+    for (const [k, v] of Object.entries(T().queues)) plain[k] = v;
+    localStorage.setItem(QUEUES_KEY, JSON.stringify(plain));
+  } catch { /* 忽略 */ }
+}
+function queueLoad() {
+  try {
+    const p = JSON.parse(localStorage.getItem(QUEUES_KEY) ?? '{}') || {};
+    T().queues = {};
+    for (const [k, v] of Object.entries(p)) if (Array.isArray(v) && v.length) T().queues[k] = v as any[];
+  } catch { /* 忽略 */ }
+}
+function queuePush(tenant: any, unitId: any, kind: any, target: any) {
+  const tac = T();
+  tac.queues[unitId] = tac.queues[unitId] ?? [];
+  tac.queues[unitId].push({ kind, target });
+  queueSave();
+  const q = tac.queues[unitId];
+  toast(`已加入队列（第 ${q.length} 段）· 当前段完成后自动执行下一段`, 'info');
+  // 单位无活跃指令时立即提交首段
+  if (q.length === 1 && !commandGoalOf(tenant, unitId) && !commandActionOf(tenant, unitId)) {
+    submitGoal(tenant, unitId, kind, target, `${kind === 'mine' ? '采矿' : '移动'} → [${target[0]}, ${target[1]}]（队列 1/${q.length}）`);
+  }
+  tactRenderActionDialog();
+}
+function queueAdvance(tenant: any, unitId: any) {
+  const tac = T();
+  const q = tac.queues[unitId];
+  if (!q || !q.length) return;
+  const next = q.shift();
+  if (next && q.length) {
+    submitGoal(tenant, unitId, next.kind, next.target, `${next.kind === 'mine' ? '采矿' : '移动'} → [${next.target[0]}, ${next.target[1]}]（队列 ${q.length + 1}/${q.length + 1}）`);
+  } else {
+    delete tac.queues[unitId];
+  }
+  queueSave();
+  tactRenderActionDialog();
+}
+function queueClearUnit(unitId: any) {
+  const tac = T();
+  delete tac.queues[unitId];
+  queueSave();
+  tactRenderActionDialog();
+}
+function queueOf(unitId: any): any[] | null {
+  const q = T().queues[unitId];
+  return q && q.length ? q : null;
+}
+/** 队列状态行（HTML）：当前段 + 剩余段，供动作面板展示。 */
+function queueStatusHtml(unitId: any): string {
+  const q = queueOf(unitId);
+  if (!q) return '';
+  const segLabel = (s: any) => (s.kind === 'mine' ? '采矿' : '移动') + ` [${s.target[0]}, ${s.target[1]}]`;
+  return `<div class="act-goal act-queue"><span class="q-title">命令队列 · ${q.length} 段</span>
+    ${q.map((s, i) => `<span class="q-seg ${i === 0 ? 'q-cur' : ''}">${i + 1}. ${segLabel(s)}</span>`).join('')}
+    <button data-queue-clear>清空队列</button></div>`;
+}
+/** 遥测 satisfied → 队列推进（当前段完成，提交下一段）。 */
+function queueOnSatisfied(tenant: any, unitId: any) {
+  if (queueOf(unitId)) queueAdvance(tenant, unitId);
+}
 async function tactSelect(tenant: any, obj: any) {
   const world = await tactLoadWorld(tenant);
   if (!world) return;
@@ -2542,6 +2827,7 @@ async function tactSelect(tenant: any, obj: any) {
 function tactClear() {
   const tac = T();
   tac.selected = null; tac.mode = null; tac.moveRoute = null; tac.routePreview = null; tac.attackTarget = null;
+  tac.multi = new Set(); tac.boxSelect = null; // 清除多选/框选
   els.actionDialog.hidden = true; els.inspectPanel.hidden = true; els.featurePanel.hidden = true;
   els.ctxMenu.hidden = true; ctxMenuOpenFor = null;
   els.assetPanel.hidden = true; els.fleetHud.hidden = true;
@@ -2636,9 +2922,10 @@ function tactRenderActionDialog() {
   const goalRow = sgoal
     ? `<div class="act-goal"><span>${sgoal.kind === 'mine' ? '采矿任务' : '移动任务'} → [${sgoal.target[0]}, ${sgoal.target[1]}] · 人类指挥</span><button data-cancel-goal>清除指令</button></div>`
     : (tac.moveGoals[obj.id] ? `<div class="act-goal"><span>本地路线 → [${tac.moveGoals[obj.id][0]}, ${tac.moveGoals[obj.id][1]}]</span></div>` : '');
+  const queueRow = obj.kind !== 'CORE' ? queueStatusHtml(obj.id) : '';
   const unitTele = unitTelemetryOf(sel.tenant, obj.id);
   const cmdStatus = commandStatusText(sel.tenant);
-  const modeBadge = tac.mode ? `<div class="act-mode-badge">${tac.mode === 'MOVE' ? '点矿=自动采矿任务 · 点空地=移动任务' : tac.mode === 'SHOOT' ? '点击敌方单位 → 锁定并提交攻击' : '点击单位相邻格选择清扫方向并提交'}</div>` : '';
+  const modeBadge = tac.mode ? `<div class="act-mode-badge">${tac.mode === 'MOVE' ? '点矿=自动采矿任务 · 点空地=移动任务 · Shift+点击=追加队列' : tac.mode === 'BATCH_MOVE' ? '批量移动：点目标格整组前往 · Shift+点击=入队' : tac.mode === 'BATCH_SHOOT' ? '批量攻击：点目标格，组内游侠开火' : tac.mode === 'SHOOT' ? '点击敌方单位 → 锁定并提交攻击' : '点击单位相邻格选择清扫方向并提交'}</div>` : '';
   els.actionDialog.innerHTML = `
     <div class="act-head">
       <span class="act-icon"><img src="${artPath}" alt="" /></span>
@@ -2660,6 +2947,7 @@ function tactRenderActionDialog() {
     }).join('')}</div>
     ${costHtml}
     ${goalRow}
+    ${queueRow}
     ${unitTele ? `<div class="act-goal act-tele">${unitTele}</div>` : ''}
     ${cmdStatus ? `<div class="act-mode-badge cmd-status">${cmdStatus}</div>` : ''}
     <div class="act-note">${isCore ? '核心 · 生产/移动为真实命令' : obj.unit_type === 'RANGER' ? '游侠 · 远程射击：点敌方目标提交攻击' : obj.unit_type === 'VANGUARD' ? '先锋 · 近战：点相邻格提交清扫' : '工人 · 点矿=自动采矿（到达挖、满仓回）'} · 人类指挥最高优先</div>
@@ -2689,6 +2977,7 @@ function tactRenderActionDialog() {
   }));
   els.actionDialog.querySelectorAll('[data-spawn]').forEach((b: any) => b.addEventListener('click', () => tactSpawn(b.dataset.spawn)));
   els.actionDialog.querySelector('[data-cancel-goal]')?.addEventListener('click', () => { delete tac.moveGoals[obj.id]; tac.moveRoute = null; tac.routePreview = null; clearUnitCommands(sel.tenant, obj.id); tactRenderActionDialog(); draw(); });
+  els.actionDialog.querySelector('[data-queue-clear]')?.addEventListener('click', () => { queueClearUnit(obj.id); toast('已清空命令队列', 'info'); draw(); });
 }
 function tactChooseAction(type: any) {
   const tac = T(), sel = tac.selected;
@@ -2851,6 +3140,11 @@ function openCtxMenu(px: any, py: any) {
       const obj = world ? tactObjectAt(world, cell.x, cell.y) : null;
       if (!obj) { toast('该单位/核心为已探索记忆，已不在当前 tick', 'warn'); return; }
       if (obj.controlled !== true) { toast('敌方单位无法指挥（可左键选中查看情报）', 'warn'); return; }
+      // 多选 ≥2 且命中编队成员：弹批量命令菜单
+      if (tac.multi.size >= 2 && tac.multi.has(obj.id)) {
+        renderBatchCtxMenu(cell.tenant, px, py);
+        return;
+      }
       const selected = tac.selected && tac.selected.obj.id === obj.id;
       const open = () => renderCtxMenu(cell.tenant, obj, px, py);
       if (selected) open();
@@ -3080,7 +3374,7 @@ function replayDrawLayer(s: any) {
   for (const c of replay.data.cores) {
     const p = replayInterp(c, f, prog);
     if (!p) continue;
-    const color = c.controlled ? (TENANT_COLORS[state.soloTenant!] ?? '#69b3d8') : '#fc5646';
+    const color = c.controlled ? (TENANT_COLORS[state.soloTenant!] ?? '#69b3d8') : '#e0625d';
     const size = Math.max(8, s * 0.72);
     const pr = project(p.x, p.y);
     if (c.controlled) { ctx.shadowColor = color; ctx.shadowBlur = 10; }
@@ -3100,7 +3394,7 @@ function replayDrawLayer(s: any) {
       const bw = Math.max(14, size * 1.1), bh = 3;
       const bx = pr.sx - bw / 2, by = pr.sy + size * 0.62 + 4;
       ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(bx, by, bw, bh);
-      ctx.fillStyle = p.hp > 3 ? '#7fd8a5' : p.hp > 1 ? '#e4a02e' : '#fc5646';
+      ctx.fillStyle = p.hp > 3 ? '#7fd8a5' : p.hp > 1 ? '#ffffff' : '#e0625d';
       ctx.fillRect(bx, by, bw * Math.max(0, Math.min(1, p.hp / 5)), bh);
     }
     // 人类指挥中标记（聚焦=回放接管单位绘制，需在此补画）
@@ -3110,14 +3404,14 @@ function replayDrawLayer(s: any) {
   for (const u of replay.data.units) {
     const p = replayInterp(u, f, prog);
     if (!p) continue;
-    const color = u.controlled ? (TENANT_COLORS[state.soloTenant!] ?? '#69b3d8') : '#fc5646';
+    const color = u.controlled ? (TENANT_COLORS[state.soloTenant!] ?? '#69b3d8') : '#e0625d';
     const size = Math.max(6, s * (u.type === 'RANGER' ? 0.68 : 0.62));
     const pr = project(p.x, p.y);
     if (s >= 6) {
       ring(pr.sx, pr.sy, size * 0.72, u.controlled ? color : 'rgba(198,99,112,.55)', u.controlled ? 1.6 : 1.1, u.controlled ? [] : [3, 3]);
       const path = unitSpritePath(u.type);
       if (images[path]) sprite(images[path], pr.sx, pr.sy, size);
-      else { ctx.fillStyle = u.controlled ? color : '#fc5646'; ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(2, size * 0.25), 0, Math.PI * 2); ctx.fill(); }
+      else { ctx.fillStyle = u.controlled ? color : '#e0625d'; ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(2, size * 0.25), 0, Math.PI * 2); ctx.fill(); }
     } else {
       ctx.fillStyle = u.controlled ? color : 'rgba(198,99,112,.7)';
       ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(1.8, s * 0.42), 0, Math.PI * 2); ctx.fill();
@@ -3156,7 +3450,7 @@ function tactDrawRoute(path: any, opts: Record<string, any> = {}) {
   const s = state.view.scale;
   // 动线配色：默认 agent 规划绿；人类指令 mine=琥珀 / goto=青（一眼区分谁在指挥）
   const C = opts.human === 'mine'
-    ? { line: '#e4a02e', lineA: 'rgba(216,182,78,.9)', flag: '#e6c96a', pulse: '#fff3d6', glow: '#e4a02e', eta: '#e6c96a' }
+    ? { line: '#ffffff', lineA: 'rgba(255,255,255,.9)', flag: '#ffffff', pulse: '#ffffff', glow: '#ffffff', eta: '#ffffff' }
     : opts.human === 'goto'
       ? { line: '#1fe0ca', lineA: 'rgba(95,200,232,.9)', flag: '#8fdcf5', pulse: '#e8f9ff', glow: '#1fe0ca', eta: '#8fdcf5' }
       : { line: '#7fd8a5', lineA: 'rgba(118,184,137,.9)', flag: '#8fd6a3', pulse: '#eafff1', glow: '#7fd8a5', eta: '#8fd6a3' };
@@ -3383,19 +3677,19 @@ function tactDrawLayer(s: any) {
     }
     for (const tg of tactRangerTargets(world, obj)) {
       const tp = project(tg.position[0], tg.position[1]);
-      ring(tp.sx, tp.sy, 12, '#fc5646', 2);
+      ring(tp.sx, tp.sy, 12, '#e0625d', 2);
     }
   }
   if (tac.mode === 'SWEEP' && obj.unit_type === 'VANGUARD') {
     for (const { dx, dy } of TACT_STEPS) {
       const tp = project(obj.position[0] + dx, obj.position[1] + dy);
-      ctx.fillStyle = 'rgba(216,182,78,.35)';
+      ctx.fillStyle = 'rgba(255,255,255,.28)';
       ctx.beginPath(); ctx.arc(tp.sx, tp.sy, Math.max(3, s * 0.3), 0, Math.PI * 2); ctx.fill();
     }
   }
   if (tac.attackTarget) {
     const tp = project(tac.attackTarget.obj.position[0], tac.attackTarget.obj.position[1]);
-    ring(tp.sx, tp.sy, 14, '#fc5646', 2.5);
+    ring(tp.sx, tp.sy, 14, '#e0625d', 2.5);
   }
 }
 /** 巡逻环（arena-hero-guide SQUAD_PATROL_RADII=(12,19,26,32) 移植）：聚焦租户时
@@ -3476,7 +3770,7 @@ function drawHumanGoalPaths(s: any) {
       const end = rec.path[rec.path.length - 1];
       const p = project(end[0], end[1]);
       const label = rec.kind === 'mine' ? '采矿' : '移动';
-      const color = rec.kind === 'mine' ? '#e4a02e' : '#1fe0ca';
+      const color = rec.kind === 'mine' ? '#ffffff' : '#1fe0ca';
       ctx.save();
       ctx.font = '600 11px ' + CANVAS_FONT;
       const tw = ctx.measureText(label).width;
@@ -3565,7 +3859,7 @@ function tactPlanLayer(s: any) {
         const st = stepOf(action.direction);
         if (!st) continue;
         const tp = project(o.position[0] + st.dx, o.position[1] + st.dy);
-        ring(tp.sx, tp.sy, Math.max(4, s * 0.32), 'rgba(216,182,78,.85)', 1.8);
+        ring(tp.sx, tp.sy, Math.max(4, s * 0.32), 'rgba(255,255,255,.85)', 1.8);
         drew = true;
       } else if (action.type === 'SHOOT' && action.expectedCell) {
         const to = extendScreen(from, project(action.expectedCell[0], action.expectedCell[1]), 9);
@@ -3728,10 +4022,10 @@ const FX_LIFE_MS = 2500;
 const FX_KIND_CN: Record<string, { text: string; color: string; size: number }> = {
   HARVEST_SUCCEEDED: { text: '+', color: '#7fd8a5', size: 13 },
   DEPOSIT_SUCCEEDED: { text: '¥', color: '#5fd4e8', size: 13 },
-  SHOT_HIT: { text: '✚', color: '#fc5646', size: 13 },
-  SWEEP_RESOLVED: { text: '⚔', color: '#e4a02e', size: 13 },
+  SHOT_HIT: { text: '✚', color: '#e0625d', size: 13 },
+  SWEEP_RESOLVED: { text: '⚔', color: '#ffffff', size: 13 },
   CORE_DAMAGED: { text: '⚔', color: '#ff6b6b', size: 14 },
-  CORE_DESTROYED: { text: '摧毁!', color: '#ff5560', size: 18 },
+  CORE_DESTROYED: { text: '摧毁!', color: '#e0625d', size: 18 },
   CORE_SPAWN_SUCCEEDED: { text: '产', color: '#5fd4e8', size: 12 },
   UNIT_HEAL_SUCCEEDED: { text: '✚', color: '#7fd8a5', size: 12 },
 };
@@ -3758,7 +4052,7 @@ function tactSpawnEventFx(frameTick: any) {
     // 销毁碎片：单位/核心被摧毁时迸溅
     if (ev.t === 'UNIT_DESTROYED' || ev.t === 'CORE_DESTROYED') {
       const n = ev.t === 'CORE_DESTROYED' ? 14 : 8;
-      const color = ev.t === 'CORE_DESTROYED' ? '#ff5560' : '#e4a02e';
+      const color = ev.t === 'CORE_DESTROYED' ? '#e0625d' : '#ffffff';
       for (let i = 0; i < n; i++) {
         const ang = Math.random() * Math.PI * 2, sp = 0.6 + Math.random() * 1.7;
         tac.debris.push({ x: ev.p[0], y: ev.p[1], vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp - 0.4, color, born: performance.now(), life: 900 + Math.random() * 600 });
@@ -3809,7 +4103,7 @@ function drawResolvedShotFx(a: any, b: any, cell: any, progress: any, hit: any) 
   const impact = Math.min(1, (progress - flightEnd) / (1 - flightEnd)), fade = 1 - impact;
   ctx.save(); ctx.globalAlpha = fade; ctx.lineCap = 'round'; ctx.lineWidth = Math.max(1.5, cell * 0.035);
   if (hit) {
-    ctx.strokeStyle = '#fc5646'; ctx.shadowColor = '#fc5646'; ctx.shadowBlur = Math.max(5, cell * 0.11);
+    ctx.strokeStyle = '#e0625d'; ctx.shadowColor = '#e0625d'; ctx.shadowBlur = Math.max(5, cell * 0.11);
     const radius = cell * (0.1 + impact * 0.28);
     ctx.beginPath(); ctx.arc(b.sx, b.sy, radius, 0, Math.PI * 2); ctx.stroke();
     for (let k = 0; k < 4; k++) {
@@ -3847,7 +4141,7 @@ function drawResolvedSweepFx(a: any, b: any, cell: any, progress: any) {
   ctx.lineTo(guardX + gpx * cell * 0.1, guardY + gpy * cell * 0.1); ctx.stroke();
   if (progress > 0.42) {
     const impact = Math.min(1, (progress - 0.42) / 0.38);
-    ctx.globalAlpha = fade * (1 - impact); ctx.strokeStyle = '#fc5646'; ctx.lineWidth = Math.max(1.5, cell * 0.04);
+    ctx.globalAlpha = fade * (1 - impact); ctx.strokeStyle = '#e0625d'; ctx.lineWidth = Math.max(1.5, cell * 0.04);
     ctx.beginPath(); ctx.arc(b.sx, b.sy, cell * (0.12 + impact * 0.28), 0, Math.PI * 2); ctx.stroke();
   }
   ctx.restore();
@@ -3981,7 +4275,7 @@ function tactShowFeature(cell: any, px: any, py: any) {
       })
       .catch(() => { const elLc = el.querySelector('.fp-lc'); if (elLc) elLc.textContent = '—'; });
   }
-}async function handleCanvasClick(px: any, py: any) {
+}async function handleCanvasClick(px: any, py: any, shift = false) {
   const tac = T();
   // 定位标记命中：非命令模式下点击 pin 清除单个（看到即清除，不再卡住关不掉）
   if (!tac.mode && state.jumpPins.length) {
@@ -3997,6 +4291,13 @@ function tactShowFeature(cell: any, px: any, py: any) {
     }
   }
   const cell = nearestCell(px, py);
+  // 批量目标模式：点目标整组前往/开火；Shift 点击 = 入队（批量移动）
+  if ((tac.mode === 'BATCH_MOVE' || tac.mode === 'BATCH_SHOOT') && tac.multi.size) {
+    const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+    const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+    batchSubmitTarget(wx, wy, shift);
+    return;
+  }
   if (tac.mode === 'MOVE' && tac.selected) {
     const world = tac.worlds[tac.selected.tenant];
     if (world) {
@@ -4015,8 +4316,14 @@ function tactShowFeature(cell: any, px: any, py: any) {
         const isResource = (cell && cell.type === 'resource') ||
           (world.state?.objects ?? []).some((o: any) => o.kind === 'RESOURCE' && (o.positions ?? []).some((p: any) => p[0] === wx && p[1] === wy));
         const kind = isResource ? 'mine' : 'goto';
-        submitGoal(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy], kind === 'mine' ? `采矿 → [${wx}, ${wy}]` : `移动 → [${wx}, ${wy}]`);
-        tactRenderActionDialog(); tactRenderInspect(); draw();
+        if (shift) {
+          // Shift+点击 = 追加命令队列（当前段完成后自动执行下一段）
+          queuePush(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy]);
+          tactRenderActionDialog(); draw();
+        } else {
+          submitGoal(tac.selected.tenant, tac.selected.obj.id, kind, [wx, wy], kind === 'mine' ? `采矿 → [${wx}, ${wy}]` : `移动 → [${wx}, ${wy}]`);
+          tactRenderActionDialog(); tactRenderInspect(); draw();
+        }
       } else {
         // 目标不可达（路径被堵/在障碍中）——官方 routeBlocked/routeUnknown 语义
         const blockedCell = state.cellIndex.get(`${tac.selected.tenant}:${wx},${wy}`);
@@ -4094,7 +4401,26 @@ function tactShowFeature(cell: any, px: any, py: any) {
   if (cell && (cell.type === 'unit' || cell.type === 'core')) {
     const world = await tactLoadWorld(cell.tenant);
     const obj = world ? tactObjectAt(world, cell.x, cell.y) : null;
-    if (obj) { await tactSelect(cell.tenant, obj); return; }
+    if (obj) {
+      if (shift && obj.kind !== 'CORE') {
+        // Shift 点击 = 加选/减选（编队多选）；主选中跟随
+        const tac = T();
+        if (tac.multi.has(obj.id)) { tac.multi.delete(obj.id); toast('已从编队移除', 'info'); }
+        else { tac.multi.add(obj.id); toast(`编队 +1（共 ${tac.multi.size}）`, 'info'); }
+        if (tac.multi.size) {
+          tac.selected = { tenant: cell.tenant, obj };
+          tactRenderActionDialog(); tactRenderInspect();
+        } else if (!tac.selected || tac.selected.obj.id === obj.id) {
+          tactClear();
+          return;
+        }
+        multiSync(cell.tenant);
+        return;
+      }
+      // 普通点击 = 单选：清空编队只留该单位
+      if (T().multi.size) { T().multi = new Set([obj.id]); multiSync(cell.tenant); }
+      await tactSelect(cell.tenant, obj); return;
+    }
     if (!cell.fresh) { toast('该单位/核心为已探索记忆，已不在当前 tick', 'warn'); return; }
   }
   // 地图要素信息卡（官方 MapFeatureInfo 移植）：点击资源/障碍/信标弹卡，不再"点了没反应"
@@ -4254,7 +4580,11 @@ function consumeCommandTelemetry(tenant: any, tele: any, prevTele: any) {
     const rs = rejected.map((rj: any) => `[${shortId(rj.unitId)}] ${escapeHtml(rj.reason)}`).join('；');
     toast(`指令被拒绝：${rs}`, 'warn');
   }
-  if (satisfied.length) toast(`意图完成 · ${satisfied.map((u: any) => shortId(u)).join('、')} 已交还 agent`, 'info');
+  if (satisfied.length) {
+    toast(`意图完成 · ${satisfied.map((u: any) => shortId(u)).join('、')} 已交还 agent`, 'info');
+    // 命令队列推进：当前段完成 → 自动提交下一段
+    satisfied.forEach((u: any) => queueOnSatisfied(tenant, u));
+  }
   else if (!rejected.length && applied.length) toast(`人类指令已生效 · ${applied.map((u: any) => shortId(u)).join('、')}`, 'info');
 }
 /** 人类指令状态快照：{ mode, actions:[], goals:[], updatedAt, telemetry }。 */

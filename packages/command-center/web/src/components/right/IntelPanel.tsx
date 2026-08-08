@@ -5,7 +5,16 @@ const fmt = (n: number | null | undefined): string => {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   return Math.abs(n) >= 1000 ? n.toLocaleString("en-US") : String(n);
 };
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#7fd8a5", t3: "#a892d6", t4: "#fc5646" };
+const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
+/** 快照年龄 → 人类可读（刚刚 / N 分钟前 / N 小时前）。 */
+const ageText = (s?: number): string => {
+  if (s === undefined || s === null || !Number.isFinite(s)) return "";
+  if (s < 60) return "刚刚更新";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} 分钟前`;
+  const h = Math.floor(m / 60);
+  return `${h} 小时前`;
+};
 
 interface EncounterEntry { tenant: string; lastSeenTick?: number | null; distanceToFriendlyCore?: number | null; raidRisk?: string | null }
 interface LeaderboardRow { rank: number; username: string; score?: number; damage?: number; tier?: string; ours?: string | null; encountered?: EncounterEntry[] | null }
@@ -18,6 +27,10 @@ interface IntelData {
   core_destruction_participations?: LeaderboardRow[];
   snapshot?: string;
   generatedAt?: string;
+  /** 快照文件 mtime（ISO）+ 动态年龄秒数 + 是否陈旧（服务端 leaderboard.ts 计算）。 */
+  snapshotAt?: string;
+  ageSeconds?: number;
+  stale?: boolean;
 }
 const TIER_CN: Record<string, string> = { ELITE_AGGRESSOR: "精英攻坚", AGGRESSOR: "攻坚", STANDARD: "常规" };
 const TIER_CLS: Record<string, string> = { ELITE_AGGRESSOR: "elite", AGGRESSOR: "agg", STANDARD: "std" };
@@ -36,6 +49,22 @@ export function IntelPanel() {
   const [filter, setFilter] = useState<Filter>("all");
   const [expand, setExpand] = useState(false);
   const [err, setErr] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+
+  /** 拉取官方排行榜：POST /api/leaderboard/refresh（服务端异步 fetch 官方快照），
+   *  完成后重读本地快照。无计划任务，纯请求驱动。 */
+  const refreshOfficial = async () => {
+    setErr("");
+    setRefreshing(true);
+    try {
+      await shopRequest<{ ok?: boolean }>("/api/leaderboard/refresh", { method: "POST" });
+      setData(await shopRequest<IntelData>("/api/leaderboard"));
+    } catch (e) {
+      setErr(String((e as Error).message ?? e));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     setErr("");
@@ -111,7 +140,7 @@ export function IntelPanel() {
           <p className="dialog-eyebrow">THREAT INTEL · OFFICIAL LEADERBOARD</p>
           <h2>威胁情报 · 排行榜</h2>
         </div>
-        <button type="button" className="btn ghost rp-refresh" title="刷新排行榜" onClick={() => { setErr(""); setData(null); shopRequest<IntelData>("/api/leaderboard").then(setData).catch((e) => setErr(String((e as Error).message ?? e))); }}>↻</button>
+        <button type="button" className={`btn ghost rp-refresh${refreshing ? " busy" : ""}`} title={refreshing ? "正在拉取官方排行榜…" : "立即拉取官方排行榜（POST /api/leaderboard/refresh）"} disabled={refreshing} onClick={refreshOfficial}>{refreshing ? "…" : "↻"}</button>
       </div>
 
       <div id="intelTabs" className="intel-tabs" role="tablist">
@@ -145,7 +174,8 @@ export function IntelPanel() {
       </div>
       <p id="intelMeta" className="dialog-note">
         {tab === "beacon" ? "信标累计持有 tick" : tab === "core" ? "核心摧毁参与次数" : "按造成伤害排名的玩家威胁画像"}
-        {` · 快照 ${data?.snapshot ?? ""}`}
+        {` · 快照 ${data?.snapshot ?? ""}${ageText(data?.ageSeconds) ? ` · ${ageText(data?.ageSeconds)}` : ""}`}
+        {data?.stale ? <span className="ir-stale" title="官方排行榜约 15 分钟一档，快照已过期">已过期 · 点 ↻ 拉取最新</span> : null}
         {tab === "threat" && (encTotal > 0 || oursOnBoard > 0) ? ` · 我方 ${oursOnBoard} 个账号 · 遭遇 ${encTotal} 位玩家` : ""}
       </p>
     </div>
