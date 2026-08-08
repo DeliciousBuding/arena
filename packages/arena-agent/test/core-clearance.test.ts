@@ -167,6 +167,28 @@ test("核心通道清障扩展：空载 worker 需回血（hp<满）留在核心
 });
 
 
+test("核心通道清障 follow-up：空邻格优先——RIGHT 有 worker(occ=1) 但 LEFT 空(occ=0) 时选 LEFT 疏散（t2 隔 tick 挡 SPAWN 8 次修复）", () => {
+  const planner = new SafetyPlanner(clearConfig());
+  // 核心格 [0,0] 空 worker；RIGHT [1,0] 有 worker(occ=1)；LEFT [-1,0] 物理空(occ=0)
+  const empty = worker("w-core", [0, 0], 0);
+  const rightNeighbor = worker("w-right", [1, 0], 0);
+  const plan = planner.decide({
+    state: makeState({
+      units: [empty, rightNeighbor],
+      vanguards: [],
+      workers: [empty, rightNeighbor],
+      resourceSpace: 5,
+    }),
+    policy: undefined,
+  });
+  const action = plan.unitActions["w-core"];
+  assert.ok(action !== undefined, "核心格空 worker 应有动作");
+  assert.equal(action.type, "MOVE", `应 MOVE 疏散，实际 ${JSON.stringify(action)}`);
+  // 必须向 LEFT（空邻格）而非 RIGHT（有 worker 会 MOVE_CONTESTED 卡死）
+  assert.equal(action.direction, "LEFT", `空邻格优先，实际方向=${action.direction}`);
+  assert.ok(intentsOf(plan).includes("worker_clear_core_empty"), "intent 应为 worker_clear_core_empty");
+});
+
 test("核心通道清障 follow-up：瞬时 MOVE_FAILED 不得遮住唯一物理空邻格", () => {
   const planner = new SafetyPlanner(clearConfig());
   const w = worker("w-empty", [0, 0], 0);
