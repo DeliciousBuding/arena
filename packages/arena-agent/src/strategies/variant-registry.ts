@@ -289,11 +289,15 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
         surveyWorkerFloor: 3,
         visibleBonus: 0.3,
         seedAgeDecay: 0.02,
-        // Phase 2（G3 数据管道）：矿刷新预测——dueInTicks ≤16 即将刷新 +0.5 提前
-        // 占位；dueInTicks < −100 疑似永久采空 → 死矿剔除（t1 实证死种子循环）。
-        refillLookahead: 16,
-        refillBonus: 0.5,
-        deadMineOverdueTicks: 100,
+        // Phase 2（G3 数据管道）：矿刷新预测——原设计 dueInTicks ≤16 即将刷新 +0.5
+        // 提前占位、dueInTicks < −100 死矿剔除；2026-08-08 实测证伪（command-center
+        // mine-patterns modelCaveat，四租户 401 样本命中率 0/401）：resource_seen_history
+        // 是观测记录非资源生命周期，观测间隔 ≠ 资源缺席——预测不能驱动剔除/占位。
+        // 决策消费禁用：refillBonus 0（占位关闭）+ deadMineOverdueTicks Infinity
+        // （永不剔除）；数据管道保留（预载/刷新/telemetry），未来模型修好后可复用。
+        refillLookahead: 0,
+        refillBonus: 0,
+        deadMineOverdueTicks: Number.POSITIVE_INFINITY,
       },
     }),
   });
