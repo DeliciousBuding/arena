@@ -146,6 +146,7 @@ const state: ArenaState = {
     fxSeq: 0,
     // 人类指令遥测追踪：{ tenant -> { sig, lastAppliedAt } }（拒绝/满足 toast 去重）
     cmdTelemetry: {},
+    batchLast: null, // 批量命令最近提交：{ n, type, at, applied, rejected }（编队 HUD 反馈）
   },
 };
 
@@ -2583,6 +2584,7 @@ function batchSubmitTarget(wx: any, wy: any, enqueue: boolean) {
   const objs = multiObjects(tenant);
   if (!world || !objs.length) return;
   let done = 0;
+  const batchType = tac.mode === 'BATCH_MOVE' ? '移动' : '攻击'; // 先保存（mode 随后置 null）
   for (const o of objs) {
     if (tac.mode === 'BATCH_MOVE') {
       const path = tactFindPath(world, o.position, [wx, wy], tenant);
@@ -2595,7 +2597,11 @@ function batchSubmitTarget(wx: any, wy: any, enqueue: boolean) {
     done++;
   }
   if (!done) toast(tac.mode === 'BATCH_MOVE' ? '组内单位均无法到达该目标' : '组内没有可射击单位', 'warn');
-  else toast(tac.mode === 'BATCH_MOVE' ? (enqueue ? `已入队 ${done} 个单位` : `批量移动 ×${done}`) : `批量攻击 ×${done}`, 'ok');
+  else {
+    toast(tac.mode === 'BATCH_MOVE' ? (enqueue ? `已入队 ${done} 个单位` : `批量移动 ×${done}`) : `批量攻击 ×${done}`, 'ok');
+    // 批量反馈（2026-08-08）：HUD 持续显示批量提交/生效/被拒汇总（toast 短暂）
+    if (!enqueue) tac.batchLast = { n: done, type: batchType, at: Date.now(), applied: 0, rejected: 0 };
+  }
   tac.mode = null;
   multiSync();
 }
@@ -3199,12 +3205,17 @@ function tactRenderHud(tenant: any) {
   const squadRow = sq
     ? `<div class="hud-row hud-survey"><span class="hud-label" style="color:var(--warn)">编队 ${sq.count}</span><span class="hud-val">${sq.parts}</span><span class="hud-val" style="color:${sq.hpMin <= 2 ? 'var(--danger)' : 'var(--success)'}" title="平均/最低 HP">HP ${sq.hpAvg}/${sq.hpMin}</span></div>`
     : '';
+  // 批量命令反馈（2026-08-08）：最近提交的批量补交（生效/被拒由 telemetry 累计）
+  const bl = T().batchLast;
+  const batchRow = bl && (Date.now() - bl.at) < 10000
+    ? `<div class="hud-row hud-survey"><span class="hud-label" style="color:var(--warn)">批量 ${bl.type}</span><span class="hud-val">${bl.applied}/${bl.n} 生效</span>${bl.rejected ? `<span class="hud-val" style="color:var(--danger)">${bl.rejected} 被拒</span>` : ''}</div>`
+    : '';
   els.fleetHud.innerHTML = `<div class="hud-row">
     <span class="hud-label">${tenant.toUpperCase()} · HUD</span>
     <span class="hud-val"><img src="${UNIT_ICONS.resource}" alt="" /> ${st.resources ?? 0} <i>/ ${cap}</i></span>
     <span class="hud-val"><img src="${UNIT_ICONS.population}" alt="" /> ${st.population ?? 0}</span>
     <span class="hud-val mono">tick ${world.tick ?? st.tick ?? '—'}</span>
-  </div>${surveyRow}${lcRow}${hudCmd}${squadRow}`;
+  </div>${surveyRow}${lcRow}${hudCmd}${squadRow}${batchRow}`;
 }
 /* ============ 回放引擎（连续 tick 快照 → 单位移动动画 + 15s 读条） ============ */
 /** 回放渲染依赖注入（replay.ts replayDrawLayer 用）：画布/投影/精灵/状态提供给回放模块，
@@ -4265,6 +4276,14 @@ function consumeCommandTelemetry(tenant: any, tele: any, prevTele: any) {
   if (prevSig === null) return; // 首次加载不弹历史
   const { rejected, satisfied, applied } = teleDeltas(prevTele, tele);
 
+  // 批量命令汇总（2026-08-08）：最近批次的 applied/rejected 累计入 HUD（toast 反馈仍由下文单独提示）
+  const bl = tac.batchLast;
+  if (bl && (Date.now() - bl.at) < 10000) {
+    const changed = applied.length > 0 || rejected.length > 0;
+    bl.applied += applied.length;
+    bl.rejected += rejected.length;
+    if (changed) { tactRenderHud(tenant); draw(); }
+  }
 
   if (rejected.length) {
     const rs = rejected.map((rj: any) => `[${shortId(rj.unitId)}] ${escapeHtml(rj.reason)}`).join('；');
