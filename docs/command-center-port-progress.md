@@ -451,3 +451,14 @@ mapEngine.ts 对应函数。
   图标，与右键/批量菜单共用 TACT_ACTION_ICON（零素材）；
   .act-btn 改 flex 居中布局对齐图标+文本。
 - 探针实测：动作卡 8 图标按钮（工人全动作集）；回归 22/22 全绿。
+
+### 9.28 回放渲染层归位 replay.ts（2026-08-08）
+- replay.ts 新增 replayDrawLayer(st, deps, s) + ReplayRenderDeps 注入接口
+  （getCtx/project/images/sprite/drawHumanMarker/soloTenant/tac/spawnFx）：
+  单位/核心按帧插值绘制（敌我区分/血条/载货/
+  人类指挥标记）全部归位，回放模块完整（状态+控制+UI+渲染）。
+- mapEngine 删本地 replayDrawLayer（59 行），draw() 改走
+  replayDrawImpl(replay, replayRenderDeps, s)；无 mapEngine 循环依赖。
+- 并手核对：原本地两参 unitHumanCommandOf 走本地包装，归位后
+  直接调用 commands.ts 三参（tac, tenant, unitId）语义等价。
+- 验证：typecheck + build 全绿，web 单测 46/46，完整回归 22/22 全绿。
