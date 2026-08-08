@@ -41,7 +41,7 @@ type stripping）+ React 19 + Vite 8 + TS（Bun/Node 工具链），浏览器访
 
 ```bash
 cd arena-ts/packages/command-center
-npm run verify         # 一键门禁：server tsc → alliance-sync → web typecheck → web build → 单测 56 项（无需服务）
+npm run verify         # 一键门禁：server tsc → alliance-sync → web typecheck → web build → 单测 58+3 项（无需服务）
 npm run verify:full    # verify + Playwright 回归 22 项（需本机 8787 + chromium）
 #    回归覆盖：页面零错误 / 六 tab / 威胁玫瑰 / 决策流 / 聚焦 HUD / 计划层像素 / 人类指挥链 /
 #              跳图定位标记 / 手操审计 / tick 读条 / 右键菜单 / 编队多选 / 命令队列 / API 健康
