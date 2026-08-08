@@ -19,6 +19,7 @@ import { supervisorState } from "./lib/supervisor.ts";
 import { loadMergedMap } from "./lib/map.ts";
 import { loadOverview, loadStream, loadReplay, loadPlan, loadWorld, loadEvents } from "./lib/streams.ts";
 import { loadSurveyDb, loadLifecycleDb, loadSurvey, loadResourceTimeline, loadSpendTrend, loadUnitLifecycleDb, loadChunksDb } from "./lib/survey.ts";
+import { loadMinePatterns, refreshMinePatterns } from "./lib/mine-patterns.ts";
 import { loadTenantSurveyCached, startSurveyCacheLoop } from "./lib/survey-cache.ts";
 import { loadDeeds, startDeedsCacheLoop } from "./lib/deeds.ts";
 import { loadAllianceSurvey, refreshAllianceSurvey, TENANT_COLORS } from "./lib/alliance-survey.ts";
@@ -130,6 +131,15 @@ app.get("/api/survey/mine", (c) => {
   if (!mine) return c.json({ tenant, mine: null, timeline: [] });
   const cell = `${mine.x},${mine.y}`;
   return c.json({ tenant, mine, cell, timeline: loadResourceTimeline(tenant, cell) });
+});
+app.get("/api/survey/mine-patterns", (c) => {
+  // 矿生命周期模式（2026-08-08，共享记忆算法深化）：每租户矿格活性/刷新规律/
+  // 采集成功率 + topActive 活跃矿（采集推荐）。?tenant=all|tN。30s 缓存 + 预热。
+  const tenant = c.req.query("tenant") ?? "all";
+  if (tenant !== "all" && !TENANTS.includes(tenant as (typeof TENANTS)[number])) {
+    return c.json({ error: "非法租户" }, 400);
+  }
+  return c.json(loadMinePatterns(tenant));
 });
 
 app.get("/api/deeds", async (c) => {
@@ -453,6 +463,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
       refreshAllianceDeeds(); // 联盟事迹 45s 缓存（读快照/共享测绘/热区缓存，快）
       void refreshDeedsJournal(); // 事迹日记摘要 30s 缓存（读 deeds 缓存，快）
       maybeRefreshLeaderboardLazy(); // 排行榜惰性刷新检查（无计划任务：stale 且间隔到才后台拉）
+      refreshMinePatterns(); // 矿生命周期模式 30s 缓存（读 survey-db，快）
       void supervisorState(); // 8120 健康状态 5s 缓存（/api/overview、/api/tenants 首开即快）
     } catch { /* 数据缺失/临时 IO 失败不阻塞启动 */ }
   };
