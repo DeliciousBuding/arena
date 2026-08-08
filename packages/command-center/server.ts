@@ -312,6 +312,21 @@ const VALID_ACTION_TYPES = new Set([
   "SELF_DESTRUCT", "HEAL", "REPAIR_SHIELD", "SPAWN", "START_MOVE", "CANCEL_MOVE",
 ]);
 const validTenant = (t: string | undefined): t is string => !!t && TENANTS.includes(t as (typeof TENANTS)[number]);
+/** 核心移动中守卫（2026-08-08）：手操目标是本租户核心且核心正在移动 → 立即拒绝并给
+ *  明确原因（否则 agent 端静默拒绝——t3 404 次 "Core is already moving" 实证）。 */
+function coreMovingGuard(tenant: string, unitId: string): { blocked: boolean; coreId: string | null } {
+  try {
+    const snap = loadAllianceSnapshot();
+    const member = snap.members?.[tenant];
+    const core = member?.core;
+    if (!core || !core.id) return { blocked: false, coreId: null };
+    if (unitId !== core.id) return { blocked: false, coreId: core.id };
+    if (core.moving === true) return { blocked: true, coreId: core.id };
+    return { blocked: false, coreId: core.id };
+  } catch {
+    return { blocked: false, coreId: null }; // 快照不可用不阻断
+  }
+}
 
 app.get("/api/commands", (c) => {
   const tenant = c.req.query("tenant") ?? "";
@@ -398,6 +413,11 @@ app.post("/api/command", async (c) => {
     note: typeof b.note === "string" ? b.note : undefined,
     createdAt: new Date().toISOString(),
   };
+  const guard = coreMovingGuard(tenant, b.unitId);
+  if (guard.blocked) {
+    appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "command", unitId: b.unitId, action: String((b.action as { type?: unknown }).type ?? "?"), note: "rejected: 核心移动中，指令未提交" });
+    return c.json({ ok: false, error: "核心移动中，指令未提交（等待移动完成后再操作）", reason: "core_moving" }, 409);
+  }
   store.commands = store.commands.filter((x) => x.unitId !== b.unitId).concat(cmd);
   const out = writeHumanStore(tenant, store);
   console.log(`[human-cmd] ${tenant} ${b.unitId} ${JSON.stringify(b.action)}`);
@@ -422,6 +442,11 @@ app.post("/api/command/goal", async (c) => {
     note: typeof b.note === "string" ? b.note : undefined,
     createdAt: new Date().toISOString(),
   };
+  const guard = coreMovingGuard(tenant, b.unitId);
+  if (guard.blocked) {
+    appendHumanAudit({ at: new Date().toISOString(), tenant, kind: "goal", unitId: b.unitId, action: `${b.kind} [${b.target[0]},${b.target[1]}]`, note: "rejected: 核心移动中，指令未提交" });
+    return c.json({ ok: false, error: "核心移动中，指令未提交（等待移动完成后再操作）", reason: "core_moving" }, 409);
+  }
   store.goals = store.goals.filter((g) => g.unitId !== b.unitId).concat(goal);
   const out = writeHumanStore(tenant, store);
   console.log(`[human-goal] ${tenant} ${b.unitId} ${b.kind} [${b.target[0]}, ${b.target[1]}]`);
