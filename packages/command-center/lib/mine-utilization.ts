@@ -73,6 +73,8 @@ export interface MineTenantUtilization {
   maxGapAgeTicks: number | null;
   medianGapAgeTicks: number | null;
   candidates: MineUtilEntry[];
+  /** 金牌矿榜（2026-08-08）：累计收益 top / 累计采集次数 top——哪些矿值得守/抢。 */
+  topMines: { byAmount: MineUtilEntry[]; byCount: MineUtilEntry[] };
 }
 
 export interface MineUtilizationPayload {
@@ -167,6 +169,14 @@ export function aggregateMineUtilization(
   const gapAges = candidates.map((e) => e.gapAgeTicks ?? 0).sort((a, b) => a - b);
   const maxGapAge = candidates.length > 0 ? gapAges[gapAges.length - 1] : null;
   const medianGapAge = gapAges.length > 0 ? gapAges[Math.floor(gapAges.length / 2)] : null;
+  const topByAmount = entries
+    .filter((e) => e.harvestAmount > 0)
+    .sort((a, b) => b.harvestAmount - a.harvestAmount || (b.lastHarvestTick ?? -1) - (a.lastHarvestTick ?? -1))
+    .slice(0, 20);
+  const topByCount = entries
+    .filter((e) => e.harvestOk > 0)
+    .sort((a, b) => b.harvestOk - a.harvestOk || (b.lastHarvestTick ?? -1) - (a.lastHarvestTick ?? -1))
+    .slice(0, 20);
 
   return {
     tenant,
@@ -181,6 +191,7 @@ export function aggregateMineUtilization(
     maxGapAgeTicks: maxGapAge,
     medianGapAgeTicks: medianGapAge,
     candidates,
+    topMines: { byAmount: topByAmount, byCount: topByCount },
   };
 }
 
@@ -257,7 +268,7 @@ function tenantUtilization(tenant: string): MineTenantUtilization {
   const empty: MineTenantUtilization = {
     tenant, currentTick: null, total: 0, harvested: 0, neverHarvested: 0,
     visibleNever: 0, staleNever: 0, utilizationRate: null, medianTimeToFirstHarvest: null,
-    maxGapAgeTicks: null, medianGapAgeTicks: null, candidates: [],
+    maxGapAgeTicks: null, medianGapAgeTicks: null, candidates: [], topMines: { byAmount: [], byCount: [] },
   };
   if (!existsSync(file)) return empty;
   let db: DatabaseSync;

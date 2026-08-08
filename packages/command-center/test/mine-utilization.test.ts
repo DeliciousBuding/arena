@@ -62,6 +62,31 @@ test("mine-utilization: gapAge 发现后仍未采时长", () => {
   assert.equal(b.candidates.length, 0);
 });
 
+test("mine-utilization: 金牌矿榜（累计收益/次数 top）", () => {
+  const resources = [
+    { cell: "1,1", x: 1, y: 1, firstSeenTick: 100, lastSeenTick: 4800, seenCount: 10 },
+    { cell: "2,2", x: 2, y: 2, firstSeenTick: 200, lastSeenTick: 4700, seenCount: 8 },
+    { cell: "3,3", x: 3, y: 3, firstSeenTick: 50, lastSeenTick: 4000, seenCount: 5 },
+  ];
+  const events = [
+    { cell: "1,1", tick: 120, eventType: "HARVEST_SUCCEEDED", amount: 2 },
+    { cell: "1,1", tick: 150, eventType: "HARVEST_SUCCEEDED", amount: 3 },
+    { cell: "2,2", tick: 250, eventType: "HARVEST_SUCCEEDED", amount: 4 },
+    { cell: "2,2", tick: 260, eventType: "HARVEST_SUCCEEDED", amount: 1 },
+    { cell: "3,3", tick: 80, eventType: "HARVEST_FAILED", amount: null },
+  ];
+  const a = aggregateMineUtilization("t1", 5000, resources, events);
+  assert.equal(a.topMines.byAmount.length, 2);
+  assert.equal(a.topMines.byAmount[0].cell, "2,2", "累计收益 5 最高");
+  assert.equal(a.topMines.byAmount[0].harvestAmount, 5);
+  assert.equal(a.topMines.byAmount[1].cell, "1,1");
+  assert.equal(a.topMines.byCount[0].cell, "2,2", "次数 2 并列，末采 260 更新优先");
+  // 空数据兜底
+  const b = aggregateMineUtilization("t2", null, [], []);
+  assert.equal(b.topMines.byAmount.length, 0);
+  assert.equal(b.topMines.byCount.length, 0);
+});
+
 test("mine-utilization: 空数据兜底 + 全采集", () => {
   const a = aggregateMineUtilization("t2", null, [], []);
   assert.equal(a.total, 0);
