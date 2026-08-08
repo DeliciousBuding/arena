@@ -471,6 +471,21 @@ body {
   content: ""; position: absolute; inset: 0; pointer-events: none;
   background: radial-gradient(110% 90% at 50% 45%, transparent 58%, rgba(0,0,0,.55) 100%);
 }
+/* 全局小地图（2026-08-08）：右下角导航——世界缩略 + 视野框 + 点击/拖拽跳转。
+   半透明深底不抢主图；租户色点 = 我方领地，红点 = 敌方核心，白框 = 当前视野。 */
+#minimap {
+  position: absolute; z-index: 5; right: 14px; bottom: 14px;
+  width: 172px; height: 128px;
+  border: 1px solid rgba(255,255,255,.14); border-radius: 10px;
+  background: rgba(5,7,10,.72);
+  box-shadow: var(--shadow-float), inset 0 1px rgba(150,185,235,.05);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  cursor: crosshair;
+  opacity: .92; transition: opacity .18s var(--ease), border-color .18s var(--ease);
+}
+#minimap:hover { opacity: 1; border-color: rgba(255,255,255,.32); }
+#minimap.hidden { display: none; }
+
 #map { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; position: relative; z-index: 1; }
 #map:active { cursor: grabbing; }
 #mapHint {
