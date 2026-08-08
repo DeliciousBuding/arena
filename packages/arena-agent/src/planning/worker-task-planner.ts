@@ -65,12 +65,19 @@ const BEACON_BONUS = 2.0; // 目标格恰为 GROUND 信标时的加成
 const EXPLORATION_GAIN = 0.0; // 预留：GO_RESOURCE 目标是已知资源格，探索增益暂为 0
 
 /** sticky 机制：上一 Tick 该 Worker 的任务目标格与本次候选一致时返回 amount，否则 0。
- *  Leader 集成时把上一 Tick 的分配结果作为 previousAssignments 传入 plan() 即可。 */
+ *  Leader 集成时把上一 Tick 的分配结果作为 previousAssignments 传入 plan() 即可。
+ *
+ * v2（2026-08-08，progress-aware）：sticky 按距离比例衰减——Worker 离目标越近
+ * （已走大部分路程）sticky 越强，离得远则弱。防止"走到 6/8 格被切到另一个矿"
+ * 的浪费（重新分配=前段步行作废）；完整衰减函数见 progressDecay()。
+ * distance 参数缺省时退化回二值 sticky（零回归）。 */
 export function applyStickyBonus(
   unitId: string,
   targetCellKey: string,
   previousAssignments: readonly Assignment[],
   amount: number,
+  /** Worker 距目标的 Manhattan 距离（用于 progress-aware 衰减；缺省回退二值）。 */
+  distance?: number,
 ): number {
   const previous = previousAssignments.find((assignment) => assignment.unitId === unitId);
   if (previous === undefined) {
@@ -81,7 +88,15 @@ export function applyStickyBonus(
     (previous.task.target !== undefined
       ? cellKey(previous.task.target[0], previous.task.target[1])
       : undefined);
-  return previousTarget === targetCellKey ? amount : 0;
+  if (previousTarget !== targetCellKey) return 0;
+  if (distance === undefined) return amount;
+  return amount * progressDecay(distance);
+}
+
+/** 距离比例衰减（progress-aware sticky 核）：dist=0 → 1.0, dist=normDist → 0.5,
+ *  dist→inf → 0。normDist=20（约 patrol 中环半径，实证合理衰减窗口）。纯函数。 */
+export function progressDecay(distance: number, normDistance = 20): number {
+  return normDistance / (normDistance + distance);
 }
 
 function sameCell(a: Position, b: Position): boolean {
@@ -150,41 +165,45 @@ export class WorkerTaskPlanner {
       }
     }
 
-    // 确定性贪心：每轮取净收益最大的 (Worker, 资源格) 对；并列时取先出现的
-    // （Worker 按 id 升序、资源格按键字典序，均确定）。已选 Worker 与资源格
-    // 从候选移除。匈牙利算法替换点：把 netValue 矩阵交给匹配器即可。
+    // 确定性贪心（v2，2026-08-08 预计算矩阵）：每轮取净收益最大的
+    // (Worker, 资源格) 对。旧实现每轮迭代重新计算全部 netValue——
+    // claimedCells 不含贪心迭代置入的格，netValue 在各迭代间独立，
+    // 总计 O(|W|×|C|²) 次 netValue 调用。预计算矩阵一次 + 排序
+    // = O(|W|×|C| log |W||C|)，行为零变化（tie-break 同旧实现）。
     // 使命层（worker-mission-v1）：候选格按 score ≥ 门槛 && 距离 ≤ 上限过滤
     // （陈旧种子/超距目标不入池 → worker 转勘探而非长途空跑，t1 实证）。
-    while (pool.length > 0 && availableCells.length > 0) {
-      let best: { worker: PlanningUnit; cellKey: string; net: number } | null = null;
+    if (pool.length > 0 && availableCells.length > 0) {
+      const pairs: Array<{ worker: PlanningUnit; cellKey: string; net: number }> = [];
       for (const worker of pool) {
         for (const key of availableCells) {
           const net = this.netValue(worker, key, snapshot, previousAssignments, claimedCells);
           const cell = snapshot.resourceCells.get(key);
-          // 使命层（worker-mission-v1）：门槛/距离/死矿过滤——该 worker 对此格不值得
-          // （陈旧种子/超距/预测采空）则跳过；无任何可采格时 worker 自然留在 pool → 转勘探。
           if (cell !== undefined && !isCollectable(net, worker, cell.position, this.mission, snapshot.refillPredictions)) {
             continue;
           }
-          if (best === null || net > best.net) {
-            best = { worker, cellKey: key, net };
-          }
+          pairs.push({ worker, cellKey: key, net });
         }
       }
-      if (best === null) {
-        break; // 无可采 (worker, 格) 对：剩余 pool 转勘探/守家
+      // 确定性排序：netValue 降序 → worker.id 升序 → cellKey 字典序
+      // （与旧"每轮扫描 pool×availableCells 取首个最大值"的 tie-break 等价）
+      pairs.sort((a, b) => b.net - a.net || a.worker.id.localeCompare(b.worker.id) || a.cellKey.localeCompare(b.cellKey));
+      const assignedWorkers = new Set<string>();
+      const assignedCells = new Set<string>();
+      for (const pair of pairs) {
+        if (assignedWorkers.has(pair.worker.id) || assignedCells.has(pair.cellKey)) continue;
+        const cell = snapshot.resourceCells.get(pair.cellKey);
+        assignments.push({
+          unitId: pair.worker.id,
+          task: {
+            type: "GO_RESOURCE",
+            target: cell?.position,
+            targetCellKey: pair.cellKey,
+          },
+        });
+        assignedWorkers.add(pair.worker.id);
+        assignedCells.add(pair.cellKey);
+        pool.splice(pool.indexOf(pair.worker), 1);
       }
-      const cell = snapshot.resourceCells.get(best.cellKey);
-      assignments.push({
-        unitId: best.worker.id,
-        task: {
-          type: "GO_RESOURCE",
-          target: cell?.position,
-          targetCellKey: best.cellKey,
-        },
-      });
-      pool.splice(pool.indexOf(best.worker), 1);
-      availableCells.splice(availableCells.indexOf(best.cellKey), 1);
     }
 
     // 使命层角色仲裁（G2，非测绘期）：剩余 worker 前 surveyWorkerCap 个 → EXPLORE
@@ -228,7 +247,7 @@ export class WorkerTaskPlanner {
       snapshot.beacon.status === "GROUND" && sameCell(snapshot.beacon.position, cell.position)
         ? BEACON_BONUS
         : 0;
-    const sticky = applyStickyBonus(worker.id, key, previousAssignments, this.stickyBonus);
+    const sticky = applyStickyBonus(worker.id, key, previousAssignments, this.stickyBonus, travelTime);
     // 使命层值层（G1）：目标置信项（可见加成 / seeded 随龄衰减）。
     const confidence = targetConfidence(cell, snapshot.tick, this.mission);
     // 使命层值层（Phase 2，G3）：矿刷新预测加成（即将刷新格提前占位）。
