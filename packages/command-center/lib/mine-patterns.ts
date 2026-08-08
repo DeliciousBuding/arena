@@ -52,6 +52,26 @@ export interface MineTenantPattern {
     avgRefillTicks: number | null;
     recent: readonly { cell: string; gapTicks: number; lastSeenTick: number }[];
   } | null;
+  /** 逐矿刷新预测（2026-08-08，矿刷新规律 → 地图/决策输入）：出现过 ≥2 次出现窗口的
+   *  矿格，预测下次出现 tick = 最后出现窗口起始 + 平均周期。dueInTicks 正=还有多久
+   *  预计刷新，负=已过预期（历史异常/被永久采空）。按 dueInTicks 升序（即将刷新优先）。 */
+  predictions: readonly MineRefillPrediction[];
+}
+
+/** 逐矿刷新预测（2026-08-08）：cell 级 refill 估计。 */
+export interface MineRefillPrediction {
+  cell: string;
+  x: number;
+  y: number;
+  /** 出现窗口数（≥2 才可预测）。 */
+  windows: number;
+  /** 相邻窗口起始 tick 差的均值（刷新周期估计）。 */
+  avgGapTicks: number | null;
+  lastSeenTick: number;
+  /** 预测下次出现 tick（lastWindowStart + avgGap）。 */
+  predictedNextTick: number | null;
+  /** predictedNextTick - currentTick（正=预计还有多久，负=已过预期）。 */
+  dueInTicks: number | null;
 }
 
 export interface MinePatternsPayload {
@@ -99,6 +119,67 @@ function computeRefillStats(rows: readonly { cell: string; tick: number }[]): Mi
   return { samples: gaps.length, avgRefillTicks: avg, recent: gaps.slice(0, 10) };
 }
 
+/** 逐矿刷新预测（2026-08-08）：resource_seen_history (cell×tick) → 每格出现窗口
+ *  （连续 tick 段，gap≤REFILL_GAP_TICKS 视为同一窗口）。两个信号：
+ *   - avgGapTicks：相邻窗口起始差均值 = 完整刷新周期（窗口长 + 缺席长）；
+ *   - predictedNextTick：最后窗口结束 + 平均缺席长（窗口间隔 − 前一窗口时长）——
+ *     "矿消失后预计多久再出现"（可行动信号：stale 矿即将刷新 / visible 矿即将消失后刷新）。
+ *  x/y 从 resources 查（cell→坐标）。样本 <2 窗口的格不预测（数据不足）。 */
+export function computeRefillPredictions(
+  rows: readonly { cell: string; tick: number }[],
+  resources: readonly { cell: string; x: number; y: number }[],
+  currentTick: number,
+): MineRefillPrediction[] {
+  const posOf = new Map<string, { x: number; y: number }>();
+  for (const r of resources) posOf.set(r.cell, { x: num(r.x), y: num(r.y) });
+  const byCell = new Map<string, number[]>();
+  for (const r of rows) {
+    const arr = byCell.get(r.cell) ?? [];
+    arr.push(num(r.tick));
+    byCell.set(r.cell, arr);
+  }
+  const out: MineRefillPrediction[] = [];
+  for (const [cell, ticks] of byCell) {
+    ticks.sort((a, b) => a - b);
+    const windows: Array<{ start: number; end: number }> = [];
+    let start = ticks[0], prevEnd = ticks[0];
+    for (let i = 1; i < ticks.length; i += 1) {
+      if (ticks[i] - prevEnd > REFILL_GAP_TICKS) {
+        windows.push({ start, end: prevEnd });
+        start = ticks[i];
+      }
+      prevEnd = ticks[i];
+    }
+    windows.push({ start, end: prevEnd });
+    if (windows.length < 2) continue; // 单窗口无法预测
+    const gaps: number[] = [];       // 窗口起始差（完整周期）
+    const absents: number[] = [];    // 缺席长（窗口间隔 − 前一窗口时长）
+    for (let i = 1; i < windows.length; i += 1) {
+      const gap = windows[i].start - windows[i - 1].start;
+      gaps.push(gap);
+      const dur = windows[i - 1].end - windows[i - 1].start;
+      absents.push(gap - dur);
+    }
+    const avgGap = Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length);
+    const avgAbsent = Math.max(1, Math.round(absents.reduce((a, b) => a + b, 0) / absents.length));
+    const lastEnd = windows[windows.length - 1].end;
+    const predictedNext = lastEnd + avgAbsent;
+    const pos = posOf.get(cell) ?? { x: 0, y: 0 };
+    out.push({
+      cell,
+      x: pos.x,
+      y: pos.y,
+      windows: windows.length,
+      avgGapTicks: avgGap,
+      lastSeenTick: prevEnd,
+      predictedNextTick: predictedNext,
+      dueInTicks: predictedNext - currentTick,
+    });
+  }
+  out.sort((a, b) => (a.dueInTicks ?? 1e9) - (b.dueInTicks ?? 1e9));
+  return out;
+}
+
 function num(v: unknown): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
@@ -110,7 +191,7 @@ function tenantPattern(tenant: string): MineTenantPattern {
   const empty: MineTenantPattern = {
     tenant, total: 0, visible: 0, stale: 0, avgAgeTicks: 0, medianSeenCount: 0,
     harvestSuccessRate: null, harvestSucceeded: 0, harvestFailed: 0, topActive: [],
-    refill: null,
+    refill: null, predictions: [],
   };
   if (!existsSync(file)) return empty;
   let db: DatabaseSync;
@@ -175,6 +256,11 @@ function tenantPattern(tenant: string): MineTenantPattern {
       harvestFailed: failed,
       topActive: entries.slice(0, 20),
       refill,
+      predictions: computeRefillPredictions(
+        histRows,
+        rows.map((r) => ({ cell: r.x + "," + r.y, x: num(r.x), y: num(r.y) })),
+        currentTick,
+      ),
     };
   } catch {
     return empty;
