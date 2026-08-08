@@ -289,6 +289,11 @@ export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, Deterministic
         surveyWorkerFloor: 3,
         visibleBonus: 0.3,
         seedAgeDecay: 0.02,
+        // Phase 2（G3 数据管道）：矿刷新预测——dueInTicks ≤16 即将刷新 +0.5 提前
+        // 占位；dueInTicks < −100 疑似永久采空 → 死矿剔除（t1 实证死种子循环）。
+        refillLookahead: 16,
+        refillBonus: 0.5,
+        deadMineOverdueTicks: 100,
       },
     }),
   });

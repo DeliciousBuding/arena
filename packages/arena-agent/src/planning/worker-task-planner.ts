@@ -20,6 +20,7 @@ import { minimumCostAssignment } from "../algorithms/min-cost-assignment.ts";
 import {
   DEFAULT_MISSION_CONFIG,
   isCollectable,
+  refillBonusOf,
   surveyorIds,
   type MissionConfig,
 } from "./mission-planner.ts";
@@ -143,8 +144,21 @@ export class WorkerTaskPlanner {
     }
 
     const unassigned = workers.filter((worker) => !assignments.some((a) => a.unitId === worker.id));
+    const occupiedByWorker = new Set(
+      workers.map((worker) => cellKey(worker.position[0], worker.position[1])),
+    );
     const availableCells = [...snapshot.resourceCells.keys()]
       .filter((key) => !claimedCells.has(key))
+      // 追空矿冻结修复（2026-08-08，t4 生产实证）：worker 已在某格但该矿
+      // 当前不可见（memory/seed 矿，visible=false——矿 2-6 tick 相位消失）时，
+      // 不得继续分配该格——否则 worker 到达后 GO_RESOURCE 恒 WAIT（无矿可采）
+      // 永久冻结（t4 3 worker 全部 WAIT+GO_RESOURCE、res=0 连续 100+ tick）。
+      // 释放后 worker 回 Safety 巡逻，去探新鲜矿/等 refill。
+      .filter((key) => {
+        const cell = snapshot.resourceCells.get(key);
+        if (cell?.visible === false && occupiedByWorker.has(key)) return false;
+        return true;
+      })
       .sort(); // 字典序：确定性迭代顺序
 
     // Hungarian 全局最优：rows=worker；columns=resource + 每 worker 一个 dummy WAIT。
@@ -201,7 +215,7 @@ export class WorkerTaskPlanner {
           const worker = pool[rowIndex]!;
           const key = availableCells[colIndex]!;
           const cell = snapshot.resourceCells.get(key);
-          if (cell !== undefined && !isCollectable(net, worker, cell.position, this.mission)) {
+          if (cell !== undefined && !isCollectable(net, worker, cell.position, this.mission, snapshot.refillPredictions)) {
             return forbiddenCost;
           }
           return -net;
@@ -271,9 +285,11 @@ export class WorkerTaskPlanner {
         ? BEACON_BONUS
         : 0;
     const sticky = applyStickyBonus(worker.id, key, previousAssignments, this.stickyBonus);
+    // 使命层值层（Phase 2，G3 数据管道）：矿刷新预测加成（即将刷新格提前占位）。
+    const refillBonus = refillBonusOf(key, snapshot.refillPredictions, this.mission);
     return (
       RESOURCE_VALUE - travelTime - returnTime - threatRisk - congestion - stalePenalty
-      + explorationGain + beaconBonus + sticky
+      + explorationGain + beaconBonus + sticky + refillBonus
     );
   }
 }
