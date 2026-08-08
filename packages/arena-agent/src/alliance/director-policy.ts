@@ -3,6 +3,18 @@
  *
  * Produces auditable Missions + ASSIST directives only. It has no Arena Plan/action,
  * no submit capability and RETREAT is a threat-feasible recommendation, not START_MOVE.
+ *
+ * 三阶段（2026-08-08 vnext 回流）：
+ * - Phase A：本地生存任务（rebuild/retreat/intercept/directional-defend），硬优先级。
+ *   未被占用的成员进入 flexible pool。
+ * - Phase B：全局 task market——urgent 时空闲成员竞标 ESCORT 支援；
+ *   平静期竞标 enemy-Core RAID（guarded core 展开多 slot → 联合攻坚）。
+ *   Hungarian 全局清算（每 tenant 至多一任务、每 slot 至多一 tenant）。
+ * - Phase C：market 未分配的成员本地 fallback（ASSEMBLE / SCOUT / DEFEND 兜底）。
+ *
+ * StrategicPolicyProfile（strategic-policy.ts）只通过 missionPriority（柔性任务
+ * 允许集 + 取舍顺序）与 thresholds（参数覆盖）影响决策——profile 不可产出
+ * AUTO/DIRECT 指令、不可绕过 ASSIST 硬约束。
  */
 import type { AllianceSnapshot, AllianceMemberState, EntitySighting, Position } from "./types.ts";
 import type {
@@ -10,6 +22,7 @@ import type {
   AllianceRole,
   Mission,
   MissionKind,
+  TaskForce,
 } from "./control-types.ts";
 import {
   buildAllianceThreatSummariesFromSnapshot,
@@ -17,6 +30,7 @@ import {
   type ThreatDirection,
   type ThreatSummaryConfig,
 } from "./threat-summary.ts";
+import { allocateAllianceTaskMarket, type AllianceMarketTask } from "./task-market.ts";
 
 const DIRECTIONS: readonly ThreatDirection[] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 const VECTOR: Readonly<Record<ThreatDirection, readonly [number, number]>> = {
@@ -37,6 +51,11 @@ export interface ShadowDirectorPolicyConfig {
   readonly raidMinConfidence: number;
   readonly raidMaxDistance: number;
   readonly raidMaxAgeTicks: number;
+  /** guarded Core 联合攻坚：目标周围该半径内的近期战斗单位算守军。 */
+  readonly jointRaidGuardRadius: number;
+  readonly jointRaidGuardThreshold: number;
+  readonly jointRaidSlots: number;
+  readonly jointRaidMinMilitaryPerTenant: number;
   readonly threatSummary: Partial<ThreatSummaryConfig>;
 }
 
@@ -53,6 +72,10 @@ export const DEFAULT_SHADOW_DIRECTOR_POLICY: ShadowDirectorPolicyConfig = Object
   raidMinConfidence: 0.65,
   raidMaxDistance: 64,
   raidMaxAgeTicks: 24,
+  jointRaidGuardRadius: 8,
+  jointRaidGuardThreshold: 2,
+  jointRaidSlots: 2,
+  jointRaidMinMilitaryPerTenant: 5,
   // Enemy Core is strategic context, not equivalent to combat units already at the door.
   threatSummary: { coreWeight: 1, unitWeight: 1, highScoreThreshold: 0.55 },
 });
@@ -73,12 +96,26 @@ export interface ShadowPolicyDecision {
   readonly missions: readonly Mission[];
   readonly directives: readonly AllianceDirective[];
   readonly roles: ReadonlyMap<string, AllianceRole>;
+  /** 仅当所有联合参与者都有真实 activeFleetId 时生成；仍是 shadow control contract。 */
+  readonly taskForces: readonly TaskForce[];
   readonly retreatAssessments: readonly RetreatCorridorAssessment[];
+}
+
+/**
+ * StrategicProfile 的 Director 消费面——strategic-policy.ts 的 StrategicPolicyProfile
+ * 结构兼容（多出的字段被忽略）。missionPriority 只约束柔性战略任务，生存分支固定优先。
+ */
+export interface ShadowPolicyProfileSurface {
+  readonly missionPriority: readonly MissionKind[];
+  readonly thresholds?: Partial<ShadowDirectorPolicyConfig>;
 }
 
 function stableCompare(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
+
+/** 无 profile 时的柔性任务默认允许集（与生产 v1 行为一致：ESCORT/RAID/SCOUT 全开）。 */
+const DEFAULT_MISSION_ALLOWED: readonly MissionKind[] = ["ESCORT", "RAID", "SCOUT"];
 
 function positiveInt(value: number | undefined, fallback: number): number {
   return Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : fallback;
@@ -102,6 +139,12 @@ function resolveConfig(input: Partial<ShadowDirectorPolicyConfig>): ShadowDirect
     raidMinConfidence: finiteNonNegative(input.raidMinConfidence, DEFAULT_SHADOW_DIRECTOR_POLICY.raidMinConfidence),
     raidMaxDistance: positiveInt(input.raidMaxDistance, DEFAULT_SHADOW_DIRECTOR_POLICY.raidMaxDistance),
     raidMaxAgeTicks: positiveInt(input.raidMaxAgeTicks, DEFAULT_SHADOW_DIRECTOR_POLICY.raidMaxAgeTicks),
+    jointRaidGuardRadius: positiveInt(input.jointRaidGuardRadius, DEFAULT_SHADOW_DIRECTOR_POLICY.jointRaidGuardRadius),
+    jointRaidGuardThreshold: positiveInt(input.jointRaidGuardThreshold, DEFAULT_SHADOW_DIRECTOR_POLICY.jointRaidGuardThreshold),
+    jointRaidSlots: positiveInt(input.jointRaidSlots, DEFAULT_SHADOW_DIRECTOR_POLICY.jointRaidSlots),
+    jointRaidMinMilitaryPerTenant: positiveInt(
+      input.jointRaidMinMilitaryPerTenant, DEFAULT_SHADOW_DIRECTOR_POLICY.jointRaidMinMilitaryPerTenant,
+    ),
     threatSummary: { ...DEFAULT_SHADOW_DIRECTOR_POLICY.threatSummary, ...(input.threatSummary ?? {}) },
   };
 }
@@ -196,6 +239,23 @@ function recentRaidTarget(
       || stableCompare(a.key, b.key))[0] ?? null;
 }
 
+/** 目标核心周围半径内近期可见战斗单位（去重）数——守军判定。 */
+function guardedCoreCombatCount(
+  snapshot: AllianceSnapshot,
+  target: EntitySighting,
+  config: ShadowDirectorPolicyConfig,
+): number {
+  const now = snapshot.tickWindow[1];
+  const ids = new Set<string>();
+  for (const sighting of snapshot.sightings) {
+    if (sighting.kind !== "UNIT" || (sighting.unitType !== "VANGUARD" && sighting.unitType !== "RANGER")) continue;
+    if (sighting.confidence < 0.5 || now - sighting.lastSeenTick > config.raidMaxAgeTicks) continue;
+    if (manhattan(target.position, sighting.position) > config.jointRaidGuardRadius) continue;
+    ids.add(sighting.entityId ?? sighting.key);
+  }
+  return ids.size;
+}
+
 function missionId(revision: number, tenantId: string, kind: MissionKind): string {
   return `shadow-${revision}-${tenantId}-${kind.toLowerCase()}`;
 }
@@ -222,12 +282,25 @@ function makeMission(
   };
 }
 
-/** Pure, deterministic shadow policy. Never returns Arena actions. */
+/**
+ * Pure, deterministic shadow policy. Never returns Arena actions.
+ *
+ * @param profile 可选 StrategicProfile 消费面：thresholds 覆盖 config；
+ *   missionPriority 决定柔性战略任务（ESCORT/RAID/SCOUT）的允许集与取舍顺序。
+ */
 export function decideAllianceShadowPolicy(
   snapshot: AllianceSnapshot,
   configInput: Partial<ShadowDirectorPolicyConfig> = {},
+  profile?: ShadowPolicyProfileSurface,
 ): ShadowPolicyDecision {
-  const config = resolveConfig(configInput);
+  // profile.thresholds 是策略卡的参数覆盖（编译时注册，不含 undefined 键）
+  const config = resolveConfig({ ...configInput, ...(profile?.thresholds ?? {}) });
+  // 柔性任务允许集：profile 未传时全开（生产 v1 行为）；profile 传入时未列出的 kind 不产出
+  // （生存分支 RETREAT/INTERCEPT/DEFEND/ASSEMBLE 恒允许，不受 profile 约束）
+  const allowed = new Set<MissionKind>([
+    ...(profile?.missionPriority ?? []),
+    ...(profile === undefined ? DEFAULT_MISSION_ALLOWED : []),
+  ]);
   const summaries = buildAllianceThreatSummariesFromSnapshot(snapshot, config.threatSummary);
   const summaryByTenant = new Map(summaries.map((s) => [s.tenantId, s] as const));
   const members = [...snapshot.members.values()].sort((a, b) => stableCompare(a.tenantId, b.tenantId));
@@ -235,30 +308,29 @@ export function decideAllianceShadowPolicy(
   const missionsByTenant = new Map<string, Mission>();
   const retreatAssessments: RetreatCorridorAssessment[] = [];
 
+  // Phase A — mandatory local survival missions. Flexible members are intentionally left
+  // unassigned so Phase B can clear global tasks across the whole alliance instead of
+  // running four independent single-agent policies side by side.
   for (const member of members) {
     const summary = summaryByTenant.get(member.tenantId)!;
     const duration = config.directiveDurationTicks;
     if (member.core === null || member.status === "RESPAWNING") {
       missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "ASSEMBLE", 80, duration, {
-        defendTenant: member.tenantId,
-        scope: "rebuild-before-external-task",
+        defendTenant: member.tenantId, scope: "rebuild-before-external-task",
       }));
       continue;
     }
-
     const durability = member.core.hp + member.core.shield;
     if (summary.multiDirectionPressure
       && (summary.totalScore >= config.retreatTotalScoreThreshold || durability <= config.retreatDurabilityThreshold)) {
       const assessment = assessRetreatCorridor(member, summary, config.retreatDistance);
       retreatAssessments.push(assessment);
       missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "RETREAT", 100, duration, {
-        target: assessment.waypoint ?? undefined,
-        defendTenant: member.tenantId,
+        target: assessment.waypoint ?? undefined, defendTenant: member.tenantId,
         scope: `threat-only-corridor:${assessment.recommendedDirection ?? "none"}`,
       }));
       continue;
     }
-
     const nearest = nearestVisibleCombat(snapshot, member);
     if (nearest !== null && manhattan(member.core.position, nearest.position) <= config.interceptDistance) {
       const kind: MissionKind = military(member) >= config.minInterceptMilitary ? "INTERCEPT" : "DEFEND";
@@ -270,50 +342,117 @@ export function decideAllianceShadowPolicy(
       }));
       continue;
     }
-
     if (summary.highDirections.length > 0) {
       missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "DEFEND", 85, duration, {
-        target: member.core.position,
-        defendTenant: member.tenantId,
+        target: member.core.position, defendTenant: member.tenantId,
         scope: `directional-pressure:${summary.highDirections.join("+")}`,
       }));
-      continue;
     }
+  }
 
-    if (military(member) < config.assembleMilitaryBelow) {
-      missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "ASSEMBLE", 60, duration, {
-        target: member.core.position,
-        defendTenant: member.tenantId,
-        scope: "military-below-shadow-floor",
-      }));
-      continue;
+  // Phase B — global task market. Under pressure, free tenants bid to reinforce threatened
+  // allies. In calm periods they bid on fresh enemy-Core raids. Central clearing is the
+  // Supervisor equivalent of a CBBA auction: utility contains force, travel, local threat,
+  // resources and a treasury-preservation penalty; Hungarian clearing removes greedy traps.
+  const flexibleMembers = members.filter((member) => !missionsByTenant.has(member.tenantId));
+  const marketTasks: AllianceMarketTask[] = [];
+  const urgentMissions = [...missionsByTenant.entries()]
+    .filter(([, mission]) => mission.kind === "DEFEND" || mission.kind === "INTERCEPT")
+    .sort((a, b) => b[1].priority - a[1].priority || stableCompare(a[0], b[0]));
+  if (allowed.has("ESCORT") && urgentMissions.length > 0) {
+    for (const [tenantId, mission] of urgentMissions) {
+      const defended = snapshot.members.get(tenantId);
+      if (defended?.core === null || defended?.core === undefined) continue;
+      marketTasks.push({
+        id: `assist-${snapshot.revision}-${tenantId}`, kind: "ESCORT", priority: Math.max(72, mission.priority - 8),
+        target: defended.core.position, defendTenant: tenantId, minMilitary: 2, maxDistance: config.raidMaxDistance,
+      });
     }
+  } else if (allowed.has("RAID")) {
+    const now = snapshot.tickWindow[1];
+    const coreTargets = snapshot.sightings
+      .filter((s) => s.kind === "CORE" && s.confidence >= config.raidMinConfidence && now - s.lastSeenTick <= config.raidMaxAgeTicks)
+      .slice()
+      .sort((a, b) => b.confidence - a.confidence || b.lastSeenTick - a.lastSeenTick || stableCompare(a.key, b.key));
+    for (const target of coreTargets) {
+      const guardCount = guardedCoreCombatCount(snapshot, target, config);
+      const joint = guardCount >= config.jointRaidGuardThreshold;
+      marketTasks.push({
+        id: `raid-${snapshot.revision}-${target.key}`, kind: "RAID",
+        priority: 70 + Math.round(target.confidence * 8) + (joint ? 2 : 0),
+        target: target.position, targetEntityKey: target.key,
+        minMilitary: joint ? config.jointRaidMinMilitaryPerTenant : config.minRaidMilitary,
+        maxDistance: config.raidMaxDistance,
+        slotCount: joint ? config.jointRaidSlots : 1,
+      });
+    }
+  }
 
-    const scout = assessRetreatCorridor(member, summary, config.scoutDistance);
-    missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "SCOUT", 40, duration, {
-      target: scout.waypoint ?? member.core.position,
-      scope: `low-risk-sector:${scout.recommendedDirection ?? "none"}`,
+  const market = allocateAllianceTaskMarket(flexibleMembers, marketTasks, summaryByTenant, treasuryTenant);
+  for (const assignment of market.assignments) {
+    const member = snapshot.members.get(assignment.tenantId)!;
+    const task = assignment.task;
+    missionsByTenant.set(member.tenantId, makeMission(snapshot, member, task.kind, task.priority, config.directiveDurationTicks, {
+      target: task.target, targetEntityKey: task.targetEntityKey, defendTenant: task.defendTenant,
+      scope: `alliance-market:utility=${assignment.bid.utility}:distance=${assignment.bid.distance}`,
     }));
   }
 
-  // RAID is considered only when no member is in an urgent defensive mission.
-  const hasUrgent = [...missionsByTenant.values()].some((m) => m.kind === "RETREAT" || m.kind === "DEFEND" || m.kind === "INTERCEPT");
-  if (!hasUrgent) {
-    const raidCandidates = members
-      .filter((m) => m.core !== null && m.status === "READY" && military(m) >= config.minRaidMilitary)
-      .sort((a, b) => military(b) - military(a)
-        || (a.tenantId === treasuryTenant ? 1 : 0) - (b.tenantId === treasuryTenant ? 1 : 0)
-        || stableCompare(a.tenantId, b.tenantId));
-    for (const member of raidCandidates) {
-      const target = recentRaidTarget(snapshot, member, config);
-      if (target === null) continue;
-      missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "RAID", 70, config.directiveDurationTicks, {
-        target: target.position,
-        targetEntityKey: target.key,
-        scope: "recent-high-confidence-enemy-core",
+  // Multi-slot RAID → existing TaskForce contract. Never fabricate fleet ids: every selected
+  // tenant must report at least one activeFleetId, otherwise only per-tenant ASSIST missions remain.
+  const taskForces: TaskForce[] = [];
+  const raidGroups = new Map<string, typeof market.assignments>();
+  for (const assignment of market.assignments) {
+    if (assignment.task.kind !== "RAID") continue;
+    const group = assignment.task.baseTaskId ?? assignment.task.id;
+    raidGroups.set(group, [...(raidGroups.get(group) ?? []), assignment]);
+  }
+  for (const [groupId, assignments] of raidGroups) {
+    if (assignments.length < 2) continue;
+    const ranked = [...assignments].sort((a, b) =>
+      b.bid.utility - a.bid.utility || stableCompare(a.tenantId, b.tenantId));
+    const refs = ranked.flatMap((assignment) => {
+      const member = snapshot.members.get(assignment.tenantId);
+      // 联合攻坚只引用真实 strike fleet；home-defense 永不被 TaskForce 借走。
+      const fleetId = member?.activeFleetIds
+        .filter((id) => id.includes(":strike:"))
+        .slice().sort(stableCompare)[0];
+      return fleetId === undefined ? [] : [{ fleetId, tenantId: assignment.tenantId }];
+    });
+    if (refs.length !== assignments.length) continue;
+    const commanderTenant = ranked[0]!.tenantId;
+    const commanderMission = missionsByTenant.get(commanderTenant);
+    if (commanderMission === undefined) continue;
+    taskForces.push({
+      id: `shadow-tf-${snapshot.revision}-${groupId}`,
+      missionId: commanderMission.id,
+      fleetRefs: refs,
+      commanderTenant,
+      synchronization: "RALLY_BEFORE_ENGAGE",
+    });
+  }
+
+  // Phase C — local fallback for market-unassigned members.
+  for (const member of flexibleMembers) {
+    if (missionsByTenant.has(member.tenantId)) continue;
+    if (military(member) < config.assembleMilitaryBelow) {
+      missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "ASSEMBLE", 60, config.directiveDurationTicks, {
+        target: member.core?.position, defendTenant: member.tenantId, scope: "military-below-shadow-floor",
       }));
-      break;
+      continue;
     }
+    if (allowed.has("SCOUT")) {
+      const summary = summaryByTenant.get(member.tenantId)!;
+      const scout = assessRetreatCorridor(member, summary, config.scoutDistance);
+      missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "SCOUT", 40, config.directiveDurationTicks, {
+        target: scout.waypoint ?? member.core?.position, scope: `low-risk-sector:${scout.recommendedDirection ?? "none"}`,
+      }));
+      continue;
+    }
+    // Profile 禁用 SCOUT（如 defend-only）时的安全兜底：守家。
+    missionsByTenant.set(member.tenantId, makeMission(snapshot, member, "DEFEND", 50, config.directiveDurationTicks, {
+      target: member.core?.position, defendTenant: member.tenantId, scope: "profile-undefined-fallback",
+    }));
   }
 
   const missions = [...missionsByTenant.values()].sort((a, b) => stableCompare(a.id, b.id));
@@ -325,7 +464,7 @@ export function decideAllianceShadowPolicy(
       ? "RAIDER"
       : mission.kind === "SCOUT"
         ? "SCOUT"
-        : (mission.kind === "DEFEND" || mission.kind === "INTERCEPT" || mission.kind === "RETREAT")
+        : (mission.kind === "DEFEND" || mission.kind === "INTERCEPT" || mission.kind === "RETREAT" || mission.kind === "ESCORT")
           ? "DEFENDER"
           : member.tenantId === treasuryTenant ? "TREASURY" : "DEFENDER";
     roles.set(member.tenantId, role);
@@ -347,6 +486,7 @@ export function decideAllianceShadowPolicy(
     missions,
     directives,
     roles,
+    taskForces: taskForces.sort((a, b) => stableCompare(a.id, b.id)),
     retreatAssessments: retreatAssessments.sort((a, b) => stableCompare(a.tenantId, b.tenantId)),
   };
 }

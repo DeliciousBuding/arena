@@ -103,5 +103,8 @@ export {
 } from "./threat-summary.ts";
 
 export * from "./director-policy.ts";
+export * from "./local-fleet.ts";
+export * from "./task-market.ts";
+export * from "./strategic-policy.ts";
 
 export * from "./shadow-frame.ts";
