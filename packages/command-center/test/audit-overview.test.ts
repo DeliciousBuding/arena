@@ -87,12 +87,13 @@ test("audit-overview: 单租户折叠 + 全局汇总", () => {
   } as unknown as import("../lib/alliance-mining.ts").AllianceMiningPayload;
   const trends = { t1: { coreDelta: 5, coreDeltaPrev: -3, visibleNever: 6, visibleNeverPrev: 12, stallRate: 0.5 } };
   const miningEff = { global: { assigned: 3, harvested: 1, harvestedByOther: 0, open: 2, stale: 0, effectiveRate: 1 } } as unknown as import("../lib/mining-effectiveness.ts").MiningEffectivenessPayload;
-  const a = aggregateAuditOverview(decisions, lifecycles, mines, exploration, pipeline, conflicts, mining, miningEff, trends);
+  const a = aggregateAuditOverview(decisions, lifecycles, mines, exploration, pipeline, conflicts, mining, miningEff, null, trends);
   const t1 = a.tenants.t1;
   assert.ok(t1);
   assert.equal(t1.decisions?.stallTicks, 50);
   // miningEff 传入后 global 暴露兑现汇总
   assert.equal(a.global.miningFulfillment?.assigned, 3);
+  assert.equal(a.global.alignment, null, "未传 alignment → null");
   assert.equal(t1.decisions?.stallRate, 0.5, "50/100");
   assert.equal(t1.decisions?.coreDelta, 5);
   assert.equal(t1.decisions?.humanApplied, 3);

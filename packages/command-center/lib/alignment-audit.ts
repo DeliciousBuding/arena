@@ -14,7 +14,7 @@ import { TtlCache } from "./cache.ts";
 import { loadDecisionAudit, type DecisionAuditPayload } from "./decision-audit.ts";
 import { loadMineUtilization, type MineUtilizationPayload } from "./mine-utilization.ts";
 import { loadMiningEffectiveness, type MiningEffectivenessPayload } from "./mining-effectiveness.ts";
-import { loadAuditOverview, type AuditOverviewPayload } from "./audit-overview.ts";
+import { loadMineUtilizationTrend } from "./mine-utilization.ts";
 
 const TTL_MS = 30_000;
 const cache = new TtlCache<AlignmentPayload>(TTL_MS);
@@ -59,7 +59,7 @@ export function aggregateAlignment(
   decisions: Record<string, DecisionAuditPayload>,
   mines: MineUtilizationPayload["tenants"],
   effectiveness: MiningEffectivenessPayload | null,
-  overview: AuditOverviewPayload | null,
+  trends: Record<string, { visibleNever: number; visibleNeverPrev: number }> = {},
 ): AlignmentPayload {
   const tenants: Record<string, TenantAlignment> = {};
   let alignedN = 0, misalignedN = 0, dataGapN = 0, unfulfilled = 0;
@@ -76,7 +76,7 @@ export function aggregateAlignment(
     const open = num(eff?.open);
     const stale = num(eff?.stale);
     const harvested = num(eff?.harvested);
-    const tr = overview?.tenants?.[t]?.trend;
+    const tr = trends[t];
     const gapTrendDelta = tr && typeof tr.visibleNever === "number" && typeof tr.visibleNeverPrev === "number"
       ? tr.visibleNever - tr.visibleNeverPrev : null;
 
@@ -133,8 +133,16 @@ export function loadAlignmentAudit(): AlignmentPayload {
   const decisions = loadDecisionAudit("all") as Record<string, DecisionAuditPayload>;
   const mines = loadMineUtilization("all") as MineUtilizationPayload;
   const effectiveness = loadMiningEffectiveness();
-  const overview = loadAuditOverview();
-  const payload = aggregateAlignment(decisions, mines.tenants, effectiveness, overview);
+  const trends: Record<string, { visibleNever: number; visibleNeverPrev: number }> = {};
+  for (const t of TENANTS) {
+    try {
+      const mt = loadMineUtilizationTrend(t, 2000, 3);
+      const last = mt.trend[mt.trend.length - 1];
+      const prev = mt.trend[mt.trend.length - 2];
+      if (last) trends[t] = { visibleNever: num(last.visibleNever), visibleNeverPrev: num(prev?.visibleNever) };
+    } catch { /* 趋势不可用跳过 */ }
+  }
+  const payload = aggregateAlignment(decisions, mines.tenants, effectiveness, trends);
   cache.set(key, payload);
   return payload;
 }
