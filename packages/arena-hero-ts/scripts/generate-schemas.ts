@@ -1,7 +1,7 @@
 /** 契约产物生成：TypeBox wire schema → contracts/generated/*.schema.json。
  *
  * 运行（包目录内）：
- *   node scripts/generate-schemas.mjs
+ *   node scripts/generate-schemas.ts
  *
  * 产物入仓（契约固定，跨仓库消费：Python 校验 / 文档 / CI 对照）。
  */
