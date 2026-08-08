@@ -249,8 +249,14 @@ function migrateCoreHuntSanity(db: DatabaseSync): void {
  *  幂等记录——是 seen_count 的准确重建源）。幂等：只触发有异常行。 */
 function migrateResourceSanity(db: DatabaseSync): void {
   try {
+    // resources 倒挂修复
     db.exec(
       "UPDATE resources SET first_seen_tick = MIN(first_seen_tick, last_seen_tick), " +
+      "last_seen_tick = MAX(first_seen_tick, last_seen_tick) WHERE first_seen_tick > last_seen_tick;"
+    );
+    // obstacles 倒挂修复（同因：旧 upsert 无条件覆盖 last）
+    db.exec(
+      "UPDATE obstacles SET first_seen_tick = MIN(first_seen_tick, last_seen_tick), " +
       "last_seen_tick = MAX(first_seen_tick, last_seen_tick) WHERE first_seen_tick > last_seen_tick;"
     );
     // seen_count 重建为 resource_seen_history 计数（仅异常行）
@@ -302,7 +308,9 @@ export function upsertObstacles(
   const stmt = db.prepare(`
     INSERT INTO obstacles (cell, x, y, first_seen_tick, last_seen_tick)
     VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(cell) DO UPDATE SET last_seen_tick = excluded.last_seen_tick
+    ON CONFLICT(cell) DO UPDATE SET
+      -- 2026-08-08 数据质量 A10：MAX 保护 last_seen 单调递增（旧无条件覆盖导致 run 顺序不一时 tick 回退 → first>last 倒挂）
+      last_seen_tick = MAX(obstacles.last_seen_tick, excluded.last_seen_tick)
   `);
   let n = 0;
   for (const cell of cells) {
