@@ -600,12 +600,12 @@ export class DeterministicPlanner implements PlanProvider {
   constructor(
     planner: WorkerTaskPlanner = new WorkerTaskPlanner(),
     fallbackPlanner: SafetyPlanner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG),
-    // patrolPlanner 永远看不到资源格（decide 传空 resourceCells）——默认 World
-    // 关闭 visionInvalidation（2026-08-08 审查修复）：A2 视野证伪对"本轮资源恒空"
-    // 的 patrol world 会把全部 seed 记忆标 harvested 且永远无法恢复，系统性破坏
-    // patrol 侧记忆（当前潜伏，任何未来消费会读到假数据）。生产侧 tenant-runtime
-    // 构造时同样注入关闭的 World（本默认值覆盖测试/未显式注入路径）。
     patrolPlanner: SafetyPlanner = new SafetyPlanner(
+      // patrolPlanner 永远看不到资源格（decide 传空 resourceCells）——默认 World
+      // 关闭 visionInvalidation（2026-08-08 审查修复）：A2 视野证伪对"本轮资源恒空"
+      // 的 patrol world 会把全部 seed 记忆标 harvested 且永远无法恢复，系统性破坏
+      // patrol 侧记忆（当前潜伏，任何未来消费会读到假数据）。生产侧 tenant-runtime
+      // 构造时同样注入关闭的 World（本默认值覆盖测试/未显式注入路径）。
       DEFAULT_SAFETY_CONFIG,
       new World({ visionInvalidation: false }),
     ),
@@ -689,6 +689,13 @@ export class DeterministicPlanner implements PlanProvider {
 
   workerProgressExpectations(): WorkerProgressExpectations {
     return this.lastWorkerProgressExpectations;
+  }
+
+  /** 分级冷却播种（2026-08-08，缺席实证）：透传内部 fallback/patrol 两个 World
+   *  ——缺席统计高频格升级失败冷却，worker 不每 32 tick 白试长期死格。 */
+  seedFailedCooldownTiers(entries: readonly { position: Position; cooldownTicks: number }[]): void {
+    this.fallbackPlanner.world.seedFailedCooldownTiers(entries);
+    this.patrolPlanner.world.seedFailedCooldownTiers(entries);
   }
 
   /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
@@ -825,8 +832,8 @@ export class DeterministicPlanner implements PlanProvider {
     // 冷却，resourceCandidates 32 tick 内跳过（"追一次即证伪"）。乒乓断链原理：
     // worker 到达死种子后被 freeze fix 剔除站立格 → 重排到相邻死种子 → 往返。证伪
     // 让已到达格不再入池，worker 线性推进逐格证伪，直到候选池只剩可见矿 → 正常
-    // 采集；无可见矿 → 转勘探（surveyOnSupplyGap）。refill 后重新可见自然恢复
-    // （visible 优先于失败冷却，不拦真矿）。
+    // 采集；无可见矿 → 转勘探（alwaysSurvey/surveyOnSupplyGap）。refill 后重新可见
+    // 自然恢复（visible 优先于失败冷却，不拦真矿）。
     for (const unit of snapshot.units) {
       if (unit.unitType !== "WORKER") continue;
       const standingCell = snapshot.resourceCells.get(cellKey(unit.position));

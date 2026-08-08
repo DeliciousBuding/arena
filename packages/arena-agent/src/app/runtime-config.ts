@@ -81,6 +81,7 @@ export const RuntimeConfigSchema = Type.Object(
           refillBonus: Type.Optional(Type.Number({ minimum: 0 })),
           deadMineOverdueTicks: Type.Optional(Type.Integer({ minimum: 0 })),
           migrationScout: Type.Optional(Type.Boolean()),
+          alwaysSurvey: Type.Optional(Type.Boolean()),
           switchThreshold: Type.Optional(Type.Number({ minimum: 0 })),
           surveyOnSupplyGap: Type.Optional(Type.Boolean()),
         },
