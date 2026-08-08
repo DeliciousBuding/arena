@@ -127,6 +127,10 @@ export async function loadDeedsJournal(tenant: string, windowTicks = 5000, query
       // 30s 缓存 + 遭遇索引 30s 缓存，无触网/无定时任务。
       const threatLine = buildThreatJournalLine(loadLeaderboardIntel(), buildEncounteredIndex());
       if (threatLine) narrative = narrative ? narrative + " " + threatLine : threatLine;
+      // 采矿执行（2026-08-08，日记层第 6 层）：矿总量/未采/失联 + 分工兑现率——读
+      // audit/overview（已在日记路径加载），无触网/无定时任务。
+      const miningLine = buildMiningExecutionLine(loadAuditOverview());
+      if (miningLine) narrative = narrative ? narrative + " " + miningLine : miningLine;
     } catch { /* 商店数据不可用不阻断 */ }
   }
   const windowDelta = buildWindowDelta(windowed, prevWindowed);
@@ -168,6 +172,31 @@ export function buildDecisionHealthLine(ov: AuditOverviewPayload | null): string
 }
 
 
+/** 采矿执行摘要（2026-08-08，日记层 · 第 6 层）：每租户矿总量/从未开采/可见未采/失联
+ *  + 联盟分工兑现（assigned/harvested/open/effectiveRate）——"矿发现了有没有去挖、挖没
+ *  挖到"一眼可读。读 audit/overview（30s 缓存，已在日记路径加载），无触网。 */
+export function buildMiningExecutionLine(ov: AuditOverviewPayload | null): string | null {
+  if (!ov) return null;
+  const parts: string[] = [];
+  for (const t of TENANTS) {
+    const m = ov.tenants?.[t]?.mines;
+    if (!m) continue;
+    const bits = [`矿${m.total}`];
+    if (m.neverHarvested > 0) bits.push(`未采${m.neverHarvested}`);
+    if (m.visibleNever > 0) bits.push(`可见未采${m.visibleNever}`);
+    if (m.overdueRefills > 0) bits.push(`失联${m.overdueRefills}`);
+    parts.push(`${t.toUpperCase()} ${bits.join("/")}`);
+  }
+  const g = ov.global;
+  const mf = g?.miningFulfillment;
+  if (parts.length === 0 && !mf) return null;
+  let line = parts.length > 0 ? `采矿执行：${parts.join("，")}` : "采矿执行：";
+  if (mf && (mf.assigned > 0 || mf.harvested > 0 || mf.open > 0)) {
+    const eff = mf.effectiveRate != null ? `${(mf.effectiveRate * 100).toFixed(0)}%` : "—";
+    line += `；分工 ${mf.assigned} 已采 ${mf.harvested} 在途 ${mf.open}（兑现率 ${eff}）`;
+  }
+  return line + "。";
+}
 /** 敌情威胁摘要（2026-08-08，日记层 · 第 5 层）：高威胁遭遇（CRITICAL/HIGH + 距核距离）
  *  + 排行榜猛攻蛆（ELITE_AGGRESSOR = 伤害 top10）——联盟日记叙事追加一行，让"谁在
  *  附近/谁有威胁"一眼可读。纯读 leaderboard（30s 缓存）+ 遭遇索引（30s 缓存），无触网。 */
