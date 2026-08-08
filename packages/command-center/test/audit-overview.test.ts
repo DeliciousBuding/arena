@@ -78,7 +78,14 @@ test("audit-overview: 单租户折叠 + 全局汇总", () => {
     topRejectedReasons: [{ reason: "Core is already moving", count: 6, share: 1 }],
     commandKinds: { goal: 2 }, cachedAt: "",
   } } as unknown as Record<string, import("../lib/human-conflict.ts").HumanConflictPayload>;
-  const a = aggregateAuditOverview(decisions, lifecycles, mines, exploration, pipeline, conflicts);
+  const mining = {
+    generatedAt: "", currentTick: 1000,
+    assignments: [], unassigned: [], cachedAt: "",
+    perTenant: { t1: { assigned: 5, avgDistance: 29.2, workers: 13 }, t2: { assigned: 48, avgDistance: 32.5, workers: 12 },
+      t3: { assigned: 3, avgDistance: 11.7, workers: 12 }, t4: { assigned: 1, avgDistance: 14, workers: 3 } },
+    global: { totalCandidates: 57, assigned: 57, shared: 0, conflict: 0, unassigned: 0 },
+  } as unknown as import("../lib/alliance-mining.ts").AllianceMiningPayload;
+  const a = aggregateAuditOverview(decisions, lifecycles, mines, exploration, pipeline, conflicts, mining);
   const t1 = a.tenants.t1;
   assert.ok(t1);
   assert.equal(t1.decisions?.stallTicks, 50);
@@ -109,6 +116,8 @@ test("audit-overview: 单租户折叠 + 全局汇总", () => {
   assert.equal(t1.conflict?.rejected, 6);
   assert.equal(t1.conflict?.rejectedRate, 0.667);
   assert.equal(t1.conflict?.topRejectedReason, "Core is already moving");
+  assert.equal(t1.mining?.assigned, 5);
+  assert.equal(t1.mining?.avgDistance, 29.2);
 });
 
 test("audit-overview: 空输入兜底", () => {
@@ -120,4 +129,5 @@ test("audit-overview: 空输入兜底", () => {
   assert.equal(a.global.totalUnits, 0);
   assert.equal(a.global.coveragePct, null);
   assert.equal(a.tenants.t1.conflict, null);
+  assert.equal(a.tenants.t1.mining, null);
 });
