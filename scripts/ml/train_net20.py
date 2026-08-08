@@ -166,12 +166,22 @@ def build_report(build_dir: Path, out_dir: Path, feature_names: list[str], all_f
             break
 
     manifest = json.loads((build_dir / "manifest.json").read_text(encoding="utf-8"))
+    quality = json.loads((build_dir / "feature-quality.json").read_text(encoding="utf-8"))
     report = {
         "schema": REPORT_SCHEMA,
         "buildId": manifest["buildId"],
         "createdAt": pd.Timestamp.now(tz="UTC").isoformat(),
         "featureCount": len(feature_names),
         "allFeatures": all_features,
+        "hygiene": {
+            "featureQualityScope": quality.get("scope", "unknown"),
+            "featureQualityScopeCount": quality.get("scopeCount"),
+            "note": (
+                "P0 fix: activeMask and OOD min/max ranges are computed over "
+                "TRAIN-ELIGIBLE rows only — validation/test distributions never "
+                "enter feature selection or the deployed OOD reference."
+            ),
+        },
         "splits": {
             "train": int(len(train)),
             "validation": int(len(validation)),

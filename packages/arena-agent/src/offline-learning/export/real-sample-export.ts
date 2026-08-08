@@ -77,6 +77,11 @@ export interface FeatureQualityReport {
   readonly schema: "feature-quality-v1";
   readonly buildId: string;
   readonly createdAt: string;
+  /** P0 hygiene: stats cover TRAIN-ELIGIBLE rows only — the mask and the
+   *  OOD min/max reference must never see validation/test distributions
+   *  (transductive leakage). */
+  readonly scope: "train-eligible";
+  readonly scopeCount: number;
   readonly dimension: number;
   readonly entries: readonly FeatureQualityEntry[];
   readonly activeMask: Readonly<Record<string, boolean>>;
@@ -249,8 +254,10 @@ function columnStats(values: readonly number[]): {
 }
 
 /**
- * Feature-quality report over the FULL export (missingness is a data reality
- * of the whole pool, not just the training bucket).
+ * Feature-quality report over TRAIN-ELIGIBLE rows only (P0 hygiene): the
+ * active mask and the OOD min/max reference must never observe
+ * validation/test distributions — that would be transductive leakage into
+ * the future holdout and into the deployed OOD reference.
  *
  * Constant/near-constant semantics:
  * - constant: a single unique value (no information at all);
@@ -302,6 +309,8 @@ function buildFeatureQuality(
     schema: "feature-quality-v1",
     buildId,
     createdAt: new Date().toISOString(),
+    scope: "train-eligible",
+    scopeCount: features.length,
     dimension: names.length,
     entries: columns,
     activeMask,
@@ -505,7 +514,17 @@ export function exportRealSamples(options: RealSampleExportOptions): RealSampleE
     writeFileSync(join(buildDir, `${split}.jsonl`), splitLines[split].join("\n") + "\n", "utf8");
   }
 
-  const quality = buildFeatureQuality(options.buildId, allRecords as unknown as FeatureV2Record[]);
+  // P0 hygiene: the feature-quality report (activeMask + OOD min/max reference)
+  // is computed over TRAIN-ELIGIBLE rows only. Validation/test rows are
+  // evaluated, never used to compute the mask or the deployed ranges.
+  const trainEligibleRecords = allRecords
+    .filter((record) => record.split === "train")
+    .filter(
+      (record) =>
+        (record.realLabelValidity as { usableForSupervisedLearning?: boolean })
+          .usableForSupervisedLearning === true,
+    );
+  const quality = buildFeatureQuality(options.buildId, trainEligibleRecords as unknown as FeatureV2Record[]);
   writeFileSync(join(buildDir, "feature-quality.json"), `${canonicalJson(quality)}\n`, "utf8");
 
   const splitReport = buildMlSplitReport(

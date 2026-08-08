@@ -3,9 +3,10 @@
  *
  * The most dangerous failure of a learned model is not "a bit wrong" — it is
  * "confidently wrong on a world it has never seen". Every online prediction
- * therefore carries an OOD report derived from the training-range reference
- * (the M1b feature-quality report records per-feature min/max over the full
- * real pool). OOD ↑ → learned weight ↓ → fallback deterministic.
+ * therefore carries an OOD report derived from the TRAIN-ONLY reference (the
+ * M1b feature-quality report records per-feature min/max over the
+ * train-eligible pool only, P0 hygiene — validation/test never feed the
+ * deployed range). OOD ↑ → learned weight ↓ → fallback deterministic.
  */
 
 export interface OodReference {

@@ -174,9 +174,12 @@ test("exportRealSamples merges datasets, splits chronologically by run, and repo
       );
     }
 
-    // Feature quality: 59-dim schema, constant detection on the fixture pool.
+    // Feature quality: 59-dim schema, constant detection on the TRAIN-ELIGIBLE
+    // pool only (P0 hygiene — test rows must never feed the mask/ranges).
     assert.equal(result.quality.dimension, 59);
     assert.equal(result.quality.entries.length, 59);
+    assert.equal(result.quality.scope, "train-eligible");
+    assert.equal(result.quality.scopeCount, 10); // 10 train-eligible rows, NOT 20 (all eligible)
     assert.ok(result.quality.constantFeatures.length >= 1);
     for (const entry of result.quality.entries) {
       assert.equal(entry.feature in result.quality.activeMask, true);
