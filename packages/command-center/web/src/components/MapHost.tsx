@@ -18,7 +18,7 @@ export function MapHost({ hostRef }: { hostRef: RefObject<HTMLElement | null> })
   return (
     <section id="mapPane">
       <canvas id="map" />
-      <div id="mapHint">拖拽平移 · 滚轮缩放 · 点击单位/核心进入战术视图 · Esc 取消</div>
+      <div id="mapHint">拖拽平移 · 滚轮缩放 · 左键选中 / 右键命令 · Esc 取消</div>
       <div id="mapTooltip" hidden />
       <div id="beaconIndicator" hidden />
       <div id="replayBar" className="panel replay-bar" hidden>
@@ -36,6 +36,7 @@ export function MapHost({ hostRef }: { hostRef: RefObject<HTMLElement | null> })
         </div>
       </div>
       <div id="actionDialog" className="action-dialog" hidden />
+      <div id="ctxMenu" className="ctx-menu" hidden />
       <div id="inspectPanel" className="panel inspect-panel" hidden />
       <div id="featurePanel" className="panel feature-panel" hidden />
       <div id="pendingPanel" className="panel pending-panel" hidden />

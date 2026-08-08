@@ -7,7 +7,7 @@ import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QU
 import { getJSON } from './api.ts';
 
 const TENANTS = ['t1', 't2', 't3', 't4'];
-const TENANT_COLORS = { t1: '#69b3d8', t2: '#57bd84', t3: '#a892d6', t4: '#dd626d' };
+const TENANT_COLORS = { t1: '#69b3d8', t2: '#7fd8a5', t3: '#a892d6', t4: '#fc5646' };
 const TENANT_LABEL = { t1: '租户 1', t2: '租户 2', t3: '租户 3', t4: '租户 4' };
 const POLL_MS = 3000;
 const UNIT_ICONS = { resource: '/assets/ui/icons/resource.png', population: '/assets/ui/icons/population.png' };
@@ -172,7 +172,7 @@ function buildEls() {
   shopCookie: $('#shopCookie'), cookieSave: $('#cookieSave'), cookieTest: $('#cookieTest'),
   shopAccount: $('#shopAccount'), shopList: $('#shopList'),
   zoomLevel: $('#zoomLevel'), mapGlobal: $('#mapGlobal'), soloBadge: $('#soloBadge'), viewGlobal: $('#viewGlobal'), viewFit: $('#viewFit'), streamToggle: $('#streamToggle'), streamPane: $('#streamPane'), streamCount: $('#streamCount'), streamLive: $('#streamLive'), streamFilter: $('#streamFilter'),
-  actionDialog: $('#actionDialog'), inspectPanel: $('#inspectPanel'), featurePanel: $('#featurePanel'),
+  actionDialog: $('#actionDialog'), ctxMenu: $('#ctxMenu'), inspectPanel: $('#inspectPanel'), featurePanel: $('#featurePanel'),
   beaconIndicator: $('#beaconIndicator'), pendingPanel: $('#pendingPanel'),
   replayBar: $('#replayBar'), rbTick: $('#rbTick'), rbMaxTick: $('#rbMaxTick'),
   rbFill: $('#rbFill'), rbCountdown: $('#rbCountdown'),
@@ -813,11 +813,11 @@ function drawMeterBar(s: any, x: any, y: any, cell: any, value: any, maximum: an
 }
 function drawUnitHealth(s: any, x: any, y: any, cell: any, hp: any, maxHp: any) {
   if (maxHp <= 0 || hp >= maxHp) return;
-  drawMeterBar(s, x, y, cell, hp, maxHp, hp > 1 ? '#76b889' : '#c66370', '#e4e4e7', `${hp}/${maxHp}`);
+  drawMeterBar(s, x, y, cell, hp, maxHp, hp > 1 ? '#7fd8a5' : '#fc5646', '#e4e4e7', `${hp}/${maxHp}`);
 }
 function drawWorkerCargo(s: any, x: any, y: any, cell: any, cargo: any) {
   if (!cargo) return;
-  drawMeterBar(s, x, y, cell, cargo, 2, '#76b889', '#b2d2ba', `×${cargo}`);
+  drawMeterBar(s, x, y, cell, cargo, 2, '#7fd8a5', '#b2d2ba', `×${cargo}`);
 }
 function drawCoreOwnerLabel(s: any, x: any, y: any, cell: any, username: any, controlled: any) {
   const label = '@' + (username || '?');
@@ -915,7 +915,7 @@ function drawResources(cells: any, s: any) {
       if (!LQ) { ctx.shadowColor = 'rgba(87,189,132,.35)'; ctx.shadowBlur = 3; }
       const path = SPRITE.crystal[hash2(c.x, c.y, 13) % SPRITE.crystal.length];
       if (images[path]) sprite(images[path], p.sx, p.sy, Math.max(7, s * 0.92));
-      else { ctx.fillStyle = '#57bd84'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.3), 0, Math.PI * 2); ctx.fill(); }
+      else { ctx.fillStyle = '#7fd8a5'; ctx.beginPath(); ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.3), 0, Math.PI * 2); ctx.fill(); }
       ctx.restore();
     }
     return;
@@ -992,7 +992,7 @@ function drawMovementDashes(cells: any, s: any) {
     const ex = to.sx - ux * endOff, ey = to.sy - uy * endOff;
     const tipX = to.sx - ux * cell * 0.12, tipY = to.sy - uy * cell * 0.12;
     const wingX = -uy, wingY = ux;
-    const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#c66370';
+    const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#fc5646';
     // ① 起点标记：实心点 + 白描边环（"从哪里出发"）
     ctx.save();
     ctx.globalAlpha = 0.9; ctx.fillStyle = color;
@@ -1052,7 +1052,7 @@ function drawUnits(cells: any, s: any) {
       const pos = unitDrawPos(c);
       const p = project(pos.x, pos.y);
       const size = s * (c.unitType === 'RANGER' ? 0.68 : 0.62);
-      const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#c66370';
+      const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#fc5646';
       ctx.save();
       ctx.globalAlpha = cellAlpha(c, 0.55);
       ring(p.sx, p.sy, size * 0.72 * pulse, c.controlled ? color : 'rgba(198,99,112,.55)', c.controlled ? 1.8 : 1.2, c.controlled ? [] : [3, 3]);
@@ -1078,7 +1078,7 @@ function drawUnits(cells: any, s: any) {
   for (const c of cells) {
     const pos = unitDrawPos(c);
     const p = project(pos.x, pos.y);
-    const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#c66370';
+    const color = c.controlled ? (TENANT_COLORS[c.tenant] ?? '#999') : '#fc5646';
     ctx.save();
     ctx.globalAlpha = cellAlpha(c, 0.55);
     ctx.fillStyle = c.controlled ? color : 'rgba(198,99,112,.7)';
@@ -1108,7 +1108,7 @@ function drawHumanMarker(s: any, sx: any, sy: any, cell: any, id: any) {
     const bx = sx + r + 2, by = sy - r - fs;
     ctx.fillStyle = 'rgba(8,8,8,.78)';
     ctx.beginPath(); ctx.roundRect(bx - 2, by - 1, tw + 5, fs + 4, 4); ctx.fill();
-    ctx.fillStyle = '#d3ad55';
+    ctx.fillStyle = '#e4a02e';
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     ctx.fillText('H', bx + 0.5, by + (fs + 4) / 2 + 0.5);
     ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
@@ -1123,7 +1123,7 @@ const TRAIL_NEAR = 3;
 function drawLiveTrails(s: any) {
   if (!state.layers.trail || !state.soloTenant || !replay.data || replay.data.loadedFor !== state.soloTenant) return;
   if (s < 3) return; // 全局/极低缩放不画轨迹，避免噪声
-  const color = TENANT_COLORS[state.soloTenant] ?? '#4591c5';
+  const color = TENANT_COLORS[state.soloTenant] ?? '#69b3d8';
   const lw = Math.max(1, s * 0.09);
   for (const u of replay.data.units) {
     const trail = u.trail;
@@ -1183,7 +1183,7 @@ function drawCores(cells: any, s: any) {
 }
 function coreColor(c: any) {
   // 我方核心=租户色；敌方核心=珊瑚红（官方 hostile 语义）
-  return c.controlled ? (TENANT_COLORS[c.tenant] ?? '#4591c5') : '#c66370';
+  return c.controlled ? (TENANT_COLORS[c.tenant] ?? '#69b3d8') : '#fc5646';
 }
 function drawCoreSprite(c: any, s: any) {
   const p = project(c.x, c.y);
@@ -1228,7 +1228,7 @@ function drawCoreSprite(c: any, s: any) {
     drawMeterBar(s, p.sx, p.sy + size * 0.56, s, c.shield, shieldMax, '#8f91c7', '#c7c8e7', `${c.shield} SHD`);
   }
   if (typeof c.hp === 'number' && s >= 8 && !LQ) {
-    const color2 = c.hp > 3 ? '#76b889' : c.hp > 1 ? '#d8b64e' : '#c66370';
+    const color2 = c.hp > 3 ? '#7fd8a5' : c.hp > 1 ? '#e4a02e' : '#fc5646';
     drawMeterBar(s, p.sx, p.sy + size * 0.72, s, c.hp, 5, color2, '#d4d4d8', `${c.hp}/${5}`);
   }
 }
@@ -1340,7 +1340,7 @@ function drawEnemyCoreTrails(s: any) {
   for (const t of trails) {
     const trail = Array.isArray(t.trail) ? t.trail : null;
     if (!trail || trail.length < 2) continue;
-    const color = '#c66370'; // 敌红（与 enemy/contested 同色系）
+    const color = '#fc5646'; // 敌红（与 enemy/contested 同色系）
     const pts = [];
     for (const pt of trail) {
       const q = project(pt.x, pt.y);
@@ -1478,7 +1478,7 @@ function drawEnemyMemory(s: any) {
       ctx.globalAlpha = alpha;
       ctx.translate(p.sx, p.sy);
       ctx.rotate(Math.PI / 4);
-      ctx.fillStyle = '#c66370';
+      ctx.fillStyle = '#fc5646';
       ctx.fillRect(-r / 2, -r / 2, r, r);
       ctx.strokeStyle = 'rgba(255,160,160,.85)';
       ctx.lineWidth = 1.2;
@@ -1505,7 +1505,7 @@ function drawEnemyMemory(s: any) {
       const alpha = enemyMemAlpha(age, 0.42, 0.1);
       ctx.save();
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = '#e0858f';
+      ctx.fillStyle = '#ff8d84';
       ctx.beginPath();
       ctx.arc(p.sx, p.sy, Math.max(2.5, s * 0.16), 0, Math.PI * 2);
       ctx.fill();
@@ -1625,7 +1625,7 @@ function lastSeenText(lastSeenTick: any) {
 }
 /** 敌情记忆 tooltip：敌核/敌单位的最后目击详情。 */
 function showMemoryTooltip(px: any, py: any, mem: any) {
-  const color = '#c66370';
+  const color = '#fc5646';
   const lines = [];
   if (mem.kind === 'core') {
     lines.push(`<div class="tt-title" style="color:${color}">敌核 · ${escapeHtml(mem.username ?? '未知')}</div>`);
@@ -1855,6 +1855,13 @@ function bindEvents() {
       const rect = els.canvas.getBoundingClientRect();
       handleCanvasClick(e.clientX - rect.left, e.clientY - rect.top);
     }
+  });
+  // 右键指挥菜单（群星式）：命中单位/核心弹命令菜单，空白处取消选中
+  els.canvas.addEventListener('contextmenu', (e) => {
+    pokeHint();
+    e.preventDefault();
+    const rect = els.canvas.getBoundingClientRect();
+    openCtxMenu(e.clientX - rect.left, e.clientY - rect.top);
   });
   let hoverTimer = null;
   els.canvas.addEventListener('pointermove', (e) => {
@@ -2086,7 +2093,38 @@ async function boot() {
       toast(state.layers.beaconEdge ? '信标边缘指示已恢复' : '信标边缘指示已隐藏（图层「信标指示」或再按 T 恢复）');
       return;
     }
+    // 快捷键指挥（群星式）：选中单位后 M=移动/S=清扫/H=维修/D=回仓/C=采集/P=生产，一键进入对应命令
+    const tactKey = { m: 'MOVE', s: 'SWEEP', h: 'HEAL', d: 'DEPOSIT', c: 'HARVEST', p: 'SPAWN', a: 'SHOOT', r: 'REPAIR_SHIELD' }[e.key.toLowerCase()];
+    if (tactKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const tac = T();
+      const sel = tac.selected;
+      if (sel && !tac.mode) {
+        const obj = sel.obj;
+        const isCore = obj.kind === 'CORE';
+        let type = tactKey;
+        if (isCore) {
+          if (tactKey === 'MOVE') type = 'START_MOVE';
+          else if (tactKey === 'REPAIR_SHIELD') type = 'REPAIR_SHIELD';
+          else if (tactKey === 'SPAWN') { // 核心生产：聚焦生产区
+            const spawnBtn = els.actionDialog && !els.actionDialog.hidden ? els.actionDialog.querySelector('[data-spawn]') : null;
+            if (spawnBtn) { spawnBtn.scrollIntoView({ block: 'center' }); spawnBtn.focus(); }
+            else toast('核心未选中（动作面板未打开）', 'info');
+            return;
+          }
+        }
+        if (type) {
+          const { types, av } = tactActionTypes(obj);
+          // 该类型不拥有的动作（如工人按 S 清扫）不响应；拥有的才校验可用性
+          if (!types.includes(type)) return;
+          if (av.actions[type] !== true) { toast(av.reasons?.[type] || `动作「${TACT_ACTION_CN[type] ?? type}」当前不可用`, 'warn'); return; }
+          tactChooseAction(type);
+          e.preventDefault();
+          return;
+        }
+      }
+    }
     if (e.key === 'Escape') {
+      if (els.ctxMenu && !els.ctxMenu.hidden) { hideCtxMenu(); return; }
       if (state.tactical.mode || state.tactical.selected) tactClear();
       else if (els.featurePanel && !els.featurePanel.hidden) { els.featurePanel.hidden = true; }
       else if (state.soloTenant) exitSolo();
@@ -2098,12 +2136,17 @@ async function boot() {
 /* ============ 战术交互层（官方 Arena Hero 移植 · 只读演练模式） ============ */
 const TACT_UNIT_BASE_COST = { WORKER: 5, VANGUARD: 10, RANGER: 12 };
 const TACT_UNIT_CN = { WORKER: '工人', VANGUARD: '先锋', RANGER: '游侠', CORE: '核心' };
+/** 单位/核心可用动作 → 中文标签（与 server 校验集一致，缺省显示原文）。 */
 const TACT_ACTION_CN = {
   MOVE: '移动', HARVEST: '采集', DEPOSIT: '回仓', SWEEP: '清扫', SHOOT: '攻击',
   PICKUP_BEACON: '拾取信标', DROP_BEACON: '放置信标', SELF_DESTRUCT: '自毁',
   HEAL: '维修', WAIT: '等待', REPAIR_SHIELD: '修复护盾',
   START_MOVE: '开始移动', CANCEL_MOVE: '取消移动',
 };
+/** 提交时需要方向参数的动作（点地图选方向），其余为一键动作直接提交。 */
+const TACT_DIRECTION_ACTIONS = new Set(['MOVE', 'SWEEP', 'START_MOVE']);
+/** 提交时需要目标参数的动作（点地图选敌方目标）。 */
+const TACT_TARGET_ACTIONS = new Set(['SHOOT']);
 const TACT_STEPS = [{ d: 'UP', dx: 0, dy: -1 }, { d: 'RIGHT', dx: 1, dy: 0 }, { d: 'DOWN', dx: 0, dy: 1 }, { d: 'LEFT', dx: -1, dy: 0 }];
 
 /** 决策意图 → 短中文标签（2026-08-08，人类观察）：/api/plan 的 intents 值
@@ -2314,6 +2357,7 @@ function tactClear() {
   const tac = T();
   tac.selected = null; tac.mode = null; tac.moveRoute = null; tac.routePreview = null; tac.attackTarget = null;
   els.actionDialog.hidden = true; els.inspectPanel.hidden = true; els.featurePanel.hidden = true;
+  els.ctxMenu.hidden = true; ctxMenuOpenFor = null;
   els.assetPanel.hidden = true; els.fleetHud.hidden = true;
   replay.playing = false; // 停掉回放引擎：退出单租户后不再 60fps 空转重绘
   els.replayBar.hidden = true;
@@ -2373,13 +2417,15 @@ function tactActionTypes(obj: any) {
   const world = T().worlds[T().selected.tenant];
   const av = tactAvailability(world, obj);
   const isCore = obj.kind === 'CORE';
-  const types = isCore ? (obj.state === 'MOVING' ? ['CANCEL_MOVE'] : ['HEAL', 'REPAIR_SHIELD', 'START_MOVE'])
-    : obj.unit_type === 'WORKER' ? ['MOVE', 'HARVEST', 'DEPOSIT']
-    : obj.unit_type === 'VANGUARD' ? ['MOVE', 'SWEEP']
-    : ['MOVE', 'SHOOT'];
-  if (av.actions.PICKUP_BEACON) types.push('PICKUP_BEACON');
-  if (av.actions.DROP_BEACON) types.push('DROP_BEACON');
-  if (!isCore) types.push('HEAL');
+  // 按单位类型列全「官方可用动作集」（含位置类动作），交给 tactChooseAction 统一处理：
+  // 需要方向（MOVE/SWEEP/START_MOVE）与需要目标（SHOOT）的走地图选点，其余一键提交。
+  // 信标/维修等条件动作不依赖 av.actions 判读（始终列出，可用性由按钮态表达），
+  // 避免"有动作但按钮不显示"的盲区。
+  const types = isCore
+    ? (obj.state === 'MOVING' ? ['CANCEL_MOVE'] : ['HEAL', 'REPAIR_SHIELD', 'START_MOVE', 'PICKUP_BEACON', 'DROP_BEACON'])
+    : obj.unit_type === 'WORKER' ? ['MOVE', 'HARVEST', 'DEPOSIT', 'PICKUP_BEACON', 'DROP_BEACON', 'HEAL']
+    : obj.unit_type === 'VANGUARD' ? ['MOVE', 'SWEEP', 'PICKUP_BEACON', 'DROP_BEACON', 'HEAL']
+    : ['MOVE', 'SHOOT', 'PICKUP_BEACON', 'DROP_BEACON', 'HEAL'];
   types.push('SELF_DESTRUCT', 'WAIT');
   return { types, av };
 }
@@ -2465,7 +2511,12 @@ function tactChooseAction(type: any) {
   const obj = sel.obj;
   const av = tactAvailability(world, obj);
   if (av.actions[type] !== true) return;
-  if (type === 'MOVE' || type === 'START_MOVE') { tac.mode = 'MOVE'; tac.routePreview = null; enterTargetingMode('🎯 选择目标：点矿=采矿任务 · 点空地=移动任务 · Esc 取消'); draw(); return; }
+  if (type === 'MOVE' || type === 'START_MOVE') {
+    tac.mode = type; // MOVE=单位移动目标 / START_MOVE=核心迁移方向（核心移动在选点后提交）
+    tac.routePreview = null;
+    enterTargetingMode(type === 'START_MOVE' ? '🎯 选择核心迁移方向（点相邻格） · Esc 取消' : '🎯 选择目标：点矿=采矿任务 · 点空地=移动任务 · Esc 取消');
+    draw(); return;
+  }
   if (type === 'SHOOT') {
     if (obj.unit_type !== 'RANGER') { toast('近战单位无法远程攻击：先锋可清扫相邻格，游侠才能射击', 'warn'); return; }
     const inRange = tactRangerRange(world, obj).some((t) => tactObjectAt(world, t[0], t[1])?.controlled === false);
@@ -2546,6 +2597,85 @@ function enterTargetingMode(tip: any) {
   if (els.hint) { els.hint.textContent = tip; els.hint.classList.remove('map-hint-fade'); }
 }
 
+/* ============ 右键指挥菜单（群星式 Context Command Menu） ============
+ * 群星指挥核心交互：左键选中/目标，右键命令。
+ * 右键命中单位/核心 → 选中并弹出该单位可用命令菜单（与动作面板同源）；
+ * 右键空白 → 取消选中。SELF_DESTRUCT/WAIT 不入菜单（危险/无意义动作只在动作面板）。 */
+let ctxMenuOpenFor = null; // 菜单当前所属单位 id（防菜单过期渲染）
+function hideCtxMenu() {
+  if (els.ctxMenu) els.ctxMenu.hidden = true;
+  ctxMenuOpenFor = null;
+}
+function renderCtxMenu(tenant: any, obj: any, px: any, py: any) {
+  const tac = T(), sel = tac.selected;
+  if (!sel || sel.obj.id !== obj.id || tac.mode) { hideCtxMenu(); return; }
+  const world = tac.worlds[tenant];
+  if (!world) return;
+  const { types, av } = tactActionTypes(obj);
+  const isCore = obj.kind === 'CORE';
+  const art = isCore ? 'CORE' : (obj.unit_type ?? 'WORKER');
+  const artPath = art === 'CORE' ? SPRITE.core : unitSpritePath(art);
+  const name = isCore ? '核心' : (TACT_UNIT_CN[obj.unit_type] ?? obj.unit_type);
+  const items = types
+    .filter((t) => t !== 'SELF_DESTRUCT' && t !== 'WAIT')
+    .map((t) => {
+      const available = av.actions[t] === true;
+      const reason = av.reasons?.[t];
+      if (available) return `<button class="ctx-item" data-action="${t}">${TACT_ACTION_CN[t] ?? t}</button>`;
+      if (reason) return `<button class="ctx-item blocked" data-action="${t}" data-reason="${escapeHtml(reason)}" title="${escapeHtml(reason)}">${TACT_ACTION_CN[t] ?? t}</button>`;
+      return '';
+    }).join('');
+  els.ctxMenu.innerHTML = `
+    <div class="ctx-head"><span class="ctx-icon"><img src="${artPath}" alt="" /></span><b>${name} · ${tenant.toUpperCase()}</b><button class="ctx-close" data-ctx-close type="button" title="关闭（Esc）">✕</button></div>
+    ${items}
+    <div class="ctx-foot">${isCore ? '核心 · 生产/迁移走动作面板' : obj.unit_type === 'RANGER' ? '游侠 · 攻击需选敌方目标' : obj.unit_type === 'VANGUARD' ? '先锋 · 清扫需选相邻方向' : '工人 · 采集需站在资源格'}</div>
+  `;
+  // 定位：鼠标旁，右缘/下缘翻转防溢出
+  const rect = els.canvas.getBoundingClientRect();
+  els.ctxMenu.hidden = false;
+  const mw = els.ctxMenu.offsetWidth, mh = els.ctxMenu.offsetHeight;
+  let left = px + 12, top = py - 8;
+  if (left + mw > rect.width - 8) left = px - mw - 12;
+  if (top + mh > rect.height - 8) top = rect.height - mh - 8;
+  if (top < 8) top = 8;
+  els.ctxMenu.style.left = `${left}px`;
+  els.ctxMenu.style.top = `${top}px`;
+  ctxMenuOpenFor = obj.id;
+  els.ctxMenu.querySelector('[data-ctx-close]')?.addEventListener('click', hideCtxMenu);
+  els.ctxMenu.querySelectorAll('[data-action]').forEach((b) => b.addEventListener('click', () => {
+    const act = b.dataset.action;
+    if (b.classList.contains('blocked')) {
+      toast(b.dataset.reason || '当前不可用', 'warn');
+      b.classList.add('shake');
+      setTimeout(() => b.classList.remove('shake'), 400);
+      return;
+    }
+    hideCtxMenu();
+    tactChooseAction(act);
+  }));
+}
+function openCtxMenu(px: any, py: any) {
+  const tac = T();
+  // 选点模式中右键：先取消当前模式再开菜单（避免模式悬空）
+  if (tac.mode) tactClear();
+  const cell = nearestCell(px, py);
+  if (cell && (cell.type === 'unit' || cell.type === 'core')) {
+    tactLoadWorld(cell.tenant).then((world) => {
+      const obj = world ? tactObjectAt(world, cell.x, cell.y) : null;
+      if (!obj) { toast('该单位/核心为已探索记忆，已不在当前 tick', 'warn'); return; }
+      if (obj.controlled !== true) { toast('敌方单位无法指挥（可左键选中查看情报）', 'warn'); return; }
+      const selected = tac.selected && tac.selected.obj.id === obj.id;
+      const open = () => renderCtxMenu(cell.tenant, obj, px, py);
+      if (selected) open();
+      else tactSelect(cell.tenant, obj).then(open);
+    });
+    return;
+  }
+  // 右键空白：取消选中（群星右键空白 = 取消目标/收镜）
+  if (tac.selected) { tactClear(); return; }
+  hideCtxMenu();
+}
+
 function tactSpawn(unitType: any) {
   const tac = T(), sel = tac.selected;
   if (!sel || sel.obj.kind !== 'CORE') return;
@@ -2589,18 +2719,41 @@ function tactRenderAssets(tenant: any) {
   const controlled = world.state.objects.filter((o) => o.controlled === true && (o.kind === 'UNIT' || o.kind === 'CORE'));
   els.assetPanel.hidden = false;
   els.assetPanel.querySelector('.panel-title').textContent = `舰队索引 · ${tenant.toUpperCase()} · ${controlled.length}`;
-  els.assetList.innerHTML = controlled.map((o) => {
-    const art = o.kind === 'CORE' ? 'CORE' : (o.unit_type ?? 'WORKER');
-    const artPath = art === 'CORE' ? SPRITE.core : unitSpritePath(art);
-    const selected = T().selected?.obj?.id === o.id;
-    const human = unitHumanCommandOf(tenant, o.id);
-    return `<button class="asset-row ${selected ? 'active' : ''}${human ? ' human' : ''}" data-asset="${o.id}" ${human ? 'title="人类指挥中 · 点击查看/清除指令"' : ''}>
-      <span class="asset-icon"><img src="${artPath}" alt="" /></span>
-      ${human ? '<span class="asset-h" title="人类指挥中">H</span>' : ''}
-      <span class="asset-name">${o.kind === 'CORE' ? '核心' : (TACT_UNIT_CN[o.unit_type] ?? o.unit_type)}</span>
-      <span class="mono asset-pos">[${o.position[0]}, ${o.position[1]}]</span>
-      <span class="mono asset-hp">${o.hp} HP</span>
-    </button>`;
+  // 群星式 Outliner：按类型分组（核心/工人/先锋/游侠），组头计数 + 可折叠（localStorage 记忆）
+  const groups = [
+    ['CORE', '核心'], ['WORKER', '工人'], ['VANGUARD', '先锋'], ['RANGER', '游侠'],
+  ];
+  let collapsed = {};
+  try { collapsed = JSON.parse(localStorage.getItem('arena-cc.assetGroups') ?? '{}') || {}; } catch { /* 忽略 */ }
+  els.assetList.innerHTML = groups.map(([gtype, gcn]) => {
+    const members = controlled.filter((o) => o.kind === 'CORE' ? gtype === 'CORE' : (o.unit_type ?? '') === gtype);
+    if (!members.length) return '';
+    const isCollapsed = collapsed[gtype] === true;
+    const rows = members.map((o) => {
+      const art = o.kind === 'CORE' ? 'CORE' : (o.unit_type ?? 'WORKER');
+      const artPath = art === 'CORE' ? SPRITE.core : unitSpritePath(art);
+      const selected = T().selected?.obj?.id === o.id;
+      const human = unitHumanCommandOf(tenant, o.id);
+      // 核心无标准 HP 上限：以 hp/shield 当前最大值为基准（满状态=满条，受损即缩短）
+      const hpMax = art === 'CORE' ? Math.max(o.hp ?? 0, o.shield ?? 0, 1) : maxUnitHp(art);
+      const hpVal = art === 'CORE' ? Math.max(o.hp ?? 0, o.shield ?? 0) : (o.hp ?? 0);
+      const hpPct = hpMax > 0 ? Math.max(0, Math.min(100, (hpVal / hpMax) * 100)) : 100;
+      return `<button class="asset-row ${selected ? 'active' : ''}${human ? ' human' : ''}" data-asset="${o.id}" ${human ? 'title="人类指挥中 · 点击查看/清除指令"' : ''}>
+        <span class="asset-icon"><img src="${artPath}" alt="" /></span>
+        ${human ? '<span class="asset-h" title="人类指挥中">H</span>' : ''}
+        <span class="asset-name">${o.kind === 'CORE' ? '核心' : (TACT_UNIT_CN[o.unit_type] ?? o.unit_type)}</span>
+        <span class="asset-hpbar" title="${o.hp}/${hpMax} HP"><span class="asset-hpfill ${hpPct <= 35 ? 'low' : ''}" style="width:${hpPct}%"></span></span>
+        <span class="mono asset-pos">[${o.position[0]}, ${o.position[1]}]</span>
+      </button>`;
+    }).join('');
+    return `<div class="asset-group${isCollapsed ? ' closed' : ''}" data-grp="${gtype}">
+      <button class="asset-group-head" data-grp-head="${gtype}" type="button" title="${isCollapsed ? '展开' : '折叠'}${gcn}组">
+        <span class="ag-chev">${isCollapsed ? '▸' : '▾'}</span>
+        <span class="ag-name">${gcn}</span>
+        <span class="ag-count">${members.length}</span>
+      </button>
+      <div class="asset-group-body"${isCollapsed ? ' hidden' : ''}>${rows}</div>
+    </div>`;
   }).join('') || '<div class="stream-empty">无受控单位</div>';
   els.assetList.querySelectorAll('[data-asset]').forEach((b) => b.addEventListener('click', () => {
     const o = world.state.objects.find((x) => x.id === b.dataset.asset);
@@ -2608,6 +2761,15 @@ function tactRenderAssets(tenant: any) {
     // 官方 selectFromAssetList：选中并居中定位到该单位
     if (o.position) { state.view.cx = o.position[0]; state.view.cy = o.position[1]; state.viewAnim = null; }
     tactSelect(tenant, o);
+  }));
+  els.assetList.querySelectorAll('[data-grp-head]').forEach((h) => h.addEventListener('click', () => {
+    const g = h.dataset.grpHead;
+    const grp = els.assetList.querySelector(`[data-grp="${g}"]`);
+    if (!grp) return;
+    const closed = grp.classList.toggle('closed');
+    grp.querySelector('.asset-group-body').hidden = closed;
+    grp.querySelector('.ag-chev').textContent = closed ? '▸' : '▾';
+    try { const p = JSON.parse(localStorage.getItem('arena-cc.assetGroups') ?? '{}') || {}; p[g] = closed; localStorage.setItem('arena-cc.assetGroups', JSON.stringify(p)); } catch { /* 忽略 */ }
   }));
 }
 function tactRenderHud(tenant: any) {
@@ -2625,7 +2787,7 @@ function tactRenderHud(tenant: any) {
     <span class="hud-label">测绘${survey.fromDb ? '·库' : ''}</span>
     <span class="hud-val">${survey.obstacleCells.length} 障碍</span>
     <span class="hud-val" style="color:var(--green-resource)">${resCount} 矿</span>
-    <span class="hud-val" style="color:#7ee0a0" title="活跃（最近确认存在）">${activeMines}●</span>
+    <span class="hud-val" style="color:#7fd8a5" title="活跃（最近确认存在）">${activeMines}●</span>
     <span class="hud-val" style="color:#5a7a64" title="待确认（见过但未确认）">${staleMines}◐</span>
     <span class="hud-val" style="color:#6b7280" title="采空/已确认空">${minedOut}○</span>
     <span class="hud-val">${survey.coreCells.length} 敌核</span>
@@ -2731,7 +2893,7 @@ function replayDrawLayer(s: any) {
   for (const c of replay.data.cores) {
     const p = replayInterp(c, f, prog);
     if (!p) continue;
-    const color = c.controlled ? (TENANT_COLORS[state.soloTenant] ?? '#4591c5') : '#c66370';
+    const color = c.controlled ? (TENANT_COLORS[state.soloTenant] ?? '#69b3d8') : '#fc5646';
     const size = Math.max(8, s * 0.72);
     const pr = project(p.x, p.y);
     if (c.controlled) { ctx.shadowColor = color; ctx.shadowBlur = 10; }
@@ -2751,7 +2913,7 @@ function replayDrawLayer(s: any) {
       const bw = Math.max(14, size * 1.1), bh = 3;
       const bx = pr.sx - bw / 2, by = pr.sy + size * 0.62 + 4;
       ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(bx, by, bw, bh);
-      ctx.fillStyle = p.hp > 3 ? '#76b889' : p.hp > 1 ? '#d8b64e' : '#c66370';
+      ctx.fillStyle = p.hp > 3 ? '#7fd8a5' : p.hp > 1 ? '#e4a02e' : '#fc5646';
       ctx.fillRect(bx, by, bw * Math.max(0, Math.min(1, p.hp / 5)), bh);
     }
     // 人类指挥中标记（聚焦=回放接管单位绘制，需在此补画）
@@ -2761,21 +2923,21 @@ function replayDrawLayer(s: any) {
   for (const u of replay.data.units) {
     const p = replayInterp(u, f, prog);
     if (!p) continue;
-    const color = u.controlled ? (TENANT_COLORS[state.soloTenant] ?? '#4591c5') : '#c66370';
+    const color = u.controlled ? (TENANT_COLORS[state.soloTenant] ?? '#69b3d8') : '#fc5646';
     const size = Math.max(6, s * (u.type === 'RANGER' ? 0.68 : 0.62));
     const pr = project(p.x, p.y);
     if (s >= 6) {
       ring(pr.sx, pr.sy, size * 0.72, u.controlled ? color : 'rgba(198,99,112,.55)', u.controlled ? 1.6 : 1.1, u.controlled ? [] : [3, 3]);
       const path = unitSpritePath(u.type);
       if (images[path]) sprite(images[path], pr.sx, pr.sy, size);
-      else { ctx.fillStyle = u.controlled ? color : '#c66370'; ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(2, size * 0.25), 0, Math.PI * 2); ctx.fill(); }
+      else { ctx.fillStyle = u.controlled ? color : '#fc5646'; ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(2, size * 0.25), 0, Math.PI * 2); ctx.fill(); }
     } else {
       ctx.fillStyle = u.controlled ? color : 'rgba(198,99,112,.7)';
       ctx.beginPath(); ctx.arc(pr.sx, pr.sy, Math.max(1.8, s * 0.42), 0, Math.PI * 2); ctx.fill();
     }
     // 载货小点
     if ((p.cargo ?? 0) > 0 && s >= 8) {
-      ctx.fillStyle = '#76b889';
+      ctx.fillStyle = '#7fd8a5';
       ctx.beginPath(); ctx.arc(pr.sx, pr.sy - size * 0.62, Math.max(1.6, s * 0.14), 0, Math.PI * 2); ctx.fill();
     }
     // 人类指挥中标记（聚焦=回放接管单位绘制，需在此补画）
@@ -2807,10 +2969,10 @@ function tactDrawRoute(path, opts = {}) {
   const s = state.view.scale;
   // 动线配色：默认 agent 规划绿；人类指令 mine=琥珀 / goto=青（一眼区分谁在指挥）
   const C = opts.human === 'mine'
-    ? { line: '#d8b64e', lineA: 'rgba(216,182,78,.9)', flag: '#e6c96a', pulse: '#fff3d6', glow: '#d8b64e', eta: '#e6c96a' }
+    ? { line: '#e4a02e', lineA: 'rgba(216,182,78,.9)', flag: '#e6c96a', pulse: '#fff3d6', glow: '#e4a02e', eta: '#e6c96a' }
     : opts.human === 'goto'
-      ? { line: '#5fc8e8', lineA: 'rgba(95,200,232,.9)', flag: '#8fdcf5', pulse: '#e8f9ff', glow: '#5fc8e8', eta: '#8fdcf5' }
-      : { line: '#76b889', lineA: 'rgba(118,184,137,.9)', flag: '#8fd6a3', pulse: '#eafff1', glow: '#76b889', eta: '#8fd6a3' };
+      ? { line: '#1fe0ca', lineA: 'rgba(95,200,232,.9)', flag: '#8fdcf5', pulse: '#e8f9ff', glow: '#1fe0ca', eta: '#8fdcf5' }
+      : { line: '#7fd8a5', lineA: 'rgba(118,184,137,.9)', flag: '#8fd6a3', pulse: '#eafff1', glow: '#7fd8a5', eta: '#8fd6a3' };
   ctx.save();
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   const seg = (i, color, width, dash) => {
@@ -2981,7 +3143,7 @@ function tactDrawLayer(s: any) {
   if (!tac.selected) return;
   const sel = tac.selected, world = tac.worlds[sel.tenant], obj = sel.obj;
   if (!world || !obj.position) return;
-  const color = TENANT_COLORS[sel.tenant] ?? '#4591c5';
+  const color = TENANT_COLORS[sel.tenant] ?? '#69b3d8';
   const p = project(obj.position[0], obj.position[1]);
   const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
   ring(p.sx, p.sy, 16 + 3 * pulse, color, 2.5);
@@ -3034,7 +3196,7 @@ function tactDrawLayer(s: any) {
     }
     for (const tg of tactRangerTargets(world, obj)) {
       const tp = project(tg.position[0], tg.position[1]);
-      ring(tp.sx, tp.sy, 12, '#c66370', 2);
+      ring(tp.sx, tp.sy, 12, '#fc5646', 2);
     }
   }
   if (tac.mode === 'SWEEP' && obj.unit_type === 'VANGUARD') {
@@ -3046,7 +3208,7 @@ function tactDrawLayer(s: any) {
   }
   if (tac.attackTarget) {
     const tp = project(tac.attackTarget.obj.position[0], tac.attackTarget.obj.position[1]);
-    ring(tp.sx, tp.sy, 14, '#c66370', 2.5);
+    ring(tp.sx, tp.sy, 14, '#fc5646', 2.5);
   }
 }
 /** 巡逻环（arena-hero-guide SQUAD_PATROL_RADII=(12,19,26,32) 移植）：聚焦租户时
@@ -3127,7 +3289,7 @@ function drawHumanGoalPaths(s: any) {
       const end = rec.path[rec.path.length - 1];
       const p = project(end[0], end[1]);
       const label = rec.kind === 'mine' ? '采矿' : '移动';
-      const color = rec.kind === 'mine' ? '#d8b64e' : '#5fc8e8';
+      const color = rec.kind === 'mine' ? '#e4a02e' : '#1fe0ca';
       ctx.save();
       ctx.font = '600 11px ' + CANVAS_FONT;
       const tw = ctx.measureText(label).width;
@@ -3145,7 +3307,7 @@ function tactPlanLayer(s: any) {
   const tac = T();
   const solo = state.soloTenant;
   const scopes = solo ? [solo] : TENANTS;
-  const colorOf = (t) => TENANT_COLORS[t] ?? '#4591c5';
+  const colorOf = (t) => TENANT_COLORS[t] ?? '#69b3d8';
   const stepOf = (dir) => TACT_STEPS.find((t) => t.d === dir);
   const dash = (from, to, color, alpha, width) => {
     ctx.save();
@@ -3377,14 +3539,14 @@ function tactRenderPending() {
 /** 回放事件特效：当前回放帧的事件（战斗/资源活动）弹出浮字+光晕，2.5s 淡出上浮。 */
 const FX_LIFE_MS = 2500;
 const FX_KIND_CN = {
-  HARVEST_SUCCEEDED: { text: '+', color: '#76b889', size: 13 },
+  HARVEST_SUCCEEDED: { text: '+', color: '#7fd8a5', size: 13 },
   DEPOSIT_SUCCEEDED: { text: '¥', color: '#5fd4e8', size: 13 },
-  SHOT_HIT: { text: '✚', color: '#c66370', size: 13 },
-  SWEEP_RESOLVED: { text: '⚔', color: '#d8b64e', size: 13 },
+  SHOT_HIT: { text: '✚', color: '#fc5646', size: 13 },
+  SWEEP_RESOLVED: { text: '⚔', color: '#e4a02e', size: 13 },
   CORE_DAMAGED: { text: '⚔', color: '#ff6b6b', size: 14 },
   CORE_DESTROYED: { text: '摧毁!', color: '#ff5560', size: 18 },
   CORE_SPAWN_SUCCEEDED: { text: '产', color: '#5fd4e8', size: 12 },
-  UNIT_HEAL_SUCCEEDED: { text: '✚', color: '#76b889', size: 12 },
+  UNIT_HEAL_SUCCEEDED: { text: '✚', color: '#7fd8a5', size: 12 },
 };
 function tactSpawnEventFx(frameTick: any) {
   const d = replay.data;
@@ -3409,7 +3571,7 @@ function tactSpawnEventFx(frameTick: any) {
     // 销毁碎片：单位/核心被摧毁时迸溅
     if (ev.t === 'UNIT_DESTROYED' || ev.t === 'CORE_DESTROYED') {
       const n = ev.t === 'CORE_DESTROYED' ? 14 : 8;
-      const color = ev.t === 'CORE_DESTROYED' ? '#ff5560' : '#d8b64e';
+      const color = ev.t === 'CORE_DESTROYED' ? '#ff5560' : '#e4a02e';
       for (let i = 0; i < n; i++) {
         const ang = Math.random() * Math.PI * 2, sp = 0.6 + Math.random() * 1.7;
         tac.debris.push({ x: ev.p[0], y: ev.p[1], vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp - 0.4, color, born: performance.now(), life: 900 + Math.random() * 600 });
@@ -3460,7 +3622,7 @@ function drawResolvedShotFx(a: any, b: any, cell: any, progress: any, hit: any) 
   const impact = Math.min(1, (progress - flightEnd) / (1 - flightEnd)), fade = 1 - impact;
   ctx.save(); ctx.globalAlpha = fade; ctx.lineCap = 'round'; ctx.lineWidth = Math.max(1.5, cell * 0.035);
   if (hit) {
-    ctx.strokeStyle = '#dd626d'; ctx.shadowColor = '#dd626d'; ctx.shadowBlur = Math.max(5, cell * 0.11);
+    ctx.strokeStyle = '#fc5646'; ctx.shadowColor = '#fc5646'; ctx.shadowBlur = Math.max(5, cell * 0.11);
     const radius = cell * (0.1 + impact * 0.28);
     ctx.beginPath(); ctx.arc(b.sx, b.sy, radius, 0, Math.PI * 2); ctx.stroke();
     for (let k = 0; k < 4; k++) {
@@ -3498,7 +3660,7 @@ function drawResolvedSweepFx(a: any, b: any, cell: any, progress: any) {
   ctx.lineTo(guardX + gpx * cell * 0.1, guardY + gpy * cell * 0.1); ctx.stroke();
   if (progress > 0.42) {
     const impact = Math.min(1, (progress - 0.42) / 0.38);
-    ctx.globalAlpha = fade * (1 - impact); ctx.strokeStyle = '#dd626d'; ctx.lineWidth = Math.max(1.5, cell * 0.04);
+    ctx.globalAlpha = fade * (1 - impact); ctx.strokeStyle = '#fc5646'; ctx.lineWidth = Math.max(1.5, cell * 0.04);
     ctx.beginPath(); ctx.arc(b.sx, b.sy, cell * (0.12 + impact * 0.28), 0, Math.PI * 2); ctx.stroke();
   }
   ctx.restore();
@@ -3667,10 +3829,10 @@ function tactShowFeature(cell: any, px: any, py: any) {
     }
     return;
   }
-  if (tac.mode === 'SHOOT' && tac.selected && cell) {
+  if (tac.mode === 'SHOOT' && tac.selected) {
     const world = tac.worlds[tac.selected.tenant];
     if (world) {
-      const target = tactObjectAt(world, cell.x, cell.y);
+      const target = cell ? tactObjectAt(world, cell.x, cell.y) : null;
       if (target && target.controlled === false) {
         tac.attackTarget = { obj: target };
         tac.mode = null;
@@ -3681,8 +3843,36 @@ function tactShowFeature(cell: any, px: any, py: any) {
       } else if (target) {
         toast('只能攻击敌方单位/核心（已探索记忆中的目标已不存在）', 'warn');
       } else {
-        toast('该位置无当前目标（可能是已探索记忆，非当前 tick）', 'warn');
+        // 空格射击：无目标格也提交（官方 cell-fire 语义，targetId=null 合法）
+        const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+        const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+        tac.attackTarget = null;
+        tac.mode = null;
+        tactRenderActionDialog(); tactRenderInspect(); draw();
+        submitCommand(tac.selected.tenant, tac.selected.obj.id,
+          { type: 'SHOOT', targetId: null, expectedCell: [wx, wy] },
+          `朝 [${wx}, ${wy}] 开火（空格射击）`);
       }
+    }
+    return;
+  }
+  if (tac.mode === 'START_MOVE' && tac.selected) {
+    // 核心迁移：点相邻格选方向，一次性提交 START_MOVE（官方 start-move 语义）
+    const obj = tac.selected.obj;
+    if (obj && obj.kind === 'CORE' && obj.position) {
+      const wx = Math.round(state.view.cx + (px - W() / 2) / state.view.scale);
+      const wy = Math.round(state.view.cy + (py - H() / 2) / state.view.scale);
+      const dx = wx - obj.position[0], dy = wy - obj.position[1];
+      const direction = dx === 1 && dy === 0 ? 'RIGHT' : dx === -1 && dy === 0 ? 'LEFT' : dy === 1 && dx === 0 ? 'DOWN' : dy === -1 && dx === 0 ? 'UP' : null;
+      if (direction) {
+        tac.mode = null;
+        submitCommand(tac.selected.tenant, obj.id, { type: 'START_MOVE', direction }, `核心迁移 ${direction}`);
+        tactRenderActionDialog(); tactRenderInspect(); draw();
+      } else {
+        toast('请点击核心相邻格选择迁移方向', 'warn');
+      }
+    } else {
+      tac.mode = null;
     }
     return;
   }
