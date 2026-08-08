@@ -49,23 +49,8 @@ interface OverviewTenant {
 }
 interface Overview { tenants: OverviewTenant[] }
 
-/** 与引擎同源拉取 /api/overview（本地文件读取，3s 一次，开销可忽略）。 */
-function useOverview(): Overview | null {
-  const [ov, setOv] = useState<Overview | null>(null);
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      try {
-        const res = await fetch("/api/overview", { cache: "no-store" });
-        if (res.ok) { const data = await res.json(); if (alive) setOv(data); }
-      } catch { /* 忽略，下次重试 */ }
-    };
-    load();
-    const timer = setInterval(load, 3000);
-    return () => { alive = false; clearInterval(timer); };
-  }, []);
-  return ov;
-}
+// useOverview 已去重（2026-08-09）：mapEngine poll 拉 /api/overview 后 emit('overview')
+// → bridge bump → Sidebar 重渲染，复用 engine.getState().overview，不再独立 fetch 双拉。
 
 function statusOf(t: OverviewTenant): { cls: string; label: string } {
   if (t.live) return { cls: "live", label: "在线" };
@@ -172,9 +157,9 @@ function TenantDataStrip({ a }: { a: AuditTenant | undefined }) {
 }
 
 function TenantCards() {
-  const overview = useOverview();
   const audit = useAuditOverview();
   const engine = useEngine();
+  const overview = (engine?.getState()?.overview ?? null) as Overview | null;
   const solo = engine?.getState().soloTenant ?? null;
   const tenants = overview?.tenants ?? [];
   // 目录树折叠（2026-08-08）：点折叠按钮收起详情，只留摘要行；独立于聚焦。
