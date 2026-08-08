@@ -142,6 +142,39 @@ test("采矿意图：目标资源已采空 → satisfied，交还 agent（不覆
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("mine_hold 盯守：目标矿不在视野仍走向目标（提前就位）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    const state = makeState({ resourceCells: new Set(["9,9"]) }); // 目标 [5,1] 不在
+    const src = makeSource(dir, "t1", { version: 1, mode: "override", commands: [], goals: [{ id: "g1", unitId: WORKER, kind: "mine_hold", target: [5, 1], createdAt: "x" }] });
+    const r = applyHumanOverrides(state, basePlan(), src);
+    assert.equal(r.active, true);
+    assert.deepEqual(r.satisfied, []); // 不因矿不在交还
+    const a = actionOf(r, WORKER);
+    assert.equal(a?.type, "MOVE");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("mine_hold 盯守：已在目标格且矿存在 → HARVEST", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    const state = makeState({ units: [{ id: WORKER, position: [5, 1], hp: 2, unitType: "WORKER", cargo: 0 }], workers: [{ id: WORKER, position: [5, 1], hp: 2, unitType: "WORKER", cargo: 0 }], resourceCells: new Set(["5,1"]) });
+    const src = makeSource(dir, "t1", { version: 1, mode: "override", commands: [], goals: [{ id: "g1", unitId: WORKER, kind: "mine_hold", target: [5, 1], createdAt: "x" }] });
+    const r = applyHumanOverrides(state, basePlan(), src);
+    assert.deepEqual(actionOf(r, WORKER), { type: "HARVEST" });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("mine_hold 盯守：已在目标格但矿不在 → WAIT 守位（不交还）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
+  try {
+    const state = makeState({ units: [{ id: WORKER, position: [5, 1], hp: 2, unitType: "WORKER", cargo: 0 }], workers: [{ id: WORKER, position: [5, 1], hp: 2, unitType: "WORKER", cargo: 0 }], resourceCells: new Set(["9,9"]) });
+    const src = makeSource(dir, "t1", { version: 1, mode: "override", commands: [], goals: [{ id: "g1", unitId: WORKER, kind: "mine_hold", target: [5, 1], createdAt: "x" }] });
+    const r = applyHumanOverrides(state, basePlan(), src);
+    assert.deepEqual(actionOf(r, WORKER), { type: "WAIT" });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("mode=disabled → 交还 agent 全权（无覆盖）", () => {
   const dir = mkdtempSync(join(tmpdir(), "cc-ho-"));
   try {

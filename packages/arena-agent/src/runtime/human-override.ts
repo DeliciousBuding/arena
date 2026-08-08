@@ -31,10 +31,12 @@ export interface HumanCommand {
   readonly createdAt: string;
 }
 
-export type HumanGoalKind = "mine" | "goto";
+export type HumanGoalKind = "mine" | "mine_hold" | "goto";
 
 /** 持续意图（任务）：不是单 tick 动作，而是一个会持续到完成/取消的目标。
  *  mine：移动到目标矿格 → 自动采集 → 满仓回仓 → 回来继续，直到目标采空或取消；
+ *  mine_hold：矿带盯守（2026-08-08 t3 实证）——无论目标矿当前是否存在都走向目标，
+ *    到达后矿在则 HARVEST、矿不在则 WAIT 守位等刷新（高频刷新矿带提前就位）；
  *  goto：移动到目标点即完成（交还 agent）。 */
 export interface HumanGoal {
   readonly id: string;
@@ -169,8 +171,8 @@ export function loadHumanCommands(source: HumanCommandSource): HumanCommandStore
     const goals: HumanGoal[] = [];
     if (Array.isArray(raw.goals)) {
       for (const g of raw.goals) {
-        if (g && typeof g === "object" && typeof g.unitId === "string" && g.kind === "mine" || (g && typeof g === "object" && g.kind === "goto")) {
-          const kind: HumanGoalKind = g.kind === "goto" ? "goto" : "mine";
+        if (g && typeof g === "object" && typeof g.unitId === "string" && (g.kind === "mine" || g.kind === "mine_hold" || g.kind === "goto")) {
+          const kind: HumanGoalKind = g.kind === "goto" ? "goto" : g.kind === "mine_hold" ? "mine_hold" : "mine";
           const t = g.target;
           if (!Array.isArray(t) || t.length !== 2 || !Number.isInteger(t[0]) || !Number.isInteger(t[1])) continue;
           goals.push({
@@ -230,6 +232,25 @@ function goalActionForUnit(state: TickState, unit: UnitSnapshot, goal: HumanGoal
     if (!state.resourceCells.has(cellKey(target))) return null; // 矿已采空 → 完成
     const dir = stepTowardPath(unit.position, target, obstacles);
     return dir === null ? { type: "WAIT" } : { type: "MOVE", direction: dir };
+  }
+  // mine_hold：矿带盯守——矿在不在都走向目标；到达后矿在 HARVEST、矿不在 WAIT
+  // （高频刷新矿带提前就位，不因"当前无矿"交还 agent。2026-08-08 t3 实证
+  //  mine 语义在矿消失时 satisfied → worker 永远到不了矿带）。
+  if (goal.kind === "mine_hold") {
+    if (unit.cargo > 0) {
+      const core = state.core;
+      if (core === null) return { type: "WAIT" };
+      const atCore = unit.position[0] === core.position[0] && unit.position[1] === core.position[1];
+      if (atCore) return { type: "DEPOSIT" };
+      const d = stepTowardPath(unit.position, core.position, obstacles);
+      return d === null ? { type: "WAIT" } : { type: "MOVE", direction: d };
+    }
+    const atTargetHold = unit.position[0] === target[0] && unit.position[1] === target[1];
+    if (atTargetHold) {
+      return state.resourceCells.has(cellKey(target)) ? { type: "HARVEST" } : { type: "WAIT" };
+    }
+    const d2 = stepTowardPath(unit.position, target, obstacles);
+    return d2 === null ? { type: "WAIT" } : { type: "MOVE", direction: d2 };
   }
   // goto
   const atTarget = unit.position[0] === target[0] && unit.position[1] === target[1];
