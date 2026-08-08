@@ -49,6 +49,7 @@ import { loadMiningEffectiveness, warmMiningEffectiveness } from "./lib/mining-e
 import { loadAuditTrail, warmAuditTrail } from "./lib/audit-trail.ts";
 import { loadConsensusMining, warmConsensusMining } from "./lib/consensus-mining.ts";
 import { loadShopHistory, refreshShopHistory } from "./lib/shop-history.ts";
+import { loadAlignmentAudit, warmAlignmentAudit } from "./lib/alignment-audit.ts";
 import { appendHumanAudit, loadHumanAudit } from "./lib/human-audit.ts";
 import { loadCoreMovingGuard } from "./lib/human-command-guard.ts";
 
@@ -370,6 +371,12 @@ app.get("/api/alliance/mining", (c) => {
   // 只读组合（快照核心位置 + 共享测绘 observers + 冲突），30s 缓存 + 启动预热。
   return c.json(loadAllianceMining());
 });
+app.get("/api/audit/alignment", (c) => {
+  // 决策-分配对齐审计（2026-08-08，综合决策 + 执行闭环）：决策采集动作占比 vs
+  // 矿缺口/分工兑现——一次调用看出"分配了为什么没人采"（采集占比低=决策脱节，
+  // 分工 0 兑现=执行没派）。只读组合 30s 缓存 + 预热，不进周期循环。
+  return c.json(loadAlignmentAudit());
+});
 app.get("/api/audit/trail", (c) => {
   // 统一审计流水（2026-08-08，综合调试）：human + command + arbitration + supervisor
   // 四源 jsonl 归一 → 时间倒序 "什么时候发生了什么"。?tenant=&source=&limit= 过滤。
@@ -675,6 +682,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
   setTimeout(() => { try { warmMiningEffectiveness(); } catch { /* 忽略 */ } }, 105);
   setTimeout(() => { try { warmAuditTrail(); } catch { /* 忽略 */ } }, 108);
   setTimeout(() => { try { warmConsensusMining(); } catch { /* 忽略 */ } }, 110);
+  setTimeout(() => { try { warmAlignmentAudit(); } catch { /* 忽略 */ } }, 115);
   const warmLight = (): void => {
     try {
       refreshAllianceSurvey(); // 共享测绘聚合 30s 缓存（读 survey 内存缓存，快）
