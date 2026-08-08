@@ -3,6 +3,7 @@
  * 由 public/app.js 移植：chrome（顶栏/侧栏/决策流/对话框）剥离到 React 组件，
  * 地图/战术/回放/覆盖层保持原生 Canvas + DOM。入口 createMapEngine(host)。 */
 import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QUART, maxUnitHp, unitSpritePath, escapeHtml, pKey, samePos, bucketScale, gridStepFor, extendScreen, replayInterp } from './utils.js';
+import { CANVAS_FONT, setCtx, ring, drawMeterBar, drawUnitHealth, drawWorkerCargo, drawCoreOwnerLabel, drawStackBadge } from './canvas.js';
 import { getJSON } from './api.js';
 import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets, tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability } from './tactical.js';
 import { findPath } from './pathfind.ts';
@@ -13,7 +14,6 @@ const TENANTS = ['t1', 't2', 't3', 't4'];
 const POLL_MS = 3000;
 const UNIT_ICONS: Record<string, string> = { resource: '/assets/ui/icons/resource.png', population: '/assets/ui/icons/population.png' };
 /** Canvas font: bold sans stack - Geist for latin, PingFang/YaHei/Noto Sans CJK for CJK (never SimSun). */
-const CANVAS_FONT = '"Geist", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
 /* ============================================================
  * 内部数据接口：官方快照/事件为 legacy JSON 结构，核心公共 API 类型见 types.ts。
  * 字段以运行时为准，索引签名兜底（渐进类型化：结构 + 常用字段精确，其余宽松）。
@@ -952,67 +952,6 @@ function cellAlpha(c: any, floor = 0.45) {
   if (!state.soloTenant) return floor + 0.18; // 全局地图记忆层略亮
   return floor;
 }
-function drawMeterBar(s: any, x: any, y: any, cell: any, value: any, maximum: any, color: any, labelColor: any, displayLabel: any) {
-  const gap = Math.max(1.5, cell * 0.04), maxWidth = cell * 0.9, barHeight = Math.max(2, cell * 0.06);
-  const ratio = maximum > 0 ? Math.max(0, Math.min(1, value / maximum)) : 0;
-  let fontSize = Math.max(6, cell * 0.15);
-  ctx.save();
-  ctx.font = '600 ' + fontSize + 'px ' + CANVAS_FONT;
-  ctx.textBaseline = 'middle';
-  let labelWidth = ctx.measureText(displayLabel).width;
-  const preferredBarWidth = cell * 0.35;
-  if (labelWidth + gap + preferredBarWidth > maxWidth) {
-    fontSize = Math.max(cell * 0.1, fontSize * (maxWidth - gap - preferredBarWidth) / labelWidth);
-    ctx.font = '600 ' + fontSize + 'px ' + CANVAS_FONT;
-    labelWidth = ctx.measureText(displayLabel).width;
-  }
-  const barWidth = Math.max(cell * 0.2, Math.min(preferredBarWidth, maxWidth - labelWidth - gap));
-  const startX = x - (labelWidth + gap + barWidth) / 2, barX = startX + labelWidth + gap;
-  ctx.fillStyle = labelColor; ctx.shadowColor = '#000'; ctx.shadowBlur = 2;
-  ctx.fillText(displayLabel, startX, y);
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = 'rgba(20,22,26,.9)'; ctx.fillRect(barX, y - barHeight / 2, barWidth, barHeight);
-  ctx.fillStyle = color; ctx.fillRect(barX, y - barHeight / 2, barWidth * ratio, barHeight);
-  ctx.strokeStyle = 'rgba(255,255,255,.16)'; ctx.lineWidth = 1;
-  ctx.strokeRect(barX + .5, y - barHeight / 2 + .5, barWidth - 1, barHeight - 1);
-  ctx.restore();
-}
-function drawUnitHealth(s: any, x: any, y: any, cell: any, hp: any, maxHp: any) {
-  if (maxHp <= 0 || hp >= maxHp) return;
-  drawMeterBar(s, x, y, cell, hp, maxHp, hp > 1 ? '#8fce9f' : '#e0625d', '#e4e4e7', `${hp}/${maxHp}`);
-}
-function drawWorkerCargo(s: any, x: any, y: any, cell: any, cargo: any) {
-  if (!cargo) return;
-  drawMeterBar(s, x, y, cell, cargo, 2, '#8fce9f', '#b2d2ba', `×${cargo}`);
-}
-function drawCoreOwnerLabel(s: any, x: any, y: any, cell: any, username: any, controlled: any) {
-  const label = '@' + (username || '?');
-  let fontSize = Math.max(6, Math.min(9, cell * 0.17));
-  const maxWidth = cell * 0.95;
-  ctx.save();
-  ctx.font = '600 ' + fontSize + 'px ' + CANVAS_FONT;
-  const measured = ctx.measureText(label).width;
-  if (measured > maxWidth) { fontSize = Math.max(5.5, fontSize * maxWidth / measured); ctx.font = '600 ' + fontSize + 'px ' + CANVAS_FONT; }
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
-  ctx.lineWidth = Math.max(1.6, fontSize * 0.28); ctx.strokeStyle = 'rgba(0,0,0,.9)';
-  ctx.strokeText(label, x, y);
-  ctx.fillStyle = controlled ? '#a8c8dd' : '#e9a0aa';
-  ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 2; ctx.shadowOffsetY = 1;
-  ctx.fillText(label, x, y);
-  ctx.restore();
-}
-function drawStackBadge(s: any, x: any, y: any, cell: any, count: any, color: any) {
-  const fontSize = Math.max(6, cell * 0.13), label = '×' + count, padding = Math.max(1, cell * 0.045);
-  const height = fontSize + padding * 2;
-  ctx.save();
-  ctx.font = '600 ' + fontSize + 'px ' + CANVAS_FONT;
-  const width = ctx.measureText(label).width + padding * 2;
-  ctx.fillStyle = 'rgba(0,0,0,.92)'; ctx.strokeStyle = color; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.roundRect(x - width / 2, y - height / 2, width, height, height / 2); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#fafafa'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(label, x, y + 0.25);
-  ctx.restore();
-}
 /** 选中波纹（官方 SELECTION_RIPPLE 900ms，双波非线性扩散） */
 const SELECTION_RIPPLE_MS = 900;
 const selectionRipples = new Map(); // objId -> born
@@ -1154,12 +1093,6 @@ function drawResources(cells: any, s: any) {
   }
   ctx.fill();
   ctx.restore();
-}
-function ring(x: any, y: any, r: any, color: any, width = 1.5, dash: number[] = []) {
-  ctx.strokeStyle = color; ctx.lineWidth = width;
-  ctx.setLineDash(dash);
-  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
-  ctx.setLineDash([]);
 }
 /** 全局联盟：加载 4 租户最新决策计划（算法 MOVE/SHOOT 虚线），不阻塞 poll。 */
 async function loadGlobalPlans() {
@@ -4544,6 +4477,7 @@ export function createMapEngine(host: any) {
   // 高刷/浏览器优化：alpha:false（画布始终不透明，跳过 alpha 合成）+
   // desynchronized（低延迟合成，减少输入到像素延迟；不影响内容绘制）
   ctx = els.canvas.getContext('2d', { alpha: false, desynchronized: true }) ?? els.canvas.getContext('2d');
+  setCtx(ctx); // 画布助手层（canvas.ts）共享同一上下文
   initMinimap();
   const api = {
     toggleSolo: (t: any) => toggleSolo(t),

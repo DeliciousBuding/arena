@@ -371,3 +371,13 @@ mapEngine.ts 对应函数。
 - **探针 TS 化**：probe-toast.mjs → probe-toast.ts（主树零 .mjs 遗留，Node 24 类型擦除直跑），
   加 @ts-nocheck（Playwright 黑盒探针，与 cc-regression 同约定）。
 - **验证**：完整回归 **22/22 全绿** + web 单测 34/34 + typecheck/build 全绿。
+
+### 9.19 画布绘制助手层 canvas.ts + 右键/队列回归加固（2026-08-08）
+- **抽取** `web/src/engine/canvas.ts`：CANVAS_FONT 常量 + ring/drawMeterBar/drawUnitHealth/
+  drawWorkerCargo/drawCoreOwnerLabel/drawStackBadge 6 个纯绘制助手（模块级 ctx + setCtx，
+  与 mapEngine 约定一致；实证 0 调用在静态缓存 ctx 换入路径）。mapEngine 4530→4466 行。
+- **6e 右键菜单根治**：与 6f 同源——原按 /api/world 实时位点击，mid-tick 与画布插值位差数格
+  脱靶（右键落空）；改为画布插值绘制位（引擎按 id 实时命中），live 兜底。
+- **6g 队列加固**：资产行探测加 20s 重试循环 + MOVE 按钮轮询（高负载动作框渲染 >800ms）；
+  队列轮询窗 2.4s→4s。
+- **验证**：完整回归 **22/22 全绿** + web 单测 34/34 + typecheck/build 全绿。
