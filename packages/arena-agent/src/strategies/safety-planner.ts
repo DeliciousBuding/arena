@@ -2217,13 +2217,21 @@ export class SafetyPlanner {
       // Ranger 单独前压仍会被守军逐个点掉（t2 二轮 jerkman 攻坚实证：5 Ranger
       // 独立前压全灭、核心未破）。Ranger 与 Vanguard 同集结位汇合（同目标同
       // 点位同 rallyReady 状态），组齐/超时后再一起压上——成建制共同出击。
+      // **目标源必须与 Vanguard 同（enemyHints 新鲜记忆）**：coreHuntTargets 含
+      // survey 跨 run 陈旧播种，会让 Ranger 集结到"没有任何人在进攻"的旧目标
+      // （t2 生产实证 72216-72258：ranger_rally 连续 42+ tick，Vanguard 在
+      // vanguard_hunt 别处扫荡，rally 永不 ready）。仅新鲜记忆才有集结目标。
+      const rallyCore = this.world
+        .enemyHints(this.config.enemyCoreMemoryTicks ?? 60)
+        .find((hint) => hint.kind === "CORE");
       if (
         this.config.rallyAssault === true &&
-        enemyCoreMemory !== undefined &&
-        !this.rallyReady(enemyCoreMemory.position, cellKey(enemyCoreMemory.position), state) &&
-        chebyshev(unit.position, enemyCoreMemory.position) > RALLY_ATTACK_RADIUS
+        rallyCore !== undefined &&
+        chebyshev(state.core.position, rallyCore.position) <= BOUNDED_RAID_DISTANCE &&
+        !this.rallyReady(rallyCore.position, cellKey(rallyCore.position), state) &&
+        chebyshev(unit.position, rallyCore.position) > RALLY_ATTACK_RADIUS
       ) {
-        const point = this.rallyPoint(enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
+        const point = this.rallyPoint(rallyCore.position, state.core.position, militaryObstacles, state.resourceCells);
         if (!samePosition(unit.position, point)) {
           const direction = stepToward(unit.position, point, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_rally");

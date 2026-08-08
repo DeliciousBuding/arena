@@ -194,3 +194,21 @@ test("rally：Vanguard+Ranger 共享集结——先到的等、后到的赶路�
   assert.equal(byId["v00"], "vanguard_rally_hold", `Vanguard 首到应等待，实际=${byId["v00"]}`);
   assert.equal(byId["r00"], "ranger_rally", `Ranger 应赶路集结，实际=${byId["r00"]}`);
 });
+
+test("rally Ranger：仅 survey 陈旧播种（无新鲜 enemyHints）→ 不集结（回归 72216-72258）", () => {
+  const planner = new SafetyPlanner(rallyConfig());
+  // 只播种 coreHuntTargets（跨 run 陈旧），不注册 enemyHints——与 Vanguard 同源
+  // 判定：无新鲜敌核记忆 = 无集结目标，Ranger 照常前压（ranger_move），不 park。
+  const targets: readonly CoreHuntTarget[] = [
+    { position: [49, 0], lastSeenTick: 1, source: "CORE", owner: "jerkman" },
+  ];
+  planner.seedCoreHuntTargets(targets);
+  const plan = planner.decide({ state: makeState(2, [], [], [[5, 0], [5, 1]]), policy: PRESSURE_POLICY });
+  const rangerIntents = Object.entries(plan.intents ?? {})
+    .filter(([id]) => id.startsWith("r"))
+    .map(([, intent]) => intent);
+  assert.ok(
+    rangerIntents.length === 2 && rangerIntents.every((i) => i === "ranger_move"),
+    `无新鲜记忆不应集结，实际 intents=${JSON.stringify(rangerIntents)}`,
+  );
+});
