@@ -175,11 +175,19 @@ function validateCoreAction(state: TickState, action: CoreAction): ValidationIss
       return null;
     case "HEAL":
       return state.core.hp < 5 ? null : issue("core_unavailable", "Core is already at maximum HP");
-    case "REPAIR_SHIELD":
-      if (state.core.state !== "NORMAL" || state.core.shield >= 5) {
+    case "REPAIR_SHIELD": {
+      // W9 beacon-hold：持标时官方规则盾上限 5→10（maxShieldWithBeacon）。
+      // validator 是纯函数无 config，持标判定来自 state.beacon：CARRIED 且 carrier
+      // 是我方单位。非持标 shieldCap=5 与历史行为一致（零回归）。
+      const ownsBeacon = state.beacon.status === "CARRIED"
+        && state.beacon.carrierId !== null
+        && state.units.some((unit) => unit.id === state.beacon.carrierId);
+      const shieldCap = ownsBeacon ? 10 : 5;
+      if (state.core.state !== "NORMAL" || state.core.shield >= shieldCap) {
         return issue("core_unavailable", "shield repair requires a stationary damaged Core");
       }
       return state.resources >= 1 ? null : issue("insufficient_resources", "shield repair costs one resource");
+    }
     case "SPAWN":
       if (state.core.state !== "NORMAL") return issue("core_unavailable", "moving Core cannot spawn");
       return state.resources >= SPAWN_COST[action.unitType]

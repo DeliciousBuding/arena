@@ -60,6 +60,17 @@ export interface WorkerTaskPlannerConfig {
 export interface PlanOptions {
   /** 迁移后测绘期激活（DeterministicPlanner 依据核心位置变化判定）。 */
   readonly surveyBurstActive?: boolean;
+  /** 打转封锁（W5）：WorkerLivenessTracker 的封锁视图。提供时 plan() 在 Hungarian
+   *  候选代价里对 isCellBlocked 的死目标格施加大额惩罚（封锁格排后，不剔除——
+   *  全部候选都被封锁时仍能分配，避免饥饿）。缺省 = undefined = 零回归（无封锁
+   *  状态，行为 bit-for-bit 不变）。tick 用 snapshot.tick。 */
+  readonly cellBlocker?: CellBlocker;
+}
+
+/** 封锁视图（W5）：WorkerLivenessTracker 实现 isCellBlocked(target, currentTick)。
+ *  接口隔离避免 planner 反向依赖 runtime 层——调用方传 tracker 或任何 mock。 */
+export interface CellBlocker {
+  isCellBlocked(target: Position, currentTick: number): boolean;
 }
 
 export const DEFAULT_STICKY_BONUS = 0.5;
@@ -83,6 +94,11 @@ const STALE_AGE_WEIGHT = 0.2;
 const STALE_MAX_PENALTY = 8.0;
 /** seeded（跨 run 测绘种子）额外惩罚：无真实观察，置信低于新鲜记忆。 */
 const SEEDED_PENALTY = 2.0;
+/** 打转封锁（W5）：死目标格的封锁惩罚。施加给 isCellBlocked 的候选格，使其
+ *  netValue 远低于任何未封锁的真实候选（典型 netValue 项量级 < 10，BLOCKADE
+ *  远大于）但仍高于 WAIT（waitCost=maxReal+1e6）——封锁格在 Hungarian 候选排序
+ *  里排后但不剔除，全部候选都被封锁时仍能分配（防饥饿）。参考 :2557。 */
+const BLOCKADE_PENALTY = 100.0;
 /** 任务分配路由预算：半径 24（与 stepToward 默认一致，走廊级绕行）+ 1024 节点
  *  （每 worker 一次 BFS 覆盖全部候选格，热路径可控）。 */
 const ASSIGNMENT_ROUTE_RADIUS = 24;
@@ -259,6 +275,12 @@ export class WorkerTaskPlanner {
       // 由哨兵代价大小关系保证，Hungarian 最小化总代价时自然遵守。
       const waitCost = maxReal + 1_000_000;
       const forbiddenCost = waitCost + 1_000_000;
+      // 打转封锁（W5）：cellBlocker 缺省 = undefined = 零回归（封锁惩罚项恒 0）。
+      // 提供时对 isCellBlocked 的死目标格在最终代价上加 BLOCKADE_PENALTY——
+      // 施加在 isCollectable 检查之后（封锁格不被 isCollectable 误判 forbidden，
+      // 仍可在全部候选都被封锁时被分配，防饥饿；只是排序排后）。
+      const cellBlocker = options.cellBlocker;
+      const blockadeTick = snapshot.tick;
       // 矩阵：行 = Worker；列 = 候选资源格 + 每 Worker 一个 dummy WAIT 列
       // （rows <= columns 的 rectangular 前提由此满足）。
       const matrix = realNetValues.map((row, rowIndex) => [
@@ -274,6 +296,12 @@ export class WorkerTaskPlanner {
             !isCollectable(net, worker, cell.position, this.mission, snapshot.refillPredictions)
           ) {
             return forbiddenCost;
+          }
+          // 封锁惩罚（W5）：isCellBlocked 的死目标格代价 +BLOCKADE_PENALTY（netValue
+          // 越大代价越小，封锁格代价被抬高 → Hungarian 排后）。cell undefined 时
+          // 无 position 可查（且 net 必为 -∞ 已被上面 forbidden 拦截），跳过。
+          if (cell !== undefined && cellBlocker !== undefined && cellBlocker.isCellBlocked(cell.position, blockadeTick)) {
+            return -net + BLOCKADE_PENALTY;
           }
           return -net;
         }),

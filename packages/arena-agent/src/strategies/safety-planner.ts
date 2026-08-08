@@ -270,6 +270,19 @@ const SCOUT_EVADE_RADIUS = 3;
 const SCOUT_COOLDOWN_TICKS = 3;
 /** 到达即进入冷却的 Core 距离（竞品 within three cells）。 */
 const SCOUT_HOME_RADIUS = 3;
+/** cargoBlockedSelfHeal 默认参数（cargo-rescue-v1，2026-08-09，W6）：
+ *  cooldownTicks=30（靠拢触发后 30 tick 内不重触发——迁移中不产兵，频繁靠拢
+ *  = 经济停滞）、stallTicks=10（靠拢路径被堵 10 tick 仍未到 → 放弃靠拢）、
+ *  minWorkers=2（同时 ≥2 个满载 worker cargo 不变才触发，单个可能是正常排队）、
+ *  stallCargoTicks=6（cargo 连续 6 tick 不变视为"被堵"，与 liveness 6 tick
+ *  无限循环同口径）、queueHoldRadius=2（满载 worker 距 Core ≤2 入口满 →
+ *  原地排队 hold）、entryOccupancyLimit=2（核心格/邻格容量 2 含 Core，≥2 即满）。 */
+const CARGO_RESCUE_COOLDOWN_TICKS = 30;
+const CARGO_RESCUE_STALL_TICKS = 10;
+const CARGO_RESCUE_MIN_WORKERS = 2;
+const CARGO_RESCUE_STALL_CARGO_TICKS = 6;
+const CARGO_QUEUE_HOLD_RADIUS = 2;
+const CARGO_QUEUE_ENTRY_LIMIT = 2;
 
 /** moveFailedAvoidance 绕行（v0.3 实验）：单位连续 MOVE_FAILED 后不再盲目重试
  *  同格——沿主方向垂直的候选方向探路（先 UP/DOWN 再 LEFT/RIGHT，排除障碍格）；
@@ -450,6 +463,22 @@ export class SafetyPlanner {
   private scoutEvadeState = new Map<string, { returnUntil: number; cooldownUntil: number }>();
   /** B8 守卫轮换 one-at-a-time：回修流程中的守卫（unitId → 名额占用截止 tick）。 */
   private healRotationActive = new Map<string, number>();
+  /** cargo-rescue-v1（W6，2026-08-09）：满载 worker 的 cargo 快照（unitId →
+   *  {cargo, tick}），用于检测"cargo 长时间不变 = 被堵"。每 tick decide 入口
+   *  刷新——比较当前 cargo 与上 tick 快照，不变则推进 stuckSince，变化则重置。 */
+  private cargoStuckSince = new Map<string, number>();
+  /** cargo-rescue-v1：上 tick 的满载 worker cargo 快照（unitId → cargo 值），
+   *  供本 tick 比较 cargo 是否变化。每 tick decide 入口刷新。 */
+  private cargoStuckCargoSnapshot = new Map<string, number>();
+  /** cargo-rescue-v1：cargoBlockedSelfHeal 冷却截止 tick——触发靠拢后该窗口内
+   *  不再重触发（避免每 tick 都迁移，迁移中不产兵 = 经济停滞）。 */
+  private cargoSelfHealUntilTick = 0;
+  /** cargo-rescue-v1：靠拢开始 tick——用于检测"靠拢路径被堵 N tick 仍未到
+   *  最近满载 worker 邻格 → 放弃靠拢"（超时撤退）。 */
+  private cargoSelfHealStartedTick = 0;
+  /** cargo-rescue-v1：靠拢目标 worker id（靠拢进行中保持同一目标，防每 tick
+   *  换目标导致 Core 原地震荡）。靠拢完成/超时后清空。 */
+  private cargoSelfHealTargetId: string | null = null;
   /** C2 RECOVERY：上次见到的我方 Core id（全新 UUID = 重生/替换 → 清战场记忆）。 */
   private lastCoreId: string | null = null;
   /** C2 RECOVERY 触发次数（telemetry/测试可读）。 */
@@ -1017,6 +1046,38 @@ export class SafetyPlanner {
     this.allocatedMines = new Map<string, number>();
     for (const unit of state.units) this.lastWorkerPos.set(unit.id, unit.position);
 
+    // cargo-rescue-v1（W6，2026-08-09，cargo 被堵检测）：满载 worker 的 cargo
+    // 连续 N tick 不变 = 被堵（无法卸货——入口满/Core 迁移中/路径被堵）。
+    // 比较当前 cargo 与上 tick 记录：不变 → 推进 stuckSince；变化（卸货成功）
+    // → 重置。只有 cargo > 0 的 worker 参与统计（空载 worker cargo=0 不算被堵）。
+    // 死亡 worker 的残留条目由下方 alive 清理一并处理。
+    if (this.config.cargoRescue === true) {
+      const aliveCargoWorkers = new Set(state.workers.filter((w) => w.cargo > 0).map((w) => w.id));
+      // 清理死亡/已卸货 worker 的 stuck 记录
+      for (const unitId of this.cargoStuckSince.keys()) {
+        if (!aliveCargoWorkers.has(unitId)) this.cargoStuckSince.delete(unitId);
+      }
+      // 推进/重置 stuck 计数
+      const previousCargo = this.cargoStuckCargoSnapshot;
+      for (const worker of state.workers) {
+        if (worker.cargo <= 0) continue;
+        const prev = previousCargo.get(worker.id);
+        if (prev !== undefined && worker.cargo === prev) {
+          // cargo 不变 → 保持/推进 stuckSince（首次不变时初始化）
+          if (!this.cargoStuckSince.has(worker.id)) {
+            this.cargoStuckSince.set(worker.id, state.tick);
+          }
+        } else {
+          // cargo 变化（卸货成功/新采）→ 重置
+          this.cargoStuckSince.delete(worker.id);
+        }
+      }
+      // 更新 cargo 快照供下 tick 比较
+      this.cargoStuckCargoSnapshot = new Map(
+        state.workers.filter((w) => w.cargo > 0).map((w) => [w.id, w.cargo]),
+      );
+    }
+
     const actions: Record<string, UnitAction> = {};
     const intents: Record<string, string> = {};
     const obstacles = this.world.obstacles(new Set([
@@ -1317,6 +1378,21 @@ export class SafetyPlanner {
     const maxPatrolRadius = this.resourceAssignmentMaxDistanceFromCore(state);
 
     if (unit.cargo > 0) {
+      // cargo-rescue-v1（W6，2026-08-09，清旧目标）：满载 worker 不清理旧采集目标
+      // → 追空矿冻结（reference `clear_worker_goal` :1563 + 目标优先级第一层"当前
+      // 可见未预留资源"）。满载 worker 下一 tick 本该 return_home 卸货，但
+      // memory.harvestTarget 仍指向已采空/不可见的旧矿——卸完货立刻又 go_harvest_mem
+      // 追空矿、HARVEST 失败 → 无限循环。变体开启时：满载 worker 的采集目标
+      // 不在当前可见资源里 → 清除（不追空矿冻结）。当前可见矿仍保留（worker
+      // 卸完货可立刻折返继续采）。零回归：变体关闭时不执行（历史行为保留旧目标）。
+      if (this.config.cargoRescue === true && memory.harvestTarget !== null) {
+        const visibleResources = [...state.resourceCells];
+        const targetKey = cellKey(memory.harvestTarget);
+        if (!visibleResources.includes(targetKey)) {
+          memory.harvestTarget = null;
+          memory.workerMode = "patrol";
+        }
+      }
       // 产兵让位（spawn-yield-v1，2026-08-08）：核心本 tick 计划 SPAWN 时，
       // 满载 worker 在核心格/核心邻格 → 让位——DEPOSIT Phase8 先于 SPAWN
       // Phase10，worker 卸货成功仍占核心格会挡掉同 tick SPAWN（生产 t2 实证
@@ -1386,6 +1462,30 @@ export class SafetyPlanner {
           }
         }
       } else if (home !== null) {
+        // cargo-rescue-v1（W6，2026-08-09，排队 hold）：满载 worker 距 Core ≤2
+        // 且核心格/邻格入口已满（容量 2 含 Core）→ worker_hold_cargo_queue（原地
+        // WAIT 不争抢，与 worker_hold_cargo_moving 区分——后者是 Core MOVING 中
+        // 持货待命，前者是 Core NORMAL 但入口拥堵排队）。reference `cargo_queue_hold`
+        // :3707-3710：距 Core ≤2 入口满时原地 hold，不与其他满载 worker 争抢核心格
+        // （争抢 = MOVE_CONTESTED 互堵 → 全卡死 → 0 卸货 → 经济冻结）。入口判定：
+        // stepToward 的下一格（朝 Core 方向）占用 ≥ CARGO_QUEUE_ENTRY_LIMIT（2）
+        // → 入口满，原地 WAIT。零回归：变体关闭时不执行（历史行为照常争抢）。
+        if (this.config.cargoRescue === true && manhattan(unit.position, home) <= CARGO_QUEUE_HOLD_RADIUS) {
+          const entryDirection = stepToward(unit.position, home, movementObstacles);
+          if (entryDirection !== null) {
+            const entryCell = move(unit.position, entryDirection);
+            const occupancy = occupancyCounts(state);
+            // 敌占格视为满（不争抢敌占入口——争抢 = 送死）
+            const enemyBlocking = state.visibleEnemies.some(
+              (enemy) => samePosition(enemy.position, entryCell),
+            );
+            const entryCount = occupancy.get(cellKey(entryCell)) ?? 0;
+            if (enemyBlocking || entryCount >= CARGO_QUEUE_ENTRY_LIMIT) {
+              set(unit, { type: "WAIT" }, "worker_hold_cargo_queue");
+              return;
+            }
+          }
+        }
         const stuckTicks = this.moveFailedStreak.get(unit.id) ?? 0;
         const direction =
           this.config.moveFailedAvoidance === true && stuckTicks >= 2
@@ -2913,12 +3013,23 @@ export class SafetyPlanner {
    *  CORE_SPAWN_FAILED/CELL_UNIT_LIMIT）。资源不足时不预判 spawn →
    *  worker 正常卸货补充资源（预判与 decideCore 同口径，误差 = 白等 1 tick
    *  卸货，可接受；绝不反向挡 spawn）。 */
+
+  /** W9 beacon-hold 盾上限（持标时 5→10，对齐官方 maxShieldWithBeacon）。
+   *  beaconHold 变体未启用 → 恒 5（零回归）；启用且持标（CARRIED + carrier
+   *  是我方单位）→ 10。持标判定与 plan-validator / W 源码 _owns_beacon 一致。 */
+  private shieldCap(state: TickState): number {
+    if (this.config.beaconHold !== true) return 5;
+    const beacon = state.beacon;
+    if (beacon.status !== "CARRIED" || beacon.carrierId === null) return 5;
+    return state.units.some((unit) => unit.id === beacon.carrierId) ? 10 : 5;
+  }
+
   private coreWantsSpawn(state: TickState): boolean {
     const core = state.core;
     if (core === null || core.state !== "NORMAL") return false;
     if (state.population >= this.config.populationCeiling) return false;
     if (core.hp < 5) return false; // heal 优先于 spawn
-    if (core.shield < 5 && state.resources >= 1) return false; // repair 优先
+    if (core.shield < this.shieldCap(state) && state.resources >= 1) return false; // repair 优先（W9 beacon-hold 持标盾上限 10）
     if (this.config.accumulateTarget > 0 && state.resources >= this.config.accumulateTarget) {
       return false; // 积累目标拦截，不产兵
     }
@@ -3059,11 +3170,70 @@ export class SafetyPlanner {
         }
       }
     }
+    // cargo-rescue-v1（W6，2026-08-09，cargoBlockedSelfHeal）：cargo 被堵检测
+    // （多个满载 worker 长时间 cargo 不变 + Core 未移动）→ Core 向最近满载
+    // worker 靠拢 1 格（reference `cargo_blocked` :9934 + `CORE_MIGRATION_ENABLED
+    // or cargo_blocked` :9946-9953，决策原因 core migrate reason=cargo_blocked_self_heal）。
+    // liveness 恢复对 cargo worker 无效（worker 已满载、无采集目标可清、无方向可
+    // rotate → 6 tick 无限循环），Core 主动靠拢打开卸货通道是唯一出路。
+    // 仲裁优先级：coreEvade > cargoBlockedSelfHeal > heal/repair/spawn
+    // （coreEvade 已 return；靠拢仅 NORMAL 非迁移期；与迁移 conductor 隔离）。
+    // 冷却 cargoBlockedSelfHealCooldownTicks（默认 30）避免每 tick 都迁移
+    // （迁移中不产兵 = 经济停滞）；靠拢路径被堵超时撤退 cargoBlockedSelfHealStallTicks
+    // （默认 10，超时放弃靠拢）。
+    if (this.config.cargoRescue === true && core.state === "NORMAL") {
+      const cooldownTicks = this.config.cargoBlockedSelfHealCooldownTicks ?? CARGO_RESCUE_COOLDOWN_TICKS;
+      const stallTicks = this.config.cargoBlockedSelfHealStallTicks ?? CARGO_RESCUE_STALL_TICKS;
+      const stallCargoTicks = this.config.cargoBlockedSelfHealStallCargoTicks ?? CARGO_RESCUE_STALL_CARGO_TICKS;
+      const minWorkers = this.config.cargoBlockedSelfHealMinWorkers ?? CARGO_RESCUE_MIN_WORKERS;
+      // 靠拢进行中超时检测：靠拢开始后 stallTicks 仍未到目标 → 放弃（恢复产兵）
+      if (this.cargoSelfHealTargetId !== null && this.cargoSelfHealStartedTick > 0) {
+        if (state.tick - this.cargoSelfHealStartedTick >= stallTicks) {
+          // 超时撤退：清状态，进入冷却
+          this.cargoSelfHealTargetId = null;
+          this.cargoSelfHealStartedTick = 0;
+          this.cargoSelfHealUntilTick = state.tick + cooldownTicks;
+        }
+      }
+      // 冷却内不触发
+      if (state.tick >= this.cargoSelfHealUntilTick) {
+        // 检测被堵满载 worker：cargo > 0 且 stuckSince 距今 ≥ stallCargoTicks
+        const stuckCargoWorkers = state.workers.filter((worker) => {
+          if (worker.cargo <= 0) return false;
+          const since = this.cargoStuckSince.get(worker.id);
+          return since !== undefined && state.tick - since >= stallCargoTicks;
+        });
+        if (stuckCargoWorkers.length >= minWorkers) {
+          // 选最近满载 worker 作为靠拢目标（确定性：距离升序 + id tie-break）
+          const target = stuckCargoWorkers
+            .slice()
+            .sort(
+              (a, b) =>
+                manhattan(a.position, core.position) - manhattan(b.position, core.position) ||
+                a.id.localeCompare(b.id),
+            )[0]!;
+          // 靠拢方向：向目标 worker 走 1 格（stepToward 走 BFS 最近路径首步）
+          const approachDirection = stepToward(
+            core.position,
+            target.position,
+            this.world.obstacles(state.obstacleCells),
+          );
+          if (approachDirection !== null) {
+            this.coreMoveDirection = approachDirection;
+            this.cargoSelfHealTargetId = target.id;
+            this.cargoSelfHealStartedTick = state.tick;
+            this.cargoSelfHealUntilTick = state.tick + cooldownTicks;
+            intents.core = "cargo_blocked_self_heal";
+            return { type: "START_MOVE", direction: approachDirection };
+          }
+        }
+      }
+    }
     if (core.hp < 5) {
       intents.core = "core_heal";
       return { type: "HEAL" };
     }
-    if (core.shield < 5 && state.resources >= 1 && core.state === "NORMAL") {
+    if (core.shield < this.shieldCap(state) && state.resources >= 1 && core.state === "NORMAL") {
       intents.core = "repair_shield";
       return { type: "REPAIR_SHIELD" };
     }

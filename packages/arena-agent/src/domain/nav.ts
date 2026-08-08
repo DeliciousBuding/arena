@@ -311,3 +311,70 @@ function compareTuple(a: readonly number[], b: readonly number[]): number {
   }
   return a.length - b.length;
 }
+
+/* ---------- W8 探索半径模式化 + wide 合并（2026-08-09）----------
+ * 模式化 leash 纯函数 + 常量，对齐 reference/arena-hero-clone-waaiging
+ * arena_hero_strategy.py HEAD 26675e36 半径常量区 :109-130。消费接线由收口
+ * 统一处理（safety-planner.ts/worker-task-planner.ts），此处只提供能力。
+ *
+ * | 常量 | 值 | reference 行号 | 语义 |
+ * |------|----|---------------|------|
+ * | DEVELOP_LEASH_DISTANCE | 38 | :109 | DEVELOP_RESOURCE_TARGET_CORE_LEASH_DISTANCE |
+ * | AGGRESS_SWEEP_* | 10/8/28 | :113-115 | initial/step/max |
+ * | BEACON_SWEEP_* | 12/6/36 | :119-121 | initial/step/max |
+ * | RETURN_TOLERANCE | 4 | :126 | 返程回退容差 |
+ */
+
+export const DEVELOP_LEASH_DISTANCE = 38;
+export const AGGRESS_SWEEP_INITIAL_RADIUS = 10;
+export const AGGRESS_SWEEP_STEP = 8;
+export const AGGRESS_SWEEP_MAX = 28;
+export const BEACON_SWEEP_INITIAL_RADIUS = 12;
+export const BEACON_SWEEP_STEP = 6;
+export const BEACON_SWEEP_MAX = 36;
+export const RETURN_TOLERANCE = 4;
+
+/** develop 模式 leash 距离（恒 38，对齐 DEVELOP_RESOURCE_TARGET_CORE_LEASH
+ *  :109）。coreDist 非有限/负 → throw（防配置注入）。 */
+export function developLeash(coreDist: number): number {
+  if (!Number.isFinite(coreDist) || coreDist < 0) {
+    throw new Error(`developLeash: coreDist must be finite non-negative (got ${coreDist})`);
+  }
+  return DEVELOP_LEASH_DISTANCE;
+}
+
+/** aggress 模式 sweep 调度三元组 {initial=10, step=8, max=28}（:113-115）。
+ *  sweepStep 非整数/负 → throw（防迭代序号注入）。调度不随 sweepStep 变化
+ *  （固定三元组，消费侧按 step 递进到 max 封顶）。 */
+export function aggressSweepRadius(sweepStep: number): {
+  readonly initial: number;
+  readonly step: number;
+  readonly max: number;
+} {
+  if (!Number.isInteger(sweepStep) || sweepStep < 0) {
+    throw new Error(`aggressSweepRadius: sweepStep must be non-negative integer (got ${sweepStep})`);
+  }
+  return Object.freeze({
+    initial: AGGRESS_SWEEP_INITIAL_RADIUS,
+    step: AGGRESS_SWEEP_STEP,
+    max: AGGRESS_SWEEP_MAX,
+  });
+}
+
+/** beacon 模式 sweep 调度三元组 {initial=12, step=6, max=36}（:119-121）。 */
+export function beaconSweepRadius(): {
+  readonly initial: number;
+  readonly step: number;
+  readonly max: number;
+} {
+  return Object.freeze({
+    initial: BEACON_SWEEP_INITIAL_RADIUS,
+    step: BEACON_SWEEP_STEP,
+    max: BEACON_SWEEP_MAX,
+  });
+}
+
+/** 返程回退容差（恒 4，对齐 reference :126）。 */
+export function returnTolerance(): number {
+  return RETURN_TOLERANCE;
+}

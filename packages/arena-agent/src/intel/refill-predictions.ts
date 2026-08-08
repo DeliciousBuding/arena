@@ -131,3 +131,121 @@ export function surveyDbPath(dataRoot: string, tenant: string): string {
 }
 
 export { MIN_WINDOWS, REFILL_GAP_TICKS };
+
+/* ---------- W7 chunk 配额复察队（2026-08-09）----------
+ * 纯函数能力：chunkKey（轴归一）/ refillTickAtOrAfter（4-tick 对齐）/ chunkQuota
+ * （W 源码 _chunk_quota）/ refillProbeAllowed（W 源码 _refill_probe_allowed）/
+ * planChunkResurvey（配额定向复察，并发 ≤3、近优先）。未接线 variant-registry
+ * /safety-planner，零回归——消费由收口统一处理。
+ * 参考：reference/arena-hero-clone-waaiging/arena_hero_strategy.py HEAD 26675e36
+ *   _chunk_quota :2135-2141 / _refill_tick_at_or_after :2143-2145 /
+ *   _refill_probe_allowed :2181-2191 / REFILL_PROBE_MAX_DISTANCE=40 :334 /
+ *   REFILL_PROBE_BACKTRACK_DISTANCE=12 :335。
+ */
+
+/** 轴归一：负坐标 -value-1 折正（与 W 源码 _chunk_quota ring 语义一致；
+ *  (-1,-1)→(0,0) 同 chunk，(-2,-3)→(1,2)）。正坐标不变。 */
+function axisFold(value: number): number {
+  return value < 0 ? -value - 1 : value;
+}
+
+/** chunk 键（轴归一单 cell 串，供外部测绘/聚合用）。 */
+export function chunkKey(x: number, y: number): string {
+  return `${axisFold(x)},${axisFold(y)}`;
+}
+
+/** 刷新 tick 取整到 4 倍数（W 源码 _refill_tick_at_or_after :2143-2145）。
+ *  tick=0→0, 1→4, 3→4, 4→4, 5→8, 7→8, 8→8, 12→12。 */
+export function refillTickAtOrAfter(tick: number): number {
+  return tick + ((4 - (tick % 4)) % 4);
+}
+
+/** chunk 配额：max(2, 128//(8+ring))（W 源码 _chunk_quota :2135-2141）。
+ *  ring=0→16, 8→8, 16→5, 24→4, 120→2（触底保 2）。 */
+export function chunkQuota(ring: number): number {
+  return Math.max(2, Math.floor(128 / (8 + ring)));
+}
+
+/** 复察许可（W 源码 _refill_probe_allowed :2181-2191）：
+ *  - travel > 40（REFILL_PROBE_MAX_DISTANCE）→ 拒（硬上限，不论信标）；
+ *  - 无信标 → travel ≤ 40；
+ *  - beaconDist ≤ travel（信标在前向）→ 许可；
+ *  - beaconDist > travel（信标在远离方向，回退）→ 仅 travel ≤ 12 许可
+ *    （REFILL_PROBE_BACKTRACK_DISTANCE）。 */
+export function refillProbeAllowed(
+  travelDist: number,
+  beaconDist: number | null,
+  _currentTick: number,
+): boolean {
+  if (travelDist > 40) return false;
+  if (beaconDist === null) return travelDist <= 40;
+  if (beaconDist <= travelDist) return true;
+  return travelDist <= 12;
+}
+
+/** chunk 复察计划项（未接线分配，assignedWorkers 恒空）。 */
+export interface ChunkResurveyPlan {
+  readonly cell: string;
+  readonly quota: number;
+  readonly dueInTicks: number;
+  readonly assignedWorkers: readonly string[];
+}
+
+/** 配额定向复察计划（W 源码 _chunk_quota + 并发上限 min(3,(n+1)//2)）：
+ *  - predictedNextTick 先 4-tick 对齐（refillTickAtOrAfter）再算 dueInTicks；
+ *  - 过滤对齐后 dueInTicks < 0（已过期/死矿）；
+ *  - 32-cell chunk 聚合（轴归一 // 32），每 chunk 取至多 chunkQuota(ring) 个
+ *    （dueInTicks 升序，近优先）；
+ *  - 跨 chunk 按 dueInTicks 升序合并，取前 cap=min(3,(workerCount+1)//2) 个；
+ *  - assignedWorkers 占位 ID（w0,w1,…），每 plan 1 个，供分配层后续替换。 */
+export function planChunkResurvey(
+  predictions: ReadonlyMap<string, RefillPrediction>,
+  workerCount: number,
+  currentTick: number,
+): readonly ChunkResurveyPlan[] {
+  const cap = Math.min(3, Math.floor((workerCount + 1) / 2));
+  if (cap === 0) return [];
+
+  interface Candidate {
+    readonly cell: string;
+    readonly dueInTicks: number;
+    readonly quota: number;
+  }
+  const candidates: Candidate[] = [];
+  for (const [cell, pred] of predictions) {
+    const alignedTick = refillTickAtOrAfter(pred.predictedNextTick);
+    const dueInTicks = alignedTick - currentTick;
+    if (dueInTicks < 0) continue;
+    const [xs, ys] = cell.split(",");
+    const x = Number(xs);
+    const y = Number(ys);
+    const ring = Math.floor(axisFold(x) / 32) + Math.floor(axisFold(y) / 32);
+    const quota = chunkQuota(ring);
+    candidates.push({ cell, dueInTicks, quota });
+  }
+
+  const byChunk = new Map<string, Candidate[]>();
+  for (const c of candidates) {
+    const [xs, ys] = c.cell.split(",");
+    const cx = Math.floor(axisFold(Number(xs)) / 32);
+    const cy = Math.floor(axisFold(Number(ys)) / 32);
+    const key = `${cx},${cy}`;
+    const arr = byChunk.get(key) ?? [];
+    arr.push(c);
+    byChunk.set(key, arr);
+  }
+
+  const selected: Candidate[] = [];
+  for (const arr of byChunk.values()) {
+    arr.sort((a, b) => a.dueInTicks - b.dueInTicks);
+    const quota = arr[0]!.quota;
+    selected.push(...arr.slice(0, quota));
+  }
+  selected.sort((a, b) => a.dueInTicks - b.dueInTicks);
+  return selected.slice(0, cap).map((c, index) => ({
+    cell: c.cell,
+    quota: c.quota,
+    dueInTicks: c.dueInTicks,
+    assignedWorkers: [`w${index}`],
+  }));
+}
