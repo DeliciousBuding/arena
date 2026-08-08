@@ -101,3 +101,48 @@ test("巡逻不穿核心格：满载 worker 回核心卸货不受影响（cargo>
     );
   }
 });
+
+test("返航空载 worker 不踏入核心格：patrolReturning 在家邻格直接换方位出发（t4 振荡复现）", () => {
+  const planner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG);
+  const mem = planner.world.unitMemory("w1");
+  mem.workerMode = "patrol";
+  mem.patrolStarted = true;
+  mem.patrolReturning = true; // 最外环完成 → 回家换方位（旧行为 stepToward 直穿核心格）
+  const state = makeWorkerState([0, 0], [1, 0], [-1, 0]);
+  const plan = planner.decide({ state });
+  const action = plan.unitActions["w1"];
+  assert.ok(action !== undefined, "worker 应有动作");
+  if (action.type !== "MOVE") return; // 非移动分支不适用
+  const next = move([1, 0], action.direction);
+  assert.ok(
+    !(next[0] === 0 && next[1] === 0),
+    `返航空载 worker 不得踏入核心格 [0,0]，实际 ${action.direction} -> ${JSON.stringify(next)}`,
+  );
+});
+
+test("返航空载 worker 多 tick 不穿核心格：到家邻格即换方位，核心格永不落空载 worker", () => {
+  const planner = new SafetyPlanner(DEFAULT_SAFETY_CONFIG);
+  let pos: Position = [1, 0]; // 核心东邻（返航态）
+  for (let t = 1; t <= 12; t += 1) {
+    const mem = planner.world.unitMemory("w1");
+    if (t === 1) {
+      mem.workerMode = "patrol";
+      mem.patrolStarted = true;
+      mem.patrolReturning = true;
+    }
+    const state = makeWorkerState([0, 0], pos, [-1, 0]);
+    const plan = planner.decide({ state });
+    const action = plan.unitActions["w1"];
+    assert.ok(action !== undefined, `tick ${t} worker 应有动作`);
+    if (action.type !== "MOVE") {
+      // 非移动分支：位置不变则下一 tick 再判
+      continue;
+    }
+    const next = move(pos, action.direction);
+    assert.ok(
+      !(next[0] === 0 && next[1] === 0),
+      `tick ${t}: 返航空载 worker 不得穿回核心格 [0,0]，${action.direction} -> ${JSON.stringify(next)}`,
+    );
+    pos = next;
+  }
+});
