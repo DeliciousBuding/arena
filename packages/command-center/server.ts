@@ -29,16 +29,18 @@ import { loadPipelineHealth, refreshPipelineHealth } from "./lib/pipeline-health
 import { loadAllianceDeeds, refreshAllianceDeeds } from "./lib/alliance-deeds.ts";
 import { loadDeedsJournal, refreshDeedsJournal } from "./lib/deeds-journal.ts";
 import { loadAllianceIntel, buildEncounteredIndex } from "./lib/intel.ts";
-import { loadLeaderboardIntel, loadOurUsernames } from "./lib/leaderboard.ts";
+import { loadLeaderboardIntel, loadOurUsernames, maybeRefreshLeaderboardLazy, refreshLeaderboardFromOfficial } from "./lib/leaderboard.ts";
 import { readHumanStore, writeHumanStore, reconcileHumanStore, latestHumanOverride, stuckRecord, type HumanCommand, type HumanGoal } from "./lib/store.ts";
 import { shopProducts, shopCookie, shopMe, shopOrders, shopOrder } from "./lib/shop.ts";
+import { appendRedeemRecord, loadRedeemHistory, type RedeemRecord } from "./lib/redeem-log.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
 const WEB_DIR = join(HERE, "web", "dist"); // React 构建产物（vite build --base=/app/）
 const PORT = Number(process.env.COMMAND_CENTER_PORT ?? 8787);
 
-const redeemLog: Array<{ code: string; at: string; ip: string }> = []; // 兑换申请内存记录（重启即清空）
+// 兑换申请记录：落盘 JSONL 持久化（2026-08-08，重启不丢），内存只做最近窗口缓存
+const redeemLog: RedeemRecord[] = loadRedeemHistory();
 
 const app = new Hono();
 
@@ -197,8 +199,11 @@ app.get("/api/events", (c) => {
   return c.json(loadEvents(tenant, n));
 });
 app.get("/api/leaderboard", (c) => {
+  // 惰性刷新检查（2026-08-08 无计划任务）：快照 stale 且距上次拉取 ≥10min → 后台异步拉取
+  // 一次（不 await、不阻塞请求，返回旧数据；下一次请求即新快照）。
+  maybeRefreshLeaderboardLazy();
   const intel = loadLeaderboardIntel();
-  if (!intel) return c.json({ generatedAt: new Date().toISOString(), error: "排行榜快照缺失（运行 docs/progress/leaderboard-intel.py 拉取）" }, 404);
+  if (!intel) return c.json({ generatedAt: new Date().toISOString(), error: "排行榜快照缺失（运行 docs/progress/leaderboard-intel.py 拉取，或 POST /api/leaderboard/refresh）" }, 404);
   const ours = loadOurUsernames();
   const encountered = buildEncounteredIndex();
   const profiles = (intel.profiles ?? []).map((p) => ({
@@ -213,6 +218,13 @@ app.get("/api/leaderboard", (c) => {
     encounteredCount: encountered.size,
     encountered: Object.fromEntries(encountered),
   });
+});
+app.post("/api/leaderboard/refresh", async (c) => {
+  // 手动刷新排行榜（2026-08-08）：请求驱动拉取官方一次——替代原计划任务 ArenaLeaderboardIntel
+  // （用户明确不要计划任务/定时任务）。前端可放"刷新"按钮；拉取 ~1s，成功后缓存即新。
+  const r = await refreshLeaderboardFromOfficial();
+  if (!r.ok) return c.json({ ok: false, error: r.error ?? "拉取失败" }, 502);
+  return c.json({ ok: true, message: "排行榜已刷新", snapshot: loadLeaderboardIntel()?.snapshot });
 });
 app.get("/api/intel", (c) => c.json(loadAllianceIntel()));
 app.get("/api/health/pipeline", (c) => {
@@ -351,14 +363,21 @@ app.post("/api/redeem", async (c) => {
   if (!code) return c.json({ status: "error", message: "兑换码不能为空" }, 400);
   // 兑换通道设计：接入官方 Arena API 时，用用户提供的 session cookie 在此完成
   // POST { code } -> official /api/v1/redeem（等待 cookie 配置）。当前只记录申请，不触碰外部。
-  redeemLog.push({ code, at: new Date().toISOString(), ip: c.req.header("x-forwarded-for") ?? "local" });
-  console.log(`[redeem] code=${code.slice(0, 6)}... at=${new Date().toISOString()}`);
+  const rec: RedeemRecord = { codeMask: code.slice(0, 6) + "***", at: new Date().toISOString(), ip: c.req.header("x-forwarded-for") ?? "local", status: "pending" };
+  redeemLog.push(rec);
+  appendRedeemRecord(rec); // 落盘 JSONL（重启不丢，只存掩码不存完整码）
+  console.log(`[redeem] code=${code.slice(0, 6)}... at=${rec.at}`);
   return c.json({
     status: "pending",
     message: "兑换通道待 cookie 配置：申请已记录，接入官方 API 后即可完成兑换。",
-    receivedAt: new Date().toISOString(),
+    receivedAt: rec.at,
     historyLength: redeemLog.length,
   });
+});
+// 兑换历史查询（2026-08-08）：面板可回看已提交的兑换申请（掩码/时间/来源），
+// 重启不丢——审计与联调用，只返回最近窗口。
+app.get("/api/redeem/history", (c) => {
+  return c.json({ generatedAt: new Date().toISOString(), records: loadRedeemHistory(), count: redeemLog.length });
 });
 
 // ---------- 静态文件 ----------
@@ -427,6 +446,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info: { port: nu
       refreshPipelineHealth(); // 数据管线健康 15s 缓存（读 survey 水位/世界，快）
       refreshAllianceDeeds(); // 联盟事迹 45s 缓存（读快照/共享测绘/热区缓存，快）
       void refreshDeedsJournal(); // 事迹日记摘要 30s 缓存（读 deeds 缓存，快）
+      maybeRefreshLeaderboardLazy(); // 排行榜惰性刷新检查（无计划任务：stale 且间隔到才后台拉）
       void supervisorState(); // 8120 健康状态 5s 缓存（/api/overview、/api/tenants 首开即快）
     } catch { /* 数据缺失/临时 IO 失败不阻塞启动 */ }
   };

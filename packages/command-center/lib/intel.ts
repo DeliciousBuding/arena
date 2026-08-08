@@ -63,7 +63,7 @@ function assessRaidRisk(input: { enemyCoreDistance: number; combatUnitsNear: num
 }
 
 const RUN_SCAN = 30; // 联盟情报扫描 run 数（平衡覆盖与性能）
-const INTEL_CASE_LIMIT = 24; // 联盟情报每个 run 取最近 N 个 case（与测绘一致，保证核心目击不丢）
+const INTEL_CASE_LIMIT = 8; // 联盟情报每个 run 取最近 N 个 case（核心是慢速目标，8 个足够捕获目击——2026-08-08 扫描减负 24→8，720→240 文件）
 
 export interface IntelEnemy {
   username: string;
@@ -87,9 +87,31 @@ export interface IntelPayload {
 
 /** 联盟情报缓存（30s，与排行榜缓存一致——面板轮询不重复扫描 calibration）。 */
 let intelCache: { at: number; data: IntelPayload } = { at: 0, data: { generatedAt: "", tenants: [], enemies: [], totalEnemyCores: 0, beacons: [] } };
+let intelRefreshing = false; // 后台刷新防抖：缓存过期只触发一次重扫
+
+/**
+ * 联盟情报读取（2026-08-08 stale-while-revalidate）：
+ *  - 30s 内新鲜：直接返回缓存；
+ *  - 过期但已有缓存：同步返回旧数据（stale），setTimeout 后台重扫一次
+ *    （用户实测 leaderboard/intel 首开 3.4s——intel 冷扫描同步阻塞事件循环，
+ *    前端所有轮询排队即"卡"。改为 stale 返回后请求永远毫秒级，重扫在后台，
+ *    下一次轮询即新数据）；
+ *  - 无缓存（首扫/兜底）：同步扫描一次（启动预热已 setImmediate 覆盖，极少触发）。
+ */
 export function loadAllianceIntel(): IntelPayload {
   const now = Date.now();
   if (intelCache.data.generatedAt !== "" && now - intelCache.at < 30_000) return intelCache.data;
+  if (intelCache.data.generatedAt !== "" && !intelRefreshing) {
+    intelRefreshing = true;
+    setTimeout(() => {
+      try { scanAllianceIntelNow(); } finally { intelRefreshing = false; }
+    }, 0);
+    return intelCache.data;
+  }
+  return scanAllianceIntelNow();
+}
+/** intel 全量扫描（从 calibration 读，纯同步；仅 loadAllianceIntel 内部调用）。 */
+function scanAllianceIntelNow(): IntelPayload {
   const intel: IntelPayload = { generatedAt: new Date().toISOString(), tenants: [], enemies: [], totalEnemyCores: 0, beacons: [] };
   const lb = loadLeaderboardIntel();
   for (const tenant of TENANTS) {
@@ -97,14 +119,23 @@ export function loadAllianceIntel(): IntelPayload {
     if (runDir === null) { intel.tenants.push({ tenant, runId: null, enemyCores: [], enemyUnits: 0 }); continue; }
     // 扫最近 RUN_SCAN 个 run（历史敌核心目击在旧 run——enemy-intel 同口径），
     // 每个 run 取 INTEL_CASE_LIMIT 个 case（核心是慢速目标，8 个足够捕获目击）：
-    const runDirs = readdirSync(calibrationDir(tenant), { withFileTypes: true })
+    // 2026-08-08 目录 IO 去重：旧实现 sort 里对每个 run 重复
+    // listCases(readdir) + parseTick（30 run × 2 次 readdir），扫描循环又 readdir
+    // 一次。改为一次性缓存每个 run 的 case 列表与最高 tick，排序与扫描共用。
+    const runNames = readdirSync(calibrationDir(tenant), { withFileTypes: true })
       .filter((d) => d.isDirectory())
-      .map((d) => d.name)
-      .sort((a, b) => {
-        const ta = listCases(tenant, a).map(parseTick).reduce((x, y) => Math.max(x, y), 0);
-        const tb = listCases(tenant, b).map(parseTick).reduce((x, y) => Math.max(x, y), 0);
-        return tb - ta;
-      })
+      .map((d) => d.name);
+    const runCaseCache = new Map<string, string[]>();
+    const runMaxTick = new Map<string, number>();
+    for (const rn of runNames) {
+      const cases = listCases(tenant, rn);
+      runCaseCache.set(rn, cases);
+      let mx = -1;
+      for (const f of cases) { const t = parseTick(f); if (t > mx) mx = t; }
+      runMaxTick.set(rn, mx);
+    }
+    const runDirs = runNames
+      .sort((a, b) => (runMaxTick.get(b) ?? -1) - (runMaxTick.get(a) ?? -1))
       .slice(0, RUN_SCAN);
     const seenCores = new Map<string, { position: Position; tick: number }>(); // owner -> { position, tick }
     let enemyUnitSightings = 0; // naive 目击条数（审计口径，不做兵力展示）
@@ -114,7 +145,7 @@ export function loadAllianceIntel(): IntelPayload {
     const enemyUnitById = new Map<string, { unitType: string; position: Position; tick: number }>(); // 敌战斗单位最后目击记忆（面板敌情记忆层）
     let latestTick = 0; // 本租户扫描窗口内的最高 tick（新鲜度基准）
     for (const rd of runDirs) {
-      const caseFiles = listCases(tenant, rd).slice(-INTEL_CASE_LIMIT);
+      const caseFiles = (runCaseCache.get(rd) ?? []).slice(-INTEL_CASE_LIMIT);
       for (const file of caseFiles) {
         const tick = parseTick(file);
         let raw: { before?: { state?: { objects?: Array<Record<string, unknown>> } } } | null = null;
@@ -238,7 +269,13 @@ export interface EncounterEntry {
 
 /** 遭遇玩家索引：username -> 目击详情（由 /api/intel 的联盟敌人测绘构建，30s 缓存），
  *  供排行榜标注"遇到过"的玩家（哪几个租户目击过、最后目击 tick、距离、快攻威胁）。 */
+let encounteredCache: { at: number; data: Map<string, EncounterEntry[]> } = { at: 0, data: new Map() };
 export function buildEncounteredIndex(): Map<string, EncounterEntry[]> {
+  // 独立 30s 缓存（2026-08-08）：/api/leaderboard 每轮询都重建 Map（内部
+  // 再触发 intel 读取）——缓存过期时会把 2.7s 冷扫描拉进 leaderboard 请求
+  // 路径（实测首开 3.4s）。改为独立缓存，leaderboard 只读缓存 Map，永不触发重扫。
+  const now = Date.now();
+  if (now - encounteredCache.at < 30_000) return encounteredCache.data;
   const alliance = loadAllianceIntel();
   const index = new Map<string, EncounterEntry[]>(); // username -> [{ tenant, lastSeenTick, distanceToFriendlyCore, raidRisk }]
   for (const enemy of alliance?.enemies ?? []) {
@@ -254,5 +291,6 @@ export function buildEncounteredIndex(): Map<string, EncounterEntry[]> {
     }
     index.set(enemy.username, list);
   }
+  encounteredCache = { at: Date.now(), data: index };
   return index;
 }
