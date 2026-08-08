@@ -366,6 +366,26 @@ export interface SafetyPlannerConfig {
    * 敌 Core 因可见模型不含 shield，不做“预计已死”过滤。默认 false 零回归。
    */
   readonly coordinatedFire?: boolean;
+  /**
+   * 近核入侵观察（2026-08-08，core-threat-watch-v1）：敌单位距我方 Core
+   * ≤ coreThreatWatchRadius（Chebyshev 默认 18）即入长 TTL 观察记忆
+   * （coreThreatWatchTicks，默认 60）——短 TTL（enemyHints 6 / stationary 12）
+   * 会漏掉"盘踞/间歇可见"的近核敌情（t2 实证敌 WORKER 离核心 2 格盘踞
+   * 600+ tick，记忆过期后威胁归零、无军事响应）。启用后：
+   *  - 威胁评估：观察内敌战斗单位（Vanguard/Ranger）→ ALERT
+   *    （reason=invasion_watch），即使当前不可见（遥测/决策持续显示入侵）；
+   *  - 远端回援：raidUnitDistance 纳入观察目标——盘踞近核的敌战斗单位触发
+   *    远端军事回援（reinforce-home-v1 同路径，官方 guide "敌方战斗单位进入
+   *    Core 防区 → 非守家单位立即回援"对齐）；
+   *  - Vanguard 回访清剿：观察内静止 WORKER camp / 战斗单位 camp → 最近
+   *    1 个 Vanguard 回访确认并清剿（防"敌贴脸不知"，白赚/断威胁）。
+   * 默认 false = 历史行为（仅 6-12 tick 短记忆，零回归）。
+   */
+  readonly coreThreatWatch?: boolean;
+  /** 入侵观察半径（Chebyshev，默认 18，与 World.CORE_WATCH_RADIUS 同值）。 */
+  readonly coreThreatWatchRadius?: number;
+  /** 入侵观察记忆 TTL（tick，默认 60，与 World.CORE_WATCH_TTL 同值）。 */
+  readonly coreThreatWatchTicks?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({

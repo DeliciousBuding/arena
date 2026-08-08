@@ -30,6 +30,11 @@ test("variant registry: known ids resolve to expected config overrides", () => {
   assert.deepEqual(resolveSafetyVariantConfig("coordinated-fire-v1"), { coordinatedFire: true });
 });
 
+test("variant registry: core-threat-watch-v1 resolves coreThreatWatch", () => {
+  assert.deepEqual(resolveSafetyVariantConfig("core-threat-watch-v1"), { coreThreatWatch: true });
+  assert.equal(isSafetyVariant("core-threat-watch-v1"), true);
+});
+
 test("variant registry: unknown id fails fast", () => {
   assert.throws(() => resolveSafetyVariantConfig("no-such-variant"), /unknown safety variant/);
   assert.equal(isSafetyVariant("no-such-variant"), false);
