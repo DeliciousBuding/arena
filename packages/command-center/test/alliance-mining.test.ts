@@ -86,6 +86,28 @@ test("alliance-mining: gapAge 积压优先排序 + 刷新预测字段", () => {
   assert.equal(a.assignments[1].dueInTicks, null);
 });
 
+test("alliance-mining: 敌情威胁分级 threatLevel", () => {
+  const cores: Partial<Record<string, [number, number] | null>> = { t1: [0, 0] };
+  const workers: Partial<Record<string, number | null>> = { t1: 3 };
+  const candidatesByTenant: Record<string, Array<{ cell: string; x: number; y: number; lastSeenTick: number | null }>> = {
+    t1: [
+      { cell: "1,1", x: 1, y: 1, lastSeenTick: 100 },   // bucket (0,0) combat 0 → 无威胁
+      { cell: "17,17", x: 17, y: 17, lastSeenTick: 100 }, // bucket (1,1) combat 12 → 高威胁
+      { cell: "20,20", x: 20, y: 20, lastSeenTick: 100 }, // bucket (1,1) 同桶
+    ],
+  };
+  const heatByBucket: Record<string, { combatCount: number; count: number; lastTick: number }> = {
+    "0,0": { combatCount: 0, count: 5, lastTick: 90 },
+    "1,1": { combatCount: 12, count: 20, lastTick: 95 },
+  };
+  const a = assignAllianceMining(cores, workers, candidatesByTenant, { "1,1": ["t1"], "17,17": ["t1"], "20,20": ["t1"] }, new Set(), {}, heatByBucket);
+  const byCell = Object.fromEntries(a.assignments.map((x) => [x.cell, x]));
+  assert.equal(byCell["1,1"].threatLevel, 0);
+  assert.equal(byCell["17,17"].threatLevel, 3, "combat 12 → 高威胁");
+  assert.equal(byCell["17,17"].threatCombat, 12);
+  assert.equal(byCell["20,20"].threatLevel, 3, "同桶共享威胁");
+});
+
 test("alliance-mining: buildObserversByCell 分组 + 空输入", () => {
   const m = buildObserversByCell([
     { tenant: "t1", x: 1, y: 2 },

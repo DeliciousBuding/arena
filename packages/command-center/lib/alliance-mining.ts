@@ -21,6 +21,7 @@ import { loadAllianceSnapshot, type AllianceSnapshotPayload } from "./alliance-s
 import { loadAllianceSurvey, type AllianceSurveyPayload } from "./alliance-survey.ts";
 import { loadMineUtilization, type MineUtilizationPayload } from "./mine-utilization.ts";
 import { loadMinePatterns } from "./mine-patterns.ts";
+import { loadEnemyHeat } from "./enemy-heat.ts";
 
 const TTL_MS = 30_000;
 
@@ -39,6 +40,10 @@ export interface MiningAssignment {
   /** 矿刷新预测（mine-patterns）：预测下次出现 tick / 还有多久（tick）。 */
   predictedNextTick: number | null;
   dueInTicks: number | null;
+  /** 敌情威胁（2026-08-08，enemy-heat 16×16 桶）：0=无 / 1=低 / 2=中 / 3=高（combat 目击数）。 */
+  threatLevel: 0 | 1 | 2 | 3;
+  threatCombat: number;
+  threatCount: number;
 }
 
 export interface AllianceMiningPayload {
@@ -53,6 +58,8 @@ export interface AllianceMiningPayload {
 
 const cache = new TtlCache<AllianceMiningPayload>(TTL_MS);
 
+const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : Number(v) || 0);
+
 const chebyshev = (a: [number, number], b: [number, number]): number =>
   Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
 
@@ -64,6 +71,7 @@ export function assignAllianceMining(
   observersByCell: Record<string, string[]>,
   conflictCells: Set<string>,
   metaByCell: Record<string, { gapAgeTicks: number | null; predictedNextTick: number | null; dueInTicks: number | null }> = {},
+  heatByBucket: Record<string, { combatCount: number; count: number; lastTick: number }> = {},
 ): AllianceMiningPayload {
   const seen = new Set<string>();
   const assignments: MiningAssignment[] = [];
@@ -121,6 +129,9 @@ export function assignAllianceMining(
     distanceCounts[best] = (distanceCounts[best] ?? 0) + 1;
 
     const meta = metaByCell[c.cell] ?? { gapAgeTicks: null, predictedNextTick: null, dueInTicks: null };
+    const hb = heatByBucket[`${Math.floor(c.x / 16)},${Math.floor(c.y / 16)}`];
+    const combat = hb?.combatCount ?? 0;
+    const threatLevel: 0 | 1 | 2 | 3 = combat >= 10 ? 3 : combat >= 3 ? 2 : combat >= 1 ? 1 : 0;
     assignments.push({
       cell: c.cell, x: c.x, y: c.y,
       assignedTenant: best,
@@ -132,6 +143,9 @@ export function assignAllianceMining(
       gapAgeTicks: meta.gapAgeTicks ?? null,
       predictedNextTick: meta.predictedNextTick ?? null,
       dueInTicks: meta.dueInTicks ?? null,
+      threatLevel,
+      threatCombat: combat,
+      threatCount: hb?.count ?? 0,
     });
   }
 
@@ -226,7 +240,19 @@ export function loadAllianceMining(): AllianceMiningPayload {
       }
     }
   } catch { /* 预测不可用不阻断分配 */ }
-  const payload = assignAllianceMining(cores, workers, candidatesByTenant, observersByCell, conflictCells, metaByCell);
+  // 2026-08-08 敌情威胁：enemy-heat 16×16 桶（all 合并）→ 每格所在桶 combat 目击数
+  const heatByBucket: Record<string, { combatCount: number; count: number; lastTick: number }> = {};
+  try {
+    for (const b of loadEnemyHeat("all").buckets ?? []) {
+      const k = `${b.bx},${b.by}`;
+      const cur = heatByBucket[k] ?? { combatCount: 0, count: 0, lastTick: 0 };
+      cur.combatCount += num(b.combatCount);
+      cur.count += num(b.count);
+      if (num(b.lastTick) > cur.lastTick) cur.lastTick = num(b.lastTick);
+      heatByBucket[k] = cur;
+    }
+  } catch { /* 热区不可用不阻断分配 */ }
+  const payload = assignAllianceMining(cores, workers, candidatesByTenant, observersByCell, conflictCells, metaByCell, heatByBucket);
   payload.currentTick = typeof snap.currentTick === "number" ? snap.currentTick : null;
   cache.set("mining", payload);
   return payload;
