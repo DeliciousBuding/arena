@@ -116,6 +116,37 @@ export function buildResurveyAdvice(resurveyTargets: readonly ResurveyTarget[]):
   return out;
 }
 
+/** 金牌矿建议（2026-08-08，联盟共享记忆·值得守/抢）：audit/mines topMines——累计
+ *  收益/采集次数 top 的矿是"黄金矿脉"，值得优先守护（防敌人抢）与持续采集。
+ *  纯函数，入参即测。每租户取 byAmount 榜首（金额 >0），INFO 级（防 15 条上限挤占）。 */
+export function buildGoldMineAdvice(
+  tenants: Readonly<Record<string, { topMines?: { byAmount?: Array<{ cell?: unknown; x?: unknown; y?: unknown; harvestAmount?: unknown; harvestOk?: unknown; activity?: unknown }> } }>>,
+): AllianceAdvice[] {
+  const out: AllianceAdvice[] = [];
+  for (const [t, x] of Object.entries(tenants)) {
+    const top = x?.topMines?.byAmount?.[0];
+    if (!top) continue;
+    const amount = Number(top.harvestAmount ?? 0);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    const cell = String(top.cell ?? "");
+    if (!cell) continue;
+    out.push({
+      // 高价值矿脉 = 值得守/抢（战略资产，MEDIUM 防被 15 条上限挤出）
+      severity: "MEDIUM",
+      category: "INTEL",
+      tenant: t,
+      title: t + " 金牌矿 " + cell + "（累计收益 " + amount + "）",
+      detail: "该矿累计采集 " + Number(top.harvestOk ?? 0) + " 次——高价值矿脉，值得守/抢",
+      action: "优先派 worker 守护并持续采集；观察敌人是否觊觎（高价值目标）",
+      weight: -amount,
+      confidence: 0.75,
+      evidence: [{ type: "survey", tenant: t, ref: "gold=" + cell + " amount=" + amount }],
+      at: new Date().toISOString(),
+    });
+  }
+  return out;
+}
+
 export function loadAllianceAdvice(): AllianceAdvicePayload {
   const hit = adviceCache.get("latest");
   if (hit !== undefined) return hit;
@@ -432,6 +463,13 @@ export function loadAllianceAdvice(): AllianceAdvicePayload {
   try {
     out.push(...buildResurveyAdvice(loadAllianceExploration().resurveyTargets));
   } catch { /* 探索数据缺失不阻断 */ }
+
+  // 10) 金牌矿（2026-08-08，联盟共享记忆·值得守/抢）：audit/mines topMines byAmount 榜首
+  //     ——高价值矿脉值得优先守护与持续采集（读 30s 缓存，无触网）。
+  try {
+    const mu2 = loadMineUtilization("all");
+    out.push(...buildGoldMineAdvice(mu2.tenants));
+  } catch { /* 矿利用数据不可用不阻断 */ }
 
   out.sort((a, b) => ORDER[a.severity] - ORDER[b.severity] || a.weight - b.weight);
   // 2026-08-08 建议去重：同一 (category, tenant, title) 只保留一条（跨租户目击

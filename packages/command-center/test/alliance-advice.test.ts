@@ -1,7 +1,7 @@
 /** 参谋建议层测试（2026-08-08）：buildResurveyAdvice——补测目标提升为可执行建议。 */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildResurveyAdvice } from "../lib/alliance-advice.ts";
+import { buildResurveyAdvice, buildGoldMineAdvice } from "../lib/alliance-advice.ts";
 import type { ResurveyTarget } from "../lib/exploration-coverage.ts";
 
 const t = (key: string, near: string, stale: number, dist: number): ResurveyTarget => ({
@@ -32,4 +32,21 @@ test("alliance-advice: 补测目标——按租户聚合 + 陈旧度排序 + 每
 
 test("alliance-advice: 补测建议空兜底", () => {
   assert.deepEqual(buildResurveyAdvice([]), [], "空输入 → 空数组");
+});
+
+test("alliance-advice: 金牌矿建议——byAmount 榜首值得守/抢", () => {
+  const tenants = {
+    t1: { topMines: { byAmount: [{ cell: "-632,-145", x: -632, y: -145, harvestAmount: 3, harvestOk: 3 }] } },
+    t2: { topMines: { byAmount: [{ cell: "-37,75", x: -37, y: 75, harvestAmount: 5, harvestOk: 2 }] } },
+    t3: { topMines: { byAmount: [] } },
+  };
+  const adv = buildGoldMineAdvice(tenants);
+  assert.equal(adv.length, 2, "t1/t2 各一条，t3 无榜首跳过");
+  const t2 = adv.find((a) => a.tenant === "t2");
+  assert.ok(t2 && t2.title.includes("金牌矿 -37,75"), "金牌矿标题含格");
+  assert.ok(t2 && t2.title.includes("累计收益 5"), "收益金额");
+  assert.ok(t2 && t2.category === "INTEL" && t2.severity === "MEDIUM", "INTEL/MEDIUM（高价值防挤出）");
+  assert.ok(t2 && t2.action.includes("守护"), "动作含守护");
+  assert.deepEqual(buildGoldMineAdvice({}), [], "空输入 → 空数组");
+  assert.deepEqual(buildGoldMineAdvice({ t1: { topMines: { byAmount: [{ cell: "1,1", harvestAmount: 0 }] } } }), [], "收益 0 → 跳过");
 });
