@@ -22,10 +22,11 @@ graph LR
 
 - 前端：React 19 + Vite 8 + TS；引擎为命令行式 Canvas（`web/src/engine/mapEngine.ts`，
   已全量类型化 409→0 错误）。
-- 引擎模块化（2026-08-08 持续推进）：mapEngine（核心状态/渲染/战术编排，~4355 行）
+- 引擎模块化（2026-08-08 持续推进）：mapEngine（核心状态/战术编排/单位渲染，~4231 行）
   分层模块——`utils.ts`（纯几何/插值）、`canvas.ts`（绘制助手）、`fx.ts`（事件特效）、
-  `tactical.ts`（动作可用性/视野/规则）、`commands.ts`（人类指令选择器/遥测差分）、
-  `pathfind.ts`（BFS）、`minimap.ts`（全局小地图）、`replay.ts`（回放状态/推进/UI，可单测）。
+  `tactical.ts`（动作可用性/视野/规则/事件图标）、`commands.ts`（人类指令选择器/遥测差分）、
+  `pathfind.ts`（BFS）、`minimap.ts`（全局小地图）、`replay.ts`（回放状态/推进/UI/渲染，可单测）、
+  `render.ts`（环境/背景层：星点/暗角/网格/探索分区/疆域色晕，注入式 deps，可单测）。
 - 后端：Hono（Node 24 type stripping），静态服务 `web/dist`（`/app/*`）+ `public/` 素材。
 - 数据流：3s poll 世界快照 + 决策流；15s tick 读条；单位跨 tick 插值动画。
 - 只读边界：面板不写运行时；唯一写通道是人类指挥 `/api/command*`。

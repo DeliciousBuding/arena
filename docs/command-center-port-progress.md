@@ -487,3 +487,24 @@ mapEngine.ts 对应函数。
 - consumeCommandTelemetry 将最新批次的 applied/rejected 累计入 batchLast，
   有变化即刷新 HUD——批量指挥成败一目了然（toast 短暂，HUD 持续）。
 - 探针实测：0/2 生效 → 累计后 2/2 生效 1 被拒；回归 22/22 全绿。
+
+### 9.33 渲染层抽取 render.ts + 决策流交互图标 + 算法采矿完整路线（2026-08-08）
+- **渲染环境层抽取 `render.ts`（fe53f36）**：星点/暗角氛围层（离屏缓存）、坐标系网格与
+  刻度、全局探索分区底纹、租户疆域色晕与标签共 6 个绘制函数归位注入式模块——复用
+  replay.ts 的 ReplayRenderDeps 模式（EnvRenderDeps：getCtx/W/H/project/getView/
+  getCells/getChunks/getTenantsOn/lq）。静态缓存渲染期间 mapEngine 会临时替换
+  ctx 与 state.view，故全部经 getter 调用时解析，语义与抽取前逐行等价；
+  mapEngine.ts -180 行（4392→4231）。typecheck + 46/46 单测全绿。
+- **决策流 hover 完整详情（ceca98d）**：决策行 title 多行补全 submitResult /
+  deadlineOutcome / agentLatency / selectionLatency / rotation / 中止标记——
+  鼠标悬停即见该决策完整生命周期，不再只靠颜色猜。
+- **事件/事迹图标列（ceca98d）**：tactical.ts 新增 EVENT_ICON / DEED_ICON
+  （零素材几何符号，与 TACT_ACTION_ICON 同风格）；事件标签页、事迹标签页行首
+  .st-ico 图标列；StreamPane 本地常量删除改导入 tactical.ts（单一事实源防漂移）。
+  tactical.test.ts +2（event-icon / deed-icon 键集一致性），单测 46→48。
+- **算法分配采矿/回仓完整路线（drawAgentGoalPaths）**：intents 为 go_harvest 系 /
+  DEPOSIT 的受控单位，从当前位置到目标（最近未采资源格 / 己方核心）寻路并画
+  完整动线（tactDrawRoute agent 绿 + 行进脉冲 + ETA 徽标）——计划只给当前步方向，
+  目标经测绘记忆推断，缓存 key=tick+起点+目标 跨 tick 持续可见；单位有人类指令时
+  跳过（人类动线优先，防双线叠层）。全局联盟视图 4 租户 + 聚焦视图都画。
+  实测：聚焦 t2 画布采样命中路线绿 #8fce9f（DEPOSIT 回仓 7 单位），无 console 报错。
