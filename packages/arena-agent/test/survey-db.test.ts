@@ -30,6 +30,7 @@ import {
   syncMeta,
   touchUnitSeen,
   unitLifecycleRows,
+  upsertUnitSeen,
   upsertChunk,
   upsertCoreHunt,
   upsertObstacles,
@@ -469,6 +470,39 @@ test("survey-db: migrateNotableSanity——CORE_DESTROYED 重复行去重 + 表�
     db2.close();
   } finally {
     cleanup(root);
+  }
+});
+
+test("survey-db: 记忆分层 A13——units_seen 旧目击归档 heat_archive + 清理原始行", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-archive-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    // 旧目击（≤ now-3000）与近期目击混合（units_seen 由 upsertUnitSeen 写）
+    upsertUnitSeen(db, { x: 1, y: 1 }, "RANGER", false, 1000);
+    upsertUnitSeen(db, { x: 1, y: 1 }, "RANGER", false, 5000);
+    upsertUnitSeen(db, { x: 2, y: 2 }, "WORKER", false, 6000);
+    upsertUnitSeen(db, { x: 3, y: 3 }, "VANGUARD", false, 9000); // 近期
+    db.close();
+    // 第二次 open 触发迁移：归档 ≤6000（最新 9000 - 3000），保留近期
+    const db2 = openSurveyDb(dir, "t1", true);
+    const archive = db2.prepare("SELECT x, y, unit_type, count, first_tick, last_tick FROM heat_archive ORDER BY x, y").all() as Array<Record<string, unknown>>;
+    assert.equal(archive.length, 2, "旧目击归档聚合");
+    const r1 = archive.find((r) => r.x === 1 && r.y === 1)!;
+    assert.equal(r1.unit_type, "RANGER");
+    assert.equal(r1.count, 2, "同格同类型聚合计数");
+    assert.equal(r1.first_tick, 1000);
+    assert.equal(r1.last_tick, 5000);
+    const remaining = db2.prepare("SELECT cell, tick FROM units_seen").all() as Array<Record<string, unknown>>;
+    assert.equal(remaining.length, 1, "原始旧行已清理，只留近期");
+    assert.equal(remaining[0].tick, 9000);
+    // 幂等：再次 open 不重复累加（旧行已删，SELECT 选不到）
+    db2.close();
+    const db3 = openSurveyDb(dir, "t1", true);
+    const count2 = db3.prepare("SELECT COUNT(*) AS c FROM heat_archive").get() as { c: number };
+    assert.equal(count2.c, 2, "幂等：归档不重复累加");
+    db3.close();
+  } finally {
+    cleanup(dir);
   }
 });
 
