@@ -269,6 +269,59 @@ test("variant-only reload waits for exact child ACK before applied", async () =>
   }
 });
 
+test("reload timeout from replaced child cannot poison respawned child config state", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  try {
+    const supervisor = new TenantSupervisor({
+      repoRoot: repo.root,
+      configs: ["t1.json"],
+      spawnChild: fakeSpawn(children),
+      respawnDelayMs: 0,
+      configReloadTimeoutMs: 80,
+    });
+    await supervisor.start();
+    const spec = supervisor.preflight()[0];
+    const first = children.get("t1")!;
+    first.emit("message", {
+      type: "arena.config_status",
+      tenantId: "t1",
+      configGeneration: 1,
+      activeConfigHash: spec.configHash,
+      activeStrategyHash: spec.strategyHash,
+    });
+
+    const raw = JSON.parse(readFileSync(spec.configPath, "utf8")) as Record<string, unknown>;
+    raw.variants = ["worker-mission-v1"];
+    writeFileSync(spec.configPath, JSON.stringify(raw));
+    const candidate = compileRuntimeStrategyFile(spec.configPath);
+    first.onSend = (message) => {
+      if ((message as { type?: string }).type === "arena.config_reload") first.emitExit(3, null);
+    };
+
+    const reloadPromise = supervisor.reloadConfigs("t1");
+    await waitUntil(() => children.get("t1") !== first);
+    const replacement = children.get("t1")!;
+    replacement.emit("message", {
+      type: "arena.config_status",
+      tenantId: "t1",
+      configGeneration: 1,
+      activeConfigHash: candidate.configHash,
+      activeStrategyHash: candidate.strategyHash,
+    });
+    const result = (await reloadPromise).t1!;
+    assert.equal(result.applied, false);
+    assert.equal(result.errorCode, "ipc_unavailable");
+    const status = supervisor.status()[0];
+    assert.equal(status.configReady, true, "replacement child independently attested the desired config");
+    assert.equal(status.lastConfigError, null, "old request timeout must not write into replacement child state");
+    replacement.autoExitOnSend = true;
+    await supervisor.shutdown();
+  } finally {
+    repo.cleanup();
+  }
+});
+
 test("non-hot config changes return restart_required without sending IPC", async () => {
   const repo = makeTempRepo();
   const children = new Map<string, FakeChild>();

@@ -1,5 +1,7 @@
 import type { Position, UnitAction, UnitSnapshot } from "../domain/model.ts";
+import { manhattan } from "../domain/nav.ts";
 import { chunkKeyFor } from "../domain/world.ts";
+import type { WorkerProgressExpectation, WorkerProgressExpectations } from "../planning/progress-contract.ts";
 
 /** Worker 局部活性异常。与租户级 StallKind 分层：这里只处理单 Worker。 */
 export type WorkerLivenessKind =
@@ -15,6 +17,8 @@ export interface WorkerLivenessObservation {
   readonly workers: readonly UnitSnapshot[];
   readonly unitActions: Readonly<Record<string, UnitAction>>;
   readonly intents: Readonly<Record<string, string>>;
+  /** Planner 显式声明的任务进展合同；未声明 = liveness 不猜任务目标。 */
+  readonly progressExpectations?: WorkerProgressExpectations;
   /** 人类显式接管的单位不做自动活性恢复，避免与 DIRECT 控制打架。 */
   readonly humanControlledUnitIds?: ReadonlySet<string>;
 }
@@ -80,6 +84,7 @@ interface WorkerTrack {
   lastCargo: number;
   lastAction: UnitAction;
   lastIntent: string;
+  lastProgressExpectation: WorkerProgressExpectation | null;
   lastHumanControlled: boolean;
   economicNoProgress: number;
   moveNoEffect: number;
@@ -104,21 +109,14 @@ function intentionalWait(intent: string): boolean {
   return intent === "worker_hold_cargo_moving"
     || intent === "worker_yield_spawn"
     || intent === "worker_evade_cooldown"
-    || intent === "worker_blockade";
+    || intent === "worker_blockade"
+    || intent === "capacity_wait:DEPOSIT";
 }
 
 function economicIntent(intent: string): boolean {
   return ECONOMIC_INTENTS.has(intent)
     || intent.startsWith("go_harvest")
-    || intent.startsWith("capacity_wait:DEPOSIT")
     || intent.startsWith("capacity_wait:go_harvest");
-}
-
-function explorationIntent(intent: string): boolean {
-  return intent === "worker_survey"
-    || intent === "worker_migration_scout"
-    || intent === "patrol"
-    || intent.startsWith("capacity_reroute:patrol");
 }
 
 function samePosition(a: Position, b: Position): boolean {
@@ -180,6 +178,7 @@ export class WorkerLivenessTracker {
           lastCargo: worker.cargo,
           lastAction: action,
           lastIntent: intent,
+          lastProgressExpectation: obs.progressExpectations?.get(worker.id) ?? null,
           lastHumanControlled: human.has(worker.id),
           economicNoProgress: 0,
           moveNoEffect: 0,
@@ -206,13 +205,21 @@ export class WorkerLivenessTracker {
         previous.moveNoEffect = previous.lastAction.type === "MOVE" && !moved
           ? previous.moveNoEffect + 1
           : 0;
-        previous.economicNoProgress = economicIntent(previous.lastIntent) && !physicalProgress
+        let taskProgress = physicalProgress;
+        if (previous.lastProgressExpectation?.kind === "target") {
+          const before = manhattan(previous.lastPosition, previous.lastProgressExpectation.target);
+          const after = manhattan(worker.position, previous.lastProgressExpectation.target);
+          taskProgress = cargoChanged || after < before;
+        } else if (previous.lastProgressExpectation?.kind === "cargo_change") {
+          taskProgress = cargoChanged;
+        }
+        previous.economicNoProgress = economicIntent(previous.lastIntent) && !taskProgress
           ? previous.economicNoProgress + 1
           : 0;
         const currentChunk = workerChunks.get(worker.id)!;
         const previousChunk = chunkKeyFor(previous.lastPosition);
         const coverageProgress = novelChunks.has(currentChunk) || currentChunk !== previousChunk;
-        previous.explorationNoNovelty = explorationIntent(previous.lastIntent) && !coverageProgress
+        previous.explorationNoNovelty = previous.lastProgressExpectation?.kind === "novel_coverage" && !coverageProgress
           ? previous.explorationNoNovelty + 1
           : 0;
         previous.crowdStarvation = previous.lastIntent === "worker_hold_crowded" && !physicalProgress
@@ -260,6 +267,7 @@ export class WorkerLivenessTracker {
       previous.lastCargo = worker.cargo;
       previous.lastAction = action;
       previous.lastIntent = intent;
+      previous.lastProgressExpectation = obs.progressExpectations?.get(worker.id) ?? null;
       previous.lastHumanControlled = human.has(worker.id);
     }
     return events;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Position, UnitAction, UnitSnapshot } from "../src/domain/model.ts";
+import type { WorkerProgressExpectation } from "../src/planning/progress-contract.ts";
 import { WorkerLivenessTracker } from "../src/runtime/worker-liveness.ts";
 
 function worker(id: string, position: Position, cargo = 0): UnitSnapshot {
@@ -16,12 +17,14 @@ function feed(
   intent: string,
   cargo = 0,
   human = false,
+  progressExpectation: WorkerProgressExpectation | null = null,
 ) {
   return tracker.onObservation({
     tick,
     workers: [worker("w1", position, cargo)],
     unitActions: { w1: action },
     intents: { w1: intent },
+    progressExpectations: progressExpectation === null ? undefined : new Map([["w1", progressExpectation]]),
     humanControlledUnitIds: human ? new Set(["w1"]) : new Set(),
   });
 }
@@ -106,7 +109,16 @@ test("WorkerLiveness: survey 一直在同一已知 chunk 内移动 → explorati
   tracker.seedKnownChunks(["0,0"]);
   const events = [];
   for (let tick = 1; tick <= 5; tick += 1) {
-    events.push(...feed(tracker, tick, [tick - 1, 0], { type: "MOVE", direction: "RIGHT" }, "worker_survey"));
+    events.push(...feed(
+      tracker,
+      tick,
+      [tick - 1, 0],
+      { type: "MOVE", direction: "RIGHT" },
+      "worker_survey",
+      0,
+      false,
+      { kind: "novel_coverage", taskType: "EXPLORE" },
+    ));
   }
   assert.equal(events.length, 1);
   assert.equal(events[0]?.kind, "exploration_no_novelty");
@@ -127,7 +139,67 @@ test("WorkerLiveness: 跨入另一个 chunk 算 coverage progress，不误伤补
   const positions: Position[] = [[13, 0], [14, 0], [15, 0], [16, 0], [17, 0], [18, 0]];
   const events = [];
   for (let index = 0; index < positions.length; index += 1) {
-    events.push(...feed(tracker, index + 1, positions[index]!, { type: "MOVE", direction: "RIGHT" }, "worker_survey"));
+    events.push(...feed(
+      tracker,
+      index + 1,
+      positions[index]!,
+      { type: "MOVE", direction: "RIGHT" },
+      "worker_survey",
+      0,
+      false,
+      { kind: "novel_coverage", taskType: "EXPLORE" },
+    ));
+  }
+  assert.equal(events.length, 0);
+});
+
+test("WorkerLiveness: 只有显式 EXPLORE 合同才检查 novelty，resurvey/普通 patrol 不靠 intent 猜", () => {
+  const tracker = new WorkerLivenessTracker({
+    graceTicks: 0,
+    explorationNoNoveltyTicks: 3,
+    moveNoEffectTicks: 99,
+  });
+  tracker.seedKnownChunks(["0,0"]);
+  const events = [];
+  for (let tick = 1; tick <= 8; tick += 1) {
+    events.push(...feed(tracker, tick, [tick - 1, 0], { type: "MOVE", direction: "RIGHT" }, "worker_survey"));
+  }
+  assert.equal(events.length, 0, "intent 文本不能自动变成 novel-coverage 契约");
+});
+
+test("WorkerLiveness: GO_RESOURCE 虽持续 MOVE 但远离目标仍判 economic_no_progress", () => {
+  const tracker = new WorkerLivenessTracker({ graceTicks: 0, economicNoProgressTicks: 3, moveNoEffectTicks: 99 });
+  const events = [];
+  for (let tick = 1; tick <= 4; tick += 1) {
+    events.push(...feed(
+      tracker,
+      tick,
+      [tick - 1, 0],
+      { type: "MOVE", direction: "RIGHT" },
+      "GO_RESOURCE",
+      0,
+      false,
+      { kind: "target", taskType: "GO_RESOURCE", target: [-10, 0] },
+    ));
+  }
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.kind, "economic_no_progress");
+});
+
+test("WorkerLiveness: capacity_wait:DEPOSIT 属于容量系统，不做 Worker 局部 reset", () => {
+  const tracker = new WorkerLivenessTracker({ graceTicks: 0, economicNoProgressTicks: 3, idleWaitTicks: 3 });
+  const events = [];
+  for (let tick = 1; tick <= 12; tick += 1) {
+    events.push(...feed(
+      tracker,
+      tick,
+      [2, 2],
+      { type: "WAIT" },
+      "capacity_wait:DEPOSIT",
+      1,
+      false,
+      { kind: "target", taskType: "DEPOSIT", target: [0, 0] },
+    ));
   }
   assert.equal(events.length, 0);
 });
