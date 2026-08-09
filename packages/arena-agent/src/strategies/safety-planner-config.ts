@@ -553,6 +553,25 @@ export interface SafetyPlannerConfig {
    */
   readonly cargoRescue?: boolean;
   /**
+   * near_core_deposit RETREAT 锁（2026-08-10，t1 生产吞吐修复，竞品
+   * arena_hero_strategy.py roles.py:158-181 对照）：满载 worker（cargo > 0）
+   * 距 Core ≤4（Manhattan）时禁止因邻接敌改 RETREAT——保持 DEPOSIT/return_home
+   * 朝 Core 步进。线上敌工贴 Core 导致 deposit 工人 man≈2 来回拉扯/排队
+   * hold/绕行漂离，workersWithCargo 累积、workerMeanDistanceFromCore 逼近
+   * exileDistance（t1 实证 DEPOSIT 意图 6/tick vs 实际 0.15/tick，40x 鸿沟）。
+   *
+   * 锁激活时满载 worker 距 Core ≤4：
+   *  - 跳过 cargoRescue 排队 hold（敌占入口不 WAIT，继续朝 Core 走）；
+   *  - 跳过 moveFailedAvoidance 垂直绕行（不漂离 Core，保持 stepToward）；
+   *  - return_home 方向计算把可见敌占格并入障碍 BFS——绕开敌工朝 Core 推进
+   *    （竞品 RETREAT hint=core_position 语义），敌封死所有路时回退 plain
+   *    stepToward（贴脸仍朝 Core 走，dist>0 不改 RETREAT）。
+   * 零回归：仅影响"满载 worker 距 Core ≤4"窄场景，其他 RETREAT/绕行逻辑
+   * 不变；缺省 true（窄场景生效，无变体时 return_home 已朝 Core 步进，锁
+   * 只在敌占入口/绕行漂离时改向），false 完全关闭（变体各按自身门控）。
+   */
+  readonly nearCoreDepositLockEnabled?: boolean;
+  /**
    * 探索半径模式化 + wide 合并（2026-08-09，explore-radius-wide-v1，W8）：
    * 启用后消费侧（safety-planner.ts/worker-task-planner.ts，由收口统一接线）
    * 按 {@link WIDE_EXPLORE_DEFAULTS} 覆盖窄模式常量——exploreRadius 8→16、
@@ -744,6 +763,15 @@ export interface SafetyPlannerConfig {
   readonly hungerGateTicks?: number;
   /** 非饥饿期 patrolRing 上限（默认 2：覆盖近程 2 环，饥饿时放开到 5 环）。 */
   readonly hungerNearRingCap?: number;
+  /**
+   * Worker 采集拴绳（2026-08-10，worker-leash-v1，算法优化）：资源距 Core
+   * 超过此 Manhattan 距离时不进入 Hungarian 候选矩阵——worker 宁可 WAIT
+   * 等近矿刷新也不长途奔袭。根因：生产 t1 实测 worker 离核 23.6 格、DEPOSIT
+   * 吞吐 0.15/tick（意 6/tick）——每次往返 47 tick，吞吐 = 1/47 = 0.021/tick。
+   * 拴绳 25 格后近矿往返 ~20 tick，吞吐 ~0.05/tick（2.4× 提升），WAIT 期可
+   * 等矿刷新或 EXPLORE。threatRecall / breakout / migrationWorkerBand 仍优
+   * 先（取 min）。undefined = 不限制（零回归，历史行为）。 */
+  readonly workerLeash?: number;
 }
 
 export const DEFAULT_SAFETY_CONFIG: SafetyPlannerConfig = Object.freeze({
