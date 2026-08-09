@@ -6,7 +6,7 @@ import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QU
 import { CANVAS_FONT, setCtx, ring, drawMeterBar, drawUnitHealth, drawWorkerCargo, drawCoreOwnerLabel, drawStackBadge } from './canvas.js';
 import { createMinimap } from './minimap.ts';
 let minimap: ReturnType<typeof createMinimap> | null = null; // createMapEngine 时初始化
-import { getJSON } from './api.js';
+import { getJSON, fetchJSONWithETag } from './api.js';
 import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, TACT_ACTION_ICON, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets, tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability } from './tactical.js';
 import { findPath } from './pathfind.ts';
 import { createReplayState, replayAdvance, replayLoad, replayStep, replayToggle, replayCycleSpeed, updateReplayUI, replayDrawLayer as replayDrawImpl } from './replay.js';
@@ -356,7 +356,7 @@ async function poll() {
   // overview/map 可能 >8s，原来 Promise.all 一挂全挂导致"界面卡住/单位冻结"。
   // 成功才覆盖 state，失败保留上一轮数据（地图/单位不闪没）。
   const [oR, mR, iR] = await Promise.allSettled([
-    getJSON('/api/overview', 30000), getJSON('/api/map', 30000), getJSON('/api/intel', 30000),
+    getJSON('/api/overview', 30000), fetchJSONWithETag('/api/map', 30000), getJSON('/api/intel', 30000),
   ]);
   const overview = oR.status === 'fulfilled' ? oR.value : null;
   const map = mR.status === 'fulfilled' ? mR.value : null;
@@ -4341,7 +4341,7 @@ export function createMapEngine(host: any) {
       draw();
     },
     resize: () => { resizeCanvas(); draw(); },
-    getState: () => ({ soloTenant: state.soloTenant, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length, jumpPins: state.jumpPins.map((p: any) => ({ x: p.x, y: p.y, at: p.at, label: p.label ?? null })),
+    getState: () => ({ soloTenant: state.soloTenant, overview: state.overview, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length, jumpPins: state.jumpPins.map((p: any) => ({ x: p.x, y: p.y, at: p.at, label: p.label ?? null })),
       cells: state.cells.map((c: any) => ({ id: c.id ?? null, x: c.x, y: c.y, type: c.type, unitType: c.unitType ?? null, controlled: c.controlled ?? null, tenant: c.tenant, fresh: c.fresh ?? true })),
       multi: [...T().multi], mode: T().mode ?? null,
       selected: (() => { const s = T().selected; return s && s.obj ? { id: s.obj.id ?? null, tenant: s.tenant ?? null, pos: s.obj.position ?? null } : null; })() }),

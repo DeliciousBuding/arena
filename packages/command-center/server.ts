@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DATA_ROOT, TENANTS } from "./lib/fs-jsonl.ts";
 import { supervisorState, supervisorAllianceDirectorState } from "./lib/supervisor.ts";
-import { loadMergedMap } from "./lib/map.ts";
+import { loadMergedMap, getMapSig } from "./lib/map.ts";
 import { loadOverview, loadStream, loadReplay, loadPlan, loadWorld, loadEvents } from "./lib/streams.ts";
 import { loadSurveyDb, loadLifecycleDb, loadSurvey, loadResourceTimeline, loadSpendTrend, loadUnitLifecycleDb, loadChunksDb } from "./lib/survey.ts";
 import { loadMinePatterns, refreshMinePatterns } from "./lib/mine-patterns.ts";
@@ -86,7 +86,16 @@ app.get("/api/overview", async (c) => {
   const sup = await supervisorState();
   return c.json(loadOverview(sup));
 });
-app.get("/api/map", (c) => c.json(loadMergedMap()));
+// /api/map ETag 304（2026-08-09）：签名不变时 304 零传输（省 642KB）；
+// 生产 ~15s/tick 间隔内 poll 3s 一次可命中 4 次 304。max-age=2 限浏览器短缓存。
+app.get("/api/map", (c) => {
+  const payload = loadMergedMap();
+  const etag = `W/"${getMapSig()}"`;
+  if (c.req.header("if-none-match") === etag) {
+    return new Response(null, { status: 304, headers: { etag, "cache-control": "public, max-age=2" } });
+  }
+  return c.json(payload, 200, { etag, "cache-control": "public, max-age=2" });
+});
 // 地图 LOD 聚合视图（2026-08-08，缩放优化数据支撑）：全局缩放用 chunk 级聚合
 // （16×16 chunk 的矿/障碍/核心计数 + 最新 tick，~12KB vs 全量 642KB），
 // 放大到局部再请求 /api/map 全量。?tenant=all|tN。30s 缓存 + 启动预热。

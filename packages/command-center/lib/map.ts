@@ -280,3 +280,8 @@ export function loadMergedMap(): MergedMap {
   mergedCache.payload = payload;
   return payload;
 }
+
+/** 当前 map 签名（用于 HTTP ETag，签名不变时 304 零传输；2026-08-09）。
+ *  签名基于 runDir/case 文件 + surveyDbSig——同一 tick 内稳定，生产 ~15s/tick
+ *  间隔内 poll 3s 一次可命中 4 次 304 省 642KB×4 传输。 */
+export function getMapSig(): string { return mergedCache.sig; }

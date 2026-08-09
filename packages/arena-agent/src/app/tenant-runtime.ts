@@ -1073,6 +1073,7 @@ export async function runTenant(
         resources: number;
         plan: TickOutcome["plan"];
         coreId: string | null;
+        /** 上一权威 tick 的自有单位 id；W50 ownership-aware outcome 归属使用。 */
         unitIds: readonly string[];
       } | null;
     } = { prev: null };
@@ -1230,10 +1231,6 @@ export async function runTenant(
           coreResourcesBefore: holder.prev.resources,
           coreResourcesAfter: outcome.state.resources,
           coreResourceDelta: outcome.state.resources - holder.prev.resources,
-          grossDeposit: outcomeCounters.grossDeposit,
-          spawnCount: outcomeCounters.spawnCount,
-          healCount: outcomeCounters.healCount,
-          unitLossCount: outcomeCounters.unitLossCount,
           coreState: outcome.state.core?.state ?? null,
           visibleResourceCellCount: outcome.state.resourceCells.size,
           workerCount: outcome.state.workers.length,
@@ -1245,7 +1242,8 @@ export async function runTenant(
             ? undefined
             : workerDistances.reduce((total, distance) => total + distance, 0) / workerDistances.length,
           failedEvents,
-          // W50 四计数器已由上方 ownership-aware SSOT 聚合；禁止再无上下文覆盖。
+          // W50 四计数器：唯一 ownership-aware SSOT，避免把敌方事件计入本租户。
+          ...outcomeCounters,
           events: outcome.state.events.map((e) => e.eventType),
           humanOverride: outcome.humanOverride === undefined || outcome.humanOverride === null
               || (!outcome.humanOverride.active && outcome.humanOverride.applied.length === 0

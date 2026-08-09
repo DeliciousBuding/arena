@@ -44,10 +44,12 @@ function findCoordinationRoot(start: string): string {
 }
 const COORDINATION_ROOT = findCoordinationRoot(REPO_ROOT);
 const localMirrorCandidates = [
-  // Canonical src-layout under the discovered coordination root (works in main + worktrees).
+  // arena-hero-python is a standard src-layout package; coordination-root probing makes this work from worktrees.
   join(COORDINATION_ROOT, "reference", "arena-hero-python", "src", "arena_hero"),
-  // Legacy root-layout compatibility only; discovery above remains the source of truth.
+  // Legacy layout kept as a compatibility fallback for older mirrors.
   join(COORDINATION_ROOT, "reference", "arena-hero-python", "arena_hero"),
+  // Historical relative fallback for unusual checkout layouts.
+  resolve(REPO_ROOT, "..", "..", "..", "reference", "arena-hero-python", "src", "arena_hero"),
 ];
 const MIRROR_DIR = process.env.ARENA_SDK_MIRROR_DIR
   ? resolve(process.env.ARENA_SDK_MIRROR_DIR)

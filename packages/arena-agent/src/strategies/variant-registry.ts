@@ -273,6 +273,18 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
       militaryHunt: true,
     }),
     /**
+     * 守家编成（2026-08-09，用户裁决"守卫至少 2 前锋 1 游侠"）：攻坚/打野
+     * 期间按"距 Core 最近"选 2 Vanguard + 1 Ranger 常驻守家——替代
+     * strikeGroupReserve 的 UUID 排序（UUID 随机可能选中远征前线单位，名义
+     * 留守实际裸奔，t1 生产实证 dist=92 守卫）。距离选择保证"留守最近的兵、
+     * 远征用最远的兵"。兵力不足收缩编成（各保留 1 个可外出单位）。
+     */
+    "home-guard-squad-v1": Object.freeze({
+      homeGuardSquad: true,
+      homeGuardVanguards: 2,
+      homeGuardRangers: 1,
+    }),
+    /**
      * 人口上限 20→30（2026-08-08 用户裁决，t1 恢复综合扩张/余额 150）：populationCeiling
      * 是产兵硬门（deterministic selectDeterministicCoreAction 与 SafetyPlanner 共用）——
      * t1 pop 25 时 20 上限导致 4500+ tick 零产兵、res 顶到容量上限（pop×5=125）空转。

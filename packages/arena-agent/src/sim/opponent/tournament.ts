@@ -77,6 +77,21 @@ export interface TournamentOptions {
   readonly validatePlans?: boolean;
 }
 
+/**
+ * 对抗平台唯一 refill 解析口：默认严格跟随官方 v0.14 的 4 resolved ticks。
+ * null 仅用于显式关闭的诊断实验；其他值必须为正整数。
+ */
+export function resolveTournamentRefillConfig(
+  everyTicks: number | null | undefined,
+): Readonly<{ everyTicks: number }> | null {
+  if (everyTicks === null) return null;
+  const resolved = everyTicks ?? 4;
+  if (!Number.isSafeInteger(resolved) || resolved <= 0) {
+    throw new Error(`refillEveryTicks must be a positive safe integer or null (got ${String(everyTicks)})`);
+  }
+  return Object.freeze({ everyTicks: resolved });
+}
+
 interface ScenarioPlayerSeed {
   readonly id: string;
   readonly username: string;
@@ -312,12 +327,7 @@ export function runMatch(
     procedural?: boolean | ProceduralWorldParams;
   },
 ): MatchResult {
-  const refillConfig =
-    opts?.refillEveryTicks === undefined
-      ? { everyTicks: 4 }
-      : opts.refillEveryTicks === null
-        ? null
-        : { everyTicks: opts.refillEveryTicks };
+  const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
   // scenario 优先；否则按 procedural 启用程序化场景；缺省 makeArenaMatchScenario。
   const scenario =
     opts?.scenario ??
@@ -453,7 +463,7 @@ export function runFreeForAll(
   opts?: {
     validatePlans?: boolean;
     recordTo?: string;
-    /** refill 节奏（同 runMatch）：undefined=65；null=关闭；N=每 N tick。 */
+    /** refill 节奏（同 runMatch）：undefined=4（官方 v0.14 节奏）；null=关闭；N=每 N tick。 */
     refillEveryTicks?: number | null;
     /** 自定义场景；缺省用 makeArenaScenarioN 圆周布局。场景 players 必须与 entries id 一致。 */
     scenario?: unknown;
@@ -463,12 +473,7 @@ export function runFreeForAll(
     procedural?: boolean | ProceduralWorldParams;
   },
 ): MatchResult {
-  const refillConfig =
-    opts?.refillEveryTicks === undefined
-      ? { everyTicks: 65 }
-      : opts.refillEveryTicks === null
-        ? null
-        : { everyTicks: opts.refillEveryTicks };
+  const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
   // scenario 优先；否则按 procedural 启用程序化场景；缺省 makeArenaScenarioN。
   const scenario =
     opts?.scenario ??

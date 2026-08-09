@@ -73,7 +73,7 @@ def _load_agent_registry() -> dict:
 
 
 def _load_repos(repo: Path, sdk_repo: Path) -> None:
-    """注入对手仓库与官方 SDK 源码路径到 sys.path。
+    """注入对手仓库与官方 SDK 镜像路径到 sys.path。
 
     arena-hero-python 是标准 ``src/arena_hero`` 布局；只放仓根会静默回退到
     机器 site-packages 里的任意旧 SDK。这里显式把 SDK 的 src 目录放在最高

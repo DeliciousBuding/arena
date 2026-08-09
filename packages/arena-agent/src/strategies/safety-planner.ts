@@ -712,6 +712,43 @@ export class SafetyPlanner {
     return this.config.strikeGroupReserve === true ? 1 : 0;
   }
 
+  /** 守卫选择（B7 + home-guard-squad-v1，2026-08-09）：返回单位是否为本次 tick
+   *  的守家编成成员。homeGuardSquad 开启时按"距 Core 最近"选 N 个 Vanguard 守家
+   *  （Ranger 由 decideRanger 同口径选择）——留守最近的兵、远征用最远的兵；
+   *  homeGuardSquad 关闭 = 旧 UUID 排序语义（strikeGroupReserve 兼容，零回归）。
+   *  总兵力不足（≤ 守卫数）时全部守家——家不空防优先于进攻编成。 */
+  private isHomeGuardUnit(state: TickState, unit: UnitSnapshot, guardCount: number): boolean {
+    if (guardCount <= 0) return false;
+    if (state.core === null) return false;
+    const corePosition = state.core.position;
+    if (this.config.homeGuardSquad === true) {
+      const sorted = [...state.vanguards]
+        .map((v) => ({ id: v.id, dist: chebyshev(v.position, corePosition) }))
+        .sort((a, b) => a.dist - b.dist || a.id.localeCompare(b.id));
+      return sorted.slice(0, guardCount).some((v) => v.id === unit.id);
+    }
+    const sortedVanguards = [...state.vanguards].map((v) => v.id).sort();
+    return (
+      sortedVanguards.length > guardCount &&
+      sortedVanguards.slice(-guardCount).includes(unit.id)
+    );
+  }
+
+  /** home-guard-squad-v1 Ranger 守卫判定（2026-08-09）：距 Core 最近的
+   *  homeGuardRangers 个 Ranger 守家（留守最近的游侠、远征用最远的）。
+   *  与 isHomeGuardUnit 同口径（距离升序 + id 决胜稳定排序）。 */
+  private isHomeGuardRanger(state: TickState, unit: UnitSnapshot): boolean {
+    if (this.config.homeGuardSquad !== true) return false;
+    const count = this.config.homeGuardRangers ?? 1;
+    if (count <= 0) return false;
+    if (state.core === null) return false;
+    const corePosition = state.core.position;
+    const sorted = [...state.rangers]
+      .map((r) => ({ id: r.id, dist: chebyshev(r.position, corePosition) }))
+      .sort((a, b) => a.dist - b.dist || a.id.localeCompare(b.id));
+    return sorted.slice(0, count).some((r) => r.id === unit.id);
+  }
+
   /** 启动播种（持久敌情测绘，2026-08-07）：从历史 calibration cases 提取的最后
    *  已知敌 Core 位置注入 World——重启后军事仍记得敌方基地（解决"重启→记忆
    *  清零→军队空转"）。返回实际播种数。 */
@@ -2858,12 +2895,14 @@ export class SafetyPlanner {
       // 攻坚时按 id 排序保留 N 个 Vanguard 守家（官方拆家留守卫
       // VANGUARD_CORE_GUARDS=1 防换家/反打；威胁自适应叠加到 2——高伤害对手
       // 趁远征偷家/反打的概率更高），其余全压拆家——家不空防。
-      const reserveGuards = this.adaptiveReserveGuards(state);
-      const sortedVanguards = [...state.vanguards].map((v) => v.id).sort();
-      const reserveGuard =
-        reserveGuards > 0 &&
-        sortedVanguards.length > reserveGuards &&
-        sortedVanguards.slice(-reserveGuards).includes(unit.id);
+      // home-guard-squad-v1（2026-08-09 用户裁决"守卫至少 2 前锋 1 游侠"）：
+      // 守卫选择从 UUID 排序改为"距 Core 最近"排序——UUID 随机可能选中远征
+      // 前线的单位（t1 生产实证 dist=92 守卫，名义留守实际裸奔）。距离选择
+      // 保证"留守最近的兵、远征用最远的兵"。Ranger 守卫在 decideRanger。
+      const reserveGuards = this.config.homeGuardSquad === true
+        ? this.config.homeGuardVanguards ?? 2
+        : this.adaptiveReserveGuards(state);
+      const reserveGuard = state.core !== null && this.isHomeGuardUnit(state, unit, reserveGuards);
       if (reserveGuard) {
         const home = state.core === null
           ? null
@@ -3504,6 +3543,20 @@ export class SafetyPlanner {
       // 无合法让位目标（Core 四邻全堵且全满）：原地等下一 tick 重试——
       // 不 fall through 到守位（守位目标可能在 Core 邻格满格 → 预裁决
       // 淘汰 → MOVE_FAILED 循环）。
+      return;
+    }
+    // home-guard-squad-v1 Ranger 守卫（2026-08-09 用户裁决"守卫至少 2 前锋
+    // 1 游侠"）：距 Core 最近的 homeGuardRangers 个 Ranger 常驻守家——不参与
+    // 攻坚集结/打野/记忆射击（远程守卫的射程优势在 Core 附近最有价值：敌核
+    // 拆家队接近时 3 格射程先接敌）。守位锚点 home 已算好；射击/回援分支在
+    // 上方已优先（有敌就开火、家被威胁就回防），这里只拦截"无威胁时的外出
+    // 分支"。兵力不足（rangers ≤ 守卫数）时全部守家——家不空防优先。
+    if (this.isHomeGuardRanger(state, unit)) {
+      if (home !== null && !samePosition(unit.position, home)) {
+        const direction = stepToward(unit.position, home, militaryObstacles);
+        if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_home_guard"); return; }
+      }
+      set(unit, { type: "WAIT" }, "ranger_home_guard_hold");
       return;
     }
     // 攻坚动量（2026-08-07 t2 jerkman 实证）：aggressive Ranger 无可见敌人时，
