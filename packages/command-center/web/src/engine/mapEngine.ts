@@ -85,10 +85,6 @@ interface ArenaState extends Jsonish {
   zoom: ZoomState;
   cc: { tick: number | null; anchor: number };
   terrainSig: number;
-  /** LOD 分级加载（2026-08-09）：全局缩放（scale<4）拉 /api/map/lod chunk 聚合
-   *  （~38KB vs 全量 921KB），drawLodChunks 画密度色块替代 cells 详细渲染。 */
-  lodChunks: Jsonish[];
-  lodMode: boolean;
   tactical: TacticalState;
 }
 
@@ -132,8 +128,6 @@ const state: ArenaState = {
   zoom: { active: false, tx: 0, ty: 0, ts: 1, lastTs: 0 }, // 滚轮缩放阻尼目标视图
   cc: { tick: null, anchor: 0 }, // 命令窗口：最近观测到的计划 tick + 观测时刻（15s 倒计时）
   terrainSig: 0,               // 障碍/资源测绘签名：仅地形变化时重建底图缓存
-  lodChunks: [],
-  lodMode: false,              // 全局缩放 LOD 模式：lodChunks 色块渲染，跳过 cells 明细
   tactical: {
     surveys: {},      // tenant -> { obstacleCells, resourceCells, ... }（累积测绘）
     worlds: {},       // tenant -> { state, tick }
@@ -297,24 +291,18 @@ function renderStaticCache(bs: any) {
     if (!state.soloTenant) renderTenantRegions(envDepsOf(), s);
     renderGlobalChunks(envDepsOf(), s); // 全局探索分区底纹（/api/map chunks，跨租户合并）
     renderGrid(envDepsOf(), W(), H()); // 网格线并入静态缓存：平移/缩放重建一次，不再每帧画
-    if (state.lodMode) {
-      // LOD 分级（2026-08-09）：全局缩放用 chunk 密度色块替代 cells 明细
-      // （数据来自 /api/map/lod ~38KB，不拉全量 921KB）
-      drawLodChunks(envDepsOf(), s);
-    } else {
-      if (!LQ) tactSurveyLayer(s); else surveySkipped = true; // 动画期间跳过最贵的测绘记忆层，结束补建
-      const cells = visibleCells();
-      const buckets: Record<string, any[]> = { obstacle: [], resource: [] };
-      for (const c of cells) {
-        if (!buckets[c.type]) continue;
-        // solo 视图：记忆层由 tactSurveyLayer 负责（chunks 底纹 + 状态着色），
-        // 全局层只画当前帧（fresh），避免同源数据双画重叠（2026-08-08 链路打通）
-        if (state.soloTenant && !c.fresh) continue;
-        buckets[c.type].push(c);
-      }
-      drawObstacles(buckets.obstacle, s);
-      drawResources(buckets.resource, s);
+    if (!LQ) tactSurveyLayer(s); else surveySkipped = true; // 动画期间跳过最贵的测绘记忆层，结束补建
+    const cells = visibleCells();
+    const buckets: Record<string, any[]> = { obstacle: [], resource: [] };
+    for (const c of cells) {
+      if (!buckets[c.type]) continue;
+      // solo 视图：记忆层由 tactSurveyLayer 负责（chunks 底纹 + 状态着色），
+      // 全局层只画当前帧（fresh），避免同源数据双画重叠（2026-08-08 链路打通）
+      if (state.soloTenant && !c.fresh) continue;
+      buckets[c.type].push(c);
     }
+    drawObstacles(buckets.obstacle, s);
+    drawResources(buckets.resource, s);
   } finally {
     ctx = prevCtx;
     state.view = prevView;
@@ -325,31 +313,6 @@ function renderStaticCache(bs: any) {
   staticCache.ready = true;
   staticDirty = false;
 }
-
-/** LOD 分级渲染（2026-08-09）：/api/map/lod chunk 聚合密度色块。
- *  cx/cy 为 chunk 坐标（×16 = 世界坐标）；矿密度绿（alpha 随计数）、
- *  障碍浅灰、核心红。静态缓存层：平移/缩放重建一次。 */
-function drawLodChunks(deps: EnvRenderDeps, s: number) {
-  const c = deps.getCtx(); if (!c) return;
-  const chunks = state.lodChunks; if (!chunks.length) return;
-  const px = 16 * s; if (px < 3) return; // chunk 过小（极高缩放）不画，避免色块闪烁
-  for (const ch of chunks) {
-    const p = deps.project(ch.cx * 16, ch.cy * 16);
-    if (p.sx > deps.W() || p.sy > deps.H() || p.sx + px < 0 || p.sy + px < 0) continue;
-    if (ch.coreCount > 0) {
-      c.fillStyle = 'rgba(224,98,93,0.42)';
-      c.fillRect(p.sx, p.sy, px, px);
-    } else if (ch.resourceCount > 0) {
-      c.fillStyle = `rgba(127,201,154,${Math.min(0.45, 0.1 + ch.resourceCount * 0.04)})`;
-      c.fillRect(p.sx, p.sy, px, px);
-    }
-    if (ch.obstacleCount > 0) {
-      c.fillStyle = 'rgba(190,190,200,0.12)';
-      c.fillRect(p.sx, p.sy, px, px);
-    }
-  }
-}
-
 function blitStatic() {
   if (!staticCache.ready) return;
   const c = staticCache;
@@ -392,13 +355,8 @@ async function poll() {
   // 逐端点容错（2026-08-08）：单个端点慢/失败不再整轮 abort——并行 agent 高 CPU 时
   // overview/map 可能 >8s，原来 Promise.all 一挂全挂导致"界面卡住/单位冻结"。
   // 成功才覆盖 state，失败保留上一轮数据（地图/单位不闪没）。
-  // LOD 分级（2026-08-09）：全局缩放（scale<4）拉 /api/map/lod chunk 聚合
-  // （~38KB vs 全量 921KB），放大到局部恢复全量 /api/map。
-  const useLod = state.view.scale < 4;
   const [oR, mR, iR] = await Promise.allSettled([
-    getJSON('/api/overview', 30000),
-    useLod ? fetchJSONWithETag('/api/map/lod?tenant=all', 30000) : fetchJSONWithETag('/api/map', 30000),
-    getJSON('/api/intel', 30000),
+    getJSON('/api/overview', 30000), fetchJSONWithETag('/api/map', 30000), getJSON('/api/intel', 30000),
   ]);
   const overview = oR.status === 'fulfilled' ? oR.value : null;
   const map = mR.status === 'fulfilled' ? mR.value : null;
@@ -416,18 +374,6 @@ async function poll() {
       draw();
       return pollOk;
     }
-    if (useLod) {
-      // LOD 模式：只更新 chunk 聚合，cells/bounds 保留上次全量（全局缩放无需明细）。
-      // 动态层（单位/核心）继续用旧 cells 画小点，切回 scale>=4 后下轮 poll 恢复全量。
-      state.lodMode = true;
-      state.lodChunks = map.chunks ?? [];
-      captureUnitPrev();
-      if (!state.view.ready && state.bounds && state.cells.length) fitView();
-      emit('overview', state.overview);
-      draw();
-      return pollOk;
-    }
-    state.lodMode = false;
     state.map = map;
     state.cells = map.cells ?? [];
     state.chunks = map.chunks ?? [];
