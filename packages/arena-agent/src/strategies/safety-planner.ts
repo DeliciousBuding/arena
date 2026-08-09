@@ -48,6 +48,16 @@ import {
   type ThreatTier,
 } from "./safety-planner-config.ts";
 import {
+  EMPTY_SQUAD_MEMBERSHIP,
+  rallyPointAtSlot,
+  rallySlotForSquad,
+  reconcileTacticalSquads,
+  type SquadMembership,
+  type SquadUnit,
+  type TacticalSquad,
+  type TacticalSquadRole,
+} from "./tactical-squads.ts";
+import {
   aggressiveShotPriority,
   canShoot,
   defensePost,
@@ -418,10 +428,19 @@ interface HealRotationSlot {
   phaseEndTick: number;
 }
 
+/** P1 战术小队（tactical-squads-v1）：SafetyPlanner 内部编成的本地租户前缀。
+ *  squad id 是 planner 局部身份（TaskForce 引用真实租户 id 属后续接线），
+ *  "local" 仅用于保持 local-fleet 命名契约 `tenant:role:index`。 */
+const LOCAL_SQUAD_TENANT_ID = "local";
+
 export class SafetyPlanner {
   readonly world: World;
   readonly phase: PhaseMachine;
   private configValue: SafetyPlannerConfig;
+  /** P1 战术小队（tactical-squads-v1，默认关）：当前 tick 编成 + 上 tick 成员
+   *  归属（sticky 输入）。关闭时恒为空（零回归）。 */
+  private tacticalSquadsValue: SquadMembership = EMPTY_SQUAD_MEMBERSHIP;
+  private tacticalSquadPrevious: ReadonlyMap<string, string> = new Map();
   /** 当前 SafetyPlanner 配置（热加载 2026-08-08：updateConfig 原子替换引用，
    *  World/巡逻记忆不丢；所有决策路径经 this.config 实时读取）。 */
   get config(): SafetyPlannerConfig {
@@ -474,6 +493,18 @@ export class SafetyPlanner {
       }
     }
     return avoid;
+  }
+
+  /** P1 战术小队（tactical-squads-v1）：只读编成快照（纯函数结果 / telemetry
+   *  消费，不改 schema）。默认关闭时恒为空数组（零回归）。 */
+  tacticalSquadSnapshot(): ReadonlyArray<{
+    readonly id: string;
+    readonly role: TacticalSquadRole;
+    readonly index: number;
+    readonly vanguardIds: readonly string[];
+    readonly rangerIds: readonly string[];
+  }> {
+    return this.tacticalSquadsValue.squads;
   }
 
   /**
@@ -766,6 +797,11 @@ export class SafetyPlanner {
   private isHomeGuardUnit(state: TickState, unit: UnitSnapshot, guardCount: number): boolean {
     if (guardCount <= 0) return false;
     if (state.core === null) return false;
+    if (this.config.tacticalSquads === true) {
+      // 稳定 squad 身份：HOME_DEFENSE 编队成员即守家（sticky，不再每 tick
+      // 按距离重排漂移；家防不被借空）。
+      return this.squadOf(unit.id)?.role === "HOME_DEFENSE";
+    }
     const corePosition = state.core.position;
     if (this.config.homeGuardSquad === true) {
       const sorted = [...state.vanguards]
@@ -784,6 +820,10 @@ export class SafetyPlanner {
    *  homeGuardRangers 个 Ranger 守家（留守最近的游侠、远征用最远的）。
    *  与 isHomeGuardUnit 同口径（距离升序 + id 决胜稳定排序）。 */
   private isHomeGuardRanger(state: TickState, unit: UnitSnapshot): boolean {
+    if (this.config.tacticalSquads === true) {
+      const squad = this.squadOf(unit.id);
+      return squad !== undefined && squad.role === "HOME_DEFENSE";
+    }
     if (this.config.homeGuardSquad !== true) return false;
     const count = this.config.homeGuardRangers ?? 1;
     if (count <= 0) return false;
@@ -793,6 +833,32 @@ export class SafetyPlanner {
       .map((r) => ({ id: r.id, dist: chebyshev(r.position, corePosition) }))
       .sort((a, b) => a.dist - b.dist || a.id.localeCompare(b.id));
     return sorted.slice(0, count).some((r) => r.id === unit.id);
+  }
+
+  /** P1 战术小队（tactical-squads-v1）：查询单位所属 squad（关闭时恒 undefined）。 */
+  private squadOf(unitId: string): TacticalSquad | undefined {
+    if (this.config.tacticalSquads !== true) return undefined;
+    const squadId = this.tacticalSquadsValue.squadByUnit.get(unitId);
+    if (squadId === undefined) return undefined;
+    return this.tacticalSquadsValue.squads.find((squad) => squad.id === squadId);
+  }
+
+  /** P1 战术小队（tactical-squads-v1）：按单位所属 squad 的 slot 选 rally 集结
+   *  位——不同小队集结到不同格（杜绝全员共享单一 rally cell / 同一路径目标）；
+   *  关闭时回落历史单一集结位（slot=0，零回归）。 */
+  private rallyPointForSquad(
+    unit: UnitSnapshot,
+    target: Position,
+    home: Position,
+    obstacles: ReadonlySet<string>,
+    resourceCells: ReadonlySet<string>,
+  ): Position {
+    if (this.config.tacticalSquads !== true) {
+      return this.rallyPoint(target, home, obstacles, resourceCells);
+    }
+    const squad = this.squadOf(unit.id);
+    const slot = squad === undefined ? 0 : rallySlotForSquad(squad.index);
+    return rallyPointAtSlot(target, home, obstacles, resourceCells, slot);
   }
 
   /** 启动播种（持久敌情测绘，2026-08-07）：从历史 calibration cases 提取的最后
@@ -1670,6 +1736,28 @@ export class SafetyPlanner {
       this.cargoStuckCargoSnapshot = new Map(
         state.workers.filter((w) => w.cargo > 0).map((w) => [w.id, w.cargo]),
       );
+    }
+
+    // P1 战术小队（tactical-squads-v1，默认关）：每 tick 重算 squad 编成
+    // （sticky 保持成员身份），供守家判定 / rally 集结位分散消费。关闭时
+    // 恒空零回归。
+    if (this.config.tacticalSquads === true) {
+      const squadUnits: SquadUnit[] = [...state.vanguards, ...state.rangers].map((u) => ({
+        id: u.id,
+        unitType: u.unitType,
+        position: u.position,
+      }));
+      this.tacticalSquadsValue = reconcileTacticalSquads(
+        squadUnits,
+        this.tacticalSquadPrevious,
+        LOCAL_SQUAD_TENANT_ID,
+        {
+          homeAnchor: state.core?.position,
+          homeVanguards: this.config.homeGuardVanguards ?? 2,
+          homeRangers: this.config.homeGuardRangers ?? 1,
+        },
+      );
+      this.tacticalSquadPrevious = this.tacticalSquadsValue.squadByUnit;
     }
 
     const actions: Record<string, UnitAction> = {};
@@ -2975,7 +3063,7 @@ export class SafetyPlanner {
       // 守卫选择从 UUID 排序改为"距 Core 最近"排序——UUID 随机可能选中远征
       // 前线的单位（t1 生产实证 dist=92 守卫，名义留守实际裸奔）。距离选择
       // 保证"留守最近的兵、远征用最远的兵"。Ranger 守卫在 decideRanger。
-      const reserveGuards = this.config.homeGuardSquad === true
+      const reserveGuards = (this.config.homeGuardSquad === true || this.config.tacticalSquads === true)
         ? this.config.homeGuardVanguards ?? 2
         : this.adaptiveReserveGuards(state);
       const reserveGuard = state.core !== null && this.isHomeGuardUnit(state, unit, reserveGuards);
@@ -3026,7 +3114,7 @@ export class SafetyPlanner {
             !this.rallyReady(enemyCoreMemory.position, key, state) &&
             chebyshev(unit.position, enemyCoreMemory.position) > RALLY_ATTACK_RADIUS
           ) {
-            const point = this.rallyPoint(enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
+            const point = this.rallyPointForSquad(unit, enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
             if (!samePosition(unit.position, point)) {
               const direction = stepToward(unit.position, point, militaryObstacles);
               if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_rally");
@@ -3704,7 +3792,7 @@ export class SafetyPlanner {
         !this.rallyReady(rallyCore.position, cellKey(rallyCore.position), state) &&
         chebyshev(unit.position, rallyCore.position) > RALLY_ATTACK_RADIUS
       ) {
-        const point = this.rallyPoint(rallyCore.position, state.core.position, militaryObstacles, state.resourceCells);
+        const point = this.rallyPointForSquad(unit, rallyCore.position, state.core.position, militaryObstacles, state.resourceCells);
         if (!samePosition(unit.position, point)) {
           const direction = stepToward(unit.position, point, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_rally");
