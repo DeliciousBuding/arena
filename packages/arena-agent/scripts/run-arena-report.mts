@@ -18,11 +18,30 @@
  * 用法（cd packages/arena-agent）：
  *   npx tsx scripts/run-arena-report.mts \
  *     [--scenarios ffa-std,ffa-dense] [--seeds 1,2,3] [--ticks 2000] \
- *     [--players 8] [--out arena-bench] [--data-root PATH] [--force]
+ *     [--players 8] [--workers N] [--out arena-bench] [--data-root PATH] [--force]
+ *
+ * 分片/合并（并行跑批，2026-08-09）：--shard <i>/<n>（或 --shard <i>
+ *   --shard-total <n>）+ --shard-by scenario|seed（默认 scenario）。全部
+ *   （场景×seed）列表按维度确定性均分，本进程只跑第 i 片，写
+ *   <runDir>/results.s<i>.json（runId 由完整参数决定，各片同目录）。
+ *   全部片完成后 --merge <runDir>：读回分片、校验完整性（参数一致/
+ *   无重叠/覆盖全笛卡尔集）、重算聚合/榜单/画像，写完整 results.json +
+ *   report.html，并调用 scripts/arena_bench_plots.py 出图（契约：
+ *   `python scripts/arena_bench_plots.py <results.json> --out <plots目录>`，
+ *   脚本不存在则跳过并注明）。
+ *
+ * 并行（2026-08-09）：--workers N（默认 1 = 原有串行行为）。N > 1 时主进程
+ *   把"场景×seed"组合分派给 N 个子进程（node:child_process spawn 同脚本
+ *   `--worker <scenario> <seed>` 模式，--import tsx 加载），每子进程跑 1 场
+ *   写单场结果 JSON 到临时目录，主进程读回后走同一套汇总/榜单/报告逻辑；
+ *   失败场次记入 results.json errors 不中断整体（汇总时标注）。同一 seed
+ *   同一场景结果与串行逐字节一致（确定性模拟）。
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runFreeForAll, makeArenaScenarioN, type TournEntry } from "../src/sim/opponent/tournament.ts";
 import { defaultContestants, type Contestant } from "../src/sim/opponent/contestants.ts";
@@ -33,6 +52,7 @@ import {
   prepareRunDir,
   resolveOutputBase,
   sha256Json,
+  validateRunId,
 } from "../src/sim/tools/artifacts.ts";
 import { resolveArenaDataRoot } from "../src/app/data-root.ts";
 import {
@@ -169,7 +189,20 @@ const PLAYERS = Number(argValue("--players") ?? 8);
 if (!Number.isSafeInteger(PLAYERS) || PLAYERS < 2) {
   throw new Error(`--players must be a safe integer >= 2 (got ${String(argValue("--players"))})`);
 }
+const WORKERS = Number(argValue("--workers") ?? 1);
+if (!Number.isSafeInteger(WORKERS) || WORKERS < 1) {
+  throw new Error(`--workers must be a positive safe integer (got ${String(argValue("--workers"))})`);
+}
 const OUT_PREFIX = argValue("--out") ?? "arena-bench";
+
+/** --shard-by 解析：scenario（默认）| seed。 */
+function parseShardBy(): "scenario" | "seed" {
+  const raw = argValue("--shard-by") ?? "scenario";
+  if (raw === "scenario" || raw === "seed") return raw;
+  throw new Error(`--shard-by 必须为 scenario 或 seed（got "${raw}"）`);
+}
+
+const SHARD_BY = parseShardBy();
 
 /* ------------------------------------------------------------------ *
  * 结构类型
@@ -345,10 +378,15 @@ function averageLedgers(ledgers: readonly PlayerCostLedger[]): PlayerCostLedger 
  * 跑批：场景模板 × 阵容 × seed
  * ------------------------------------------------------------------ */
 
-/** 按 --players 裁剪阵容：N < 条目数取前 N 个；≥ 条目数全上。 */
-function buildRoster(): { readonly contestants: readonly Contestant[] } {
+/** 按玩家数裁剪阵容：N < 条目数取前 N 个；≥ 条目数全上。 */
+function buildRosterForPlayers(playerCount: number): readonly Contestant[] {
   const all = defaultContestants();
-  return { contestants: PLAYERS < all.length ? all.slice(0, PLAYERS) : all };
+  return playerCount < all.length ? all.slice(0, playerCount) : all;
+}
+
+/** 按 --players 裁剪阵容（正常/分片路径；合并路径用分片文件里的 players）。 */
+function buildRoster(): { readonly contestants: readonly Contestant[] } {
+  return { contestants: buildRosterForPlayers(PLAYERS) };
 }
 
 function buildScenario(
@@ -372,41 +410,64 @@ function runScenario(
 ): ScenarioSummary {
   const matches: BenchMatch[] = [];
   for (const seed of seeds) {
-    const entries = contestants.map((contestant) => contestant.entry(seed));
-    const scenario = buildScenario(template, entries, seed);
-    const result = runFreeForAll(entries, seed, ticks, RULES_PATH, { scenario });
-    const rank = rankMatchPlayers(entries.map((entry) => entry.id), result);
-    const ledgers = result.perPlayerLedgers ?? {};
-    const kills = result.perPlayerKills ?? {};
-    const firstKillTicks = result.perPlayerFirstKillTicks ?? {};
-    const perPlayer: Record<string, MatchPlayerData> = {};
-    for (const entry of entries) {
-      const ledger = ledgers[entry.id];
-      if (ledger === undefined) {
-        throw new Error(`runFreeForAll 缺 ${entry.id} 的 per-player ledger`);
-      }
-      perPlayer[entry.id] = {
-        kills: kills[entry.id] ?? 0,
-        firstKillTick: firstKillTicks[entry.id] ?? null,
-        aliveTicks: ledger.aliveTicks,
-        harvested: ledger.harvested,
-        deposited: ledger.deposited,
-        damageDealt: ledger.damageDealt,
-        beaconTicks: ledger.beaconTicks,
-        unitsLost: ledger.unitsLost,
-        finalPopulation: ledger.finalPopulation,
-        finalResources: ledger.finalResources,
-        populationPeak: ledger.populationPeak,
-        ledger,
-      };
-    }
-    const winnerLabel = result.winner ?? "draw";
-    const summaryLine = entries.map((entry) => `${entry.id} r${rank[entry.id]}`).join(" ");
-    console.log(`[${name}] seed=${seed} winner=${winnerLabel} events=${result.eventCount} :: ${summaryLine}`);
-    matches.push({ scenario: name, seed, winner: result.winner, rank, perPlayer });
+    matches.push(runSingleMatch(name, template, seed, ticks, contestants));
   }
+  return aggregateScenarioMatches(name, template, seeds, ticks, contestants, matches);
+}
 
-  // 跨 seeds 聚合（设计 §4；每个条目都出现在每场，缺失场次跳过）
+/** 跑单场对局（runFreeForAll 真实桥），返回规范化场次结果。子进程 --worker
+ *  模式与主进程串行路径共用此函数——同一 seed 同一场景产出完全一致。 */
+function runSingleMatch(
+  name: string,
+  template: ScenarioTemplate,
+  seed: number,
+  ticks: number,
+  contestants: readonly Contestant[],
+): BenchMatch {
+  const entries = contestants.map((contestant) => contestant.entry(seed));
+  const scenario = buildScenario(template, entries, seed);
+  const result = runFreeForAll(entries, seed, ticks, RULES_PATH, { scenario });
+  const rank = rankMatchPlayers(entries.map((entry) => entry.id), result);
+  const ledgers = result.perPlayerLedgers ?? {};
+  const kills = result.perPlayerKills ?? {};
+  const firstKillTicks = result.perPlayerFirstKillTicks ?? {};
+  const perPlayer: Record<string, MatchPlayerData> = {};
+  for (const entry of entries) {
+    const ledger = ledgers[entry.id];
+    if (ledger === undefined) {
+      throw new Error(`runFreeForAll 缺 ${entry.id} 的 per-player ledger`);
+    }
+    perPlayer[entry.id] = {
+      kills: kills[entry.id] ?? 0,
+      firstKillTick: firstKillTicks[entry.id] ?? null,
+      aliveTicks: ledger.aliveTicks,
+      harvested: ledger.harvested,
+      deposited: ledger.deposited,
+      damageDealt: ledger.damageDealt,
+      beaconTicks: ledger.beaconTicks,
+      unitsLost: ledger.unitsLost,
+      finalPopulation: ledger.finalPopulation,
+      finalResources: ledger.finalResources,
+      populationPeak: ledger.populationPeak,
+      ledger,
+    };
+  }
+  const winnerLabel = result.winner ?? "draw";
+  const summaryLine = entries.map((entry) => `${entry.id} r${rank[entry.id]}`).join(" ");
+  console.log(`[${name}] seed=${seed} winner=${winnerLabel} events=${result.eventCount} :: ${summaryLine}`);
+  return { scenario: name, seed, winner: result.winner, rank, perPlayer };
+}
+
+/** 跨 seeds 聚合（设计 §4；每个条目都出现在每场，缺失场次跳过）。跑批与
+ *  汇总分离：串行路径与并行路径（子进程结果 JSON 读回）共用同一聚合。 */
+function aggregateScenarioMatches(
+  name: string,
+  template: ScenarioTemplate,
+  seeds: readonly number[],
+  ticks: number,
+  contestants: readonly Contestant[],
+  matches: readonly BenchMatch[],
+): ScenarioSummary {
   const perEntry: Record<string, EntryScenarioStats> = {};
   for (const contestant of contestants) {
     const playerIdBySeed = new Map(seeds.map((seed) => [seed, contestant.entry(seed).id]));
@@ -434,6 +495,632 @@ function runScenario(
     };
   }
   return { name, template, seedCount: seeds.length, matches, perEntry };
+}
+
+/* ------------------------------------------------------------------ *
+ * 并行跑批：--workers N 子进程分派（--worker 单场模式）
+ * ------------------------------------------------------------------ */
+
+/** 子进程单场结果 JSON（--worker 输出到临时目录）。 */
+interface WorkerMatchFile {
+  readonly schema: "arena.bench.match.v1";
+  readonly scenario: string;
+  readonly seed: number;
+  readonly winner: string | null;
+  readonly rank: Readonly<Record<string, number>>;
+  readonly perPlayer: Readonly<Record<string, MatchPlayerData>>;
+  /** 单场耗时（ms）。 */
+  readonly elapsedMs: number;
+}
+
+/** 子进程失败 JSON（非 0 退出时写）。 */
+interface WorkerErrorFile {
+  readonly schema: "arena.bench.match.error.v1";
+  readonly scenario: string;
+  readonly seed: number;
+  readonly message: string;
+  readonly stack?: string;
+}
+
+/** 主进程汇总的失败场次记录（写入 results.json errors）。 */
+interface MatchError {
+  readonly scenario: string;
+  readonly seed: number;
+  readonly message: string;
+}
+
+function workerResultFileName(scenario: string, seed: number): string {
+  return `match-${scenario}-s${seed}.json`;
+}
+
+function workerErrorFileName(scenario: string, seed: number): string {
+  return `match-${scenario}-s${seed}.error.json`;
+}
+
+/** 解析 --worker <scenario> <seed> 子进程调用；非 worker 模式返回 null。 */
+function parseWorkerInvocation(): { readonly scenario: string; readonly seed: number; readonly outDir: string } | null {
+  const flagIndex = process.argv.indexOf("--worker");
+  if (flagIndex < 0) return null;
+  const scenario = process.argv[flagIndex + 1];
+  const seedRaw = process.argv[flagIndex + 2];
+  const outDir = argValue("--worker-out-dir");
+  if (scenario === undefined || seedRaw === undefined || outDir === undefined) {
+    throw new Error(`--worker 需要 <scenario> <seed> --worker-out-dir <dir>`);
+  }
+  const seed = Number(seedRaw);
+  if (!Number.isSafeInteger(seed) || seed < 0) {
+    throw new Error(`--worker seed must be a non-negative safe integer (got "${seedRaw}")`);
+  }
+  if (!(scenario in SCENARIO_REGISTRY)) {
+    throw new Error(`--worker 含未知场景 "${scenario}"`);
+  }
+  return { scenario, seed, outDir };
+}
+
+/** 子进程入口：跑 1 场并写单场结果 JSON；失败写 error JSON 并返回非 0。 */
+function runWorkerProcess(): number {
+  const invocation = parseWorkerInvocation();
+  if (invocation === null) return 2;
+  const roster = buildRoster().contestants;
+  const startedAt = Date.now();
+  try {
+    const match = runSingleMatch(
+      invocation.scenario,
+      SCENARIO_REGISTRY[invocation.scenario],
+      invocation.seed,
+      TICKS,
+      roster,
+    );
+    const file: WorkerMatchFile = {
+      schema: "arena.bench.match.v1",
+      scenario: match.scenario,
+      seed: match.seed,
+      winner: match.winner,
+      rank: match.rank,
+      perPlayer: match.perPlayer,
+      elapsedMs: Date.now() - startedAt,
+    };
+    atomicWriteJson(join(invocation.outDir, workerResultFileName(invocation.scenario, invocation.seed)), file);
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[worker] ${invocation.scenario} seed=${invocation.seed} 失败：${message}`);
+    try {
+      const errorFile: WorkerErrorFile = {
+        schema: "arena.bench.match.error.v1",
+        scenario: invocation.scenario,
+        seed: invocation.seed,
+        message,
+        stack: error instanceof Error ? error.stack : undefined,
+      };
+      atomicWriteJson(join(invocation.outDir, workerErrorFileName(invocation.scenario, invocation.seed)), errorFile);
+    } catch {
+      // 错误文件写失败不掩盖原始错误
+    }
+    return 1;
+  }
+}
+
+/** 派发单场给一个子进程：spawn 同脚本 --worker 模式，等退出后读回结果 JSON。
+ *  非 0 退出 / 结果缺失 / 解析失败 → 抛错（由调用方记入 MatchError）。 */
+function runOneWorkerMatch(job: { readonly scenario: string; readonly seed: number }, outDir: string): Promise<BenchMatch> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(
+      process.execPath,
+      [
+        "--import", "tsx",
+        fileURLToPath(import.meta.url),
+        "--worker", job.scenario, String(job.seed),
+        "--ticks", String(TICKS),
+        "--players", String(PLAYERS),
+        "--worker-out-dir", outDir,
+      ],
+      { cwd: PKG_ROOT, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+    );
+    let stderrTail = "";
+    child.stdout?.on("data", (chunk) => {
+      process.stdout.write(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderrTail = (stderrTail + String(chunk)).slice(-2000);
+    });
+    child.on("error", (error) => rejectPromise(new Error(`spawn 失败：${error.message}`)));
+    child.once("exit", (code, signal) => {
+      if (code !== 0) {
+        let detail = stderrTail.trim() || `exit ${code}${signal ? ` (${signal})` : ""}`;
+        try {
+          const errorFile = JSON.parse(
+            readFileSync(join(outDir, workerErrorFileName(job.scenario, job.seed)), "utf8"),
+          ) as WorkerErrorFile;
+          if (typeof errorFile.message === "string" && errorFile.message.length > 0) {
+            detail = errorFile.message;
+          }
+        } catch {
+          // 错误文件缺失时退回 stderr 摘要
+        }
+        rejectPromise(new Error(detail));
+        return;
+      }
+      try {
+        const raw = JSON.parse(
+          readFileSync(join(outDir, workerResultFileName(job.scenario, job.seed)), "utf8"),
+        ) as WorkerMatchFile;
+        if (raw.schema !== "arena.bench.match.v1") {
+          throw new Error(`schema 不符：${String(raw.schema)}`);
+        }
+        resolvePromise({
+          scenario: raw.scenario,
+          seed: raw.seed,
+          winner: raw.winner,
+          rank: raw.rank,
+          perPlayer: raw.perPlayer,
+        });
+      } catch (error) {
+        rejectPromise(new Error(`结果 JSON 读取失败：${error instanceof Error ? error.message : String(error)}`));
+      }
+    });
+  });
+}
+
+/** 并行跑批：--workers 个并发，FIFO 队列调度（完成后补下一个）；按
+ *  场景×seed 笛卡尔序（与串行一致）返回场次。失败场次记入 errors。 */
+async function runScenarioBatchParallel(
+  contestants: readonly Contestant[],
+  workers: number,
+): Promise<{ readonly scenarios: readonly ScenarioSummary[]; readonly errors: readonly MatchError[] }> {
+  const jobs: { readonly scenario: string; readonly seed: number }[] = [];
+  for (const scenario of SCENARIOS) {
+    for (const seed of SEEDS) {
+      jobs.push({ scenario, seed });
+    }
+  }
+  const outDir = mkdtempSync(join(tmpdir(), "arena-bench-workers-"));
+  const results = new Map<string, BenchMatch>();
+  const errors: MatchError[] = [];
+  try {
+    let nextJob = 0;
+    const workerLoop = async (): Promise<void> => {
+      while (nextJob < jobs.length) {
+        const job = jobs[nextJob];
+        nextJob += 1;
+        try {
+          const match = await runOneWorkerMatch(job, outDir);
+          results.set(`${job.scenario}\u0000${job.seed}`, match);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`[fail] ${job.scenario} seed=${job.seed}：${message}`);
+          errors.push({ scenario: job.scenario, seed: job.seed, message });
+        }
+      }
+    };
+    const concurrency = Math.min(workers, jobs.length);
+    await Promise.all(Array.from({ length: concurrency }, () => workerLoop()));
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+  const scenarios = SCENARIOS.map((scenario) => {
+    const matches = SEEDS.map((seed) => results.get(`${scenario}\u0000${seed}`)).filter(
+      (match): match is BenchMatch => match !== undefined,
+    );
+    return aggregateScenarioMatches(scenario, SCENARIO_REGISTRY[scenario], SEEDS, TICKS, contestants, matches);
+  });
+  return { scenarios, errors };
+}
+
+/* ------------------------------------------------------------------ *
+ * 分片/合并：--shard <i>/<n> + --merge <dir>
+ * ------------------------------------------------------------------ */
+
+/** --shard 解析（两种写法）：`--shard 0/2` 或 `--shard 0 --shard-total 2`。
+ *  未提供返回 null。 */
+function parseShardArg(): { readonly index: number; readonly total: number } | null {
+  const raw = argValue("--shard");
+  if (raw === undefined) return null;
+  let indexRaw = raw;
+  let totalRaw = argValue("--shard-total");
+  if (raw.includes("/")) {
+    if (totalRaw !== undefined) {
+      throw new Error(`--shard 写法冲突：--shard <i>/<n> 与 --shard-total 不能同时使用`);
+    }
+    const parts = raw.split("/");
+    if (parts.length !== 2) {
+      throw new Error(`--shard 格式：--shard <i>/<n> 或 --shard <i> --shard-total <n>（got "${raw}"）`);
+    }
+    indexRaw = parts[0];
+    totalRaw = parts[1];
+  }
+  if (totalRaw === undefined) {
+    throw new Error(`--shard 需要 --shard-total <n>（或 --shard <i>/<n> 格式）`);
+  }
+  const index = Number(indexRaw);
+  const total = Number(totalRaw);
+  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(total) || total < 1 || index < 0 || index >= total) {
+    throw new Error(`--shard <i>/<n> 要求 0 <= i < n 且 n >= 1（got i=${indexRaw}, n=${totalRaw}）`);
+  }
+  return { index, total };
+}
+
+/** 确定性均分切片：list 按 shardTotal 片连续均分（长度差 ≤ 1，单调不重叠，
+ *  覆盖全列表）。同 i/n 永远得到同一集合——分片可合并的前提。 */
+function shardSlice<T>(list: readonly T[], shardIndex: number, shardTotal: number): T[] {
+  const start = Math.floor((shardIndex * list.length) / shardTotal);
+  const end = Math.floor(((shardIndex + 1) * list.length) / shardTotal);
+  return list.slice(start, end);
+}
+
+/** 分片结果文件（<runDir>/results.s<i>.json，schema arena.bench.shard.v1）。
+ *  params 是完整的（全部场景×seeds，runId 由此决定），shard 只描述运行范围；
+ *  matches 只含本片场次，perPlayer 保留完整 ledger——合并时据此重算画像。 */
+interface ShardFile {
+  readonly schema: "arena.bench.shard.v1";
+  readonly shard: { readonly index: number; readonly total: number; readonly by: "scenario" | "seed" };
+  readonly params: {
+    readonly scenarios: readonly string[];
+    readonly seeds: readonly number[];
+    readonly ticks: number;
+    readonly players: number;
+    readonly rulesVersion: string;
+  };
+  readonly matches: readonly BenchMatch[];
+  readonly errors: readonly MatchError[];
+}
+
+function shardFileName(index: number): string {
+  return `results.s${index}.json`;
+}
+
+const SHARD_FILE_PATTERN = /^results\.s(\d+)\.json$/u;
+
+/** 分片共享 runDir：只 mkdir 不删除——并发分片进程写同一目录（runId 由完整
+ *  参数决定，各片一致）；不能用 prepareRunDir（其 --force 会删掉其他片的文件）。 */
+function ensureShardRunDir(outputBase: string, runId: string): string {
+  validateRunId(runId);
+  const runDir = resolve(outputBase, runId);
+  mkdirSync(runDir, { recursive: true });
+  return runDir;
+}
+
+/** --merge <dir> 解析：相对 runs/sim 解析（也接受 runs/sim 前缀或绝对路径），
+ *  必须已存在。 */
+function resolveMergeRunDir(dataRoot: string, raw: string): string {
+  const outputBase = resolveOutputBase(dataRoot, null);
+  const parts = raw.split(/[\\/]+/u);
+  const normalized = parts[0] === "runs" && parts[1] === "sim" ? parts.slice(2).join("/") : raw;
+  const candidate = resolve(outputBase, normalized);
+  if (relative(outputBase, candidate).startsWith("..")) {
+    throw new Error(`--merge 目标必须在 runs/sim 下（got "${raw}"）`);
+  }
+  if (!existsSync(candidate)) {
+    throw new Error(`--merge 目录不存在：${candidate}`);
+  }
+  return candidate;
+}
+
+/** 读目录下全部 results.s*.json，按分片号升序返回；无分片文件 fail-fast。 */
+function readShardFiles(runDir: string): ShardFile[] {
+  const names = readdirSync(runDir)
+    .filter((name) => SHARD_FILE_PATTERN.test(name))
+    .sort((a, b) => {
+      const aIndex = Number(a.match(SHARD_FILE_PATTERN)![1]);
+      const bIndex = Number(b.match(SHARD_FILE_PATTERN)![1]);
+      return aIndex - bIndex;
+    });
+  if (names.length === 0) {
+    throw new Error(`--merge 目录没有分片文件（期望 results.s*.json）：${runDir}`);
+  }
+  return names.map((name) => {
+    const raw = JSON.parse(readFileSync(join(runDir, name), "utf8")) as Partial<ShardFile>;
+    if (raw.schema !== "arena.bench.shard.v1") {
+      throw new Error(`${name}: schema 不符（got ${String(raw.schema)}）`);
+    }
+    return raw as ShardFile;
+  });
+}
+
+function sameRunParams(a: ShardFile["params"], b: ShardFile["params"]): boolean {
+  return (
+    a.ticks === b.ticks &&
+    a.players === b.players &&
+    a.rulesVersion === b.rulesVersion &&
+    a.scenarios.length === b.scenarios.length &&
+    a.scenarios.every((scenario, index) => scenario === b.scenarios[index]) &&
+    a.seeds.length === b.seeds.length &&
+    a.seeds.every((seed, index) => seed === b.seeds[index])
+  );
+}
+
+/** 分片模式：只跑本片（scenario 片 = 场景列表均分；seed 片 = seeds 列表均分）
+ *  的全部对局，写 <runDir>/results.s<i>.json；不生成报告/图（由 --merge 统一做）。 */
+async function runShardMode(
+  shard: { readonly index: number; readonly total: number },
+  shardBy: "scenario" | "seed",
+): Promise<number> {
+  const scenarios = shardBy === "scenario" ? shardSlice(SCENARIOS, shard.index, shard.total) : SCENARIOS;
+  const seeds = shardBy === "seed" ? shardSlice(SEEDS, shard.index, shard.total) : SEEDS;
+  const roster = buildRoster().contestants;
+  console.log(
+    `arena-bench-v2 分片 ${shard.index + 1}/${shard.total}（按${shardBy === "scenario" ? "场景" : "seed"}）：` +
+      `本片 ${scenarios.length} 场景 × ${seeds.length} seeds × ${roster.length} 玩家，ticks=${TICKS}`,
+  );
+  const matches: BenchMatch[] = [];
+  const errors: MatchError[] = [];
+  for (const scenario of scenarios) {
+    for (const seed of seeds) {
+      try {
+        matches.push(runSingleMatch(scenario, SCENARIO_REGISTRY[scenario], seed, TICKS, roster));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[shard ${shard.index}/${shard.total}] ${scenario} seed=${seed} 失败：${message}`);
+        errors.push({ scenario, seed, message });
+      }
+    }
+  }
+  const dataRoot = resolveArenaDataRoot(REPO_ROOT, argValue("--data-root"), process.env.ARENA_DATA_ROOT);
+  const outputBase = resolveOutputBase(dataRoot, null);
+  const rosterSize = Math.min(PLAYERS, defaultContestants().length);
+  // runId 由完整参数决定（与其它分片一致）→ 全部片落在同一 runDir
+  const identity = { kind: "arena-bench-v2", scenarios: SCENARIOS, seeds: SEEDS, ticks: TICKS, players: rosterSize };
+  const runId = `${OUT_PREFIX}-${sha256Json(identity).slice(0, 12)}`;
+  const runDir = ensureShardRunDir(outputBase, runId);
+  const shardFile: ShardFile = {
+    schema: "arena.bench.shard.v1",
+    shard: { index: shard.index, total: shard.total, by: shardBy },
+    params: {
+      scenarios: SCENARIOS,
+      seeds: SEEDS,
+      ticks: TICKS,
+      players: rosterSize,
+      rulesVersion: "v0.14",
+    },
+    matches,
+    errors,
+  };
+  atomicWriteJson(join(runDir, shardFileName(shard.index)), shardFile);
+  console.log(`分片完成：${matches.length} 场（${errors.length} 失败）`);
+  console.log(`  分片数据：${join(runDir, shardFileName(shard.index))}`);
+  console.log(`  全部片完成后合并：npx tsx scripts/run-arena-report.mts --merge ${relative(outputBase, runDir)}`);
+  return 0;
+}
+
+/** 合并模式：读 <dir> 下全部分片，校验完整性（参数一致/无重叠/覆盖全笛卡尔集），
+ *  重算聚合 + 榜单 + 画像，写完整 results.json + report.html，并调用出图脚本。 */
+async function runMergeMode(rawDir: string): Promise<number> {
+  const dataRoot = resolveArenaDataRoot(REPO_ROOT, argValue("--data-root"), process.env.ARENA_DATA_ROOT);
+  const runDir = resolveMergeRunDir(dataRoot, rawDir);
+  const shardFiles = readShardFiles(runDir);
+  const params = shardFiles[0].params;
+  for (const file of shardFiles) {
+    if (!sameRunParams(file.params, params)) {
+      throw new Error(
+        `${shardFileName(file.shard.index)}: 参数与分片 0 不一致（scenarios/seeds/ticks/players 必须完全一致才能合并）`,
+      );
+    }
+  }
+  const total = shardFiles[0].shard.total;
+  const by = shardFiles[0].shard.by;
+  for (const file of shardFiles) {
+    if (file.shard.total !== total || file.shard.by !== by) {
+      throw new Error(`${shardFileName(file.shard.index)}: shard 元信息不一致（total/by 必须一致）`);
+    }
+  }
+  for (let index = 0; index < total; index += 1) {
+    if (!shardFiles.some((file) => file.shard.index === index)) {
+      throw new Error(`缺少分片 ${index}/${total}（已找到：${shardFiles.map((f) => f.shard.index).join(",")}）`);
+    }
+  }
+  for (const scenario of params.scenarios) {
+    if (!(scenario in SCENARIO_REGISTRY)) {
+      throw new Error(`分片含未知场景 "${scenario}"（与当前注册表不符）`);
+    }
+  }
+  const seen = new Set<string>();
+  const matchesByScenario = new Map<string, BenchMatch[]>();
+  const errors: MatchError[] = [];
+  for (const file of shardFiles) {
+    for (const match of file.matches) {
+      const key = `${match.scenario}\u0000${match.seed}`;
+      if (seen.has(key)) {
+        throw new Error(`场次重复（分片重叠）：${match.scenario} seed=${match.seed}`);
+      }
+      seen.add(key);
+      const list = matchesByScenario.get(match.scenario);
+      if (list === undefined) matchesByScenario.set(match.scenario, [match]);
+      else list.push(match);
+    }
+    for (const error of file.errors) {
+      const key = `${error.scenario}\u0000${error.seed}`;
+      if (seen.has(key)) {
+        throw new Error(`场次重复（分片重叠）：${error.scenario} seed=${error.seed}`);
+      }
+      seen.add(key);
+      errors.push(error);
+    }
+  }
+  const expected = new Set(params.scenarios.flatMap((scenario) => params.seeds.map((seed) => `${scenario}\u0000${seed}`)));
+  const missing = [...expected].filter((key) => !seen.has(key));
+  if (missing.length > 0) {
+    const sample = missing.slice(0, 5).map((key) => key.replace("\u0000", " seed=")).join("；");
+    throw new Error(`合并不完整：缺 ${missing.length} 场（如 ${sample}）。确认所有分片都已成功完成。`);
+  }
+  const contestants = defaultContestants();
+  const roster = buildRosterForPlayers(params.players);
+  const scenarios = params.scenarios.map((scenario) => {
+    const matches = (matchesByScenario.get(scenario) ?? []).sort((a, b) => a.seed - b.seed);
+    return aggregateScenarioMatches(scenario, SCENARIO_REGISTRY[scenario], params.seeds, params.ticks, roster, matches);
+  });
+  const generatedAt = new Date().toISOString();
+  console.log(
+    `merge：${shardFiles.length} 个分片 → ${scenarios.length} 场景 × ${params.seeds.length} seeds（errors=${errors.length}）`,
+  );
+  await writeRunArtifacts({
+    runDir,
+    generatedAt,
+    scenarios,
+    errors,
+    contestants,
+    rosterSize: params.players,
+    seeds: params.seeds,
+    ticks: params.ticks,
+  });
+  console.log(`  分片文件保留于 ${runDir}/results.s*.json（审计）`);
+  return 0;
+}
+
+/** Python 出图脚本（scripts/arena_bench_plots.py，并行会话开发中）：
+ *  契约 `python scripts/arena_bench_plots.py <results.json> --out <plots目录>`，
+ *  在 <plots目录> 写 PNG/SVG。脚本不存在则跳过并注明（results.json 不受影响）。 */
+async function maybeRunPlots(runDir: string): Promise<void> {
+  const plotsScript = join(here, "arena_bench_plots.py");
+  if (!existsSync(plotsScript)) {
+    console.log("  plots：跳过（scripts/arena_bench_plots.py 尚不存在）");
+    return;
+  }
+  const plotsDir = join(runDir, "plots");
+  mkdirSync(plotsDir, { recursive: true });
+  await new Promise<void>((resolvePromise) => {
+    const child = spawn("python", [plotsScript, join(runDir, "results.json"), "--out", plotsDir], {
+      cwd: PKG_ROOT,
+      stdio: ["ignore", "inherit", "inherit"],
+      windowsHide: true,
+    });
+    child.on("error", (error) => {
+      console.warn(`  plots：python 启动失败：${error.message}`);
+      resolvePromise();
+    });
+    child.once("exit", (code) => {
+      if (code === 0) {
+        console.log(`  plots：${plotsDir}`);
+      } else {
+        console.warn(`  plots：脚本退出码 ${code}（results.json/report.html 不受影响）`);
+      }
+      resolvePromise();
+    });
+  });
+}
+
+/** 组装并落盘完整报告（results.json + report.html + plots/）。串行/并行/合并
+ *  三路径共用——保证合并结果与串行跑聚合逐字节一致（除 generatedAt/errors）。 */
+async function writeRunArtifacts(args: {
+  readonly runDir: string;
+  readonly generatedAt: string;
+  readonly scenarios: readonly ScenarioSummary[];
+  readonly errors: readonly MatchError[];
+  readonly contestants: readonly Contestant[];
+  readonly rosterSize: number;
+  readonly seeds: readonly number[];
+  readonly ticks: number;
+}): Promise<void> {
+  const { runDir, generatedAt, scenarios, errors, contestants, rosterSize, seeds, ticks } = args;
+  const leaderboard = buildLeaderboard(scenarios);
+
+  // 五维画像：全部场景 × seeds 的 ledger 聚合 → 均值 → 画像 → 全体归一化
+  const ledgerPool: Record<string, PlayerCostLedger[]> = {};
+  for (const contestant of contestants) ledgerPool[contestant.id] = [];
+  for (const scenario of scenarios) {
+    for (const match of scenario.matches) {
+      for (const [playerId, data] of Object.entries(match.perPlayer)) {
+        const entryId = playerId.replace(/-s\d+$/u, "");
+        ledgerPool[entryId]?.push(data.ledger);
+      }
+    }
+  }
+  const rawProfiles: Record<string, AgentProfile> = {};
+  for (const contestant of contestants) {
+    const pool = ledgerPool[contestant.id];
+    if (pool === undefined || pool.length === 0) continue;
+    rawProfiles[contestant.id] = computeAgentProfile(averageLedgers(pool), ticks);
+  }
+  const normalizedProfiles = normalizeProfiles(rawProfiles);
+
+  const results = {
+    schema: "arena.bench.report.v2",
+    generatedAt,
+    params: {
+      scenarios: scenarios.map((scenario) => scenario.name),
+      seeds,
+      ticks,
+      players: rosterSize,
+      rulesVersion: "v0.14",
+    },
+    contestants: contestants.map((contestant) => ({
+      id: contestant.id,
+      label: contestant.label,
+      kind: contestant.kind,
+      configNote: contestant.configNote,
+    })),
+    scenarios: scenarios.map((scenario) => ({
+      name: scenario.name,
+      template: scenario.template,
+      seedCount: scenario.seedCount,
+      perEntry: scenario.perEntry,
+      matches: scenario.matches.map((match) => ({
+        seed: match.seed,
+        winner: match.winner,
+        rank: match.rank,
+        perPlayer: Object.fromEntries(
+          Object.entries(match.perPlayer).map(([playerId, data]) => [
+            playerId,
+            {
+              kills: data.kills,
+              firstKillTick: data.firstKillTick,
+              aliveTicks: data.aliveTicks,
+              harvested: data.harvested,
+              deposited: data.deposited,
+              damageDealt: data.damageDealt,
+              beaconTicks: data.beaconTicks,
+              unitsLost: data.unitsLost,
+              finalPopulation: data.finalPopulation,
+              finalResources: data.finalResources,
+              populationPeak: data.populationPeak,
+            },
+          ]),
+        ),
+      })),
+    })),
+    leaderboard,
+    errors: errors.map((error) => ({
+      scenario: error.scenario,
+      seed: error.seed,
+      error: error.message,
+    })),
+    profiles: Object.fromEntries(
+      contestants
+        .filter((contestant) => rawProfiles[contestant.id] !== undefined)
+        .map((contestant) => [
+          contestant.id,
+          { raw: rawProfiles[contestant.id], normalized: normalizedProfiles[contestant.id] },
+        ]),
+    ),
+  };
+  atomicWriteJson(join(runDir, "results.json"), results);
+
+  const reportHtml = buildReportHtml({
+    ticks,
+    seeds,
+    players: rosterSize,
+    generatedAt,
+    contestants,
+    scenarios,
+    leaderboard,
+    errors,
+    rawProfiles,
+    normalizedProfiles,
+    runDir,
+  });
+  atomicWriteText(join(runDir, "report.html"), reportHtml);
+
+  await maybeRunPlots(runDir);
+
+  const totalMatches = scenarios.reduce((sum, scenario) => sum + scenario.matches.length, 0);
+  if (errors.length > 0) {
+    console.warn(`arena-bench 警告：${errors.length} 场失败（结果已标注）：`);
+    for (const error of errors) {
+      console.warn(`  - ${error.scenario} seed=${error.seed}：${error.message}`);
+    }
+  }
+  console.log(`arena-bench ok: ${totalMatches} 场（${scenarios.length} 场景 × ${seeds.length} seeds）`);
+  console.log(`  报告：${runDir}/report.html`);
+  console.log(`  数据：${runDir}/results.json`);
 }
 
 /* ------------------------------------------------------------------ *
@@ -585,6 +1272,9 @@ function scenarioTablesHtml(scenarios: readonly ScenarioSummary[]): string {
 function methodNotesHtml(
   contestants: readonly Contestant[],
   scenarios: readonly ScenarioSummary[],
+  seeds: readonly number[],
+  ticks: number,
+  players: number,
 ): string {
   const scenarioLines = scenarios
     .map((s) => `${s.name}: radius=${s.template.radius}, 资源=${s.template.resources}${s.template.randomDrop === true ? ", randomDrop" : ""}`)
@@ -594,7 +1284,7 @@ function methodNotesHtml(
     .join("<br/>");
   return (
     `<div>场景模板（scripts/bench-scenarios.json）：${escapeHtml(scenarioLines)}</div>` +
-    `<div>seeds=${SEEDS.join(",")} · ticks=${TICKS} · 每场玩家数=${PLAYERS}（取阵容前 ${Math.min(PLAYERS, contestants.length)} 个）· 规则 v0.14</div>` +
+    `<div>seeds=${seeds.join(",")} · ticks=${ticks} · 每场玩家数=${players}（取阵容前 ${Math.min(players, contestants.length)} 个）· 规则 v0.14</div>` +
     `<div>判定（每场）：存活 → 击杀数 → 资源 → 人口；并列同分同排（竞争式排名）。</div>` +
     `<div>击杀归属：CORE_DESTROYED.values.destroyed_by（最终贡献伤害玩家的 username；` +
     `合成场景 username=playerId；多贡献者同记一杀，无贡献者不计——perPlayerKills 之和` +
@@ -616,11 +1306,12 @@ function buildReportHtml(args: {
   readonly contestants: readonly Contestant[];
   readonly scenarios: readonly ScenarioSummary[];
   readonly leaderboard: readonly LeaderboardRow[];
+  readonly errors: readonly MatchError[];
   readonly rawProfiles: Readonly<Record<string, AgentProfile>>;
   readonly normalizedProfiles: Readonly<Record<string, AgentProfile>>;
   readonly runDir: string;
 }): string {
-  const { ticks, seeds, players, generatedAt, contestants, scenarios, leaderboard, runDir } = args;
+  const { ticks, seeds, players, generatedAt, contestants, scenarios, leaderboard, errors, runDir } = args;
   const bars = barsSvg({
     title: "综合榜单（综合分 = avgRank 60% + killRate 20% + survivalMedian 20%）",
     items: leaderboard.map((row) => ({
@@ -698,9 +1389,15 @@ function buildReportHtml(args: {
     ${scenarioTables}
   </section>
 
+  ${errors.length === 0
+    ? ""
+    : `<section class="card"><h2>失败场次（${errors.length}，不计入聚合）</h2><ul>${errors
+        .map((error) => `<li>${escapeHtml(error.scenario)} seed=${error.seed}：${escapeHtml(error.message)}</li>`)
+        .join("")}</ul></section>`}
+
   <section class="card">
     <h2>6. 方法说明</h2>
-    <div style="font-size:13px;line-height:1.8">${methodNotesHtml(contestants, scenarios)}</div>
+    <div style="font-size:13px;line-height:1.8">${methodNotesHtml(contestants, scenarios, seeds, ticks, players)}</div>
   </section>
 
   <footer>
@@ -719,49 +1416,55 @@ function buildReportHtml(args: {
  * 主流程
  * ------------------------------------------------------------------ */
 
-function main(): number {
+async function main(): Promise<number> {
   if (hasFlag("--help")) {
     console.log(
       `usage: npx tsx scripts/run-arena-report.mts ` +
       `[--scenarios ffa-std,ffa-dense] [--seeds 1,2,3] [--ticks 2000] ` +
-      `[--players 8] [--out arena-bench] [--data-root PATH] [--force]`,
+      `[--players 8] [--workers N] [--out arena-bench] [--data-root PATH] [--force]\n` +
+      `分片/合并（并行跑批）：--shard <i>/<n>（或 --shard <i> --shard-total <n>）` +
+      `[--shard-by scenario|seed]（默认 scenario）→ 只跑第 i 片\n` +
+      `  --merge <runDir> → 合并全部分片（results.s*.json）为完整 results.json + report.html + plots`,
     );
     console.log(`scenario registry: ${Object.keys(SCENARIO_REGISTRY).join(", ")}`);
     return 0;
   }
+
+  // 子进程模式：只跑单场并写结果 JSON（由 --workers 主进程分派）
+  if (hasFlag("--worker")) {
+    return runWorkerProcess();
+  }
+
+  // 分片/合并模式（互斥）
+  const mergeArg = argValue("--merge");
+  const shardArg = parseShardArg();
+  if (mergeArg !== undefined && shardArg !== null) {
+    throw new Error("--merge 与 --shard 互斥，二选一");
+  }
+  if (mergeArg !== undefined) return runMergeMode(mergeArg);
+  if (shardArg !== null) return runShardMode(shardArg, SHARD_BY);
 
   const contestants = defaultContestants();
   const rosterSize = Math.min(PLAYERS, contestants.length);
   const generatedAt = new Date().toISOString();
 
   console.log(
-    `arena-bench-v2：${SCENARIOS.length} 场景 × ${SEEDS.length} seeds × ${rosterSize} 玩家（阵容 ${contestants.length} 条目），ticks=${TICKS}`,
+    `arena-bench-v2：${SCENARIOS.length} 场景 × ${SEEDS.length} seeds × ${rosterSize} 玩家（阵容 ${contestants.length} 条目），ticks=${TICKS}，workers=${WORKERS}`,
   );
 
   const roster = buildRoster().contestants;
-  const scenarios = SCENARIOS.map((name) =>
-    runScenario(name, SCENARIO_REGISTRY[name], SEEDS, TICKS, roster),
-  );
-  const leaderboard = buildLeaderboard(scenarios);
-
-  // 五维画像：全部场景 × seeds 的 ledger 聚合 → 均值 → 画像 → 全体归一化
-  const ledgerPool: Record<string, PlayerCostLedger[]> = {};
-  for (const contestant of contestants) ledgerPool[contestant.id] = [];
-  for (const scenario of scenarios) {
-    for (const match of scenario.matches) {
-      for (const [playerId, data] of Object.entries(match.perPlayer)) {
-        const entryId = playerId.replace(/-s\d+$/u, "");
-        ledgerPool[entryId]?.push(data.ledger);
-      }
-    }
+  let scenarios: readonly ScenarioSummary[];
+  let errors: readonly MatchError[];
+  if (WORKERS > 1) {
+    const parallel = await runScenarioBatchParallel(roster, WORKERS);
+    scenarios = parallel.scenarios;
+    errors = parallel.errors;
+  } else {
+    scenarios = SCENARIOS.map((name) =>
+      runScenario(name, SCENARIO_REGISTRY[name], SEEDS, TICKS, roster),
+    );
+    errors = [];
   }
-  const rawProfiles: Record<string, AgentProfile> = {};
-  for (const contestant of contestants) {
-    const pool = ledgerPool[contestant.id];
-    if (pool === undefined || pool.length === 0) continue;
-    rawProfiles[contestant.id] = computeAgentProfile(averageLedgers(pool), TICKS);
-  }
-  const normalizedProfiles = normalizeProfiles(rawProfiles);
 
   const identity = {
     kind: "arena-bench-v2",
@@ -775,82 +1478,16 @@ function main(): number {
   const runId = `${OUT_PREFIX}-${sha256Json(identity).slice(0, 12)}`;
   const runDir = prepareRunDir(outputBase, runId, hasFlag("--force"));
 
-  const results = {
-    schema: "arena.bench.report.v2",
-    generatedAt,
-    params: {
-      scenarios: SCENARIOS,
-      seeds: SEEDS,
-      ticks: TICKS,
-      players: rosterSize,
-      rulesVersion: "v0.14",
-    },
-    contestants: contestants.map((contestant) => ({
-      id: contestant.id,
-      label: contestant.label,
-      kind: contestant.kind,
-      configNote: contestant.configNote,
-    })),
-    scenarios: scenarios.map((scenario) => ({
-      name: scenario.name,
-      template: scenario.template,
-      seedCount: scenario.seedCount,
-      perEntry: scenario.perEntry,
-      matches: scenario.matches.map((match) => ({
-        seed: match.seed,
-        winner: match.winner,
-        rank: match.rank,
-        perPlayer: Object.fromEntries(
-          Object.entries(match.perPlayer).map(([playerId, data]) => [
-            playerId,
-            {
-              kills: data.kills,
-              firstKillTick: data.firstKillTick,
-              aliveTicks: data.aliveTicks,
-              harvested: data.harvested,
-              deposited: data.deposited,
-              damageDealt: data.damageDealt,
-              beaconTicks: data.beaconTicks,
-              unitsLost: data.unitsLost,
-              finalPopulation: data.finalPopulation,
-              finalResources: data.finalResources,
-              populationPeak: data.populationPeak,
-            },
-          ]),
-        ),
-      })),
-    })),
-    leaderboard,
-    profiles: Object.fromEntries(
-      contestants
-        .filter((contestant) => rawProfiles[contestant.id] !== undefined)
-        .map((contestant) => [
-          contestant.id,
-          { raw: rawProfiles[contestant.id], normalized: normalizedProfiles[contestant.id] },
-        ]),
-    ),
-  };
-  atomicWriteJson(join(runDir, "results.json"), results);
-
-  const reportHtml = buildReportHtml({
-    ticks: TICKS,
-    seeds: SEEDS,
-    players: rosterSize,
-    generatedAt,
-    contestants,
-    scenarios,
-    leaderboard,
-    rawProfiles,
-    normalizedProfiles,
-    runDir,
-  });
-  atomicWriteText(join(runDir, "report.html"), reportHtml);
-
-  const totalMatches = scenarios.reduce((sum, scenario) => sum + scenario.matches.length, 0);
-  console.log(`arena-bench ok: ${totalMatches} 场（${scenarios.length} 场景 × ${SEEDS.length} seeds）`);
-  console.log(`  报告：${runDir}/report.html`);
-  console.log(`  数据：${runDir}/results.json`);
+  await writeRunArtifacts({ runDir, generatedAt, scenarios, errors, contestants, rosterSize, seeds: SEEDS, ticks: TICKS });
   return 0;
 }
 
-process.exitCode = main();
+void main().then(
+  (code) => {
+    process.exitCode = code;
+  },
+  (error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exitCode = 1;
+  },
+);
