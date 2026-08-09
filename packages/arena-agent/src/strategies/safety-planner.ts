@@ -372,6 +372,11 @@ const CARGO_RESCUE_MIN_WORKERS = 2;
 const CARGO_RESCUE_STALL_CARGO_TICKS = 6;
 const CARGO_QUEUE_HOLD_RADIUS = 2;
 const CARGO_QUEUE_ENTRY_LIMIT = 2;
+/** near_core_deposit 锁半径（Manhattan，竞品 arena_hero_strategy.py roles.py:158
+ *  `dist_core <= 4`）：满载 worker 距 Core ≤ 该值时禁止因邻接敌改 RETREAT——
+ *  保持 DEPOSIT/return_home 朝 Core 步进，跳过排队 hold / 垂直绕行，并把可见
+ *  敌占格并入 BFS 障碍绕开敌工朝 Core 推进（贴脸但未上 Core dist>0 仍朝 Core 走）。 */
+const NEAR_CORE_DEPOSIT_RADIUS = 4;
 
 /** W37 冲突退避时间窗兜底（2026-08-09，挂 W5，默认关）：
  *  连续 ≥CONFLICT_BACKOFF_THRESHOLD 次 MOVE_FAILED 且 detourDirection 垂直绕行
@@ -1493,7 +1498,17 @@ export class SafetyPlanner {
     const breakoutActive =
       this.config.threatBreakout === true && this.currentThreat?.level === "BREAKOUT";
     const band = this.config.migrationWorkerBand;
-    const base = recallActive || breakoutActive ? RECALL_PATROL_RADIUS : Number.POSITIVE_INFINITY;
+    const leash = this.config.workerLeash;
+    // worker-leash-v1：非威胁期基础拴绳（undefined = 不限制，零回归）。
+    // recall/breakout 优先（守家圈更紧），leash 作为非威胁期的经济距离上限。
+    let base: number;
+    if (recallActive || breakoutActive) {
+      base = RECALL_PATROL_RADIUS;
+    } else if (leash !== undefined) {
+      base = leash;
+    } else {
+      base = Number.POSITIVE_INFINITY;
+    }
     // 迁移期 worker 集结带（migration-system-v1 §3.3）：min 叠加既有权威上限。
     return band === undefined ? base : Math.min(base, band);
   }
@@ -2281,6 +2296,22 @@ export class SafetyPlanner {
     const maxPatrolRadius = this.resourceAssignmentMaxDistanceFromCore(state);
 
     if (unit.cargo > 0) {
+      // near_core_deposit RETREAT 锁（2026-08-10，t1 生产吞吐修复，竞品
+      // arena_hero_strategy.py roles.py:158-181 对照）：满载 worker 距 Core
+      // ≤4（Manhattan）时禁止因邻接敌改 RETREAT——保持 DEPOSIT/return_home
+      // 朝 Core 步进。线下：worker 贴近 Core（≤4）却被敌工挡在入口 man≈2
+      // 处排队 hold / 垂直绕行漂离，workersWithCargo 累积、均值逼近 exile。
+      // 锁激活时：敌占入口不 hold（仍朝 Core 走，绕开敌工；友军占满照常
+      // hold 不争抢）+ 跳过 moveFailedAvoidance 垂直绕行（不漂离 Core，保持
+      // stepToward）+ return_home BFS 把可见敌占格并入障碍——绕开敌工朝 Core
+      // 推进（竞品 RETREAT hint=core_position 语义），敌封死所有路时回退 plain
+      // stepToward（贴脸仍朝 Core 走，dist>0 不改 RETREAT）。零回归：仅影响
+      // "满载 worker 距 Core ≤4 + 邻接敌"窄场景；缺省 true，false 完全关闭
+      // （变体各按自身门控）。
+      const nearCoreDepositLocked =
+        this.config.nearCoreDepositLockEnabled !== false &&
+        home !== null &&
+        manhattan(unit.position, home) <= NEAR_CORE_DEPOSIT_RADIUS;
       // cargo-rescue-v1（W6，2026-08-09，清旧目标）：满载 worker 不清理旧采集目标
       // → 追空矿冻结（reference `clear_worker_goal` :1563 + 目标优先级第一层"当前
       // 可见未预留资源"）。满载 worker 下一 tick 本该 return_home 卸货，但
@@ -2415,7 +2446,10 @@ export class SafetyPlanner {
         // （争抢 = MOVE_CONTESTED 互堵 → 全卡死 → 0 卸货 → 经济冻结）。入口判定：
         // stepToward 的下一格（朝 Core 方向）占用 ≥ CARGO_QUEUE_ENTRY_LIMIT（2）
         // → 入口满，原地 WAIT。零回归：变体关闭时不执行（历史行为照常争抢）。
-        if (this.config.cargoRescue === true && manhattan(unit.position, home) <= CARGO_QUEUE_HOLD_RADIUS) {
+        if (
+          this.config.cargoRescue === true &&
+          manhattan(unit.position, home) <= CARGO_QUEUE_HOLD_RADIUS
+        ) {
           const entryDirection = stepToward(unit.position, home, movementObstacles);
           if (entryDirection !== null) {
             const entryCell = move(unit.position, entryDirection);
@@ -2425,7 +2459,12 @@ export class SafetyPlanner {
               (enemy) => samePosition(enemy.position, entryCell),
             );
             const entryCount = occupancy.get(cellKey(entryCell)) ?? 0;
-            if (enemyBlocking || entryCount >= CARGO_QUEUE_ENTRY_LIMIT) {
+            // near_core_deposit 锁：满载 worker 距 Core ≤4 + 敌占入口时不 hold
+            // （仍朝 Core 走——下方 return_home BFS 把敌占格并入障碍绕开敌工，
+            // 不改 RETREAT 远离 Core）。锁关或入口被友军占满（容量满，争抢必
+            // MOVE_CONTESTED 互堵）时照常 hold（零回归）。
+            const holdForEnemy = enemyBlocking && !nearCoreDepositLocked;
+            if (holdForEnemy || entryCount >= CARGO_QUEUE_ENTRY_LIMIT) {
               set(unit, { type: "WAIT" }, "worker_hold_cargo_queue");
               return;
             }
@@ -2444,10 +2483,26 @@ export class SafetyPlanner {
             this.conflictBackoffUntil.delete(unit.id);
           }
         }
-        const direction =
-          this.config.moveFailedAvoidance === true && stuckTicks >= 2
-            ? detourDirection(unit.position, home, movementObstacles)
-            : stepToward(unit.position, home, movementObstacles);
+        // near_core_deposit 锁激活时：满载 worker 距 Core ≤4 把可见敌占格并入
+        // BFS 障碍——绕开敌工朝 Core 推进（竞品 RETREAT hint=core_position 语义，
+        // 不改 RETREAT 远离 Core），敌封死所有路时回退 plain stepToward（贴脸但
+        // 未上 Core dist>0 仍朝 Core 走）；同时跳过 moveFailedAvoidance 垂直绕行
+        // （不漂离 Core）。锁关闭时走历史行为（detour/stepToward 二选一，
+        // movementObstacles 不含敌占格，零回归）。
+        let direction: Direction | null;
+        if (nearCoreDepositLocked) {
+          const enemyAwareObstacles = new Set(movementObstacles);
+          for (const enemy of state.visibleEnemies) {
+            if (enemy.kind === "UNIT") enemyAwareObstacles.add(cellKey(enemy.position));
+          }
+          direction = stepToward(unit.position, home, enemyAwareObstacles)
+            ?? stepToward(unit.position, home, movementObstacles);
+        } else {
+          direction =
+            this.config.moveFailedAvoidance === true && stuckTicks >= 2
+              ? detourDirection(unit.position, home, movementObstacles)
+              : stepToward(unit.position, home, movementObstacles);
+        }
         if (direction !== null) {
           set(unit, { type: "MOVE", direction }, "return_home");
         } else if (
@@ -4575,6 +4630,20 @@ export class SafetyPlanner {
     if (core.state !== "NORMAL" || state.population >= this.config.populationCeiling) return null;
     if (this.config.accumulateTarget > 0 && state.resources >= this.config.accumulateTarget) {
       intents.core = "accumulated_target";
+      return null;
+    }
+
+    // O3 核格占用检查（2026-08-10，算法优化）：核心格已有单位占位时
+    // SPAWN 会 CELL_UNIT_LIMIT（容量 2 = core + 1 unit = 满；加 SPAWN = 3 >
+    // 容量 2 = 失败）。deterministic-planner.selectDeterministicCoreAction
+    // 已有此检查（C6 修复），safety 侧 decideCore 作为 fallback/sim 路径
+    // 需同步——防 fallback 模式下 SPAWN 白发失败。spawnYield 机制让 worker
+    // 下一 tick 让位后重试；HEAL/REPAIR_SHIELD 在此之前已 return，不受影响。
+    const occupantsOnCore = state.units.filter(
+      (unit) => unit.position[0] === core.position[0] && unit.position[1] === core.position[1],
+    ).length;
+    if (occupantsOnCore > 0) {
+      intents.core = "spawn_blocked_occupancy";
       return null;
     }
 
