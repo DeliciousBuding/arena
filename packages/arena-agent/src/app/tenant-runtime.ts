@@ -1467,8 +1467,11 @@ export async function runTenant(
         }
         if (phase === "pre-decision") {
           // 勘探前向约束（migration-system-v1 §3.3，评审 P1）：决策前把计划注入
-          // planner——EXPLORE worker 朝计划路径前向探路（替代 core 坐标差分触发）。
+          // planner——EXPLORE worker 朝计划路径前向探路（替代 core 坐标差分触发）；
+          // SafetyPlanner 迁移激活期（LEG_MOVE）军事守位统一外环（防军事贴核心
+          // 围死移动中的核心，2026-08-09）。
           if (planner instanceof DeterministicPlanner) planner.setMigrationPlan(read.plan);
+          if (planner instanceof SafetyPlanner) planner.setMigrationPlan(read.plan);
           return null; // 预决策钩子不产订单
         }
         const result = applyMigrationOverlay({
