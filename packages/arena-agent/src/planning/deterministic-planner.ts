@@ -648,7 +648,10 @@ export function selectDeterministicCoreAction(
         }
         // 资源不足以产兵：回积累期
         active = false;
-      } else if (threatDefenseSpawn && coreThreatened && state.vanguards.length < DEFENSE_VANGUARD_TARGET) {
+      }
+      // threatDefenseSpawn 独立 if（非 else-if）：资源不足 VANGUARD 时
+      // 需 fall-through 到 worker spawn——else-if 会短路链导致 worker 不产。
+      if (threatDefenseSpawn && coreThreatened && state.vanguards.length < DEFENSE_VANGUARD_TARGET) {
         // 威胁防御产兵（2026-08-07 竞品 _control_core 对照）：可见战斗敌
         // 距 Core <=5 格（预警带：射程 3 外提前 2 tick 部署）且 VANGUARD
         // 未达防御目标 → 优先产 VANGUARD——敌人打到门口时继续产 worker
@@ -662,7 +665,9 @@ export function selectDeterministicCoreAction(
             surgeActive: active,
           };
         }
-      } else if (recoveryEarlyMilitary && military === 0 &&
+      }
+      // recoveryEarlyMilitary 独立 if（同上：资源不足时需 fall-through）
+      if (recoveryEarlyMilitary && military === 0 &&
                  state.workers.length >= EARLY_MILITARY_WORKER_FLOOR && militaryRatio > 0) {
         // RECOVERY 早期防御（ref 4W→1V 语义）：worker 已起步但无军事 → 产 1 Vanguard 自卫，
         // 不等 workerTarget=12（裸奔期被拆教训）。产 1 个后回到正常扩编。
