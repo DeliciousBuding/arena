@@ -80,7 +80,13 @@ const DIRECTION_DELTAS: Record<string, [number, number]> = {
 };
 
 /** 从计划路径推导下一格方向（4 向）：跳过核心已走过的格（位置在路径中的
- *  最后出现之后才开始找），无下一格/不相邻 → null。 */
+ *  最后出现之后才开始找），无下一格/不相邻 → null。
+ *
+ *  对角步分解：路径生成（route.ts）允许 8 邻域对角格（Chebyshev ≤1），而
+ *  引擎 START_MOVE 仅 4 向。遇到对角下一格时按"先水平后垂直"分解为两个
+ *  4 向子步——核心每 tick 走一格，中间格自然成为下一 tick 的起点，无需
+ *  在 overlay 侧维护中间态（中间格在路径外，directionToNextPathCell 的
+ *  "最后出现"定位逻辑对中间格天然放行下一格）。 */
 export function directionToNextPathCell(
   pathCells: readonly (readonly [number, number])[],
   position: readonly [number, number],
@@ -100,6 +106,10 @@ export function directionToNextPathCell(
       if (adx === dx && ady === dy) {
         return { direction: name as "UP" | "DOWN" | "LEFT" | "RIGHT", nextIndex: i };
       }
+    }
+    // 对角下一格（|dx|=|dy|=1）→ 先走水平轴子步，下一 tick 再走垂直轴
+    if (Math.abs(dx) === 1 && Math.abs(dy) === 1) {
+      return { direction: dx > 0 ? "RIGHT" : "LEFT", nextIndex: i };
     }
     if (Math.abs(dx) + Math.abs(dy) > 1) return null; // 路径与当前位置不再相邻
   }

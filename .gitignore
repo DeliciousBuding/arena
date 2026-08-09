@@ -48,3 +48,6 @@ docs/generated/
 
 # command-center React 构建产物（随用随起，构建即生成）
 packages/command-center/web/dist/
+
+# neat-freak bundle 备份（含 hash 校验）
+.backups/

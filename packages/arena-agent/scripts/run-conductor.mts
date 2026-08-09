@@ -113,6 +113,7 @@ function parseObservation(raw: unknown): BestEffortObservation | null {
   const enemyCores: { readonly x: number; readonly y: number; readonly lastSeenTick: number }[] = [];
   const units: { readonly id: string; readonly unitType: string; readonly cargo: number; readonly position: readonly [number, number] | null }[] = [];
   const resources: { readonly x: number; readonly y: number; readonly lastSeenTick: number }[] = [];
+  const obstacles: { readonly x: number; readonly y: number }[] = [];
 
   for (const objectValue of objects) {
     if (typeof objectValue !== "object" || objectValue === null) continue;
@@ -157,6 +158,13 @@ function parseObservation(raw: unknown): BestEffortObservation | null {
           resources.push({ x: Number(entry[0]), y: Number(entry[1]), lastSeenTick: tick });
         }
       }
+    } else if (kind === "OBSTACLE" && Array.isArray(object.positions)) {
+      // 静态地形障碍（引擎不可通行）→ 寻路避障输入
+      for (const entry of object.positions) {
+        if (Array.isArray(entry) && Number.isFinite(Number(entry[0])) && Number.isFinite(Number(entry[1]))) {
+          obstacles.push({ x: Number(entry[0]), y: Number(entry[1]) });
+        }
+      }
     }
   }
 
@@ -166,7 +174,7 @@ function parseObservation(raw: unknown): BestEffortObservation | null {
     events: events.filter((event): event is { readonly type?: string } =>
       typeof event === "object" && event !== null),
     units,
-    survey: { resources, enemyCores },
+    survey: { resources, enemyCores, obstacles },
   };
 }
 
