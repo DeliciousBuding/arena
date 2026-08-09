@@ -1,25 +1,28 @@
 /**
- * 参赛条目注册表（arena-bench-v2 §3，2026-08-09 设计定稿）
+ * 参赛条目注册表（arena-bench-v3 §3，2026-08-09 设计定稿）
  *
  * 默认阵容 10 条目：5 社区 agent 默认配置 + 3 战术配置变体 + 2 内置对照。
- * 变体配置支持性（2026-08-09）：core-mil/farmer-eco 经 SDK 配置注入通道
- * （ARENA_CFG_* env）真参数化（v3）；waaiging-agg 无注入键保持降级
- * （SmartTactic 仅接受 memory/control_path，无进攻参数）。
+ * 变体配置支持性（2026-08-09，R1 探针实测）：三个变体均已查实 agent 属性路径
+ * 并接线 ARENA_CFG_* env（core-mil/farmer-eco 由父会话接线，waaiging-agg 由
+ * R1 补充 memory.mode 路径）——SDK 层（probe_tool）验证键有效；**桥端通道当前
+ * 未生效**（opponent-bridge.py import 官方 SDK 无 config_overrides，ImportError
+ * 被吞——R2 桥接线遗留，见 docs/design/arena-bench-v3.md §3/§6）。
  *
  * 2026-08-09 实测结论（变体参数支持性，证据见各 configNote）：
- *  - waaiging：registry construct.kwargs=[] 且无 decide_kwargs；
- *    SmartTactic.__init__(memory=None, *, control_path=None)——无任何进攻参数。
- *  - core：decide_kwargs=[target, mode]，但 arena_core_agent.plan_turn 的
- *    mode 仅支持 control/harvest（harvest=达 target 即止、control=无限对局），
- *    无 military 值（bridge CLI --mode choices 同此限制）。
- *  - farmer：construct.kwargs 含 worker_target，但 MAX_WORKER_TARGET =
- *    PLANNED_POPULATION_CAP(20) − DEFENSE_VANGUARD_TARGET(4) −
- *    DEFENSE_RANGER_TARGET(4) = 12 = DEFAULT_WORKER_TARGET——默认即上限，
- *    无法拉高。
+ *  - waaiging：registry construct.kwargs=[] 且无 decide_kwargs；SmartTactic
+ *    __init__(memory=None, *, control_path=None) 无进攻参数——但实例属性
+ *    memory.mode（TacticMemory.mode，MODE_DEVELOP 默认）可经点分键
+ *    memory.mode 注入，MODE_AGGRESS="aggress" 即进攻模式开关（R1 发现）。
+ *  - core：decide_kwargs=[target, mode]，mode 仅支持 control/harvest
+ *    （harvest=达 target 即止），无 military 值——变体用 target 缩短发育期
+ *    （bridge CLI --mode choices 同此限制）。
+ *  - farmer：construct.kwargs 含 worker_target（默认 12），可注入 8/6 等
+ *    低于默认的值（worker_target 构造校验上限 12 不影响 setattr 注入）。
  *
  * 内置对照（kind=builtin）不经过 Python 桥：ts-aggressive 用
  * DeterministicPlanner（构造同 episode.ts createPlanner deterministic 分支），
- * ts-safety 用保守 SafetyPlanner。
+ * ts-safety 用保守 SafetyPlanner。二者为"对照组"：不参与主榜 composite 排名
+ * （单独展示，见 run-arena-report buildLeaderboard）。
  */
 import type { TournEntry } from "./tournament.ts";
 import { opponentEntry, resolveOpponent } from "./registry.ts";
@@ -69,7 +72,7 @@ function pythonContestant(
 const AGGRESSIVE_VANGUARD_RATIO = 0.8;
 const AGGRESSIVE_ACCUMULATE_THRESHOLD = 30;
 
-/** 默认阵容：5 社区默认 + 3 变体（降级）+ 2 内置对照 = 10 条目。 */
+/** 默认阵容：5 社区默认 + 3 变体（SDK 注入接线）+ 2 内置对照 = 10 条目。 */
 export function defaultContestants(): Contestant[] {
   return [
     pythonContestant(
@@ -106,24 +109,28 @@ export function defaultContestants(): Contestant[] {
       "waaiging-agg",
       "waaiging",
       "waaiging-agg（进攻变体）",
-      "降级：注册表 construct.kwargs=[] 且无 decide_kwargs；SmartTactic 仅接受 " +
-        "memory/control_path——无进攻参数可注入，entry 用默认构造",
+      "SDK 注入（config-injection v3，R1 接线）：ARENA_CFG_MEMORY_MODE=aggress " +
+        "（TacticMemory.mode 点分路径——进攻模式开关，默认 develop→aggress；" +
+        "SDK 层探针验证有效，桥端通道待 R2，见 v3 文档 §条目）",
+      { ARENA_CFG_MEMORY_MODE: "aggress" },
     ),
     pythonContestant(
       "core-mil",
       "core",
       "core-mil（军事变体）",
       "SDK 注入（config-injection v3）：ARENA_CFG_TARGET=20 + ARENA_CFG_MODE=harvest " +
-        "（提前结束经济扩张，省资源转兵力投入——mode 无 military 值，用 target 缩短发育期）",
+        "（提前结束经济扩张，省资源转兵力投入——mode 无 military 值，用 target 缩短发育期；" +
+        "SDK 层 decide_kwargs 覆盖验证有效，桥端通道待 R2，见 v3 文档 §条目）",
       { ARENA_CFG_TARGET: "20", ARENA_CFG_MODE: "harvest" },
     ),
     pythonContestant(
       "farmer-eco",
       "farmer",
       "farmer-eco（纯经济对照）",
-      "SDK 注入（config-injection v3）：ARENA_CFG_WORKER_TARGET=6（低于默认 12，" +
-        "纯经济发育对照——注入通道端到端验证过 harvested 差异）",
-      { ARENA_CFG_WORKER_TARGET: "6" },
+      "SDK 注入（config-injection v3）：ARENA_CFG_WORKER_TARGET=8（低于默认 12，" +
+        "纯经济发育对照——任务书指定值；SDK 层探针验证有效，桥端通道待 R2，" +
+        "见 v3 文档 §条目）",
+      { ARENA_CFG_WORKER_TARGET: "8" },
     ),
     {
       id: "ts-aggressive",

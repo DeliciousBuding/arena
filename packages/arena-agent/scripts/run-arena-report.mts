@@ -1,23 +1,29 @@
 #!/usr/bin/env node
 /**
- * run-arena-report — agent 评测跑批 + 报告组装 CLI（arena-bench-v2）
+ * run-arena-report — agent 评测跑批 + 报告组装 CLI（arena-bench-v3）
  *
- * 评测形态（arena-bench-v2，取代 v1 的 1v1 矩阵 + FFA 变体）：
+ * 评测形态（arena-bench-v3，审计 docs/analysis/bench-fairness-audit-2026-08-09.md
+ *  §6 落地；取代 v2）：
  *   FFA 擂台标准化评测：场景模板 × 阵容（defaultContestants） × seed 笛卡尔跑批。
- *   - 场景模板注册表：scripts/bench-scenarios.json（radius/资源/randomDrop）
+ *   - 场景模板注册表：scripts/bench-scenarios.json（radius/资源/randomDrop +
+ *     v3 新增 center-race / depletion 后处理场景）
  *   - 阵容：src/sim/opponent/contestants.ts defaultContestants()（10 条目；
  *     --players N < 条目数取前 N 个，≥ 条目数全上）
- *   - 判定（每场）：存活 → 击杀数 → 资源 → 人口（击杀优先于发育，设计 §2）
- *   - 指标（每场景×条目，跨 seeds 聚合，设计 §4）：killRate / firstKillTick /
- *     survivalMedian / resourcesPerTick / damagePerLoss / populationPeak /
- *     beaconTicks / avgRank
- *   - 综合分：avgRank 60% + killRate 20% + survivalMedian 20% → 榜单
- * 报告：data/runs/sim/arena-bench-<id>/ 下 results.json（完整结构化数据）
+ *   - 判定（每场，v3）：存活 → 击杀数 → 累计存款 deposited → 资源 → 人口
+ *     （并列同分同排；v3 新增 deposited tie-break，审计 §6.4）
+ *   - 胜者（v3）：与排名同链第 1 名（decideWinner 加击杀键，审计 §1.4）
+ *   - 综合分（v3）：avgRank(反向 min-max) 60% + killRate 30% +
+ *     resourcesPerTick 10%（v2 的 survivalMedian 20% 因同 tick 重生恒 1.0 移除，
+ *     审计 §1.2/§6.2；字段保留兼容旧消费者）
+ *   - 对照组：内置 ts-aggressive/ts-safety 不参与主榜 composite 排名
+ *     （单独展示 leaderboardControl，审计 §6.9）
+ * 报告：data/runs/sim/arena-bench-<id>/ 下 results.json（schema
+ *       arena.bench.report.v3，v2 字段向后兼容）
  *       + report.html（深色主题，SVG 内嵌：综合榜单/场景×条目热图/雷达图）。
  *
  * 用法（cd packages/arena-agent）：
  *   npx tsx scripts/run-arena-report.mts \
- *     [--scenarios ffa-std,ffa-dense] [--seeds 1,2,3] [--ticks 2000] \
+ *     [--scenarios ffa-std,ffa-dense] [--seeds 1,2,3,4,5] [--ticks 2000] \
  *     [--players 8] [--workers N] [--out arena-bench] [--data-root PATH] [--force]
  *
  * 分片/合并（并行跑批，2026-08-09）：--shard <i>/<n>（或 --shard <i>
@@ -330,6 +336,14 @@ interface LeaderboardRow {
   readonly survivalScore: number;
   /** 综合分 = avgRank 60% + killRate 30% + economy 10%（v3，审计 §6.2）。 */
   readonly composite: number;
+}
+
+/** 榜单分区：main = 参与主榜 composite 排名的条目；control = 内置对照组
+ *  （ts-aggressive/ts-safety，kind=builtin）——不参与主榜排名、单独展示
+ *  （任务书条目面；与 v2 相比去内置特权，审计 §6.9）。 */
+interface LeaderboardSection {
+  readonly main: readonly LeaderboardRow[];
+  readonly control: readonly LeaderboardRow[];
 }
 
 /* ------------------------------------------------------------------ *
@@ -912,7 +926,7 @@ async function runShardMode(
   const seeds = shardBy === "seed" ? shardSlice(SEEDS, shard.index, shard.total) : SEEDS;
   const roster = buildRoster().contestants;
   console.log(
-    `arena-bench-v2 分片 ${shard.index + 1}/${shard.total}（按${shardBy === "scenario" ? "场景" : "seed"}）：` +
+    `arena-bench-v3 分片 ${shard.index + 1}/${shard.total}（按${shardBy === "scenario" ? "场景" : "seed"}）：` +
       `本片 ${scenarios.length} 场景 × ${seeds.length} seeds × ${roster.length} 玩家，ticks=${TICKS}`,
   );
   const matches: BenchMatch[] = [];
@@ -932,7 +946,7 @@ async function runShardMode(
   const outputBase = resolveOutputBase(dataRoot, null);
   const rosterSize = Math.min(PLAYERS, defaultContestants().length);
   // runId 由完整参数决定（与其它分片一致）→ 全部片落在同一 runDir
-  const identity = { kind: "arena-bench-v2", scenarios: SCENARIOS, seeds: SEEDS, ticks: TICKS, players: rosterSize };
+  const identity = { kind: "arena-bench-v3", scenarios: SCENARIOS, seeds: SEEDS, ticks: TICKS, players: rosterSize };
   const runId = `${OUT_PREFIX}-${sha256Json(identity).slice(0, 12)}`;
   const runDir = ensureShardRunDir(outputBase, runId);
   const shardFile: ShardFile = {
@@ -1084,7 +1098,7 @@ async function writeRunArtifacts(args: {
   readonly ticks: number;
 }): Promise<void> {
   const { runDir, generatedAt, scenarios, errors, contestants, rosterSize, seeds, ticks } = args;
-  const leaderboard = buildLeaderboard(scenarios);
+  const leaderboardSection = buildLeaderboard(scenarios);
 
   // 五维画像：全部场景 × seeds 的 ledger 聚合 → 均值 → 画像 → 全体归一化
   const ledgerPool: Record<string, PlayerCostLedger[]> = {};
@@ -1150,7 +1164,27 @@ async function writeRunArtifacts(args: {
         ),
       })),
     })),
-    leaderboard,
+    leaderboard: leaderboardSection.main,
+    /** 内置对照组（ts-aggressive/ts-safety）：不参与主榜 composite 排名，
+     *  分数用主榜同一归一化基准计算（可横向参考），单独展示。 */
+    leaderboardControl: leaderboardSection.control,
+    /** v3 判定口径（审计 bench-fairness-audit-2026-08-09 §6 落地）：
+     *  1) winner 与排名统一：存活→击杀→资源→人口（decideWinner 加 kills 键）；
+     *  2) 排名 tie-break：存活→击杀→deposited→资源→人口（并列不再落
+     *     playerId 字典序，消除出生位噪声）；
+     *  3) 综合分 = rank 60% + kill 30% + economy 10%（economy=resourcesPerTick
+     *     min-max）；survivalMedian 20% 移除（同 tick 重生机制下恒 1.0）；
+     *  4) 击杀归属保持 v2 口径（CORE_DESTROYED.destroyed_by，聚合层注释：
+     *     最后 tick 偏置/同 tick 集火多记/sweep 伤害不入 damageDealt 账本——
+     *     ≥20% 伤害占比归属需改结算层，v3 不实施，逐字节一致性优先）；
+     *  5) 内置条目（kind=builtin）为对照组，不参与主榜 composite 排名。 */
+    notes: [
+      "winner/排名统一链：存活→击杀→资源→人口（审计 §1.4）",
+      "排名 tie-break 新增 deposited（累计存款）（审计 §6.4）",
+      "综合分：rank 60% + kill 30% + economy 10%；survivalMedian 20% 移除（恒 1.0，审计 §1.2）",
+      "击杀归属口径：destroyed_by 同 tick 集火多记/最后一击偏置保留（审计 §2d），聚合层注释",
+      "内置 ts-aggressive/ts-safety 为对照组：不参与主榜 composite（leaderboardControl）",
+    ],
     errors: errors.map((error) => ({
       scenario: error.scenario,
       seed: error.seed,
@@ -1174,7 +1208,7 @@ async function writeRunArtifacts(args: {
     generatedAt,
     contestants,
     scenarios,
-    leaderboard,
+    leaderboard: leaderboardSection,
     errors,
     rawProfiles,
     normalizedProfiles,
@@ -1225,11 +1259,13 @@ function minMaxNormalize(values: readonly number[]): (value: number) => number {
   return (value) => (value - min) / (max - min);
 }
 
-/** 跨场景聚合榜单：avgRank（反向）/ killRate / resourcesPerTick 各自 min-max
- *  归一化后按 0.6/0.3/0.1 加权（v3 综合分；survivalMedian 恒 1.0 已退出权重，
- *  字段保留供旧消费者，见审计 bench-fairness-audit §1.2/§6.2）。 */
-function buildLeaderboard(scenarios: readonly ScenarioSummary[]): LeaderboardRow[] {
-  const contestantIds = defaultContestants().map((contestant) => contestant.id);
+/** 跨场景聚合榜单（v3 综合分 0.6/0.3/0.1）：main = 非内置条目（参与主榜
+ *  composite 排名）；control = 内置对照组（ts-aggressive/ts-safety）——用同一
+ *  归一化基准计算分数、但不参与主榜排序、单独展示（任务书条目面；审计 §6.9
+ *  内置去特权）。归一化 min-max 只在 main 行上做，control 行套用同基准。 */
+function buildLeaderboard(scenarios: readonly ScenarioSummary[]): LeaderboardSection {
+  const contestants = defaultContestants();
+  const contestantIds = contestants.map((contestant) => contestant.id);
   const rows: LeaderboardRow[] = [];
   for (const contestantId of contestantIds) {
     const stats = scenarios
@@ -1248,28 +1284,39 @@ function buildLeaderboard(scenarios: readonly ScenarioSummary[]): LeaderboardRow
       composite: 0,
     });
   }
-  const rankNormalize = minMaxNormalize(rows.map((row) => row.avgRank));
-  const killNormalize = minMaxNormalize(rows.map((row) => row.killRate));
+  const isControl = new Set(
+    contestants.filter((contestant) => contestant.kind === "builtin").map((contestant) => contestant.id),
+  );
+  const mainRows = rows.filter((row) => !isControl.has(row.contestantId));
+  const controlRows = rows.filter((row) => isControl.has(row.contestantId));
+  const rankNormalize = minMaxNormalize(mainRows.map((row) => row.avgRank));
+  const killNormalize = minMaxNormalize(mainRows.map((row) => row.killRate));
   const economyStats = scenarios
     .map((scenario) => Object.values(scenario.perEntry))
     .flat()
     .map((stats) => stats.resourcesPerTick);
   const economyNormalize = minMaxNormalize(economyStats);
-  for (const row of rows) {
+  const scoreRow = (row: LeaderboardRow): LeaderboardRow => {
     const ownEconomy = mean(
       scenarios
         .map((scenario) => scenario.perEntry[row.contestantId])
         .filter((stats): stats is EntryScenarioStats => stats !== undefined)
         .map((stats) => stats.resourcesPerTick),
     );
-    row.rankScore = 1 - rankNormalize(row.avgRank);
-    row.killScore = killNormalize(row.killRate);
-    row.economyScore = economyNormalize(ownEconomy);
-    // v2 兼容：survivalScore 恒 1（span=0 时 minMaxNormalize 返回 () => 1）。
-    row.survivalScore = 1;
-    row.composite = 0.6 * row.rankScore + 0.3 * row.killScore + 0.1 * row.economyScore;
-  }
-  return rows.sort((a, b) => b.composite - a.composite);
+    const scored = {
+      ...row,
+      rankScore: 1 - rankNormalize(row.avgRank),
+      killScore: killNormalize(row.killRate),
+      economyScore: economyNormalize(ownEconomy),
+      // v2 兼容：survivalScore 恒 1（span=0 时 minMaxNormalize 返回 () => 1）。
+      survivalScore: 1,
+    };
+    return { ...scored, composite: 0.6 * scored.rankScore + 0.3 * scored.killScore + 0.1 * scored.economyScore };
+  };
+  return {
+    main: mainRows.map(scoreRow).sort((a, b) => b.composite - a.composite),
+    control: controlRows.map(scoreRow).sort((a, b) => b.composite - a.composite),
+  };
 }
 
 /** 场景×条目排名热图：每场景内 avgRank min-max（1=最佳 → 绿）。 */
@@ -1305,9 +1352,10 @@ function killTableHtml(
         : "∞";
       const killMatches = stats.reduce((sum, s) => sum + s.killMatches, 0);
       const totalMatches = scenarios.reduce((sum, scenario) => sum + scenario.seedCount, 0);
+      const controlTag = contestant?.kind === "builtin" ? " · 对照组" : "";
       return (
         `<tr>` +
-        `<td>${escapeHtml(row.contestantId)}</td>` +
+        `<td>${escapeHtml(row.contestantId)}${controlTag}</td>` +
         `<td>${escapeHtml(contestant?.label ?? "")}</td>` +
         `<td>${fmt(row.killRate, 2)}</td>` +
         `<td>${firstKill}</td>` +
@@ -1372,15 +1420,23 @@ function methodNotesHtml(
   return (
     `<div>场景模板（scripts/bench-scenarios.json）：${escapeHtml(scenarioLines)}</div>` +
     `<div>seeds=${seeds.join(",")} · ticks=${ticks} · 每场玩家数=${players}（取阵容前 ${Math.min(players, contestants.length)} 个）· 规则 v0.14</div>` +
-    `<div>判定（每场）：存活 → 击杀数 → 资源 → 人口；并列同分同排（竞争式排名）。</div>` +
-    `<div>击杀归属：CORE_DESTROYED.values.destroyed_by（最终贡献伤害玩家的 username；` +
-    `合成场景 username=playerId；多贡献者同记一杀，无贡献者不计——perPlayerKills 之和` +
-    `可能小于全场击毁数）。首杀 tick = 首次被归属击杀的结算 tick。</div>` +
+    `<div>判定（每场，v3）：存活 → 击杀数 → 累计存款 deposited（v3 tie-break）→ 资源 → 人口；` +
+    `并列同分同排（竞争式排名）。胜者 = 同链第 1 名（唯一时；并列 draw）——与排名判定统一` +
+    `（v2 的 decideWinner 资源优先已加击杀键，审计 §1.4）。</div>` +
+    `<div>击杀归属口径（v3 聚合层注释，审计 §2d）：CORE_DESTROYED.values.destroyed_by` +
+    `（最终贡献伤害玩家的 username；合成场景 username=playerId；多贡献者同记一杀，` +
+    `无贡献者不计）。已知局限：最后一 tick 偏置（早 100 tick 的伤害不算击杀归属）、` +
+    `同 tick 集火多记（perPlayerKills 之和可能大于全场击毁数）、SWEEP 命中计入归属但` +
+    `不入 damageDealt 账本——≥20% 伤害占比归属需改结算层（v3 不实施，逐字节一致性优先）。` +
+    `首杀 tick = 首次被归属击杀的结算 tick。</div>` +
     `<div>指标（设计 §4）：killRate=场均击毁；firstKillTick=有击杀场次的场均首杀；` +
-    `survivalMedian=aliveTicks/ticks 中位；resourcesPerTick=harvested/aliveTicks；` +
-    `damagePerLoss=damageDealt/max(unitsLost,1)；populationPeak=场均人口峰值；` +
-    `beaconTicks=beaconTicks/ticks 占比；avgRank=场均排名。` +
-    `综合分=avgRank(反向 min-max)60% + killRate(min-max)20% + survivalMedian(min-max)20%。</div>` +
+    `survivalMedian=aliveTicks/ticks 中位（v2 残留指标，恒 1.0 已退出权重）；` +
+    `resourcesPerTick=harvested/aliveTicks；damagePerLoss=damageDealt/max(unitsLost,1)；` +
+    `populationPeak=场均人口峰值；beaconTicks=beaconTicks/ticks 占比；avgRank=场均排名。` +
+    `综合分（v3）=avgRank(反向 min-max)60% + killRate(min-max)30% + ` +
+    `resourcesPerTick(min-max)10%（survivalMedian 20% 因同 tick 重生恒 1.0 移除，审计 §1.2）。</div>` +
+    `<div>对照组：内置条目（ts-aggressive/ts-safety，kind=builtin）不参与主榜 composite ` +
+    `排名，单独展示（leaderboardControl）——审计 §6.9 内置去特权。</div>` +
     `<div>条目配置：<br/>${entryLines}</div>`
   );
 }
@@ -1392,7 +1448,7 @@ function buildReportHtml(args: {
   readonly generatedAt: string;
   readonly contestants: readonly Contestant[];
   readonly scenarios: readonly ScenarioSummary[];
-  readonly leaderboard: readonly LeaderboardRow[];
+  readonly leaderboard: LeaderboardSection;
   readonly errors: readonly MatchError[];
   readonly rawProfiles: Readonly<Record<string, AgentProfile>>;
   readonly normalizedProfiles: Readonly<Record<string, AgentProfile>>;
@@ -1400,11 +1456,19 @@ function buildReportHtml(args: {
 }): string {
   const { ticks, seeds, players, generatedAt, contestants, scenarios, leaderboard, errors, runDir } = args;
   const bars = barsSvg({
-    title: "综合榜单（综合分 = avgRank 60% + killRate 20% + survivalMedian 20%）",
-    items: leaderboard.map((row) => ({
+    title: "主榜（综合分 = avgRank 60% + killRate 30% + economy 10%；v3）",
+    items: leaderboard.main.map((row) => ({
       label: row.contestantId,
       value: row.composite,
-      detail: `均排 ${fmt(row.avgRank, 2)} · 击杀 ${fmt(row.killRate, 2)}/场 · 存活 ${fmtPct(row.survivalMedian)}`,
+      detail: `均排 ${fmt(row.avgRank, 2)} · 击杀 ${fmt(row.killRate, 2)}/场 · 经济 ${fmt(row.economyScore, 2)}`,
+    })),
+  });
+  const controlBars = barsSvg({
+    title: "对照组（内置条目，不参与主榜 composite 排名）",
+    items: leaderboard.control.map((row) => ({
+      label: row.contestantId,
+      value: row.composite,
+      detail: `均排 ${fmt(row.avgRank, 2)} · 击杀 ${fmt(row.killRate, 2)}/场 · 经济 ${fmt(row.economyScore, 2)}`,
     })),
   });
   const heatmap = rankHeatmap(scenarios);
@@ -1422,7 +1486,7 @@ function buildReportHtml(args: {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>arena-bench-v2 Agent 评测报告</title>
+<title>arena-bench-v3 Agent 评测报告</title>
 <style>
   :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; }
   * { box-sizing:border-box; }
@@ -1447,13 +1511,17 @@ function buildReportHtml(args: {
 </head>
 <body>
 <div class="wrap">
-  <h1>arena-bench-v2 · Agent 评测报告（FFA 擂台标准化）</h1>
-  <div class="subtitle">深色评测报告 · SVG 内嵌（无外部资源）</div>
+  <h1>arena-bench-v3 · Agent 评测报告（FFA 擂台标准化）</h1>
+  <div class="subtitle">深色评测报告 · SVG 内嵌（无外部资源）· v3 判定（rank 60% + kill 30% + economy 10%）</div>
   <div class="params">scenarios=${scenarios.map((s) => s.name).join(",")} · seeds=${seeds.join(",")} · ticks=${ticks} · players=${players} · ${generatedAt}</div>
 
   <section class="card">
-    <h2>1. 综合榜单（综合分）</h2>
+    <h2>1. 综合榜单（主榜 composite，v3）</h2>
     ${bars}
+    ${leaderboard.control.length === 0
+      ? ""
+      : `<h2 style="margin-top:18px">对照组（内置条目：不参与主榜 composite 排名，单独展示）</h2>
+         ${controlBars}`}
   </section>
 
   <section class="card">
@@ -1463,7 +1531,7 @@ function buildReportHtml(args: {
 
   <section class="card">
     <h2>3. 击杀率表（实战证明段）</h2>
-    ${killTableHtml(leaderboard, contestants, scenarios)}
+    ${killTableHtml([...leaderboard.main, ...leaderboard.control], contestants, scenarios)}
   </section>
 
   <section class="card">
@@ -1507,11 +1575,12 @@ async function main(): Promise<number> {
   if (hasFlag("--help")) {
     console.log(
       `usage: npx tsx scripts/run-arena-report.mts ` +
-      `[--scenarios ffa-std,ffa-dense] [--seeds 1,2,3] [--ticks 2000] ` +
+      `[--scenarios ffa-std,ffa-dense] [--seeds 1,2,3,4,5] [--ticks 2000] ` +
       `[--players 8] [--workers N] [--out arena-bench] [--data-root PATH] [--force] ` +
-      `[--pipeline]\n` +
+      `[--pipeline] [--bridge-projection]\n` +
       `  --pipeline   P4g 决策流水线（prefetch 提前发起 tick N+1 决策，消除主线程每\n` +
       `               tick 同步等待桥决策的空闲；结果与串行逐字节一致，仅墙钟更快）\n` +
+      `  --bridge-projection   R2 桥状态投影（白名单 agent 省略恒 null 字段，默认关）\n` +
       `分片/合并（并行跑批）：--shard <i>/<n>（或 --shard <i> --shard-total <n>）` +
       `[--shard-by scenario|seed]（默认 scenario）→ 只跑第 i 片\n` +
       `  --merge <runDir> → 合并全部分片（results.s*.json）为完整 results.json + report.html + plots`,
@@ -1539,7 +1608,7 @@ async function main(): Promise<number> {
   const generatedAt = new Date().toISOString();
 
   console.log(
-    `arena-bench-v2：${SCENARIOS.length} 场景 × ${SEEDS.length} seeds × ${rosterSize} 玩家（阵容 ${contestants.length} 条目），ticks=${TICKS}，workers=${WORKERS}${PIPELINE ? "，pipeline=ON" : ""}`,
+    `arena-bench-v3：${SCENARIOS.length} 场景 × ${SEEDS.length} seeds × ${rosterSize} 玩家（阵容 ${contestants.length} 条目），ticks=${TICKS}，workers=${WORKERS}${PIPELINE ? "，pipeline=ON" : ""}`,
   );
 
   const roster = buildRoster().contestants;
@@ -1557,7 +1626,7 @@ async function main(): Promise<number> {
   }
 
   const identity = {
-    kind: "arena-bench-v2",
+    kind: "arena-bench-v3",
     scenarios: SCENARIOS,
     seeds: SEEDS,
     ticks: TICKS,

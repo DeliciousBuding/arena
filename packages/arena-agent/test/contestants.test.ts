@@ -1,8 +1,8 @@
 /**
- * 参赛条目注册表测试（arena-bench-v2 §3）：
+ * 参赛条目注册表测试（arena-bench-v3 §3）：
  *  - 默认阵容 10 条目、id 唯一、kind 分类（8 python + 2 builtin）；
  *  - python 条目 entry(seed) 可构造（懒构建：不 spawn 子进程、不跑对局）；
- *  - 3 个变体按实际支持性降级为默认构造（configNote 注明）；
+ *  - 3 个变体按 SDK 注入通道接线（ARENA_CFG_* env，configNote 注明键）；
  *  - 内置条目 entry(seed).build() 返回实例不抛错（纯 TS 构造）。
  */
 import { test } from "node:test";
@@ -57,18 +57,20 @@ test("contestants: python 条目 entry(seed) 可构造（id 约定 <name>-s<seed
   }
 });
 
-test("contestants: 三个变体按实际支持性降级为默认构造并注明", () => {
+test("contestants: 三个变体按 SDK 注入通道接线（ARENA_CFG_* env，configNote 注明键）", () => {
   const contestants = defaultContestants();
   for (const id of VARIANT_IDS) {
     const contestant = contestants.find((entry) => entry.id === id);
     assert.ok(contestant !== undefined, `缺 ${id}`);
     assert.ok(
-      contestant!.configNote.startsWith("降级"),
-      `${id} 应标注降级（实际: ${contestant!.configNote}）`,
+      contestant!.configNote.startsWith("SDK 注入"),
+      `${id} 应标注 SDK 注入接线（实际: ${contestant!.configNote}）`,
     );
-    // 降级 = entry 与默认条目同构造路径（registry 默认，无参数注入）
+    // 接线 = entry 带 ARENA_CFG_* env（opponentEntry 第三参注入通道），
+    // 且 configNote 写明注入键
     const tournEntry = contestant!.entry(1);
     assert.equal(tournEntry.id, `${id}-s1`);
+    assert.match(contestant!.configNote, /ARENA_CFG_/u, `${id} configNote 应写明注入键`);
   }
 });
 
