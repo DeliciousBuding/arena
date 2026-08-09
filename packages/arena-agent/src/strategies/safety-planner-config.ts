@@ -289,6 +289,20 @@ export interface SafetyPlannerConfig {
    */
   readonly strikeGroupReserve?: boolean;
   /**
+   * 守家编成（home-guard-squad-v1，2026-08-09 用户裁决"守卫至少 2 前锋 1
+   * 游侠"）：启用后攻坚/打野期间按"距 Core 最近"选 homeGuardVanguards 个
+   * Vanguard + homeGuardRangers 个 Ranger 常驻守家（替代 strikeGroupReserve
+   * 的 UUID 排序 1 个 Vanguard——UUID 随机可能选中远征前线的单位，名义留守
+   * 实际裸奔，t1 生产实证 dist=92 守卫）。距离选择保证"留守最近的兵、远征
+   * 用最远的兵"。总兵力不足时收缩编成（各保留 1 个可外出单位）。
+   * 默认 false = 历史行为（零回归）。
+   */
+  readonly homeGuardSquad?: boolean;
+  /** 守家 Vanguard 编成数（homeGuardSquad 生效，默认 2）。 */
+  readonly homeGuardVanguards?: number;
+  /** 守家 Ranger 编成数（homeGuardSquad 生效，默认 1）。 */
+  readonly homeGuardRangers?: number;
+  /**
    * worker 遭遇撤离（v0.3，实验，B10 竞品 "Scout And Observer Response"
    * 对照）：空 worker 视野内（3 格）出现战斗单位（VANGUARD/RANGER）时，
    * 撤离回 Core（EVADE+RETURN 合一——向 Core 步进即远离敌人，敌占格
