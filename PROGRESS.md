@@ -120,3 +120,27 @@ L-D 网站。地界：`packages/arena-agent/src/sim/`、`src/cli/`、`src/planni
   Python 桥提交之前（提交序 = tenant 序），waaiging/waaiging-agg 的请求晚 ~17ms 发出，
   决策等待被放大。若把桥提交提到内置 planner 同步计算之前（请求序列逐 tenant 不变，
   逐字节一致），waaiging-agg/core-mil 系统性等待有望归零 → 预期端到端 -30%+。
+
+## 进度（2026-08-09，实现+验证完成）
+
+### 实现（P4g+，随 735c6c5 合入 main）
+
+- `runtime/decision-types.ts`：PlanProvider 新增可选 `parallelPrefetch?: boolean`
+  （缺省 false = 同步计算；真异步桥置 true）。
+- `sim/opponent/opponent-adapter.ts`：OpponentAdapter.parallelPrefetch = decider 原生
+  实现 prefetch/decideCached 时 true。
+- `sim/harness/episode.ts`：pipelinePrefetchOrder 两遍提交（真异步桥先、同步计算后，
+  组内保持原序）。只改调度顺序——每 tenant 请求内容/序列不变，逐字节一致。
+
+### 验证（2026-08-09，全部实测）
+
+- **逐字节一致性**：优化前 pipeline vs 优化后（probe-b1 vs o1）diff=1（仅 generatedAt）；
+  串行 vs 优化后（probe-s1 vs o1）diff=1（仅 generatedAt）——2 场同 seed 过验收线。
+- **加速**：单场探针 46-54s → 33s（1.4-1.6×）；**15 场全量（5 分片并行 + merge）
+  143s+2s = 145s** vs 基线 4-5 分钟（1.7-2.1×，errors=0）。
+- **门禁**：`pnpm -r check` 全绿（tsc + sim isolation + 全量 2330 测试 0 失败）。
+- 报告：`docs/analysis/perf-optimization-2026-08-09.md`（前置测量表/实现/加速/放弃项）。
+- 放弃：状态投影（<3%）、决策窗口（bench 路径无此参数）、桥跨场复用（~11%，低于
+  已实现的调度优化）；详见报告 §4。
+- 遗留：ts-aggressive 16.4ms/tick（WIP 文件只读）、arena-evolve 每 tick 写盘
+  （slotEvery 顺手项）、waaiging 长尾（第三方只读）——报告 §5。
