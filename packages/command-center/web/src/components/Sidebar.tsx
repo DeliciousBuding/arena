@@ -44,6 +44,10 @@ interface OverviewTenant {
     workerMaxDistance?: number | null;
     workerMeanDistance?: number | null;
     visibleResources?: number | null;
+    visibleEnemies?: number | null;
+    coreX?: number | null;
+    coreY?: number | null;
+    status?: string | null;
     events?: number | null;
   };
 }
@@ -213,7 +217,7 @@ function TenantCards() {
             <div className="row1">
               <span className={`dot ${st.cls}`} title={st.label} />
               <span className="tenant-name">{tenant.toUpperCase()}</span>
-              <span className="tenant-tag">{TENANT_LABEL[tenant] ?? ""}</span>
+              <span className="tenant-tag">{TENANT_LABEL[tenant] ?? ""}{L.status ? ` · ${L.status}` : ""}</span>
               <button type="button" className={`tc-fold${isFolded ? " folded" : ""}`} title={isFolded ? "展开详情" : "折叠详情"}
                 aria-expanded={!isFolded}
                 onClick={(ev) => { ev.stopPropagation(); setCollapsed((p) => ({ ...p, [tenant]: !isFolded })); }}>
@@ -230,12 +234,20 @@ function TenantCards() {
             <>
             <div className="metrics">
               <div className="metric"><span className="v">{fmt(L.resources)}</span><span className="k">资源</span></div>
-              <div className="metric"><span className={`v ${(L.resourceDelta ?? 0) > 0 ? "delta-pos" : (L.resourceDelta ?? 0) < 0 ? "delta-neg" : ""}`}>{fmt(L.resourceDelta, 0)}</span><span className="k">增量</span></div>
-              <div className="metric"><span className="v">{fmt(L.workers)}</span><span className="k">工人</span></div>
+              <div className="metric" title="增量：仅 JSONL 数据源（t1）有值；台账模式下后端恒为 null，显示 —">
+                <span className={`v ${(L.resourceDelta ?? 0) > 0 ? "delta-pos" : (L.resourceDelta ?? 0) < 0 ? "delta-neg" : ""}`}>{fmt(L.resourceDelta, 0)}</span><span className="k">增量</span>
+              </div>
+              <div className="metric" title="单位=可见世界全部 UNIT（台账模式含敌方/先锋/游侠；JSONL 回退为自有工人数）">
+                <span className="v">{fmt(L.workers)}</span><span className="k">单位</span>
+              </div>
+              <div className="metric" title="当前可见敌方单位数（台账模式 python 租户上报）">
+                <span className="v">{fmt(L.visibleEnemies)}</span><span className="k">敌方</span>
+              </div>
               <div className="metric"><span className="v">{fmt(L.events)}</span><span className="k">事件</span></div>
             </div>
             <div className="row3">
               <span>tick <b>{fmt(L.tick)}</b></span>
+              <span title="核心坐标（台账模式 python 租户上报）">核心 <b>{L.coreX != null && L.coreY != null ? `[${L.coreX}, ${L.coreY}]` : "—"}</b></span>
               <span>最大距离 <b>{fmt(L.workerMaxDistance)}</b></span>
               <span>均值 <b>{fmt(L.workerMeanDistance)}</b></span>
               <span>可见资源 <b>{fmt(L.visibleResources)}</b></span>
