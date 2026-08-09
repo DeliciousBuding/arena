@@ -636,3 +636,88 @@ test("S5: 维护机制整体移除（无 UPKEEP_PAID/UPKEEP_DEFICIT，unit 不�
   assert.equal(result.world.players.get("p1")!.units.length, 21);
   assert.equal(result.world.players.get("p1")!.resources, 0);
 });
+
+/* ---------------- sim 死锁检测概念证明（2026-08-10）---------------- */
+
+test("sim 死锁检测：资源满 + worker 卡 core 格 → DEPOSIT_FAILED 连续 streak（死锁特征）", () => {
+  // 死锁场景还原（t1 生产 80523-80746 根因之一）：worker 站在 core 格 [0,0]，
+  // resources 已满（capacity 10），cargo 1。每 tick DEPOSIT → CORE_RESOURCE_FULL
+  // → 无法卸货 → cargo 保留 → worker 卡在 core 格 → 资源静止。
+  // sim 自主推进 tick + 产生 DEPOSIT_FAILED 事件流 → 后置扫 streak 可检测死锁。
+  let world = makeWorld([{
+    id: "p1",
+    resources: 10,
+    core: [0, 0],
+    units: [{ id: uuid(1), position: [0, 0], cargo: 1 }],
+  }]);
+
+  let depositFailStreak = 0;
+  let maxStreak = 0;
+  let harvestCount = 0;
+  for (let tick = 0; tick < 10; tick++) {
+    const result = settleTick(
+      world,
+      new Map([["p1", planFor(world, "p1", { [uuid(1)]: { type: "DEPOSIT" } })]]),
+      ctx,
+    );
+    const failed = result.events.some((e) => e.eventType === "DEPOSIT_FAILED");
+    const harvested = result.events.some((e) => e.eventType === "HARVEST_SUCCEEDED");
+    if (failed) {
+      depositFailStreak++;
+      maxStreak = Math.max(maxStreak, depositFailStreak);
+    } else {
+      depositFailStreak = 0;
+    }
+    if (harvested) harvestCount++;
+    world = result.world;
+  }
+
+  // 死锁特征：DEPOSIT_FAILED 连续 streak（10 tick 全失败）+ harvest=0
+  assert.ok(maxStreak >= 5, `资源满死锁应产生 DEPOSIT_FAILED 连续 streak ≥5（实际 max=${maxStreak}）`);
+  assert.equal(harvestCount, 0, "死锁期无 HARVEST_SUCCEEDED（资源静止）");
+  assert.equal(world.players.get("p1")!.units[0].cargo, 1, "cargo 保留（无法卸货）");
+  assert.equal(world.players.get("p1")!.resources, 10, "resources 不变（无回补）");
+});
+
+test("sim 死锁检测：后置扫 events 可定位死锁 tick 窗口", () => {
+  // 证明 sim 可用于"死锁 tick 窗口定位"：跑 10 tick，记录每 tick 是否有
+  // DEPOSIT_FAILED，断言死锁窗口（连续失败 >= 3 tick）可被后置扫描检出。
+  // 这是 StallDetector（runtime/stall-detector.ts）9 模式的等价手写版——
+  // 证明 sim 侧无需内置检测器，后置扫 events 即可实现死锁检测。
+  let world = makeWorld([{
+    id: "p1",
+    resources: 10,
+    core: [0, 0],
+    units: [{ id: uuid(1), position: [0, 0], cargo: 1 }],
+  }]);
+
+  const failureByTick: boolean[] = [];
+  for (let tick = 0; tick < 10; tick++) {
+    const result = settleTick(
+      world,
+      new Map([["p1", planFor(world, "p1", { [uuid(1)]: { type: "DEPOSIT" } })]]),
+      ctx,
+    );
+    failureByTick.push(result.events.some((e) => e.eventType === "DEPOSIT_FAILED"));
+    world = result.world;
+  }
+
+  // 后置扫：找最长连续失败窗口
+  let currentStreak = 0;
+  let longestWindow: { start: number; length: number } = { start: -1, length: 0 };
+  let windowStart = -1;
+  for (let i = 0; i < failureByTick.length; i++) {
+    if (failureByTick[i]) {
+      if (currentStreak === 0) windowStart = i;
+      currentStreak++;
+      if (currentStreak > longestWindow.length) {
+        longestWindow = { start: windowStart, length: currentStreak };
+      }
+    } else {
+      currentStreak = 0;
+    }
+  }
+
+  assert.equal(longestWindow.start, 0, "死锁从 tick 0 开始");
+  assert.ok(longestWindow.length >= 3, `死锁窗口长度 ≥3（实际 ${longestWindow.length}）`);
+});
