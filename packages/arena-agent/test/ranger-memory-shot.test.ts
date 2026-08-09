@@ -63,14 +63,15 @@ test("rangerMemoryShot 默认关闭：无可见目标 + 敌 Core 记忆 → 不�
 
 test("rangerMemoryShot 开启：确认静止敌 Core 记忆 + 射程内 → 记忆格 cell-fire", () => {
   const planner = new SafetyPlanner(SHOT_CONFIG);
-  // tick1：Ranger [6,0] 见敌 Core [8,0]（初次观察）
-  planner.decide({ state: makeState(1, [6, 0], [enemyCore([8, 0])]), policy: AGGRESSIVE_POLICY });
-  // tick2：再次见敌 Core [8,0]（同位置 = 静止确认；prevPosition=[8,0] == position）
-  planner.decide({ state: makeState(2, [6, 0], [enemyCore([8, 0])]), policy: AGGRESSIVE_POLICY });
-  // tick3：敌 Core 消失（视野丢失）→ 射程内（2 格直线）→ 记忆格 cell-fire
+  // tick1：Ranger [6,0] 见敌 Core [9,3]（初次观察）
+  // Chebyshev 3 ≤ 3（射程内）；Manhattan 6 > 5（视野外 → C2 不拦）
+  planner.decide({ state: makeState(1, [6, 0], [enemyCore([9, 3])]), policy: AGGRESSIVE_POLICY });
+  // tick2：再次见敌 Core [9,3]（同位置 = 静止确认；prevPosition=[9,3] == position）
+  planner.decide({ state: makeState(2, [6, 0], [enemyCore([9, 3])]), policy: AGGRESSIVE_POLICY });
+  // tick3：敌 Core 消失（视野丢失）→ 射程内 → 记忆格 cell-fire
   const plan = planner.decide({ state: makeState(3, [6, 0], []), policy: AGGRESSIVE_POLICY });
   assert.equal(plan.intents["r1"], "ranger_memory_shot");
-  assert.deepEqual(plan.unitActions["r1"], { type: "SHOOT", targetId: null, expectedCell: [8, 0] });
+  assert.deepEqual(plan.unitActions["r1"], { type: "SHOOT", targetId: null, expectedCell: [9, 3] });
 });
 
 test("rangerMemoryShot 开启：敌 Core 记忆超射程（>3 格）→ 不射击", () => {

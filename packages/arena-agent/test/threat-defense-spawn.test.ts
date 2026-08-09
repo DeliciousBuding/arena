@@ -132,7 +132,7 @@ test("威胁防御产兵：资源 10（纯成本，豁免 reserve）→ spawn", 
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" }, "威胁产兵豁免 reserve——10 即可产");
 });
 
-test("威胁防御产兵：资源 9（<10）→ 不 spawn", () => {
+test("威胁防御产兵：资源 9（<10）→ 不 spawn VANGUARD（回退 WORKER）", () => {
   const decision = selectDeterministicCoreAction(
     makeState(9, 3, 0, [enemyAt([3, 0])]),
     null,
@@ -144,7 +144,7 @@ test("威胁防御产兵：资源 9（<10）→ 不 spawn", () => {
     undefined,
     true,
   );
-  assert.equal(decision.action, null, "9 < 10 → 不产 VANGUARD");
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" }, "9 < 10 → 不产 VANGUARD，回退产 WORKER");
 });
 
 test("威胁防御产兵：敌方 WORKER 不触发（非战斗单位）", () => {
@@ -172,10 +172,12 @@ test("威胁防御产兵：默认关闭（候选）——威胁场景不产兵�
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" }, "默认关闭 → 威胁不产兵");
 });
 
-test("威胁防御产兵：默认关闭且 workers 达标 → 不产（纯原行为）", () => {
+test("威胁防御产兵：默认关闭且 workers 达标 + 军事达标 → 不产（纯原行为）", () => {
+  // 8 vanguard 使 military >= EMERGENCY_MILITARY_FLOOR(8) → P1 不触发
+  // workers=4 >= DEFAULT_WORKER_TARGET=4 → 正常分支不产 → capacitySpend null
   const decision = selectDeterministicCoreAction(
-    makeState(15, 4, 0, [enemyAt([3, 0])]),
+    makeState(15, 4, 8, [enemyAt([3, 0])]),
     null,
   );
-  assert.equal(decision.action, null, "默认关闭 → workers 达标不产兵");
+  assert.equal(decision.action, null, "默认关闭 → workers/military 达标不产兵");
 });

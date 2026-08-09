@@ -136,11 +136,10 @@ test("cargo-rescue：距 Core >2 → 不触发 hold（正常 return_home）", ()
 
 test("cargo-rescue：2 个满载 worker cargo 连续 6 tick 不变 + Core NORMAL → Core 靠拢（cargo_blocked_self_heal）", () => {
   const planner = new SafetyPlanner(RESCUE_CONFIG);
-  // 2 个满载 worker 在 Core 附近但无法卸货（resourceSpace=0 → DEPOSIT 失败）
-  // → cargo 不变 → stuck 检测在第 2 tick 初始化 stuckSince，第 8 tick（8-2=6>=6）触发靠拢
-  const w1 = worker("w1", [1, 0], 1);
-  const w2 = worker("w2", [-1, 0], 1);
-  // resourceSpace=0：worker 即使到核心格也卸不了货 → cargo 不变
+  // 2 个满载 worker 距 Core 8 格（> CARGO_RESCUE_MIN_DISTANCE=6 → 可迁移）
+  // resourceSpace=0 → worker 即使到核心格也卸不了货 → cargo 不变
+  const w1 = worker("w1", [8, 0], 1);
+  const w2 = worker("w2", [-8, 0], 1);
   for (let tick = 1; tick <= 7; tick += 1) {
     planner.decide({
       state: makeState({
@@ -197,8 +196,8 @@ test("cargo-rescue：cargo 变化（卸货成功）→ 重置 stuck 计数 → �
 
 test("cargo-rescue：靠拢触发时 Core START_MOVE（不 SPAWN，产兵暂停）", () => {
   const planner = new SafetyPlanner(RESCUE_CONFIG);
-  const w1 = worker("w1", [1, 0], 1);
-  const w2 = worker("w2", [-1, 0], 1);
+  const w1 = worker("w1", [8, 0], 1);
+  const w2 = worker("w2", [-8, 0], 1);
   // resourceSpace=0：worker 无法卸货 → cargo 不变 → stuck 检测积累
   for (let tick = 1; tick <= 7; tick += 1) {
     planner.decide({
@@ -216,8 +215,8 @@ test("cargo-rescue：靠拢触发时 Core START_MOVE（不 SPAWN，产兵暂停�
 
 test("cargo-rescue：靠拢触发后冷却内不重触发（cooldownTicks=30）", () => {
   const planner = new SafetyPlanner(RESCUE_CONFIG);
-  const w1 = worker("w1", [1, 0], 1);
-  const w2 = worker("w2", [-1, 0], 1);
+  const w1 = worker("w1", [8, 0], 1);
+  const w2 = worker("w2", [-8, 0], 1);
   // resourceSpace=0：worker 无法卸货 → cargo 不变
   for (let tick = 1; tick <= 7; tick += 1) {
     planner.decide({
@@ -335,8 +334,8 @@ test("cargo-rescue：变体关闭 → 满载 worker 旧目标不在可见资源 
 
 test("cargo-rescue：靠拢超时撤退（stallTicks=10，靠拢后 10 tick 仍未解决 → 放弃）", () => {
   const planner = new SafetyPlanner(RESCUE_CONFIG);
-  const w1 = worker("w1", [1, 0], 1);
-  const w2 = worker("w2", [-1, 0], 1);
+  const w1 = worker("w1", [8, 0], 1);
+  const w2 = worker("w2", [-8, 0], 1);
   // resourceSpace=0：worker 无法卸货 → cargo 不变
   for (let tick = 1; tick <= 7; tick += 1) {
     planner.decide({

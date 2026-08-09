@@ -67,9 +67,10 @@ test("aggressive Ranger 记忆敌核心（64 格内）→ 无可见敌人时前�
 
 test("aggressive Ranger 已在射程内（≤3）→ 不移动（保持站位，记忆射击接管）", () => {
   const planner = new SafetyPlanner({ ...AGGRESSIVE, rangerMemoryShot: true });
-  planner.decide({ state: makeState(1, [6, 0], [enemyCore([8, 0])]), policy: AGGRESSIVE_POLICY });
-  planner.decide({ state: makeState(2, [6, 0], [enemyCore([8, 0])]), policy: AGGRESSIVE_POLICY });
-  // tick3：敌消失，Ranger [6,0] 距记忆核心 [8,0] 2 格（射程内）→ 记忆射击，不移动
+  // [9,3] from [6,0]: Chebyshev 3 ≤ 3 (canShoot); Manhattan 6 > 5 (outside vision → C2 pass)
+  planner.decide({ state: makeState(1, [6, 0], [enemyCore([9, 3])]), policy: AGGRESSIVE_POLICY });
+  planner.decide({ state: makeState(2, [6, 0], [enemyCore([9, 3])]), policy: AGGRESSIVE_POLICY });
+  // tick3：敌消失，Ranger [6,0] 距记忆核心 [9,3] Chebyshev 3（射程内）→ 记忆射击
   const plan = planner.decide({ state: makeState(3, [6, 0], []), policy: AGGRESSIVE_POLICY });
   assert.equal(plan.intents["r1"], "ranger_memory_shot", "射程内打记忆格");
 });

@@ -388,7 +388,7 @@ const WORKER_SPAWN_COST = 5;
 const WORKER_SPAWN_RESERVE = 2;
 /** 资源高水位消费线（2026-08-10 用户理念）：150 = 顶级兑换码门槛，够用即可；
  *  超出部分花掉造单位。资源 >= 该值时强制 SPAWN（防 Core 容量顶格死锁）。 */
-const RESOURCE_HIGH_WATER = 150;
+export const RESOURCE_HIGH_WATER = 150;
 /** 军事危机底线（2026-08-10 用户裁决升级"守卫起码 8 个"）：4V+4R = 8。
  *  军事单位（Vanguard+Ranger）少于该值 = 危机 → 紧急爆兵（无视 reserve/
  *  水位/ceiling，按 4V+4R 编成补缺口）。 */
@@ -550,27 +550,31 @@ export function selectDeterministicCoreAction(
         enemy.unitType !== "WORKER" &&
         manhattan(enemy.position, core.position) <= THREAT_SPAWN_DISTANCE,
     );
-    // Core 格被空载/非 Worker 单位占位时阻塞生成（SPAWN 会叠加容量）；
-    // 满载 Worker 是"卸货等待"不阻塞（资源满时 DEPOSIT 暂不合法，但 SPAWN
-    // 消耗资源后立即可卸——资源满 + 占格 + 无法卸货会形成永久经济死锁）。
+    // Core 格被任何单位占位时阻塞生成（SPAWN 会叠加容量）——生产实证 t1
+    // tick 80585-80586：满载 worker 在 Core 格 + SPAWN → Core(1)+worker(1)+
+    // spawn(1)=3 > cell_entity_capacity(2) → CELL_UNIT_LIMIT。满载 worker
+    // 的让位由 SafetyPlanner.coreWantsSpawn/spawnYield 处理（resourceHighWater
+    // 触发 → worker 让出 Core 格 → 下 tick SPAWN 不被占格挡）。此处
+    // permanentOccupantsOnCore 是安全网：worker 未让位时不发 SPAWN。
     const permanentOccupantsOnCore = state.units.filter(
       (unit) =>
         unit.position[0] === core.position[0] &&
-        unit.position[1] === core.position[1] &&
-        !(unit.unitType === "WORKER" && unit.cargo > 0),
+        unit.position[1] === core.position[1],
     ).length;
     if (permanentOccupantsOnCore === 0) {
       const militaryCount = state.vanguards.length + state.rangers.length;
       // P1 军事危机爆兵（2026-08-10 用户裁决"军事单位减少太多才紧急爆兵，
       // 守卫起码 8 个 = 4V+4R"）：军事 < 8（且 worker 已起步 >=4，冷启动先
-      // 按正常算法产 worker——工人军事均衡）或 可见威胁缺 Vanguard → 无视
-      // reserve/水位/ceiling 全力产兵——按 4V+4R 编成补缺口（V<4 产
-      // Vanguard 抗线肉盾，V≥4 产 Ranger 火力）。军事归零=裸奔（t2 77003
-      // 被拆教训）；资源不足则让位（下 tick 重试）。放 popCeiling 检查前
-      // （危机是生存行为，与占位检查同级——满载 worker 卡 Core 时同样解锁）。
+      // 按正常算法产 worker——工人军事均衡）。军事 < 8（且 worker 已起步
+      // >=4）→ 无视 reserve/水位/ceiling 全力产兵——按 4V+4R 编成补缺口
+      // （V<4 产 Vanguard 抗线肉盾，V≥4 产 Ranger 火力）。军事归零=裸奔
+      // （t2 77003 被拆教训）；资源不足则让位（下 tick 重试）。放
+      // popCeiling 检查前（危机是生存行为，与占位检查同级——满载 worker
+      // 卡 Core 时同样解锁）。威胁驱动产兵走 threatDefenseSpawn 分支（不
+      // 在 P1 叠加——避免 threatDefenseSpawn=false 时仍触发威胁产兵，破坏
+      // 默认关闭语义）。
       if (
-        (militaryCount < EMERGENCY_MILITARY_FLOOR && state.workers.length >= EMERGENCY_WORKER_GATE) ||
-        (coreThreatened && state.vanguards.length < DEFENSE_VANGUARD_TARGET)
+        militaryCount < EMERGENCY_MILITARY_FLOOR && state.workers.length >= EMERGENCY_WORKER_GATE
       ) {
         const unitType: "VANGUARD" | "RANGER" =
           state.vanguards.length < EMERGENCY_VANGUARD_TARGET ? "VANGUARD" : "RANGER";
