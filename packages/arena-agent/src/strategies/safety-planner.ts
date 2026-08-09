@@ -371,6 +371,19 @@ const CARGO_RESCUE_STALL_TICKS = 10;
 const CARGO_RESCUE_MIN_WORKERS = 2;
 const CARGO_RESCUE_STALL_CARGO_TICKS = 6;
 const CARGO_QUEUE_HOLD_RADIUS = 2;
+/** 2026-08-10 Core 迁移自愈 3 守卫（waaiging _choose_core_migration 参考）：
+ *  - MIN_DISTANCE=6：target 距 Core ≤6 不迁移（近距离靠 near_core_deposit 锁
+ *    + 排队 hold 解决，Core 迁移帮不上反打断交仓）；
+ *  - LOGISTICS_HOLD_RADIUS=8：8 格内有"未打转"满载 worker → Core 不动
+ *    （防靠拢打断正在交仓的近程 worker）；
+ *  - FAR_RANGE_THRESHOLD=12 + FAR_STALL=60/FAR_COOLDOWN=8：远距离场景放宽
+ *    stall（防 10 tick 超时杀死）+ 缩短 cooldown（允许持续挪动到目标）。
+ *    原 10/30 让 Core 每 40 tick 移 1 格，26 格需 1040 tick 永不到达。 */
+const CARGO_RESCUE_MIN_DISTANCE = 6;
+const CARGO_RESCUE_LOGISTICS_HOLD_RADIUS = 8;
+const CARGO_RESCUE_FAR_RANGE_THRESHOLD = 12;
+const CARGO_RESCUE_FAR_STALL_TICKS = 60;
+const CARGO_RESCUE_FAR_COOLDOWN_TICKS = 8;
 const CARGO_QUEUE_ENTRY_LIMIT = 2;
 /** near_core_deposit 锁半径（Manhattan，竞品 arena_hero_strategy.py roles.py:158
  *  `dist_core <= 4`）：满载 worker 距 Core ≤ 该值时禁止因邻接敌改 RETREAT——
@@ -734,6 +747,10 @@ export class SafetyPlanner {
   /** cargo-rescue-v1：靠拢目标 worker id（靠拢进行中保持同一目标，防每 tick
    *  换目标导致 Core 原地震荡）。靠拢完成/超时后清空。 */
   private cargoSelfHealTargetId: string | null = null;
+  /** 2026-08-10 守卫 2 远距离参数：当前靠拢的 stall 超时阈值（远距离场景
+   *  用 60 而非默认 10，防 Core 每 40 tick 移 1 格永不到达）。null = 用
+   *  config 默认 stallTicks。靠拢完成/超时后清空。 */
+  private cargoSelfHealStallTicks: number | null = null;
   /** C2 RECOVERY：上次见到的我方 Core id（全新 UUID = 重生/替换 → 清战场记忆）。 */
   private lastCoreId: string | null = null;
   /** C2 RECOVERY 触发次数（telemetry/测试可读）。 */
@@ -4578,10 +4595,11 @@ export class SafetyPlanner {
       const minWorkers = this.config.cargoBlockedSelfHealMinWorkers ?? CARGO_RESCUE_MIN_WORKERS;
       // 靠拢进行中超时检测：靠拢开始后 stallTicks 仍未到目标 → 放弃（恢复产兵）
       if (this.cargoSelfHealTargetId !== null && this.cargoSelfHealStartedTick > 0) {
-        if (state.tick - this.cargoSelfHealStartedTick >= stallTicks) {
+        if (state.tick - this.cargoSelfHealStartedTick >= (this.cargoSelfHealStallTicks ?? stallTicks)) {
           // 超时撤退：清状态，进入冷却
           this.cargoSelfHealTargetId = null;
           this.cargoSelfHealStartedTick = 0;
+          this.cargoSelfHealStallTicks = null;
           this.cargoSelfHealUntilTick = state.tick + cooldownTicks;
         }
       }
@@ -4602,19 +4620,49 @@ export class SafetyPlanner {
                 manhattan(a.position, core.position) - manhattan(b.position, core.position) ||
                 a.id.localeCompare(b.id),
             )[0]!;
-          // 靠拢方向：向目标 worker 走 1 格（stepToward 走 BFS 最近路径首步）
-          const approachDirection = stepToward(
-            core.position,
-            target.position,
-            this.world.obstacles(state.obstacleCells),
-          );
-          if (approachDirection !== null) {
-            this.coreMoveDirection = approachDirection;
-            this.cargoSelfHealTargetId = target.id;
-            this.cargoSelfHealStartedTick = state.tick;
-            this.cargoSelfHealUntilTick = state.tick + cooldownTicks;
-            intents.core = "cargo_blocked_self_heal";
-            return { type: "START_MOVE", direction: approachDirection };
+          // 2026-08-10 Core 迁移自愈 3 守卫（waaiging _choose_core_migration 参考）：
+          // 守卫 1 距离门槛：target 距 Core ≤6 不迁移（近距离 worker 靠
+          //   near_core_deposit 锁 + 排队 hold 解决，Core 迁移帮不上反打断交仓）。
+          // 守卫 3 logistics_hold：8 格内有"未打转"（不在 stuck 名单）的满载
+          //   worker → Core 不动（防靠拢打断正在交仓的近程 worker）。
+          // 守卫 2 远距离参数：距离 >12 用长 stall(60)+短 cooldown(8)——原 10/30
+          //   让 Core 每 40 tick 移 1 格，26 格需 1040 tick 永不到达。远距离
+          //   stall 超时检测用实例字段 cargoSelfHealStallTicks（下 tick 超时检测读它）。
+          const targetDistance = manhattan(target.position, core.position);
+          if (targetDistance <= CARGO_RESCUE_MIN_DISTANCE) {
+            // 近距离不迁移：fall through 到 heal/repair/spawn
+          } else {
+            const progressingNearby = state.workers.some(
+              (w) =>
+                w.cargo > 0 &&
+                manhattan(w.position, core.position) <= CARGO_RESCUE_LOGISTICS_HOLD_RADIUS &&
+                !this.cargoStuckSince.has(w.id),
+            );
+            if (!progressingNearby) {
+              // 靠拢方向：向目标 worker 走 1 格（stepToward 走 BFS 最近路径首步）
+              const approachDirection = stepToward(
+                core.position,
+                target.position,
+                this.world.obstacles(state.obstacleCells),
+              );
+              if (approachDirection !== null) {
+                // 守卫 2：远距离参数（>12 用长 stall + 短 cooldown）
+                const isFarRange = targetDistance > CARGO_RESCUE_FAR_RANGE_THRESHOLD;
+                const effectiveStallTicks = isFarRange
+                  ? CARGO_RESCUE_FAR_STALL_TICKS
+                  : stallTicks;
+                const effectiveCooldownTicks = isFarRange
+                  ? CARGO_RESCUE_FAR_COOLDOWN_TICKS
+                  : cooldownTicks;
+                this.coreMoveDirection = approachDirection;
+                this.cargoSelfHealTargetId = target.id;
+                this.cargoSelfHealStartedTick = state.tick;
+                this.cargoSelfHealUntilTick = state.tick + effectiveCooldownTicks;
+                this.cargoSelfHealStallTicks = effectiveStallTicks;
+                intents.core = "cargo_blocked_self_heal";
+                return { type: "START_MOVE", direction: approachDirection };
+              }
+            }
           }
         }
       }
