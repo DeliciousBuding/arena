@@ -2,10 +2,11 @@
  * 参赛条目注册表（arena-bench-v2 §3，2026-08-09 设计定稿）
  *
  * 默认阵容 10 条目：5 社区 agent 默认配置 + 3 战术配置变体 + 2 内置对照。
- * 变体的配置支持性以 python-agents.json / reference agent 实际字段为准，
- * 不支持的降级为"默认构造 + configNote 注明"（设计文档 §3 明确允许）。
+ * 变体配置支持性（2026-08-09）：core-mil/farmer-eco 经 SDK 配置注入通道
+ * （ARENA_CFG_* env）真参数化（v3）；waaiging-agg 无注入键保持降级
+ * （SmartTactic 仅接受 memory/control_path，无进攻参数）。
  *
- * 2026-08-09 实测结论（全部降级，证据见各 configNote）：
+ * 2026-08-09 实测结论（变体参数支持性，证据见各 configNote）：
  *  - waaiging：registry construct.kwargs=[] 且无 decide_kwargs；
  *    SmartTactic.__init__(memory=None, *, control_path=None)——无任何进攻参数。
  *  - core：decide_kwargs=[target, mode]，但 arena_core_agent.plan_turn 的
@@ -41,13 +42,14 @@ export interface Contestant {
   readonly entry: (seed: number) => TournEntry;
 }
 
-/** python 条目：以 baseAgent 注册名构造（变体条目 base agent 默认构造、仅覆盖
- *  id/desc——注册表本身不含变体名，见各变体 configNote 的降级说明）。 */
+/** python 条目：以 baseAgent 注册名构造（变体条目经 SDK 配置注入通道
+ *  （ARENA_CFG_* env）真参数化——见 docs/analysis/sdk-config-injection-patch.md）。 */
 function pythonContestant(
   id: string,
   baseAgent: string,
   label: string,
   configNote: string,
+  configEnv?: Record<string, string>,
 ): Contestant {
   return {
     id,
@@ -58,6 +60,7 @@ function pythonContestant(
       opponentEntry(resolveOpponent(baseAgent), seed, {
         id: `${id}-s${seed}`,
         desc: label,
+        ...(configEnv !== undefined ? { env: configEnv } : {}),
       }),
   };
 }
@@ -110,15 +113,17 @@ export function defaultContestants(): Contestant[] {
       "core-mil",
       "core",
       "core-mil（军事变体）",
-      "降级：decide_kwargs 仅 target/mode，mode 实际支持 control/harvest（harvest=达 " +
-        "target 即止、control=无限对局），无 military 值——entry 用默认构造",
+      "SDK 注入（config-injection v3）：ARENA_CFG_TARGET=20 + ARENA_CFG_MODE=harvest " +
+        "（提前结束经济扩张，省资源转兵力投入——mode 无 military 值，用 target 缩短发育期）",
+      { ARENA_CFG_TARGET: "20", ARENA_CFG_MODE: "harvest" },
     ),
     pythonContestant(
       "farmer-eco",
       "farmer",
       "farmer-eco（纯经济对照）",
-      "降级：worker_target 默认即上限 12（MAX_WORKER_TARGET=20−4−4=12），无法拉高——" +
-        "entry 用默认构造",
+      "SDK 注入（config-injection v3）：ARENA_CFG_WORKER_TARGET=6（低于默认 12，" +
+        "纯经济发育对照——注入通道端到端验证过 harvested 差异）",
+      { ARENA_CFG_WORKER_TARGET: "6" },
     ),
     {
       id: "ts-aggressive",

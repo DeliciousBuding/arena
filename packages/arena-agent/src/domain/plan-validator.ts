@@ -1,5 +1,6 @@
 import { cellKey, type CoreAction, type Plan, type TickState, type UnitAction } from "./model.ts";
 import { lineBlocked, manhattan, move } from "./nav.ts";
+import { unitSpawnCost } from "./pricing.ts";
 
 export type ValidationCode =
   | "tick_mismatch"
@@ -29,7 +30,6 @@ export interface ValidationResult {
 }
 
 export const UNIT_MAX_HP = { WORKER: 2, VANGUARD: 4, RANGER: 2 } as const;
-const SPAWN_COST = { WORKER: 5, VANGUARD: 10, RANGER: 12 } as const;
 
 export function validatePlan(
   state: TickState,
@@ -190,9 +190,13 @@ function validateCoreAction(state: TickState, action: CoreAction): ValidationIss
     }
     case "SPAWN":
       if (state.core.state !== "NORMAL") return issue("core_unavailable", "moving Core cannot spawn");
-      return state.resources >= SPAWN_COST[action.unitType]
+      // v0.14 动态定价（与 domain/pricing.ts unitSpawnCost 共用，避免两处漂移）：
+      // 按 spawn 前人口算实际成本——base 价会在 pop≥21（动态价>base 价）时漏过
+      // 校验（生产实证：pop 24 RANGER 实收 16、pop 25 VANGUARD 实收 13）。
+      const spawnCost = unitSpawnCost(action.unitType, state.population);
+      return state.resources >= spawnCost
         ? null
-        : issue("insufficient_resources", `spawn ${action.unitType} costs ${SPAWN_COST[action.unitType]}`);
+        : issue("insufficient_resources", `spawn ${action.unitType} costs ${spawnCost}`);
     case "START_MOVE":
       return state.core.state === "NORMAL" ? null : issue("core_unavailable", "Core is already moving");
     case "CANCEL_MOVE":

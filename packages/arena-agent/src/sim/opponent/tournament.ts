@@ -235,11 +235,13 @@ export function makeSafetyEntry(id: string): TournEntry {
   };
 }
 
-/** 计算一个 match 的胜者：核心存活优先；都活 → 资源多；都活且资源平 → 人口多；仍平 → null。 */
+/** 计算一个 match 的胜者：核心存活优先；都活 → 击杀多（v3：与榜单排名判定
+ *  统一，审计 bench-fairness-audit §1.4）；再 → 资源多；再 → 人口多；仍平 → null。 */
 export function decideWinner(
   players: readonly string[],
   before: SimWorld,
   after: SimWorld,
+  kills?: Readonly<Record<string, number>>,
 ): { winner: string | null; coreAlive: Record<string, boolean>; finalResources: Record<string, number>; finalPopulation: Record<string, number> } {
   const coreAlive: Record<string, boolean> = {};
   const finalResources: Record<string, number> = {};
@@ -255,14 +257,18 @@ export function decideWinner(
   if (alive.length === 1) {
     winner = alive[0];
   } else if (alive.length > 1) {
-    // 多存活（含全员存活）：存活者内资源多优先；平 → 人口多；平 → null。
-    // FFA 中间态（部分核心被拆、未到唯一存活）同样按存活阵营资源定胜。
+    // 多存活（含全员存活）：存活者内击杀多优先；平 → 资源；平 → 人口；平 → null。
+    const killOf = (player: string): number => kills?.[player] ?? 0;
     const sorted = [...alive].sort(
-      (a, b) => finalResources[b] - finalResources[a] || finalPopulation[b] - finalPopulation[a],
+      (a, b) =>
+        killOf(b) - killOf(a) ||
+        finalResources[b] - finalResources[a] ||
+        finalPopulation[b] - finalPopulation[a],
     );
     const top = sorted[0];
     const second = sorted[1];
     if (
+      killOf(top) !== killOf(second) ||
       finalResources[top] !== finalResources[second] ||
       finalPopulation[top] !== finalPopulation[second]
     ) {
@@ -648,12 +654,13 @@ export function runFreeForAll(
       onTickRecorded: recorder?.onTickRecorded,
       pipeline: opts?.pipeline === true,
     } as never);
+    const { kills, firstKillTicks } = computePerPlayerKills(result.records, ids);
     const { winner, coreAlive, finalResources, finalPopulation } = decideWinner(
       ids,
       undefined as never,
       result.finalWorld,
+      kills,
     );
-    const { kills, firstKillTicks } = computePerPlayerKills(result.records, ids);
     return {
       players: ids,
       winner,

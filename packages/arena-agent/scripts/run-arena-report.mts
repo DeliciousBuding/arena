@@ -80,8 +80,8 @@ const SCENARIOS_PATH = join(here, "bench-scenarios.json");
 
 interface ScenarioTemplate {
   readonly radius: number;
-  /** "standard" | "scarce"（scarce = 构建场景后每玩家资源盘减半，见 halveScenarioResources）。 */
-  readonly resources: "standard" | "scarce";
+  /** "standard" | "scarce" | "center-race" | "depletion"（见 loadScenarioRegistry 与各后处理函数）。 */
+  readonly resources: "standard" | "scarce" | "center-race" | "depletion";
   readonly randomDrop?: boolean;
   readonly configNote?: string;
 }
@@ -96,8 +96,15 @@ function loadScenarioRegistry(): ScenarioRegistry {
     if (typeof template.radius !== "number" || !Number.isFinite(template.radius) || template.radius <= 0) {
       throw new Error(`bench-scenarios.json: ${name}.radius must be a positive finite number`);
     }
-    if (template.resources !== "standard" && template.resources !== "scarce") {
-      throw new Error(`bench-scenarios.json: ${name}.resources must be "standard" or "scarce"`);
+    if (
+      template.resources !== "standard" &&
+      template.resources !== "scarce" &&
+      template.resources !== "center-race" &&
+      template.resources !== "depletion"
+    ) {
+      throw new Error(
+        `bench-scenarios.json: ${name}.resources must be "standard"|"scarce"|"center-race"|"depletion"`,
+      );
     }
     registry[name] = {
       radius: template.radius,
@@ -131,6 +138,46 @@ function halveScenarioResources(scenario: unknown): unknown {
     for (let offset = 0; offset < perPlayer; offset += 1) {
       if (offset % 2 === 0) kept.push(resources[player * perPlayer + offset]);
     }
+  }
+  return {
+    ...root,
+    terrain: { ...root.terrain, resources: kept },
+  };
+}
+
+/** v3 中央矿争夺：每玩家近距盘减半 + 地图中心 [0,0] 加 4 盘共享矿（强争夺点，
+ *  与信标同位——抢矿即抢信标战略位；审计 §6.5）。 */
+function addCenterRaceResources(scenario: unknown): unknown {
+  const root = scenario as {
+    readonly players: readonly unknown[];
+    readonly terrain: { readonly obstacles: readonly unknown[]; readonly resources: readonly [number, number][] };
+  };
+  const halved = halveScenarioResources(scenario) as typeof root;
+  const centerMines: [number, number][] = [
+    [1, 0], [-1, 0], [0, 1], [0, -1],
+  ];
+  return {
+    ...halved,
+    terrain: { ...halved.terrain, resources: [...halved.terrain.resources, ...centerMines] },
+  };
+}
+
+/** v3 资源枯竭压力（防御压力降级版）：每玩家资源盘 4→1（取每盘首格）——
+ *  持久资源压力逼出兵争夺/抢矿；引擎暂无定时红队中性单位（审计 §6.6 降级说明）。 */
+function depleteScenarioResources(scenario: unknown): unknown {
+  const root = scenario as {
+    readonly players: readonly unknown[];
+    readonly terrain: { readonly obstacles: readonly unknown[]; readonly resources: readonly [number, number][] };
+  };
+  const playerCount = Math.max(1, root.players.length);
+  const resources = root.terrain.resources;
+  if (resources.length % playerCount !== 0) {
+    throw new Error(`depleteScenarioResources: resources ${resources.length} not divisible by players ${playerCount}`);
+  }
+  const perPlayer = resources.length / playerCount;
+  const kept: [number, number][] = [];
+  for (let player = 0; player < playerCount; player += 1) {
+    kept.push(resources[player * perPlayer]);
   }
   return {
     ...root,
@@ -183,7 +230,7 @@ const TICKS = Number(argValue("--ticks") ?? 2000);
 if (!Number.isSafeInteger(TICKS) || TICKS < 1) {
   throw new Error(`--ticks must be a positive safe integer (got ${String(argValue("--ticks"))})`);
 }
-const SEEDS = intList(argValue("--seeds") ?? "1,2,3", "--seeds");
+const SEEDS = intList(argValue("--seeds") ?? "1,2,3,4,5", "--seeds");
 const SCENARIOS = scenarioList(argValue("--scenarios") ?? Object.keys(SCENARIO_REGISTRY).join(","), "--scenarios");
 const PLAYERS = Number(argValue("--players") ?? 8);
 if (!Number.isSafeInteger(PLAYERS) || PLAYERS < 2) {
@@ -273,11 +320,15 @@ interface LeaderboardRow {
   readonly contestantId: string;
   readonly avgRank: number;
   readonly killRate: number;
+  /** v2 兼容字段（恒 1.0 退化，保留仅供旧消费者；v3 权重不用）。 */
   readonly survivalMedian: number;
   readonly rankScore: number;
   readonly killScore: number;
+  /** v3：经济分（resourcesPerTick min-max），替换失效的 survivalScore。 */
+  readonly economyScore: number;
+  /** v2 兼容字段（恒 1.0，保留）。 */
   readonly survivalScore: number;
-  /** 综合分 = avgRank 60% + killRate 20% + survivalMedian 20%（设计 §4）。 */
+  /** 综合分 = avgRank 60% + killRate 30% + economy 10%（v3，审计 §6.2）。 */
   readonly composite: number;
 }
 
@@ -285,8 +336,8 @@ interface LeaderboardRow {
  * 工具：排序 / 排名 / 聚合
  * ------------------------------------------------------------------ */
 
-/** 竞争式排名（1,2,2,4）：sort key 存活 → 击杀 → 资源 → 人口（设计 §2，
- *  击杀优先于发育）。并列同分同排，下一名跳过。 */
+/** 竞争式排名（1,2,2,4）：sort key 存活 → 击杀 → 累计存款（deposited，v3
+ *  tie-break，审计 §6.4）→ 资源 → 人口。并列同分同排，下一名跳过。 */
 function rankMatchPlayers(
   playerIds: readonly string[],
   result: ReturnType<typeof runFreeForAll>,
@@ -295,14 +346,17 @@ function rankMatchPlayers(
     readonly playerId: string;
     readonly alive: boolean;
     readonly kills: number;
+    readonly deposited: number;
     readonly resources: number;
     readonly population: number;
   }
   const kills = result.perPlayerKills ?? {};
+  const ledgers = result.perPlayerLedgers ?? {};
   const scored: ScoredPlayer[] = playerIds.map((playerId) => ({
     playerId,
     alive: result.coreAlive[playerId] ?? false,
     kills: kills[playerId] ?? 0,
+    deposited: ledgers[playerId]?.deposited ?? 0,
     resources: result.finalResources[playerId] ?? 0,
     population: result.finalPopulation[playerId] ?? 0,
   }));
@@ -310,12 +364,17 @@ function rankMatchPlayers(
     (a, b) =>
       Number(b.alive) - Number(a.alive) ||
       b.kills - a.kills ||
+      b.deposited - a.deposited ||
       b.resources - a.resources ||
       b.population - a.population ||
       (a.playerId < b.playerId ? -1 : 1),
   );
   const sameScore = (a: ScoredPlayer, b: ScoredPlayer): boolean =>
-    a.alive === b.alive && a.kills === b.kills && a.resources === b.resources && a.population === b.population;
+    a.alive === b.alive &&
+    a.kills === b.kills &&
+    a.deposited === b.deposited &&
+    a.resources === b.resources &&
+    a.population === b.population;
   const rank: Record<string, number> = {};
   let currentRank = 1;
   for (let index = 0; index < scored.length; index += 1) {
@@ -402,7 +461,13 @@ function buildScenario(
     radius: template.radius,
     ...(template.randomDrop === true ? { randomDrop: { seed } } : {}),
   });
-  return template.resources === "scarce" ? halveScenarioResources(scenario) : scenario;
+  return template.resources === "scarce"
+    ? halveScenarioResources(scenario)
+    : template.resources === "center-race"
+      ? addCenterRaceResources(scenario)
+      : template.resources === "depletion"
+        ? depleteScenarioResources(scenario)
+        : scenario;
 }
 
 function runScenario(
@@ -1041,7 +1106,7 @@ async function writeRunArtifacts(args: {
   const normalizedProfiles = normalizeProfiles(rawProfiles);
 
   const results = {
-    schema: "arena.bench.report.v2",
+    schema: "arena.bench.report.v3",
     generatedAt,
     params: {
       scenarios: scenarios.map((scenario) => scenario.name),
@@ -1160,8 +1225,9 @@ function minMaxNormalize(values: readonly number[]): (value: number) => number {
   return (value) => (value - min) / (max - min);
 }
 
-/** 跨场景聚合榜单：avgRank（反向）/ killRate / survivalMedian 各自 min-max
- *  归一化后按 0.6/0.2/0.2 加权（设计 §4 综合分）。 */
+/** 跨场景聚合榜单：avgRank（反向）/ killRate / resourcesPerTick 各自 min-max
+ *  归一化后按 0.6/0.3/0.1 加权（v3 综合分；survivalMedian 恒 1.0 已退出权重，
+ *  字段保留供旧消费者，见审计 bench-fairness-audit §1.2/§6.2）。 */
 function buildLeaderboard(scenarios: readonly ScenarioSummary[]): LeaderboardRow[] {
   const contestantIds = defaultContestants().map((contestant) => contestant.id);
   const rows: LeaderboardRow[] = [];
@@ -1177,18 +1243,31 @@ function buildLeaderboard(scenarios: readonly ScenarioSummary[]): LeaderboardRow
       survivalMedian: mean(stats.map((s) => s.survivalMedian)),
       rankScore: 0,
       killScore: 0,
+      economyScore: 0,
       survivalScore: 0,
       composite: 0,
     });
   }
   const rankNormalize = minMaxNormalize(rows.map((row) => row.avgRank));
   const killNormalize = minMaxNormalize(rows.map((row) => row.killRate));
-  const survivalNormalize = minMaxNormalize(rows.map((row) => row.survivalMedian));
+  const economyStats = scenarios
+    .map((scenario) => Object.values(scenario.perEntry))
+    .flat()
+    .map((stats) => stats.resourcesPerTick);
+  const economyNormalize = minMaxNormalize(economyStats);
   for (const row of rows) {
+    const ownEconomy = mean(
+      scenarios
+        .map((scenario) => scenario.perEntry[row.contestantId])
+        .filter((stats): stats is EntryScenarioStats => stats !== undefined)
+        .map((stats) => stats.resourcesPerTick),
+    );
     row.rankScore = 1 - rankNormalize(row.avgRank);
     row.killScore = killNormalize(row.killRate);
-    row.survivalScore = survivalNormalize(row.survivalMedian);
-    row.composite = 0.6 * row.rankScore + 0.2 * row.killScore + 0.2 * row.survivalScore;
+    row.economyScore = economyNormalize(ownEconomy);
+    // v2 兼容：survivalScore 恒 1（span=0 时 minMaxNormalize 返回 () => 1）。
+    row.survivalScore = 1;
+    row.composite = 0.6 * row.rankScore + 0.3 * row.killScore + 0.1 * row.economyScore;
   }
   return rows.sort((a, b) => b.composite - a.composite);
 }
