@@ -118,7 +118,8 @@ test("safety planner deposits cargo and prepares affordable Worker spawn", () =>
   const planner = new SafetyPlanner();
   const plan = planner.decide({ state: state({ units: [worker] }) });
   assert.deepEqual(plan.unitActions[worker.id], { type: "DEPOSIT" });
-  assert.deepEqual(plan.coreAction, { type: "SPAWN", unitType: "WORKER" });
+  // O3 核格占用检查：worker 在 Core 格 → SPAWN 会 CELL_UNIT_LIMIT → 不产
+  assert.equal(plan.coreAction, null);
 });
 
 test("safety planner chooses legal Ranger shot before movement", () => {
