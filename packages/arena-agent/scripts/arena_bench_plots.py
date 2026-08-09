@@ -353,7 +353,7 @@ def draw_kill_chart(ax: plt.Axes, results: dict, colors: dict[str, tuple]) -> No
     kill_rates, first_kills = entry_kill_stats(results, order)
     x_pos = np.arange(len(order))
     ax.bar(x_pos, kill_rates, width=0.6, color=[colors.get(eid, "#7f8c8d") for eid in order],
-           edgecolor="black", linewidth=0.4, alpha=0.94, label=tr("killRate（场均击毁）", "killRate"))
+           edgecolor="#333333", linewidth=0.4, alpha=0.94, label=tr("killRate（场均击毁）", "killRate"))
     ax.set_ylim(0, max(1.0, max(kill_rates) * 1.18))
     ax.set_ylabel(tr("killRate（场均击毁）", "killRate (cores destroyed / match)"))
     ax.set_xticks(x_pos, order, rotation=45, ha="right")
