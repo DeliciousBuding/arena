@@ -135,3 +135,70 @@ diff count: 1
   ~5% 端到端（行为不变——常驻进程记忆在进程内，槽仅备份）；本次未做（"只做收益最大
   的一个"），留给后续顺手项。
 - 计时探针（ARENA_BRIDGE_TIMING / ARENA_EPISODE_TIMING）保留，默认关，供后续优化复测。
+
+---
+
+## 6. 追加（R2）：桥状态投影落地（2026-08-09，总负责人裁决执行）
+
+背景：L-A §1.1 曾判"放弃状态投影"（协议开销 <3%）。总负责人随后拍板执行
+R2：**字段并集审计先行**，投影实现默认关，逐字节一致性全过后才谈启用——
+即把"投影"从预判转为**可安全启用的能力**（审计 + 实现 + 验证，见
+`docs/analysis/bridge-field-audit.md`）。
+
+### 6.1 字段并集审计摘要
+
+- 5 agent（farmer/core/waaiging/tactic/arena-evolve）静态分析：
+  **并集 = 现状 wire 全字段**——无"任何 agent 都不读"的字段可整字段删除
+  （SDK Turn 基类还无条件读 `state.objects`）。事件数组不能删（4/5 读）。
+- 投影 = **值条件省略**（并集内恒 null 可选字段省略键，桥端 pydantic 默认
+  None 还原）：`respawn_at_tick`（ACTIVE）、NORMAL 核心迁移字段、非受控
+  WORKER 的 `cargo`、beacon null `status`/`carrier_id`、事件 null 可选字段。
+  MOVING/RESPAWNING/CARRIED 必带字段按官方 wire validator 强制保留。
+- pydantic 缺失字段兼容实测通过（reference SDK 0.2.6）。
+
+### 6.2 实现
+
+`tickStateToProto(state, selfPlayerId, { projectFields })` →
+`OpponentAdapter.setProjection` → `runFreeForAll({ bridgeProjection })`。
+**默认关**；逐 agent 白名单 `BRIDGE_PROJECTION_AUDITED_AGENTS`（5/5 审计可
+投影；未审计第三方/HTTP 端点不投影；未来发现动态读字段的 agent 移出白名单
+即降级）。
+
+### 6.3 逐字节一致性验证（4 场，全部 agent）
+
+同 seed 同场景、投影关 vs 开、400-1000 tick、pipeline 模式；记录
+（recorder JSONL：每 tick players/events/planHashes）diff 仅 `meta.startedAt`：
+
+```
+match=a (farmer+core, seed7, 500t)          tick_line_diffs=0  ALL BYTE-IDENTICAL
+match=b (waaiging+tactic, seed11, 400t)     tick_line_diffs=0  ALL BYTE-IDENTICAL
+match=c (arena-evolve+core, seed13, 400t)   tick_line_diffs=0  ALL BYTE-IDENTICAL
+match=d (5 agent ×2, seed42, 1000t)         tick_line_diffs=0  ALL BYTE-IDENTICAL
+```
+
+kills/ledger/事件序/每 tick planHash 逐字段一致。
+
+### 6.4 收益测量（同场 10 玩家 5 agent ×2，流水线探针）
+
+| 指标 | 关 | 开 | 变化 |
+|---|---|---|---|
+| 桥消息 avg reqBytes（500t，10000 请求） | 2105 B | 1744 B | **-17.1%** |
+| 桥消息 avg reqBytes（1000t，20000 请求） | 2651 B | 2218 B | **-16.3%** |
+| Python avg_parse / validate（1000t） | 0.058 / 0.129 ms | 0.054 / 0.137 ms | 噪声内 |
+| episode avg_tick（1000t 10 玩家） | 20.6 ms | 22.6 ms | 噪声内（±10%） |
+
+- 桥消息体积稳定 **-16~18%**（farmer 1619→1328、core 2273→1877、waaiging
+  2592→2153、tactic 1797→1482、arena-evolve 1950→1624）。
+- **端到端 avg_tick 无显著变化**——与 L-A §1.1 的 <3% 结论一致：本尺度下
+  序列化+桥解析只占 prefetch 小部分（serializeMs <0.05ms/请求），prefetch
+  主体是 observeAndPolicy，decision 主体是 Python decide；投影不触及两者。
+  原始"20-30% 端到端"预估不成立；收益边界 = 序列化/解析占比（~2-4%），
+  随状态体积（更多单位/更长对局）增大而上升。投影默认保持关闭，是否在
+  评测路径启用由总负责人按本验证裁决。
+
+### 6.5 不可投影 agent
+
+- 无（5/5 静态可枚举，见 audit §5——tactic 的 getattr 均字面量名，model_dump
+  仅作用于输出 plan）。未审计第三方/HTTP 端点默认不投影（黑盒，字段读取
+  不可控）。
+

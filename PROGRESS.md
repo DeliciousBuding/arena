@@ -181,3 +181,28 @@ farmer 0.102ms（14.4%）/ 0.610ms —— 大头是第三方策略，唯一无�
 - contestants.ts 三变体接线 diff 待应用（patch 文件已含完整 diff + core 默认条目
   需补 harvest 注入 + 桥接 decide_kwargs 合并前置）。
 - probe 状态实录：`data/probe-rec/`（untracked，运行时输出）。
+
+## 进度（2026-08-09，R2 桥状态投影，实现+验证完成）
+
+### 交付（本 commit）
+
+- **字段并集审计**：`docs/analysis/bridge-field-audit.md`——5 Python agent
+  （farmer/core/waaiging/tactic/arena-evolve）决策源码静态分析：并集 = 现状
+  wire 全字段（无整字段可删）；投影 = 值条件省略（恒 null 可选字段，pydantic
+  默认 None 还原）；必保字段（validator：MOVING 迁移字段/RESPAWNING
+  respawn_at_tick/CARRIED carrier_id）逐一判定。5/5 可静态枚举，无降级。
+- **投影实现（默认关）**：`tickStateToProto(..., { projectFields })`
+  （protocol-bridge.ts）+ `OpponentAdapter.setProjection`（opponent-adapter.ts）+
+  `runFreeForAll({ bridgeProjection })` 白名单透传（tournament.ts）。桥端
+  pydantic 缺失字段兼容实测通过（reference SDK 0.2.6）。
+- **逐字节一致性**：4 场同 seed 关/开对比（farmer+core / waaiging+tactic /
+  arena-evolve+core / 5 agent×2，400-1000 tick）——记录 diff 仅
+  `meta.startedAt`，kills/ledger/事件序/每 tick planHash 全一致。
+- **收益测量**：桥消息体积稳定 -16~18%（avg reqBytes 2105→1744 @500t；
+  2651→2218 @1000t）；端到端 avg_tick 无显著变化（噪声内）——与 L-A
+  §1.1 <3% 结论一致，原始 20-30% 预估不成立；投影默认保持关闭。
+
+### 遗留
+
+- 评测路径（run-arena-report）是否启用 bridgeProjection：由总负责人按
+  逐字节一致性结果裁决（当前默认关）。
