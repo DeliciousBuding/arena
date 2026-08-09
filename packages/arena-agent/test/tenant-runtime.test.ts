@@ -199,6 +199,7 @@ function writeConfig(config: TenantRuntimeConfig): string {
 function makeConfig(baseDir: string, overrides: Partial<TenantRuntimeConfig> = {}): TenantRuntimeConfig {
   return {
     tenantId: "t1",
+    rulesVersion: "v0.14",
     arenaTokenEnv: "ARENA_HERO_API_KEY_T_TEST",
     decisionMode: "safety",
     submitEnabled: false,

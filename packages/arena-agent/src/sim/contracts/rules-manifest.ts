@@ -19,9 +19,11 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** 已核对的规则版本（加载器只允许这些版本，其余 fail closed）。 */
-export const SUPPORTED_RULES_VERSIONS = ["v0.11", "v0.14"] as const;
-export type RulesVersion = (typeof SUPPORTED_RULES_VERSIONS)[number];
+import {
+  SUPPORTED_RULES_VERSIONS,
+  type RulesVersion,
+} from "../../domain/rules-version.ts";
+export { SUPPORTED_RULES_VERSIONS, type RulesVersion } from "../../domain/rules-version.ts";
 
 export interface EvidenceDocs {
   readonly repo: string;

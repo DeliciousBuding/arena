@@ -33,6 +33,7 @@ const REPO_ROOT = resolve(here, "..", "..", "..");
 
 const VALID_CONFIG: TenantRuntimeConfig = {
   tenantId: "t1",
+  rulesVersion: "v0.14",
   arenaTokenEnv: "ARENA_HERO_API_KEY_1",
   decisionMode: "safety",
   submitEnabled: false,

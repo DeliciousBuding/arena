@@ -9,6 +9,8 @@ import { readFileSync } from "node:fs";
 import { Type, type Static } from "typebox";
 import { Compile } from "typebox/compile";
 
+import { SUPPORTED_RULES_VERSIONS } from "../domain/rules-version.ts";
+
 // P0-1：模式类型单源在 runtime/decision-types.ts（GPT 裁决：决策类型只定义一次）
 export type { DecisionModeName, SubmissionModeName } from "../runtime/decision-types.ts";
 
@@ -22,6 +24,11 @@ export const DEFAULT_DEADLINES = {
 export const RuntimeConfigSchema = Type.Object(
   {
     tenantId: Type.String({ minLength: 1 }),
+    /** 显式规则版本：不得从 SDK/fixture/历史样本推断。 */
+    rulesVersion: Type.Union([
+      Type.Literal(SUPPORTED_RULES_VERSIONS[0]),
+      Type.Literal(SUPPORTED_RULES_VERSIONS[1]),
+    ]),
     /** 环境变量名（不是密钥本身）；运行时从 process.env 读取。 */
     arenaTokenEnv: Type.String({ minLength: 1 }),
     decisionMode: Type.Union([

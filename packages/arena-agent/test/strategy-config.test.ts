@@ -12,6 +12,7 @@ import {
 function base(overrides: Partial<TenantRuntimeConfig> = {}): TenantRuntimeConfig {
   return {
     tenantId: "t1",
+    rulesVersion: "v0.14",
     arenaTokenEnv: "ARENA_TEST_KEY",
     decisionMode: "deterministic",
     submitEnabled: false,
