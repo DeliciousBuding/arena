@@ -304,8 +304,14 @@ export interface PersistentReferenceConfig {
 }
 
 /** 创建桥进程的隔离工作目录：per-instance mkdtemp + 复制父 cwd 的 .env
- *  （farmer/tactic 等经 Path.cwd()/.env 读 key——保持 key 读取兼容）。 */
+ *  （farmer/tactic 等经 Path.cwd()/.env 读 key——保持 key 读取兼容）。
+ *  调试/兼容开关：ARENA_BRIDGE_CWD 显式指定共享工作目录时跳过隔离
+ *  （= v3 全量时代的 cwd 行为；第三方 agent 有 cwd 依赖时使用）。 */
 function createIsolatedBridgeCwd(): string {
+  const shared = process.env.ARENA_BRIDGE_CWD;
+  if (shared !== undefined && shared.length > 0) {
+    return shared;
+  }
   const isolated = mkdtempSync(join(tmpdir(), "arena-bridge-cwd-"));
   try {
     const dotEnv = join(process.cwd(), ".env");
@@ -327,10 +333,13 @@ export class PersistentSubprocessDecider implements ExternalDecider {
   ready = true;
   /** 隔离 cwd（本次创建并持有；close 时清理）。显式传入的 cwd 不清理。 */
   private readonly bridgeCwd: string | null;
+  /** cwd 是否本次创建（true = close 时清理；false = 调用方传入，不清理）。 */
+  private readonly bridgeCwdOwned: boolean;
   /** 预取请求的 tick（decideCached 解析响应兜底用；prefetch/decideCached 成对）。 */
   private pendingTick: number | null = null;
 
   constructor(config: PersistentReferenceConfig) {
+    this.bridgeCwdOwned = config.cwd === undefined;
     this.bridgeCwd = config.cwd ?? createIsolatedBridgeCwd();
     const created = createReferenceBridge({
       python: config.python,
@@ -391,7 +400,7 @@ export class PersistentSubprocessDecider implements ExternalDecider {
         // 槽清理失败不阻断（临时目录会被系统回收）。
       }
     }
-    if (this.bridgeCwd !== null) {
+    if (this.bridgeCwdOwned && this.bridgeCwd !== null) {
       try {
         rmSync(this.bridgeCwd, { recursive: true, force: true });
       } catch {

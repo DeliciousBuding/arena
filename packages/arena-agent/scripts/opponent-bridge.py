@@ -55,6 +55,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 ARENA_TS_ROOT = Path(__file__).resolve().parents[3]
@@ -551,6 +552,7 @@ def _serve_lines(args, decide, persist, telemetry) -> int:
                     )
             except Exception as exc:  # noqa: BLE001 —— 决策失败输出到 stderr
                 # （模拟器端 fail-fast 中止——诚实暴露适配/对手问题）。
+                traceback.print_exc(file=sys.stderr)
                 print(
                     f"bridge error agent={args.agent} at line {line_number} (tick "
                     f"{message.get('tick') if message is not None else '?'}): {exc}",
