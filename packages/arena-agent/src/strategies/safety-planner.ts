@@ -28,6 +28,7 @@ import { UNIT_MAX_HP } from "../domain/plan-validator.ts";
 import { countEnemiesNearCore } from "../domain/plan-validator.ts";
 import { PhaseMachine } from "../domain/phase-machine.ts";
 import { type CoreHuntTarget, World } from "../domain/world.ts";
+import type { MigrationPlanV1 } from "../migration/plan.ts";
 import {
   assessThreat,
   advanceRecentAttack,
@@ -429,6 +430,19 @@ export class SafetyPlanner {
   /** 热加载配置快照（tick 间调用；非法配置由调用方先校验，这里只做引用替换）。 */
   updateConfig(config: SafetyPlannerConfig): void {
     this.configValue = config;
+  }
+
+  /** 迁移计划注入（migration-system-v1 §3.3，2026-08-09 接线）：tenant-runtime
+   *  每 tick 决策前调用；迁移激活期（LEG_MOVE）军事守位统一外环（guardHomeCell）
+   *  ——防军事编队贴核心站 4 邻把核心围死（迁移实证：非守卫军事跟核心走、
+   *  核心每格被自己人堵 → 引擎容量拒 → 停滞/REPLAN 循环）。null = 无迁移。 */
+  setMigrationPlan(plan: MigrationPlanV1 | null): void {
+    this.migrationPlan = plan;
+  }
+  private migrationPlan: MigrationPlanV1 | null = null;
+  /** 迁移激活期判定：计划存在且处于 LEG_MOVE（核心移动中，4 邻必须畅通）。 */
+  private get migrationMoving(): boolean {
+    return this.migrationPlan !== null && this.migrationPlan.state === "LEG_MOVE";
   }
 
   /**
@@ -2653,13 +2667,16 @@ export class SafetyPlanner {
     );
     const approachTarget = state.core === null
       ? null
-      : this.config.coreClearance === true && coreOccupiedByWorker
-        ? (this.coreGuardFallback(state.core.position, militaryObstacles, index)
-           ?? homeCell(state.core.position, militaryObstacles, index))
-        : homeCell(state.core.position, militaryObstacles, index)
-          ?? (this.config.coreClearance === true
-            ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
-            : state.core.position);
+      : (this.migrationMoving
+          ? guardHomeCell(state.core.position, militaryObstacles, index)
+          : null)
+        ?? (this.config.coreClearance === true && coreOccupiedByWorker
+          ? (this.coreGuardFallback(state.core.position, militaryObstacles, index)
+             ?? homeCell(state.core.position, militaryObstacles, index))
+          : homeCell(state.core.position, militaryObstacles, index)
+            ?? (this.config.coreClearance === true
+              ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
+              : state.core.position));
     // 寡不敌众撤退（outnumbered-retreat-v1，2026-08-08）：非守家单位遇可见敌
     // 战斗单位且附近我方军事 < 敌 → 向家撤退（绕开敌人占位，stepToward 障碍集
     // 含敌格）——防 1v2+ 单薄送死。守家圈（≤4）单位不撤（最后防线接战）；敌核
@@ -3523,12 +3540,18 @@ export class SafetyPlanner {
     // Core 邻格为空）；无敌人回退历史四邻轮转。
     // W64（terrain-guard 候选）：无可见敌人时按地形背靠重排四邻顺序
     // （守位站开阔侧、岩石在背后），与 guardAxes 正交（threat vs terrain）。
+    // 迁移激活期（migrationMoving，2026-08-09）：统一外环守位——军事编队
+    // 贴核心站 4 邻会把移动中的核心围死（生产实证：非守卫军事跟核心走、
+    // 核心每格被自己人堵 → 引擎容量拒 → 停滞/REPLAN 循环）。
     const home = state.core === null
       ? null
-      : guardAxesPost
-        ?? (this.config.terrainGuard === true
-          ? terrainGuardPost(state.core.position, movementObstacles, index)
-          : homeCell(state.core.position, movementObstacles, index));
+      : (this.migrationMoving
+          ? guardHomeCell(state.core.position, movementObstacles, index)
+          : null)
+        ?? (guardAxesPost
+          ?? (this.config.terrainGuard === true
+            ? terrainGuardPost(state.core.position, movementObstacles, index)
+            : homeCell(state.core.position, movementObstacles, index)));
     // 已在 Core 格且满血：移出到让位锚点（yieldAnchor——优先空邻格、其次
     // 单占用邻格（可挤入，容量 2）；Core 四邻全堵（障碍+单位）时 homeCell
     // 会选到满格 → 预裁决淘汰让位 → Ranger 永不离开 → worker 永不
