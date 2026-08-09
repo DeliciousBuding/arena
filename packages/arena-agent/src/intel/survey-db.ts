@@ -244,6 +244,7 @@ CREATE TABLE IF NOT EXISTS agents (
   base_url TEXT,
   pid INTEGER,
   platform TEXT,
+  mode TEXT NOT NULL DEFAULT 'production',
   connection_state TEXT NOT NULL DEFAULT 'down',
   first_seen TEXT,
   last_heartbeat TEXT,
@@ -274,8 +275,23 @@ export function openSurveyDb(dataRoot: string, tenant: string, write = false): D
     migrateNotableSanity(db, dataRoot, tenant); // 叙事 A11：CORE_DESTROYED 敌我/摧毁者回填（旧库）
     migrateUnitsSeenArchive(db); // 共享记忆分层 A13：旧目击归档 heat_archive + 清理原始行
     migrateDropControlledSeen(db); // 记忆收敛 A14：清理我方目击行（units_seen 纯敌方记忆）
+    migrateAgentMode(db); // agent-ecosystem-v1 P1：agents 表补 mode 列（旧库）
   }
   return db;
+}
+
+/** 旧库迁移（2026-08-09，agent-ecosystem-v1 P1）：agents 表补
+ *  mode TEXT NOT NULL DEFAULT 'production' 列——旧库由 ingest 端点建表时
+ *  尚无该列，ALTER 补齐；幂等：列已存在则跳过。 */
+function migrateAgentMode(db: DatabaseSync): void {
+  try {
+    const cols = db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "mode")) {
+      db.exec("ALTER TABLE agents ADD COLUMN mode TEXT NOT NULL DEFAULT 'production';");
+    }
+  } catch {
+    // 并发 write 开打碰撞时容错；下次 sync 重试即可
+  }
 }
 
 /** 旧库迁移（2026-08-08，数据架构审计 A2）：units_seen 补 x/y INTEGER 列并

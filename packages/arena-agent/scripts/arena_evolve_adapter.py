@@ -1,7 +1,7 @@
-"""Thin official-SDK bridge for reference/arena-evolve@bef407e.
+"""Thin official-SDK bridge for reference/third-party/arena-evolve@bef407e.
 
 This file intentionally lives in arena-ts, not the read-only reference checkout.
-The generic opponent bridge adds reference/arena-evolve to sys.path before
+The generic opponent bridge adds reference/third-party/arena-evolve to sys.path before
 importing this module. We then reuse arena-evolve's own LiveAdapter so its
 production SDK semantics stay the source of truth for Turn <-> Observation.
 """

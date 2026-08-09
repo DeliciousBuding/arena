@@ -49,6 +49,13 @@
       "decide": "choose_actions",
       "slot": "process-memory",
       "desc": "Torther/arena-evolve@bef407e 进化冠军（evolve_v7_best；复用其 LiveAdapter 接官方 SDK Turn）"
+    },
+    "tactic": {
+      "repo": "arena-hero-tactic",
+      "module": "bot.strategy",
+      "decide": "decide",
+      "slot": "process-memory",
+      "desc": "arena-hero-tactic 均衡扩张+防守战术（12/4/4 编制，MemoryMap 螺旋扫掠/信标控制/Core 防御；decide 模块级函数，官方 Turn API，决策与 I/O 解耦）"
     }
   }
 }

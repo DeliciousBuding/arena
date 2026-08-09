@@ -10,16 +10,27 @@ import type { PlayerState } from "./types.ts";
 
 export const TELEMETRY_ENDPOINT_ENV = "ARENA_HERO_TELEMETRY_ENDPOINT";
 export const TELEMETRY_TENANT_ENV = "ARENA_HERO_TENANT";
+export const TELEMETRY_MODE_ENV = "ARENA_HERO_MODE";
 export const SDK_VERSION = "0.2.9-telemetry.1";
 
 const FLUSH_INTERVAL_MS = 5000;
 const FLUSH_BATCH_SIZE = 20;
+
+export type AgentMode = "production" | "simulation";
+
+/** 读取 agent 运行模式（ARENA_HERO_MODE，缺省 production）。 */
+function readMode(): AgentMode {
+  const mode = (process.env[TELEMETRY_MODE_ENV] ?? "").trim().toLowerCase();
+  return mode === "simulation" ? "simulation" : "production";
+}
 
 export interface TelemetryEvent {
   readonly tenant: string;
   readonly instance: string;
   readonly ts: number;
   readonly event: "register" | "connection" | "tick_summary" | "disconnected";
+  /** agent 运行模式（production|simulation），register 台账区分真实/模拟。 */
+  readonly mode?: string;
   /** connection 事件：up|error；tick_summary 事件：玩家状态（PlayerStatus）。 */
   readonly status?: string;
   readonly error?: string;
@@ -54,11 +65,13 @@ class HttpTelemetrySink implements TelemetrySink {
   private readonly endpoint: string;
   private readonly tenant: string;
   private readonly instance: string;
+  private readonly mode: AgentMode;
 
-  constructor(endpoint: string, tenant: string, instance: string) {
+  constructor(endpoint: string, tenant: string, instance: string, mode: AgentMode) {
     this.endpoint = endpoint;
     this.tenant = tenant;
     this.instance = instance;
+    this.mode = mode;
     this.timer = setInterval(() => this.flush(), FLUSH_INTERVAL_MS);
     this.timer.unref?.();
   }
@@ -85,6 +98,7 @@ class HttpTelemetrySink implements TelemetrySink {
       tenant: this.tenant,
       instance: this.instance,
       ts: Date.now() / 1000,
+      mode: this.mode,
       ...e,
     }));
     // fire-and-forget：失败静默，遥测绝不能影响游戏
@@ -101,21 +115,24 @@ export function buildTelemetry(apiKey: string, baseUrl: string): TelemetrySink {
   if (!endpoint) return new NoopSink();
   const tenant = (process.env[TELEMETRY_TENANT_ENV] ?? "unknown").trim() || "unknown";
   const instance = apiKey.slice(-6) || "unknown";
-  return new HttpTelemetrySink(endpoint, tenant, instance);
+  return new HttpTelemetrySink(endpoint, tenant, instance, readMode());
 }
 
 export function identityEvent(
   apiKey: string,
   baseUrl: string,
+  mode?: AgentMode,
 ): Omit<TelemetryEvent, "tenant" | "instance" | "ts"> {
-  return {
-    event: "register",
+  const event = {
+    event: "register" as const,
     api_key_tail: apiKey.slice(-6),
     base_url: baseUrl,
     sdk_version: SDK_VERSION,
     pid: typeof process !== "undefined" ? process.pid : undefined,
     platform: typeof process !== "undefined" ? process.platform : undefined,
   };
+  // 缺省省略：HttpTelemetrySink 按 ARENA_HERO_MODE 注入同一字段
+  return mode === undefined ? event : { ...event, mode };
 }
 
 /** 每 tick PlayerState 摘要（与 Python fork 同构）。 */

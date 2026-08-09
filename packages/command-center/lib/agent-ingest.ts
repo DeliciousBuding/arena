@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS agents (
   base_url TEXT,
   pid INTEGER,
   platform TEXT,
+  mode TEXT NOT NULL DEFAULT 'production',
   connection_state TEXT NOT NULL DEFAULT 'down',
   first_seen TEXT,
   last_heartbeat TEXT,
@@ -49,9 +50,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_events_tenant_ts ON agent_events(tenant, ts
 const AGENT_UPSERT = `
 INSERT INTO agents (
   tenant, instance, tick, resources, population, core_x, core_y, units,
-  visible_enemies, status, sdk_version, base_url, pid, platform,
+  visible_enemies, status, sdk_version, base_url, pid, platform, mode,
   connection_state, first_seen, last_heartbeat, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'production'), ?, ?, ?, ?)
 ON CONFLICT(tenant) DO UPDATE SET
   instance = excluded.instance,
   tick = COALESCE(excluded.tick, agents.tick),
@@ -66,6 +67,9 @@ ON CONFLICT(tenant) DO UPDATE SET
   base_url = COALESCE(excluded.base_url, agents.base_url),
   pid = COALESCE(excluded.pid, agents.pid),
   platform = COALESCE(excluded.platform, agents.platform),
+  -- 事件未带 mode 时保留现值：INSERT 侧的 COALESCE 会把 excluded.mode 变成
+  -- 'production'（永远非 NULL），不能用来区分"没带"——这里直接回绑原始参数
+  mode = COALESCE(?, agents.mode),
   connection_state = excluded.connection_state,
   last_heartbeat = COALESCE(excluded.last_heartbeat, agents.last_heartbeat),
   updated_at = excluded.updated_at`;
@@ -87,6 +91,8 @@ export interface AgentIngestEvent {
   readonly sdk_version?: string;
   readonly pid?: number | null;
   readonly platform?: string;
+  /** agent 运行模式（production|simulation），缺省 production。 */
+  readonly mode?: string;
   readonly error?: string;
 }
 
@@ -105,6 +111,7 @@ export interface AgentRow {
   readonly baseUrl: string | null;
   readonly pid: number | null;
   readonly platform: string | null;
+  readonly mode: string;
   readonly connectionState: "up" | "down";
   readonly firstSeen: string;
   readonly lastHeartbeat: string | null;
@@ -118,7 +125,21 @@ export function openAgentDb(tenant: string, write = false): DatabaseSync {
   const db = new DatabaseSync(join(dir, `${tenant}.db`));
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(AGENT_SCHEMA);
+  if (write) ensureAgentModeColumn(db); // 旧库补 mode 列（幂等）
   return db;
+}
+
+/** 旧库迁移（2026-08-09，agent-ecosystem-v1 P1）：agents 表补 mode 列。
+ *  幂等：列已存在则跳过。仅 write 打开时执行（面板只读连接不触发 DDL）。 */
+function ensureAgentModeColumn(db: DatabaseSync): void {
+  try {
+    const cols = db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "mode")) {
+      db.exec("ALTER TABLE agents ADD COLUMN mode TEXT NOT NULL DEFAULT 'production';");
+    }
+  } catch {
+    // 并发 write 开打碰撞时容错；下次写入重试即可
+  }
 }
 
 /** 将 SDK 上报的一条 telemetry 事件写入台账（agents + agent_events）。 */
@@ -128,6 +149,9 @@ export function applyAgentEvent(db: DatabaseSync, event: AgentIngestEvent): void
   const tick = event.tick === null || event.tick === undefined ? null : Number(event.tick);
   const coreX = event.core?.[0] ?? null;
   const coreY = event.core?.[1] ?? null;
+  // 只认合法 mode；缺省/非法 → null（INSERT 回落 'production'，UPDATE 保留现值，
+  // 避免 tick_summary 等无 mode 事件把已登记的 simulation 覆盖回 production）
+  const modeValue = event.mode === "production" || event.mode === "simulation" ? event.mode : null;
 
   db.prepare(AGENT_UPSERT).run(
     event.tenant,
@@ -144,10 +168,12 @@ export function applyAgentEvent(db: DatabaseSync, event: AgentIngestEvent): void
     event.base_url ?? null,
     event.pid ?? null,
     event.platform ?? null,
+    modeValue,
     event.event === "disconnected" ? "down" : "up",
     now,
     event.event === "tick_summary" ? now : null,
     now,
+    modeValue, // UPDATE 子句的 COALESCE(?, agents.mode)：事件未带 mode 时保留现值
   );
 
   db.prepare(
@@ -177,6 +203,7 @@ export function knownAgent(db: DatabaseSync, tenant: string): AgentRow | null {
     baseUrl: r.base_url === null ? null : String(r.base_url),
     pid: r.pid === null ? null : Number(r.pid),
     platform: r.platform === null ? null : String(r.platform),
+    mode: String(r.mode ?? "production"),
     connectionState: String(r.connection_state) === "down" ? "down" : "up",
     firstSeen: String(r.first_seen),
     lastHeartbeat: r.last_heartbeat === null ? null : String(r.last_heartbeat),

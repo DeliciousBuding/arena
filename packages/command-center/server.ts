@@ -23,6 +23,7 @@ import { loadMergedMap, getMapSig } from "./lib/map.ts";
 import { loadOverview, loadStream, loadReplay, loadPlan, loadWorld, loadEvents } from "./lib/streams.ts";
 import { loadSurveyDb, loadLifecycleDb, loadSurvey, loadResourceTimeline, loadSpendTrend, loadUnitLifecycleDb, loadChunksDb } from "./lib/survey.ts";
 import { openAgentDb, applyAgentEvent, knownAgent, recentAgentEvents, type AgentRow } from "./lib/agent-ingest.ts";
+import { openRegistryDb, registerAgent, issueKey, listAgents, revokeAgent } from "./lib/registry.ts";
 import { loadMinePatterns, refreshMinePatterns } from "./lib/mine-patterns.ts";
 import { loadTenantSurveyCached, startSurveyCacheLoop } from "./lib/survey-cache.ts";
 import { loadDeeds, startDeedsCacheLoop } from "./lib/deeds.ts";
@@ -836,6 +837,77 @@ app.get("/api/agents", async (c) => {
     });
   }
   return c.json({ generatedAt: new Date().toISOString(), agents: result });
+});
+
+// ---------- Agent Registry（2026-08-09，agent-ecosystem-v1 §2.1） ----------
+
+// key 分配 + 注册后台：SQLite data/runtime/registry.db。生产 agent 登记官方
+// key 尾缀；simulation 签发一次性明文模拟 key（simkey-<24 hex>，库存哈希）。
+// 任何列表/查询响应都不返回明文 key。
+
+app.post("/api/registry/agents", async (c) => {
+  const b = (await c.req.json().catch(() => null)) as {
+    username?: unknown;
+    mode?: unknown;
+    api_key_tail?: unknown;
+  } | null;
+  if (!b) return c.json({ error: "JSON body 必填" }, 400);
+  const username = String(b.username ?? "").trim();
+  if (!username) return c.json({ error: "username 必填" }, 400);
+  const mode = String(b.mode ?? "").trim();
+  if (mode !== "production" && mode !== "simulation") {
+    return c.json({ error: "mode 必须是 production 或 simulation" }, 400);
+  }
+  const apiKeyTail = b.api_key_tail === undefined || b.api_key_tail === null
+    ? undefined
+    : String(b.api_key_tail).trim();
+  if (mode === "production" && !apiKeyTail) {
+    return c.json({ error: "production 模式需要 api_key_tail" }, 400);
+  }
+  const db = openRegistryDb();
+  try {
+    return c.json(registerAgent(db, { username, mode, apiKeyTail }), 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : "注册失败" }, 400);
+  } finally {
+    db.close();
+  }
+});
+
+app.get("/api/registry/agents", (c) => {
+  const db = openRegistryDb();
+  try {
+    return c.json({ generatedAt: new Date().toISOString(), agents: listAgents(db) });
+  } finally {
+    db.close();
+  }
+});
+
+// 补发模拟 key（仅 simulation 且未吊销的 agent；明文只出现一次）
+app.post("/api/registry/keys", async (c) => {
+  const b = (await c.req.json().catch(() => null)) as { agent_id?: unknown } | null;
+  const agentId = String(b?.agent_id ?? "").trim();
+  if (!agentId) return c.json({ error: "agent_id 必填" }, 400);
+  const db = openRegistryDb();
+  try {
+    const issued = issueKey(db, agentId);
+    if (!issued) return c.json({ error: "agent 不存在 / 非 simulation 模式 / 已吊销" }, 404);
+    return c.json(issued, 201);
+  } finally {
+    db.close();
+  }
+});
+
+// 吊销 agent：agents + 全部未吊销 key 置 revoked_at
+app.delete("/api/registry/agents/:id", (c) => {
+  const db = openRegistryDb();
+  try {
+    const agent = revokeAgent(db, c.req.param("id"));
+    if (!agent) return c.json({ error: "agent 不存在" }, 404);
+    return c.json(agent);
+  } finally {
+    db.close();
+  }
 });
 
 // ---------- 静态文件 ----------
