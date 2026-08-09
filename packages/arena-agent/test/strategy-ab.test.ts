@@ -244,7 +244,7 @@ test("S7 aggressive: 对打 200 Tick 无非法计划、确实交战", () => {
   const combatEvents = result.records.flatMap((record) =>
     record.events.filter((event) =>
       event.eventType === "UNIT_DAMAGED" ||
-      event.eventType === "UNIT_DESTROYED" ||
+      (event.eventType as string) === "UNIT_DESTROYED" ||
       event.eventType === "CORE_DESTROYED" ||
       event.eventType === "CORE_DAMAGED",
     ),

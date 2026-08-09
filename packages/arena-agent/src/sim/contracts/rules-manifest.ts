@@ -84,6 +84,23 @@ export interface RulesMovement {
   readonly crossPlayerContested: string;
 }
 
+/**
+ * respawn resolver 配置（P13，可选；2026-08-09 P4g 配置化）。
+ * server 未公开这些放置参数（respawn.ts 原为硬编码常量）；内置已发布
+ * manifest（rules-v0.11/v0.14.json）不含本节点——缺省回退现有常量，不改
+ * 已发布 manifest 的 hash。仅外部自定义 rules 文件可携带本节点覆盖。
+ */
+export interface RulesRespawn {
+  /** 距最近活 Core 的最小 Manhattan 距离。 */
+  readonly minDistance: number;
+  /** 距最近活 Core 的最大 Manhattan 距离。 */
+  readonly maxDistance: number;
+  /** 候选格至少需要的可通行（非障碍）邻居数。 */
+  readonly minPassableNeighbors: number;
+  /** 附近实体密度统计半径（Manhattan）。 */
+  readonly densityRadius: number;
+}
+
 export interface RulesSettlement {
   readonly officialPhaseCount: number;
   readonly localPhaseCount: number;
@@ -117,6 +134,8 @@ export interface RulesCommon {
   readonly economy: RulesEconomy;
   readonly movement: RulesMovement;
   readonly settlement: RulesSettlement;
+  /** 可选：respawn resolver 放置参数覆盖（仅外部自定义 rules 文件携带）。 */
+  readonly respawn?: RulesRespawn;
 }
 
 /** v0.11 专属：静态 spawn 价格。 */
@@ -307,6 +326,38 @@ function parseRulesSettlement(raw: Record<string, unknown>): RulesSettlement {
   });
 }
 
+/**
+ * 可选 respawn 配置节（P4g，2026-08-09）。缺省不出现（内置已发布 manifest
+ * 不含本节点，解析结果与旧版逐字节一致 → manifestHash 不变）；出现时
+ * fail closed 校验数值范围与区间自洽。
+ */
+function parseRulesRespawn(raw: Record<string, unknown>): RulesRespawn {
+  const minDistance = assertIntField(raw.minDistance, "rules.respawn.minDistance");
+  const maxDistance = assertIntField(raw.maxDistance, "rules.respawn.maxDistance");
+  if (minDistance < 1) {
+    throw new RulesManifestError(`rules.respawn.minDistance must be a positive integer, got ${minDistance}`);
+  }
+  if (maxDistance < minDistance) {
+    throw new RulesManifestError(
+      `rules.respawn.maxDistance (${maxDistance}) must be >= minDistance (${minDistance})`,
+    );
+  }
+  // 邻居数上限 4（四方向），0 = 不要求可通行邻居。
+  const minPassableNeighbors = assertIntField(
+    raw.minPassableNeighbors,
+    "rules.respawn.minPassableNeighbors",
+    4,
+  );
+  if (raw.densityRadius === undefined) {
+    throw new RulesManifestError("rules.respawn.densityRadius is required");
+  }
+  const densityRadius = assertIntField(raw.densityRadius, "rules.respawn.densityRadius", 1_000);
+  if (densityRadius < 1) {
+    throw new RulesManifestError(`rules.respawn.densityRadius must be a positive integer, got ${densityRadius}`);
+  }
+  return Object.freeze({ minDistance, maxDistance, minPassableNeighbors, densityRadius });
+}
+
 function parseRulesCommon(raw: Record<string, unknown>): RulesCommon {
   return Object.freeze({
     core: parseRulesCore(assertRecord(raw.core, "rules.core")),
@@ -314,6 +365,9 @@ function parseRulesCommon(raw: Record<string, unknown>): RulesCommon {
     economy: parseRulesEconomy(assertRecord(raw.economy, "rules.economy")),
     movement: parseRulesMovement(assertRecord(raw.movement, "rules.movement")),
     settlement: parseRulesSettlement(assertRecord(raw.settlement, "rules.settlement")),
+    ...(raw.respawn === undefined
+      ? {}
+      : { respawn: parseRulesRespawn(assertRecord(raw.respawn, "rules.respawn")) }),
   });
 }
 

@@ -17,7 +17,8 @@ import { DEFAULT_SAFETY_CONFIG, SafetyPlanner, type SafetyPlannerConfig } from "
 import { loadRulesManifest, type RulesManifest } from "../contracts/rules-manifest.ts";
 import { createSeededRng } from "../deterministic/rng.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
-import type { ResolutionEvent, UnknownEffect } from "../engine/phase.ts";
+import { EVENT_CATEGORY_TYPES } from "../engine/phase.ts";
+import type { EventCategoryId, EventType, ResolutionEvent, UnknownEffect } from "../engine/phase.ts";
 import { initialChunkKeys } from "../engine/refill.ts";
 import { settleTick, type SettlementContext } from "../engine/settlement.ts";
 import { privateEventsForPlayer } from "../visibility/private-events.ts";
@@ -85,6 +86,13 @@ export interface PlayerCostLedger {
   readonly finalPopulation: number;
   readonly finalResources: number;
   readonly aliveTicks: number;
+  /** 注册表类别聚合计数（movement/combat/economy/beacon/respawn）；
+   *  新增事件类型加入 EVENT_CATEGORY_TYPES 后自动被统计（P4h）。 */
+  readonly eventCounts: Readonly<Record<EventCategoryId, number>>;
+  /** 未识别事件计数（事件类型不在注册表内；eventOf 已校验，正常恒为 0）。 */
+  readonly unrecognizedEventCount: number;
+  /** P4e 决策超时次数（每 tick 超预算被丢弃的 decide 次数；未启用恒 0）。 */
+  readonly decisionTimeouts: number;
 }
 
 export interface EpisodeTickMeasurement {
@@ -171,6 +179,31 @@ export interface EpisodeConfig {
   /** 被测者在 id-sorted tenants 中的 index（slot 轮换用）。缺省 0。
    *  仅当 rotateSlot=true 时读取。 */
   readonly mySlot?: number;
+  /**
+   * P4e per-tick 决策预算护栏（agent-ecosystem P4e，2026-08-09）：
+   * 单 tick 决策预算（ms）。planner.decide 耗时超过预算时丢弃本次结果，
+   * 本 tick 重放该 tenant 上次执行计划（lastPlan 语义；无上次计划用空计划
+   * WAIT），并计入 per-player 指标 decisionTimeouts（EpisodeRecord +
+   * PlayerCostLedger + summarizeEpisode）。连续超时达 decisionBudgetStrikes
+   * 次后跳过该 tenant 后续 decide（直接空计划，记录在
+   * EpisodeRecord.decisionTimeoutSkipped）。
+   *
+   * JS 无法强杀同步函数——护栏语义 = 丢弃 + 降级 + 指标，不中断循环；
+   * 慢 planner 仍会占满本 tick 的墙钟时间，只是结果不再进入 settlement。
+   * 缺省 undefined = 不启用（与历史行为逐字节一致）；sim-server 服务模式
+   * 启用时传 200。
+   */
+  readonly decisionBudgetMs?: number;
+  /** P4e 连续超时阈值（缺省 3）：连续超预算 N 次后跳过该 tenant 后续 decide。 */
+  readonly decisionBudgetStrikes?: number;
+  /**
+   * P4f early-stop 护栏（agent-ecosystem P4f，2026-08-09）：缺省 false =
+   * 历史行为零回归（固定跑满 config.ticks）。true 时每 tick 结算后检查存活
+   * 玩家数（有 Core/单位/ACTIVE 者），存活数为 0 → 提前终止
+   * （metrics.endedEarly/endReason/endedAtTick），后续 tick 不跑。
+   * 只省资源，不判胜负（官方"无终局"语义保持）。
+   */
+  readonly earlyStop?: boolean;
 }
 
 /**
@@ -198,6 +231,12 @@ export interface EpisodeRecord {
   readonly events: readonly ResolutionEvent[];
   readonly unsupported: readonly SimFeature[];
   readonly unknownEffects: readonly UnknownEffect[];
+  /** P4e 本 tick 决策超时次数（tenantId → 次数，0/1 per tenant per tick；
+   *  未启用决策预算时恒为空对象）。 */
+  readonly decisionTimeouts: Readonly<Record<string, number>>;
+  /** P4e 本 tick 因连续超时达标被跳过 decide 的 tenant（直接提交空计划 WAIT）。
+   *  未启用决策预算时恒为空数组。 */
+  readonly decisionTimeoutSkipped: readonly string[];
 }
 
 export interface EpisodeResult {
@@ -205,6 +244,7 @@ export interface EpisodeResult {
   readonly finalWorldHash: string;
   readonly records: readonly EpisodeRecord[];
   readonly metrics: {
+    /** 实际结算 tick 数（early-stop 触发时 < config.ticks；否则 === config.ticks）。 */
     readonly ticks: number;
     readonly illegalPlans: number;
     readonly repairedPlans: number;
@@ -217,6 +257,12 @@ export interface EpisodeResult {
      * 现有消费者读 ticks/illegalPlans 等不受影响（默认关 = 仅追加，不改既有语义）。
      */
     readonly perPlayer: Readonly<Record<string, PlayerCostLedger>>;
+    /** P4f 是否提前终止（early-stop；缺省 earlyStop=false 恒 false）。 */
+    readonly endedEarly: boolean;
+    /** P4f 提前终止原因（null = 未提前终止；当前只有 "all-dead"）。 */
+    readonly endReason: "all-dead" | null;
+    /** P4f 提前终止时的最后结算 tick（null = 未提前终止）。 */
+    readonly endedAtTick: number | null;
   };
 }
 
@@ -327,6 +373,20 @@ interface MutableCostLedger {
   finalPopulation: number;
   finalResources: number;
   aliveTicks: number;
+  /** 注册表类别聚合计数（movement/combat/economy/beacon/respawn）。
+   *  新增事件类型加入 EVENT_CATEGORY_TYPES 后自动被统计（P4h）。 */
+  eventCounts: Record<EventCategoryId, number>;
+  /** 未识别事件计数（事件类型不在注册表内；eventOf 已校验，正常恒为 0，
+   *  直接构造 ResolutionEvent 的旁路在此拦截，防静默漏计）。 */
+  unrecognizedEventCount: number;
+  /** P4e 决策超时次数（每 tick 超预算被丢弃的 decide 次数；未启用恒 0）。 */
+  decisionTimeouts: number;
+}
+
+function emptyEventCounts(): Record<EventCategoryId, number> {
+  return Object.fromEntries(
+    Object.keys(EVENT_CATEGORY_TYPES).map((category) => [category, 0]),
+  ) as Record<EventCategoryId, number>;
 }
 
 function createEmptyLedger(): MutableCostLedger {
@@ -345,8 +405,18 @@ function createEmptyLedger(): MutableCostLedger {
     finalPopulation: 0,
     finalResources: 0,
     aliveTicks: 0,
+    eventCounts: emptyEventCounts(),
+    unrecognizedEventCount: 0,
+    decisionTimeouts: 0,
   };
 }
+
+/** 事件类型 → 类别反查表（注册表推导；ledger 按类别聚合统计用）。 */
+const EVENT_TYPE_TO_CATEGORY: ReadonlyMap<EventType, EventCategoryId> = new Map(
+  (Object.entries(EVENT_CATEGORY_TYPES) as Array<[EventCategoryId, readonly EventType[]]>).flatMap(
+    ([category, types]) => types.map((type) => [type, category] as const),
+  ),
+);
 
 /**
  * 构造 entityId → playerId 反查表（core.id / unit.id → owner playerId）。
@@ -384,8 +454,19 @@ function accumulateEventsIntoLedger(
   owners: Map<string, string>,
 ): void {
   for (const event of events) {
+    // 类别聚合统计（注册表驱动）：新增事件类型进 EVENT_CATEGORY_TYPES 即被统计。
+    const category = EVENT_TYPE_TO_CATEGORY.get(event.eventType);
     const actorOwner = event.actorId !== null ? owners.get(event.actorId) ?? null : null;
     const targetOwner = event.targetId !== null ? owners.get(event.targetId) ?? null : null;
+    if (category === undefined) {
+      // 未识别事件防漏：类型不在注册表内（eventOf 创建入口已校验，正常
+      // 恒为 0；直接构造 ResolutionEvent 的旁路在此拦截，不再静默跳过）。
+      if (actorOwner !== null) ledgers.get(actorOwner)!.unrecognizedEventCount += 1;
+      else if (targetOwner !== null) ledgers.get(targetOwner)!.unrecognizedEventCount += 1;
+      continue;
+    }
+    if (actorOwner !== null) ledgers.get(actorOwner)!.eventCounts[category] += 1;
+    else if (targetOwner !== null) ledgers.get(targetOwner)!.eventCounts[category] += 1;
     switch (event.eventType) {
       case "HARVEST_SUCCEEDED":
       case "BEACON_HARVEST_BONUS": {
@@ -500,6 +581,30 @@ function accumulateTickStateIntoLedger(
 
 type LoadedEpisodeConfig = Omit<EpisodeConfig, "scenario">;
 
+/** 空计划（全 WAIT）：P4e 超时无上次计划 / 连续超时跳过 decide 时的降级计划。 */
+function emptyPlanFor(tick: number): Plan {
+  return { tick, unitActions: {}, coreAction: null, intents: {} };
+}
+
+/**
+ * P4f 存活玩家数：存活 = status ACTIVE 或有 Core/有单位。
+ *
+ * RESPAWNING（core=null, units=[]）玩家不算存活——但只有全员无 Core/无单位
+ * 时才触发 early-stop：多人对局中任一玩家存活时，RESPAWNING 玩家不会终止
+ * episode（且其重生依赖活 Core 的 20-30 曼哈顿环带，稍后即可重生回 ACTIVE）；
+ * 而全员 RESPAWNING 时重生不可能（无活 Core 即无 spawn 候选格），等同于
+ * 全员死亡。语义上只省资源，不判胜负（官方"无终局"保持）。
+ */
+function alivePlayerCount(world: SimWorld): number {
+  let alive = 0;
+  for (const player of world.players.values()) {
+    if (player.status === "ACTIVE" || player.core !== null || player.units.length > 0) {
+      alive += 1;
+    }
+  }
+  return alive;
+}
+
 /** 共享确定性 runner：初始世界已解析。wallMs 是唯一非确定字段。 */
 function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): EpisodeResult {
   const started = performance.now();
@@ -553,6 +658,17 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
   const costLedgers = new Map<string, MutableCostLedger>(
     [...world.players.keys()].map((playerId) => [playerId, createEmptyLedger()]),
   );
+  // P4e 决策预算护栏状态：上次执行计划（超时重放源，lastPlan 语义）、
+  // 连续超时 strike 计数、已跳过 decide 的 tenant 集合。
+  const decisionBudgetMs = config.decisionBudgetMs;
+  const strikesBeforeSkip = config.decisionBudgetStrikes ?? 3;
+  const lastExecutedPlan = new Map<string, Plan>();
+  const decisionTimeoutStrikes = new Map<string, number>();
+  const decisionTimeoutSkipped = new Set<string>();
+  // P4f early-stop 记录（未触发时确定性 false/null/null）。
+  let endedEarly = false;
+  let endReason: "all-dead" | null = null;
+  let endedAtTick: number | null = null;
 
   for (let step = 0; step < config.ticks; step += 1) {
     const tickStarted = performance.now();
@@ -565,6 +681,8 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
     const plans: Record<string, Plan> = {};
     const planHashes: Record<string, string> = {};
     const validations: Record<string, ValidationSummary> = {};
+    const tickDecisionTimeouts: Record<string, number> = {};
+    const tickDecisionSkipped: string[] = [];
 
     for (const tenant of tenants) {
       const planner = planners.get(tenant.id)!;
@@ -581,7 +699,34 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
         if (next !== null) lastPolicy.set(tenant.id, next);
       }
       const policy = lastPolicy.get(tenant.id) ?? tenant.policy;
-      const proposed = planner.decide({ state, policy });
+
+      // P4e 决策预算护栏（同步循环内无强杀；语义 = 丢弃 + 降级 + 指标）：
+      // - 超预算 → 丢弃本次结果，重放上次执行计划（lastPlan 语义；无上次
+      //   计划用空计划 WAIT），计 1 次超时（tickDecisionTimeouts + ledger）；
+      // - 连续超时达 strikesBeforeSkip → 跳过该 tenant 后续 decide（直接
+      //   空计划），记录在 tickDecisionSkipped（DECISION_TIMEOUT_SKIPPED）。
+      const skipDecision = decisionTimeoutSkipped.has(tenant.id);
+      let proposed: Plan;
+      if (skipDecision) {
+        proposed = emptyPlanFor(state.tick);
+        tickDecisionSkipped.push(tenant.id);
+      } else {
+        const decidedAt = performance.now();
+        proposed = planner.decide({ state, policy });
+        if (decisionBudgetMs !== undefined && performance.now() - decidedAt > decisionBudgetMs) {
+          const strikes = (decisionTimeoutStrikes.get(tenant.id) ?? 0) + 1;
+          decisionTimeoutStrikes.set(tenant.id, strikes);
+          if (strikes >= strikesBeforeSkip) decisionTimeoutSkipped.add(tenant.id);
+          const last = lastExecutedPlan.get(tenant.id);
+          proposed = last === undefined ? emptyPlanFor(state.tick) : { ...last, tick: state.tick };
+          tickDecisionTimeouts[tenant.id] = (tickDecisionTimeouts[tenant.id] ?? 0) + 1;
+          const ledger = costLedgers.get(tenant.id);
+          if (ledger !== undefined) ledger.decisionTimeouts += 1;
+        } else {
+          decisionTimeoutStrikes.set(tenant.id, 0);
+        }
+      }
+
       let finalPlan = proposed;
       let summary: ValidationSummary = { valid: true, repaired: false, issueCount: 0 };
 
@@ -602,6 +747,7 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
 
       const settledPlan =
         config.manualOverrideProvider?.(tenant.id, before.tick, state, finalPlan) ?? finalPlan;
+      lastExecutedPlan.set(tenant.id, settledPlan);
       settlementPlans.set(tenant.id, settledPlan);
       plans[tenant.id] = settledPlan;
       planHashes[tenant.id] = hashPlan(settledPlan);
@@ -631,6 +777,8 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
       events: result.events,
       unsupported: result.unsupported,
       unknownEffects: result.unknownEffects,
+      decisionTimeouts: tickDecisionTimeouts,
+      decisionTimeoutSkipped: tickDecisionSkipped,
     });
     if (config.onTickRecorded !== undefined) {
       config.onTickRecorded({
@@ -655,6 +803,15 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
         players: Object.freeze(players),
       }));
     }
+
+    // P4f early-stop：全员无存活（无 Core/无单位）→ 提前终止，后续 tick 不跑。
+    // 只省资源，不判胜负（官方"无终局"语义保持）。
+    if (config.earlyStop === true && alivePlayerCount(world) === 0) {
+      endedEarly = true;
+      endReason = "all-dead";
+      endedAtTick = before.tick;
+      break;
+    }
   }
 
   // W51: 快照终局 finalPopulation/finalResources 到 ledger。
@@ -674,13 +831,16 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
     finalWorldHash: worldHash(world),
     records,
     metrics: {
-      ticks: config.ticks,
+      ticks: records.length,
       illegalPlans,
       repairedPlans,
       unsupported: [...seenUnsupported].sort(compareCodeUnit),
       totalEvents,
       wallMs: performance.now() - started,
       perPlayer: Object.freeze(perPlayer),
+      endedEarly,
+      endReason,
+      endedAtTick,
     },
   };
 }

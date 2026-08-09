@@ -124,7 +124,7 @@ test("S10: 多 SWEEP 叠加伤害，杀死满 hp 单位", () => {
   // p2 Vanguard 2hp 收到 2 伤害 → 死亡
   assert.equal(result.world.players.get("p2")!.units.find((u) => u.id === P2_VANGUARD), undefined);
   assert.ok(result.events.some((e) => e.eventType === "UNIT_DAMAGED" && e.targetId === P2_VANGUARD && e.values?.hp === 0));
-  assert.ok(!result.events.some((e) => e.eventType === "UNIT_DESTROYED"));
+  assert.ok(!result.events.some((e) => (e.eventType as string) === "UNIT_DESTROYED"));
 });
 
 test("S10: SHOOT 八方向线 1-3 格、障碍阻断、非直线无效", () => {
@@ -605,7 +605,7 @@ test("S10 contract: combat kill 事件对齐且 participation 仅投递给攻击
   const damage = result.events.find((event) => event.eventType === "UNIT_DAMAGED");
   assert.equal(damage?.reasonCode, "ATTACK");
   assert.deepEqual(damage?.values, { damage: 1, hp: 0 });
-  assert.ok(!result.events.some((event) => event.eventType === "UNIT_DESTROYED"));
+  assert.ok(!result.events.some((event) => (event.eventType as string) === "UNIT_DESTROYED"));
   assert.deepEqual(
     result.events.find((event) => event.eventType === "WORKER_CARGO_DROPPED")?.values,
     { amount: 2 },

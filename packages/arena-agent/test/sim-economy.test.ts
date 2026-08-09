@@ -627,7 +627,10 @@ test("S5: 维护机制整体移除（无 UPKEEP_PAID/UPKEEP_DEFICIT，unit 不�
   const world = makeWorld([{ id: "p1", resources: 0, core: [0, 0], units }]);
   const result = settle(world, new Map([["p1", idlePlans(world).get("p1")!]]));
   const maintenanceEvents = result.events.filter(
-    (e) => e.eventType === "UPKEEP_PAID" || e.eventType === "UPKEEP_DEFICIT" || e.eventType === "UNIT_DAMAGED",
+    (e) =>
+      (e.eventType as string) === "UPKEEP_PAID" ||
+      (e.eventType as string) === "UPKEEP_DEFICIT" ||
+      e.eventType === "UNIT_DAMAGED",
   );
   assert.deepEqual(maintenanceEvents, []);
   assert.equal(result.world.players.get("p1")!.units.length, 21);

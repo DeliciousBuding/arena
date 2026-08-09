@@ -232,14 +232,14 @@ test("S11: 失去 Beacon 时盾 >5 clamp 到 5", () => {
     ctx,
   );
   assert.equal(result.world.players.get("p1")!.core!.shield, 5);
-  assert.ok(!result.events.some((e) => e.eventType === "CORE_SHIELD_CLAMPED"), "no invented wire event");
+  assert.ok(!result.events.some((e) => (e.eventType as string) === "CORE_SHIELD_CLAMPED"), "no invented wire event");
 });
 
 test("S11: 未失去 Beacon 时盾不 clamp", () => {
   const world = makeWorld({ beaconStatus: "CARRIED", beaconCarrierId: P1_WORKER_A, p1Shield: 7 });
   const result = settleTick(world, idlePlans(world), ctx);
   assert.equal(result.world.players.get("p1")!.core!.shield, 7);
-  assert.ok(!result.events.some((e) => e.eventType === "CORE_SHIELD_CLAMPED"));
+  assert.ok(!result.events.some((e) => (e.eventType as string) === "CORE_SHIELD_CLAMPED"));
 });
 
 test("S11: 持有者 harvest 加成 2，非持有者 1", () => {

@@ -21,10 +21,13 @@ export interface PlayerEpisodeSummary {
   readonly resourceDelta: number;
   readonly initialPopulation: number;
   readonly finalPopulation: number;
+  /** P4e 决策超时次数（per-tick 超预算被丢弃的 decide 次数；未启用恒 0）。 */
+  readonly decisionTimeouts: number;
 }
 
 export interface EpisodeSemanticSummary {
   readonly schema: "sim.episode-summary.v1";
+  /** 实际结算 tick 数（early-stop 触发时 < config.ticks；否则 === config.ticks）。 */
   readonly ticks: number;
   readonly seed: number;
   readonly finalWorldHash: string;
@@ -37,6 +40,12 @@ export interface EpisodeSemanticSummary {
   readonly unknownEffectCount: number;
   readonly eventCounts: Readonly<Record<string, number>>;
   readonly semanticHash: string;
+  /** P4f 是否提前终止（early-stop）。 */
+  readonly endedEarly: boolean;
+  /** P4f 提前终止原因（null = 未提前终止；当前只有 "all-dead"）。 */
+  readonly endReason: "all-dead" | null;
+  /** P4f 提前终止时的最后结算 tick（null = 未提前终止）。 */
+  readonly endedAtTick: number | null;
 }
 
 export interface EpisodePerformance {
@@ -67,11 +76,12 @@ export function summarizeEpisode(config: EpisodeConfig, result: EpisodeResult): 
         resourceDelta: finalPlayer.resources - initialPlayer.resources,
         initialPopulation: initialPlayer.units.length,
         finalPopulation: finalPlayer.units.length,
+        decisionTimeouts: result.metrics.perPlayer[playerId]?.decisionTimeouts ?? 0,
       };
     });
   const stable = {
     schema: "sim.episode-summary.v1" as const,
-    ticks: config.ticks,
+    ticks: result.metrics.ticks,
     seed: config.seed,
     finalWorldHash: result.finalWorldHash,
     players,
@@ -82,6 +92,9 @@ export function summarizeEpisode(config: EpisodeConfig, result: EpisodeResult): 
     unsupported: [...result.metrics.unsupported].sort(compareCodeUnit),
     unknownEffectCount: result.records.reduce((sum, record) => sum + record.unknownEffects.length, 0),
     eventCounts: countEvents(result),
+    endedEarly: result.metrics.endedEarly,
+    endReason: result.metrics.endReason,
+    endedAtTick: result.metrics.endedAtTick,
   };
   return { ...stable, semanticHash: sha256Json(stable) };
 }
@@ -91,7 +104,7 @@ export function episodePerformance(config: EpisodeConfig, result: EpisodeResult)
   return {
     schema: "sim.performance.v1",
     wallMs: result.metrics.wallMs,
-    ticksPerSecond: seconds <= 0 ? 0 : config.ticks / seconds,
+    ticksPerSecond: seconds <= 0 ? 0 : result.metrics.ticks / seconds,
   };
 }
 
