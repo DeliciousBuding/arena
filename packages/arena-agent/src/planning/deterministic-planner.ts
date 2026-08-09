@@ -386,6 +386,9 @@ const BOOTSTRAP_WORKER_TARGET = 6;
 const WORKER_SPAWN_COST = 5;
 /** 补员保留资源（不因扩编掏空国库；emergency 时也可用满额 5）。 */
 const WORKER_SPAWN_RESERVE = 2;
+/** 资源高水位消费线（2026-08-10 用户理念）：150 = 顶级兑换码门槛，够用即可；
+ *  超出部分花掉造单位。资源 >= 该值时强制 SPAWN（防 Core 容量顶格死锁）。 */
+const RESOURCE_HIGH_WATER = 150;
 /**
  * 无 policy 时的默认补员目标（2026-08-06 扩编主动性优化）：原恢复地板 2 使
  * solo 3 worker 起步即永不补员（res 闲置）；workerTarget 梯度实验（3 seeds）：
@@ -469,6 +472,12 @@ export function selectDeterministicCoreAction(
    *  纯函数（applyReplacementQueueDelta / consumeReplacementQueue）转移而来。 */
   replacementQueue: ReplacementQueue = EMPTY_REPLACEMENT_QUEUE,
   replacementQueueEnabled = false,
+  /** 资源高水位消费线（2026-08-10 用户理念，防死锁兜底）：资源 >= 该值时
+   *  无视 populationCeiling/军事配比强制产兵（价格按动态价）——t1 实证
+   *  pop≥ceiling 后所有 SPAWN 分支关闭，资源囤积到 Core 容量上限
+   *  （max(10, pop×5)）→ DEPOSIT_FAILED 满载 worker 卡 Core 格 → 经济死锁。
+   *  默认 150 = 顶级兑换码门槛（够用即可，超出花掉造单位）。0 = 关闭。 */
+  resourceHighWater = RESOURCE_HIGH_WATER,
 ): { readonly action: CoreAction | null; readonly intent: string | null; readonly surgeActive: boolean } {
   if (fallbackAction?.type === "HEAL") {
     return { action: fallbackAction, intent: "core_heal", surgeActive };
@@ -518,6 +527,30 @@ export function selectDeterministicCoreAction(
     // 不再用 base 价预算——旧固定价导致 pop≥21 后连串 INSUFFICIENT_RESOURCES
     // 失败（t1 67452-67478 实证）。人口超上限（默认 20 = 动态价线）不再产兵。
     const spawnCosts = unitSpawnCosts(state.population);
+    // 资源高水位消费（2026-08-10 生产实证 t1 死锁根因）：pop≥ceiling 后所有
+    // 正常 SPAWN 分支关闭 → 资源囤积到 Core 容量上限（max(10, pop×5)）→
+    // DEPOSIT_FAILED 满载 worker 卡 Core 格 → 经济死锁，需人工 override spawn
+    // 解锁。用户理念：150（顶级兑换码门槛）够用即可，超出部分花掉造单位。
+    // 优先级高于 populationCeiling / 军事配比（死锁兜底，正常策略层的 ROI
+    // 保护不适用）；价格按动态价；首选军事（交替），买不起回退 Worker，
+    // 仍买不起则本 tick 让位（下 tick 重试）。
+    if (resourceHighWater > 0 && state.resources >= resourceHighWater) {
+      const unitType: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
+      if (state.resources >= spawnCosts[unitType]) {
+        return {
+          action: { type: "SPAWN", unitType },
+          intent: "spawn_high_water_spend",
+          surgeActive: active,
+        };
+      }
+      if (state.resources >= spawnCosts.WORKER) {
+        return {
+          action: { type: "SPAWN", unitType: "WORKER" },
+          intent: "spawn_high_water_worker",
+          surgeActive: active,
+        };
+      }
+    }
     if (state.population >= populationCeiling) {
       return { action: null, intent: null, surgeActive: active };
     }
@@ -724,6 +757,8 @@ export class DeterministicPlanner implements PlanProvider {
   private accumulateThreshold: number;
   /** 爆兵状态（跨 tick 保持：达标后持续爆兵直到资源耗尽回积累期）。 */
   private surgeActive = false;
+  /** 资源高水位消费线（2026-08-10 用户理念，防 Core 容量顶格死锁）。 */
+  private resourceHighWater = RESOURCE_HIGH_WATER;
   /** 补员 reserve（第十轮实验配置；默认 2 = 生产行为零回归）。 */
   private spawnReserve: number;
   /** 使命层配置（worker-mission-v1）：值层置信 + SURVEYOR 角色仲裁。 */
@@ -1199,10 +1234,11 @@ export class DeterministicPlanner implements PlanProvider {
       // NOTE: threatDefenseSpawn（pos 9）与 recoveryEarlyMilitary/homeDefenseBottom
       // 的位置映射沿用历史调用约定（不改既有行为——零回归）。pos 11 显式传
       // false 保持 homeDefenseBottom 形参的历史默认值。replacement-queue-v1 的
-      // 两个新形参落在 pos 12-13。
+      // 两个新形参落在 pos 12-13，resourceHighWater 在 pos 14。
       false,
       this.replacementQueue,
       this.replacementQueueEnabled,
+      this.resourceHighWater,
     );
     this.surgeActive = coreDecision.surgeActive;
     if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;
