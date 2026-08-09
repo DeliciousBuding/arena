@@ -144,3 +144,40 @@ L-D 网站。地界：`packages/arena-agent/src/sim/`、`src/cli/`、`src/planni
   已实现的调度优化）；详见报告 §4。
 - 遗留：ts-aggressive 16.4ms/tick（WIP 文件只读）、arena-evolve 每 tick 写盘
   （slotEvery 顺手项）、waaiging 长尾（第三方只读）——报告 §5。
+
+## 进度（2026-08-09，L-C SDK 层，实现+验证完成）
+
+### 交付（reference fork `arena-hero-python-telemetry`，commit ac31314 / 1252fb5）
+
+- **配置注入通道**（`src/arena_hero/config_overrides.py`，16 测试）：`ARENA_CFG_*`
+  env + `arena-config.json` 文件双通道 → `apply_config_overrides(module/instance)`
+  深合并（点分键/类型强转/未知键跳过/损坏静默降级/默认 no-op）+ 
+  `overridden_decide_kwargs`（decide 函数参数合并，core 用）。
+- **telemetry-v2**：`tick_summary` 补 `state_bytes`/`parse_ms`/`prev_decision_ms`；
+  `Turn.decision_ms` 只读计时；SDK_VERSION 0.2.9-telemetry.2；向后兼容。
+- **探针工具**（`probes/probe_tool.py`）：serve（HTTP 决策服务+状态实录）+
+  replay（同序列基线 vs 注入 plan 差异 + 决策阶段计时）。
+- **patch 文件**：`docs/analysis/sdk-config-injection-patch.md`（contestants.ts
+  三变体接线 diff + 证据 + 经验）。
+
+### 验证（同 seed×500 ticks×6 玩家 synthetic，基线 vs 注入）
+
+| 变体 | env | plan 差异 | 真局差异 |
+|---|---|---|---|
+| waaiging-agg | MEMORY_MODE=aggress + AGGRESS_TARGET_VANGUARDS=10/RANGERS=12/BASE_WORKERS=3 | 231/500 | 均资源 6.0→4.0，popPeak 9→12，BEACON_HARVEST_BONUS 0→38，世界翻转 |
+| core-mil | MODE=harvest+TARGET=30（decide_kwargs；TARGET=8 时 119/500） | 1/500（场景资源峰值<30） | 均资源 9.0→19.0，harvest 版胜出 |
+| farmer-eco | WORKER_TARGET=16 + CORE_RESOURCE_RESERVE=5 + EARLY_DEFENSE_RESERVE=10 | 142/500 | 均资源 23→12，popEnd 6→9，spawns W5→W7+V1，farmer 胜出 |
+
+no-op 保证：无 env 同序列 plan 逐字节一致（0/30）。
+
+### 决策计时（SDK 侧 <15% 裁决 → 只测量不优化）
+
+waaiging SDK 0.108ms（7.3%）/ decide 1.375ms；core 0.103ms（13.1%）/ 0.681ms；
+farmer 0.102ms（14.4%）/ 0.610ms —— 大头是第三方策略，唯一无损优化点
+（桥接 json.loads+model_validate 双遍 → validate_json 单遍）建议不做。
+
+### 遗留（转总负责人/L-A）
+
+- contestants.ts 三变体接线 diff 待应用（patch 文件已含完整 diff + core 默认条目
+  需补 harvest 注入 + 桥接 decide_kwargs 合并前置）。
+- probe 状态实录：`data/probe-rec/`（untracked，运行时输出）。
