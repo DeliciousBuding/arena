@@ -61,25 +61,38 @@ export class OpponentAdapter implements PlanProvider {
   readonly decider: ExternalDecider;
   readonly selfPlayerId: string;
   readonly label: string;
+  /** R2 桥状态投影（默认关）：传给 tickStateToProto 的 projectFields。 */
+  private projectFields: boolean;
   /** 流水线预取缓存（decider 无原生 prefetch 时的同步兜底）：prefetch 同步
    *  计算缓存，decideCached 取。decider 原生支持时恒为 null。 */
   private prefetchedCommand: ProtoCommandPlan | null = null;
 
-  constructor(decider: ExternalDecider, selfPlayerId: string, label = "opponent") {
+  constructor(
+    decider: ExternalDecider,
+    selfPlayerId: string,
+    label = "opponent",
+    options: { readonly projectFields?: boolean } = {},
+  ) {
     this.decider = decider;
     this.selfPlayerId = selfPlayerId;
     this.label = label;
+    this.projectFields = options.projectFields === true;
     // P4g+：decider 原生支持 prefetch/decideCached（持久桥）时 prefetch 为
     // 真异步（提交后不等待）——episode 调度优先发起；否则同步计算（假异步）。
     this.parallelPrefetch =
       typeof decider.prefetch === "function" && typeof decider.decideCached === "function";
   }
 
+  /** R2：按 runFreeForAll bridgeProjection 逐 agent 开关状态投影（默认关）。 */
+  setProjection(on: boolean): void {
+    this.projectFields = on;
+  }
+
   /** P4g+：prefetch 是否非阻塞发起（真异步桥）。 */
   readonly parallelPrefetch: boolean;
 
   decide(input: { readonly state: TickState; readonly policy?: import("../../runtime/macro-policy.ts").MacroPolicy }): Plan {
-    const proto = tickStateToProto(input.state, this.selfPlayerId);
+    const proto = tickStateToProto(input.state, this.selfPlayerId, { projectFields: this.projectFields });
     if (!this.decider.ready) return emptyPlanForTick(input.state.tick);
     const command = this.decider.decide(proto, input.state.tick);
     return protoPlanToPlan(command, this.label);
@@ -88,7 +101,7 @@ export class OpponentAdapter implements PlanProvider {
   /** 流水线预取：decider 原生支持则异步发起（不阻塞）；否则同步计算并缓存
    *  （decideCached 取——行为与串行 decide 逐字节一致，仅时间点前移）。 */
   prefetch(input: { readonly state: TickState; readonly policy?: import("../../runtime/macro-policy.ts").MacroPolicy }): void {
-    const proto = tickStateToProto(input.state, this.selfPlayerId);
+    const proto = tickStateToProto(input.state, this.selfPlayerId, { projectFields: this.projectFields });
     this.prefetchedCommand = null;
     if (!this.decider.ready) {
       // 与 decide() 的空计划兜底对齐：不可用 → 缓存空计划（全 WAIT）。

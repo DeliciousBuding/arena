@@ -40,7 +40,9 @@ export type ProtoCoreState = "NORMAL" | "MOVING";
 export type ProtoPlayerStatus = "ACTIVE" | "RESPAWNING";
 export type ProtoObjectKind = "OBSTACLE" | "RESOURCE" | "CORE" | "UNIT";
 
-/** 官方 CoreView。 */
+/** 官方 CoreView。
+ *  R2 状态投影（projectFields）：NORMAL 核心的迁移字段省略（桥端 pydantic
+ *  默认 None 还原，逐字节一致）；MOVING 核心必须全带（官方 wire 校验）。 */
 export interface ProtoCoreView {
   readonly kind: "CORE";
   readonly id: string;
@@ -50,13 +52,13 @@ export interface ProtoCoreView {
   readonly hp: number;
   readonly shield: number;
   readonly state: ProtoCoreState;
-  readonly move_direction: ProtoDirection | null;
-  readonly move_progress: number | null;
-  readonly move_required_ticks: number | null;
-  readonly destination: readonly [number, number] | null;
+  readonly move_direction?: ProtoDirection | null;
+  readonly move_progress?: number | null;
+  readonly move_required_ticks?: number | null;
+  readonly destination?: readonly [number, number] | null;
 }
 
-/** 官方 UnitView。 */
+/** 官方 UnitView。cargo 投影时省略 null（仅受控 WORKER 有值）。 */
 export interface ProtoUnitView {
   readonly kind: "UNIT";
   readonly id: string;
@@ -64,7 +66,7 @@ export interface ProtoUnitView {
   readonly position: readonly [number, number];
   readonly hp: number;
   readonly unit_type: ProtoUnitType;
-  readonly cargo: number | null;
+  readonly cargo?: number | null;
 }
 
 /** 官方 TerrainView（UUID-less 批量地形）。 */
@@ -76,29 +78,32 @@ export interface ProtoTerrainView {
 /** 官方 WorldObject 判别联合。 */
 export type ProtoWorldObject = ProtoCoreView | ProtoUnitView | ProtoTerrainView;
 
-/** 官方 ChampionBeacon。 */
+/** 官方 ChampionBeacon。投影时省略 null 的 status/carrier_id（pydantic 默认
+ *  None 还原；CARRIED 时 carrier_id 恒有值——官方 wire 校验约束）。 */
 export interface ProtoChampionBeacon {
   readonly position: readonly [number, number];
-  readonly status: "GROUND" | "CARRIED" | null;
-  readonly carrier_id: string | null;
+  readonly status?: "GROUND" | "CARRIED" | null;
+  readonly carrier_id?: string | null;
 }
 
-/** 官方 ResolutionEvent（最小集）。 */
+/** 官方 ResolutionEvent（最小集）。投影时省略 null 的可选字段。 */
 export interface ProtoResolutionEvent {
   readonly event_id: string;
   readonly tick: number;
   readonly event_type: string;
-  readonly reason_code: string | null;
-  readonly actor_id: string | null;
-  readonly target_id: string | null;
-  readonly position: readonly [number, number] | null;
-  readonly values: Readonly<Record<string, unknown>> | null;
+  readonly reason_code?: string | null;
+  readonly actor_id?: string | null;
+  readonly target_id?: string | null;
+  readonly position?: readonly [number, number] | null;
+  readonly values?: Readonly<Record<string, unknown>> | null;
 }
 
-/** 官方 PlayerState —— 每一个"本租户视角"的权威观察快照。 */
+/** 官方 PlayerState —— 每一个"本租户视角"的权威观察快照。
+ *  respawn_at_tick 投影时仅 ACTIVE 且 null 才省略（RESPAWNING 必须带——
+ *  官方 wire 校验要求）。 */
 export interface ProtoPlayerState {
   readonly status: ProtoPlayerStatus;
-  readonly respawn_at_tick: number | null;
+  readonly respawn_at_tick?: number | null;
   readonly resources: number;
   readonly population: number;
   readonly champion_beacon: ProtoChampionBeacon;
@@ -200,6 +205,28 @@ export function directionToProto(direction: Direction): ProtoDirection {
   return direction;
 }
 
+/** R2 桥状态投影选项。 */
+export interface TickStateToProtoOptions {
+  /** 状态投影（默认关 = 现状逐字节一致）：只序列化并集审计字段的非空值——
+   *  恒 null 的可选字段省略，桥端 pydantic 默认 None 还原（见
+   *  docs/analysis/bridge-field-audit.md）。省略不改变任何 agent 看到的
+   *  值（null → None），MOVING 核心迁移字段 / RESPAWNING respawn_at_tick
+   *  按官方 wire 校验强制保留。 */
+  readonly projectFields?: boolean;
+}
+
+/** R2 投影白名单：字段读取已静态审计的 agent（python-agents.json 注册名）。
+ *  投影只对白名单生效——未审计的第三方（含任意 HTTP 端点）不投影。审计中
+ *  发现动态读字段（按名反射/遍历全字段）的 agent 从白名单移除（逐 agent
+ *  降级不投影），目前 5 个 agent 全部可静态枚举，无降级。 */
+export const BRIDGE_PROJECTION_AUDITED_AGENTS: ReadonlySet<string> = new Set([
+  "farmer",
+  "core",
+  "waaiging",
+  "tactic",
+  "arena-evolve",
+]);
+
 /**
  * 把一个 `TickState`（本租户视角）翻译成官方 `PlayerState`。
  * 语义：
@@ -210,11 +237,17 @@ export function directionToProto(direction: Direction): ProtoDirection {
  * 注意：official PlayerState 是"单个玩家视角"，所以本函数只产出**当前玩家**的
  * 视图（no cross-view merging here — 由调用方决定该喂哪个玩家视角）。
  */
-export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoPlayerState {
+export function tickStateToProto(
+  state: TickState,
+  selfPlayerId: string,
+  opts: TickStateToProtoOptions = {},
+): ProtoPlayerState {
+  const project = opts.projectFields === true;
   const objects: ProtoWorldObject[] = [];
 
   // 己方核心
   if (state.core !== null) {
+    const moving = state.core.state === "MOVING";
     objects.push({
       kind: "CORE",
       id: state.core.id,
@@ -224,15 +257,22 @@ export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoP
       hp: state.core.hp,
       shield: state.core.shield,
       state: state.core.state,
-      move_direction: state.core.moveDirection ?? null,
-      move_progress: state.core.moveProgress ?? null,
-      move_required_ticks: state.core.moveRequiredTicks ?? null,
-      destination: state.core.destination ?? null,
+      // 投影：NORMAL 时迁移字段恒 null——省略由 pydantic 默认 None 还原；
+      // MOVING 必须全带（官方 wire 校验：MOVING 要求全部迁移字段）。
+      ...(moving || !project
+        ? {
+            move_direction: state.core.moveDirection ?? null,
+            move_progress: state.core.moveProgress ?? null,
+            move_required_ticks: state.core.moveRequiredTicks ?? null,
+            destination: state.core.destination ?? null,
+          }
+        : {}),
     });
   }
 
   // 己方单位
   for (const unit of state.units) {
+    const cargo = unit.unitType === "WORKER" ? unit.cargo : null;
     objects.push({
       kind: "UNIT",
       id: unit.id,
@@ -240,7 +280,8 @@ export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoP
       position: unit.position,
       hp: unit.hp,
       unit_type: unit.unitType,
-      cargo: unit.unitType === "WORKER" ? unit.cargo : null,
+      // 投影：cargo 恒 null 时省略（非 WORKER/空载——pydantic 默认 None）。
+      ...(cargo !== null || !project ? { cargo } : {}),
     });
   }
 
@@ -258,10 +299,14 @@ export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoP
         shield: 0,
         // 敌方核心迁移状态如实投影（MOVING 时带全迁移字段——官方 wire 校验要求）
         state: moving ? "MOVING" : "NORMAL",
-        move_direction: enemy.moveDirection ?? null,
-        move_progress: enemy.moveProgress ?? null,
-        move_required_ticks: enemy.moveRequiredTicks ?? null,
-        destination: enemy.destination ?? null,
+        ...(moving || !project
+          ? {
+              move_direction: enemy.moveDirection ?? null,
+              move_progress: enemy.moveProgress ?? null,
+              move_required_ticks: enemy.moveRequiredTicks ?? null,
+              destination: enemy.destination ?? null,
+            }
+          : {}),
       });
     } else {
       objects.push({
@@ -271,7 +316,8 @@ export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoP
         position: enemy.position,
         hp: enemy.hp,
         unit_type: enemy.unitType ?? "VANGUARD",
-        cargo: null,
+        // 敌方单位 cargo 恒 null：投影时省略（pydantic 默认 None）。
+        ...(project ? {} : { cargo: null }),
       });
     }
   }
@@ -282,18 +328,25 @@ export function tickStateToProto(state: TickState, selfPlayerId: string): ProtoP
   if (obstacleCells.length > 0) objects.push({ kind: "OBSTACLE", positions: obstacleCells } satisfies ProtoTerrainView);
   if (resourceCells.length > 0) objects.push({ kind: "RESOURCE", positions: resourceCells } satisfies ProtoTerrainView);
 
+  // 投影：信标 status/carrier_id 恒 null 时省略（pydantic 默认 None；CARRIED
+  // 时 carrier_id 恒有值——官方 wire 校验约束）。
+  const beaconStatus = state.beacon.status;
+  const beaconCarrier = asOfficialNullableUuid(state.beacon.carrierId);
+
   return {
     status: state.status,
-    respawn_at_tick: null,
+    // 投影：ACTIVE + null 省略（pydantic 默认 None）；RESPAWNING 必须带
+    // （官方 wire 校验要求）——与现状 wire 完全一致。
+    ...(project && state.status === "ACTIVE" ? {} : { respawn_at_tick: null }),
     resources: state.resources,
     population: state.population,
     champion_beacon: {
       position: state.beacon.position,
-      status: state.beacon.status,
-      carrier_id: asOfficialNullableUuid(state.beacon.carrierId),
+      ...(project && beaconStatus === null ? {} : { status: beaconStatus }),
+      ...(project && beaconCarrier === null ? {} : { carrier_id: beaconCarrier }),
     },
     objects,
-    events: state.events.map(eventToProto),
+    events: state.events.map((event) => eventToProto(event, project)),
   };
 }
 
@@ -302,16 +355,17 @@ function parseCell(key: string): readonly [number, number] {
   return [Number(key.slice(0, i)), Number(key.slice(i + 1))];
 }
 
-function eventToProto(event: ResolutionEventSnapshot): ProtoResolutionEvent {
+function eventToProto(event: ResolutionEventSnapshot, project = false): ProtoResolutionEvent {
   return {
     event_id: asOfficialUuid(event.eventId),
     tick: event.tick,
     event_type: event.eventType,
-    reason_code: event.reasonCode,
-    actor_id: asOfficialNullableUuid(event.actorId),
-    target_id: asOfficialNullableUuid(event.targetId),
-    position: event.position ?? null,
-    values: Object.keys(event.values).length === 0 ? null : event.values,
+    // 投影：null 可选字段省略（pydantic 默认 None）。
+    ...(project && event.reasonCode === null ? {} : { reason_code: event.reasonCode }),
+    ...(project && event.actorId === null ? {} : { actor_id: asOfficialNullableUuid(event.actorId) }),
+    ...(project && event.targetId === null ? {} : { target_id: asOfficialNullableUuid(event.targetId) }),
+    ...(project && event.position === null ? {} : { position: event.position ?? null }),
+    ...(project && Object.keys(event.values).length === 0 ? {} : { values: Object.keys(event.values).length === 0 ? null : event.values }),
   };
 }
 

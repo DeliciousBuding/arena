@@ -30,6 +30,8 @@ import {
 import type { PlanProvider } from "../../runtime/decision-types.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../../strategies/safety-planner.ts";
 import { createEpisodeRecorder } from "./recorder.ts";
+import { OpponentAdapter } from "./opponent-adapter.ts";
+import { BRIDGE_PROJECTION_AUDITED_AGENTS } from "./protocol-bridge.ts";
 
 /** Re-export 程序化生成旋钮（调用方无需直接 import world/procedural）。 */
 export { DEFAULT_PROCEDURAL_PARAMS } from "../world/procedural.ts";
@@ -606,6 +608,11 @@ export function runFreeForAll(
     arenaScenarioOptions?: ArenaScenarioNOptions;
     /** P4g 决策流水线（2026-08-09）：透传到 episode（默认关 = 现有行为）。 */
     pipeline?: boolean;
+    /** R2 桥状态投影（2026-08-09）：对字段读取已审计的 Python 对手逐 agent
+     *  启用状态投影（只序列化并集字段的非空值；默认关 = 现状逐字节一致）。
+     *  白名单见 BRIDGE_PROJECTION_AUDITED_AGENTS——未审计的第三方/HTTP 端点
+     *  与审计中发现动态读字段的 agent 不投影。 */
+    bridgeProjection?: boolean;
   },
 ): MatchResult {
   const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
@@ -636,6 +643,18 @@ export function runFreeForAll(
         });
   try {
     for (const entry of entries) providers.push(entry.build());
+    // R2 桥状态投影：只对白名单内（字段读取已审计）的 OpponentAdapter 启用；
+    // 未审计第三方/HTTP 端点与审计中动态读字段的 agent 不投影（默认关）。
+    if (opts?.bridgeProjection === true) {
+      for (const provider of providers) {
+        if (
+          provider instanceof OpponentAdapter &&
+          BRIDGE_PROJECTION_AUDITED_AGENTS.has(provider.label)
+        ) {
+          provider.setProjection(true);
+        }
+      }
+    }
     const result = runEpisode({
       scenario,
       rulesPath,
