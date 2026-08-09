@@ -842,9 +842,17 @@ export class DeterministicPlanner implements PlanProvider {
   }
 
   /** 迁移计划注入（migration-system-v1 §3.3，评审 P1）：tenant-runtime 每 tick
-   *  决策前调用；EXPLORE worker 朝计划路径前向探路。null = 无迁移。 */
+   *  决策前调用；EXPLORE worker 朝计划路径前向探路。null = 无迁移。
+   *
+   *  **转发 fallback SafetyPlanner（2026-08-09 生产实证）**：deterministic 模式
+   *  下军事单位（Vanguard/Ranger/满载 worker）的决策在 fallback SafetyPlanner
+   *  ——tenant-runtime 只对主 planner 调 setMigrationPlan，fallback 永远看不到
+   *  迁移计划 → migrationMoving=false → 迁移期守卫/worker 不疏散、核心被自己
+   *  编队围死（t1 生产实证：4 邻 13 个单位、核心 19+ tick 0 格、清路/REPLAN
+   *  循环）。主 planner 注入时同步转发。 */
   setMigrationPlan(plan: MigrationPlanV1 | null): void {
     this.migrationPlan = plan;
+    this.fallbackPlanner.setMigrationPlan(plan);
   }
 
   /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
