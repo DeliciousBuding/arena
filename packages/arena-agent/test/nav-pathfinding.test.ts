@@ -75,6 +75,37 @@ test("fail-safe 不横跳：接近方向被墙挡时返回 null（WAIT）而非�
   assert.equal(stepToward(start, target, wall), null, "无接近方向时必须 WAIT 而非横跳远离");
 });
 
+test("4 向契约：move() 每步恰好一个轴向一格（引擎只支持 4 向）", () => {
+  assert.deepEqual(move([3, -2], "RIGHT"), [4, -2]);
+  assert.deepEqual(move([3, -2], "LEFT"), [2, -2]);
+  assert.deepEqual(move([3, -2], "DOWN"), [3, -1]);
+  assert.deepEqual(move([3, -2], "UP"), [3, -3]);
+});
+
+test("4 向契约：逐步走向目标时每步位移均为轴向一格（无对角步/穿角）", () => {
+  // 引擎 START_MOVE/MOVE 只有 4 向；nav 输出方向必须保证每步位移 = 恰好 1 格轴向。
+  const wall = obstaclesOf([
+    [1, 0], [2, 0], [3, 0], [4, 0], [5, 0],
+    [2, -1], [2, 1], [-1, 0],
+  ]);
+  const start: Position = [0, 0];
+  const target: Position = [7, -4];
+  let cursor: Position = start;
+  let steps = 0;
+  while (cursor[0] !== target[0] || cursor[1] !== target[1]) {
+    const direction = stepTowardPath(cursor, target, wall);
+    assert.notEqual(direction, null, `tick ${steps}: 不得卡死`);
+    const next = move(cursor, direction as Direction);
+    const dx = Math.abs(next[0] - cursor[0]);
+    const dy = Math.abs(next[1] - cursor[1]);
+    assert.equal(dx + dy, 1, `每步必须恰好轴向 1 格: ${JSON.stringify(cursor)} → ${JSON.stringify(next)}`);
+    assert.ok(!wall.has(cellKey(next)), "不得走进障碍");
+    cursor = next;
+    steps += 1;
+    assert.ok(steps < 100, "路径不应过长");
+  }
+});
+
 test("目标格本身被占：提前短路返回 null", () => {
   const start: Position = [0, 0];
   const target: Position = [5, 0];

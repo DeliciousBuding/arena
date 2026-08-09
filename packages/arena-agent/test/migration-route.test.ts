@@ -81,13 +81,15 @@ test("起点即终点：单格路径", () => {
   assert.deepEqual(path, [{ x: 3, y: 3 }]);
 });
 
-test("障碍绕行：短墙绕行，路径连通且避开障碍（最优 4 步）", () => {
-  // (1,0),(2,0),(3,0) 三连墙：直线被堵，必须绕出 y=0（对角贴墙 4 步即 Chebyshev 最优）
+test("障碍绕行：短墙绕行，路径连通且避开障碍（对角不穿角）", () => {
+  // (1,0),(2,0),(3,0) 三连墙：直线被堵，必须绕出 y=0；对角不穿角规则
+  // （引擎 4 向移动，对角步要求两正交中间格可通行）禁止从 (0,0) 对角到
+  // (1,1)（中间格 (1,0) 是墙）→ 先沿 y=1 平移到 (4,1) 再轴向落回。
   const path = expectPath(
     planRoute({ x: 0, y: 0 }, { x: 4, y: 0 }, [{ x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 }]),
   );
   assertValidPath(path, { x: 0, y: 0 }, { x: 4, y: 0 });
-  assert.equal(path.length, 5, "绕行 4 步 = Chebyshev 距离（步数下界，最优）");
+  assert.equal(path.length, 7, "绕行 6 步（y=1 平移 5 + 落回 1），4 向可执行最短");
   for (const cell of path) {
     assert.ok(!(cell.x >= 1 && cell.x <= 3 && cell.y === 0), `路径踩到障碍格: ${JSON.stringify(cell)}`);
   }
@@ -95,12 +97,13 @@ test("障碍绕行：短墙绕行，路径连通且避开障碍（最优 4 步�
 });
 
 test("障碍绕行：T 形障碍（前方与上下均堵）连通", () => {
-  // 前 (1,0)、上 (1,1)、下 (1,-1) 全堵：必须绕到 y=±2 才过得去
+  // 前 (1,0)、上 (1,1)、下 (1,-1) 全堵：必须绕到 y=±2 才过得去；对角不穿角
+  // 规则禁止 (0,0)→(1,1)（中间格 (1,0) 墙）→ 先上到 (0,2) 再平移。
   const path = expectPath(
     planRoute({ x: 0, y: 0 }, { x: 4, y: 0 }, [{ x: 1, y: 0 }, { x: 1, y: 1 }, { x: 1, y: -1 }]),
   );
   assertValidPath(path, { x: 0, y: 0 }, { x: 4, y: 0 });
-  assert.equal(path.length, 6, "绕过 T 形障碍最优 5 步");
+  assert.equal(path.length, 7, "绕过 T 形障碍 6 步（上 2 + 平移 1 + 对角贴回 2 + 落回 1）");
   assert.ok(path.some((cell) => cell.x === 1 && Math.abs(cell.y) === 2), "必经 x=1 的 y=±2 缺口");
   for (const cell of path) {
     assert.ok(
@@ -111,12 +114,13 @@ test("障碍绕行：T 形障碍（前方与上下均堵）连通", () => {
 });
 
 test("障碍绕行：直墙（竖向）绕行连通", () => {
-  // (0,1),(0,2),(0,3)：直线北上被堵，从侧翼（x≠0）绕回
+  // (0,1),(0,2),(0,3)：直线北上被堵，从侧翼（x≠0）绕回；对角不穿角禁止
+  // (1,3)→(0,4)（中间格 (0,3) 墙）→ 侧翼平移至 (1,4) 再轴向落回。
   const path = expectPath(
     planRoute({ x: 0, y: 0 }, { x: 0, y: 4 }, [{ x: 0, y: 1 }, { x: 0, y: 2 }, { x: 0, y: 3 }]),
   );
   assertValidPath(path, { x: 0, y: 0 }, { x: 0, y: 4 });
-  assert.equal(path.length, 5, "绕行 4 步 = Chebyshev 距离（步数下界，最优）");
+  assert.equal(path.length, 7, "绕行 6 步（侧翼 4 + 落回 2），4 向可执行最短");
   assert.ok(path.some((cell) => cell.x !== 0), "路径应经侧翼绕行（x≠0 格）");
   for (const cell of path) {
     assert.ok(!(cell.x === 0 && cell.y >= 1 && cell.y <= 3), `路径踩到障碍格: ${JSON.stringify(cell)}`);
@@ -127,9 +131,35 @@ test("障碍接受 [x,y] 元组形态（与计划 schema path.cells 同构）", 
   const obstacles: readonly (readonly [number, number])[] = [[1, 0], [2, 0], [3, 0]];
   const path = expectPath(planRoute({ x: 0, y: 0 }, { x: 4, y: 0 }, obstacles));
   assertValidPath(path, { x: 0, y: 0 }, { x: 4, y: 0 });
-  assert.equal(path.length, 5);
+  assert.equal(path.length, 7, "同短墙绕行（对角不穿角）6 步");
   for (const cell of path) {
     assert.ok(!(cell.x >= 1 && cell.x <= 3 && cell.y === 0), `路径踩到障碍格: ${JSON.stringify(cell)}`);
+  }
+});
+
+test("对角不穿角：路径中所有对角步的两个正交中间格必须非障碍（引擎 4 向可执行）", () => {
+  // (1,0),(2,0),(3,0) 挡在 (0,0)→(3,3) 的 y=0 行：若允许穿角，路径会走
+  // (0,0)→(1,1)（对角中间格 (1,0) 是墙）→ 引擎 4 向移动的第一步（先水平到
+  // (1,0)）即被拒。新规则必须禁止该对角步，路径改从 (0,1) 起绕。
+  const obstacles: readonly (readonly [number, number])[] = [[1, 0], [2, 0], [3, 0]];
+  const path = expectPath(planRoute({ x: 0, y: 0 }, { x: 3, y: 3 }, obstacles));
+  assertValidPath(path, { x: 0, y: 0 }, { x: 3, y: 3 });
+  const blocked = new Set(obstacles.map(([x, y]) => `${x},${y}`));
+  for (let i = 1; i < path.length; i += 1) {
+    const prev = path[i - 1]!;
+    const cell = path[i]!;
+    const dx = cell.x - prev.x;
+    const dy = cell.y - prev.y;
+    if (dx !== 0 && dy !== 0) {
+      assert.ok(
+        !blocked.has(`${prev.x + dx},${prev.y}`),
+        `对角步水平中间格被障碍: ${JSON.stringify(prev)} → ${JSON.stringify(cell)}`,
+      );
+      assert.ok(
+        !blocked.has(`${prev.x},${prev.y + dy}`),
+        `对角步垂直中间格被障碍: ${JSON.stringify(prev)} → ${JSON.stringify(cell)}`,
+      );
+    }
   }
 });
 
