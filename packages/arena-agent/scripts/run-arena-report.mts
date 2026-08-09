@@ -195,6 +195,10 @@ if (!Number.isSafeInteger(WORKERS) || WORKERS < 1) {
 }
 const OUT_PREFIX = argValue("--out") ?? "arena-bench";
 
+/** P4g 决策流水线（2026-08-09）：--pipeline 启用 episode 流水线模式（prefetch
+ *  提前发起 tick N+1 决策，主线程不再每 tick 同步等待桥决策——默认关 = 现有行为）。 */
+const PIPELINE = hasFlag("--pipeline");
+
 /** --shard-by 解析：scenario（默认）| seed。 */
 function parseShardBy(): "scenario" | "seed" {
   const raw = argValue("--shard-by") ?? "scenario";
@@ -426,7 +430,10 @@ function runSingleMatch(
 ): BenchMatch {
   const entries = contestants.map((contestant) => contestant.entry(seed));
   const scenario = buildScenario(template, entries, seed);
-  const result = runFreeForAll(entries, seed, ticks, RULES_PATH, { scenario });
+  const result = runFreeForAll(entries, seed, ticks, RULES_PATH, {
+    scenario,
+    pipeline: PIPELINE,
+  });
   const rank = rankMatchPlayers(entries.map((entry) => entry.id), result);
   const ledgers = result.perPlayerLedgers ?? {};
   const kills = result.perPlayerKills ?? {};
@@ -613,6 +620,7 @@ function runOneWorkerMatch(job: { readonly scenario: string; readonly seed: numb
         "--worker", job.scenario, String(job.seed),
         "--ticks", String(TICKS),
         "--players", String(PLAYERS),
+        ...(PIPELINE ? ["--pipeline"] : []),
         "--worker-out-dir", outDir,
       ],
       { cwd: PKG_ROOT, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
@@ -1421,7 +1429,10 @@ async function main(): Promise<number> {
     console.log(
       `usage: npx tsx scripts/run-arena-report.mts ` +
       `[--scenarios ffa-std,ffa-dense] [--seeds 1,2,3] [--ticks 2000] ` +
-      `[--players 8] [--workers N] [--out arena-bench] [--data-root PATH] [--force]\n` +
+      `[--players 8] [--workers N] [--out arena-bench] [--data-root PATH] [--force] ` +
+      `[--pipeline]\n` +
+      `  --pipeline   P4g 决策流水线（prefetch 提前发起 tick N+1 决策，消除主线程每\n` +
+      `               tick 同步等待桥决策的空闲；结果与串行逐字节一致，仅墙钟更快）\n` +
       `分片/合并（并行跑批）：--shard <i>/<n>（或 --shard <i> --shard-total <n>）` +
       `[--shard-by scenario|seed]（默认 scenario）→ 只跑第 i 片\n` +
       `  --merge <runDir> → 合并全部分片（results.s*.json）为完整 results.json + report.html + plots`,
@@ -1449,7 +1460,7 @@ async function main(): Promise<number> {
   const generatedAt = new Date().toISOString();
 
   console.log(
-    `arena-bench-v2：${SCENARIOS.length} 场景 × ${SEEDS.length} seeds × ${rosterSize} 玩家（阵容 ${contestants.length} 条目），ticks=${TICKS}，workers=${WORKERS}`,
+    `arena-bench-v2：${SCENARIOS.length} 场景 × ${SEEDS.length} seeds × ${rosterSize} 玩家（阵容 ${contestants.length} 条目），ticks=${TICKS}，workers=${WORKERS}${PIPELINE ? "，pipeline=ON" : ""}`,
   );
 
   const roster = buildRoster().contestants;

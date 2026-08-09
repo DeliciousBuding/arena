@@ -340,6 +340,8 @@ export function runMatch(
      *  默认手写布局。true = 用 DEFAULT_PROCEDURAL_PARAMS；传入 params 覆盖。
      *  默认关（不改变现有场景行为）；与 scenario 互斥（scenario 优先）。 */
     procedural?: boolean | ProceduralWorldParams;
+    /** P4g 决策流水线（2026-08-09）：透传到 episode（默认关 = 现有行为）。 */
+    pipeline?: boolean;
   },
 ): MatchResult {
   const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
@@ -385,6 +387,7 @@ export function runMatch(
       plannerFactory: (tenant: EpisodeTenant): PlanProvider => (tenant.id === a.id ? providers[0] : providers[1]),
       validatePlans: opts?.validatePlans ?? true,
       onTickRecorded: recorder?.onTickRecorded,
+      pipeline: opts?.pipeline === true,
     } as never);
     const { winner: w, coreAlive, finalResources, finalPopulation } = decideWinner([a.id, b.id], undefined as never, result.finalWorld);
     return {
@@ -595,6 +598,8 @@ export function runFreeForAll(
     /** makeArenaScenarioN 布局旋钮（radius / resourceLayoutIndex / randomDrop）；
      *  仅缺省合成场景路径（未给 scenario/procedural 时）生效。 */
     arenaScenarioOptions?: ArenaScenarioNOptions;
+    /** P4g 决策流水线（2026-08-09）：透传到 episode（默认关 = 现有行为）。 */
+    pipeline?: boolean;
   },
 ): MatchResult {
   const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
@@ -641,6 +646,7 @@ export function runFreeForAll(
       plannerFactory: (tenant: EpisodeTenant): PlanProvider => providers[ids.indexOf(tenant.id)],
       validatePlans: opts?.validatePlans ?? true,
       onTickRecorded: recorder?.onTickRecorded,
+      pipeline: opts?.pipeline === true,
     } as never);
     const { winner, coreAlive, finalResources, finalPopulation } = decideWinner(
       ids,

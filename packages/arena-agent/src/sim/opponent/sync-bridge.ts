@@ -82,8 +82,12 @@ export class PersistentSyncBridge {
     );
   }
 
-  /** 同步往返：发送请求 JSON → 阻塞等待响应 JSON。失败抛错（fail-fast）。 */
-  exchange(requestJson: string): string {
+  /**
+   * 提交请求（流水线预取，P4g）：写请求 JSON 到帧槽 → postMessage 唤醒 worker，
+   * 立即返回不阻塞。结果由 awaitResponse() 取回。与 awaitResponse 严格成对
+   * 交替使用：同一时刻至多一个未决请求（单槽帧协议天然保证）。
+   */
+  submit(requestJson: string): void {
     if (this.closed) {
       throw new Error("sync bridge: exchange after close");
     }
@@ -97,7 +101,13 @@ export class PersistentSyncBridge {
     Atomics.store(this.flags, 1, bytes.length);
     this.frame.set(bytes, 0);
     this.worker.postMessage(requestJson);
+  }
 
+  /**
+   * 取回 submit 发起的请求结果（流水线预取，P4g）：阻塞等待响应（未完成则
+   * 等——保底逻辑；10s 超时 fail-fast）。submit 后只能调用一次。
+   */
+  awaitResponse(): string {
     const deadline = Date.now() + DECISION_TIMEOUT_MS;
     while (Date.now() < deadline) {
       Atomics.wait(this.flags, 0, FLAG_BUSY, 200);
@@ -119,6 +129,13 @@ export class PersistentSyncBridge {
       }
     }
     throw new Error(`sync bridge: decision timeout (${DECISION_TIMEOUT_MS}ms)`);
+  }
+
+  /** 同步往返：发送请求 JSON → 阻塞等待响应 JSON。失败抛错（fail-fast）。
+   *  语义与既有行为逐字节一致（submit + awaitResponse 的组合）。 */
+  exchange(requestJson: string): string {
+    this.submit(requestJson);
+    return this.awaitResponse();
   }
 
   /** 关闭：通知 worker 优雅终止子进程（EOF/哨兵退出窗口内完成状态槽与遥测

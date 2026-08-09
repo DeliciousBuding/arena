@@ -41,12 +41,18 @@ import {
   type SyncBridgeConfig,
 } from "./sync-bridge.ts";
 
-/** 对手决策器端口：输入官方玩家观察 → 输出官方计划（纯协议，无模拟器依赖）。 */
+/** 对手决策器端口：输入官方玩家观察 → 输出官方计划（纯协议，无模拟器依赖）。
+ *
+ * 流水线预取端口（P4g，2026-08-09，可选）：`prefetch` 异步发起决策（不阻塞，
+ * 结果缓存在实现内部），`decideCached` 取缓存结果（未完成则等待）。两者要么
+ * 都实现要么都不实现；缺省 = 调用方退回同步 `decide`（逐字节不变）。 */
 export interface ExternalDecider {
   /** 是否可用（e.g. 子进程就绪 / HTTP 连接建立）。 */
   readonly ready: boolean;
   /** 对单个观察做一次决策。实现方不得假设线程/时序。 */
   decide(player: ProtoPlayerState, tick: number): ProtoCommandPlan;
+  prefetch?(player: ProtoPlayerState, tick: number): void;
+  decideCached?(): ProtoCommandPlan;
   close(): void;
 }
 
@@ -55,6 +61,9 @@ export class OpponentAdapter implements PlanProvider {
   readonly decider: ExternalDecider;
   readonly selfPlayerId: string;
   readonly label: string;
+  /** 流水线预取缓存（decider 无原生 prefetch 时的同步兜底）：prefetch 同步
+   *  计算缓存，decideCached 取。decider 原生支持时恒为 null。 */
+  private prefetchedCommand: ProtoCommandPlan | null = null;
 
   constructor(decider: ExternalDecider, selfPlayerId: string, label = "opponent") {
     this.decider = decider;
@@ -67,6 +76,39 @@ export class OpponentAdapter implements PlanProvider {
     if (!this.decider.ready) return emptyPlanForTick(input.state.tick);
     const command = this.decider.decide(proto, input.state.tick);
     return protoPlanToPlan(command, this.label);
+  }
+
+  /** 流水线预取：decider 原生支持则异步发起（不阻塞）；否则同步计算并缓存
+   *  （decideCached 取——行为与串行 decide 逐字节一致，仅时间点前移）。 */
+  prefetch(input: { readonly state: TickState; readonly policy?: import("../../runtime/macro-policy.ts").MacroPolicy }): void {
+    const proto = tickStateToProto(input.state, this.selfPlayerId);
+    this.prefetchedCommand = null;
+    if (!this.decider.ready) {
+      // 与 decide() 的空计划兜底对齐：不可用 → 缓存空计划（全 WAIT）。
+      this.prefetchedCommand = { tick: input.state.tick, unit_actions: {}, core_action: null };
+      return;
+    }
+    if (
+      typeof this.decider.prefetch === "function" &&
+      typeof this.decider.decideCached === "function"
+    ) {
+      this.decider.prefetch(proto, input.state.tick);
+    } else {
+      this.prefetchedCommand = this.decider.decide(proto, input.state.tick);
+    }
+  }
+
+  /** 取流水线预取结果（decider 原生支持时可能阻塞等待——保底逻辑）。 */
+  decideCached(): Plan {
+    if (this.prefetchedCommand !== null) {
+      const command = this.prefetchedCommand;
+      this.prefetchedCommand = null;
+      return protoPlanToPlan(command, this.label);
+    }
+    if (typeof this.decider.decideCached === "function") {
+      return protoPlanToPlan(this.decider.decideCached(), this.label);
+    }
+    throw new Error("opponent adapter: decideCached without prefetch");
   }
 
   close(): void {
@@ -243,6 +285,8 @@ export class PersistentSubprocessDecider implements ExternalDecider {
   readonly slotIsDefault: boolean;
   readonly agent: string;
   ready = true;
+  /** 预取请求的 tick（decideCached 解析响应兜底用；prefetch/decideCached 成对）。 */
+  private pendingTick: number | null = null;
 
   constructor(config: PersistentReferenceConfig) {
     const created = createReferenceBridge({
@@ -261,27 +305,28 @@ export class PersistentSubprocessDecider implements ExternalDecider {
     this.agent = config.agent ?? "farmer";
   }
 
+  /** 流水线预取（P4g）：提交请求到 worker（不阻塞）——Python 决策与主线程
+   *  结算/记录重叠；结果由 decideCached 取（此时桥已完成，等待≈0）。 */
+  prefetch(player: ProtoPlayerState, tick: number): void {
+    this.pendingTick = tick;
+    this.bridge.submit(JSON.stringify({ tick, state: player }));
+  }
+
+  /** 取预取结果（P4g）：桥未完成则阻塞等待（10s 超时兜底）。 */
+  decideCached(): ProtoCommandPlan {
+    const tick = this.pendingTick;
+    this.pendingTick = null;
+    if (tick === null) {
+      throw new Error("persistent decider: decideCached without prefetch");
+    }
+    const line = this.bridge.awaitResponse();
+    return parsePlanLine(line, this, tick);
+  }
+
   decide(player: ProtoPlayerState, tick: number): ProtoCommandPlan {
     const request = JSON.stringify({ tick, state: player });
     const line = this.bridge.exchange(request);
-    try {
-      const parsed = JSON.parse(line) as {
-        readonly tick?: number;
-        readonly unit_actions?: Readonly<Record<string, ProtoUnitAction | null>>;
-        readonly core_action?: ProtoCoreAction | null;
-      };
-      return {
-        tick: parsed.tick ?? tick,
-        unit_actions: parsed.unit_actions ?? {},
-        core_action: parsed.core_action ?? null,
-      };
-    } catch (error) {
-      // 把原始行带进错误（外部 agent 是黑盒——stdout 被污染时必须有原文可查）。
-      throw new Error(
-        `opponent plan JSON parse failed (tick ${tick}): ${String(error)}` +
-          `\nraw: ${line.slice(0, 2000)}`,
-      );
-    }
+    return parsePlanLine(line, this, tick);
   }
 
   close(): void {
@@ -293,6 +338,32 @@ export class PersistentSubprocessDecider implements ExternalDecider {
         // 槽清理失败不阻断（临时目录会被系统回收）。
       }
     }
+  }
+}
+
+/** 解析桥响应行 → 官方 CommandPlan（decide / decideCached 共用）。
+ *  解析失败把原始行带进错误（外部 agent 是黑盒——stdout 被污染时必须有原文可查）。 */
+function parsePlanLine(
+  line: string,
+  decider: { readonly agent: string },
+  tick: number,
+): ProtoCommandPlan {
+  try {
+    const parsed = JSON.parse(line) as {
+      readonly tick?: number;
+      readonly unit_actions?: Readonly<Record<string, ProtoUnitAction | null>>;
+      readonly core_action?: ProtoCoreAction | null;
+    };
+    return {
+      tick: parsed.tick ?? tick,
+      unit_actions: parsed.unit_actions ?? {},
+      core_action: parsed.core_action ?? null,
+    };
+  } catch (error) {
+    throw new Error(
+      `opponent plan JSON parse failed (${decider.agent}, tick ${tick}): ${String(error)}` +
+        `\nraw: ${line.slice(0, 2000)}`,
+    );
   }
 }
 

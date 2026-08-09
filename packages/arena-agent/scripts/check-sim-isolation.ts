@@ -100,7 +100,11 @@ function classifyImports(files) {
         if (token === ".localeCompare(" && !file.startsWith(`${SIM_DIR}\\`) && !file.startsWith(`${SIM_DIR}/`)) {
           continue;
         }
-        if (text.includes(token)) {
+        // 本地决策预取端口（P4g）方法名 prefetch( 含 fetch( 子串——非网络
+        // IO。剔除该标识符后剩余文本仍含 token 才算命中（真实 fetch( 调用
+        // 不会被 prefetch( 掩盖：prefetch(fetch(...) 剔除后仍剩 fetch(）。
+        const scanned = text.replaceAll("prefetch(", "");
+        if (scanned.includes(token)) {
           textScan.push({ file, token });
         }
       }

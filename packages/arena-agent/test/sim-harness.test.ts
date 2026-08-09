@@ -235,3 +235,83 @@ test("S7: tenant/rules/beacon 契约 fail closed", () => {
     /beacon state is required/,
   );
 });
+
+/* ------------------------------------------------------------------ *
+ * P4g 决策流水线（pipeline=true）
+ * ------------------------------------------------------------------ */
+
+/** 带 prefetch/decideCached 的测试 provider：记录调用序列并缓存 prefetch 结果。 */
+class CountingPipelinePlanner implements PlanProvider {
+  readonly prefetchCalls: number[] = [];
+  readonly decideCalls: number[] = [];
+  readonly cachedTicks: number[] = [];
+  private cached: Plan | null = null;
+
+  decide(input: { readonly state: TickState }): Plan {
+    this.decideCalls.push(input.state.tick);
+    return { tick: input.state.tick, unitActions: {}, coreAction: null, intents: {} };
+  }
+
+  prefetch(input: { readonly state: TickState }): void {
+    this.prefetchCalls.push(input.state.tick);
+    this.cached = this.decide(input);
+  }
+
+  decideCached(): Plan {
+    const plan = this.cached;
+    this.cached = null;
+    if (plan === null) {
+      throw new Error("pipeline test: decideCached without prefetch");
+    }
+    this.cachedTicks.push(plan.tick);
+    return plan;
+  }
+}
+
+test("S7 P4g: 流水线模式与串行模式结果逐字节一致（内置 planner 同步 prefetch）", () => {
+  const serial = runEpisode(baseConfig({ ticks: 60 }));
+  const pipelined = runEpisode(baseConfig({ ticks: 60, pipeline: true }));
+  assert.equal(pipelined.finalWorldHash, serial.finalWorldHash);
+  assert.deepEqual(pipelined.records, serial.records);
+  assert.deepEqual(metricsWithoutWall(pipelined), metricsWithoutWall(serial));
+});
+
+test("S7 P4g: prefetch/decideCached 成对调用——tick 序列与串行一致且无悬空缓存", () => {
+  const planner = new CountingPipelinePlanner();
+  const result = runEpisode(
+    baseConfig({
+      ticks: 40,
+      pipeline: true,
+      plannerFactory: () => planner,
+    }),
+  );
+  // 预取 tick 1..ticks（tick 1 循环外预取；tick N 预取在 tick N-1 结算后）——
+  // 与串行模式的 decide tick 序列完全一致。
+  const expectedTicks = Array.from({ length: 40 }, (_, index) => index + 1);
+  assert.deepEqual(planner.prefetchCalls, expectedTicks);
+  assert.deepEqual(planner.decideCalls, expectedTicks);
+  assert.deepEqual(planner.cachedTicks, expectedTicks);
+  assert.equal(result.metrics.ticks, 40);
+  assert.equal(result.finalWorld.tick, 41);
+});
+
+test("S7 P4g: 无 prefetch 的 provider 在流水线模式下退回同步 decide（行为不变）", () => {
+  const emptyPlanner: PlanProvider = {
+    decide: (input: { readonly state: TickState }) => ({
+      tick: input.state.tick,
+      unitActions: {},
+      coreAction: null,
+      intents: {},
+    }),
+  };
+  const serial = runEpisode(baseConfig({ ticks: 30, plannerFactory: () => emptyPlanner }));
+  const pipelined = runEpisode(
+    baseConfig({
+      ticks: 30,
+      pipeline: true,
+      plannerFactory: () => emptyPlanner,
+    }),
+  );
+  assert.deepEqual(pipelined.records, serial.records);
+  assert.deepEqual(metricsWithoutWall(pipelined), metricsWithoutWall(serial));
+});
