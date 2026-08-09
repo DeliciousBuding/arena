@@ -156,8 +156,8 @@ test("清空未完成：单位仍在 destination → 重试计数累积；第 3 
   });
   assert.equal(r1.plan?.state, "LEG_MOVE", "重试 1 仍等待清路");
   assert.equal(r1.held.clearRetries, 2);
-  // 重试 2（累计第 3 次）→ REPLAN
-  const r2 = step(r1.plan!, { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 }, blocker, r1.held);
+  // 重试 2（下一游戏 tick，累计第 3 次）→ REPLAN
+  const r2 = step(r1.plan!, { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 }, blocker, r1.held, 10_001);
   assert.equal(r2.plan?.state, "PLAN", "第 3 次清路未果 → REPLAN（回 PLAN）");
   assert.equal(r2.plan?.revision, 2, "REPLAN revision+1");
   assert.equal(r2.plan?.clearRequests, undefined, "REPLAN 清除旧清路请求（重生成路径）");
