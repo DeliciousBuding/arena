@@ -252,6 +252,11 @@ const OUT_PREFIX = argValue("--out") ?? "arena-bench";
  *  提前发起 tick N+1 决策，主线程不再每 tick 同步等待桥决策——默认关 = 现有行为）。 */
 const PIPELINE = hasFlag("--pipeline");
 
+/** R2 桥状态投影（2026-08-09）：--bridge-projection 对白名单 agent（字段审计
+ *  通过的 Python 对手）启用状态投影（省略恒 null 字段，payload -20.3%）——
+ *  默认关 = 现状逐字节一致。见 docs/analysis/bridge-field-audit.md。 */
+const BRIDGE_PROJECTION = hasFlag("--bridge-projection");
+
 /** --shard-by 解析：scenario（默认）| seed。 */
 function parseShardBy(): "scenario" | "seed" {
   const raw = argValue("--shard-by") ?? "scenario";
@@ -512,6 +517,7 @@ function runSingleMatch(
   const result = runFreeForAll(entries, seed, ticks, RULES_PATH, {
     scenario,
     pipeline: PIPELINE,
+    bridgeProjection: BRIDGE_PROJECTION,
   });
   const rank = rankMatchPlayers(entries.map((entry) => entry.id), result);
   const ledgers = result.perPlayerLedgers ?? {};
