@@ -436,6 +436,9 @@ const LOCAL_SQUAD_TENANT_ID = "local";
 export class SafetyPlanner {
   readonly world: World;
   readonly phase: PhaseMachine;
+  /** P4g 流水线预取缓存（决策流水线，2026-08-09）：prefetch 同步计算缓存，
+   *  decideCached 取——决策输入与串行 decide 相同，结果逐字节一致。 */
+  private prefetchedPlanValue: Plan | null = null;
   private configValue: SafetyPlannerConfig;
   /** P1 战术小队（tactical-squads-v1，默认关）：当前 tick 编成 + 上 tick 成员
    *  归属（sticky 输入）。关闭时恒为空（零回归）。 */
@@ -2080,6 +2083,22 @@ export class SafetyPlanner {
 
     const coreAction = this.decideCore(state, intents);
     return { tick: state.tick, unitActions: actions, coreAction, intents };
+  }
+
+  /** 流水线预取（P4g，决策流水线）：同步计算并缓存——决策输入与串行 decide
+   *  相同，结果逐字节一致；仅时间点前移（结算后即算，不阻塞调用方）。 */
+  prefetch(input: SafetyPlannerInput): void {
+    this.prefetchedPlanValue = this.decide(input);
+  }
+
+  /** 取流水线预取结果（P4g）：必须在 prefetch 之后成对调用。 */
+  decideCached(): Plan {
+    const plan = this.prefetchedPlanValue;
+    this.prefetchedPlanValue = null;
+    if (plan === null) {
+      throw new Error("safety planner: decideCached without prefetch");
+    }
+    return plan;
   }
 
   /** worker 巡逻目标点（worker-dense-scan-v1，2026-08-07）：密集模式用 16 方位

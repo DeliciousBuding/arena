@@ -677,6 +677,9 @@ export interface BlockadeSink extends CellBlocker {
 export class DeterministicPlanner implements PlanProvider {
   private readonly planner: WorkerTaskPlanner;
   private readonly fallbackPlanner: SafetyPlanner;
+  /** P4g 流水线预取缓存（决策流水线，2026-08-09）：prefetch 同步计算缓存，
+   *  decideCached 取——决策输入与串行 decide 相同，结果逐字节一致。 */
+  private prefetchedPlanValue: Plan | null = null;
   /** 只用于“资源格已被其他 Worker 占用”时继续探索；永远看不到 resourceCells，
    *  因此不会把额外 Worker 再次派往同一可见资源格。 */
   private readonly patrolPlanner: SafetyPlanner;
@@ -1228,6 +1231,22 @@ export class DeterministicPlanner implements PlanProvider {
       coreAction: coreDecision.action,
       intents: finalIntents,
     };
+  }
+
+  /** 流水线预取（P4g，决策流水线）：同步计算并缓存——决策输入与串行 decide
+   *  相同，结果逐字节一致；仅时间点前移（结算后即算，不阻塞调用方）。 */
+  prefetch(input: DeterministicPlannerInput): void {
+    this.prefetchedPlanValue = this.decide(input);
+  }
+
+  /** 取流水线预取结果（P4g）：必须在 prefetch 之后成对调用。 */
+  decideCached(): Plan {
+    const plan = this.prefetchedPlanValue;
+    this.prefetchedPlanValue = null;
+    if (plan === null) {
+      throw new Error("deterministic planner: decideCached without prefetch");
+    }
+    return plan;
   }
 
   /** Task → UnitAction（确定性映射；核心语义见文件头注释）。 */

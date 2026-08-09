@@ -20,9 +20,19 @@ export type DecisionModeName = "safety" | "deterministic" | "agent-shadow" | "hy
 export type SubmissionModeName = "disabled" | "live";
 
 /** 确定性 planner 端口（SafetyPlanner 与 DeterministicPlanner 可互换注入——P0-1：
- *  deterministic 模式 = coordinator 短路 + planner 注入，coordinator 不感知差异）。 */
+ *  deterministic 模式 = coordinator 短路 + planner 注入，coordinator 不感知差异）。
+ *
+ * 决策流水线端口（P4g，2026-08-09，可选）：
+ *  - `prefetch` 异步发起决策（不阻塞），结果缓存在 provider 内部——持久桥
+ *    实现 = worker 线程提交请求不等待；内置 planner = 直接同步计算缓存；
+ *  - `decideCached` 取缓存结果（未完成则同步等待，保底逻辑）。必须在
+ *    `prefetch` 之后成对调用。
+ *  两个方法要么都实现要么都不实现；缺省不实现 = 调用方退回同步 `decide`
+ *  （逐 tick 阻塞），行为与无流水线时逐字节一致。 */
 export interface PlanProvider {
   decide(input: { readonly state: TickState; readonly policy?: MacroPolicy }): Plan;
+  prefetch?(input: { readonly state: TickState; readonly policy?: MacroPolicy }): void;
+  decideCached?(): Plan;
 }
 
 /** 决策上下文：不可变，一次决策全程共享（R9：World 必须在 Tick 开始时快照化）。 */
