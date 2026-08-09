@@ -144,12 +144,18 @@ export type {
 // ── Candidate Generator (M2b) ──
 export { generateCandidateSet } from "./candidate/candidate-generator.ts";
 export type { CandidateGeneratorOptions } from "./candidate/candidate-generator.ts";
+export {
+  macroPoliciesEqual,
+  applyCandidateToMacroPolicy,
+  resolveExactPolicyCandidate,
+} from "./candidate/candidate-policy.ts";
 
 // ── Q-Sample (M2c) ──
 export {
   Q_SAMPLE_SCHEMA_VERSION,
   PAIRWISE_PREFERENCE_SCHEMA_VERSION,
   Q_LABEL_SOURCES,
+  INITIAL_STATE_SCOPES,
   SUGGESTED_LABEL_HORIZONS,
   canonicalFeatures,
   computeFeatureHash,
@@ -159,6 +165,7 @@ export {
 } from "./q-sample/q-sample-v1.ts";
 export type {
   QLabelSource,
+  InitialStateScope,
   BehaviorPolicySnapshot,
   QSampleLabel,
   QSampleSimProvenance,

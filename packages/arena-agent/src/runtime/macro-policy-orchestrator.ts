@@ -114,7 +114,7 @@ export class MacroPolicyOrchestrator {
     if (this.onDecisionPoint === undefined) return;
     try {
       const candidates = generateCandidateSet(state, previousPolicy);
-      const chosen = resolveChosenCandidate(candidates, newPolicy);
+      const chosen = resolveChosenCandidate(candidates, previousPolicy, newPolicy);
       this.onDecisionPoint({
         schema: "macro-decision-point-v1",
         decisionPointId: `${this.decisionPointPrefix}:${state.tick}`,
@@ -126,7 +126,11 @@ export class MacroPolicyOrchestrator {
         chosenBy,
         candidates,
         candidateSetHash: computeCandidateSetHash(candidates),
-        chosenCandidateHash: chosen.candidate.deterministicHash,
+        chosenCandidateHash: chosen?.deterministicHash ?? null,
+        selectionRepresentable: chosen !== null,
+        // Pi/LLM does not expose a calibrated candidate probability. Never
+        // fabricate one; future randomized exploration can fill this exactly.
+        behaviorPropensity: null,
       });
     } catch (error) {
       // Shadow must never break production decision flow.

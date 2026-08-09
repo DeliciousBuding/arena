@@ -8,7 +8,8 @@
  *   占据格、chunk 边界主干通道；允许单位脚下与地面信标之下——官方约束为
  *   可通行/非障碍/非主干/非 Core）；
  * - 官方 placement seed 是 server-secret（单玩家视野不可逆向），模拟器实现
- *   自洽确定性：同一 (worldHash, tick, chunkId, missingSlots) → 同一位置。
+ *   自洽确定性环境随机流：同一 (environmentSeed, tick, chunkId) → 同一随机序列；
+ *   不把 policy outcome/worldHash 混进 RNG，保证 counterfactual A/B 共用外生随机数。
  *
  * backbone 排除（map-and-vision.md:62-63 "outside chunk's backbone passages"）：
  * chunk 边界格（x 或 y 对 32 取模为 0）视为主干通道候选排除集。官方精确
@@ -21,7 +22,6 @@ import { createHash } from "node:crypto";
 import { cellKey, type Position } from "../../domain/model.ts";
 import { createSeededRng } from "../deterministic/rng.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
-import { worldHash } from "../world/canonical.ts";
 import { chunkBounds, chunkKey, chunkOf, chunkQuota, parseChunkKey, CHUNK_SIZE } from "../world/chunks.ts";
 import type { SimWorld } from "../world/types.ts";
 
@@ -61,17 +61,17 @@ function isChunkBackbonePassage(x: number, y: number): boolean {
 }
 
 /**
- * 确定性 seed：稳定输入 (worldHash, tick, chunkId, missingSlots) → 固定
- * uint32。禁止 Math.random；同 seed 恒同结果。
+ * 确定性环境随机流：稳定输入 (environmentSeed, tick, chunkId) → 固定 uint32。
+ * counterfactual A/B 必须共享同一外生随机流；策略只能改变候选空槽集合，
+ * 不能通过 worldHash/missingSlots 间接改变随机数本身。
  */
 function deriveRefillSeed(
-  worldHashHex: string,
+  environmentSeed: number,
   tick: number,
   chunk: string,
-  missingSlots: number,
 ): number {
   const digest = createHash("sha256")
-    .update(`${worldHashHex}|${tick}|${chunk}|${missingSlots}`)
+    .update(`${environmentSeed}|${tick}|${chunk}`)
     .digest();
   return digest.readUInt32LE(0);
 }
@@ -95,7 +95,6 @@ export function refillChunkQuota(
   chunks: readonly string[],
   tick: number,
 ): RefillSummary {
-  const hash = worldHash(draft);
   const coreCells = coreOccupiedCells(draft);
   const summaries: ChunkRefillSummary[] = [];
   let total = 0;
@@ -128,7 +127,7 @@ export function refillChunkQuota(
     }
 
     // 不放回随机抽样：从候选空槽中逐次选位，同 seed 恒同结果。
-    const rng = createSeededRng(deriveRefillSeed(hash, tick, chunk, missing));
+    const rng = createSeededRng(deriveRefillSeed(draft.seed, tick, chunk));
     const resources = new Map(draft.terrain.resources);
     for (let i = 0; i < missing; i += 1) {
       const index = Math.floor(rng.next() * candidates.length);

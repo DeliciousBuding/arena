@@ -1073,6 +1073,8 @@ export async function runTenant(
         resources: number;
         plan: TickOutcome["plan"];
         coreId: string | null;
+        /** 上一权威 tick 的自有单位 id；W50 ownership-aware outcome 归属使用。 */
+        unitIds: readonly string[];
       } | null;
     } = { prev: null };
     let processedTickCount = 0;
@@ -1408,6 +1410,7 @@ export async function runTenant(
         resources: outcome.state.resources,
         plan: outcome.plan,
         coreId: outcome.state.core?.id ?? null,
+        unitIds: outcome.state.units.map((unit) => unit.id),
       };
       processedTickCount += 1;
       if (outcome.submitAttempted) liveSubmitCount += 1;
