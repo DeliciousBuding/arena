@@ -49,8 +49,8 @@ import {
 } from "./safety-planner-config.ts";
 import {
   EMPTY_SQUAD_MEMBERSHIP,
-  rallyPointAtSlot,
-  rallySlotForSquad,
+  rallyMemberSlot,
+  rallyPointAtMemberSlot,
   reconcileTacticalSquads,
   type SquadMembership,
   type SquadUnit,
@@ -849,10 +849,11 @@ export class SafetyPlanner {
     return this.tacticalSquadsValue.squads.find((squad) => squad.id === squadId);
   }
 
-  /** P1 战术小队（tactical-squads-v1）：按单位所属 squad 的 slot 选 rally 集结
-   *  位——不同小队集结到不同格（杜绝全员共享单一 rally cell / 同一路径目标）；
-   *  关闭时回落历史单一集结位（slot=0，零回归）。 */
-  private rallyPointForSquad(
+  /** P1 战术小队（tactical-squads-v1）：按单位所属 squad + 成员序号选 rally 集结
+   *  位——同 squad 的 2V+1R 各占不同格（不共用容量 2 的单格），不同 squad 也不
+   *  共用单格（8 squad × 3 成员 = 24 格互异）；关闭或单位无编成时回落历史单一
+   *  集结位（slot=0 语义，零回归）。 */
+  private rallyPointForUnit(
     unit: UnitSnapshot,
     target: Position,
     home: Position,
@@ -863,8 +864,13 @@ export class SafetyPlanner {
       return this.rallyPoint(target, home, obstacles, resourceCells);
     }
     const squad = this.squadOf(unit.id);
-    const slot = squad === undefined ? 0 : rallySlotForSquad(squad.index);
-    return rallyPointAtSlot(target, home, obstacles, resourceCells, slot);
+    if (squad === undefined) {
+      return this.rallyPoint(target, home, obstacles, resourceCells);
+    }
+    const members = [...squad.vanguardIds, ...squad.rangerIds];
+    const memberIndex = members.indexOf(unit.id);
+    const slot = rallyMemberSlot(squad.index, memberIndex === -1 ? 0 : memberIndex);
+    return rallyPointAtMemberSlot(target, home, obstacles, resourceCells, slot);
   }
 
   /** 启动播种（持久敌情测绘，2026-08-07）：从历史 calibration cases 提取的最后
@@ -1202,10 +1208,11 @@ export class SafetyPlanner {
     return target;
   }
 
-  /** 攻坚组是否"已到齐"（rally-assault-v1）：敌核外圈集结区（≤RALLY_DISTANCE+
-   *  RALLY_ARRIVE_RADIUS）内军事单位 ≥RALLY_READY_COUNT，或首到后超时强制压上
-   *  （防某单位被障碍卡住导致永久空等）。目标切换/被重新目击时重置 ready。 */
-  private rallyReady(target: Position, key: string, state: TickState): boolean {
+  /** 攻坚组是否"已到齐"（rally-assault-v1 历史全局门）：敌核外圈集结区
+   *  （≤RALLY_DISTANCE+RALLY_ARRIVE_RADIUS）内军事单位 ≥RALLY_READY_COUNT，或
+   *  首到后超时强制压上（防某单位被障碍卡住导致永久空等）。目标切换/被重新
+   *  目击时重置 ready。战术小队关闭（或单位无编成）时使用，零回归。 */
+  private globalRallyReady(target: Position, key: string, state: TickState): boolean {
     const arrived = [...state.vanguards, ...state.rangers].filter(
       (u) => chebyshev(u.position, target) <= RALLY_DISTANCE + RALLY_ARRIVE_RADIUS,
     ).length;
@@ -1224,6 +1231,51 @@ export class SafetyPlanner {
       return true;
     }
     return rec.ready;
+  }
+
+  /** 攻坚组是否"已到齐"（tactical-squads-v1 小队版）：按 squad 独立门——本 squad
+   *  全部存活成员到齐（arrived ≥ members.length）即放行本 squad，或本 squad 首到
+   *  后 RALLY_TIMEOUT_TICKS 超时强制压上。记录键 = `${squad.id}@${targetKey}`，
+   *  不同 squad 的到齐/超时互不影响（一个 squad 到齐不放行另一个）。 */
+  private squadRallyReady(target: Position, targetKey: string, state: TickState, squad: TacticalSquad): boolean {
+    const members = [...squad.vanguardIds, ...squad.rangerIds];
+    if (members.length === 0) return true;
+    const memberPositions = new Map<string, Position>();
+    for (const u of state.vanguards) memberPositions.set(u.id, u.position);
+    for (const u of state.rangers) memberPositions.set(u.id, u.position);
+    const arrived = members.filter((id) => {
+      const position = memberPositions.get(id);
+      return position !== undefined && chebyshev(position, target) <= RALLY_DISTANCE + RALLY_ARRIVE_RADIUS;
+    }).length;
+    const key = `${squad.id}@${targetKey}`;
+    const rec = this.rallyTargets.get(key);
+    if (rec === undefined) {
+      // 首个成员调用即评估到齐/超时（不因"建记录先返回 false"晚一 tick 放行——
+      // ranger 先于 vanguard 决策时同 squad 到齐也须同 tick 放行）。
+      this.rallyTargets.set(key, { ready: false, firstArriveTick: -1 });
+    }
+    const record = this.rallyTargets.get(key)!;
+    if (arrived >= members.length) {
+      record.ready = true;
+      return true;
+    }
+    if (record.firstArriveTick === -1 && arrived > 0) record.firstArriveTick = state.tick;
+    if (record.firstArriveTick !== -1 && state.tick - record.firstArriveTick >= RALLY_TIMEOUT_TICKS) {
+      record.ready = true;
+      return true;
+    }
+    return record.ready;
+  }
+
+  /** 攻坚组是否"已到齐"（rally-assault-v1）：战术小队开启时按单位所属 squad
+   *  独立门（squad 到齐/超时才放行，一个 squad 到齐不放行另一个）；关闭或单位
+   *  无编成时回落历史全局门（≥RALLY_READY_COUNT 或全局首到超时，零回归）。 */
+  private rallyReady(target: Position, key: string, state: TickState, unit: UnitSnapshot): boolean {
+    if (this.config.tacticalSquads === true) {
+      const squad = this.squadOf(unit.id);
+      if (squad !== undefined) return this.squadRallyReady(target, key, state, squad);
+    }
+    return this.globalRallyReady(target, key, state);
   }
 
   private huntSweepPoint(target: Position, index: number, reach: number): Position {
@@ -3122,10 +3174,10 @@ export class SafetyPlanner {
           const key = cellKey(enemyCoreMemory.position);
           if (
             this.config.rallyAssault === true &&
-            !this.rallyReady(enemyCoreMemory.position, key, state) &&
+            !this.rallyReady(enemyCoreMemory.position, key, state, unit) &&
             chebyshev(unit.position, enemyCoreMemory.position) > RALLY_ATTACK_RADIUS
           ) {
-            const point = this.rallyPointForSquad(unit, enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
+            const point = this.rallyPointForUnit(unit, enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
             if (!samePosition(unit.position, point)) {
               const direction = stepToward(unit.position, point, militaryObstacles);
               if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_rally");
@@ -3800,10 +3852,10 @@ export class SafetyPlanner {
         this.config.rallyAssault === true &&
         rallyCore !== undefined &&
         chebyshev(state.core.position, rallyCore.position) <= BOUNDED_RAID_DISTANCE &&
-        !this.rallyReady(rallyCore.position, cellKey(rallyCore.position), state) &&
+        !this.rallyReady(rallyCore.position, cellKey(rallyCore.position), state, unit) &&
         chebyshev(unit.position, rallyCore.position) > RALLY_ATTACK_RADIUS
       ) {
-        const point = this.rallyPointForSquad(unit, rallyCore.position, state.core.position, militaryObstacles, state.resourceCells);
+        const point = this.rallyPointForUnit(unit, rallyCore.position, state.core.position, militaryObstacles, state.resourceCells);
         if (!samePosition(unit.position, point)) {
           const direction = stepToward(unit.position, point, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_rally");

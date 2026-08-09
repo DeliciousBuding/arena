@@ -12,6 +12,10 @@
  * rally slot：每个 squad 有一个确定性 slot 索引，`rallyPointAtSlot` 按 slot
  * 从 8 方位候选错位取点——不同小队集结到不同格，杜绝"全员共享单一 rally
  * cell / 同一路径目标"。slot=0 时行为 = 历史 rallyPoint（首候选，零回归）。
+ * rally member slot（tactical-squad-rally-v1，2026-08-09）：在 squad slot 之上
+ * 再按成员序号细分——同 squad 的 2V+1R 各占一个唯一集结格（不共用容量 2 的
+ * 单格），8 squad × 3 成员 = 24 格（3 环 × 8 方位）互不碰撞；障碍/资源格跳过，
+ * 全堵回退敌核格（fail-safe）。关闭时零消费（零回归）。
  *
  * 默认关：SafetyPlanner 只在 config.tacticalSquads === true 时调用；关闭时
  * 本模块零消费（零回归）。
@@ -62,6 +66,18 @@ export const RALLY_SLOT_DISTANCE = 5;
 
 /** rally 方位候选数（8 方位，与 safety-planner rallyPoint 同构）。 */
 export const RALLY_SLOT_COUNT = 8;
+
+/** rally member slot 步长：每 squad 成员数（2V+1R = 3）——squad index × 步长
+ *  得该 squad 首成员 slot，成员依次 +1。 */
+export const RALLY_SQUAD_MEMBER_COUNT = 3;
+
+/** rally member slot 总数：8 squad × 3 成员 = 24（3 环 × 8 方位）。常见 8 个
+ *  squad 全部成员互不碰撞；第 9 个起取模回绕（超常规模，fail-safe 收敛）。 */
+export const RALLY_MEMBER_SLOT_COUNT = 24;
+
+/** rally member slot 环数：第 k 环 Chebyshev 距离 = RALLY_SLOT_DISTANCE + k
+ *  （5,6,7），环间错距保证 24 格互异。 */
+export const RALLY_MEMBER_RING_COUNT = 3;
 
 export const EMPTY_SQUAD_MEMBERSHIP: SquadMembership = Object.freeze({
   squads: Object.freeze([]),
@@ -253,6 +269,45 @@ export function rallyPointAtSlot(
   const start = rallySlotForSquad(slot);
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[(start + i) % candidates.length]!;
+    if (obstacles.has(cellKey(candidate))) continue;
+    if (resourceCells.has(cellKey(candidate))) continue;
+    return candidate;
+  }
+  return target;
+}
+
+/** squad 顺序索引 + 成员序号 → 唯一 rally member slot（0..23）。
+ *  同 squad 的 2V+1R 占用 3 个连续 slot（环内不同方位/跨环），跨 squad 不重叠
+ *  （8 squad × 3 成员 = 24 slot 全覆盖）；超过 8 squad 取模回绕（fail-safe）。 */
+export function rallyMemberSlot(squadIndex: number, memberIndex: number): number {
+  const slot = squadIndex * RALLY_SQUAD_MEMBER_COUNT + memberIndex;
+  return ((slot % RALLY_MEMBER_SLOT_COUNT) + RALLY_MEMBER_SLOT_COUNT) % RALLY_MEMBER_SLOT_COUNT;
+}
+
+/** 按 rally member slot 取集结位：slot → (环, 方位)，环 = 第 k 环（Chebyshev
+ *  距离 RALLY_SLOT_DISTANCE + k），方位 = 8 方位之一。同 squad 成员各占不同格，
+ *  跨 squad 不共用单格（无障碍/资源时 24 格全互异）；障碍/资源格跳过，全堵
+ *  回退敌核格（fail-safe，同历史 rallyPoint 兜底）。环内 slot<8 时与
+ *  rallyPointAtSlot 同构（方向索引一致）。 */
+export function rallyPointAtMemberSlot(
+  target: Position,
+  home: Position,
+  obstacles: ReadonlySet<string>,
+  resourceCells: ReadonlySet<string>,
+  slot: number,
+): Position {
+  const ring = Math.floor(slot / RALLY_SLOT_COUNT);
+  const direction = ((slot % RALLY_SLOT_COUNT) + RALLY_SLOT_COUNT) % RALLY_SLOT_COUNT;
+  const distance = RALLY_SLOT_DISTANCE + ring;
+  const offsets: ReadonlyArray<readonly [number, number]> = [
+    [1, 0], [-1, 0], [0, 1], [0, -1],
+    [1, 1], [1, -1], [-1, 1], [-1, -1],
+  ];
+  const candidates = offsets
+    .map(([dx, dy]) => [target[0] + dx * distance, target[1] + dy * distance] as Position)
+    .sort((a, b) => manhattan(a, home) - manhattan(b, home));
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[(direction + i) % candidates.length]!;
     if (obstacles.has(cellKey(candidate))) continue;
     if (resourceCells.has(cellKey(candidate))) continue;
     return candidate;
