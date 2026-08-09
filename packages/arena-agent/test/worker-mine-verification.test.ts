@@ -311,3 +311,27 @@ test("surveyOnSupplyGap: 缺省 false = 零回归（dummy 走 surveyWorkerCap �
   assert.equal(tasks.filter((t) => t === "GO_RESOURCE").length, 1);
   assert.equal(tasks.filter((t) => t === "WAIT").length, 4);
 });
+
+test("surveyBurst + supplyGap: burst 期间全局 EXPLORE ≤ cap（2026-08-10 P0-1 回归门）", () => {
+  // t1 生产 regression：迁移后 surveyBurstActive=true + supplyGapSurvey=true
+  // 双路 surveyorIds 双开火（预留3 + leftover3 = 6，2x cap=3）。
+  // 修复：burst 期间 leftover 走空，全局 EXPLORE = 预留 cap=3。
+  const mission = t2Mission({ alwaysSurvey: true });
+  // 6 worker + 1 可见矿 → 1 人采矿、5 dummy；burst 预留 cap=3 → 3 EXPLORE；
+  // leftover 走空（burst）→ 0 额外；全局 3 EXPLORE + 2 WAIT（不破 cap）。
+  const snap = snapshotOf(makeTurn([
+    worker("w1", 1, 0),
+    worker("w2", 0, 2),
+    worker("w3", -1, 0),
+    worker("w4", 0, -2),
+    worker("w5", 2, 2),
+    worker("w6", -2, -2),
+  ], {
+    resourceCells: new Set(["3,0"]),
+  }));
+  const plan = new WorkerTaskPlanner({ mission }).plan(snap, [], { surveyBurstActive: true });
+  const tasks = plan.assignments.map((a) => a.task.type);
+  const explorers = tasks.filter((t) => t === "EXPLORE").length;
+  assert.ok(tasks.includes("GO_RESOURCE"), "有矿可采的 worker 正常采矿");
+  assert.ok(explorers <= 3, `burst 期间全局 EXPLORE ≤ cap=3（P0-1 修复），实际 ${explorers}`);
+});

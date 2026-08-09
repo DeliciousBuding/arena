@@ -514,18 +514,15 @@ export class WorkerTaskPlanner {
           dummyWorkers.push(worker);
         }
       }
-      const alwaysOutbound = this.mission.alwaysSurvey === true;
       const supplyGapSurvey = this.mission.surveyOnSupplyGap === true && dummyWorkers.length > 0;
-      // 勘探集合：supplyGapSurvey 时走 cap 仲裁（2026-08-10 修复：原 new Set(all)
-      // 全员 EXPLORE 导致 t1 经济死锁，res 跌破 150；现 cap 硬上限始终生效）。
-      // supplyGapSurvey=false 时保持原行为（burst 空、非 burst cap 仲裁）。
-      // alwaysSurvey 不再 OR 全员（同上修复：alwaysSurvey=true 只启用勘探，
-      // 不突破 cap；cap 外 dummy 守家 WAIT 等矿刷新）。
-      const leftoverSurveyors = supplyGapSurvey
-        ? surveyorIds(dummyWorkers, this.mission, false)
-        : options.surveyBurstActive === true
-          ? new Set<string>()
-          : surveyorIds(dummyWorkers, this.mission, false);
+      // 2026-08-10 P0-1 修复：burst 期间 leftover 走空（预留 line 369 已满足
+      // floor/cap=3，覆盖测绘语义）。原 supplyGapSurvey 直接走 surveyorIds(cap)
+      // 忽略 surveyBurstActive → burst 期间两路双开火（预留3 + leftover3 = 6，
+      // 2x cap）。现 burst 优先走空，非 burst 稳态保留 supplyGap cap=3。
+      // alwaysSurvey 死变量已清理（edfa8ab 删 OR 全员后未再引用）。
+      const leftoverSurveyors = options.surveyBurstActive === true
+        ? new Set<string>()
+        : surveyorIds(dummyWorkers, this.mission, false);
       for (const worker of pool) {
         const key = realTargets.get(worker.id);
         if (key !== undefined) {
