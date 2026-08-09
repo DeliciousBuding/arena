@@ -21,7 +21,20 @@ export type StallKind =
   /** go_focus 远征：worker 被 focusRegion 支离 Core 且 0 产出。 */
   | "focus_exile"
   /** capacity_wait 占主导（容量互堵循环）。 */
-  | "capacity_wait_loop";
+  | "capacity_wait_loop"
+  /** 军事互堵死锁（2026-08-10 新增）：军事单位连续多 tick MOVE_FAILED
+   *  （CELL_UNIT_LIMIT/MOVE_CONTESTED）且无战斗进展（无 SHOT_HIT/UNIT_DAMAGED）。
+   *  生产实证 vanguard_pressure 642+302 次互堵，经济正常时既有 5 模式全不命中。 */
+  | "military_interlock"
+  /** 空枪空转（2026-08-10 新增）：游侠连续多 tick SHOT_MISSED 且无 SHOT_HIT。
+   *  生产实证 shoot_cell 1530 次 + ranger_memory_shot 338 次空枪。 */
+  | "shot_missed_spiral"
+  /** 迁移卡死（2026-08-10 新增）：CORE_MOVE_START_FAILED 连续多 tick。
+   *  生产实证 139 次 TERRAIN_BLOCKED + 248 次 CELL_UNIT_LIMIT。 */
+  | "migration_stall"
+  /** 产兵饿死（2026-08-10 新增）：CORE_SPAWN_FAILED 连续多 tick。
+   *  生产实证 34 次（核心格被占/资源不足）。 */
+  | "spawn_stall";
 
 export interface StallObservation {
   readonly tick: number;
@@ -36,6 +49,13 @@ export interface StallObservation {
   readonly intentCounts: Readonly<Record<string, number>>;
   /** 满载 worker 位置指纹（无满载 worker 时 null）；cargo_blocked 的移动判据。 */
   readonly cargoWorkerFingerprint: string | null;
+  /** 结算侧失败事件计数（按 eventType 聚合，2026-08-10 新增——军事/迁移/
+   *  spawn 死锁检测数据源；undefined = 调用方未提供，新 4 模式不判定）。 */
+  readonly failedEventCounts?: Readonly<Record<string, number>>;
+  /** 军事单位数（vanguard+ranger，军事死锁判据分母）。 */
+  readonly militaryCount?: number;
+  /** SHOT_HIT 计数（空枪判据"无命中"用；undefined 视为 0）。 */
+  readonly shotHitCount?: number;
 }
 
 export interface StallEvent {
@@ -159,6 +179,28 @@ export class StallDetector {
       noProduction &&
       obs.waitCount > 0 &&
       capacityWaitCount(obs.intentCounts) >= Math.ceil(obs.workerCount / 2);
+
+    // 2026-08-10 新增 4 模式：与 noProduction 解耦（经济正常也报），数据源
+    // 是结算侧 failedEventCounts（undefined = 调用方未提供，不判定）。阈值同
+    // thresholdTicks（连续命中即报，rising-edge 只发一次）。
+    const failed = obs.failedEventCounts ?? {};
+    const failedCount = (type: string): number => failed[type] ?? 0;
+    const militaryCount = obs.militaryCount ?? 0;
+    const shotHit = obs.shotHitCount ?? 0;
+    // 军事互堵：军事单位 MOVE_FAILED ≥ ceil(military/2) 且无战斗进展（无命中
+    // 无造成伤害）。经济正常时既有 5 模式不命中，此模式独立兜底。
+    results.military_interlock =
+      militaryCount > 0 &&
+      failedCount("UNIT_MOVE_FAILED") >= Math.ceil(militaryCount / 2) &&
+      shotHit === 0 &&
+      failedCount("UNIT_DAMAGED") === 0;
+    // 空枪空转：有 SHOT_MISSED 且无 SHOT_HIT（游侠连发空枪，无命中压制）。
+    results.shot_missed_spiral =
+      failedCount("SHOT_MISSED") > 0 && shotHit === 0;
+    // 迁移卡死：CORE_MOVE_START_FAILED（任何原因——TERRAIN_BLOCKED/CELL_UNIT_LIMIT）。
+    results.migration_stall = failedCount("CORE_MOVE_START_FAILED") > 0;
+    // 产兵饿死：CORE_SPAWN_FAILED（核心格被占/资源不足）。
+    results.spawn_stall = failedCount("CORE_SPAWN_FAILED") > 0;
     return results;
   }
 
@@ -192,6 +234,25 @@ export class StallDetector {
           waitCount: obs.waitCount,
           intentCounts: obs.intentCounts,
         };
+      case "military_interlock":
+        return {
+          militaryCount: obs.militaryCount ?? 0,
+          failedEventCounts: obs.failedEventCounts ?? {},
+          shotHitCount: obs.shotHitCount ?? 0,
+        };
+      case "shot_missed_spiral":
+        return {
+          shotMissed: (obs.failedEventCounts ?? {})["SHOT_MISSED"] ?? 0,
+          shotHitCount: obs.shotHitCount ?? 0,
+        };
+      case "migration_stall":
+        return {
+          failedEventCounts: obs.failedEventCounts ?? {},
+        };
+      case "spawn_stall":
+        return {
+          failedEventCounts: obs.failedEventCounts ?? {},
+        };
     }
   }
 }
@@ -202,4 +263,8 @@ const STALL_KINDS: readonly StallKind[] = [
   "patrol_only",
   "focus_exile",
   "capacity_wait_loop",
+  "military_interlock",
+  "shot_missed_spiral",
+  "migration_stall",
+  "spawn_stall",
 ];

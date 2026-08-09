@@ -1,12 +1,13 @@
 # Arena Agent 协作说明
 
-最后更新：2026-08-08。
+最后更新：2026-08-10。
 
 （TS 线）与 `arena-rs`（Rust 线）曾各自独立实现引擎与策略，共享数据层
 （`ARENA_DATA_ROOT`、共享 schema、calibration case、数据集），在同一套
 真实数据上正面比较（2026-08-07 用户裁决 RS 线赛马认输，本仓成为唯一实现线）。
-真实数据采集执行采用单一 writer 纪律（防双 schema/撕裂写）：**t1/t2/t3/t4
-全部由本线（TS）采集**；Rust 看护 `ArenaWatchdogRust`/`ArenaWatchdogT34` 已禁用。
+**2026-08-09 起生产分线**：t1 由本线（TS supervisor）采集，t2/t3/t4 转为
+Python 客户端（waaiging arena-hero-tactic + fork SDK，见根 AGENTS.md）。
+真实数据采集执行采用单一 writer 纪律（防双 schema/撕裂写）。
 本线遵循原生设计：优先 Node 标准能力、现有 SDK/lock/JSONL，不引入
 第二套进程框架、控制面或配置系统。
 
@@ -44,18 +45,20 @@ pnpm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --shadow
 > 其他 worktree 首次使用时需 `pnpm install` 切换布局（junction 清理见
 > `docs/design/branch-governance-v1.md` §5.3：禁 `rm -rf` 含 junction 目录）。
 
-## 本地运行形态（2026-08-06 起；t3/t4 收回 TS 线 2026-08-07）
+## 本地运行形态（2026-08-06 起；2026-08-09 起 t1-only TS 生产）
 
-us1 已关闭，t1/t2/t3/t4 本地 live（deterministic + submitEnabled=true，data root 默认 `../data`，baseDir=runtime）：
+t1 本地 live（deterministic + submitEnabled=true，data root 默认 `../data`，baseDir=runtime）。
+**2026-08-09 起 t2/t3/t4 转为 Python 客户端**（waaiging arena-hero-tactic + fork SDK），
+本线 supervisor 仅管 t1（watchdog `TENANTS=["t1"]`）：
 ```bash
-pnpm run arena:supervisor -- --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --port=8120
+pnpm run arena:supervisor -- --configs=t1 --mode=deterministic --live --record-calibration --port=8120
 ```
-- 看护：Windows 计划任务 `ArenaWatchdog`（每分钟，t1-t4）+ `scripts/arena-watchdog.mjs`（Node 版 v5：
+- 看护：Windows 计划任务 `ArenaWatchdog`（每分钟，t1）+ `scripts/arena-watchdog.mjs`（Node 版 v5：
   异常自动恢复：确认死透 → 清死锁 → 带 `--record-calibration` 重启，日志 `~/arena-watchdog.log`；
   启动入口 `scripts/arena-watchdog-hide.vbs`（v5，worktree 相对解析））；
-- 生产租户为四线 `t1`/`t2`/`t3`/`t4`（用户 2026-08-06 裁决；t3/t4 2026-08-07 收回 TS 线，
-  Rust 线退役、看护已禁用）；supervisor 跑 `--configs=t1,t2,t3,t4`，
-  watchdog 看护四线（含 t3/t4 锁清理与拉起）。
+- 生产租户 t1（用户 2026-08-06 裁决四线，2026-08-07 RS 线退役，
+  2026-08-09 t2/t3/t4 转 Python 客户端）；supervisor 跑 `--configs=t1`，
+  watchdog 看护 t1。t2/t3/t4 由 Python 客户端独立采集（见根 AGENTS.md §agent-ecosystem-v1）。
 
 ### 租户始终运行 + 数据收集线保障（2026-08-06；t3/t4 收回 TS 线 2026-08-07）
 

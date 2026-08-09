@@ -338,6 +338,32 @@ test("场景1b：无活跃敌核 → 走廊审计通过 → LEG_MOVE", () => {
   assert.equal(result.plan?.path.lookahead, 30);
 });
 
+test("collectObstacles：陈旧资源格对 Core 永久设障（路径绕开，不再 TERRAIN_BLOCKED）", () => {
+  // 2026-08-10 修复：资源格对 Core 迁入是静态不可通行（规则表 RESOURCE |
+  // Core may migrate: no）。旧实现按新鲜窗口设障，陈旧资源目击="当可走" →
+  // 路径直线穿过资源格 → 核心走到格前 START_MOVE 被引擎拒（t1 生产实证
+  // CORE_DESTINATION_TERRAIN_BLOCKED 139 次）。refreshSurvey=false 保持陈旧
+  // 目击（模拟 survey 库里很久前测绘的资源格）——路径必须绕开 (5,0)。
+  // A* 8 邻域可走对角等长绕行（[4,0]→[5,1]→[6,0]），故长度仍 30 但不穿过
+  // 资源格；若修复失效则直线穿过 (5,0)（也是 30 格但含资源格）——核心
+  // 证据 = 路径不含 (5,0)。
+  const world: SimWorld = {
+    resources: [{ x: 5, y: 0, lastSeenTick: 1 }], // 陈旧：位于直线路径 [0,0]→[29,0] 上
+    enemyCores: [],
+    refreshSurvey: false,
+  };
+  const sim = new MigrationSim(makeInitialPlan(29), world, 1000, [0, 0], "uuid-A");
+
+  const result = sim.step();
+  assert.equal(result.plan?.state, "LEG_MOVE", "应照常规划（绕行而非卡死）");
+  const cells = result.plan!.path.cells;
+  assert.ok(
+    !cells.some((cell) => cell[0] === 5 && cell[1] === 0),
+    `路径不得穿过资源格 (5,0)：${JSON.stringify(cells.slice(0, 8))}`,
+  );
+  assert.ok(cells.length <= 32, `绕行路径长度应合理（≤32），实际 ${cells.length}`);
+});
+
 // ---------------------------------------------------------------------------
 // 场景 2：荒漠段（起点矿簇之外无近矿）→ minSettle 即走；富集段自动多停；cargo 阻滞
 // ---------------------------------------------------------------------------

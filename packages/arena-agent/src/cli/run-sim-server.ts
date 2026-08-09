@@ -47,6 +47,7 @@ import {
 import { createSeededRng } from "../sim/deterministic/rng.ts";
 import { settleTick, type SettlementContext } from "../sim/engine/settlement.ts";
 import {
+  countFailedEvents,
   hashPlan,
   type EpisodeRecord,
   type EpisodeResult,
@@ -676,6 +677,7 @@ class SimServerRuntime {
         // 连续超时达标后按重放处理的客户端（对齐 episode 的字段形状）。
         decisionTimeouts: tickDecisionTimeouts,
         decisionTimeoutSkipped: tickDecisionSkipped,
+        failedEventCounts: countFailedEvents(result.events),
       });
       settledTicks += 1;
 

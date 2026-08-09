@@ -27,7 +27,7 @@ import {
 import { UNIT_MAX_HP } from "../domain/plan-validator.ts";
 import { countEnemiesNearCore } from "../domain/plan-validator.ts";
 import { PhaseMachine } from "../domain/phase-machine.ts";
-import { type CoreHuntTarget, World } from "../domain/world.ts";
+import { type CoreHuntTarget, visionLineBlocked, World } from "../domain/world.ts";
 import type { MigrationPlanV1 } from "../migration/plan.ts";
 import {
   assessThreat,
@@ -285,6 +285,10 @@ const RANGER_SPREAD_DELTAS: readonly (readonly [number, number])[] = [
 ];
 /** 军事打野沿环扫描时间预算：同一八分点目标 >N tick 未到达强制换向（防障碍点卡死）。 */
 const SCAVENGE_HOLD_TICKS = 24;
+/** C7 军事单位卡死连续上限（2026-08-10）：位置连续 N tick 不变 = 容量互堵/
+ *  路径被堵 → 强制 spread 到相邻空格（复用 nearestFreeAdjacent），打断
+ *  capacity_wait 无限循环（不产生 UNIT_MOVE_FAILED → moveFailedStreak 盲区）。 */
+const MILITARY_STUCK_TICKS = 3;
 /**
  * 军事散开一格（2026-08-10，vanguard_pressure 互堵修复）：从本格 8 邻选
  * "非障碍、己方占用 <2（容量 2）、无可见敌"的最近格——横竖优先（数组序，
@@ -666,6 +670,11 @@ export class SafetyPlanner {
   private harvestMemStuck = new Map<string, number>();
   /** 上 tick worker 位置（记忆矿卡死检测：位置未变 = 未推进）。 */
   private lastWorkerPos = new Map<string, Position>();
+  /** C7 修复（2026-08-10）：军事单位卡死连续 tick 计数（capacity_wait 不产生
+   *  UNIT_MOVE_FAILED → moveFailedStreak 盲区 → 军事单位无限 WAIT）。
+   *  用 lastWorkerPos（实际存所有单位位置）检测位置未变，连续 ≥3 tick
+   *  → 强制 spread 到相邻空格（复用 nearestFreeAdjacent）。 */
+  private militaryStuckStreak = new Map<string, number>();
   /** Worker 活性恢复冷却：unitId → 截止 tick。冷却内不主动领取 stale memory mine，
    *  让 reset+rotate 真正获得一段探索窗口，防下一 Tick 又被同一历史任务吸回去。 */
   private workerLivenessRecoveryUntil = new Map<string, number>();
@@ -1871,6 +1880,28 @@ export class SafetyPlanner {
     }
     // 记忆矿容量感知 + 卡死检测的 per-tick 状态（2026-08-08，t3 生产实证修复）。
     this.allocatedMines = new Map<string, number>();
+
+    // C7 修复（2026-08-10）：军事单位卡死检测——位置连续 N tick 不变 =
+    // capacity_wait / 路径被堵（不产生 UNIT_MOVE_FAILED → moveFailedStreak 盲区）。
+    // 阈值后 spread 到相邻空格，打断无限 WAIT 循环。lastWorkerPos 存所有单位
+    // 位置（上 tick 快照），此处先读后写（读 = 比较上 tick，写 = 存本 tick）。
+    for (const unit of state.vanguards) {
+      const prevPos = this.lastWorkerPos.get(unit.id);
+      if (prevPos !== undefined && samePosition(prevPos, unit.position)) {
+        this.militaryStuckStreak.set(unit.id, (this.militaryStuckStreak.get(unit.id) ?? 0) + 1);
+      } else {
+        this.militaryStuckStreak.delete(unit.id);
+      }
+    }
+    for (const unit of state.rangers) {
+      const prevPos = this.lastWorkerPos.get(unit.id);
+      if (prevPos !== undefined && samePosition(prevPos, unit.position)) {
+        this.militaryStuckStreak.set(unit.id, (this.militaryStuckStreak.get(unit.id) ?? 0) + 1);
+      } else {
+        this.militaryStuckStreak.delete(unit.id);
+      }
+    }
+
     for (const unit of state.units) this.lastWorkerPos.set(unit.id, unit.position);
 
     // cargo-rescue-v1（W6，2026-08-09，cargo 被堵检测）：满载 worker 的 cargo
@@ -3853,8 +3884,22 @@ export class SafetyPlanner {
     const nearest = nearestEnemy(predictionPool, unit.position);
     if (nearest !== null) {
       const predicted = predictedEnemyCell(unit.position, nearest.position);
+      // C1 修复（2026-08-10）：预判射击对"确认静止"的敌人跳过——
+      // 生产实证 shoot_cell 367 发 → 360 次 SHOT_MISSED（98% 空枪率），
+      // 根因是敌方 WORKER 站在资源格上采集不动，预判格永远是空的。
+      // 跳过条件（满足任一即不预判开火，落入下方走位接敌）：
+      // 1. enemyHints 有记忆且 prevPosition === position → 确认静止
+      // 2. 敌人在资源格上（采集 WORKER 不动）→ 高概率静止
+      // 首次目击（无 enemyHints 记忆）允许预判——无证据反证其移动。
+      const enemyMemory = this.world.enemyHints().find((hint) => hint.id === nearest.id);
+      const enemyOnResourceCell = state.resourceCells.has(cellKey(nearest.position));
+      const enemyIsStationary = enemyMemory !== undefined
+        && enemyMemory.prevPosition !== undefined
+        && samePosition(enemyMemory.prevPosition, nearest.position);
       if (
         predicted !== null &&
+        !enemyIsStationary &&
+        !enemyOnResourceCell &&
         // 预测格必须是敌人"一步可达"的格：障碍格敌人永远走不进去（t1 生产
         // 实测 79857-80001：敌方 WORKER 被障碍列 [-539,-80] 隔开，游侠群
         // 连开 320+ 枪全部 SHOT_MISSED——预判射击只查了弹道中间格，漏查
@@ -3893,7 +3938,13 @@ export class SafetyPlanner {
         canShoot(unit.position, coreMemory.position, obstacles) &&
         // 不打被自己单位占位的格（t1 69640 拆核后实证：死核格上站着己方
         // Vanguard，空放枪观感像打友军 + 浪费 DPS）——占位说明该格当前无敌人。
-        !state.units.some((u) => samePosition(u.position, coreMemory.position))
+        !state.units.some((u) => samePosition(u.position, coreMemory.position)) &&
+        // C2 修复（2026-08-10）：视野确认缺失 = 该格在友方视野内但无可见
+        // 敌核 → 核已迁移/被摧毁/重生到别处 → 记忆格是空的 → 不空枪。
+        // 生产实证 338 次 SHOT_MISSED 的根因之一 = 死核/迁移核的旧格记忆
+        // 在 60 tick 窗口内持续被打。视野判定用 visionLineBlocked（C4 修复
+        // 后与官方 supercover 一致）。
+        !this.cellVisibleButNoCore(state, coreMemory.position, obstacles)
       ) {
         set(
           unit,
@@ -4274,10 +4325,75 @@ export class SafetyPlanner {
     return state.units.some((unit) => unit.id === beacon.carrierId) ? 10 : 5;
   }
 
+  /** C2 修复（2026-08-10）：检查某格是否在友方视野内且无可见敌核——
+   *  用于 ranger_memory_shot 视野确认缺失（格在视野内但无核 = 核已迁移/
+   *  被摧毁/重生到别处 → 记忆格是空的 → 不空枪）。视野判定与
+   *  resourceCellCoveredByVision 同口径：Manhattan 半径 + visionLineBlocked。 */
+  private cellVisibleButNoCore(
+    state: TickState,
+    cell: Position,
+    obstacles: ReadonlySet<string>,
+  ): boolean {
+    const covered = (origin: Position, radius: number): boolean =>
+      manhattan(origin, cell) <= radius &&
+      !visionLineBlocked(origin, cell, obstacles);
+    let anyObserver = false;
+    if (state.core !== null && covered(state.core.position, 5)) anyObserver = true;
+    if (!anyObserver) {
+      for (const unit of state.units) {
+        const radius = unit.unitType === "WORKER" ? 3 : unit.unitType === "VANGUARD" ? 4 : 5;
+        if (covered(unit.position, radius)) {
+          anyObserver = true;
+          break;
+        }
+      }
+    }
+    if (!anyObserver) return false;
+    // 格在视野内 → 检查有无可见敌核在此格
+    return !state.visibleEnemies.some(
+      (enemy) => enemy.kind === "CORE" && samePosition(enemy.position, cell),
+    );
+  }
+
+  /** C7 修复（2026-08-10）：军事单位卡死 spread——位置连续 ≥MILITARY_STUCK_TICKS
+   *  不变 + 无邻接敌（不在战斗中）→ 强制 spread 到相邻空格，打断 capacity_wait
+   *  无限循环。返回 true = 已 spread（调用方 return），false = 未触发（继续正常逻辑）。
+   *  复用 nearestFreeAdjacent（vanguard_pressure 互堵修复的同款散开逻辑）。 */
+  private checkMilitaryStuckSpread(
+    unit: UnitSnapshot,
+    state: TickState,
+    militaryObstacles: ReadonlySet<string>,
+    enemies: readonly VisibleEntity[],
+    set: (unit: UnitSnapshot, action: UnitAction, intent: string) => void,
+  ): boolean {
+    const streak = this.militaryStuckStreak.get(unit.id) ?? 0;
+    if (streak < MILITARY_STUCK_TICKS) return false;
+    // 战斗中不 spread（邻接敌 = SWEEP/射击优先——卡着也要打）
+    const hasAdjacentEnemy = enemies.some(
+      (enemy) => chebyshev(unit.position, enemy.position) <= 1,
+    );
+    if (hasAdjacentEnemy) return false;
+    const spread = nearestFreeAdjacent(
+      unit.position,
+      militaryObstacles,
+      occupancyCounts(state),
+      enemies,
+    );
+    if (spread === null || samePosition(unit.position, spread)) return false;
+    const direction = stepToward(unit.position, spread, militaryObstacles);
+    if (direction === null) return false;
+    set(unit, { type: "MOVE", direction }, "military_stuck_spread");
+    return true;
+  }
+
   private coreWantsSpawn(state: TickState): boolean {
     const core = state.core;
     if (core === null || core.state !== "NORMAL") return false;
-    if (state.population >= this.config.populationCeiling) return false;
+    // C6 修复（2026-08-10）：高水位消费分支在 pop≥ceiling 时仍会 SPAWN——
+    // spawnYield 需同步感知此条件，否则满载 worker 不让位 → SPAWN 被
+    // 占格挡掉（CELL_UNIT_LIMIT）。resourceHighWater 缺省 0 = 不感知（零回归）。
+    const resourceHighWater = this.config.resourceHighWater ?? 0;
+    if (resourceHighWater === 0 && state.population >= this.config.populationCeiling) return false;
     if (core.hp < 5) return false; // heal 优先于 spawn
     if (core.shield < this.shieldCap(state) && state.resources >= 1) return false; // repair 优先（W9 beacon-hold 持标盾上限 10）
     if (this.config.accumulateTarget > 0 && state.resources >= this.config.accumulateTarget) {

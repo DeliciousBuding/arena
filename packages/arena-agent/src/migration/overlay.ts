@@ -12,6 +12,7 @@
  */
 
 import type { Plan } from "../domain/model.ts";
+import { cellKey } from "../domain/model.ts";
 import { isMigrationLeaseFresh } from "./lease.ts";
 import type { MigrationPlanV1 } from "./plan.ts";
 import type { MigrationRuntimeConfig } from "./config.ts";
@@ -33,6 +34,11 @@ export interface MigrationOverlayContext {
   /** 提交前重读的计划文件 epoch（fencing）；null = 文件已被清/改写。 */
   readonly fileEpoch: number | null;
   readonly config: MigrationRuntimeConfig;
+  /**
+   * runtime 已知的不可迁入地形格（障碍 + 资源格，2026-08-10 修复）：发射
+   * START_MOVE 前校验下一路径格；undefined/null = 不校验（零回归）。
+   */
+  readonly terrainBlockedCells?: ReadonlySet<string> | null;
 }
 
 export interface MigrationOverlayResult {
@@ -183,9 +189,22 @@ export function migrationOverlay(context: MigrationOverlayContext): MigrationOve
       Math.max(0, migrationPlan.legProgress.legIndex),
     );
     if (next !== null) {
-      coreOrder = { type: "START_MOVE", direction: next.direction };
-      plan = { ...plan, coreAction: coreOrder };
-      reasons.push(`burst 推进 → ${next.direction}（路径格 ${next.nextIndex}）`);
+      // 发射防御（2026-08-10 修复）：下一路径格若在 runtime 已知的障碍/资源
+      // 集合里 → 不发射 START_MOVE（fail-closed 等 conductor REPLAN/清路）。
+      // 规则表 RESOURCE/OBSTACLE | Core may migrate: no——路径规划用完整
+      // survey 障碍集（conductor 侧修复），此处是防"观测与计划时差/未知
+      // 地形"的最后一层兜底；terrainBlockedCells 未提供 = 不校验（零回归）。
+      const nextCell = migrationPlan.path.cells[next.nextIndex]!;
+      const terrainBlocked = context.terrainBlockedCells !== undefined &&
+        context.terrainBlockedCells !== null &&
+        context.terrainBlockedCells.has(cellKey(nextCell));
+      if (terrainBlocked) {
+        reasons.push(`下一路径格 [${nextCell[0]},${nextCell[1]}] 为已知障碍/资源格，不发射 START_MOVE（等待 conductor 换路）`);
+      } else {
+        coreOrder = { type: "START_MOVE", direction: next.direction };
+        plan = { ...plan, coreAction: coreOrder };
+        reasons.push(`burst 推进 → ${next.direction}（路径格 ${next.nextIndex}）`);
+      }
     } else {
       reasons.push("路径已耗尽或核心偏离路径，等待 conductor 更新");
     }

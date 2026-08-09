@@ -193,3 +193,20 @@ test("directionToNextPathCell: 沿路径找相邻格方向；不相邻返回 nul
   assert.equal(directionToNextPathCell(cells, [5, 5], 0), null);
   assert.equal(directionToNextPathCell([[0, 0]], [0, 0], 0), null); // 无后续格
 });
+
+test("overlay: 下一路径格是已知障碍/资源格 → 不发射 START_MOVE（t1 生产 139 次 TERRAIN_BLOCKED 实证）", () => {
+  // 核心 [0,0]，路径下一格 [0,-1] 在 terrainBlockedCells（已知资源/障碍）里
+  // → fail-closed 不发射，等 conductor 换路（规则表 RESOURCE/OBSTACLE |
+  // Core may migrate: no）。
+  const result = migrationOverlay(context({
+    terrainBlockedCells: new Set(["0,-1"]),
+  }));
+  assert.equal(result.coreOrder, null, "已知不可迁入格不得发射 START_MOVE");
+  assert.ok(result.reasons.some((r) => r.includes("不发射")), result.reasons.join("; "));
+});
+
+test("overlay: terrainBlockedCells 未提供 → 正常发射（零回归）", () => {
+  const result = migrationOverlay(context({}));
+  assert.notEqual(result.coreOrder, null, "无防御数据时保持历史行为");
+  assert.deepEqual(result.coreOrder, { type: "START_MOVE", direction: "UP" });
+});

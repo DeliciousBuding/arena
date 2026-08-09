@@ -624,6 +624,15 @@ export interface SafetyPlannerConfig {
    *  防"核心永远想产兵、worker 永远卸不了"的让位饿死循环。 */
   readonly spawnYieldMaxTicks?: number;
   /**
+   * 资源高水位线（2026-08-10，C6 修复）：资源 ≥ 此值时 deterministic
+   * planner 的 P2 高水位消费分支会 SPAWN（即使 pop≥ceiling）。本字段让
+   * SafetyPlanner.coreWantsSpawn 也能感知此条件 → spawnYield 让 worker 先
+   * 让出核心格 → 下 tick SPAWN 不被占格挡掉（生产 t1 tick 80585-80586
+   * DEPOSIT_SUCCEEDED + CORE_SPAWN_FAILED/CELL_UNIT_LIMIT 同 tick 34 次）。
+   * 缺省 0 = 不感知高水位（零回归，spawnYield 仅由正常 SPAWN 分支触发）。
+   */
+  readonly resourceHighWater?: number;
+  /**
    * 锁阵（2026-08-08，worker-blockade-v1，研究驱动设计见
    * docs/design/blockade-tactics-v1.md）：主动利用格子容量 2 + 移动冲突规则
    * 锁死敌方单位——预判敌方回程路径/环境瓶颈锁点（敌核心邻格/资源旁/窄

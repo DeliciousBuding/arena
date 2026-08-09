@@ -256,6 +256,11 @@ export interface EpisodeRecord {
   /** P4e 本 tick 因连续超时达标被跳过 decide 的 tenant（直接提交空计划 WAIT）。
    *  未启用决策预算时恒为空数组。 */
   readonly decisionTimeoutSkipped: readonly string[];
+  /** 2026-08-10 sim 死锁检测：本 tick 失败事件按 eventType 计数。
+   *  失败事件 = SHOT_MISSED/UNIT_MOVE_FAILED/CELL_UNIT_LIMIT/
+   *  CORE_SPAWN_FAILED/CORE_MOVE_START_FAILED/DEPOSIT_FAILED 等。
+   *  供 episode 级多 tick 失败连续计数（maxFailureStreak）检测死锁模式。 */
+  readonly failedEventCounts: Readonly<Record<string, number>>;
 }
 
 export interface EpisodeResult {
@@ -320,6 +325,63 @@ export function hashPlan(plan: Plan): string {
 
 function hashPlanSet(plans: Readonly<Record<string, Plan>>): string {
   return createHash("sha256").update(canonicalJson(plans)).digest("hex");
+}
+
+/** 2026-08-10 sim 死锁检测：失败事件类型集合（从 EVENT_CATEGORY_TYPES
+ *  的各类别 *_FAILED + SHOT_MISSED 提取）。这些是生产 outcome.jsonl 中
+ *  反复出现的浪费动作/死锁信号——sim episode 级多 tick 连续计数
+ *  （maxFailureStreak）可检测生产实证的死锁模式。 */
+const FAILED_EVENT_TYPES: ReadonlySet<string> = new Set<string>([
+  "SHOT_MISSED",
+  "UNIT_MOVE_FAILED",
+  "CORE_MOVE_FAILED",
+  "CORE_MOVE_START_FAILED",
+  "CORE_ACTION_FAILED",
+  "HARVEST_FAILED",
+  "DEPOSIT_FAILED",
+  "CORE_SPAWN_FAILED",
+  "UNIT_HEAL_FAILED",
+  "CORE_HEAL_FAILED",
+]);
+
+/** 从结算事件流提取失败事件计数（eventType → count）。
+ *  纯函数，供 EpisodeRecord.failedEventCounts 消费 + sim-server 复用。 */
+export function countFailedEvents(events: readonly ResolutionEvent[]): Readonly<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  for (const event of events) {
+    if (!FAILED_EVENT_TYPES.has(event.eventType)) continue;
+    counts[event.eventType] = (counts[event.eventType] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/** Episode 级多 tick 失败连续计数：返回每个失败事件类型的最大连续 tick 数。
+ *  用途：sim 测试断言"某失败类型连续不超过 N tick"——检测死锁模式
+ *  （如 SHOT_MISSED 连续 16+ tick = 空枪螺旋；CELL_UNIT_LIMIT 连续 16+ = 互堵）。
+ *  纯函数，供测试/分析消费。 */
+export function maxFailureStreak(
+  records: readonly EpisodeRecord[],
+): Readonly<Record<string, number>> {
+  const result: Record<string, number> = {};
+  const current: Record<string, number> = {};
+  for (const record of records) {
+    const failedTypes = new Set(Object.keys(record.failedEventCounts));
+    for (const eventType of Object.keys(current)) {
+      if (!failedTypes.has(eventType)) {
+        result[eventType] = Math.max(result[eventType] ?? 0, current[eventType] ?? 0);
+        delete current[eventType];
+      }
+    }
+    for (const [eventType, count] of Object.entries(record.failedEventCounts)) {
+      if (count === 0) continue;
+      current[eventType] = (current[eventType] ?? 0) + 1;
+      result[eventType] = Math.max(result[eventType] ?? 0, current[eventType] ?? 0);
+    }
+  }
+  for (const [eventType, streak] of Object.entries(current)) {
+    result[eventType] = Math.max(result[eventType] ?? 0, streak);
+  }
+  return result;
 }
 
 function validateConfig(
@@ -987,6 +1049,7 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
       unknownEffects: result.unknownEffects,
       decisionTimeouts: tickDecisionTimeouts,
       decisionTimeoutSkipped: tickDecisionSkipped,
+      failedEventCounts: countFailedEvents(result.events),
     });
     if (config.onTickRecorded !== undefined) {
       config.onTickRecorded({

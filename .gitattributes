@@ -1,3 +1,13 @@
 packages/arena-hero-ts/contracts/generated/*.schema.json text eol=lf
 *.sh text eol=lf
 scripts/server/*.mjs text eol=lf
+
+# 2026-08-10: 强制源码 LF，消除 autocrlf=true 假阳性 diff（17 文件）
+*.ts  text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.mts text eol=lf
+*.cjs text eol=lf
+*.json text eol=lf
+*.md  text eol=lf
+*.py  text eol=lf

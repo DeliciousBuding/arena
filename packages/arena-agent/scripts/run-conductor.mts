@@ -18,6 +18,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 
 import {
@@ -225,6 +226,55 @@ function readLatestObservation(dataRoot: string, tenant: string): BestEffortObse
 }
 
 /**
+ * 合并 survey 全局测绘记忆（2026-08-10 修复）：calibration 观测的 obstacles
+ * 只有当前视野内几十格且随核心位置漂移，conductor 全图规划按"未知=可走"会
+ * 一路规划进真实障碍/资源格 → START_MOVE 撞 CORE_DESTINATION_TERRAIN_BLOCKED
+ * （t1 生产实证 139 次 + CELL_UNIT_LIMIT 248 次）。survey 库是全量累积测绘
+ * （t1 障碍 2836 格），合并后路径规划地形完整；资源格同合并（lastSeenTick
+ * 保留，由 conductor 侧按"Core 不可迁入资源格"静态设障）。
+ * 与 core-migrate-driver.mts 的 loadSurveyObstacles 同源同口径。
+ */
+function withSurveyMemory(
+  observation: BestEffortObservation,
+  dataRoot: string,
+  tenant: string,
+): BestEffortObservation {
+  const surveyDb = join(dataRoot, "runtime", "survey", `${tenant}.db`);
+  if (!existsSync(surveyDb)) return observation;
+  try {
+    const db = new DatabaseSync(surveyDb, { readOnly: true });
+    const obstacleRows = db.prepare("SELECT x, y FROM obstacles").all() as { x: number; y: number }[];
+    const resourceRows = db.prepare(
+      "SELECT x, y, last_seen_tick AS lastSeenTick FROM resources",
+    ).all() as { x: number; y: number; lastSeenTick: number }[];
+    db.close();
+
+    const knownObstacles = new Set(observation.survey.obstacles.map((cell) => `${cell.x},${cell.y}`));
+    const obstacles = [...observation.survey.obstacles];
+    for (const row of obstacleRows) {
+      const key = `${row.x},${row.y}`;
+      if (!knownObstacles.has(key)) {
+        knownObstacles.add(key);
+        obstacles.push({ x: row.x, y: row.y });
+      }
+    }
+    const seenResources = new Set(observation.survey.resources.map((cell) => `${cell.x},${cell.y}`));
+    const resources = [...observation.survey.resources];
+    for (const row of resourceRows) {
+      const key = `${row.x},${row.y}`;
+      if (!seenResources.has(key)) {
+        seenResources.add(key);
+        resources.push({ x: row.x, y: row.y, lastSeenTick: row.lastSeenTick });
+      }
+    }
+    return { ...observation, survey: { ...observation.survey, obstacles, resources } };
+  } catch (error) {
+    console.warn(`[${tenant}] survey 记忆合并失败（跳过）：${error instanceof Error ? error.message : String(error)}`);
+    return observation;
+  }
+}
+
+/**
  * 初始意图 → 初始计划（state=PLAN）。路径/legs/走廊审计留待 conductorStep
  * 的 PLAN 阶段从 survey 生成（planPhaseStep），这里只带 target + 核心身份。
  */
@@ -292,6 +342,7 @@ function main(): void {
 
       const observation = readLatestObservation(dataRoot, tenant);
       if (observation === null) return; // 解析失败跳过本 tick（计划留在磁盘，lease 过期后 runtime fail-closed）
+      const mergedObservation = withSurveyMemory(observation, dataRoot, tenant);
 
       const planResult = readMigrationPlan(planPath);
       let plan = planResult.ok ? planResult.plan : null;
@@ -301,22 +352,22 @@ function main(): void {
 
       // 初始意图接线：无计划 + 给了 --target → 构造初始计划（PLAN）并立即推进
       if (plan === null && options.target !== null) {
-        if (observation.core?.position === null || observation.core === null) {
+        if (mergedObservation.core?.position === null || mergedObservation.core === null) {
           console.error(`[${tenant}] 无法发起迁移：核心位置未知（等待校准）`);
           return;
         }
-        plan = buildInitialPlan(tenant, observation, options.target, config);
+        plan = buildInitialPlan(tenant, mergedObservation, options.target, config);
         writeMigrationPlanAtomic(planPath, plan);
         console.log(`[${tenant}] 初始意图 → 计划写入（PLAN，目标 [${options.target.x},${options.target.y}]${options.target.reason !== "" ? `，理由：${options.target.reason}` : ""}）`);
       }
 
       const input: ConductorStepInput = {
-        tick: observation.tick,
+        tick: mergedObservation.tick,
         nowMs: Date.now(),
-        core: observation.core,
-        events: observation.events,
-        units: observation.units,
-        survey: observation.survey,
+        core: mergedObservation.core,
+        events: mergedObservation.events,
+        units: mergedObservation.units,
+        survey: mergedObservation.survey,
         config,
         held: heldState,
         plan,
@@ -334,16 +385,16 @@ function main(): void {
             y: result.starveTrigger.target.y,
             reason: result.starveTrigger.reason,
           };
-          plan = buildInitialPlan(tenant, observation, starveTarget, config);
+          plan = buildInitialPlan(tenant, mergedObservation, starveTarget, config);
           writeMigrationPlanAtomic(planPath, plan);
-          console.log(`[${tenant}] tick ${observation.tick}：饿死兜底触发 → 计划写入（PLAN，目标 [${starveTarget.x},${starveTarget.y}]，理由：${starveTarget.reason}）`);
+          console.log(`[${tenant}] tick ${mergedObservation.tick}：饿死兜底触发 → 计划写入（PLAN，目标 [${starveTarget.x},${starveTarget.y}]，理由：${starveTarget.reason}）`);
         } else if (plan !== null) {
           clearMigrationPlan(planPath);
-          console.log(`[${tenant}] tick ${observation.tick}：计划清理完成`);
+          console.log(`[${tenant}] tick ${mergedObservation.tick}：计划清理完成`);
         }
       } else {
         writeMigrationPlanAtomic(planPath, result.plan);
-        console.log(`[${tenant}] tick ${observation.tick} state=${result.plan.state}：${result.reasons.join(" | ")}`);
+        console.log(`[${tenant}] tick ${mergedObservation.tick} state=${result.plan.state}：${result.reasons.join(" | ")}`);
       }
       for (const transition of result.transitions) {
         console.log(`[${tenant}] tick ${transition.tick} 转移：${transition.from} --${transition.event}--> ${transition.to}`);
