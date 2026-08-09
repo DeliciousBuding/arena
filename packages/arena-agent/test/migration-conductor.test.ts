@@ -623,10 +623,12 @@ test("同 tick 3 次轮询：holdTicks 只按游戏 tick 增长（run-conductor 
   const first = holdStep(plan, held, 10_000);
   assert.equal(first.plan?.state, "DEFENSIVE_HOLD");
   assert.equal(first.held.holdTicks, 3, "首个游戏 tick 滞回计数 +1");
+  assert.equal(first.held.holdRecordedTick, 10_000, "计数同时记录当前游戏 tick");
   const poll2 = holdStep(first.plan!, first.held, 10_000);
   assert.equal(poll2.held.holdTicks, 3, "同 tick 第二次轮询不得累加");
   const poll3 = holdStep(poll2.plan!, poll2.held, 10_000);
   assert.equal(poll3.held.holdTicks, 3, "同 tick 第三次轮询仍不得累加");
   const nextTick = holdStep(poll3.plan!, poll3.held, 10_001);
   assert.equal(nextTick.held.holdTicks, 4, "下一游戏 tick 才累加");
+  assert.equal(nextTick.held.holdRecordedTick, 10_001);
 });

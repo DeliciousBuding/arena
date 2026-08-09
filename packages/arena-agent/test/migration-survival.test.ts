@@ -257,12 +257,14 @@ test("同 tick 3 次轮询：threatStallTicks 只按游戏 tick 增长", () => {
   const core = { id: "uuid-A", position: [0, 0] as readonly [number, number], state: "NORMAL" as const, hp: 5 };
   const first = step(plan, core, militaryUnits(6), NEAR_ENEMY, INITIAL_CONDUCTOR_HELD_STATE, 10_000);
   assert.equal(first.held.threatStallTicks, 1, "首个游戏 tick 贴脸计数 1");
+  assert.equal(first.held.threatStallRecordedTick, 10_000, "计数同时记录当前游戏 tick");
   const poll2 = step(first.plan!, core, militaryUnits(6), NEAR_ENEMY, first.held, 10_000);
   assert.equal(poll2.held.threatStallTicks, 1, "同 tick 第二次轮询不得累加");
   const poll3 = step(poll2.plan!, core, militaryUnits(6), NEAR_ENEMY, poll2.held, 10_000);
   assert.equal(poll3.held.threatStallTicks, 1, "同 tick 第三次轮询仍不得累加");
   const nextTick = step(poll3.plan!, core, militaryUnits(6), NEAR_ENEMY, poll3.held, 10_001);
   assert.equal(nextTick.held.threatStallTicks, 2, "下一游戏 tick 才累加");
+  assert.equal(nextTick.held.threatStallRecordedTick, 10_001);
 });
 
 test("同 tick 3 次轮询：settleElapsed 只按游戏 tick 增长", () => {
@@ -270,12 +272,14 @@ test("同 tick 3 次轮询：settleElapsed 只按游戏 tick 增长", () => {
   const core = { id: "uuid-A", position: [0, 0] as readonly [number, number], state: "NORMAL" as const, hp: 5 };
   const first = step(plan, core, militaryUnits(6), [], INITIAL_CONDUCTOR_HELD_STATE, 10_000);
   assert.equal(first.held.settleElapsed, 1);
+  assert.equal(first.held.settleRecordedTick, 10_000);
   const poll2 = step(first.plan!, core, militaryUnits(6), [], first.held, 10_000);
   assert.equal(poll2.held.settleElapsed, 1, "同 tick 第二次轮询不得累加");
   const poll3 = step(poll2.plan!, core, militaryUnits(6), [], poll2.held, 10_000);
   assert.equal(poll3.held.settleElapsed, 1, "同 tick 第三次轮询仍不得累加");
   const nextTick = step(poll3.plan!, core, militaryUnits(6), [], poll3.held, 10_001);
   assert.equal(nextTick.held.settleElapsed, 2, "下一游戏 tick 才累加");
+  assert.equal(nextTick.held.settleRecordedTick, 10_001);
 });
 
 test("同 tick 3 次轮询：gapTicks 只按游戏 tick 增长", () => {
@@ -283,12 +287,14 @@ test("同 tick 3 次轮询：gapTicks 只按游戏 tick 增长", () => {
   const core = { id: "uuid-A", position: [0, 0] as readonly [number, number], state: "NORMAL" as const, hp: 5 };
   const first = step(plan, core, militaryUnits(4), [], INITIAL_CONDUCTOR_HELD_STATE, 10_000);
   assert.equal(first.held.gapTicks, 1);
+  assert.equal(first.held.gapRecordedTick, 10_000);
   const poll2 = step(first.plan!, core, militaryUnits(4), [], first.held, 10_000);
   assert.equal(poll2.held.gapTicks, 1, "同 tick 第二次轮询不得累加");
   const poll3 = step(poll2.plan!, core, militaryUnits(4), [], poll2.held, 10_000);
   assert.equal(poll3.held.gapTicks, 1, "同 tick 第三次轮询仍不得累加");
   const nextTick = step(poll3.plan!, core, militaryUnits(4), [], poll3.held, 10_001);
   assert.equal(nextTick.held.gapTicks, 2, "下一游戏 tick 才累加");
+  assert.equal(nextTick.held.gapRecordedTick, 10_001);
 });
 
 test("威胁升级：PLAN_AUDITED 保留威胁窗口（threatReplanCount/threatFirstTick）→ 窗口内第 3 次升级 → ABORT", () => {
