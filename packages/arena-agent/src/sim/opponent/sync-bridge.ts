@@ -51,6 +51,10 @@ export interface SyncBridgeConfig {
   readonly bridgeArgs: readonly string[];
   /** L-C config-injection：spawn 桥进程时附加的环境变量（ARENA_CFG_* 等）。 */
   readonly env?: Record<string, string>;
+  /** 桥进程工作目录（缺省继承父进程 cwd）。并发评测时用于隔离第三方 agent
+   *  的相对路径状态文件（如 waaiging 的 .arena_hero_*.json）——见
+   *  opponent-adapter.ts PersistentSubprocessDecider 的 per-instance temp dir。 */
+  readonly cwd?: string;
 }
 
 /**
@@ -80,6 +84,7 @@ export class PersistentSyncBridge {
           bridgeScript: config.bridgeScript,
           bridgeArgs: config.bridgeArgs,
           ...(config.env !== undefined ? { env: config.env } : {}),
+          ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
         },
       },
     );
@@ -198,6 +203,8 @@ export function createReferenceBridge(options: {
   readonly instance?: string | null;
   /** L-C config-injection：spawn 桥进程时附加的环境变量（ARENA_CFG_* 等）。 */
   readonly env?: Record<string, string>;
+  /** 桥进程工作目录（缺省继承父进程 cwd；并发评测隔离用，见 SyncBridgeConfig）。 */
+  readonly cwd?: string;
 }): { readonly bridge: PersistentSyncBridge; readonly stateSlot: string } {
   const stateSlot =
     options.stateSlot ?? join(tmpdir(), `arena-ref-${randomUUID()}.pkl`);
@@ -228,6 +235,7 @@ export function createReferenceBridge(options: {
     bridgeScript,
     bridgeArgs,
     ...(options.env !== undefined ? { env: options.env } : {}),
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
   });
   return { bridge, stateSlot };
 }

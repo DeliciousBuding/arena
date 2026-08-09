@@ -61,6 +61,15 @@ export interface MatchResult {
   readonly perPlayerKills?: Readonly<Record<string, number>>;
   /** 每玩家首杀 tick（playerId → 首个被归属击杀的 tick；无击杀缺省）。 */
   readonly perPlayerFirstKillTicks?: Readonly<Record<string, number>>;
+  /** 逐击杀事件（tick 升序；arena-bench v3.1 击杀时序可视化用，可选）。
+   *  语义同 perPlayerKills 的 destroyed_by 归属。 */
+  readonly killEvents?: readonly KillEvent[];
+}
+
+/** 单次核心摧毁事件（击杀时序图数据源）。 */
+export interface KillEvent {
+  readonly tick: number;
+  readonly destroyedBy: readonly string[];
 }
 
 /** 一种可参赛的策略（我的 TS / reference 提取 / HTTP）。标定 score 由外部提供。 */
@@ -571,8 +580,7 @@ function computePerPlayerKills(
       const destroyedBy = event.values?.destroyed_by;
       if (!Array.isArray(destroyedBy)) continue;
       for (const rawUsername of destroyedBy) {
-        if (typeof rawUsername !== "string" || !playerSet.has(rawUsername)) continue;
-        kills[rawUsername] += 1;
+        if (typeof rawUsername !== "string" || !playerSet.has(rawUsername)) continue;        kills[rawUsername] += 1;
         if (firstKillTicks[rawUsername] === undefined) {
           firstKillTicks[rawUsername] = record.tick;
         }
@@ -587,6 +595,27 @@ function computePerPlayerKills(
  * 多计划同时结算（引擎原生支持）；胜负判定复用 decideWinner（最后存活核心
  * 胜；都存活 → 资源/人口排序）。
  */
+function collectKillEvents(
+  records: readonly EpisodeRecord[],
+  playerIds: readonly string[],
+): readonly KillEvent[] {
+  const playerSet = new Set(playerIds);
+  const events: KillEvent[] = [];
+  for (const record of records) {
+    for (const event of record.events) {
+      if (event.eventType !== "CORE_DESTROYED") continue;
+      const destroyedBy = event.values?.destroyed_by;
+      if (!Array.isArray(destroyedBy)) continue;
+      const contributors = destroyedBy.filter(
+        (raw): raw is string => typeof raw === "string" && playerSet.has(raw),
+      );
+      if (contributors.length === 0) continue;
+      events.push({ tick: record.tick, destroyedBy: contributors });
+    }
+  }
+  return events;
+}
+
 export function runFreeForAll(
   entries: readonly TournEntry[],
   seed: number,
@@ -694,6 +723,8 @@ export function runFreeForAll(
       // arena-bench 击杀归属：CORE_DESTROYED values.destroyed_by（可选字段，向后兼容）
       perPlayerKills: kills,
       perPlayerFirstKillTicks: firstKillTicks,
+      // arena-bench v3.1 击杀时序：逐事件（tick + 归属者），可视化用（可选字段）
+      killEvents: collectKillEvents(result.records, ids),
     };
   } finally {
     recorder?.close();

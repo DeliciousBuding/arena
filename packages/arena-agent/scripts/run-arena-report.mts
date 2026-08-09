@@ -294,6 +294,8 @@ interface BenchMatch {
   /** entry id → 本场排名（1 = 最佳；并列同分同排）。 */
   readonly rank: Readonly<Record<string, number>>;
   readonly perPlayer: Readonly<Record<string, MatchPlayerData>>;
+  /** 击杀时序事件（tick 升序；v3.1，向后兼容——旧数据无此字段）。 */
+  readonly killEvents?: readonly { readonly tick: number; readonly destroyedBy: readonly string[] }[];
 }
 
 /** 每场景×条目跨 seeds 聚合指标（设计 §4）。 */
@@ -547,7 +549,14 @@ function runSingleMatch(
   const winnerLabel = result.winner ?? "draw";
   const summaryLine = entries.map((entry) => `${entry.id} r${rank[entry.id]}`).join(" ");
   console.log(`[${name}] seed=${seed} winner=${winnerLabel} events=${result.eventCount} :: ${summaryLine}`);
-  return { scenario: name, seed, winner: result.winner, rank, perPlayer };
+  return {
+    scenario: name,
+    seed,
+    winner: result.winner,
+    rank,
+    perPlayer,
+    ...(result.killEvents === undefined ? {} : { killEvents: result.killEvents }),
+  };
 }
 
 /** 跨 seeds 聚合（设计 §4；每个条目都出现在每场，缺失场次跳过）。跑批与
@@ -1150,6 +1159,7 @@ async function writeRunArtifacts(args: {
         seed: match.seed,
         winner: match.winner,
         rank: match.rank,
+        killEvents: match.killEvents ?? [],
         perPlayer: Object.fromEntries(
           Object.entries(match.perPlayer).map(([playerId, data]) => [
             playerId,

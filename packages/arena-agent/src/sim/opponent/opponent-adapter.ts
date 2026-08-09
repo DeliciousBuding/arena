@@ -19,7 +19,7 @@
  *    本文件只提供"子进程桥"这一个实现，HTTP 桥留在平台层扩展（见 tournament）。
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -298,6 +298,24 @@ export interface PersistentReferenceConfig {
   readonly instance?: string | null;
   /** L-C config-injection：spawn 桥进程时附加的环境变量（ARENA_CFG_* 等）。 */
   readonly env?: Record<string, string>;
+  /** 桥进程工作目录（缺省：per-instance 临时目录——隔离第三方 agent 的相对
+   *  路径状态文件，防并发评测跨进程写冲突；显式传入则用传入目录不清理）。 */
+  readonly cwd?: string;
+}
+
+/** 创建桥进程的隔离工作目录：per-instance mkdtemp + 复制父 cwd 的 .env
+ *  （farmer/tactic 等经 Path.cwd()/.env 读 key——保持 key 读取兼容）。 */
+function createIsolatedBridgeCwd(): string {
+  const isolated = mkdtempSync(join(tmpdir(), "arena-bridge-cwd-"));
+  try {
+    const dotEnv = join(process.cwd(), ".env");
+    if (existsSync(dotEnv)) {
+      copyFileSync(dotEnv, join(isolated, ".env"));
+    }
+  } catch {
+    // .env 复制失败不阻断（非关键路径）。
+  }
+  return isolated;
 }
 
 /** 常驻子进程决策器：对局级生命周期（随用随起），close() 释放进程与槽。 */
@@ -307,10 +325,13 @@ export class PersistentSubprocessDecider implements ExternalDecider {
   readonly slotIsDefault: boolean;
   readonly agent: string;
   ready = true;
+  /** 隔离 cwd（本次创建并持有；close 时清理）。显式传入的 cwd 不清理。 */
+  private readonly bridgeCwd: string | null;
   /** 预取请求的 tick（decideCached 解析响应兜底用；prefetch/decideCached 成对）。 */
   private pendingTick: number | null = null;
 
   constructor(config: PersistentReferenceConfig) {
+    this.bridgeCwd = config.cwd ?? createIsolatedBridgeCwd();
     const created = createReferenceBridge({
       python: config.python,
       farmerRepoDir: config.farmerRepoDir,
@@ -320,6 +341,7 @@ export class PersistentSubprocessDecider implements ExternalDecider {
       agent: config.agent,
       seed: config.seed,
       instance: config.instance,
+      cwd: this.bridgeCwd,
       ...(config.env !== undefined ? { env: config.env } : {}),
     });
     this.bridge = created.bridge;
@@ -367,6 +389,13 @@ export class PersistentSubprocessDecider implements ExternalDecider {
         unlinkSync(this.stateSlot);
       } catch {
         // 槽清理失败不阻断（临时目录会被系统回收）。
+      }
+    }
+    if (this.bridgeCwd !== null) {
+      try {
+        rmSync(this.bridgeCwd, { recursive: true, force: true });
+      } catch {
+        // 临时目录清理失败不阻断（系统会回收）。
       }
     }
   }
