@@ -7,6 +7,7 @@
  */
 
 import type { PlayerState } from "./types.ts";
+import type { UnitType } from "./enums.ts";
 
 export const TELEMETRY_ENDPOINT_ENV = "ARENA_HERO_TELEMETRY_ENDPOINT";
 export const TELEMETRY_TENANT_ENV = "ARENA_HERO_TENANT";
@@ -40,6 +41,13 @@ export interface TelemetryEvent {
   readonly core?: readonly [number, number] | null;
   readonly units?: number;
   readonly visible_enemies?: number;
+  /** 测绘字段（python-mapping-telemetry-v1 §2.1，与 Python fork 载荷同构）。 */
+  readonly resource_cells?: readonly (readonly [number, number])[];
+  readonly obstacle_cells?: readonly (readonly [number, number])[];
+  /** [id, unit_type, controlled(0|1), x, y, hp]，全部可见单位（含己方）。 */
+  readonly units_seen?: readonly (readonly [string, UnitType, 0 | 1, number, number, number])[];
+  /** [x, y, owner_username]，controlled=false 的 CORE。 */
+  readonly enemy_cores?: readonly (readonly [number, number, string])[];
   readonly api_key_tail?: string;
   readonly base_url?: string;
   readonly sdk_version?: string;
@@ -135,7 +143,8 @@ export function identityEvent(
   return mode === undefined ? event : { ...event, mode };
 }
 
-/** 每 tick PlayerState 摘要（与 Python fork 同构）。 */
+/** 每 tick PlayerState 摘要（与 Python fork 同构，含测绘字段；
+ *  载荷契约见 python-mapping-telemetry-v1 §2.1）。 */
 export function tickSummary(
   tick: number,
   state: PlayerState,
@@ -145,6 +154,13 @@ export function tickSummary(
       o.kind === "CORE" && o.controlled === true,
   );
   const units = state.objects.filter((o) => o.kind === "UNIT");
+  const terrainCells = (kind: "RESOURCE" | "OBSTACLE"): readonly (readonly [number, number])[] =>
+    state.objects
+      .filter((o): o is Extract<typeof o, { kind: typeof kind }> => o.kind === kind)
+      .flatMap((t) => t.positions);
+  const enemyCores = state.objects
+    .filter((o): o is Extract<typeof o, { kind: "CORE" }> => o.kind === "CORE" && !o.controlled)
+    .map((c) => [c.position[0], c.position[1], c.owner_username] as const);
   return {
     event: "tick_summary",
     tick,
@@ -154,5 +170,11 @@ export function tickSummary(
     core: controlledCore ? [...controlledCore.position] as [number, number] : null,
     units: units.length,
     visible_enemies: units.filter((u) => !u.controlled).length,
+    resource_cells: terrainCells("RESOURCE"),
+    obstacle_cells: terrainCells("OBSTACLE"),
+    units_seen: units.map(
+      (u) => [u.id, u.unit_type, u.controlled ? 1 : 0, u.position[0], u.position[1], u.hp] as const,
+    ),
+    enemy_cores: enemyCores,
   };
 }
