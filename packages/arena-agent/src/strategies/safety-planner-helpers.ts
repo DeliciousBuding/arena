@@ -211,7 +211,12 @@ export function homeCell(core: Position, obstacles: ReadonlySet<string>, index =
  * 优先核心外环（Chebyshev 2-3，四角对角位优先），既保持拱卫距离（预警/
  * 拦截）又让出 4 邻通道；外环全堵才回退历史 homeCell 四邻（零回归兜底）。
  */
-export function guardHomeCell(core: Position, obstacles: ReadonlySet<string>, index = 0): Position | null {
+export function guardHomeCell(
+  core: Position,
+  obstacles: ReadonlySet<string>,
+  index = 0,
+  avoid?: ReadonlySet<string>,
+): Position | null {
   const ringOrder: readonly Position[] = [
     [-2, -2], [2, -2], [-2, 2], [2, 2],
     [-2, 0], [2, 0], [0, -2], [0, 2],
@@ -221,7 +226,9 @@ export function guardHomeCell(core: Position, obstacles: ReadonlySet<string>, in
   for (let offset = 0; offset < ringOrder.length; offset += 1) {
     const [dx, dy] = ringOrder[(index + offset) % ringOrder.length]!;
     const cell: Position = [core[0] + dx, core[1] + dy];
-    if (!obstacles.has(cellKey(cell))) return cell;
+    if (obstacles.has(cellKey(cell))) continue;
+    if (avoid !== undefined && avoid.has(cellKey(cell))) continue;
+    return cell;
   }
   return homeCell(core, obstacles, index);
 }

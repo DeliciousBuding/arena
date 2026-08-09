@@ -113,8 +113,10 @@ test("停滞 2 tick：迁移失败签名 → 写 clearRequests（destination + �
   const plan = makeMovingPlan();
   // 第 1 tick：stall=1
   const first = step(plan, { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 }, []);
-  // 第 2 tick：stall=2 → 写清路
-  const second = step(first.plan!, { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 }, [], first.held);
+  assert.equal(first.held.stallTicks, 1);
+  assert.equal(first.held.stallRecordedTick, 10_000, "首次计数记录当前游戏 tick");
+  // 第 2 个游戏 tick（run-conductor 同 tick 重复轮询去重后）：stall=2 → 写清路
+  const second = step(first.plan!, { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 }, [], first.held, 10_001);
   assert.ok(second.reasons.some((r) => r.includes("clearRequests")), `reasons 应含 clearRequests：${second.reasons.join("|")}`);
   assert.equal(second.plan?.clearRequests?.length, 2, "应清 destination [1,0] + 前瞻 [2,0]");
   assert.deepEqual(second.plan?.clearRequests?.[0], { x: 1, y: 0, reason: "destination" });
@@ -154,8 +156,8 @@ test("清空未完成：单位仍在 destination → 重试计数累积；第 3 
   });
   assert.equal(r1.plan?.state, "LEG_MOVE", "重试 1 仍等待清路");
   assert.equal(r1.held.clearRetries, 2);
-  // 重试 2（累计第 3 次）→ REPLAN
-  const r2 = step(r1.plan!, { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 }, blocker, r1.held);
+  // 重试 2（下一游戏 tick，累计第 3 次）→ REPLAN
+  const r2 = step(r1.plan!, { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 }, blocker, r1.held, 10_001);
   assert.equal(r2.plan?.state, "PLAN", "第 3 次清路未果 → REPLAN（回 PLAN）");
   assert.equal(r2.plan?.revision, 2, "REPLAN revision+1");
   assert.equal(r2.plan?.clearRequests, undefined, "REPLAN 清除旧清路请求（重生成路径）");
@@ -178,6 +180,171 @@ test("推进复位 stall：核心到达下一格不误判", () => {
   const result = step(
     plan,
     { id: "uuid-A", position: [1, 0], state: "NORMAL", hp: 5 },
+    [],
+    { ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 1 },
+  );
+  assert.equal(result.plan?.state, "LEG_MOVE");
+  assert.equal(result.held.stallTicks, 0, "推进后 stall 复位");
+});
+
+// ---------------------------------------------------------------------------
+// conductor：中段停滞（M6 §4-D 扩展）—— 任意腿位置 NORMAL 未推进即计停滞
+// ---------------------------------------------------------------------------
+
+/** 中段计划：legProgress.cellsThisLeg=3（核心已越过腿起点 3 格），路径 6 格。 */
+function makeMidLegPlan(overrides: Partial<MigrationPlanV1> = {}): MigrationPlanV1 {
+  return makeMovingPlan({
+    legProgress: { legIndex: 0, cellsThisLeg: 3 },
+    ...overrides,
+  });
+}
+
+test("中段停滞 1 tick：不触发清路（stall<2 等待）", () => {
+  const plan = makeMidLegPlan();
+  const result = step(plan, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, []);
+  assert.equal(result.plan?.state, "LEG_MOVE");
+  assert.equal(result.plan?.clearRequests, undefined, "stall<2 不得写清路请求");
+  assert.equal(result.held.stallTicks, 1, "腿中段 NORMAL 未推进应计停滞");
+});
+
+test("中段停滞 2 tick：迁移失败签名 → 写 clearRequests（当前格下一格 + 前瞻）", () => {
+  const plan = makeMidLegPlan();
+  const first = step(plan, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, []);
+  // 第 2 个游戏 tick（同 tick 重复轮询去重后）→ 触发
+  const second = step(first.plan!, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, [], first.held, 10_001);
+  assert.ok(second.reasons.some((r) => r.includes("clearRequests")), `reasons 应含 clearRequests：${second.reasons.join("|")}`);
+  assert.equal(second.plan?.clearRequests?.length, 2, "应清当前格下一格 [4,0] + 前瞻 [5,0]");
+  assert.deepEqual(second.plan?.clearRequests?.[0], { x: 4, y: 0, reason: "destination" });
+  assert.deepEqual(second.plan?.clearRequests?.[1], { x: 5, y: 0, reason: "ahead" });
+  assert.equal(second.plan?.assist?.clearAheadReason, "blocked-retry");
+  assert.equal(second.held.clearRetries, 1);
+});
+
+// ---------------------------------------------------------------------------
+// conductor：stall 按游戏 tick 去重（run-conductor 每 5s 轮询、游戏 tick 约 15s——
+// 同一 input.tick 多次调用 conductorStep 不得累计计数）
+// ---------------------------------------------------------------------------
+
+test("同 tick 连续多次轮询：stall 不累计到 2（去重，不假触发清路）", () => {
+  const plan = makeMidLegPlan();
+  const first = step(plan, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, [], INITIAL_CONDUCTOR_HELD_STATE, 10_000);
+  assert.equal(first.held.stallTicks, 1);
+  assert.equal(first.held.stallRecordedTick, 10_000, "首次计数记录当前游戏 tick");
+  // 同游戏 tick 内 run-conductor 会多次轮询（5s 轮询 vs ~15s tick）
+  const poll2 = step(first.plan!, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, [], first.held, 10_000);
+  assert.equal(poll2.held.stallTicks, 1, "同 tick 第二次轮询不得累加");
+  const poll3 = step(poll2.plan!, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, [], poll2.held, 10_000);
+  assert.equal(poll3.held.stallTicks, 1, "同 tick 第三次轮询仍不得累加");
+  assert.equal(poll3.plan?.clearRequests, undefined, "同 tick 重复轮询不得触发清路");
+  assert.equal(poll3.plan?.state, "LEG_MOVE");
+});
+
+test("仅下一游戏 tick 才触发：tick+1 时 stall 到 2 → 写清路", () => {
+  const plan = makeMidLegPlan();
+  const first = step(plan, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, [], INITIAL_CONDUCTOR_HELD_STATE, 10_000);
+  const sameTick = step(first.plan!, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, [], first.held, 10_000);
+  assert.equal(sameTick.held.stallTicks, 1, "同 tick 多次轮询 stall 保持 1");
+  assert.equal(sameTick.plan?.clearRequests, undefined, "同 tick 不得触发清路");
+  // 游戏 tick 前进 → 计数 +1 → 触发
+  const nextTick = step(sameTick.plan!, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, [], sameTick.held, 10_001);
+  assert.equal(nextTick.held.stallTicks, 2, "下一游戏 tick 才累计到 2");
+  assert.equal(nextTick.held.stallRecordedTick, 10_001, "触发 tick 记录为当前游戏 tick");
+  assert.ok(nextTick.reasons.some((r) => r.includes("clearRequests")), `reasons 应含 clearRequests：${nextTick.reasons.join("|")}`);
+  assert.equal(nextTick.plan?.clearRequests?.length, 2, "仅下一游戏 tick 触发清路");
+});
+
+test("推进后同 tick 再轮询：不计停滞（stall 保持 0）", () => {
+  const plan = makeMovingPlan();
+  const progressed = step(plan, { id: "uuid-A", position: [1, 0], state: "NORMAL", hp: 5 }, [], INITIAL_CONDUCTOR_HELD_STATE, 10_000);
+  assert.equal(progressed.held.stallTicks, 0, "真实推进复位 stall");
+  assert.equal(progressed.held.stallRecordedTick, 10_000, "推进复位同时记录当前 tick");
+  assert.equal(progressed.plan?.legProgress.cellsThisLeg, 1, "推进写入持久化进度");
+  // 同 tick 再次轮询（位置未再推进）→ 不得重新计 1
+  const rePoll = step(progressed.plan!, { id: "uuid-A", position: [1, 0], state: "NORMAL", hp: 5 }, [], progressed.held, 10_000);
+  assert.equal(rePoll.held.stallTicks, 0, "推进后同 tick 重复轮询不得计 1");
+  assert.equal(rePoll.plan?.clearRequests, undefined, "推进后同 tick 不得触发清路");
+  assert.equal(rePoll.plan?.state, "LEG_MOVE");
+});
+
+test("中段清空验证：clearRequests 格无单位 → 复位续走（stall/retries 清零、clearRequests 清除）", () => {
+  const plan = makeMidLegPlan({
+    clearRequests: [{ x: 4, y: 0, reason: "destination" }, { x: 5, y: 0, reason: "ahead" }],
+    assist: { clearAheadCells: 2, clearAheadReason: "blocked-retry" },
+  });
+  const result = step(
+    plan,
+    { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 },
+    [{ id: "w1", unitType: "WORKER", cargo: 0, position: [6, 0] }], // 占用者已离开
+    { ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 3, clearRetries: 1 },
+  );
+  assert.equal(result.plan?.clearRequests, undefined, "清空后 clearRequests 必须移除");
+  assert.equal(result.held.stallTicks, 0, "清空后 stall 复位");
+  assert.equal(result.held.clearRetries, 0, "清空后重试计数复位");
+  assert.ok(result.reasons.some((r) => r.includes("清路完成")), `reasons 应含清路完成：${result.reasons.join("|")}`);
+});
+
+test("同 tick 已累计到 clear retry 2：不得立即误 REPLAN，下一游戏 tick 才执行第 3 次", () => {
+  const plan = makeMidLegPlan({
+    clearRequests: [{ x: 4, y: 0, reason: "destination" }, { x: 5, y: 0, reason: "ahead" }],
+    assist: { clearAheadCells: 2, clearAheadReason: "blocked-retry" },
+  });
+  const blocker: ConductorStepInput["units"] = [
+    { id: "v1", unitType: "VANGUARD", cargo: 0, position: [4, 0] },
+  ];
+  const held = {
+    ...INITIAL_CONDUCTOR_HELD_STATE,
+    stallTicks: 2,
+    stallRecordedTick: 10_000,
+    clearRetries: 2,
+  };
+
+  const sameTick = step(plan, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, blocker, held, 10_000);
+  assert.equal(sameTick.plan?.state, "LEG_MOVE", "同 tick 重复轮询不得把 retry 2 直接升级为 REPLAN");
+  assert.equal(sameTick.held.clearRetries, 2, "同 tick retry 计数保持 2");
+
+  const nextTick = step(sameTick.plan!, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, blocker, sameTick.held, 10_001);
+  assert.equal(nextTick.plan?.state, "PLAN", "下一游戏 tick 才执行第 3 次失败并 REPLAN");
+  assert.ok(nextTick.transitions.some((transition) => transition.event === "REPLAN_REQUESTED"));
+});
+
+test("中段清空未完成：单位仍在 destination → 重试计数累积；第 3 次 → REPLAN", () => {
+  const plan = makeMidLegPlan({
+    clearRequests: [{ x: 4, y: 0, reason: "destination" }, { x: 5, y: 0, reason: "ahead" }],
+    assist: { clearAheadCells: 2, clearAheadReason: "blocked-retry" },
+  });
+  const blocker: ConductorStepInput["units"] = [
+    { id: "v1", unitType: "VANGUARD", cargo: 0, position: [4, 0] },
+  ];
+  // 重试 1
+  const r1 = step(plan, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, blocker, {
+    ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 2, clearRetries: 1,
+  });
+  assert.equal(r1.plan?.state, "LEG_MOVE", "重试 1 仍等待清路");
+  assert.equal(r1.held.clearRetries, 2);
+  // 重试 2（下一游戏 tick，累计第 3 次）→ REPLAN
+  const r2 = step(r1.plan!, { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: 5 }, blocker, r1.held, 10_001);
+  assert.equal(r2.plan?.state, "PLAN", "第 3 次清路未果 → REPLAN（回 PLAN）");
+  assert.equal(r2.plan?.revision, 2, "REPLAN revision+1");
+  assert.equal(r2.plan?.clearRequests, undefined, "REPLAN 清除旧清路请求（重生成路径）");
+  assert.ok(r2.transitions.some((t) => t.event === "REPLAN_REQUESTED"), "应记录 REPLAN_REQUESTED");
+});
+
+test("中段 MOVING 复位 stall：引擎正常推进不误判", () => {
+  const plan = makeMidLegPlan();
+  const result = step(
+    plan,
+    { id: "uuid-A", position: [3, 0], state: "MOVING", hp: 5 },
+    [],
+    { ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 1 },
+  );
+  assert.equal(result.held.stallTicks, 0, "MOVING = 引擎推进中，stall 复位");
+});
+
+test("中段推进复位 stall：核心到达下一格不误判", () => {
+  const plan = makeMidLegPlan();
+  const result = step(
+    plan,
+    { id: "uuid-A", position: [4, 0], state: "NORMAL", hp: 5 },
     [],
     { ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 1 },
   );

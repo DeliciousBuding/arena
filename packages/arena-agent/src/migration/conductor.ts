@@ -161,6 +161,8 @@ export interface ConductorHeldState {
   readonly settleElapsed: number;
   /** M6（migration-assist-v1 §4-D）：LEG_MOVE 中 NORMAL 未推进的连续 tick（MOVING/推进即复位）。 */
   readonly stallTicks: number;
+  /** M6：最近一次记录 stall/reset 的游戏 tick（同 tick 多次轮询不重复累计）。 */
+  readonly stallRecordedTick: number;
   /** M6：清路重试计数（≥3 次仍未清空 → REPLAN）。 */
   readonly clearRetries: number;
   /** M8（migration-survival-v1 §3）：敌核贴脸持续 tick（敌核离开/升级复位）。 */
@@ -207,6 +209,7 @@ export const INITIAL_CONDUCTOR_HELD_STATE: ConductorHeldState = {
   holdTicks: 0,
   settleElapsed: 0,
   stallTicks: 0,
+  stallRecordedTick: -1,
   clearRetries: 0,
   threatStallTicks: 0,
   threatFirstTick: 0,
@@ -255,6 +258,17 @@ function waitStep(
     transitions,
     reasons: [...reasons, reason],
   };
+}
+
+/** M6：stall 只按不同游戏 tick 计数（run-conductor 可在同一游戏 tick 内轮询多次）。 */
+function countStall(held: ConductorHeldState, tick: number): ConductorHeldState {
+  if (held.stallRecordedTick === tick) return held;
+  return { ...held, stallTicks: held.stallTicks + 1, stallRecordedTick: tick };
+}
+
+/** M6：stall 复位并记录当前 tick，防止本 tick 后续轮询重新计 1。 */
+function resetStall(held: ConductorHeldState, tick: number): ConductorHeldState {
+  return { ...held, stallTicks: 0, stallRecordedTick: tick };
 }
 
 /** 走廊审计参数（§4：宽度走 config，阈值/窗口走领域常量）。 */
@@ -674,7 +688,7 @@ function legMoveStep(
   if (core.state === "MOVING") {
     // M6：MOVING = 引擎正在推进，不算停滞（失败签名 = MOVING→NORMAL 位置未变，
     // 由下方 NORMAL 未推进分支从 0 重新计数捕获）。
-    return waitStep(input, plan, { ...held, stallTicks: 0 }, transitions, reasons, "LEG_MOVE：核心 MOVING 中（引擎 4 tick/格），等待到达");
+    return waitStep(input, plan, resetStall(held, input.tick), transitions, reasons, "LEG_MOVE：核心 MOVING 中（引擎 4 tick/格），等待到达");
   }
   const position = core.position;
   if (position === null) {
@@ -703,7 +717,7 @@ function legMoveStep(
         { ...plan, state: "PLAN", revision: plan.revision + 1, clearRequests: undefined },
         input,
       ),
-      held: { ...held, stallTicks: 0, clearRetries: 0 },
+      held: { ...resetStall(held, input.tick), clearRetries: 0 },
       transitions: [...transitions, {
         from: plan.state,
         to: "PLAN",
@@ -724,7 +738,7 @@ function legMoveStep(
         { ...plan, state: "LEG_SETTLE", legProgress: { ...plan.legProgress, cellsThisLeg: Math.max(plan.legProgress.cellsThisLeg, pathIndex - legStartIndex) } },
         input,
       ),
-      held: { ...held, settleElapsed: 0 },
+      held: { ...resetStall(held, input.tick), settleElapsed: 0 },
       transitions: [...transitions, {
         from: plan.state,
         to: "LEG_SETTLE",
@@ -743,7 +757,7 @@ function legMoveStep(
         { ...plan, state: "LEG_SETTLE", legProgress: { ...plan.legProgress, cellsThisLeg: nextCellsThisLeg } },
         input,
       ),
-      held: { ...held, settleElapsed: 0, stallTicks: 0 },
+      held: { ...resetStall(held, input.tick), settleElapsed: 0 },
       transitions: [...transitions, {
         from: plan.state,
         to: "LEG_SETTLE",
@@ -757,7 +771,7 @@ function legMoveStep(
     return waitStep(
       input,
       { ...plan, legProgress: { ...plan.legProgress, cellsThisLeg: nextCellsThisLeg } },
-      { ...held, stallTicks: 0 },
+      resetStall(held, input.tick),
       transitions,
       reasons,
       `LEG_MOVE：burst 推进 ${nextCellsThisLeg}/${input.config.pace.burstCells}（已到 (${position[0]},${position[1]})）`,
@@ -769,12 +783,15 @@ function legMoveStep(
   // 同样适用——2026-08-09 生产实证：守卫单位站在核心行进方向的前方格，
   // 核心在 burst 中途 NORMAL 卡死，原实现只检测腿起点导致清路永不触发）。
   {
-    const stallTicks = held.stallTicks + 1;
+    // run-conductor 轮询快于游戏 tick：仅不同 input.tick 才累计 stall/clear retry。
+    const stallTickAdvanced = held.stallRecordedTick !== input.tick;
+    const counted = countStall(held, input.tick);
+    const stallTicks = counted.stallTicks;
     if (stallTicks < 2) {
       return waitStep(
         input,
         plan,
-        { ...held, stallTicks },
+        counted,
         transitions,
         reasons,
         `LEG_MOVE：核心 NORMAL 未推进（stall ${stallTicks}/2，等待引擎/清路）`,
@@ -794,13 +811,13 @@ function legMoveStep(
         return waitStep(
           input,
           { ...plan, clearRequests: undefined },
-          { ...held, stallTicks: 0, clearRetries: 0 },
+          { ...resetStall(held, input.tick), clearRetries: 0 },
           transitions,
           reasons,
           `LEG_MOVE：清路完成（clearRequests 已清空）→ 复位 stall，等待 overlay 重发 START_MOVE`,
         );
       }
-      if (held.clearRetries >= 2) {
+      if (stallTickAdvanced && held.clearRetries >= 2) {
         // 连续 3 次清路未果 → REPLAN（换路绕开占用带，migration-assist-v1 §4-D）
         const replan = transition(plan.state, { type: "REPLAN_REQUESTED" });
         void replan;
@@ -809,7 +826,7 @@ function legMoveStep(
             { ...plan, state: "PLAN", revision: plan.revision + 1, clearRequests: undefined },
             input,
           ),
-          held: { ...held, stallTicks: 0, clearRetries: 0 },
+          held: { ...resetStall(held, input.tick), clearRetries: 0 },
           transitions: [...transitions, {
             from: plan.state,
             to: "PLAN",
@@ -825,10 +842,10 @@ function legMoveStep(
       return waitStep(
         input,
         plan,
-        { ...held, stallTicks, clearRetries: held.clearRetries + 1 },
+        { ...counted, clearRetries: stallTickAdvanced ? counted.clearRetries + 1 : counted.clearRetries },
         transitions,
         reasons,
-        `LEG_MOVE：清路重试 ${held.clearRetries + 1}/3（destination 仍有我方单位，runtime 清路订单执行中）`,
+        `LEG_MOVE：清路重试 ${counted.clearRetries + (stallTickAdvanced ? 1 : 0)}/3（destination 仍有我方单位，runtime 清路订单执行中）`,
       );
     }
     // 首次失败：写 clearRequests（当前格下一格 + 前瞻 1 格），runtime 执行让路。
@@ -853,7 +870,7 @@ function legMoveStep(
         },
         input,
       ),
-      held: { ...held, stallTicks, clearRetries: 1 },
+      held: { ...counted, clearRetries: 1 },
       transitions,
       reasons: [
         ...reasons,
