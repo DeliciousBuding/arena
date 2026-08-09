@@ -712,9 +712,41 @@ function legMoveStep(
       reasons: [...reasons, `LEG_MOVE：本腿完成（核心已到腿终点 (${leg.to.x},${leg.to.y})）→ LEG_SETTLE`],
     };
   }
-  if (pathIndex <= legStartIndex) {
-    // M6 停滞检测（migration-assist-v1 §4-D）：NORMAL 且未推进持续 ≥2 tick
-    // = 迁移失败签名（引擎拒：占位者不移走/争抢/容量，R3/R4）→ 生成清路请求。
+  const nextCellsThisLeg = Math.max(plan.legProgress.cellsThisLeg, pathIndex - legStartIndex);
+  const progressed = nextCellsThisLeg > plan.legProgress.cellsThisLeg;
+  if (progressed && nextCellsThisLeg % input.config.pace.burstCells === 0) {
+    const result = transition(plan.state, { type: "LEG_BURST_DONE" });
+    return {
+      plan: refreshLease(
+        { ...plan, state: "LEG_SETTLE", legProgress: { ...plan.legProgress, cellsThisLeg: nextCellsThisLeg } },
+        input,
+      ),
+      held: { ...held, settleElapsed: 0, stallTicks: 0 },
+      transitions: [...transitions, {
+        from: plan.state,
+        to: "LEG_SETTLE",
+        event: "LEG_BURST_DONE",
+        tick: input.tick,
+      }],
+      reasons: [...reasons, `LEG_MOVE：burst ${nextCellsThisLeg}/${input.config.pace.burstCells} 达标 → LEG_SETTLE`],
+    };
+  }
+  if (progressed) {
+    return waitStep(
+      input,
+      { ...plan, legProgress: { ...plan.legProgress, cellsThisLeg: nextCellsThisLeg } },
+      { ...held, stallTicks: 0 },
+      transitions,
+      reasons,
+      `LEG_MOVE：burst 推进 ${nextCellsThisLeg}/${input.config.pace.burstCells}（已到 (${position[0]},${position[1]})）`,
+    );
+  }
+  // 未推进（progressed=false）→ M6 停滞检测（migration-assist-v1 §4-D）：
+  // NORMAL 且位置未变持续 ≥2 tick = 迁移失败签名（引擎拒：占位者不移走/
+  // 争抢/容量，R3/R4）→ 生成清路请求。覆盖路径任意点（腿起点与 burst 中途
+  // 同样适用——2026-08-09 生产实证：守卫单位站在核心行进方向的前方格，
+  // 核心在 burst 中途 NORMAL 卡死，原实现只检测腿起点导致清路永不触发）。
+  {
     const stallTicks = held.stallTicks + 1;
     if (stallTicks < 2) {
       return waitStep(
@@ -723,7 +755,7 @@ function legMoveStep(
         { ...held, stallTicks },
         transitions,
         reasons,
-        `LEG_MOVE：核心在腿起点 NORMAL 未推进（stall ${stallTicks}/2，等待引擎/清路）`,
+        `LEG_MOVE：核心 NORMAL 未推进（stall ${stallTicks}/2，等待引擎/清路）`,
       );
     }
     // 已有清路请求：验证目标格是否已清空（单位坐标观测，M6 §5）。
@@ -777,8 +809,8 @@ function legMoveStep(
         `LEG_MOVE：清路重试 ${held.clearRetries + 1}/3（destination 仍有我方单位，runtime 清路订单执行中）`,
       );
     }
-    // 首次失败：写 clearRequests（destination + 前瞻 1 格），runtime 执行让路。
-    const destinationIndex = legStartIndex + 1;
+    // 首次失败：写 clearRequests（当前格下一格 + 前瞻 1 格），runtime 执行让路。
+    const destinationIndex = pathIndex + 1;
     const destination = plan.path.cells[destinationIndex];
     if (destination === undefined) {
       return waitStep(input, plan, held, transitions, reasons, "LEG_MOVE：路径无下一格（计划损坏，fail-closed 等待）");
@@ -808,35 +840,6 @@ function legMoveStep(
     };
   }
 
-  const nextCellsThisLeg = Math.max(plan.legProgress.cellsThisLeg, pathIndex - legStartIndex);
-  const progressed = nextCellsThisLeg > plan.legProgress.cellsThisLeg;
-  if (progressed && nextCellsThisLeg % input.config.pace.burstCells === 0) {
-    const result = transition(plan.state, { type: "LEG_BURST_DONE" });
-    return {
-      plan: refreshLease(
-        { ...plan, state: "LEG_SETTLE", legProgress: { ...plan.legProgress, cellsThisLeg: nextCellsThisLeg } },
-        input,
-      ),
-      held: { ...held, settleElapsed: 0, stallTicks: 0 },
-      transitions: [...transitions, {
-        from: plan.state,
-        to: "LEG_SETTLE",
-        event: "LEG_BURST_DONE",
-        tick: input.tick,
-      }],
-      reasons: [...reasons, `LEG_MOVE：burst ${nextCellsThisLeg}/${input.config.pace.burstCells} 达标 → LEG_SETTLE`],
-    };
-  }
-  if (progressed) {
-    return waitStep(
-      input,
-      { ...plan, legProgress: { ...plan.legProgress, cellsThisLeg: nextCellsThisLeg } },
-      { ...held, stallTicks: 0 },
-      transitions,
-      reasons,
-      `LEG_MOVE：burst 推进 ${nextCellsThisLeg}/${input.config.pace.burstCells}（已到 (${position[0]},${position[1]})）`,
-    );
-  }
   return waitStep(input, plan, held, transitions, reasons, `LEG_MOVE：burst ${nextCellsThisLeg}/${input.config.pace.burstCells}，等待移动`);
 }
 
