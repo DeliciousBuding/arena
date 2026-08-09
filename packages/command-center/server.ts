@@ -760,6 +760,7 @@ app.post("/api/ingest/agents", async (c) => {
     return c.json({ error: "events 数组必填" }, 400);
   }
   let accepted = 0;
+  let failed = 0;
   const open: Array<{ tenant: string; db: DatabaseSync }> = [];
   try {
     for (const raw of body.events) {
@@ -773,13 +774,23 @@ app.post("/api/ingest/agents", async (c) => {
       const held = open.find((o) => o.tenant === tenant);
       const db = held?.db ?? openAgentDb(tenant, true);
       if (!held) open.push({ tenant, db });
-      applyAgentEvent(db, ev as never);
+      try {
+        applyAgentEvent(db, ev as never);
+      } catch (err) {
+        // 单事件隔离（2026-08-10 P1）：一个事件失败（BUSY 超时/坏数据）不再
+        // 拖垮整批——此前整批 500 且已落库事件形成半写；失败记日志继续下一
+        // 事件，响应返回 failed 计数（busy_timeout 已让锁等待替代失败，此
+        // 分支仅兜底真异常）。
+        console.error(`[ingest/agents] applyAgentEvent 失败: ${err instanceof Error ? err.message : String(err)}`, { tenant, event: kind });
+        failed += 1;
+        continue;
+      }
       accepted += 1;
     }
   } finally {
     for (const o of open) o.db.close();
   }
-  return c.json({ accepted, at: new Date().toISOString() });
+  return c.json({ accepted, failed, at: new Date().toISOString() });
 });
 
 // Agent 统一台账视图：自有（TS 数据流）+ 第三方（SDK 心跳）同屏。

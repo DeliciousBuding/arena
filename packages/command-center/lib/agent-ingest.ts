@@ -181,6 +181,12 @@ export function openAgentDb(tenant: string, write = false): DatabaseSync {
   const dir = join(DATA_ROOT, "runtime", "survey");
   if (write) mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(join(dir, `${tenant}.db`));
+  // 双写竞争（2026-08-10 P1）：ingest（python 实时域，每 5s flush）与
+  // survey:sync CLI（TS 回放域，~15min 全量 SAVEPOINT 事务）并发写同一
+  // survey/<tenant>.db；node:sqlite 默认 busy_timeout=0ms，撞上即
+  // "database is locked"——busy_timeout 让等待替代失败（与 map-store.ts
+  // 同参；须先于 WAL pragma：journal 切换需独占锁）。
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(AGENT_SCHEMA);
   if (write) {

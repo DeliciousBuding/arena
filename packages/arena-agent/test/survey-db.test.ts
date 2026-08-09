@@ -74,6 +74,19 @@ function makeState(tick: number, overrides: Partial<TickState> = {}): TickState 
   };
 }
 
+test("survey-db: openSurveyDb 写路径设置 busy_timeout=5000（ingest/sync 双写竞争 P1）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-busy-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    // 列名是 timeout（SQLite 对 PRAGMA busy_timeout 查询的返回列）
+    const row = db.prepare("PRAGMA busy_timeout").get() as { timeout: number };
+    assert.equal(row.timeout, 5000, "busy_timeout 生效：锁竞争时等待 5s 替代直接抛 database is locked");
+    db.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("survey-db: resources upsert 去重 + seen_count 累积 + 状态回写", () => {
   const dir = mkdtempSync(join(tmpdir(), "survey-db-"));
   try {

@@ -268,16 +268,31 @@ export function openSurveyDb(dataRoot: string, tenant: string, write = false): D
   const dir = join(dataRoot, "runtime", "survey");
   if (write) mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(join(dir, `${tenant}.db`));
+  // 双写竞争（2026-08-10 P1）：survey:sync CLI（TS calibration 回放域，
+  // ~15min 对全部 4 租户持写锁做 SAVEPOINT 单事务）与 ingest（python 实时域，
+  // 每 5s flush）并发写同一 survey/<tenant>.db；node:sqlite 默认
+  // busy_timeout=0ms，撞上即 "database is locked"，SCHEMA/迁移整体失败——
+  // busy_timeout 让等待替代失败（与 map-store.ts 同参；须先于 WAL pragma：
+  // journal 切换需独占锁）。
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
   if (write) {
-    migrateUnitsSeenXY(db); // 数据架构审计 A2：旧库补 x/y 列 + 回填
-    migrateCoreHuntSanity(db); // 数据质量 A5：核心时间戳倒挂修复（first<=last）
-    migrateResourceSanity(db); // 数据质量 A10：矿时间戳倒挂 + seen_count 重建（force 重跑污染）
-    migrateNotableSanity(db, dataRoot, tenant); // 叙事 A11：CORE_DESTROYED 敌我/摧毁者回填（旧库）
-    migrateUnitsSeenArchive(db); // 共享记忆分层 A13：旧目击归档 heat_archive + 清理原始行
-    migrateDropControlledSeen(db); // 记忆收敛 A14：清理我方目击行（units_seen 纯敌方记忆）
-    migrateAgentMode(db); // agent-ecosystem-v1 P1：agents 表补 mode 列（旧库）
+    try {
+      migrateUnitsSeenXY(db); // 数据架构审计 A2：旧库补 x/y 列 + 回填
+      migrateCoreHuntSanity(db); // 数据质量 A5：核心时间戳倒挂修复（first<=last）
+      migrateResourceSanity(db); // 数据质量 A10：矿时间戳倒挂 + seen_count 重建（force 重跑污染）
+      migrateNotableSanity(db, dataRoot, tenant); // 叙事 A11：CORE_DESTROYED 敌我/摧毁者回填（旧库）
+      migrateUnitsSeenArchive(db); // 共享记忆分层 A13：旧目击归档 heat_archive + 清理原始行
+      migrateDropControlledSeen(db); // 记忆收敛 A14：清理我方目击行（units_seen 纯敌方记忆）
+      migrateAgentMode(db); // agent-ecosystem-v1 P1：agents 表补 mode 列（旧库）
+    } catch (err) {
+      // busy_timeout 下并发写应等待而非抛错；走到这里是真失败（库损坏/
+      // 磁盘/迁移缺陷）。schema 未就绪的连接不可用——关闭并上抛，由
+      // 调用方决定重试（syncTenantSurvey 依赖完整库，不静默吞）。
+      db.close();
+      throw err;
+    }
   }
   return db;
 }
