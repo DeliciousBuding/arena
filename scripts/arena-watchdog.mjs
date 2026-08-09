@@ -263,6 +263,12 @@ function restartSupervisor() {
     detached: true,
     stdio: ["ignore", out, out],
     shell: false,
+    // t1 台账依赖 SDK 遥测 env：不带则台账停更（2026-08-09 15:13 根因）。
+    env: {
+      ...process.env,
+      ARENA_HERO_TELEMETRY_ENDPOINT: "http://127.0.0.1:8787/api/ingest/agents",
+      ARENA_HERO_TENANT: "t1",
+    },
   });
   child.unref();
   closeSync(out);
