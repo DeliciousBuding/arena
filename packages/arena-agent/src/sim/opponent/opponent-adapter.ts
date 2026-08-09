@@ -98,6 +98,10 @@ export interface ReferencePythonConfig {
   readonly stateSlot?: string;
   /** bridge 脚本路径（scripts/opponent-bridge.py），缺省按本文件相对定位。 */
   readonly bridgeScript?: string;
+  /** P4c+d：遥测台账 instance 用 seed 推导（--seed <n> → <agent>-s<n>）。 */
+  readonly seed?: number | null;
+  /** P4c+d：台账 instance 显式覆盖（优先于 --seed 推导）。 */
+  readonly instance?: string | null;
 }
 
 /**
@@ -123,6 +127,8 @@ export class ReferenceSubprocessDecider implements ExternalDecider {
   readonly stateSlot: string;
   readonly bridgeScript: string;
   readonly slotIsDefault: boolean;
+  readonly seed: number | null;
+  readonly instance: string | null;
   ready = false;
   private spawnCount = 0;
 
@@ -138,6 +144,8 @@ export class ReferenceSubprocessDecider implements ExternalDecider {
     this.bridgeScript =
       config.bridgeScript ??
       fileURLToPath(new URL("../../../scripts/opponent-bridge.py", import.meta.url));
+    this.seed = config.seed ?? null;
+    this.instance = config.instance ?? null;
   }
 
   decide(player: ProtoPlayerState, tick: number): ProtoCommandPlan {
@@ -152,6 +160,12 @@ export class ReferenceSubprocessDecider implements ExternalDecider {
     ];
     if (this.sdkRepoDir !== undefined && this.sdkRepoDir.length > 0) {
       commandArgs.push("--sdk-repo", this.sdkRepoDir);
+    }
+    if (this.seed !== null) {
+      commandArgs.push("--seed", String(this.seed));
+    }
+    if (this.instance !== null && this.instance.length > 0) {
+      commandArgs.push("--instance", this.instance);
     }
     this.spawnCount += 1;
     const result = spawnSync(this.python, commandArgs, {
@@ -216,6 +230,10 @@ export interface PersistentReferenceConfig {
   readonly bridgeScript?: string;
   /** python-agents.json 注册名；默认 farmer。 */
   readonly agent?: string;
+  /** P4c+d：遥测台账 instance 用 seed 推导（--seed <n> → <agent>-s<n>）。 */
+  readonly seed?: number | null;
+  /** P4c+d：台账 instance 显式覆盖（优先于 --seed 推导）。 */
+  readonly instance?: string | null;
 }
 
 /** 常驻子进程决策器：对局级生命周期（随用随起），close() 释放进程与槽。 */
@@ -234,6 +252,8 @@ export class PersistentSubprocessDecider implements ExternalDecider {
       stateSlot: config.stateSlot,
       bridgeScript: config.bridgeScript,
       agent: config.agent,
+      seed: config.seed,
+      instance: config.instance,
     });
     this.bridge = created.bridge;
     this.stateSlot = created.stateSlot;

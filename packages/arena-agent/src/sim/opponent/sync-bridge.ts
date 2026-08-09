@@ -121,13 +121,16 @@ export class PersistentSyncBridge {
     throw new Error(`sync bridge: decision timeout (${DECISION_TIMEOUT_MS}ms)`);
   }
 
-  /** 关闭：通知 worker 终止子进程并释放。 */
+  /** 关闭：通知 worker 优雅终止子进程（EOF/哨兵退出窗口内完成状态槽与遥测
+   *  flush），并释放。 */
   close(): void {
     if (this.closed) return;
     this.closed = true;
     try {
       this.worker.postMessage("close");
-      Atomics.wait(this.flags, 0, FLAG_IDLE, 2000);
+      // worker 收尾（子进程优雅退出 + 遥测 flush）后置回 FLAG_IDLE；
+      // 等待窗口 ≥ worker 的优雅窗口，防提前 terminate 打断上报。
+      Atomics.wait(this.flags, 0, FLAG_IDLE, 4000);
     } catch {
       // worker 可能已退出——忽略。
     }
@@ -151,6 +154,12 @@ export function createReferenceBridge(options: {
   readonly bridgeScript?: string;
   /** python-agents.json 注册名；默认 farmer。 */
   readonly agent?: string;
+  /** P4c+d（2026-08-09）：遥测台账 instance 用 seed 推导（--seed <n>
+   *  → bridge 端 instance=<agent>-s<n>）；null/缺省 = 不传（bridge 按
+   *  --state-slot 文件名 / sim-<agent> 兜底）。 */
+  readonly seed?: number | null;
+  /** P4c+d：台账 instance 显式覆盖（优先于 --seed/--state-slot 推导）。 */
+  readonly instance?: string | null;
 }): { readonly bridge: PersistentSyncBridge; readonly stateSlot: string } {
   const stateSlot =
     options.stateSlot ?? join(tmpdir(), `arena-ref-${randomUUID()}.pkl`);
@@ -169,6 +178,12 @@ export function createReferenceBridge(options: {
   }
   if (options.sdkRepoDir !== undefined && options.sdkRepoDir.length > 0) {
     bridgeArgs.push("--sdk-repo", options.sdkRepoDir);
+  }
+  if (options.seed !== undefined && options.seed !== null) {
+    bridgeArgs.push("--seed", String(options.seed));
+  }
+  if (options.instance !== undefined && options.instance !== null && options.instance.length > 0) {
+    bridgeArgs.push("--instance", options.instance);
   }
   const bridge = new PersistentSyncBridge({
     python: options.python ?? "python",

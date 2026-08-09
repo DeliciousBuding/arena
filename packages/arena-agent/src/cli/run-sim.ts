@@ -1,7 +1,5 @@
 /** Offline simulator CLI (S9): doctor, episode, ab, benchmark and calibrate. */
 
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +7,7 @@ import { runCalibrationCase } from "../sim/calibration/calibrate.ts";
 import { runCalibrationDataset } from "../sim/calibration/dataset.ts";
 import { buildDataset } from "../sim/dataset/builder.ts";
 import { runSimServer } from "./run-sim-server.ts";
+import { buildSimTelemetryFactory } from "./telemetry-sink.ts";
 import {
   loadRulesManifest,
   manifestHash,
@@ -38,8 +37,6 @@ import {
 import { canonicalWorldJson } from "../sim/world/canonical.ts";
 import { worldFromScenario } from "../sim/world/loaders.ts";
 import { resolveArenaDataRoot } from "../app/data-root.ts";
-import type { TickState } from "../domain/model.ts";
-import { TELEMETRY_ENDPOINT_ENV, tickSummaryFromTickState, type SimTelemetrySink } from "../sim/telemetry.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, "..", "..");
@@ -227,94 +224,6 @@ function runDoctor(args: ParsedArgs): number {
   const rules = checkedRules(path);
   console.log(`sim doctor ok: rules=${rules.rulesVersion} manifest=${manifestHash(rules)}`);
   return 0;
-}
-
-// ---------- 模拟器遥测（agent-telemetry-bridge-v1 §3.4） ----------
-
-/** cli 层 HTTP sink：批量上报同一 ingest 端点（fire-and-forget，失败静默）。 */
-class SimHttpSink implements SimTelemetrySink {
-  private readonly events: Array<Record<string, unknown>> = [];
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private readonly endpoint: string;
-  private readonly tenant: string;
-
-  constructor(endpoint: string, tenant: string) {
-    this.endpoint = endpoint;
-    this.tenant = tenant;
-    this.timer = setInterval(() => this.flush(), 5000);
-    this.timer.unref?.();
-  }
-
-  emitTick(tick: number, state: TickState): void {
-    this.events.push({
-      tenant: this.tenant,
-      instance: this.tenant,
-      ts: Date.now() / 1000,
-      ...tickSummaryFromTickState(tick, state),
-    });
-    if (this.events.length >= 20) this.flush();
-  }
-
-  close(): void {
-    if (this.timer !== null) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    this.flush();
-  }
-
-  private flush(): void {
-    if (this.events.length === 0) return;
-    const batch = this.events.splice(0);
-    postJsonSilent(this.endpoint, { events: batch });
-  }
-}
-
-/** node:http(s) 原生 POST（隔离合规：sim 闭包禁 fetch/长连接 token）。 */
-function postJsonSilent(endpoint: string, payload: unknown): void {
-  const url = new URL(endpoint);
-  const body = JSON.stringify(payload);
-  const doRequest = url.protocol === "https:" ? httpsRequest : httpRequest;
-  const req = doRequest(
-    {
-      hostname: url.hostname,
-      port: url.port !== "" ? Number(url.port) : undefined,
-      path: url.pathname,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-      },
-    },
-    (res) => {
-      res.resume();
-    },
-  );
-  req.on("error", () => {});
-  req.end(body);
-}
-
-/** env 配了 ingest 端点 → 每 tenant 一个 HTTP sink；否则全部 null（no-op）。 */
-function buildSimTelemetryFactory(playerIds: readonly string[]): {
-  readonly factory: (tenantId: string) => SimTelemetrySink | null;
-  readonly closeAll: () => void;
-} {
-  const endpoint = (process.env[TELEMETRY_ENDPOINT_ENV] ?? "").trim();
-  const sinks = new Map<string, SimHttpSink>();
-  const factory = (tenantId: string): SimTelemetrySink | null => {
-    if (!endpoint) return null;
-    let sink = sinks.get(tenantId);
-    if (sink === undefined) {
-      // 模拟器租户命名空间：sim-<playerId>（与生产 t1-t4 区分，ingest 白名单接受 sim- 前缀）
-      sink = new SimHttpSink(endpoint, `sim-${tenantId}`);
-      sinks.set(tenantId, sink);
-    }
-    return sink;
-  };
-  const closeAll = () => {
-    for (const sink of sinks.values()) sink.close();
-  };
-  return { factory, closeAll };
 }
 
 function runEpisodeCommand(args: ParsedArgs): number {

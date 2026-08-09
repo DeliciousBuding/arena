@@ -207,7 +207,10 @@ class _HttpTelemetrySink:
                     try:
                         item = self._queue.get(timeout=0.5)
                     except queue.Empty:
-                        item = None
+                        # 队列暂空：继续等待（只有 close() 的 None 哨兵才退出）——
+                        # 否则启动期（注册表加载/import 慢于 0.5s）线程会带着
+                        # register/connection 提前退出，后续事件全部丢失。
+                        continue
                     if item is None:
                         self._flush(client, batch)
                         return
@@ -475,6 +478,10 @@ def _serve_lines(args, decide, persist, telemetry) -> int:
             line = line.strip()
             if not line:
                 continue
+            # 优雅退出哨兵（worker 关闭时发送）：静默 return 0，走 finally
+            # （强制 flush 状态槽 + 遥测 disconnected/剩余事件）。
+            if line == "__arena_quit__":
+                return 0
             message: dict | None = None
             try:
                 message = json.loads(line)

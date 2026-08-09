@@ -31,8 +31,6 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
 import type { Duplex } from "node:stream";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -48,7 +46,12 @@ import {
 } from "../sim/contracts/rules-manifest.ts";
 import { createSeededRng } from "../sim/deterministic/rng.ts";
 import { settleTick, type SettlementContext } from "../sim/engine/settlement.ts";
-import { hashPlan, type EpisodeRecord, type EpisodeResult } from "../sim/harness/episode.ts";
+import {
+  hashPlan,
+  type EpisodeRecord,
+  type EpisodeResult,
+  type PlayerCostLedger,
+} from "../sim/harness/episode.ts";
 import { stateToOfficialJson } from "../sim/bridge/official-state.ts";
 import { planFromOfficialJson } from "../sim/bridge/official-plan.ts";
 import {
@@ -57,11 +60,8 @@ import {
 } from "../sim/opponent/protocol-bridge.ts";
 import { privateEventsForPlayer } from "../sim/visibility/private-events.ts";
 import { simTurnLike } from "../sim/visibility/visibility.ts";
-import {
-  TELEMETRY_ENDPOINT_ENV,
-  tickSummaryFromTickState,
-  type SimTelemetrySink,
-} from "../sim/telemetry.ts";
+import { type SimTelemetrySink } from "../sim/telemetry.ts";
+import { buildSimTelemetryFactory } from "./telemetry-sink.ts";
 import {
   atomicWriteJson,
   atomicWriteJsonl,
@@ -89,6 +89,12 @@ const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const COMMAND_SOURCE = "AGENT" as const;
 const PLAN_TIMEOUT_MS = 5000;
 const TICK_INTERVAL_MS = 200;
+/** P4e 决策预算（对齐 episode 引擎 decisionBudgetMs=200）：计划到达时刻 vs
+ *  本 tick 广播时刻超预算 → 丢弃该 tick 使用（重放），记 decisionTimeouts。 */
+const DECISION_BUDGET_MS = 200;
+/** P4e 连续超时 strikes（对齐 episode decisionBudgetStrikes 缺省 3）：
+ *  连续超预算达此数 → 该客户端后续 tick 直接按重放处理（不再等待）。 */
+const DECISION_BUDGET_STRIKES = 3;
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const CLOSE_NORMAL = 1000;
 const CLOSE_POLICY_VIOLATION = 1008;
@@ -268,73 +274,6 @@ class WebSocketConnection {
 }
 
 /* ============================================================
- * 模拟器遥测（agent-telemetry-bridge-v1 §3.4）——复用 run-sim.ts
- * 的 SimHttpSink 模式（CLI 层 HTTP sink，fire-and-forget）
- * ============================================================ */
-
-class SimHttpSink implements SimTelemetrySink {
-  private readonly events: Array<Record<string, unknown>> = [];
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private readonly endpoint: string;
-  private readonly tenant: string;
-
-  constructor(endpoint: string, tenant: string) {
-    this.endpoint = endpoint;
-    this.tenant = tenant;
-    this.timer = setInterval(() => this.flush(), 5000);
-    this.timer.unref?.();
-  }
-
-  emitTick(tick: number, state: TickState): void {
-    this.events.push({
-      tenant: this.tenant,
-      instance: this.tenant,
-      ts: Date.now() / 1000,
-      ...tickSummaryFromTickState(tick, state),
-    });
-    if (this.events.length >= 20) this.flush();
-  }
-
-  close(): void {
-    if (this.timer !== null) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    this.flush();
-  }
-
-  private flush(): void {
-    if (this.events.length === 0) return;
-    const batch = this.events.splice(0);
-    postJsonSilent(this.endpoint, { events: batch });
-  }
-}
-
-/** node:http(s) 原生 POST（隔离合规：sim 闭包禁 fetch/长连接 token）。 */
-function postJsonSilent(endpoint: string, payload: unknown): void {
-  const url = new URL(endpoint);
-  const body = JSON.stringify(payload);
-  const doRequest = url.protocol === "https:" ? httpsRequest : httpRequest;
-  const req = doRequest(
-    {
-      hostname: url.hostname,
-      port: url.port !== "" ? Number(url.port) : undefined,
-      path: url.pathname,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-      },
-    },
-    (res) => {
-      res.resume();
-    },
-  );
-  req.on("error", () => {});
-  req.end(body);
-}
-
-/* ============================================================
  * 协议工具
  * ============================================================ */
 
@@ -357,6 +296,14 @@ interface PlayerSession {
   lastWirePlan: Record<string, unknown> | null;
   /** 已广播 state 的 tick；迟连客户端不算入本 tick 计划等待。 */
   tickDelivered: number;
+  /** P4e：本 tick 广播时刻（决策耗时基准：计划到达时刻 − 广播时刻）。 */
+  tickBroadcastAt: number;
+  /** P4e：本 tick 计划到达时刻（0 = 尚未到达）。 */
+  planArrivedAt: number;
+  /** P4e：连续超预算 strike 数。 */
+  decisionTimeoutStrikes: number;
+  /** P4e：连续超时达标 → 后续 tick 直接重放（不等待其计划）。 */
+  decisionTimeoutSkipped: boolean;
 }
 
 interface WorldOutcome {
@@ -477,7 +424,9 @@ class SimServerRuntime {
   private readonly server: Server;
   private readonly runDir: string;
   private readonly runId: string;
-  private readonly telemetrySinks = new Map<string, SimHttpSink>();
+  /** 模拟器遥测（agent-telemetry-bridge-v1 §3.4）：与 run-sim.ts 共用同一
+   *  HTTP sink 工厂（telemetry-sink.ts），env 未配端点 = 全 no-op。 */
+  private readonly telemetryFactory: ReturnType<typeof buildSimTelemetryFactory>;
   private currentTick = 0;
   /** 最近一次广播/结算所基于的 SimWorld（计划反查 UUID 映射用）。 */
   private currentWorld: SimWorld | null = null;
@@ -488,6 +437,7 @@ class SimServerRuntime {
     this.options = options;
     const loaded = worldFromScenario(options.scenario);
     this.playerIds = [...loaded.players.keys()];
+    this.telemetryFactory = buildSimTelemetryFactory(this.playerIds);
     const output = this.resolveOutput();
     this.runId = output.runId;
     this.runDir = prepareRunDir(output.outputBase, output.runId, options.force);
@@ -518,6 +468,18 @@ class SimServerRuntime {
     const outcome = await this.runWorldLoop();
     await this.closeClients(CLOSE_NORMAL);
     const finalWorldHash = worldHash(outcome.world);
+    // P4e：per-player 决策超时计数（对齐 episode metrics.perPlayer 形状——
+    // summarizeEpisode 从这里读 decisionTimeouts 进 summary）。
+    const decisionTimeouts: Record<string, number> = {};
+    for (const record of outcome.records) {
+      for (const [playerId, count] of Object.entries(record.decisionTimeouts)) {
+        decisionTimeouts[playerId] = (decisionTimeouts[playerId] ?? 0) + count;
+      }
+    }
+    const totalDecisionTimeouts = Object.values(decisionTimeouts).reduce(
+      (sum, count) => sum + count,
+      0,
+    );
     const result: EpisodeResult = {
       finalWorld: outcome.world,
       finalWorldHash,
@@ -529,7 +491,14 @@ class SimServerRuntime {
         unsupported: [...new Set(outcome.records.flatMap((record) => record.unsupported))].sort(),
         totalEvents: outcome.totalEvents,
         wallMs: outcome.wallMs,
-        perPlayer: {},
+        // sim-server 只维护 decisionTimeouts 一项 ledger 指标（其余字段
+        // 由 episode 引擎路径累计；此处按 summary 读取面补齐形状）。
+        perPlayer: Object.fromEntries(
+          this.playerIds.map((playerId) => [
+            playerId,
+            { decisionTimeouts: decisionTimeouts[playerId] ?? 0 },
+          ]),
+        ) as unknown as Readonly<Record<string, PlayerCostLedger>>,
         endedEarly: outcome.settledTicks < this.options.ticks,
         endReason: outcome.settledTicks < this.options.ticks ? ("all-dead" as const) : null,
         endedAtTick: outcome.settledTicks < this.options.ticks ? outcome.settledTicks : null,
@@ -573,6 +542,8 @@ class SimServerRuntime {
         players: [...this.playerIds],
         planTimeoutMs: PLAN_TIMEOUT_MS,
         tickIntervalMs: TICK_INTERVAL_MS,
+        decisionBudgetMs: DECISION_BUDGET_MS,
+        decisionBudgetStrikes: DECISION_BUDGET_STRIKES,
         endedEarly: outcome.settledTicks < this.options.ticks,
         clients: [...this.playerSessions.values()].map((session) => ({
           playerId: session.playerId,
@@ -591,6 +562,7 @@ class SimServerRuntime {
     console.log(
       `sim-server ok: ticks=${outcome.settledTicks}/${this.options.ticks} ` +
         `illegal=${outcome.illegalPlans} repaired=${outcome.repairedPlans} ` +
+        `decisionTimeouts=${totalDecisionTimeouts} ` +
         `events=${outcome.totalEvents} out=${this.runDir}`,
     );
     return 0;
@@ -632,12 +604,17 @@ class SimServerRuntime {
         this.telemetrySinkFor(playerId)?.emitTick(tick, state);
       }
 
-      // 2) 广播 Tick + PlayerState（新 tick 清掉上一轮未消费计划）
-      for (const session of this.playerSessions.values()) session.pendingPlan = null;
+      // 2) 广播 Tick + PlayerState（新 tick 清掉上一轮未消费计划；记录广播
+      //    时刻与计划到达基准——P4e 决策耗时 = planArrivedAt − tickBroadcastAt）
+      for (const session of this.playerSessions.values()) {
+        session.pendingPlan = null;
+        session.planArrivedAt = 0;
+      }
       for (const playerId of this.playerIds) {
         const session = this.playerSessions.get(playerId);
         if (session === undefined || session.ws === null) continue;
         session.tickDelivered = tick;
+        session.tickBroadcastAt = performance.now();
         session.ws.sendText(JSON.stringify({ type: "tick", data: tick }));
         session.ws.sendText(
           JSON.stringify({
@@ -647,7 +624,8 @@ class SimServerRuntime {
         );
       }
 
-      // 3) 等所有已连接客户端回计划（超时后未回 = 上轮重放或 WAIT）
+      // 3) 等所有已连接客户端回计划（超时后未回 = 上轮重放或 WAIT；
+      //    P4e：连续超时达标的客户端不再等待，直接按重放处理）
       await this.waitForTickPlans();
 
       // 4) 收集计划 → 校验/修复 → settleTick 推进世界
@@ -655,11 +633,15 @@ class SimServerRuntime {
       const plans: Record<string, Plan> = {};
       const planHashes: Record<string, string> = {};
       const validations: Record<string, { valid: boolean; repaired: boolean; issueCount: number }> = {};
+      const tickDecisionTimeouts: Record<string, number> = {};
+      const tickDecisionSkipped: string[] = [];
       for (const playerId of this.playerIds) {
         const state = observations.get(playerId)!;
-        const { plan, validation } = this.planForPlayer(playerId, tick, state);
+        const { plan, validation, decisionTimeout, skipped } = this.planForPlayer(playerId, tick, state);
         if (!validation.valid) illegalPlans += 1;
         if (validation.repaired) repairedPlans += 1;
+        if (decisionTimeout) tickDecisionTimeouts[playerId] = 1;
+        if (skipped) tickDecisionSkipped.push(playerId);
         settlementPlans.set(playerId, plan);
         plans[playerId] = plan;
         planHashes[playerId] = hashPlan(plan);
@@ -690,10 +672,10 @@ class SimServerRuntime {
         events: result.events,
         unsupported: result.unsupported,
         unknownEffects: result.unknownEffects,
-        // P4e：sim-server 客户端计划走 PLAN_TIMEOUT_MS 超时（桥层语义），
-        // 不启用 episode 引擎决策预算 → 恒空。
-        decisionTimeouts: {},
-        decisionTimeoutSkipped: [],
+        // P4e：sim-server 客户端计划超预算（200ms）被丢弃的 tick 计数 +
+        // 连续超时达标后按重放处理的客户端（对齐 episode 的字段形状）。
+        decisionTimeouts: tickDecisionTimeouts,
+        decisionTimeoutSkipped: tickDecisionSkipped,
       });
       settledTicks += 1;
 
@@ -725,6 +707,8 @@ class SimServerRuntime {
     for (const session of this.playerSessions.values()) {
       if (
         session.ws !== null &&
+        // P4e：连续超时达标的客户端不参与等待（直接按重放处理）
+        !session.decisionTimeoutSkipped &&
         session.tickDelivered === this.currentTick &&
         session.pendingPlan === null
       ) {
@@ -763,18 +747,49 @@ class SimServerRuntime {
     this.planWaitResolve = null;
   }
 
-  /** 单个槽位的结算计划：本 tick 提交 → 上轮重放 → WAIT 空计划，均过校验。 */
+  /**
+   * 单个槽位的结算计划：本 tick 提交 → 上轮重放 → WAIT 空计划，均过校验。
+   * P4e 决策预算护栏（对齐 episode 语义，最小侵入）：计划到达时刻 − 本 tick
+   * 广播时刻 > DECISION_BUDGET_MS → 丢弃该 tick 使用（重放上次执行计划，
+   * 无上次计划用空计划 WAIT）、计 1 次超时、strikes+1；连续超时达
+   * DECISION_BUDGET_STRIKES → 该客户端后续 tick 直接按重放处理（skipped，
+   * 不等待、不计新超时）。正常客户端（预算内到达）行为与原来完全一致。
+   */
   private planForPlayer(
     playerId: string,
     tick: number,
     state: TickState,
-  ): { plan: Plan; validation: ValidationResult } {
+  ): { plan: Plan; validation: ValidationResult; decisionTimeout: boolean; skipped: boolean } {
     const session = this.playerSessions.get(playerId);
     let candidate: Plan | null = null;
-    if (session !== undefined && session.ws !== null && session.pendingPlan !== null) {
-      candidate = session.pendingPlan;
-    } else if (session !== undefined && session.ws !== null && session.lastPlan !== null) {
-      candidate = { ...session.lastPlan, tick };
+    let decisionTimeout = false;
+    if (session !== undefined && session.ws !== null) {
+      if (session.decisionTimeoutSkipped) {
+        // 连续超时达标：直接重放，不再消费/等待客户端计划。
+        candidate = session.lastPlan === null ? null : { ...session.lastPlan, tick };
+      } else if (session.pendingPlan !== null) {
+        const budgetExceeded =
+          session.tickBroadcastAt > 0 &&
+          session.planArrivedAt > 0 &&
+          session.planArrivedAt - session.tickBroadcastAt > DECISION_BUDGET_MS;
+        if (!budgetExceeded) {
+          candidate = session.pendingPlan;
+          session.decisionTimeoutStrikes = 0;
+        } else {
+          decisionTimeout = true;
+          session.decisionTimeoutStrikes += 1;
+          if (session.decisionTimeoutStrikes >= DECISION_BUDGET_STRIKES) {
+            session.decisionTimeoutSkipped = true;
+            console.log(
+              `sim-server: decision timeout skip enabled for ${playerId} at tick ${tick}` +
+                ` (${session.decisionTimeoutStrikes} consecutive)`,
+            );
+          }
+          candidate = session.lastPlan === null ? null : { ...session.lastPlan, tick };
+        }
+      } else if (session.lastPlan !== null) {
+        candidate = { ...session.lastPlan, tick };
+      }
     }
     const base = candidate ?? emptyPlan(tick);
     const validation = validatePlan(state, base);
@@ -791,7 +806,12 @@ class SimServerRuntime {
       session.lastPlan = usable;
       session.pendingPlan = null;
     }
-    return { plan: usable, validation };
+    return {
+      plan: usable,
+      validation,
+      decisionTimeout,
+      skipped: session?.decisionTimeoutSkipped === true,
+    };
   }
 
   /* ---------------- 连接/计划入口 ---------------- */
@@ -863,6 +883,10 @@ class SimServerRuntime {
           lastPlan: null,
           lastWirePlan: null,
           tickDelivered: 0,
+          tickBroadcastAt: 0,
+          planArrivedAt: 0,
+          decisionTimeoutStrikes: 0,
+          decisionTimeoutSkipped: false,
         });
         if (token !== null) this.tokenToPlayer.set(token, playerId);
         return playerId;
@@ -952,6 +976,7 @@ class SimServerRuntime {
     }
     const receivedAt = new Date().toISOString();
     session.pendingPlan = translated.plan;
+    session.planArrivedAt = performance.now();
     session.lastWirePlan = sanitizeWirePlan(wire);
     this.broadcastReceived(session, receivedAt);
     this.notifyPlanArrived();
@@ -1011,18 +1036,11 @@ class SimServerRuntime {
   /* ---------------- 遥测 / 输出 / 关停 ---------------- */
 
   private telemetrySinkFor(playerId: string): SimTelemetrySink | null {
-    const endpoint = (process.env[TELEMETRY_ENDPOINT_ENV] ?? "").trim();
-    if (!endpoint) return null;
-    let sink = this.telemetrySinks.get(playerId);
-    if (sink === undefined) {
-      sink = new SimHttpSink(endpoint, `sim-${playerId}`);
-      this.telemetrySinks.set(playerId, sink);
-    }
-    return sink;
+    return this.telemetryFactory.factory(playerId);
   }
 
   private closeAllTelemetry(): void {
-    for (const sink of this.telemetrySinks.values()) sink.close();
+    this.telemetryFactory.closeAll();
   }
 
   private resolveOutput(): { outputBase: string; runId: string } {

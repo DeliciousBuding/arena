@@ -116,6 +116,10 @@ export function opponentEntry(spec: OpponentSpec, seed: number): TournEntry {
         farmerPath: join(FARMER_REPO, "arena_farmer.py"),
         stateSlot: join(slotDir, `slot-${seed}-${randomUUID()}.pkl`),
         agent: spec.pythonAgent,
+        // P4c+d：桥进程带 --seed/--instance——遥测台账 instance=<name>-s<seed>
+        // （同 agent 多 seed 实例可区分；instance 显式传 opponentId 与 id 对齐）。
+        seed,
+        instance: opponentId,
       });
       return new OpponentAdapter(decider, opponentId, spec.name);
     },
