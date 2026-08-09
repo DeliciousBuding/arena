@@ -99,18 +99,23 @@ export function targetConfidence(
 /** 采集池过滤（G1+G2 门槛 + Phase 2 死矿剔除）：不满足门槛/距离的格不可采集。
  *  返回 false = 该格不可达/不值得，worker 应转勘探。
  *  refillPredictions（cellKey → dueInTicks）：dueInTicks < −deadMineOverdueTicks
- *  的格疑似永久采空 → 不可采（t1 实证死种子循环）。 */
+ *  的格疑似永久采空 → 不可采（t1 实证死种子循环）。
+ *  visible（2026-08-09 P0 止血）：当前可见格（cell.visible === true）是实时事实，
+ *  只受 maxCollectionDistance / 敌占 / 路径等硬约束——跳过历史/价值 floor 与死矿
+ *  预测；不可见 memory/seed 格（visible=false 或缺省）仍必须过 floor/置信/陈旧
+ *  惩罚。调用方显式传 cell.visible === true，不允许靠调低配置绕过。 */
 export function isCollectable(
   score: number,
   worker: PlanningUnit,
   cellPosition: readonly [number, number],
   config: MissionConfig,
   refillPredictions?: ReadonlyMap<string, number>,
+  visible = false,
 ): boolean {
-  if (score < config.collectionValueFloor) return false;
+  if (!visible && score < config.collectionValueFloor) return false;
   const key = cellKey(cellPosition[0], cellPosition[1]);
   const dueInTicks = refillPredictions?.get(key);
-  if (dueInTicks !== undefined && dueInTicks < -config.deadMineOverdueTicks) return false;
+  if (!visible && dueInTicks !== undefined && dueInTicks < -config.deadMineOverdueTicks) return false;
   const distance = Math.abs(worker.position[0] - cellPosition[0]) + Math.abs(worker.position[1] - cellPosition[1]);
   return distance <= config.maxCollectionDistance;
 }

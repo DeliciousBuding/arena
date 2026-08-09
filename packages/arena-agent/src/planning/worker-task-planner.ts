@@ -291,9 +291,19 @@ export class WorkerTaskPlanner {
           const cell = snapshot.resourceCells.get(key);
           // 使命层（worker-mission-v1）：门槛/距离/死矿过滤——不值得的格对该
           // worker 视为 forbidden（宁 WAIT 也不长途空跑陈旧种子，t1 实证）。
+          // 当前可见格（cell.visible === true）显式豁免 floor：实时事实只受
+          // maxCollectionDistance / 敌占 / 路径硬约束，历史/价值 floor 不再当
+          // 隐式距离门（2026-08-09 P0 止血，t1 floor=-20 曾把可采半径压到 10 格）。
           if (
             cell !== undefined &&
-            !isCollectable(net, worker, cell.position, this.mission, snapshot.refillPredictions)
+            !isCollectable(
+              net,
+              worker,
+              cell.position,
+              this.mission,
+              snapshot.refillPredictions,
+              cell.visible === true,
+            )
           ) {
             return forbiddenCost;
           }
