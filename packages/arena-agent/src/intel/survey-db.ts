@@ -820,6 +820,17 @@ export function markResourceState(
   `).run(state, tick, cell);
 }
 
+/** 负态 TTL 过期（P2，2026-08-10）：harvested/empty 格超过阈值未恢复 →
+ *  复位 visible（待复查）。对照 world.ts 资源记忆 64-tick TTL；refill 同格
+ *  周期实证 avg 37 tick（survey-sync 注释），128 = 2 倍余量。幂等（WHERE 只
+ *  命中过期负态行）。在 survey-sync 每 run 开头执行。返回受影响行数。 */
+export function expireNegativeResourceStates(db: DatabaseSync, beforeTick: number): number {
+  return Number(db.prepare(`
+    UPDATE resources SET state = 'visible'
+    WHERE state IN ('harvested', 'empty') AND last_state_tick < ?
+  `).run(beforeTick).changes);
+}
+
 export { dirname };
 
 
