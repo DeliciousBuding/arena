@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { runCalibrationCase } from "../sim/calibration/calibrate.ts";
 import { runCalibrationDataset } from "../sim/calibration/dataset.ts";
 import { buildDataset } from "../sim/dataset/builder.ts";
+import { runSimServer } from "./run-sim-server.ts";
 import {
   loadRulesManifest,
   manifestHash,
@@ -47,7 +48,7 @@ const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
 const SUPPORTED_RULES_VERSION = "v0.14";
 const DEFAULT_RULES_PATH = join(PKG_ROOT, "src", "sim", "contracts", `rules-${SUPPORTED_RULES_VERSION}.json`);
 
-type Command = "doctor" | "episode" | "ab" | "benchmark" | "calibrate" | "calibrate-dataset" | "dataset";
+type Command = "doctor" | "episode" | "ab" | "benchmark" | "calibrate" | "calibrate-dataset" | "dataset" | "sim-server";
 
 interface ParsedArgs {
   readonly command: Command;
@@ -70,6 +71,10 @@ const KNOWN_FLAGS: Readonly<Record<Command, ReadonlySet<string>>> = {
   calibrate: new Set(["--case", "--rules", "--output", "--run-id", "--data-root", "--force", "--help"]),
   "calibrate-dataset": new Set(["--manifest", "--rules", "--output", "--run-id", "--data-root", "--force", "--help"]),
   dataset: new Set(["--manifest", "--rules", "--data-root", "--dataset-id", "--force", "--help"]),
+  "sim-server": new Set([
+    "--scenario", "--rules", "--ticks", "--seed", "--port", "--sim-key",
+    "--output", "--run-id", "--data-root", "--force", "--help",
+  ]),
 };
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -98,7 +103,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
 }
 
 function parseCommand(value: string): Command {
-  if (["doctor", "episode", "ab", "benchmark", "calibrate", "calibrate-dataset", "dataset"].includes(value)) {
+  if (["doctor", "episode", "ab", "benchmark", "calibrate", "calibrate-dataset", "dataset", "sim-server"].includes(value)) {
     return value as Command;
   }
   throw new Error(`unknown sim command: ${value}`);
@@ -114,6 +119,7 @@ function usage(): string {
     "  calibrate --case PATH",
     "  calibrate-dataset --manifest PATH",
     "  dataset --manifest PATH [--dataset-id ID] [--force]",
+    "  sim-server --scenario PATH [--ticks N] [--seed N] [--port N] [--sim-key KEY] [--rules PATH]",
     "common output flags: --data-root PATH --output runs/sim[/subdir] --run-id ID --force",
   ].join("\n");
 }
@@ -576,7 +582,36 @@ function runDatasetCommand(args: ParsedArgs): number {
   return result.gatePassed ? 0 : 2;
 }
 
-function main(): number {
+function runSimServerCommand(args: ParsedArgs): Promise<number> {
+  const scenarioPath = resolveInputPath(REPO_ROOT, required(args, "--scenario"));
+  const scenario = readJsonFile(scenarioPath);
+  const pathToRules = rulesPath(args);
+  const rules = checkedRules(pathToRules);
+  const ticks = integer(args, "--ticks", 100, 1);
+  const seed = integer(args, "--seed", 1, 0);
+  const port = integer(args, "--port", 8899, 1);
+  const rawKey = args.values.get("--sim-key") ?? process.env.ARENA_HERO_SIM_KEY ?? "";
+  const simKeys = rawKey
+    .split(",")
+    .map((key) => key.trim())
+    .filter((key) => key.length > 0);
+  return runSimServer({
+    scenarioPath,
+    scenario,
+    rules,
+    rulesPath: pathToRules,
+    ticks,
+    seed,
+    port,
+    simKeys,
+    dataRoot: args.values.get("--data-root") ?? null,
+    output: args.values.get("--output") ?? null,
+    runId: args.values.get("--run-id") ?? null,
+    force: args.booleans.has("--force"),
+  });
+}
+
+function main(): number | Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   if (args.booleans.has("--help")) {
     console.log(usage());
@@ -590,11 +625,25 @@ function main(): number {
     case "calibrate": return runCalibrationCommand(args);
     case "calibrate-dataset": return runCalibrationDatasetCommand(args);
     case "dataset": return runDatasetCommand(args);
+    case "sim-server": return runSimServerCommand(args);
   }
 }
 
 try {
-  process.exitCode = main();
+  const result = main();
+  if (result instanceof Promise) {
+    result.then(
+      (code) => {
+        process.exitCode = code;
+      },
+      (error: unknown) => {
+        console.error(`sim: ${(error as Error).message}`);
+        process.exitCode = 1;
+      },
+    );
+  } else {
+    process.exitCode = result;
+  }
 } catch (error) {
   console.error(`sim: ${(error as Error).message}`);
   process.exitCode = 1;

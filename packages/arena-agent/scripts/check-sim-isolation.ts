@@ -53,6 +53,13 @@ const FORBIDDEN_TOKENS = [
   ".localeCompare(",
 ];
 
+/**
+ * 网络能力白名单（2026-08-09，agent-ecosystem-v1 P2a）：CLI 层 sim-server
+ * 是官方协议 WS 服务（用户裁决落在 CLI 层，不在 src/sim/**），授权含网络
+ * token。import 危险目标检查对该文件仍全量生效；src/sim/** 扫描不变。
+ */
+const NETWORK_CARVEOUTS = [join("src", "cli", "run-sim-server.ts")];
+
 /** 允许的裸包 import：arena-hero-ts 只允许 type-only。 */
 const BARE_TYPE_ONLY = new Set(["@arena/arena-hero-ts"]);
 
@@ -85,14 +92,17 @@ function classifyImports(files) {
   const importPattern = /(?:import|export)\s+(?:type\s+)?(?:[^"']*?\s+from\s*)?["']([^"']+)["']/g;
   for (const file of files) {
     const text = readFileSync(file, "utf8");
-    for (const token of FORBIDDEN_TOKENS) {
-      // locale-sensitive 排序是 sim 自身的确定性禁令；依赖闭包中的既有
-      // domain 代码由其自己的迁移计划负责，不能在 S5 中误伤线上路径。
-      if (token === ".localeCompare(" && !file.startsWith(`${SIM_DIR}\\`) && !file.startsWith(`${SIM_DIR}/`)) {
-        continue;
-      }
-      if (text.includes(token)) {
-        textScan.push({ file, token });
+    const carvedOut = NETWORK_CARVEOUTS.some((rel) => file === join(PKG_ROOT, rel));
+    if (!carvedOut) {
+      for (const token of FORBIDDEN_TOKENS) {
+        // locale-sensitive 排序是 sim 自身的确定性禁令；依赖闭包中的既有
+        // domain 代码由其自己的迁移计划负责，不能在 S5 中误伤线上路径。
+        if (token === ".localeCompare(" && !file.startsWith(`${SIM_DIR}\\`) && !file.startsWith(`${SIM_DIR}/`)) {
+          continue;
+        }
+        if (text.includes(token)) {
+          textScan.push({ file, token });
+        }
       }
     }
     // import 语句本身引用危险目标（即使路径无法解析也要拦——防伪造/未来文件）
