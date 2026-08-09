@@ -22,6 +22,7 @@ import { supervisorState, supervisorAllianceDirectorState } from "./lib/supervis
 import { loadMergedMap, getMapSig } from "./lib/map.ts";
 import { loadOverview, loadStream, loadReplay, loadPlan, loadWorld, loadEvents } from "./lib/streams.ts";
 import { loadSurveyDb, loadLifecycleDb, loadSurvey, loadResourceTimeline, loadSpendTrend, loadUnitLifecycleDb, loadChunksDb } from "./lib/survey.ts";
+import { openAgentDb, applyAgentEvent, knownAgent, recentAgentEvents, type AgentRow } from "./lib/agent-ingest.ts";
 import { loadMinePatterns, refreshMinePatterns } from "./lib/mine-patterns.ts";
 import { loadTenantSurveyCached, startSurveyCacheLoop } from "./lib/survey-cache.ts";
 import { loadDeeds, startDeedsCacheLoop } from "./lib/deeds.ts";
@@ -746,6 +747,93 @@ app.post("/api/redeem", async (c) => {
 // 重启不丢——审计与联调用，只返回最近窗口。
 app.get("/api/redeem/history", (c) => {
   return c.json({ generatedAt: new Date().toISOString(), records: loadRedeemHistory(), count: redeemLog.length });
+});
+
+// ---------- Agent 遥测桥（2026-08-09，agent-telemetry-bridge-v1） ----------
+
+// SDK 遥测唯一写入口（agents/agent_events 单一 writer）。只接受已知租户；
+// 事件 schema 见 docs/design/agent-telemetry-bridge-v1.md §4。
+app.post("/api/ingest/agents", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { events?: unknown } | null;
+  if (!body || !Array.isArray(body.events) || body.events.length === 0) {
+    return c.json({ error: "events 数组必填" }, 400);
+  }
+  let accepted = 0;
+  const open: Array<{ tenant: string; db: DatabaseSync }> = [];
+  try {
+    for (const raw of body.events) {
+      const ev = raw as Record<string, unknown>;
+      const tenant = String(ev.tenant ?? "");
+      const kind = String(ev.event ?? "");
+      if (!TENANTS.includes(tenant as (typeof TENANTS)[number])) continue;
+      if (!["register", "connection", "tick_summary", "disconnected"].includes(kind)) continue;
+      const held = open.find((o) => o.tenant === tenant);
+      const db = held?.db ?? openAgentDb(tenant, true);
+      if (!held) open.push({ tenant, db });
+      applyAgentEvent(db, ev as never);
+      accepted += 1;
+    }
+  } finally {
+    for (const o of open) o.db.close();
+  }
+  return c.json({ accepted, at: new Date().toISOString() });
+});
+
+// Agent 统一台账视图：自有（TS 数据流）+ 第三方（SDK 心跳）同屏。
+app.get("/api/agents", async (c) => {
+  const sup = await supervisorState();
+  const overview = loadOverview(sup);
+  const result = [];
+  for (const tenant of TENANTS) {
+    const ov = overview.tenants.find((t) => t.tenant === tenant) ?? null;
+    let agent: AgentRow | null = null;
+    let events: Array<Record<string, unknown>> = [];
+    let db: DatabaseSync | null = null;
+    try {
+      db = openAgentDb(tenant, false);
+      agent = knownAgent(db, tenant);
+      events = recentAgentEvents(db, tenant, 20);
+    } catch {
+      // 库尚未创建：无台账数据
+    } finally {
+      db?.close();
+    }
+    const world = loadWorld(tenant) as { state?: { objects?: unknown[]; resources?: number; population?: number } | null; tick?: number | null } | null;
+    const coreObj = Array.isArray(world?.state?.objects)
+      ? (world.state.objects as Array<{ kind?: string; controlled?: boolean; position?: readonly [number, number] }>)
+          .find((o) => o.kind === "CORE" && o.controlled === true) ?? null
+      : null;
+    result.push({
+      tenant,
+      source: agent ? "sdk" : "ts",
+      live: ov?.live ?? false,
+      supervisor: ov?.supervisor ?? null,
+      agent,
+      latest: agent
+        ? {
+            tick: agent.tick,
+            resources: agent.resources,
+            population: agent.population,
+            core: agent.coreX !== null && agent.coreY !== null ? [agent.coreX, agent.coreY] : null,
+            units: agent.units,
+            visibleEnemies: agent.visibleEnemies,
+            status: agent.status,
+            heartbeatAt: agent.lastHeartbeat,
+          }
+        : {
+            tick: ov?.latest?.tick ?? null,
+            resources: ov?.latest?.resources ?? null,
+            population: ov?.latest?.workers ?? null,
+            core: coreObj?.position ? [coreObj.position[0], coreObj.position[1]] : null,
+            units: null,
+            visibleEnemies: null,
+            status: null,
+            heartbeatAt: null,
+          },
+      events,
+    });
+  }
+  return c.json({ generatedAt: new Date().toISOString(), agents: result });
 });
 
 // ---------- 静态文件 ----------
