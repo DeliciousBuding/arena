@@ -51,3 +51,4 @@ packages/command-center/web/dist/
 
 # neat-freak bundle 备份（含 hash 校验）
 .backups/
+/data/

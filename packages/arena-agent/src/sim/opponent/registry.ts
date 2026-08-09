@@ -100,7 +100,12 @@ export function resolveOpponent(name: string): OpponentSpec {
 export function opponentEntry(
   spec: OpponentSpec,
   seed: number,
-  opts: { readonly id?: string; readonly desc?: string } = {},
+  opts: {
+    readonly id?: string;
+    readonly desc?: string;
+    /** L-C config-injection：spawn 桥进程时附加的环境变量（ARENA_CFG_* 等）。 */
+    readonly env?: Record<string, string>;
+  } = {},
 ): TournEntry {
   const opponentId = opts.id ?? `${spec.name}-s${seed}`;
   if (spec.kind === "http") {
@@ -126,6 +131,7 @@ export function opponentEntry(
         // （同 agent 多 seed 实例可区分；instance 显式传 opponentId 与 id 对齐）。
         seed,
         instance: opponentId,
+        ...(opts.env !== undefined ? { env: opts.env } : {}),
       });
       return new OpponentAdapter(decider, opponentId, spec.name);
     },

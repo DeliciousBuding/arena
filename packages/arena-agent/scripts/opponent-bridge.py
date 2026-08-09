@@ -401,6 +401,23 @@ def _build_agent(args, config: dict):
     if slot == "json":
         memory = module.AgentMemory.restore(module.load_persistent_state())
 
+    # SDK 配置注入通道（config-injection）：构造完成后应用 ARENA_CFG_*/文件覆盖。
+    # SDK 默认 no-op；缺失/失败静默降级（SDK 内部 try/except + stderr 一行）。
+    applied_config = {}
+    if instance is not None:
+        try:
+            from arena_hero import apply_config_overrides
+
+            applied_config = apply_config_overrides(instance=instance)
+        except Exception:  # noqa: BLE001 —— SDK 通道不可用不影响默认构造。
+            applied_config = {}
+    if applied_config:
+        print(
+            f"bridge config overrides applied: {sorted(applied_config)}",
+            file=sys.stderr,
+            flush=True,
+        )
+
     decide_kwargs = {}
     if "target" in config.get("decide_kwargs", []):
         decide_kwargs["target"] = args.target

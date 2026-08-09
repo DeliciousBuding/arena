@@ -49,6 +49,8 @@ export interface SyncBridgeConfig {
   readonly bridgeScript: string;
   /** 传给桥接脚本的额外参数（--farmer-repo / --sdk-repo / --state-slot）。 */
   readonly bridgeArgs: readonly string[];
+  /** L-C config-injection：spawn 桥进程时附加的环境变量（ARENA_CFG_* 等）。 */
+  readonly env?: Record<string, string>;
 }
 
 /**
@@ -77,6 +79,7 @@ export class PersistentSyncBridge {
           python: config.python,
           bridgeScript: config.bridgeScript,
           bridgeArgs: config.bridgeArgs,
+          ...(config.env !== undefined ? { env: config.env } : {}),
         },
       },
     );
@@ -193,6 +196,8 @@ export function createReferenceBridge(options: {
   readonly seed?: number | null;
   /** P4c+d：台账 instance 显式覆盖（优先于 --seed/--state-slot 推导）。 */
   readonly instance?: string | null;
+  /** L-C config-injection：spawn 桥进程时附加的环境变量（ARENA_CFG_* 等）。 */
+  readonly env?: Record<string, string>;
 }): { readonly bridge: PersistentSyncBridge; readonly stateSlot: string } {
   const stateSlot =
     options.stateSlot ?? join(tmpdir(), `arena-ref-${randomUUID()}.pkl`);
@@ -222,6 +227,7 @@ export function createReferenceBridge(options: {
     python: options.python ?? "python",
     bridgeScript,
     bridgeArgs,
+    ...(options.env !== undefined ? { env: options.env } : {}),
   });
   return { bridge, stateSlot };
 }

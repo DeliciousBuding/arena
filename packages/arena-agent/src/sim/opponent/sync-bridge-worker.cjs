@@ -31,6 +31,7 @@ const encoder = new TextEncoder();
 
 const child = spawn(python, [bridgeScript, ...bridgeArgs], {
   stdio: ["pipe", "pipe", "inherit"],
+  ...(workerData.env !== undefined ? { env: workerData.env } : {}),
 });
 
 // 孤儿进程防护（M2 卫生项）：worker 线程退出（正常结束/被 parentPort.close

@@ -69,12 +69,14 @@ export class OpponentAdapter implements PlanProvider {
     this.decider = decider;
     this.selfPlayerId = selfPlayerId;
     this.label = label;
+    // P4g+：decider 原生支持 prefetch/decideCached（持久桥）时 prefetch 为
+    // 真异步（提交后不等待）——episode 调度优先发起；否则同步计算（假异步）。
+    this.parallelPrefetch =
+      typeof decider.prefetch === "function" && typeof decider.decideCached === "function";
   }
 
-  /** P4g+：decider 原生支持 prefetch/decideCached（持久桥）时 prefetch 为
-   *  真异步（提交后不等待）——episode 调度优先发起；否则同步计算（假异步）。 */
-  readonly parallelPrefetch: boolean =
-    typeof this.decider.prefetch === "function" && typeof this.decider.decideCached === "function";
+  /** P4g+：prefetch 是否非阻塞发起（真异步桥）。 */
+  readonly parallelPrefetch: boolean;
 
   decide(input: { readonly state: TickState; readonly policy?: import("../../runtime/macro-policy.ts").MacroPolicy }): Plan {
     const proto = tickStateToProto(input.state, this.selfPlayerId);
@@ -281,6 +283,8 @@ export interface PersistentReferenceConfig {
   readonly seed?: number | null;
   /** P4c+d：台账 instance 显式覆盖（优先于 --seed 推导）。 */
   readonly instance?: string | null;
+  /** L-C config-injection：spawn 桥进程时附加的环境变量（ARENA_CFG_* 等）。 */
+  readonly env?: Record<string, string>;
 }
 
 /** 常驻子进程决策器：对局级生命周期（随用随起），close() 释放进程与槽。 */
@@ -303,6 +307,7 @@ export class PersistentSubprocessDecider implements ExternalDecider {
       agent: config.agent,
       seed: config.seed,
       instance: config.instance,
+      ...(config.env !== undefined ? { env: config.env } : {}),
     });
     this.bridge = created.bridge;
     this.stateSlot = created.stateSlot;

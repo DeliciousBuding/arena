@@ -746,14 +746,8 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
     ? tenants
         .filter((tenant) => pipelineTenantIds.has(tenant.id))
         .sort((a, b) => {
-          const aAsync = (planners.get(a.id) as { readonly parallelPrefetch?: boolean } | undefined)
-            ?.parallelPrefetch === true
-            ? 0
-            : 1;
-          const bAsync = (planners.get(b.id) as { readonly parallelPrefetch?: boolean } | undefined)
-            ?.parallelPrefetch === true
-            ? 0
-            : 1;
+          const aAsync = planners.get(a.id)?.parallelPrefetch === true ? 0 : 1;
+          const bAsync = planners.get(b.id)?.parallelPrefetch === true ? 0 : 1;
           return aAsync - bAsync;
         })
     : [];
