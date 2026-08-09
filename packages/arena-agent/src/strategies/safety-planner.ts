@@ -287,8 +287,11 @@ const RANGER_SPREAD_DELTAS: readonly (readonly [number, number])[] = [
 const SCAVENGE_HOLD_TICKS = 24;
 /** C7 军事单位卡死连续上限（2026-08-10）：位置连续 N tick 不变 = 容量互堵/
  *  路径被堵 → 强制 spread 到相邻空格（复用 nearestFreeAdjacent），打断
- *  capacity_wait 无限循环（不产生 UNIT_MOVE_FAILED → moveFailedStreak 盲区）。 */
-const MILITARY_STUCK_TICKS = 3;
+ *  capacity_wait 无限循环（不产生 UNIT_MOVE_FAILED → moveFailedStreak 盲区）。
+ *  阈值 20（非 3）：vanguard_watch_clear/vanguard_reinforce 等正常待命逻辑
+ *  在 checkMilitaryStuckSpread 之后，短 streak 会误覆盖回访清剿；20 tick
+ *  让正常待命（core-threat-watch 18 tick 窗口）不触发，只真卡死（≥20）才 spread。 */
+const MILITARY_STUCK_TICKS = 20;
 /**
  * 军事散开一格（2026-08-10，vanguard_pressure 互堵修复）：从本格 8 邻选
  * "非障碍、己方占用 <2（容量 2）、无可见敌"的最近格——横竖优先（数组序，
@@ -3037,6 +3040,10 @@ export class SafetyPlanner {
       : new Set([...movementObstacles, cellKey(state.core.position)]);
     // 核心通道清障（core-clearance-v1）：homeCell 四邻全堵时历史行为回退到核心
     // 格（占死卸货通道）——coreClearance 下回退到外圈守位点，军事绝不落核心格。
+    // C7 修复（2026-08-10）：军事单位卡死 spread——连续 N tick 位置不变 +
+    // 无邻接敌 → spread 到相邻空格，打断 capacity_wait 无限循环。
+    if (this.checkMilitaryStuckSpread(unit, state, militaryObstacles, enemies, set)) return;
+
     // ring 疏散（2026-08-08，t2 卸货通道死锁实证）：核心格被 worker 占用（空载
     // idle 或满载待卸）= 卸货通道已被占死，守位退到 Chebyshev 2（coreGuardFallback
     // 优先）腾出 cheb-1 ring——否则 4 Vanguard 挤满 ring，被困空 worker 4 邻全堵
@@ -3722,6 +3729,9 @@ export class SafetyPlanner {
     const militaryObstacles = state.core === null
       ? movementObstacles
       : new Set([...movementObstacles, cellKey(state.core.position)]);
+    // C7 修复（2026-08-10）：军事单位卡死 spread——连续 N tick 位置不变 +
+    // 无邻接敌 → spread 到相邻空格，打断 capacity_wait 无限循环。
+    if (this.checkMilitaryStuckSpread(unit, state, militaryObstacles, enemies, set)) return;
     // 核心通道清障（core-clearance-v1）：homeCell 四邻全堵时历史行为回退到核心
     // 格（占死卸货通道）——coreClearance 下回退到外圈守位点，军事绝不落核心格。
     const approachTarget = state.core === null
