@@ -291,3 +291,17 @@ test("用例7：变体关零回归——config.starveTriggerTicks undefined → 
   // starveSince 保持 0（未启用检测不累积）
   assert.equal(held.starveSince, 0, "零回归：未启用时 starveSince 不得累积");
 });
+// ---------------------------------------------------------------------------
+// 用例 8：per-game-tick 去重（run-conductor 同 tick 多次轮询不得 3x 压缩）
+// ---------------------------------------------------------------------------
+
+test("用例8：同 tick 3 次轮询 → starveSince 只按游戏 tick 增长", () => {
+  const first = starveStep(INITIAL_CONDUCTOR_HELD_STATE, 1_000);
+  assert.equal(first.held.starveSince, 1, "首个 starving 游戏 tick 计 1");
+  const poll2 = starveStep(first.held, 1_000);
+  assert.equal(poll2.held.starveSince, 1, "同 tick 第二次轮询不得累加");
+  const poll3 = starveStep(poll2.held, 1_000);
+  assert.equal(poll3.held.starveSince, 1, "同 tick 第三次轮询仍不得累加");
+  const nextTick = starveStep(poll3.held, 1_001);
+  assert.equal(nextTick.held.starveSince, 2, "下一游戏 tick 才累加");
+});

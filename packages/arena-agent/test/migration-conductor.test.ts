@@ -592,3 +592,38 @@ test("场景8：无计划输入 → plan=null、无转移、held 不变、reason
   const fresh = conductorStep({ ...input, held: null });
   assert.deepEqual(fresh.held, INITIAL_CONDUCTOR_HELD_STATE);
 });
+// ---------------------------------------------------------------------------
+// per-game-tick 去重：DEFENSIVE_HOLD 中 holdTicks 只按游戏 tick 增长
+// ---------------------------------------------------------------------------
+
+function holdStep(
+  plan: MigrationPlanV1,
+  held: Readonly<ConductorHeldState> | null,
+  tick: number,
+): ConductorStepResult {
+  return conductorStep({
+    tick,
+    nowMs: NOW_BASE_MS + tick * TICK_MS,
+    core: { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: CONDUCTOR_CORE_HP_FULL },
+    events: [],
+    units: [],
+    survey: { resources: DESERT_RESOURCES.map((r) => ({ ...r, lastSeenTick: tick })), enemyCores: [] },
+    config: DEFAULT_MIGRATION_RUNTIME_CONFIG,
+    held,
+    plan,
+  });
+}
+
+test("同 tick 3 次轮询：holdTicks 只按游戏 tick 增长（run-conductor 5s poll vs ~15s tick）", () => {
+  const plan = makeInitialPlan(29, 10_000, { state: "DEFENSIVE_HOLD" as const });
+  const held: ConductorHeldState = { ...INITIAL_CONDUCTOR_HELD_STATE, holdTicks: 2 };
+  const first = holdStep(plan, held, 10_000);
+  assert.equal(first.plan?.state, "DEFENSIVE_HOLD");
+  assert.equal(first.held.holdTicks, 3, "首个游戏 tick 滞回计数 +1");
+  const poll2 = holdStep(first.plan!, first.held, 10_000);
+  assert.equal(poll2.held.holdTicks, 3, "同 tick 第二次轮询不得累加");
+  const poll3 = holdStep(poll2.plan!, poll2.held, 10_000);
+  assert.equal(poll3.held.holdTicks, 3, "同 tick 第三次轮询仍不得累加");
+  const nextTick = holdStep(poll3.plan!, poll3.held, 10_001);
+  assert.equal(nextTick.held.holdTicks, 4, "下一游戏 tick 才累加");
+});
