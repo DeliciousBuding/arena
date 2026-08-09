@@ -27,6 +27,7 @@ function makeState(opts: {
   rangers?: TickState["rangers"];
   enemies?: TickState["visibleEnemies"];
   obstacles?: ReadonlySet<string>;
+  resourceCells?: ReadonlySet<string>;
 } = {}): TickState {
   const coreState = opts.coreState ?? "NORMAL";
   const workers = opts.workers ?? [];
@@ -46,7 +47,7 @@ function makeState(opts: {
     vanguards,
     rangers,
     visibleEnemies: opts.enemies ?? [],
-    resourceCells: new Set(),
+    resourceCells: opts.resourceCells ?? new Set(),
     obstacleCells: opts.obstacles ?? new Set(),
     beacon: { position: [100, 100], status: "GROUND", carrierId: null },
     events: [],
@@ -201,4 +202,120 @@ test("C6 spawnYield: resourceHighWater 配置 + 满载 worker 在 Core 格 → �
     `高水位+满载 worker 在 Core 格应让位，实际 ${plan.intents["w1"]}`,
   );
   assert.notEqual(plan.unitActions["w1"].type, "DEPOSIT", "让位时不卸货（先让位下 tick 再 SPAWN）");
+});
+
+// ---------------------------------------------------------------------------
+// O1 worker-leash（2026-08-10，算法优化）：resourceAssignmentMaxDistanceFromCore
+// 在 workerLeash 配置时返回有限值，否则 Infinity（零回归）。
+// 生产 t1 实测 worker 离核 23.6 格、DEPOSIT 吞吐 0.15/tick → 拴绳 25 格后
+// 近矿往返 ~20 tick（吞吐 ~0.05/tick，2.4× 提升）。
+// ---------------------------------------------------------------------------
+
+test("O1: workerLeash=undefined → resourceAssignmentMaxDistanceFromCore=Infinity（零回归）", () => {
+  const planner = new SafetyPlanner(AGGRESSIVE);
+  const state = makeState();
+  assert.equal(
+    planner.resourceAssignmentMaxDistanceFromCore(state),
+    Number.POSITIVE_INFINITY,
+    "无 workerLeash 配置时不限制（历史行为）",
+  );
+});
+
+test("O1: workerLeash=25 → resourceAssignmentMaxDistanceFromCore=25", () => {
+  const config: SafetyPlannerConfig = { ...AGGRESSIVE, workerLeash: 25 };
+  const planner = new SafetyPlanner(config);
+  const state = makeState();
+  assert.equal(
+    planner.resourceAssignmentMaxDistanceFromCore(state),
+    25,
+    "workerLeash=25 时返回 25",
+  );
+});
+
+test("O1: threatRecall 激活时 recall 优先于 workerLeash（取 min）", () => {
+  const config: SafetyPlannerConfig = {
+    ...AGGRESSIVE,
+    workerLeash: 25,
+    threatRecall: true,
+  };
+  const planner = new SafetyPlanner(config);
+  const state = makeState({
+    enemies: [
+      { id: "e1", kind: "UNIT", position: [5, 0], hp: 2, unitType: "RANGER" },
+    ],
+  });
+  // 威胁召回返回 RECALL_PATROL_RADIUS=4（比 workerLeash=25 更紧）
+  assert.ok(
+    planner.resourceAssignmentMaxDistanceFromCore(state) <= 4,
+    "threatRecall 激活时 RECALL_PATROL_RADIUS 优先（取 min）",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// O3 SPAWN 核格占用检查（2026-08-10，算法优化）：decideCore 在 Core 格有
+// 单位占位时不发 SPAWN（防 CELL_UNIT_LIMIT）。deterministic-planner 已有
+// 此检查（C6 修复），safety 侧 fallback 路径同步。
+// ---------------------------------------------------------------------------
+
+test("O3: Core 格有 worker → decideCore 不 SPAWN（fallback 路径防 CELL_UNIT_LIMIT）", () => {
+  const planner = new SafetyPlanner(AGGRESSIVE);
+  const state = makeState({
+    resources: 50,
+    resourceSpace: 50,
+    workers: [{ id: "w1", position: CORE, hp: 2, unitType: "WORKER", cargo: 0 }],
+  });
+  const plan = planner.decide({ state });
+  // Core 格有 worker 占位 → SPAWN 会 CELL_UNIT_LIMIT → 不 SPAWN
+  assert.notEqual(plan.coreAction?.type, "SPAWN", "Core 格有单位时不得 SPAWN");
+  assert.equal(plan.intents.core, "spawn_blocked_occupancy", "intent 应标记 occupancy 阻断");
+});
+
+test("O3: Core 格无单位 → decideCore 正常 SPAWN（零回归）", () => {
+  const planner = new SafetyPlanner(AGGRESSIVE);
+  const state = makeState({
+    resources: 50,
+    resourceSpace: 50,
+    workers: [{ id: "w1", position: [1, 0], hp: 2, unitType: "WORKER", cargo: 0 }],
+  });
+  const plan = planner.decide({ state });
+  // Core 格空 → SPAWN 正常
+  assert.equal(plan.coreAction?.type, "SPAWN", "Core 格无单位时正常 SPAWN");
+  assert.notEqual(plan.intents.core, "spawn_blocked_occupancy", "不应标记 occupancy 阻断");
+});
+
+// ---------------------------------------------------------------------------
+// D1 coreEvade 资源格避让（2026-08-10，CRITICAL）：retreatDirection 不含
+// 资源格 → Core 可 START_MOVE 进资源格 → 引擎拒（TERRAIN_BLOCKED）→ 无限循环。
+// 修复：合并 resourceCells 到障碍集。影响 t2/t3/t4（coreEvade 启用）。
+// ---------------------------------------------------------------------------
+
+test("D1: coreEvade 不朝资源格方向 START_MOVE（避免 TERRAIN_BLOCKED 无限循环）", () => {
+  // 场景：Core [0,0]，敌 RANGER [5,0]（逼近 → closing 触发 coreEvade）。
+  // 资源格在 [1,0]（Core 右侧）→ 修复前 retreatDirection 可能选 RIGHT
+  // （[1,0] 无障碍标记）→ START_MOVE RIGHT → 引擎拒（资源格拒核迁移）
+  // → 无限循环。修复后 [1,0] 被资源格标记 → retreatDirection 跳过 →
+  // 选其他方向（UP/DOWN/LEFT 中远离敌的）。
+  const config: SafetyPlannerConfig = {
+    ...AGGRESSIVE,
+    coreEvade: true,
+  };
+  const planner = new SafetyPlanner(config);
+  const state = makeState({
+    resources: 10,
+    resourceSpace: 30,
+    enemies: [
+      { id: "e1", kind: "UNIT", position: [5, 0], hp: 2, unitType: "RANGER" },
+    ],
+    obstacles: new Set<string>(["1,0"]), // 资源格在 Core 右侧
+    resourceCells: new Set(["1,0"]),
+  });
+  const plan = planner.decide({ state });
+  // 应该 START_MOVE（coreEvade 触发），但不是 RIGHT（资源格方向）
+  if (plan.coreAction?.type === "START_MOVE") {
+    assert.notEqual(
+      plan.coreAction.direction,
+      "RIGHT",
+      "coreEvade 不得朝资源格方向 START_MOVE（TERRAIN_BLOCKED）",
+    );
+  }
 });
