@@ -516,7 +516,7 @@ export class WorkerTaskPlanner {
       // 测绘期（恰是迁移后最缺矿期）缺口 worker 仍守家 WAIT。缺口判断只看
       // dummy 是否非空，测绘期同样生效。
       const leftoverSurveyors = supplyGapSurvey
-        ? new Set(dummyWorkers.map((worker) => worker.id))
+        ? surveyorIds(dummyWorkers, this.mission, false)
         : options.surveyBurstActive === true
           ? new Set<string>()
           : surveyorIds(dummyWorkers, this.mission, false);
@@ -535,7 +535,7 @@ export class WorkerTaskPlanner {
         } else {
           assignments.push({
             unitId: worker.id,
-            task: alwaysOutbound || leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
+            task: leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
           });
         }
       }
@@ -545,15 +545,17 @@ export class WorkerTaskPlanner {
       // 转 SURVEYOR 外出测绘，不守家 WAIT（t2 生产实证：近核全死种子时守家
       // WAIT 零产出，勘探才能找到新矿源）。
       const supplyGapSurvey = this.mission.surveyOnSupplyGap === true;
-      const leftoverSurveyors = options.surveyBurstActive === true
-        ? new Set<string>()
-        : supplyGapSurvey
-          ? new Set(pool.map((worker) => worker.id))
+      // 2026-08-10 修复：原 supplyGapSurvey 全员 EXPLORE → cap 限制；alwaysSurvey
+      // 不再 OR 全员。cap 始终硬上限，多余 worker 守家 WAIT 等矿刷新。
+      const leftoverSurveyors = supplyGapSurvey
+        ? surveyorIds(pool, this.mission, false)
+        : options.surveyBurstActive === true
+          ? new Set<string>()
           : surveyorIds(pool, this.mission, false);
       for (const worker of pool) {
         assignments.push({
           unitId: worker.id,
-          task: (this.mission.alwaysSurvey === true) || leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
+          task: leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
         });
       }
     }
