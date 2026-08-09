@@ -133,7 +133,7 @@ test("威胁防御产兵：资源 10（纯成本，豁免 reserve）→ spawn", 
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" }, "威胁产兵豁免 reserve——10 即可产");
 });
 
-test("威胁防御产兵：资源 9（<10）→ VANGUARD 买不起，不 spawn（else-if 链短路）", () => {
+test("威胁防御产兵：资源 9（<10）→ VANGUARD 买不起，回退产 WORKER", () => {
   const decision = selectDeterministicCoreAction(
     makeState(9, 3, 0, [enemyAt([3, 0])]),
     null,
@@ -145,9 +145,8 @@ test("威胁防御产兵：资源 9（<10）→ VANGUARD 买不起，不 spawn�
     undefined,
     true,
   );
-  // threatDefenseSpawn=true 匹配 else-if 分支但资源不足 → 链短路 →
-  // capacitySpend 因 coreCapacity(10) ≤ 2×margin(30) 返回 null
-  assert.equal(decision.action, null, "9 < 10 → VANGUARD 买不起，链短路 null");
+  // threatDefenseSpawn=true 匹配但 VANGUARD 买不起 → fall-through 到 worker spawn
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" }, "9 < 10 → 不产 VANGUARD，回退产 WORKER");
 });
 
 test("威胁防御产兵：敌方 WORKER 不触发（非战斗单位）", () => {
