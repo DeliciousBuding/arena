@@ -449,6 +449,12 @@ export class SafetyPlanner {
   /** 热加载配置快照（tick 间调用；非法配置由调用方先校验，这里只做引用替换）。 */
   updateConfig(config: SafetyPlannerConfig): void {
     this.configValue = config;
+    // P1 战术小队热载关闭：原子清空编成快照与 sticky 上一代，避免 snapshot
+    // 暴露旧代 / re-enable 继承关闭前的成员归属。开启时由下一次 decide 重建。
+    if (config.tacticalSquads !== true) {
+      this.tacticalSquadsValue = EMPTY_SQUAD_MEMBERSHIP;
+      this.tacticalSquadPrevious = new Map<string, string>();
+    }
   }
 
   /** 迁移计划注入（migration-system-v1 §3.3，2026-08-09 接线）：tenant-runtime
@@ -1758,6 +1764,11 @@ export class SafetyPlanner {
         },
       );
       this.tacticalSquadPrevious = this.tacticalSquadsValue.squadByUnit;
+    } else if (this.tacticalSquadsValue !== EMPTY_SQUAD_MEMBERSHIP) {
+      // 关闭兜底：与 updateConfig 同步清空（防御任何绕过 updateConfig 的
+      // configValue 改写路径），保证 snapshot 与 sticky 不残留旧代。
+      this.tacticalSquadsValue = EMPTY_SQUAD_MEMBERSHIP;
+      this.tacticalSquadPrevious = new Map<string, string>();
     }
 
     const actions: Record<string, UnitAction> = {};

@@ -325,3 +325,61 @@ test("tactical-squads-v1：home guard 不被借空——扩军后原 home 成员
     }
   }
 });
+
+// ---------- planner 集成：热载关闭生命周期 ----------
+
+test("tactical-squads-v1 热载关闭：updateConfig 后 snapshot 立即清空，下一 decide 仍空", () => {
+  const planner = new SafetyPlanner(squadConfig({ tacticalSquads: true }));
+  seedCore(planner);
+  // 开启形成 squad
+  planner.decide({ state: makeState(2, HOME_SIDE, [[5, 2], [5, 3], [4, 2]]), policy: PRESSURE_POLICY });
+  assert.equal(planner.tacticalSquadSnapshot().length, 3, "开启时应已形成 3 编队");
+  // 热载关闭（tacticalSquads 缺省 = 未开）
+  planner.updateConfig(squadConfig());
+  assert.deepEqual(planner.tacticalSquadSnapshot(), [], "updateConfig 关闭后 snapshot 应立即为空");
+  // 下一 decide 仍为空（关闭态不重建、不残留旧代）
+  const plan = planner.decide({ state: makeState(3, HOME_SIDE, [[5, 2], [5, 3], [4, 2]]), policy: PRESSURE_POLICY });
+  assert.deepEqual(planner.tacticalSquadSnapshot(), [], "关闭后下一 decide 仍无编成");
+  // 关闭态回落历史 rally 单一集结位行为（零回归）
+  const intents = Object.entries(plan.intents ?? {})
+    .filter(([id]) => id.startsWith("v"))
+    .map(([, intent]) => intent);
+  assert.ok(
+    intents.length === 6 && intents.every((i) => i === "vanguard_rally"),
+    `关闭后应保持历史 rally 行为，实际 ${JSON.stringify(intents)}`,
+  );
+});
+
+test("tactical-squads-v1：关闭后再开启 → 按当前 units 重建（不继承关闭前代际）", () => {
+  const planner = new SafetyPlanner(squadConfig({ tacticalSquads: true }));
+  seedCore(planner);
+  // tick2：形成 home(2V+1R)——v00/v01/r00（距锚点 [0,0] 最近）
+  planner.decide({ state: makeState(2, [[1, 0], [1, 1]], [[1, -1]]), policy: PRESSURE_POLICY });
+  const firstHome = planner.tacticalSquadSnapshot().find((s) => s.role === "HOME_DEFENSE")!;
+  const staleHome = new Set([...firstHome.vanguardIds, ...firstHome.rangerIds]);
+  assert.equal(staleHome.size, 3, "2V+1R 应全 home");
+  assert.ok(staleHome.has("v00") && staleHome.has("v01") && staleHome.has("r00"), "home 应为 v00/v01/r00");
+  // tick3：热载关闭 → snapshot 立即空，decide 后仍空
+  planner.updateConfig(squadConfig());
+  assert.deepEqual(planner.tacticalSquadSnapshot(), [], "updateConfig 关闭后 snapshot 应立即为空");
+  planner.decide({ state: makeState(3, [[1, 0], [1, 1]], [[1, -1]]), policy: PRESSURE_POLICY });
+  assert.deepEqual(planner.tacticalSquadSnapshot(), [], "关闭态 decide 不重建");
+  // tick4：re-enable，原 home 成员 v01 已远离锚点（位置索引 1 = [49,0] 前压），且扩军
+  planner.updateConfig(squadConfig({ tacticalSquads: true }));
+  planner.decide({
+    state: makeState(4, [[1, 1], [49, 0], [1, 0], [2, 0], [2, 1], [2, -1]], [[1, -1], [2, 2], [2, -2]]),
+    policy: PRESSURE_POLICY,
+  });
+  const rebuilt = planner.tacticalSquadSnapshot();
+  assert.ok(rebuilt.length >= 1, "re-enable 后应重建编成");
+  const rebuiltHome = rebuilt.find((s) => s.role === "HOME_DEFENSE")!;
+  const rebuiltHomeIds = new Set([...rebuiltHome.vanguardIds, ...rebuiltHome.rangerIds]);
+  assert.ok(
+    !rebuiltHomeIds.has("v01"),
+    "远离锚点的 v01 不应因关闭前 sticky 留在 home（不继承关闭代际）",
+  );
+  // 重建完整性：每个单位恰好归属一次
+  const allIds = rebuilt.flatMap((s) => [...s.vanguardIds, ...s.rangerIds]);
+  assert.equal(new Set(allIds).size, allIds.length, "重建编成无重复单位");
+  assert.equal(allIds.length, 9, "6V+3R 应全部分配");
+});
