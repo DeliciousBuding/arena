@@ -56,7 +56,11 @@ export interface WorkerClaim {
   readonly unitId: string;
   readonly cellKey: string;
   readonly claimTick: number;
+  /** 最近一次"真实推进"（到目标距离严格下降）的 tick；无进展 TTL 从它计时。 */
   readonly lastProgressTick: number;
+  /** 最近一次真实推进时到目标格的 Manhattan 距离：只有 currentDistance <
+   *  progressDistance 才续租——侧移/远离/振荡一律不算推进（bounded/fail-open）。 */
+  readonly progressDistance: number;
   readonly lastPosition: Position;
 }
 
@@ -257,8 +261,10 @@ export class WorkerTaskPlanner {
   }
 
   /** 租约更新（每 tick 终点）：GO_RESOURCE 分配即续租/新建；其余任务（WAIT /
-   *  EXPLORE / 强制 DEPOSIT 等）释放持有。真实位置推进（lastPosition 变化）→
-   *  lastProgressTick = tick（续租）；原地不动保留（TTL 失效交给 prune）。 */
+   *  EXPLORE / 强制 DEPOSIT 等）释放持有。续租条件：到 claim target 的
+   *  Manhattan 距离**严格下降**（currentDistance < progressDistance）才更新
+   *  lastProgressTick——侧移（同距）/远离/两格振荡一律不续，TTL 照常计时
+   *  （bounded、fail-open）；lastPosition 恒更新为当前位置（诊断用）。 */
   private updateClaims(
     assignments: readonly Assignment[],
     workersById: ReadonlyMap<string, PlanningUnit>,
@@ -269,26 +275,31 @@ export class WorkerTaskPlanner {
       if (assignment.task.type !== "GO_RESOURCE" || assignment.task.targetCellKey === undefined) continue;
       const worker = workersById.get(assignment.unitId);
       if (worker === undefined) continue;
+      const target = assignment.task.target;
       const existing = this.claims.get(assignment.task.targetCellKey);
-      const renewed =
-        existing !== undefined && existing.unitId === assignment.unitId
-          ? {
-              unitId: assignment.unitId,
-              cellKey: assignment.task.targetCellKey,
-              claimTick: existing.claimTick,
-              lastProgressTick: sameCell(existing.lastPosition, worker.position)
-                ? existing.lastProgressTick
-                : tick,
-              lastPosition: worker.position,
-            }
-          : {
-              unitId: assignment.unitId,
-              cellKey: assignment.task.targetCellKey,
-              claimTick: tick,
-              lastProgressTick: tick,
-              lastPosition: worker.position,
-            };
-      next.set(assignment.task.targetCellKey, renewed);
+      // 本 planner 产出的 GO_RESOURCE 恒带 target（目标格坐标）；缺省防御分支 =
+      // 不可判定，按无推进处理（不续租，保守）。
+      const currentDistance = target === undefined ? undefined : manhattan(worker.position, target);
+      if (existing !== undefined && existing.unitId === assignment.unitId) {
+        const progressed = currentDistance !== undefined && currentDistance < existing.progressDistance;
+        next.set(assignment.task.targetCellKey, {
+          unitId: assignment.unitId,
+          cellKey: assignment.task.targetCellKey,
+          claimTick: existing.claimTick,
+          lastProgressTick: progressed ? tick : existing.lastProgressTick,
+          progressDistance: progressed ? currentDistance! : existing.progressDistance,
+          lastPosition: worker.position,
+        });
+      } else {
+        next.set(assignment.task.targetCellKey, {
+          unitId: assignment.unitId,
+          cellKey: assignment.task.targetCellKey,
+          claimTick: tick,
+          lastProgressTick: tick,
+          progressDistance: currentDistance ?? 0,
+          lastPosition: worker.position,
+        });
+      }
     }
     this.claims = next;
   }

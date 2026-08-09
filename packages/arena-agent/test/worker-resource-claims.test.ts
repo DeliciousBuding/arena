@@ -304,3 +304,107 @@ test("claim lease: 与 previous 不一致时不强制（sticky API 兼容，plan
   const plan2 = planner.plan(snap, previous);
   assert.equal(goOf(plan2, "w1")?.targetCellKey, "2,0", "previous 不一致时租约不强制，sticky 生效");
 });
+
+// ===========================================================================
+// 续租语义收紧（2026-08-09 follow-up）：只有到 claim target 的 Manhattan
+// 距离**严格下降**才算"真实推进"并续 lastProgressTick。侧移（同距）、远离、
+// 两格振荡一律不续租——否则任意位置变化都无限续租，违背 bounded/fail-open。
+// ===========================================================================
+
+test("claim lease: 侧移同距不续租（TTL 照常到期释放）", () => {
+  const planner = new WorkerTaskPlanner({ claimNoProgressTtlTicks: 2 });
+  const mine = "10,0";
+  // T1: w1 [0,0] -> dist 10，领取（lastProgressTick=1000, progressDistance=10）
+  const plan1 = planner.plan(snapshotOf(makeTurn([worker("w1", 0, 0)], 1000, { resourceCells: new Set([mine]) })));
+  assert.equal(goOf(plan1, "w1")?.targetCellKey, mine);
+  // T2: w1 侧移到 [5,5]（dist 10 不变，同距）-> 不续租；w2 [3,0] 出现仍被租约挡住
+  const plan2 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", 5, 5), worker("w2", 3, 0)], 1001, { resourceCells: new Set([mine]) })),
+    assignmentsOf(plan1),
+  );
+  assert.equal(goOf(plan2, "w1")?.targetCellKey, mine, "同距侧移不释放（租约未到期）");
+  assert.ok(!(goOf(plan2, "w2")?.type === "GO_RESOURCE" && goOf(plan2, "w2")?.targetCellKey === mine), "w2 不得抢");
+  // T3: tick 1002 - lastProgress 1000 = 2 >= 2 -> 释放，w2 接替
+  const plan3 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", 5, 5), worker("w2", 3, 0)], 1002, { resourceCells: new Set([mine]) })),
+    assignmentsOf(plan2),
+  );
+  const w2Task = goOf(plan3, "w2");
+  assert.ok(w2Task?.type === "GO_RESOURCE" && w2Task.targetCellKey === mine, `侧移不算推进，TTL 到期后 w2 应接替，实际 ${JSON.stringify(w2Task)}`);
+});
+
+test("claim lease: 远离目标不续租（TTL 照常到期释放）", () => {
+  const planner = new WorkerTaskPlanner({ claimNoProgressTtlTicks: 2 });
+  const mine = "10,0";
+  const plan1 = planner.plan(snapshotOf(makeTurn([worker("w1", 0, 0)], 1000, { resourceCells: new Set([mine]) })));
+  assert.equal(goOf(plan1, "w1")?.targetCellKey, mine);
+  // T2: w1 远离到 [-5,0]（dist 15 > 10）-> 不续租
+  const plan2 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", -5, 0), worker("w2", 3, 0)], 1001, { resourceCells: new Set([mine]) })),
+    assignmentsOf(plan1),
+  );
+  assert.equal(goOf(plan2, "w1")?.targetCellKey, mine, "远离不释放（租约未到期）");
+  // T3: TTL 到期（1002-1000=2）-> 释放，w2 接替
+  const plan3 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", -5, 0), worker("w2", 3, 0)], 1002, { resourceCells: new Set([mine]) })),
+    assignmentsOf(plan2),
+  );
+  const w2Task = goOf(plan3, "w2");
+  assert.ok(w2Task?.type === "GO_RESOURCE" && w2Task.targetCellKey === mine, `远离不算推进，TTL 到期后 w2 应接替，实际 ${JSON.stringify(w2Task)}`);
+});
+
+test("claim lease: 两格振荡不续租（TTL 照常到期释放）", () => {
+  const planner = new WorkerTaskPlanner({ claimNoProgressTtlTicks: 2 });
+  const mine = "10,0";
+  // T1: w1 [0,0] dist 10 -> 领取
+  const plan1 = planner.plan(snapshotOf(makeTurn([worker("w1", 0, 0)], 1000, { resourceCells: new Set([mine]) })));
+  assert.equal(goOf(plan1, "w1")?.targetCellKey, mine);
+  // T2: 靠近到 [1,0]（dist 9）-> 续租（lastProgressTick=1001, progressDistance=9）
+  const plan2 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", 1, 0), worker("w2", 3, 0)], 1001, { resourceCells: new Set([mine]) })),
+    assignmentsOf(plan1),
+  );
+  assert.equal(goOf(plan2, "w1")?.targetCellKey, mine, "首次靠近应续租");
+  // T3: 振荡回 [0,0]（dist 10 > progressDistance 9）-> 不续租；租约未到期仍挡 w2
+  const plan3 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", 0, 0), worker("w2", 3, 0)], 1002, { resourceCells: new Set([mine]) })),
+    assignmentsOf(plan2),
+  );
+  assert.equal(goOf(plan3, "w1")?.targetCellKey, mine, "振荡回远格不释放（TTL 内）");
+  // T4: 再振荡到 [1,0]（dist 9，非严格下降）-> 不续租；1003-1001=2 >= 2 -> 释放
+  const plan4 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", 1, 0), worker("w2", 3, 0)], 1003, { resourceCells: new Set([mine]) })),
+    assignmentsOf(plan3),
+  );
+  const w2Task = goOf(plan4, "w2");
+  assert.ok(w2Task?.type === "GO_RESOURCE" && w2Task.targetCellKey === mine, `两格振荡不得无限续租，TTL 到期后 w2 应接替，实际 ${JSON.stringify(w2Task)}`);
+});
+
+test("claim lease: 正常靠近仍续租（TTL 重新计时，不被近 worker 抢）", () => {
+  const planner = new WorkerTaskPlanner({ claimNoProgressTtlTicks: 2 });
+  const mine = "10,0";
+  // T1: w1 [0,0] dist 10 -> 领取
+  const plan1 = planner.plan(snapshotOf(makeTurn([worker("w1", 0, 0)], 1000, { resourceCells: new Set([mine]) })));
+  assert.equal(goOf(plan1, "w1")?.targetCellKey, mine);
+  // T2: 靠近 [1,0] dist 9 -> 续租（lastProgressTick=1001）
+  const plan2 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", 1, 0)], 1001, { resourceCells: new Set([mine]) })),
+    assignmentsOf(plan1),
+  );
+  assert.equal(goOf(plan2, "w1")?.targetCellKey, mine, "靠近应续租");
+  // T3: 再靠近 [2,0] dist 8 -> 续租（lastProgressTick=1002）；w2 更近（dist 7）出现
+  const plan3 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", 2, 0), worker("w2", 3, 0)], 1002, { resourceCells: new Set([mine]) })),
+    assignmentsOf(plan2),
+  );
+  assert.equal(goOf(plan3, "w1")?.targetCellKey, mine, "持续靠近应续租并保留");
+  // T4: 原地（1003-1002=1 < 2）-> 因 T3 续租而保留（若未续租此刻已释放）
+  const plan4 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", 2, 0), worker("w2", 3, 0)], 1003, { resourceCells: new Set([mine]) })),
+    assignmentsOf(plan3),
+  );
+  const w1Task = goOf(plan4, "w1");
+  assert.equal(w1Task?.type, "GO_RESOURCE", "正常靠近续租，w1 应继续持有");
+  assert.equal(w1Task?.targetCellKey, mine);
+  assert.ok(!(goOf(plan4, "w2")?.type === "GO_RESOURCE" && goOf(plan4, "w2")?.targetCellKey === mine), "w2 不得抢（租约有效）");
+});
