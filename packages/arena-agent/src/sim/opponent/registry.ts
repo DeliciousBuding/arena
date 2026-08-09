@@ -94,13 +94,19 @@ export function resolveOpponent(name: string): OpponentSpec {
   return builtin;
 }
 
-/** 由 spec 构造可参赛条目（每 seed 独立 state-slot，随用随起）。 */
-export function opponentEntry(spec: OpponentSpec, seed: number): TournEntry {
-  const opponentId = `${spec.name}-s${seed}`;
+/** 由 spec 构造可参赛条目（每 seed 独立 state-slot，随用随起）。
+ *  opts.id/desc 覆盖默认 <name>-s<seed> / spec.desc（配置变体条目用：
+ *  变体 id 不是注册名，仍以 base agent 构造、仅改名与说明）。 */
+export function opponentEntry(
+  spec: OpponentSpec,
+  seed: number,
+  opts: { readonly id?: string; readonly desc?: string } = {},
+): TournEntry {
+  const opponentId = opts.id ?? `${spec.name}-s${seed}`;
   if (spec.kind === "http") {
     return {
       id: opponentId,
-      desc: spec.desc,
+      desc: opts.desc ?? spec.desc,
       build: () => new OpponentAdapter(new HttpDecider(spec.endpoint!), opponentId, spec.name),
     };
   }
@@ -108,7 +114,7 @@ export function opponentEntry(spec: OpponentSpec, seed: number): TournEntry {
   mkdirSync(slotDir, { recursive: true });
   return {
     id: opponentId,
-    desc: spec.desc,
+    desc: opts.desc ?? spec.desc,
     build: () => {
       const decider = new PersistentSubprocessDecider({
         farmerRepoDir: FARMER_REPO,

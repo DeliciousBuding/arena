@@ -68,6 +68,7 @@ export interface EpisodeTickPlayerMeasurement {
  * - finalPopulation  ← finalWorld 玩家单位数
  * - finalResources   ← finalWorld 玩家资源
  * - aliveTicks  ← 每 tick after.core!==null 计 1（与 reference ticks_alive 同语义）
+ * - populationPeak   ← 每 tick after 玩家单位数的最大值（arena-bench 扩张力指标）
  *
  * 默认追加：不破坏现有 metrics 字段；现有消费者读 ticks/illegalPlans 等不受影响。
  */
@@ -86,6 +87,8 @@ export interface PlayerCostLedger {
   readonly finalPopulation: number;
   readonly finalResources: number;
   readonly aliveTicks: number;
+  /** 每 tick 玩家单位数的最大值（arena-bench 扩张力指标；恒 ≥ 0）。 */
+  readonly populationPeak: number;
   /** 注册表类别聚合计数（movement/combat/economy/beacon/respawn）；
    *  新增事件类型加入 EVENT_CATEGORY_TYPES 后自动被统计（P4h）。 */
   readonly eventCounts: Readonly<Record<EventCategoryId, number>>;
@@ -373,6 +376,7 @@ interface MutableCostLedger {
   finalPopulation: number;
   finalResources: number;
   aliveTicks: number;
+  populationPeak: number;
   /** 注册表类别聚合计数（movement/combat/economy/beacon/respawn）。
    *  新增事件类型加入 EVENT_CATEGORY_TYPES 后自动被统计（P4h）。 */
   eventCounts: Record<EventCategoryId, number>;
@@ -405,6 +409,7 @@ function createEmptyLedger(): MutableCostLedger {
     finalPopulation: 0,
     finalResources: 0,
     aliveTicks: 0,
+    populationPeak: 0,
     eventCounts: emptyEventCounts(),
     unrecognizedEventCount: 0,
     decisionTimeouts: 0,
@@ -576,6 +581,9 @@ function accumulateTickStateIntoLedger(
     if (ledger === undefined) continue;
     if (player.core !== null) ledger.aliveTicks += 1;
     if (beaconOwner === playerId) ledger.beaconTicks += 1;
+    if (player.units.length > ledger.populationPeak) {
+      ledger.populationPeak = player.units.length;
+    }
   }
 }
 

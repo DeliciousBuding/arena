@@ -13,7 +13,12 @@
  */
 
 import type { Plan } from "../../domain/model.ts";
-import { runEpisode, type EpisodeTenant } from "../../sim/harness/episode.ts";
+import {
+  runEpisode,
+  type EpisodeRecord,
+  type EpisodeTenant,
+  type PlayerCostLedger,
+} from "../../sim/harness/episode.ts";
 import { createSeededRng } from "../../sim/deterministic/rng.ts";
 import type { SimWorld } from "../../sim/world/types.ts";
 import {
@@ -45,6 +50,15 @@ export interface MatchResult {
   readonly finalPopulation: Readonly<Record<string, number>>;
   /** 对打当轮事件数（用于常观验证）。 */
   readonly eventCount: number;
+  /** 每玩家五维 cost ledger（arena-bench 评测画像用；无 ledger 场景下可能缺省）。 */
+  readonly perPlayerLedgers?: Readonly<Record<string, PlayerCostLedger>>;
+  /** 每玩家击杀数（playerId → CORE_DESTROYED 归属数；arena-bench 用，可选）。
+   *  归属语义：CORE_DESTROYED 无 actorId，击杀记在 values.destroyed_by
+   *  （最终贡献伤害的玩家 username 列表；合成场景 username=playerId，
+   *  多贡献者同记一杀）。 */
+  readonly perPlayerKills?: Readonly<Record<string, number>>;
+  /** 每玩家首杀 tick（playerId → 首个被归属击杀的 tick；无击杀缺省）。 */
+  readonly perPlayerFirstKillTicks?: Readonly<Record<string, number>>;
 }
 
 /** 一种可参赛的策略（我的 TS / reference 提取 / HTTP）。标定 score 由外部提供。 */
@@ -382,6 +396,8 @@ export function runMatch(
       finalResources,
       finalPopulation,
       eventCount: result.records.reduce((n, r) => n + r.events.length, 0),
+      // arena-bench 五维画像：从 EpisodeResult.metrics.perPlayer 透传（可选字段，向后兼容）
+      perPlayerLedgers: result.metrics.perPlayer,
     };
   } finally {
     recorder?.close();
@@ -520,6 +536,42 @@ export function makeArenaScenarioN(
 }
 
 /**
+ * 从 EpisodeResult.records 事件统计 CORE_DESTROYED 击杀归属。
+ *
+ * CORE_DESTROYED 事件结构（sim/engine/combat.ts）：无 actorId——击杀归属
+ * 在 values.destroyed_by（最终贡献伤害的玩家 username 列表）。合成场景
+ * username=playerId（makeArenaScenarioN/makeArenaMatchScenario 均如此），
+ * 故按 destroyed_by 直接归到玩家 id；多贡献者同记一杀，无贡献者不记
+ * （perPlayerKills 之和可能小于全场 CORE_DESTROYED 数，调用方按需注明）。
+ */
+function computePerPlayerKills(
+  records: readonly EpisodeRecord[],
+  playerIds: readonly string[],
+): { readonly kills: Readonly<Record<string, number>>; readonly firstKillTicks: Readonly<Record<string, number>> } {
+  const playerSet = new Set(playerIds);
+  const kills: Record<string, number> = {};
+  const firstKillTicks: Record<string, number> = {};
+  for (const playerId of playerIds) {
+    kills[playerId] = 0;
+  }
+  for (const record of records) {
+    for (const event of record.events) {
+      if (event.eventType !== "CORE_DESTROYED") continue;
+      const destroyedBy = event.values?.destroyed_by;
+      if (!Array.isArray(destroyedBy)) continue;
+      for (const rawUsername of destroyedBy) {
+        if (typeof rawUsername !== "string" || !playerSet.has(rawUsername)) continue;
+        kills[rawUsername] += 1;
+        if (firstKillTicks[rawUsername] === undefined) {
+          firstKillTicks[rawUsername] = record.tick;
+        }
+      }
+    }
+  }
+  return { kills, firstKillTicks };
+}
+
+/**
  * 跑一场 N 玩家混战（N≥2），返回规范化结果。同一场次内所有 entry 共享世界，
  * 多计划同时结算（引擎原生支持）；胜负判定复用 decideWinner（最后存活核心
  * 胜；都存活 → 资源/人口排序）。
@@ -595,6 +647,7 @@ export function runFreeForAll(
       undefined as never,
       result.finalWorld,
     );
+    const { kills, firstKillTicks } = computePerPlayerKills(result.records, ids);
     return {
       players: ids,
       winner,
@@ -604,6 +657,11 @@ export function runFreeForAll(
       finalResources,
       finalPopulation,
       eventCount: result.records.reduce((n, r) => n + r.events.length, 0),
+      // arena-bench 五维画像：从 EpisodeResult.metrics.perPlayer 透传（可选字段，向后兼容）
+      perPlayerLedgers: result.metrics.perPlayer,
+      // arena-bench 击杀归属：CORE_DESTROYED values.destroyed_by（可选字段，向后兼容）
+      perPlayerKills: kills,
+      perPlayerFirstKillTicks: firstKillTicks,
     };
   } finally {
     recorder?.close();

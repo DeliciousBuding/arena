@@ -1,0 +1,28 @@
+{
+  "ffa-dense": {
+    "radius": 18,
+    "resources": "standard",
+    "configNote": "高密度冲突：小半径 18，8 玩家圆周密布"
+  },
+  "ffa-std": {
+    "radius": 24,
+    "resources": "standard",
+    "configNote": "标准擂台（基准）：radius 24 圆周布局"
+  },
+  "ffa-open": {
+    "radius": 36,
+    "resources": "standard",
+    "configNote": "开阔发育 + 远征战：大半径 36"
+  },
+  "ffa-scarce": {
+    "radius": 24,
+    "resources": "scarce",
+    "configNote": "资源争夺：radius 24，场景构建后每玩家资源盘 4→2（×0.5）"
+  },
+  "ffa-random": {
+    "radius": 24,
+    "resources": "standard",
+    "randomDrop": true,
+    "configNote": "随机出生：randomDrop seed 派生起始角旋转 + 参与序洗牌（确定性）"
+  }
+}

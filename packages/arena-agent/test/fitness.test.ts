@@ -155,6 +155,7 @@ test("ledgerToDetail: 字段名映射 camelCase → snake_case", () => {
     harvested: 5, deposited: 3, damageDealt: 7, beaconTicks: 2, respawnCount: 1,
     unitsLost: 4, healCost: 6, repairCost: 8, spawnCost: 9, overflowDestroyed: 11,
     resourcesLost: 13, finalPopulation: 14, finalResources: 15, aliveTicks: 16,
+    populationPeak: 20,
     eventCounts: { movement: 1, combat: 2, economy: 3, beacon: 4, respawn: 5 },
     unrecognizedEventCount: 0,
     decisionTimeouts: 0,
