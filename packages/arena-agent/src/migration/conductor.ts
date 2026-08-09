@@ -692,7 +692,29 @@ function legMoveStep(
 
   const pathIndex = pathIndexOf(plan.path.cells, position[0], position[1]);
   if (pathIndex < 0) {
-    return waitStep(input, plan, held, transitions, reasons, `LEG_MOVE：核心在 (${position[0]},${position[1]}) 偏离已审走廊（偏离检测/REPLAN 属 M6，fail-closed 等待）`);
+    // 核心偏离走廊（2026-08-09 生产实证：REPLAN 换路后新路径不经过核心当前
+    // 位置——旧路径残位 [-566,-112] vs 新路径起点 [-567,-112]）→ 以当前
+    // 位置为起点重新寻路（planPhaseStep 用 input.core.position 起算）。
+    // 原实现 fail-closed 干等（注释"REPLAN 属 M6"但未接线）→ 永久卡死。
+    const replan = transition(plan.state, { type: "REPLAN_REQUESTED" });
+    void replan;
+    return {
+      plan: refreshLease(
+        { ...plan, state: "PLAN", revision: plan.revision + 1, clearRequests: undefined },
+        input,
+      ),
+      held: { ...held, stallTicks: 0, clearRetries: 0 },
+      transitions: [...transitions, {
+        from: plan.state,
+        to: "PLAN",
+        event: "REPLAN_REQUESTED",
+        tick: input.tick,
+      }],
+      reasons: [
+        ...reasons,
+        `LEG_MOVE：核心在 (${position[0]},${position[1]}) 偏离已审走廊 → REPLAN（以当前位置重新寻路）`,
+      ],
+    };
   }
   // 腿完成 = 到达腿终点（位置为真值；1 格腿在起点即完成）
   if (position[0] === leg.to.x && position[1] === leg.to.y) {

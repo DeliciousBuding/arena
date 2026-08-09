@@ -543,6 +543,29 @@ test("场景7b：170 格路径 → 按 legMaxCells(150) 分 2 腿，legIndex 跨
 });
 
 // ---------------------------------------------------------------------------
+// 场景 9：核心偏离已审走廊 → REPLAN（以当前位置重新寻路，不 fail-closed 干等）
+// ---------------------------------------------------------------------------
+
+test("场景9：核心偏离已审走廊 → REPLAN_REQUESTED → PLAN（revision+1），以当前位置重新寻路", () => {
+  // 2026-08-09 生产实证：REPLAN 换路后新路径不经过核心当前（旧路径残位）——
+  // 原实现 fail-closed 干等（"偏离检测/REPLAN 属 M6"未接线）→ 永久卡死。
+  const sim = new MigrationSim(makeInitialPlan(29), seededWorld(1, 30), 1000, [0, 0], "uuid-A");
+  runUntil(sim, (s) => s.plan?.state === "LEG_MOVE", 100);
+  // 模拟 REPLAN 后路径变更：核心在路径外（旧路径残位）
+  sim.corePosition = [10, 2];
+  sim.coreState = "NORMAL";
+  runUntil(sim, (s) => s.transitions.some((t) => t.event === "REPLAN_REQUESTED"), 50);
+  assert.equal(sim.plan?.state, "PLAN", "偏离必须触发 REPLAN 而非干等");
+  assert.equal(sim.plan?.revision, 2, "REPLAN 应 revision+1");
+  // REPLAN 后从核心当前位置重新寻路 → 审计通过 → LEG_MOVE（不卡死）
+  runUntil(sim, (s) => s.plan?.state === "LEG_MOVE", 200);
+  assert.equal(sim.plan?.state, "LEG_MOVE", "新路径应以核心当前位置为起点");
+  const pathIndex = sim.plan!.path.cells.findIndex((cell) => cell[0] === 10 && cell[1] === 2);
+  assert.equal(pathIndex, 0, "新路径起点 = 核心当前位置 [10,2]");
+  assertPathMonotonic(sim);
+});
+
+// ---------------------------------------------------------------------------
 // 场景 8：零影响（无计划）
 // ---------------------------------------------------------------------------
 
