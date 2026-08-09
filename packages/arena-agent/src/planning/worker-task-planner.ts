@@ -47,6 +47,19 @@ export interface WorkerTaskPlan {
   readonly assignments: ReadonlyArray<Assignment>;
 }
 
+/** 跨 tick GO_RESOURCE 领取租约（claim lease）：cellKey → claimant + 租约元数据。
+ *  claimTick：租约起始 tick；lastProgressTick：最近一次真实位置推进的 tick
+ *  （无进展 TTL 从它计时）；lastPosition：上次决策时 claimant 的位置（推进检测
+ *  用）。租约是运行态数据，不是配置——热载（updateConfig）不清除，每次 plan()
+ *  按当前 resourceCells/config 重新校验，失效即释放。 */
+export interface WorkerClaim {
+  readonly unitId: string;
+  readonly cellKey: string;
+  readonly claimTick: number;
+  readonly lastProgressTick: number;
+  readonly lastPosition: Position;
+}
+
 export interface WorkerTaskPlannerConfig {
   /** 上一 Tick 同目标格任务的净收益加成（防抖动的 sticky bonus），默认 0.5。 */
   readonly stickyBonus?: number;
@@ -54,6 +67,9 @@ export interface WorkerTaskPlannerConfig {
   readonly congestionPenalty?: number;
   /** 使命层配置（worker-mission-v1）：缺省 = 关闭（现行为零回归）。 */
   readonly mission?: MissionConfig;
+  /** GO_RESOURCE 领取租约：worker 在途目标跨 tick 保留的最长无进展时长（游戏
+   *  tick）。缺省 10；真卡死（无推进超时）释放（fail-open，不永久锁格）。 */
+  readonly claimNoProgressTtlTicks?: number;
 }
 
 /** plan() 每次调用级选项（核心迁移状态由调用方追踪）。 */
@@ -99,6 +115,14 @@ const SEEDED_PENALTY = 2.0;
  *  远大于）但仍高于 WAIT（waitCost=maxReal+1e6）——封锁格在 Hungarian 候选排序
  *  里排后但不剔除，全部候选都被封锁时仍能分配（防饥饿）。参考 :2557。 */
 const BLOCKADE_PENALTY = 100.0;
+/** 领取租约（claim lease，2026-08-09，P0 采矿恢复延伸）：跨 tick 的"一矿一
+ *  worker 领取"。租约格对非 claimant 直接 forbidden（硬保留）；对 claimant
+ *  自身 +CLAIM_BONUS——典型 netValue 噪声（sticky/hysteresis/confidence 量级
+ *  < 2）不足以翻转，只有显著更优（>20）才允许自切换——防抖动而非永久锁。 */
+const CLAIM_BONUS = 20.0;
+/** 租约无进展 TTL 缺省（游戏 tick）：引擎慢、多 tick/格时 newborn/慢 worker
+ *  短期不移动仍保留；真卡死（无推进超时）释放（fail-open）。 */
+const DEFAULT_CLAIM_NO_PROGRESS_TTL_TICKS = 10;
 /** 任务分配路由预算：半径 24（与 stepToward 默认一致，走廊级绕行）+ 1024 节点
  *  （每 worker 一次 BFS 覆盖全部候选格，热路径可控）。 */
 const ASSIGNMENT_ROUTE_RADIUS = 24;
@@ -148,16 +172,125 @@ export class WorkerTaskPlanner {
   readonly stickyBonus: number;
   readonly congestionPenalty: number;
   private mission: MissionConfig;
+  /** 领取租约（cellKey → claim）。跨 tick 运行态数据；updateConfig（热载）不
+   *  清除——数据面热载安全（每 tick 按当前事实重校验，失效即释放）。 */
+  private claims = new Map<string, WorkerClaim>();
+  /** 租约无进展 TTL（游戏 tick），构造注入，缺省 DEFAULT_CLAIM_NO_PROGRESS_TTL_TICKS。 */
+  private readonly claimNoProgressTtlTicks: number;
 
   constructor(config: WorkerTaskPlannerConfig = {}) {
     this.stickyBonus = config.stickyBonus ?? DEFAULT_STICKY_BONUS;
     this.congestionPenalty = config.congestionPenalty ?? DEFAULT_CONGESTION_PENALTY;
     this.mission = { ...DEFAULT_MISSION_CONFIG, ...(config.mission ?? {}) };
+    this.claimNoProgressTtlTicks = config.claimNoProgressTtlTicks ?? DEFAULT_CLAIM_NO_PROGRESS_TTL_TICKS;
   }
 
   /** 热加载使命层配置（DeterministicPlanner.updateConfig 转发）。 */
   updateConfig(config: WorkerTaskPlannerConfig = {}): void {
     this.mission = { ...DEFAULT_MISSION_CONFIG, ...(config.mission ?? {}) };
+  }
+
+  /** 释放该 worker 的全部领取租约（recoverWorker 接线：DeterministicPlanner.
+   *  recoverWorker 转发；局部活性恢复/阵亡清理时调用，避免租约悬空锁格）。 */
+  recoverWorker(unitId: string): void {
+    for (const [key, claim] of this.claims) {
+      if (claim.unitId === unitId) this.claims.delete(key);
+    }
+  }
+
+  /** 租约裁剪（每 tick 起点）：按当前事实校验全部跨 tick 领取，失效即释放
+   *  （fail-open）。释放条件：
+   *  - worker 消失（阵亡，或 Safety veto / liveness recovery 被排除出经济快照）；
+   *  - 强制任务占用（DEPOSIT / HARVEST_CURRENT / RETURN_FOR_HEAL 等优先）；
+   *  - 与上一 tick 分配不一致（previousAssignments 未指向同一 GO_RESOURCE 目标
+   *    = 租约已陈旧，不强制——sticky API 兼容）；
+   *  - 目标格消失 / 敌占 / 明确 block（cellBlocker）/ tick 回滚（时钟异常）；
+   *  - 无进展超时（tick − lastProgressTick ≥ TTL）；
+   *  - 目标不可采（不可见且 claimant 已站格 = freeze-fix 同语义：矿不在格上）。
+   *  不可采（floor/距离）由矩阵 isCollectable 判定 → 分配不成 → 终点 updateClaims
+   *  自然释放。 */
+  private pruneClaims(
+    workers: readonly PlanningUnit[],
+    forcedIds: ReadonlySet<string>,
+    snapshot: PlanningSnapshot,
+    previousAssignments: readonly Assignment[],
+    options: PlanOptions,
+  ): void {
+    if (this.claims.size === 0) return;
+    const tick = snapshot.tick;
+    const ttl = this.claimNoProgressTtlTicks;
+    const workerById = new Map(workers.map((w) => [w.id, w]));
+    // 上一 tick 每个 worker 的 GO_RESOURCE 目标（无 targetCellKey 时从 target 推导）。
+    const previousTargetByWorker = new Map<string, string>();
+    for (const assignment of previousAssignments) {
+      if (assignment.task.type !== "GO_RESOURCE") continue;
+      const targetKey = assignment.task.targetCellKey ??
+        (assignment.task.target !== undefined
+          ? cellKey(assignment.task.target[0], assignment.task.target[1])
+          : undefined);
+      if (targetKey !== undefined) previousTargetByWorker.set(assignment.unitId, targetKey);
+    }
+    const cellBlocker = options.cellBlocker;
+    for (const [key, claim] of this.claims) {
+      const worker = workerById.get(claim.unitId);
+      if (worker === undefined) { this.claims.delete(key); continue; }
+      if (forcedIds.has(claim.unitId)) { this.claims.delete(key); continue; }
+      if (previousTargetByWorker.get(claim.unitId) !== key) { this.claims.delete(key); continue; }
+      const cell = snapshot.resourceCells.get(key);
+      if (cell === undefined) { this.claims.delete(key); continue; }
+      if (snapshot.enemyCells.has(key)) { this.claims.delete(key); continue; }
+      if (tick < claim.lastProgressTick) { this.claims.delete(key); continue; }
+      if (tick - claim.lastProgressTick >= ttl) { this.claims.delete(key); continue; }
+      if (cellBlocker !== undefined && cellBlocker.isCellBlocked(cell.position, tick)) { this.claims.delete(key); continue; }
+      // 硬距离门：claimant 已超出 maxCollectionDistance（isCollectable 的硬必要
+      // 条件，可见/不可见都适用）→ 不可采 → 立即释放（避免本 tick 锁格给他人）。
+      if (manhattan(worker.position, cell.position) > this.mission.maxCollectionDistance) { this.claims.delete(key); continue; }
+      // freeze-fix 同语义：不可见且 claimant 已站格 → 矿不在格上，不可采。
+      if (
+        cell.visible === false &&
+        worker.position[0] === cell.position[0] &&
+        worker.position[1] === cell.position[1]
+      ) {
+        this.claims.delete(key);
+      }
+    }
+  }
+
+  /** 租约更新（每 tick 终点）：GO_RESOURCE 分配即续租/新建；其余任务（WAIT /
+   *  EXPLORE / 强制 DEPOSIT 等）释放持有。真实位置推进（lastPosition 变化）→
+   *  lastProgressTick = tick（续租）；原地不动保留（TTL 失效交给 prune）。 */
+  private updateClaims(
+    assignments: readonly Assignment[],
+    workersById: ReadonlyMap<string, PlanningUnit>,
+    tick: number,
+  ): void {
+    const next = new Map<string, WorkerClaim>();
+    for (const assignment of assignments) {
+      if (assignment.task.type !== "GO_RESOURCE" || assignment.task.targetCellKey === undefined) continue;
+      const worker = workersById.get(assignment.unitId);
+      if (worker === undefined) continue;
+      const existing = this.claims.get(assignment.task.targetCellKey);
+      const renewed =
+        existing !== undefined && existing.unitId === assignment.unitId
+          ? {
+              unitId: assignment.unitId,
+              cellKey: assignment.task.targetCellKey,
+              claimTick: existing.claimTick,
+              lastProgressTick: sameCell(existing.lastPosition, worker.position)
+                ? existing.lastProgressTick
+                : tick,
+              lastPosition: worker.position,
+            }
+          : {
+              unitId: assignment.unitId,
+              cellKey: assignment.task.targetCellKey,
+              claimTick: tick,
+              lastProgressTick: tick,
+              lastPosition: worker.position,
+            };
+      next.set(assignment.task.targetCellKey, renewed);
+    }
+    this.claims = next;
   }
 
   /** 全局任务分配（确定性 Hungarian）。previousAssignments：上一 Tick 分配结果
@@ -194,6 +327,9 @@ export class WorkerTaskPlanner {
         }
       }
     }
+    // 领取租约裁剪（2026-08-09）：按当前事实校验全部跨 tick 领取，失效即释放
+    // （assignments 此刻只含强制任务 → 其 unitId 集合 = 强制任务占用者）。
+    this.pruneClaims(workers, new Set(assignments.map((a) => a.unitId)), snapshot, previousAssignments, options);
 
     const unassigned = workers.filter((worker) => !assignments.some((a) => a.unitId === worker.id));
     // freeze fix（生产回流 99b4ba2，2026-08-08 t4）：worker 站在 invisible 记忆/
@@ -225,6 +361,17 @@ export class WorkerTaskPlanner {
         if (!surveyors.has(worker.id)) continue;
         assignments.push({ unitId: worker.id, task: { type: "EXPLORE" } });
         pool.splice(pool.indexOf(worker), 1);
+      }
+    }
+
+    // 领取租约保留（2026-08-09）：仍在本轮池中的 claimant 对租约格独占（非
+    // claimant 在矩阵直接 forbidden → 跨 tick 一矿一领取）。claimant 被强制任务
+    // /预留给勘探时不在池中 → 该 tick 不保留（租约格回归公共池，防锁格）。
+    const reservedFor = new Map<string, string>();
+    {
+      const poolIds = new Set(pool.map((w) => w.id));
+      for (const [key, claim] of this.claims) {
+        if (poolIds.has(claim.unitId)) reservedFor.set(key, claim.unitId);
       }
     }
 
@@ -288,6 +435,11 @@ export class WorkerTaskPlanner {
           if (!Number.isFinite(net)) return forbiddenCost;
           const worker = pool[rowIndex]!;
           const key = availableCells[colIndex]!;
+          const reservedWorkerId = reservedFor.get(key);
+          // 领取租约：租约格对非 claimant 直接 forbidden（跨 tick 一矿一领取）。
+          if (reservedWorkerId !== undefined && worker.id !== reservedWorkerId) {
+            return forbiddenCost;
+          }
           const cell = snapshot.resourceCells.get(key);
           // 使命层（worker-mission-v1）：门槛/距离/死矿过滤——不值得的格对该
           // worker 视为 forbidden（宁 WAIT 也不长途空跑陈旧种子，t1 实证）。
@@ -313,7 +465,10 @@ export class WorkerTaskPlanner {
           if (cell !== undefined && cellBlocker !== undefined && cellBlocker.isCellBlocked(cell.position, blockadeTick)) {
             return -net + BLOCKADE_PENALTY;
           }
-          return -net;
+          // 领取租约：claimant 自身对租约格 +CLAIM_BONUS（防抖动；非永久锁——
+          // 显著更优（>20）仍可自切换，切换后终点 updateClaims 释放旧租约）。
+          const leaseBonus = reservedWorkerId === worker.id ? CLAIM_BONUS : 0;
+          return -(net + leaseBonus);
         }),
         ...Array.from({ length: pool.length }, () => waitCost),
       ]);
@@ -391,6 +546,9 @@ export class WorkerTaskPlanner {
         });
       }
     }
+
+    // 领取租约更新（2026-08-09）：GO_RESOURCE 分配即续租/新建；其余任务释放。
+    this.updateClaims(assignments, new Map(workers.map((w) => [w.id, w])), snapshot.tick);
 
     return { assignments };
   }

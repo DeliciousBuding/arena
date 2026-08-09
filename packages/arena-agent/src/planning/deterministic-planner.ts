@@ -902,6 +902,9 @@ export class DeterministicPlanner implements PlanProvider {
     currentTick?: number,
   ): { readonly previousDirection: number; readonly nextDirection: number; readonly clearedMoveFailures: number; readonly cooldownUntilTick: number | null } {
     this.previousAssignments = this.previousAssignments.filter((assignment) => assignment.unitId !== unitId);
+    // GO_RESOURCE 领取租约释放（2026-08-09）：worker 局部活性恢复时不得继续锁
+    // 住已领取矿格（否则恢复冷却结束后其他 worker 无法接替）。
+    this.planner.recoverWorker(unitId);
     const fallback = this.fallbackPlanner.recoverWorker(unitId, currentTick);
     // patrol planner 独立持有 World；也必须清，否则下一 Tick fallback 仍可能从旧状态回灌。
     this.patrolPlanner.recoverWorker(unitId, currentTick);
