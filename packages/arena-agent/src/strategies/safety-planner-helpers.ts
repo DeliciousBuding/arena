@@ -204,6 +204,29 @@ export function homeCell(core: Position, obstacles: ReadonlySet<string>, index =
 }
 
 /**
+ * 守卫外环守位（guard-spacing-v1，2026-08-09 用户裁决"守卫隔开拱卫，不
+ * 堵死核心四邻"）：核心 4 邻格是核心移动通道 + worker 卸货通道——军事单位
+ * 贴脸站位会堵死核心（迁移时核心无法行进、卸货时 deposit 死锁，t1 生产
+ * 实证：守卫站核心行进方向前方格 → 引擎容量拒 → 迁移停滞）。守卫守位
+ * 优先核心外环（Chebyshev 2-3，四角对角位优先），既保持拱卫距离（预警/
+ * 拦截）又让出 4 邻通道；外环全堵才回退历史 homeCell 四邻（零回归兜底）。
+ */
+export function guardHomeCell(core: Position, obstacles: ReadonlySet<string>, index = 0): Position | null {
+  const ringOrder: readonly Position[] = [
+    [-2, -2], [2, -2], [-2, 2], [2, 2],
+    [-2, 0], [2, 0], [0, -2], [0, 2],
+    [-3, -3], [3, -3], [-3, 3], [3, 3],
+    [-3, 0], [3, 0], [0, -3], [0, 3],
+  ];
+  for (let offset = 0; offset < ringOrder.length; offset += 1) {
+    const [dx, dy] = ringOrder[(index + offset) % ringOrder.length]!;
+    const cell: Position = [core[0] + dx, core[1] + dy];
+    if (!obstacles.has(cellKey(cell))) return cell;
+  }
+  return homeCell(core, obstacles, index);
+}
+
+/**
  * W64 地形背靠守位（2026-08-09，竞品 arena_hero_strategy.py
  * `_core_attack_surface_profile` :2043 / `_terrain_guard_offsets` :2080 /
  * `_core_patrol_slots` :9303 对照）：守位选择时考虑地形背靠——从 Core 锚点
