@@ -59,6 +59,9 @@ from pathlib import Path
 
 ARENA_TS_ROOT = Path(__file__).resolve().parents[3]
 
+# 进程启动时刻（ARENA_BRIDGE_TIMING=1 时用于冷启动测量）。
+_PROCESS_STARTED_AT = time.perf_counter()
+
 
 def _find_coordination_root(start: Path) -> Path:
     """从脚本目录向上找协调根（含 reference/official/arena-hero-python；兼容
@@ -473,6 +476,12 @@ def _serve_lines(args, decide, persist, telemetry) -> int:
     from arena_hero.models import PlayerState
     from arena_hero.turn import Turn
 
+    # 临时计时（ARENA_BRIDGE_TIMING=1 时输出到 stderr；默认关 = 零行为变化）。
+    timing = os.environ.get("ARENA_BRIDGE_TIMING", "").strip() == "1"
+    timing_stats = {"ticks": 0, "bytes": 0.0, "parse": 0.0, "validate": 0.0,
+                    "decide": 0.0, "dump": 0.0, "persist": 0.0}
+    startup = time.perf_counter() - _PROCESS_STARTED_AT
+
     try:
         for line_number, line in enumerate(sys.stdin, start=1):
             line = line.strip()
@@ -484,8 +493,11 @@ def _serve_lines(args, decide, persist, telemetry) -> int:
                 return 0
             message: dict | None = None
             try:
+                t0 = time.perf_counter()
                 message = json.loads(line)
+                t1 = time.perf_counter()
                 state = PlayerState.model_validate(message["state"])
+                t2 = time.perf_counter()
                 # 遥测旁路：每处理一行 state 上报 tick_summary（不参与决策语义）。
                 telemetry.emit(_tick_summary(int(message["tick"]), state))
                 turn = Turn(
@@ -494,12 +506,32 @@ def _serve_lines(args, decide, persist, telemetry) -> int:
                     submitter=_noop_submitter,
                 )
                 decide(turn)
+                t3 = time.perf_counter()
                 # 注意：SDK 的 Turn.plan 是 property（返回 CommandPlan），非方法。
                 plan = turn.plan
                 # mode="json"：UUID key/Position 转 JSON 原生类型。
                 payload = json.dumps(plan.model_dump(mode="json"), separators=(",", ":"))
+                t4 = time.perf_counter()
                 print(payload, flush=True)
                 persist()
+                t5 = time.perf_counter()
+                if timing:
+                    timing_stats["ticks"] += 1
+                    timing_stats["bytes"] += len(line)
+                    timing_stats["parse"] += t1 - t0
+                    timing_stats["validate"] += t2 - t1
+                    timing_stats["decide"] += t3 - t2
+                    timing_stats["dump"] += t4 - t3
+                    timing_stats["persist"] += t5 - t4
+                    print(
+                        f"[timing] agent={args.agent} tick={message.get('tick')} "
+                        f"bytes={len(line)} parse={(t1 - t0) * 1e3:.2f}ms "
+                        f"validate={(t2 - t1) * 1e3:.2f}ms decide={(t3 - t2) * 1e3:.2f}ms "
+                        f"dump={(t4 - t3) * 1e3:.2f}ms persist={(t5 - t4) * 1e3:.2f}ms "
+                        f"roundtrip={(t5 - t0) * 1e3:.2f}ms",
+                        file=sys.stderr,
+                        flush=True,
+                    )
             except Exception as exc:  # noqa: BLE001 —— 决策失败输出到 stderr
                 # （模拟器端 fail-fast 中止——诚实暴露适配/对手问题）。
                 print(
@@ -516,6 +548,22 @@ def _serve_lines(args, decide, persist, telemetry) -> int:
         # 常驻模式 stdin EOF / 任何退出路径：最后一次强制 flush 状态槽
         # （P4c：常驻进程退出时记忆不丢；one-shot 已每 tick 写过，冗余无害）。
         persist(force=True)
+        if timing and timing_stats["ticks"] > 0:
+            n = timing_stats["ticks"]
+            total = sum(timing_stats[k] for k in ("parse", "validate", "decide", "dump", "persist"))
+            print(
+                f"[timing] agent={args.agent} summary ticks={n} "
+                f"startup={startup * 1e3:.0f}ms "
+                f"avg_bytes={timing_stats['bytes'] / n:.0f} "
+                f"avg_parse={(timing_stats['parse'] / n) * 1e3:.2f}ms "
+                f"avg_validate={(timing_stats['validate'] / n) * 1e3:.2f}ms "
+                f"avg_decide={(timing_stats['decide'] / n) * 1e3:.2f}ms "
+                f"avg_dump={(timing_stats['dump'] / n) * 1e3:.2f}ms "
+                f"avg_persist={(timing_stats['persist'] / n) * 1e3:.2f}ms "
+                f"avg_roundtrip={(total / n) * 1e3:.2f}ms",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 def main() -> int:

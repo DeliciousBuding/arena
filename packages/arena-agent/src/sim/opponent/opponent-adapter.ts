@@ -71,6 +71,11 @@ export class OpponentAdapter implements PlanProvider {
     this.label = label;
   }
 
+  /** P4g+：decider 原生支持 prefetch/decideCached（持久桥）时 prefetch 为
+   *  真异步（提交后不等待）——episode 调度优先发起；否则同步计算（假异步）。 */
+  readonly parallelPrefetch: boolean =
+    typeof this.decider.prefetch === "function" && typeof this.decider.decideCached === "function";
+
   decide(input: { readonly state: TickState; readonly policy?: import("../../runtime/macro-policy.ts").MacroPolicy }): Plan {
     const proto = tickStateToProto(input.state, this.selfPlayerId);
     if (!this.decider.ready) return emptyPlanForTick(input.state.tick);
@@ -309,7 +314,15 @@ export class PersistentSubprocessDecider implements ExternalDecider {
    *  结算/记录重叠；结果由 decideCached 取（此时桥已完成，等待≈0）。 */
   prefetch(player: ProtoPlayerState, tick: number): void {
     this.pendingTick = tick;
-    this.bridge.submit(JSON.stringify({ tick, state: player }));
+    const serializedAt = Date.now();
+    const requestJson = JSON.stringify({ tick, state: player });
+    // 临时计时（ARENA_BRIDGE_TIMING=1 时输出；默认关 = 零行为变化）。
+    if (process.env.ARENA_BRIDGE_TIMING === "1") {
+      console.error(
+        `[sync-bridge timing] serializeMs=${Date.now() - serializedAt} reqBytes=${Buffer.byteLength(requestJson)}`,
+      );
+    }
+    this.bridge.submit(requestJson);
   }
 
   /** 取预取结果（P4g）：桥未完成则阻塞等待（10s 超时兜底）。 */

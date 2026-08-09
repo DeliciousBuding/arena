@@ -677,6 +677,10 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
         }),
   };
   const validate = config.validatePlans ?? true;
+  // 临时分阶段计时（ARENA_EPISODE_TIMING=1 时按 tick 输出摘要；默认关 = 零行为变化）。
+  const phaseTiming = process.env.ARENA_EPISODE_TIMING === "1";
+  let timingSum = { decision: 0, settlement: 0, record: 0, prefetch: 0, tick: 0 };
+  let timingTicks = 0;
   // Slot 轮换（W54）：id-sorted tenants → 按站点序循环移位。id 集合不变，
   // validateConfig 已过；privateEventsForPlayer 按 playerId 过滤（顺序无关）。
   // 调用方需把 scenario players[] 按站点序构造（被测者在 site rotatedSlot）。
@@ -734,6 +738,25 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
           .map((tenant) => tenant.id)
       : [],
   );
+  /** P4g+（2026-08-09）：prefetch 提交顺序——parallelPrefetch（真异步桥）在先，
+   *  同步计算（内置 planner）在后：桥请求先发出 → Python 决策与主线程后续的
+   *  同步 prefetch 计算重叠（waaiging 等长尾决策等待显著缩短）。只影响调度
+   *  顺序，每个 tenant 的请求内容/序列不变 → 逐字节一致。 */
+  const pipelinePrefetchOrder = pipeline
+    ? tenants
+        .filter((tenant) => pipelineTenantIds.has(tenant.id))
+        .sort((a, b) => {
+          const aAsync = (planners.get(a.id) as { readonly parallelPrefetch?: boolean } | undefined)
+            ?.parallelPrefetch === true
+            ? 0
+            : 1;
+          const bAsync = (planners.get(b.id) as { readonly parallelPrefetch?: boolean } | undefined)
+            ?.parallelPrefetch === true
+            ? 0
+            : 1;
+          return aAsync - bAsync;
+        })
+    : [];
   /** tenantId → 预取上下文（state/policy）：prefetch 时计算并缓存，decideCached
    *  后 validatePlan/manualOverride 使用（同一观察，串行模式每 tick 一次）。 */
   const prefetchedContext = new Map<string, { readonly state: TickState; readonly policy: MacroPolicy | undefined }>();
@@ -741,11 +764,13 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
   /** 用给定世界（= 下一 tick 的 before 世界）发起所有流水线 tenant 的 prefetch。
    *  观察 + 策略与串行路径同一实现（observeAndPolicy），逐字节同结果；跳过
    *  （decisionTimeoutSkipped）tenant 不发起（其 pending 请求为空，迭代处重算
-   *  观察走空计划降级——请求/响应交替不破）。 */
+   *  观察走空计划降级——请求/响应交替不破）。提交顺序走
+   *  pipelinePrefetchOrder（真异步桥先发，同步计算排后——P4g+ 调度）。 */
   const prefetchNextTick = (nextWorld: SimWorld): void => {
-    for (const tenant of tenants) {
-      if (!pipelineTenantIds.has(tenant.id)) continue;
+    for (const tenant of pipelinePrefetchOrder) {
       if (decisionTimeoutSkipped.has(tenant.id)) continue;
+      // 临时 per-tenant 计时（ARENA_EPISODE_TIMING=1）。
+      const tenantStartedAt = phaseTiming ? performance.now() : 0;
       const observed = observeAndPolicy(
         nextWorld,
         tenant,
@@ -756,6 +781,11 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
       );
       prefetchedContext.set(tenant.id, observed);
       planners.get(tenant.id)!.prefetch!({ state: observed.state, policy: observed.policy });
+      if (phaseTiming) {
+        console.error(
+          `[episode timing] prefetch tenant=${tenant.id} ms=${(performance.now() - tenantStartedAt).toFixed(2)}`,
+        );
+      }
     }
   };
 
@@ -777,6 +807,7 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
       config.onBeforePlanners?.({ tick: before.tick, world: before, rules });
     }
 
+    const decisionStarted = performance.now();
     const settlementPlans = new Map<string, Plan>();
     const plans: Record<string, Plan> = {};
     const planHashes: Record<string, string> = {};
@@ -787,6 +818,8 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
     for (const tenant of tenants) {
       const planner = planners.get(tenant.id)!;
       const pipelineTenant = pipelineTenantIds.has(tenant.id);
+      // 临时 per-tenant 计时（ARENA_EPISODE_TIMING=1）。
+      const tenantStartedAt = phaseTiming ? performance.now() : 0;
       let state: TickState;
       let policy: MacroPolicy | undefined;
       let proposed: Plan;
@@ -818,6 +851,11 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
         } else {
           const decidedAt = performance.now();
           proposed = planner.decideCached!();
+          if (phaseTiming) {
+            console.error(
+              `[episode timing] tenant ${tenant.id} decideCachedMs=${(performance.now() - decidedAt).toFixed(2)}`,
+            );
+          }
           if (decisionBudgetMs !== undefined && performance.now() - decidedAt > decisionBudgetMs) {
             const strikes = (decisionTimeoutStrikes.get(tenant.id) ?? 0) + 1;
             decisionTimeoutStrikes.set(tenant.id, strikes);
@@ -874,7 +912,13 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
       let summary: ValidationSummary = { valid: true, repaired: false, issueCount: 0 };
 
       if (validate) {
+        const validateStartedAt = phaseTiming ? performance.now() : 0;
         const result: ValidationResult = validatePlan(state, proposed);
+        if (phaseTiming) {
+          console.error(
+            `[episode timing] tenant ${tenant.id} validateMs=${(performance.now() - validateStartedAt).toFixed(2)}`,
+          );
+        }
         summary = {
           valid: result.valid,
           repaired: result.repaired,
@@ -895,9 +939,22 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
       plans[tenant.id] = settledPlan;
       planHashes[tenant.id] = hashPlan(settledPlan);
       validations[tenant.id] = summary;
+      // 临时 per-tenant 计时（ARENA_EPISODE_TIMING=1）。
+      if (phaseTiming) {
+        console.error(
+          `[episode timing] tenant ${tenant.id} total=${(performance.now() - tenantStartedAt).toFixed(2)}ms ` +
+            `pipeline=${String(pipelineTenant)}`,
+        );
+      }
     }
 
+    const decisionEnded = performance.now();
     const result = settleTick(world, settlementPlans, context);
+    const settlementEnded = performance.now();
+    if (phaseTiming) {
+      timingSum.decision += decisionEnded - decisionStarted;
+      timingSum.settlement += settlementEnded - decisionEnded;
+    }
     world = result.world;
     for (const tenant of tenants) {
       previousEvents.set(
@@ -905,6 +962,7 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
         privateEventsForPlayer(before, world, tenant.id, result.events),
       );
     }
+    const prefetchStarted = performance.now();
     // P4g 决策流水线：结算完成后立即发起 tick N+1 的观察+决策（prefetch 异步
     // 不阻塞——持久桥在 worker 线程/独立 Python 进程并行决策），把本 tick 剩余
     // 的 ledger/记录/observer 工作叠在 Python 决策之下；tick N+1 开始时
@@ -916,6 +974,8 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
       config.onBeforePlanners?.({ tick: world.tick, world, rules });
       prefetchNextTick(world);
     }
+    const prefetchEnded = performance.now();
+    if (phaseTiming) timingSum.prefetch += prefetchEnded - prefetchStarted;
     for (const feature of result.unsupported) seenUnsupported.add(feature);
     totalEvents += result.events.length;
     // W51: 累计 per-player cost ledger（before+after 合并覆盖被摧毁/新生实体）。
@@ -958,6 +1018,23 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
       }));
     }
 
+    // 临时分阶段计时：tick 级摘要（ARENA_EPISODE_TIMING=1）。
+    if (phaseTiming) {
+      timingSum.record += performance.now() - prefetchEnded;
+      timingSum.tick += performance.now() - tickStarted;
+      timingTicks += 1;
+      if (timingTicks % 100 === 0) {
+        const t = timingSum;
+        console.error(
+          `[episode timing] ticks=${timingTicks} avg_tick=${(t.tick / timingTicks).toFixed(1)}ms ` +
+            `decision=${(t.decision / timingTicks).toFixed(1)}ms ` +
+            `settlement=${(t.settlement / timingTicks).toFixed(1)}ms ` +
+            `prefetch=${(t.prefetch / timingTicks).toFixed(1)}ms ` +
+            `record=${(t.record / timingTicks).toFixed(1)}ms`,
+        );
+      }
+    }
+
     // P4f early-stop：全员无存活（无 Core/无单位）→ 提前终止，后续 tick 不跑。
     // 只省资源，不判胜负（官方"无终局"语义保持）。
     if (config.earlyStop === true && alivePlayerCount(world) === 0) {
@@ -978,6 +1055,19 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
   const perPlayer: Record<string, PlayerCostLedger> = {};
   for (const [playerId, ledger] of costLedgers) {
     perPlayer[playerId] = Object.freeze({ ...ledger });
+  }
+
+  // 临时分阶段计时汇总（ARENA_EPISODE_TIMING=1）。
+  if (phaseTiming && timingTicks > 0) {
+    const t = timingSum;
+    console.error(
+      `[episode timing] TOTAL ticks=${timingTicks} avg_tick=${(t.tick / timingTicks).toFixed(1)}ms ` +
+        `decision=${(t.decision / timingTicks).toFixed(1)}ms ` +
+        `settlement=${(t.settlement / timingTicks).toFixed(1)}ms ` +
+        `prefetch=${(t.prefetch / timingTicks).toFixed(1)}ms ` +
+        `record=${(t.record / timingTicks).toFixed(1)}ms ` +
+        `sum=${((t.decision + t.settlement + t.prefetch + t.record) / timingTicks).toFixed(1)}ms`,
+    );
   }
 
   return {

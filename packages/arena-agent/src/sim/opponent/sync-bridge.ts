@@ -108,6 +108,7 @@ export class PersistentSyncBridge {
    * 等——保底逻辑；10s 超时 fail-fast）。submit 后只能调用一次。
    */
   awaitResponse(): string {
+    const waitStartedAt = Date.now();
     const deadline = Date.now() + DECISION_TIMEOUT_MS;
     while (Date.now() < deadline) {
       Atomics.wait(this.flags, 0, FLAG_BUSY, 200);
@@ -116,6 +117,12 @@ export class PersistentSyncBridge {
         const length = Atomics.load(this.flags, 1);
         const payload = new TextDecoder().decode(this.frame.slice(0, length));
         Atomics.store(this.flags, 0, FLAG_IDLE);
+        // 临时计时（ARENA_BRIDGE_TIMING=1 时输出；默认关 = 零行为变化）。
+        if (process.env.ARENA_BRIDGE_TIMING === "1") {
+          console.error(
+            `[sync-bridge timing] awaitBlockedMs=${Date.now() - waitStartedAt} respBytes=${Buffer.byteLength(payload)}`,
+          );
+        }
         return payload;
       }
       if (flag === FLAG_ERROR) {
@@ -134,8 +141,17 @@ export class PersistentSyncBridge {
   /** 同步往返：发送请求 JSON → 阻塞等待响应 JSON。失败抛错（fail-fast）。
    *  语义与既有行为逐字节一致（submit + awaitResponse 的组合）。 */
   exchange(requestJson: string): string {
+    const startedAt = Date.now();
     this.submit(requestJson);
-    return this.awaitResponse();
+    const response = this.awaitResponse();
+    // 临时计时（ARENA_BRIDGE_TIMING=1 时输出到 stderr；默认关 = 零行为变化）。
+    if (process.env.ARENA_BRIDGE_TIMING === "1") {
+      console.error(
+        `[sync-bridge timing] roundtrip=${Date.now() - startedAt}ms ` +
+          `reqBytes=${Buffer.byteLength(requestJson)} respBytes=${Buffer.byteLength(response)}`,
+      );
+    }
+    return response;
   }
 
   /** 关闭：通知 worker 优雅终止子进程（EOF/哨兵退出窗口内完成状态槽与遥测
