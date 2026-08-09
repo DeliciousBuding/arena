@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import type { Plan, TickState } from "../src/domain/model.ts";
 import type { PlanProvider } from "../src/runtime/decision-types.ts";
-import { hashPlan, runEpisode, type EpisodeConfig } from "../src/sim/harness/episode.ts";
+import { hashPlan, maxFailureStreak, runEpisode, type EpisodeConfig, type EpisodeRecord } from "../src/sim/harness/episode.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = join(here, "..", "src", "sim", "contracts", "rules-v0.11.json");
@@ -102,6 +102,28 @@ test("S7: 1000 Tick 闭环成功", () => {
   assert.equal(result.finalWorld.resolvedTickCount, 1000);
   assert.equal(result.records.length, 1000);
   assert.ok(result.records.every((record) => /^[0-9a-f]{64}$/.test(record.aggregatePlanHash)));
+  // 2026-08-10 sim 死锁检测：failedEventCounts 字段存在且是对象
+  assert.ok(typeof result.records[0]!.failedEventCounts === "object", "failedEventCounts 字段应存在");
+});
+
+// ---------------------------------------------------------------------------
+// 2026-08-10 sim 死锁检测：failedEventCounts + maxFailureStreak
+// ---------------------------------------------------------------------------
+
+test("S7: failedEventCounts 统计失败事件 + maxFailureStreak 检测连续死锁", () => {
+  // 构造人工 records 验证 maxFailureStreak 纯函数逻辑
+  const fakeRecords = [
+    { failedEventCounts: { SHOT_MISSED: 3, UNIT_MOVE_FAILED: 1 } },
+    { failedEventCounts: { SHOT_MISSED: 2, UNIT_MOVE_FAILED: 1 } },
+    { failedEventCounts: { SHOT_MISSED: 1 } }, // UNIT_MOVE_FAILED 断了
+    { failedEventCounts: {} }, // SHOT_MISSED 断了
+    { failedEventCounts: { SHOT_MISSED: 2 } }, // 新 streak
+  ] as unknown as EpisodeRecord[];
+  const streaks = maxFailureStreak(fakeRecords);
+  // SHOT_MISSED: streak 1-3 (3 ticks) + streak 5 (1 tick) → max = 3
+  assert.equal(streaks.SHOT_MISSED, 3, "SHOT_MISSED max streak = 3");
+  // UNIT_MOVE_FAILED: streak 1-2 (2 ticks) → max = 2
+  assert.equal(streaks.UNIT_MOVE_FAILED, 2, "UNIT_MOVE_FAILED max streak = 2");
 });
 
 test("S7: 非法计划真实进入 validator 并被修复", () => {

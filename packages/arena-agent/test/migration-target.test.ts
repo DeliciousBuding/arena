@@ -118,3 +118,34 @@ test("selectTarget：陈旧资源不计入新鲜（富集下限用新鲜窗口�
   const score = scoreTarget({ x: 0, y: 0 }, survey, CONFIG, TICK);
   assert.equal(score.freshResources, 0, "陈旧目击不算新鲜矿");
 });
+
+test("scoreTarget：候选格自身是障碍/资源格 → terrainBlocked 硬性拒绝（t1 生产 139 次 TERRAIN_BLOCKED 实证）", () => {
+  // 饿死兜底候选就是已知矿格（资源格）——旧实现目标=资源格，路径最后一步
+  // 必被引擎拒（CORE_DESTINATION_TERRAIN_BLOCKED）。obstacleCells = 障碍 +
+  // 已知资源格全量。
+  const survey: TargetSurveyInput = {
+    resources: freshResources([[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5], [6, 6], [7, 7], [8, 8], [9, 9], [10, 10], [11, 11], [12, 12]]),
+    enemyCores: [],
+    obstacleCells: [[0, 0]],
+  };
+  const score = scoreTarget({ x: 0, y: 0 }, survey, CONFIG, TICK);
+  assert.equal(score.terrainBlocked, true, "候选自身在障碍/资源格上 = 不可迁入");
+  const selected = selectTarget([{ x: 0, y: 0 }], survey, CONFIG, TICK);
+  assert.equal(selected, null, "地形不可迁入候选必须被过滤");
+});
+
+test("selectTarget：障碍格候选被过滤后可选其余正常候选（饿死兜底不再自撞资源格）", () => {
+  const survey: TargetSurveyInput = {
+    resources: freshResources([[1, 1], [2, 2], [3, 3], [4, 4], [5, 5], [6, 6], [7, 7], [8, 8], [9, 9], [10, 10], [11, 11], [12, 12]]),
+    enemyCores: [],
+    obstacleCells: [[0, 0]],
+  };
+  const selected = selectTarget(
+    [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+    survey,
+    CONFIG,
+    TICK,
+  );
+  assert.notEqual(selected, null, "障碍候选被拒后应选到正常候选");
+  assert.equal(selected!.target.x, 1, "应选中非障碍候选");
+});

@@ -153,6 +153,36 @@ test("shoot_cell：预测格弹道被障碍遮挡 → 不预判开火", () => {
   assert.ok(action.type !== "SHOOT", "障碍遮挡不出 SHOOT");
 });
 
+test("shoot_cell：预测格本身是障碍 → 不开预判枪、走位接敌（t1 生产 79857 实证）", () => {
+  const planner = new SafetyPlanner(CONFIG);
+  // 敌 [4,0] 横线 4 格外：预测 (3,0)，但 (3,0) 本身就是障碍格——敌人一步
+  // 永远走不进去（t1 生产：敌 WORKER [-538,-80] 被障碍列 [-539,-80] 隔开，
+  // 游侠群连开 320+ 枪全 SHOT_MISSED 且被 shoot_cell 提前 return 钉死原地）。
+  // canShoot 只查弹道中间格不查终点，此场景旧实现必然空枪。
+  const plan = planner.decide({
+    state: makeState(1, [enemyVanguard("e1", [4, 0])], new Set([cellKey([3, 0])])),
+    policy: AGGRESSIVE_POLICY,
+  });
+  assert.notEqual(plan.intents["r1"], "shoot_cell", "预测格是障碍不预判开火");
+  const action = plan.unitActions["r1"];
+  assert.ok(action.type !== "SHOOT", "预测格是障碍不出 SHOOT（不打障碍）");
+  assert.equal(action.type, "MOVE", "跳过空枪后游侠走位接敌（不再钉死原地）");
+});
+
+test("shoot_cell：斜向预测格是障碍 → 不开预判枪（生产镜像：敌 (4,3) 隔障碍列）", () => {
+  const planner = new SafetyPlanner(CONFIG);
+  // 生产实况镜像：Ranger [-542,-83] vs 敌 WORKER [-538,-80]（相对 (4,3)），
+  // 预测 (3,3) = [-539,-80] 障碍列——敌无法踏入，旧实现每 tick 空枪。
+  const plan = planner.decide({
+    state: makeState(1, [enemyVanguard("e1", [4, 3])], new Set([cellKey([3, 3])])),
+    policy: AGGRESSIVE_POLICY,
+  });
+  assert.notEqual(plan.intents["r1"], "shoot_cell", "斜向预测格是障碍不预判开火");
+  const action = plan.unitActions["r1"];
+  assert.ok(action.type !== "SHOOT", "斜向预测格是障碍不出 SHOOT");
+  assert.equal(action.type, "MOVE", "斜向障碍场景同样走位接敌");
+});
+
 test("shoot_cell：射程内可见敌 → 优先 precision shoot（不抢预判）", () => {
   const planner = new SafetyPlanner(CONFIG);
   // 敌 Vanguard [2,0] 在射程（横线 2 格）→ precision shoot 打当前位置
@@ -162,4 +192,57 @@ test("shoot_cell：射程内可见敌 → 优先 precision shoot（不抢预判�
   });
   assert.equal(plan.intents["r1"], "shoot");
   assert.deepEqual(plan.unitActions["r1"], { type: "SHOOT", targetId: "e1", expectedCell: [2, 0] });
+});
+
+// ---------------------------------------------------------------------------
+// C1 修复测试（2026-08-10）：静止敌人不预判开火
+// 生产实证 shoot_cell 367 发 → 360 SHOT_MISSED（98% 空枪率），根因是敌方
+// WORKER 站在资源格采集不动，预判格永远空。修复后：敌人在资源格上或
+// enemyHints 确认静止（prevPosition === position）时跳过 cell fire。
+// ---------------------------------------------------------------------------
+
+test("shoot_cell C1：敌人在资源格上 → 不预判开火（采集 WORKER 不动）", () => {
+  const planner = new SafetyPlanner(CONFIG);
+  // 敌 Vanguard [4,0] 横线 4 格，预测 (3,0)——但敌人在资源格上（采集中
+  // 不动），预判格永远空 → 不应预判开火。
+  const state = makeState(1, [enemyVanguard("e1", [4, 0])]);
+  // 在敌人格上放资源格
+  const stateWithResource = { ...state, resourceCells: new Set([cellKey([4, 0])]) };
+  const plan = planner.decide({
+    state: stateWithResource,
+    policy: AGGRESSIVE_POLICY,
+  });
+  assert.notEqual(plan.intents["r1"], "shoot_cell", "敌人在资源格上不预判开火");
+  const action = plan.unitActions["r1"];
+  assert.ok(action.type !== "SHOOT", "资源格上敌人不出 SHOOT（不射空气）");
+  assert.equal(action.type, "MOVE", "跳过空枪后游侠走位接敌");
+});
+
+test("shoot_cell C1：确认静止敌人（二次目击同位置）→ 不预判开火", () => {
+  const planner = new SafetyPlanner(CONFIG);
+  // 第一次 decide：敌 Vanguard [4,0] 横线 4 格 → 首次目击（无 prevPosition）
+  // → 允许预判开火（无证据反证其移动）。同时 world.observe 会记录敌情。
+  const state1 = makeState(1, [enemyVanguard("e1", [4, 0])]);
+  planner.decide({ state: state1, policy: AGGRESSIVE_POLICY });
+
+  // 第二次 decide：敌仍在 [4,0]（静止）→ prevPosition === position
+  // → 确认静止 → 不预判开火。
+  const state2 = makeState(2, [enemyVanguard("e1", [4, 0])]);
+  const plan = planner.decide({ state: state2, policy: AGGRESSIVE_POLICY });
+  assert.notEqual(plan.intents["r1"], "shoot_cell", "确认静止敌人不预判开火");
+  const action = plan.unitActions["r1"];
+  assert.ok(action.type !== "SHOOT", "静止敌人不出 SHOOT（不射空气）");
+  assert.equal(action.type, "MOVE", "跳过空枪后游侠走位接敌");
+});
+
+test("shoot_cell C1 零回归：首次目击移动方向未知 → 仍允许预判开火", () => {
+  const planner = new SafetyPlanner(CONFIG);
+  // 敌 Vanguard [4,0] 横线 4 格，无资源格、无 enemyHints 记忆 → 首次目击
+  // → 允许预判（无证据反证其移动）。
+  const plan = planner.decide({
+    state: makeState(1, [enemyVanguard("e1", [4, 0])]),
+    policy: AGGRESSIVE_POLICY,
+  });
+  assert.equal(plan.intents["r1"], "shoot_cell", "首次目击允许预判开火");
+  assert.deepEqual(plan.unitActions["r1"], { type: "SHOOT", targetId: null, expectedCell: [3, 0] });
 });

@@ -60,7 +60,10 @@ export const VISION_RADIUS: Readonly<Record<UnitType | "CORE", number>> = {
 
 /** 视野遮挡判定：integer supercover 线（与官方 SDK sim/visibility/supercoverLine
  *  及 arena-hero-agent _has_vision_line 同构）。途经格（不含 origin，含 target）
- *  任一为障碍 → 遮挡；target 自身不算遮挡（目标格是资源/单位，非障碍）。 */
+ *  任一为障碍 → 遮挡；target 自身不算遮挡（目标格是资源/单位，非障碍）。
+ *  C4 修复（2026-08-10）：对角过角（nextX===nextY）时官方 supercover 推两个
+ *  角侧格 [x+sx,y] + [x,y+sy]，任一为障碍即遮挡——旧实现只查对角格漏查
+ *  角侧，导致"说可见但实际被角侧障碍挡住"的误判（216 处 brute-force 不一致）。 */
 export function visionLineBlocked(
   origin: Position,
   target: Position,
@@ -88,6 +91,10 @@ export function visionLineBlocked(
       y += sy;
       iy += 1;
     } else {
+      // C4 修复：对角过角时，官方 supercover 先推两个角侧格再推对角格。
+      // 角侧格是途经格（非 target），障碍遮挡视线。
+      if (obstacles.has(cellKey([x + sx, y]))) return true;
+      if (obstacles.has(cellKey([x, y + sy]))) return true;
       x += sx;
       y += sy;
       ix += 1;

@@ -165,3 +165,93 @@ test("StallDetector: 阈值边界 + 恢复后重新计数", () => {
   const secondRound = runTicks(detector, 16, { moveCount: 5, intentCounts: { patrol: 5 } });
   assert.ok(secondRound.length >= 1, "恢复后重新累计 16 tick 再次触发");
 });
+
+// ---------------------------------------------------------------------------
+// 2026-08-10 新增 4 模式：军事互堵 / 空枪空转 / 迁移卡死 / 产兵饿死
+// （与 noProduction 解耦——经济正常也报；数据源 = 结算侧 failedEventCounts）
+// ---------------------------------------------------------------------------
+
+test("StallDetector: military_interlock 触发（军事 MOVE_FAILED 过半 + 无战斗进展，经济正常）", () => {
+  // 生产实证：vanguard_pressure 642 次互堵，经济正常时既有 5 模式全不命中。
+  const detector = new StallDetector();
+  // 4 军事单位，2 个 UNIT_MOVE_FAILED（=ceil(4/2)=2 过半），有 harvest（经济正常），
+  // 无 SHOT_HIT/UNIT_DAMAGED。
+  const events = runTicks(detector, 16, {
+    coreResourceDelta: 2,
+    harvestCount: 1,
+    militaryCount: 4,
+    failedEventCounts: { UNIT_MOVE_FAILED: 2 },
+    shotHitCount: 0,
+  });
+  const interlock = events.filter((e) => e.kind === "military_interlock");
+  assert.equal(interlock.length, 1, "经济正常时军事互堵也应报警");
+  assert.equal(interlock[0]?.streak, 16);
+});
+
+test("StallDetector: military_interlock 不触发（有 SHOT_HIT = 战斗有进展，非死锁）", () => {
+  const detector = new StallDetector();
+  const events = runTicks(detector, 16, {
+    militaryCount: 4,
+    failedEventCounts: { UNIT_MOVE_FAILED: 2 },
+    shotHitCount: 1, // 有命中 = 游侠在有效输出，不是纯互堵
+  });
+  assert.equal(events.filter((e) => e.kind === "military_interlock").length, 0, "有战斗进展不算死锁");
+});
+
+test("StallDetector: shot_missed_spiral 触发（游侠连发空枪无命中）", () => {
+  // 生产实证：shoot_cell 1530 次 + ranger_memory_shot 338 次空枪。
+  const detector = new StallDetector();
+  const events = runTicks(detector, 16, {
+    coreResourceDelta: 2,
+    harvestCount: 1,
+    failedEventCounts: { SHOT_MISSED: 3 },
+    shotHitCount: 0,
+  });
+  const spiral = events.filter((e) => e.kind === "shot_missed_spiral");
+  assert.equal(spiral.length, 1, "持续空枪无命中应报警");
+  assert.equal(spiral[0]?.streak, 16);
+});
+
+test("StallDetector: shot_missed_spiral 不触发（有 SHOT_HIT = 有效压制）", () => {
+  const detector = new StallDetector();
+  const events = runTicks(detector, 16, {
+    failedEventCounts: { SHOT_MISSED: 3, SHOT_HIT: 1 },
+    shotHitCount: 1,
+  });
+  assert.equal(events.filter((e) => e.kind === "shot_missed_spiral").length, 0, "有命中不算空转");
+});
+
+test("StallDetector: migration_stall 触发（CORE_MOVE_START_FAILED 连续）", () => {
+  // 生产实证：139 次 TERRAIN_BLOCKED + 248 次 CELL_UNIT_LIMIT。
+  const detector = new StallDetector();
+  const events = runTicks(detector, 16, {
+    coreResourceDelta: 2,
+    failedEventCounts: { CORE_MOVE_START_FAILED: 1 },
+  });
+  assert.equal(events.filter((e) => e.kind === "migration_stall").length, 1);
+});
+
+test("StallDetector: spawn_stall 触发（CORE_SPAWN_FAILED 连续）", () => {
+  // 生产实证：34 次 spawn 失败（核心格被占/资源不足）。
+  const detector = new StallDetector();
+  const events = runTicks(detector, 16, {
+    coreResourceDelta: 2,
+    harvestCount: 1,
+    failedEventCounts: { CORE_SPAWN_FAILED: 1 },
+  });
+  assert.equal(events.filter((e) => e.kind === "spawn_stall").length, 1);
+});
+
+test("StallDetector: 新 4 模式零回归——failedEventCounts 未提供时不判定", () => {
+  const detector = new StallDetector();
+  // 经济正常 + 无 failedEventCounts（旧调用方）→ 新 4 模式不应触发
+  const events = runTicks(detector, 16, {
+    coreResourceDelta: 2,
+    harvestCount: 1,
+    moveCount: 3,
+  });
+  assert.equal(events.filter((e) =>
+    e.kind === "military_interlock" || e.kind === "shot_missed_spiral" ||
+    e.kind === "migration_stall" || e.kind === "spawn_stall").length, 0,
+    "未提供 failedEventCounts 时新 4 模式不判定（零回归）");
+});

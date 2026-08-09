@@ -986,6 +986,11 @@ export class DeterministicPlanner implements PlanProvider {
     // 否则未分配 worker 会经 patrol 基线的 go_harvest_mem 绕过 Hungarian 唯一性）。
     patrolPlanner.updateConfig({ ...patrolPlanner.config, harvestMemoryMine: false });
     this.planner.updateConfig({ mission: missionConfig });
+    // C6 修复（2026-08-10）：将 resourceHighWater 传播到内部 SafetyPlanner——
+    // coreWantsSpawn 需感知高水位条件才能在 pop≥ceiling 时触发 spawnYield
+    // （满载 worker 让出核心格 → 下 tick SPAWN 不被占格挡掉）。
+    fallbackPlanner.updateConfig({ ...fallbackPlanner.config, resourceHighWater: this.resourceHighWater });
+    patrolPlanner.updateConfig({ ...patrolPlanner.config, resourceHighWater: this.resourceHighWater });
   }
 
   /** 热刷新官方排行榜威胁画像（2026-08-08）：替换式透传内部两个 SafetyPlanner——

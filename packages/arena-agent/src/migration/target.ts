@@ -61,6 +61,8 @@ export interface TargetScore {
   readonly candidate: MigrationPosition;
   /** 总分（资源分 - 安全惩罚 - 未知惩罚 + 方向承诺；越高越好）。 */
   readonly score: number;
+  /** 候选格自身在障碍/资源格上 = Core 无法迁入（硬性拒绝，selectTarget 过滤）。 */
+  readonly terrainBlocked: boolean;
   readonly freshResources: number;
   readonly activeEnemyCores: number;
   readonly knownResources: number;
@@ -91,6 +93,18 @@ export function scoreTarget(
   let freshResources = 0;
   let activeEnemyCores = 0;
   let knownResources = 0;
+
+  // 地形硬门槛（2026-08-10 修复）：候选格自身在障碍/资源格上 = Core 无法
+  // 迁入该格（规则表 RESOURCE/OBSTACLE | Core may migrate: no）。饿死兜底
+  // 候选就是已知矿格（资源格）——旧实现目标=资源格，路径最后一步必被引擎
+  // 拒（CORE_DESTINATION_TERRAIN_BLOCKED，t1 生产实证 139 次 + REPLAN 停滞
+  // 循环）。obstacleCells 由调用方注入 = 障碍 + 已知资源格全量。
+  const terrainBlocked = (survey.obstacleCells ?? []).some(
+    (cell) => cell[0] === candidate.x && cell[1] === candidate.y,
+  );
+  if (terrainBlocked) {
+    reasons.push("目标格为障碍/资源格（Core 不可迁入，硬性拒绝）");
+  }
 
   for (const resource of survey.resources) {
     if (chebyshev(candidate, resource) > config.radius) continue;
@@ -141,6 +155,7 @@ export function scoreTarget(
   return {
     candidate,
     score,
+    terrainBlocked,
     freshResources,
     activeEnemyCores,
     knownResources,
@@ -151,8 +166,8 @@ export function scoreTarget(
 }
 
 /**
- * 候选选择：评分最高且无硬性拒绝（活跃敌核 = 0 且新鲜矿 ≥ 下限）的候选。
- * 无候选通过 → null（调用方 ABORT/换候选集）。
+ * 候选选择：评分最高且无硬性拒绝（地形不可迁入 / 活跃敌核 = 0 且新鲜矿 ≥
+ * 下限）的候选。无候选通过 → null（调用方 ABORT/换候选集）。
  * 首选注入：t2 旁已审安全格（core-rejoin-v1 决策点 2）作为候选集首位。
  */
 export function selectTarget(
@@ -164,6 +179,7 @@ export function selectTarget(
   let best: { readonly target: MigrationPosition; readonly score: TargetScore } | null = null;
   for (const candidate of candidates) {
     const score = scoreTarget(candidate, survey, config, tick);
+    if (score.terrainBlocked) continue; // 硬门槛：目标格可迁入（障碍/资源格不可）
     if (score.activeEnemyCores > 0) continue; // 硬门槛：活跃敌核 = 0
     if (score.freshResources < config.minFreshResources) continue; // 硬门槛：富集下限
     if (best === null || score.score > best.score.score) {

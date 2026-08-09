@@ -143,3 +143,192 @@ test("StallRecovery: 迁移结局 outcome 标记（recovered/failed/expired）",
   assert.equal(expired?.state, "idle");
   assert.equal(expired?.outcome, "expired");
 });
+
+// === 2026-08-10 B6 修复测试：分 kind 成功判据 ===
+// 盲点：军事类死锁触发 recovering 后，经济正常（delta>0）立即假成功——
+// focusRegion=null 对军事互堵/空枪/迁移/spawn 死锁无意义。修复后军事类
+// 用"对应失败事件归零"判成功。以下测试验证不误判 + 正确成功。
+
+test("StallRecovery B6: military_interlock 经济正常不假成功（UNIT_MOVE_FAILED 未归零）", () => {
+  const recovery = new StallRecovery({ recoveryTicks: 128 });
+  recovery.observe([event("military_interlock", 100)], { tick: 100, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(recovery.stateOf(), "recovering");
+  assert.equal(recovery.kindOf(), "military_interlock");
+
+  // 经济正常（有采集）但军事互堵未解除（UNIT_MOVE_FAILED 仍有）→ 不应成功
+  const stillStuck = recovery.observe(noEvents(), {
+    tick: 101,
+    coreResourceDelta: 5,
+    harvestCount: 2,
+    depositCount: 1,
+    failedEventCounts: { UNIT_MOVE_FAILED: 3 },
+    shotHitCount: 0,
+  });
+  assert.equal(stillStuck, null, "军事互堵未解除，不提前退出");
+  assert.equal(recovery.stateOf(), "recovering", "仍在 recovering");
+});
+
+test("StallRecovery B6: military_interlock UNIT_MOVE_FAILED 归零 → 成功", () => {
+  const recovery = new StallRecovery({ recoveryTicks: 128 });
+  recovery.observe([event("military_interlock", 200)], { tick: 200, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+
+  // 互堵解除（UNIT_MOVE_FAILED=0）→ 成功退出（即使经济 delta=0）
+  const recovered = recovery.observe(noEvents(), {
+    tick: 201,
+    coreResourceDelta: 0,
+    harvestCount: 0,
+    depositCount: 0,
+    failedEventCounts: {},
+    shotHitCount: 0,
+  });
+  assert.equal(recovered?.state, "idle");
+  assert.equal(recovered?.outcome, "recovered");
+  assert.equal(recovery.stateOf(), "idle");
+});
+
+test("StallRecovery B6: shot_missed_spiral 经济正常不假成功", () => {
+  const recovery = new StallRecovery({ recoveryTicks: 128 });
+  recovery.observe([event("shot_missed_spiral", 300)], { tick: 300, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+
+  // 经济正常但仍在空枪（SHOT_MISSED>0 且 shotHit=0）→ 不应成功
+  const stillMissing = recovery.observe(noEvents(), {
+    tick: 301,
+    coreResourceDelta: 3,
+    harvestCount: 1,
+    depositCount: 0,
+    failedEventCounts: { SHOT_MISSED: 2 },
+    shotHitCount: 0,
+  });
+  assert.equal(stillMissing, null);
+  assert.equal(recovery.stateOf(), "recovering");
+});
+
+test("StallRecovery B6: shot_missed_spiral shotHitCount>0 → 成功（即使仍有 miss）", () => {
+  const recovery = new StallRecovery({ recoveryTicks: 128 });
+  recovery.observe([event("shot_missed_spiral", 400)], { tick: 400, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+
+  // 有命中（shotHitCount>0）→ 空枪螺旋已破 → 成功（即使 SHOT_MISSED 仍有）
+  const recovered = recovery.observe(noEvents(), {
+    tick: 401,
+    coreResourceDelta: 0,
+    harvestCount: 0,
+    depositCount: 0,
+    failedEventCounts: { SHOT_MISSED: 1 },
+    shotHitCount: 2,
+  });
+  assert.equal(recovered?.state, "idle");
+  assert.equal(recovered?.outcome, "recovered");
+});
+
+test("StallRecovery B6: shot_missed_spiral SHOT_MISSED 归零 → 成功", () => {
+  const recovery = new StallRecovery({ recoveryTicks: 128 });
+  recovery.observe([event("shot_missed_spiral", 500)], { tick: 500, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+
+  const recovered = recovery.observe(noEvents(), {
+    tick: 501,
+    coreResourceDelta: 0,
+    harvestCount: 0,
+    depositCount: 0,
+    failedEventCounts: {},
+    shotHitCount: 0,
+  });
+  assert.equal(recovered?.state, "idle");
+  assert.equal(recovered?.outcome, "recovered");
+});
+
+test("StallRecovery B6: migration_stall CORE_MOVE_START_FAILED 归零 → 成功", () => {
+  const recovery = new StallRecovery({ recoveryTicks: 128 });
+  recovery.observe([event("migration_stall", 600)], { tick: 600, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+
+  // 经济正常但迁移仍失败 → 不成功
+  const stillFailing = recovery.observe(noEvents(), {
+    tick: 601,
+    coreResourceDelta: 4,
+    harvestCount: 2,
+    depositCount: 1,
+    failedEventCounts: { CORE_MOVE_START_FAILED: 1 },
+  });
+  assert.equal(stillFailing, null);
+  assert.equal(recovery.stateOf(), "recovering");
+
+  // 迁移不再失败 → 成功
+  const recovered = recovery.observe(noEvents(), {
+    tick: 602,
+    coreResourceDelta: 0,
+    harvestCount: 0,
+    depositCount: 0,
+    failedEventCounts: {},
+  });
+  assert.equal(recovered?.state, "idle");
+  assert.equal(recovered?.outcome, "recovered");
+});
+
+test("StallRecovery B6: spawn_stall CORE_SPAWN_FAILED 归零 → 成功", () => {
+  const recovery = new StallRecovery({ recoveryTicks: 128 });
+  recovery.observe([event("spawn_stall", 700)], { tick: 700, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+
+  const stillFailing = recovery.observe(noEvents(), {
+    tick: 701,
+    coreResourceDelta: 2,
+    harvestCount: 1,
+    depositCount: 0,
+    failedEventCounts: { CORE_SPAWN_FAILED: 1 },
+  });
+  assert.equal(stillFailing, null);
+  assert.equal(recovery.stateOf(), "recovering");
+
+  const recovered = recovery.observe(noEvents(), {
+    tick: 702,
+    coreResourceDelta: 0,
+    harvestCount: 0,
+    depositCount: 0,
+    failedEventCounts: {},
+  });
+  assert.equal(recovered?.state, "idle");
+  assert.equal(recovered?.outcome, "recovered");
+});
+
+test("StallRecovery B6 零回归: 经济类 kind 仍用 economyRecovered（无 failedEventCounts 兼容）", () => {
+  // focus_exile（经济类）不传 failedEventCounts → 回退到 economyRecovered
+  const recovery = new StallRecovery({ recoveryTicks: 128 });
+  recovery.observe([event("focus_exile", 800)], { tick: 800, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+
+  // 经济恢复 → 成功（不传 failedEventCounts，兼容旧调用方）
+  const recovered = recovery.observe(noEvents(), {
+    tick: 801,
+    coreResourceDelta: 1,
+    harvestCount: 0,
+    depositCount: 0,
+  });
+  assert.equal(recovered?.state, "idle");
+  assert.equal(recovered?.outcome, "recovered");
+});
+
+test("StallRecovery C8: failureRounds 在 recovered 时归零（不累积到 escalating）", () => {
+  // 场景：第一轮失败 → 第二轮成功恢复 → 后续 stall 不应一轮即 escalating
+  const recovery = new StallRecovery({ recoveryTicks: 10, escalateAfterFailures: 2, cooldownTicks: 0 });
+
+  // 第一轮：focus_exile 触发 → 10 tick 未恢复 → 失败（failureRounds=1）
+  recovery.observe([event("focus_exile", 1000)], { tick: 1000, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  for (let tick = 1001; tick < 1010; tick += 1) {
+    recovery.observe(noEvents(), { tick, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  }
+  const firstFail = recovery.observe(noEvents(), { tick: 1010, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(firstFail?.outcome, "failed");
+  assert.equal(recovery.stateOf(), "idle");
+
+  // 第二轮：再次触发 → 成功恢复（failureRounds 应归零）
+  recovery.observe([event("focus_exile", 1011)], { tick: 1011, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  const recovered = recovery.observe(noEvents(), { tick: 1012, coreResourceDelta: 2, harvestCount: 1, depositCount: 0 });
+  assert.equal(recovered?.outcome, "recovered");
+
+  // 第三轮：触发 → 失败一次 → 不应 escalating（failureRounds=1 < 2）
+  recovery.observe([event("focus_exile", 1013)], { tick: 1013, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  for (let tick = 1014; tick < 1023; tick += 1) {
+    recovery.observe(noEvents(), { tick, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  }
+  const thirdFail = recovery.observe(noEvents(), { tick: 1023, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(thirdFail?.state, "idle", "第三轮失败一次不应 escalating（failureRounds 已归零）");
+  assert.equal(thirdFail?.outcome, "failed");
+  assert.equal(recovery.stateOf(), "idle");
+});

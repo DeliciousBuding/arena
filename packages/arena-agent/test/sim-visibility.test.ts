@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 
 import { reduceTurn } from "../src/domain/state-reducer.ts";
 import { cellKey, type Position } from "../src/domain/model.ts";
+import { visionLineBlocked } from "../src/domain/world.ts";
 import { loadRulesManifest } from "../src/sim/contracts/rules-manifest.ts";
 import { projectPlayerState, simTurnLike, supercoverLine, visibleCellSet } from "../src/sim/visibility/visibility.ts";
 import { worldFromScenario } from "../src/sim/world/loaders.ts";
@@ -367,4 +368,53 @@ test("S6: Beacon 坐标恒可见，但状态仅格子可见时给出（fog 补�
   const visibleState = projectPlayerState(visibleWorld, "p1", rules);
   assert.equal(visibleState.champion_beacon.status, "CARRIED");
   assert.equal(visibleState.champion_beacon.carrier_id, uuid(1));
+});
+
+/* ---------------- C4 修复：visionLineBlocked 对角过角侧格遮挡 ---------------- */
+
+test("C4: visionLineBlocked 对角线 [0,0]→[2,2] 角侧障碍 [1,0] → 遮挡", () => {
+  // 官方 supercover [0,0]→[2,2] 过 (1,1) 角时推 [1,0]+[0,1] 两侧格——
+  // [1,0] 有障碍 → 线被遮挡。旧 visionLineBlocked 只查对角格 [1,1]，
+  // 漏查 [1,0] → 误判"可见"（216 处 brute-force 不一致之一）。
+  assert.equal(
+    visionLineBlocked([0, 0], [2, 2], new Set([cellKey([1, 0])])),
+    true,
+    "角侧 [1,0] 有障碍 → 遮挡",
+  );
+});
+
+test("C4: visionLineBlocked 对角线 [0,0]→[2,2] 角侧障碍 [0,1] → 遮挡", () => {
+  // 另一侧角邻格 [0,1] 有障碍 → 同样遮挡
+  assert.equal(
+    visionLineBlocked([0, 0], [2, 2], new Set([cellKey([0, 1])])),
+    true,
+    "角侧 [0,1] 有障碍 → 遮挡",
+  );
+});
+
+test("C4: visionLineBlocked 对角线 [0,0]→[2,2] 无侧障碍 → 不遮挡（零回归）", () => {
+  // 两侧无障碍 → 视线通畅
+  assert.equal(
+    visionLineBlocked([0, 0], [2, 2], new Set()),
+    false,
+    "无障碍 → 不遮挡",
+  );
+});
+
+test("C4: visionLineBlocked 直线 [0,0]→[3,0] 中间障碍 → 遮挡（零回归）", () => {
+  // 非对角线：中间格 [2,0] 有障碍 → 遮挡（历史行为不变）
+  assert.equal(
+    visionLineBlocked([0, 0], [3, 0], new Set([cellKey([2, 0])])),
+    true,
+    "直线中间障碍 → 遮挡",
+  );
+});
+
+test("C4: visionLineBlocked 终点格障碍不算遮挡（零回归）", () => {
+  // 目标格自身的障碍不挡（目标格是资源/单位，非障碍）
+  assert.equal(
+    visionLineBlocked([0, 0], [3, 0], new Set([cellKey([3, 0])])),
+    false,
+    "终点格障碍不算遮挡",
+  );
 });

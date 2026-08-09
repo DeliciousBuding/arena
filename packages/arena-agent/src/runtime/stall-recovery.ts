@@ -57,6 +57,60 @@ function economyRecovered(delta: number, harvestCount: number, depositCount: num
   return delta > 0 || harvestCount > 0 || depositCount > 0;
 }
 
+/** 2026-08-10 B6 修复：分 kind 成功判据。经济类 kind 用 economyRecovered()；
+ *  军事/迁移/spawn 类用"对应失败事件归零"判成功——否则军事死锁触发
+ *  recovering 后因经济正常立即假成功（focusRegion=null 对军事互堵无意义）。
+ *  failedEventCounts 缺省（旧测试兼容）= 视为 0，回退到 economyRecovered。
+ *
+ *  各 kind 对应"失败事件归零"映射：
+ *  - military_interlock → UNIT_MOVE_FAILED（互堵解除 = MOVE 不再失败）
+ *  - shot_missed_spiral → SHOT_MISSED（空枪解除 = 不再 miss，或 shotHitCount>0）
+ *  - migration_stall → CORE_MOVE_START_FAILED（迁移解除 = 不再 START_MOVE 失败）
+ *  - spawn_stall → CORE_SPAWN_FAILED（产兵解除 = 不再 spawn 失败） */
+const MILITARY_KIND_SUCCESS_EVENT: Readonly<Record<string, string>> = {
+  military_interlock: "UNIT_MOVE_FAILED",
+  shot_missed_spiral: "SHOT_MISSED",
+  migration_stall: "CORE_MOVE_START_FAILED",
+  spawn_stall: "CORE_SPAWN_FAILED",
+};
+
+const ECONOMY_KINDS: ReadonlySet<StallKind> = new Set<StallKind>([
+  "cargo_blocked",
+  "no_production",
+  "patrol_only",
+  "focus_exile",
+  "capacity_wait_loop",
+]);
+
+function recoveredForKind(
+  kind: StallKind,
+  obs: {
+    readonly coreResourceDelta: number;
+    readonly harvestCount: number;
+    readonly depositCount: number;
+    readonly failedEventCounts?: Readonly<Record<string, number>>;
+    readonly shotHitCount?: number;
+  },
+): boolean {
+  if (ECONOMY_KINDS.has(kind)) {
+    return economyRecovered(obs.coreResourceDelta, obs.harvestCount, obs.depositCount);
+  }
+  const eventName = MILITARY_KIND_SUCCESS_EVENT[kind];
+  if (eventName === undefined) {
+    return economyRecovered(obs.coreResourceDelta, obs.harvestCount, obs.depositCount);
+  }
+  const counts = obs.failedEventCounts ?? {};
+  const failedCount = counts[eventName] ?? 0;
+  // shot_missed_spiral 特判：检测条件是"SHOT_MISSED>0 且 shotHit===0"。
+  // 恢复成功 = 检测条件不再成立：要么有命中（shotHitCount>0，空枪螺旋
+  // 已破），要么不再 miss（failedCount===0）。两者满足其一即成功。其他
+  // 军事类严格要求对应失败事件归零。
+  if (kind === "shot_missed_spiral") {
+    return (obs.shotHitCount ?? 0) > 0 || failedCount === 0;
+  }
+  return failedCount === 0;
+}
+
 /** escalating 的 all-in 军事覆盖：拆敌 CORE 翻盘（终局自救，非常规策略）。 */
 function escalationPolicy(base: MacroPolicy): MacroPolicy {
   return {
@@ -113,7 +167,16 @@ export class StallRecovery {
    */
   observe(
     events: readonly StallEvent[],
-    obs: { readonly tick: number; readonly coreResourceDelta: number; readonly harvestCount: number; readonly depositCount: number },
+    obs: {
+      readonly tick: number;
+      readonly coreResourceDelta: number;
+      readonly harvestCount: number;
+      readonly depositCount: number;
+      /** 2026-08-10 B6：分 kind 成功判据数据源（军事类用失败事件归零判成功）。
+       *  缺省 = 视为 0，回退到 economyRecovered（旧调用方/测试兼容）。 */
+      readonly failedEventCounts?: Readonly<Record<string, number>>;
+      readonly shotHitCount?: number;
+    },
   ): RecoveryTransition | null {
     const { tick } = obs;
     if (this.state === "idle") {
@@ -132,8 +195,9 @@ export class StallRecovery {
       if (this.activeKind === null || this.startTick === null) {
         return this.resetToIdle(tick);
       }
-      if (economyRecovered(obs.coreResourceDelta, obs.harvestCount, obs.depositCount)) {
-        // 经济恢复 → 提前退出干预（自愈成功），进入冷却。
+      if (recoveredForKind(this.activeKind, obs)) {
+        // 恢复成功（经济类=经济恢复；军事类=对应失败事件归零）→ 提前退出
+        // 干预，进入冷却。
         return this.resetToIdle(tick, "recovered");
       }
       if (tick - this.startTick >= this.recoveryTicks) {
@@ -157,13 +221,19 @@ export class StallRecovery {
   }
 
   /** 状态回 idle + 同类冷却（返回迁移记录）。
-   *  注意：failureRounds 跨会话保留——连续失败升级 escalating 依赖跨轮累计。 */
+   *  failureRounds 在 recovered/expired 时归零（成功恢复或终局尝试结束后
+   *  清账），仅在 failed 时保留累计——连续失败升级 escalating 依赖跨轮
+   *  累计。原设计 failureRounds 永不归零，导致 2 次失败后所有后续 stall
+   *  一轮即 escalating（C8 修复）。 */
   private resetToIdle(tick: number, outcome?: "recovered" | "failed" | "expired"): RecoveryTransition {
     const kind = this.activeKind;
     const previousState = this.state;
     this.state = "idle";
     this.activeKind = null;
     this.startTick = null;
+    if (outcome === undefined || outcome === "recovered" || outcome === "expired") {
+      this.failureRounds = 0;
+    }
     if (kind !== null) {
       this.cooldownUntilTick.set(kind, tick + this.cooldownTicks);
     }
