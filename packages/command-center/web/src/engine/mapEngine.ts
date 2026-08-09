@@ -6,7 +6,7 @@ import { SPRITE, hash2, fmt, shortId, ageText, hexA, EASE_OUT_CUBIC, EASE_OUT_QU
 import { CANVAS_FONT, setCtx, ring, drawMeterBar, drawUnitHealth, drawWorkerCargo, drawCoreOwnerLabel, drawStackBadge } from './canvas.js';
 import { createMinimap } from './minimap.ts';
 let minimap: ReturnType<typeof createMinimap> | null = null; // createMapEngine 时初始化
-import { getJSON } from './api.js';
+import { getJSON, fetchJSONWithETag } from './api.js';
 import { TENANT_COLORS, TENANT_LABEL, DECISION_KIND_CN, EVENT_KIND_CN, TACT_UNIT_BASE_COST, TACT_UNIT_CN, TACT_ACTION_CN, TACT_DIRECTION_ACTIONS, TACT_TARGET_ACTIONS, TACT_STEPS, TACT_RANGER_RAYS, TACT_ACTION_ICON, INTENT_LABEL_CN, intentLabelCn, tactCoreCapacity, tactUnitCost, tactObjectNear, tactObjectAt, tactTerrain, tactHostileAt, tactMoveTargets, tactRangerRange, tactRangerTargets, tactVisibility, tactAvailability } from './tactical.js';
 import { findPath } from './pathfind.ts';
 import { createReplayState, replayAdvance, replayLoad, replayStep, replayToggle, replayCycleSpeed, updateReplayUI, replayDrawLayer as replayDrawImpl } from './replay.js';
@@ -356,7 +356,7 @@ async function poll() {
   // overview/map 可能 >8s，原来 Promise.all 一挂全挂导致"界面卡住/单位冻结"。
   // 成功才覆盖 state，失败保留上一轮数据（地图/单位不闪没）。
   const [oR, mR, iR] = await Promise.allSettled([
-    getJSON('/api/overview', 30000), getJSON('/api/map', 30000), getJSON('/api/intel', 30000),
+    getJSON('/api/overview', 30000), fetchJSONWithETag('/api/map', 30000), getJSON('/api/intel', 30000),
   ]);
   const overview = oR.status === 'fulfilled' ? oR.value : null;
   const map = mR.status === 'fulfilled' ? mR.value : null;
