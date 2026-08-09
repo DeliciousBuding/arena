@@ -1193,7 +1193,11 @@ export async function runTenant(
         const workerDistances = corePosition === undefined
           ? []
           : outcome.state.workers.map((worker) => manhattan(worker.position, corePosition));        const failedEvents = outcome.state.events
-          .filter((event) => event.eventType.endsWith("_FAILED") || event.reasonCode !== null)
+          .filter((event) =>
+            event.eventType.endsWith("_FAILED") ||
+            event.eventType === "SHOT_MISSED" ||
+            event.reasonCode !== null
+          )
           .map((event) => {
             const actorId = event.actorId;
             const priorAction =

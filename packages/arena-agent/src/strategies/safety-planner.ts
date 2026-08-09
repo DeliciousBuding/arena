@@ -79,6 +79,7 @@ import {
   guardHomeCell,
 } from "./safety-planner-helpers.ts";
 import { EMPTY_ROSTER_ID_SET, type AllianceRosterRef } from "../alliance/roster-file.ts";
+import { unitSpawnCost } from "../domain/pricing.ts";
 import {
   chokepointLockPoint,
   enemyReturnPath,
@@ -4419,7 +4420,7 @@ export class SafetyPlanner {
           military < this.config.guardForce
         ? nextMilitary(state, this.config)
         : nextSpawn(state, this.effectiveWorkerTarget, this.config);
-    const cost = unitType === "WORKER" ? 5 : unitType === "VANGUARD" ? 10 : 12;
+    const cost = unitSpawnCost(unitType, state.population);
     const reserve = threatened
       ? this.config.reserveEarly
       : state.resources >= this.config.wealthyThreshold
@@ -4735,7 +4736,7 @@ export class SafetyPlanner {
     const spawnType: UnitType = militaryRatioActive && unitType !== "WORKER"
       ? this.chooseMilitaryByRatio(state, policyMilitaryRatio)
       : unitType;
-    const cost = spawnType === "WORKER" ? 5 : spawnType === "VANGUARD" ? 10 : 12;
+    const cost = unitSpawnCost(spawnType, state.population);
     const reserve = threatened
       ? this.config.reserveEarly
       : state.resources >= this.config.wealthyThreshold
