@@ -62,3 +62,41 @@ test("疏散环全被占满（Cheb 2-5）→ 回退历史 homeCell 四邻（零�
   assert.notEqual(post, null, "疏散环全堵应回退 4 邻");
   assert.equal(chebyshev(core, post!), 1, "回退站 4 邻（homeCell 历史行为）");
 });
+
+test("四角站岗（cornerSpacing）：守位 3-5 格四角优先，2 环完全让出", () => {
+  const core: readonly [number, number] = [0, 0];
+  const obstacles = new Set<string>();
+  // 前 12 个候选（3-5 环四角）全部应在 3-5 格、绝不落 2 环
+  for (let index = 0; index < 12; index += 1) {
+    const post = guardHomeCell(core, obstacles, index, undefined, true);
+    assert.notEqual(post, null, `cornerSpacing index ${index} 应有守位`);
+    const distance = chebyshev(core, post!);
+    assert.ok(distance >= 3 && distance <= 5, `四角站岗应在 3-5 格: ${JSON.stringify(post)}`);
+    // 四角优先：前 12 个（3-5 环四角）都该是 |dx|==|dy| 的对角位
+    assert.equal(
+      Math.abs(post![0]),
+      Math.abs(post![1]),
+      `前 12 候选应为四角对角位: ${JSON.stringify(post)}`,
+    );
+  }
+});
+
+test("四角站岗（cornerSpacing）：index 0 首选 3 环四角（[3,3]），不落 2 环", () => {
+  const core: readonly [number, number] = [0, 0];
+  const post = guardHomeCell(core, new Set(), 0, undefined, true);
+  assert.deepEqual(post, [3, 3], "cornerSpacing index 0 应首选 3 环对角（确定性）");
+  assert.notDeepEqual(post, [-2, -2], "2 环（Chebyshev 2）完全让出");
+});
+
+test("四角站岗（cornerSpacing）：3-5 环全堵 → 回退 4 邻（兜底）", () => {
+  const core: readonly [number, number] = [0, 0];
+  const obstacles = new Set<string>();
+  for (let x = -5; x <= 5; x += 1) {
+    for (let y = -5; y <= 5; y += 1) {
+      if (Math.max(Math.abs(x), Math.abs(y)) >= 3) obstacles.add(cellKey([x, y]));
+    }
+  }
+  const post = guardHomeCell(core, obstacles, 0, undefined, true);
+  assert.notEqual(post, null, "3-5 环全堵应回退");
+  assert.equal(chebyshev(core, post!), 1, "回退站 4 邻（homeCell 历史行为）");
+});

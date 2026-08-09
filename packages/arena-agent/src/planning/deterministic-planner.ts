@@ -389,6 +389,21 @@ const WORKER_SPAWN_RESERVE = 2;
 /** 资源高水位消费线（2026-08-10 用户理念）：150 = 顶级兑换码门槛，够用即可；
  *  超出部分花掉造单位。资源 >= 该值时强制 SPAWN（防 Core 容量顶格死锁）。 */
 const RESOURCE_HIGH_WATER = 150;
+/** 军事危机底线（2026-08-10 用户裁决升级"守卫起码 8 个"）：4V+4R = 8。
+ *  军事单位（Vanguard+Ranger）少于该值 = 危机 → 紧急爆兵（无视 reserve/
+ *  水位/ceiling，按 4V+4R 编成补缺口）。 */
+const EMERGENCY_MILITARY_FLOOR = 8;
+/** 危机爆兵的 Vanguard 目标（4V+4R 编成）：V < 4 先补 Vanguard（抗线肉盾），
+ *  V≥4 后产 Ranger（火力）——四角各配 1 前锋 1 游侠（用户裁决）。 */
+const EMERGENCY_VANGUARD_TARGET = 4;
+/** 危机爆兵的 worker 起步门（2026-08-10）：workers < 该值 = 冷启动期——
+ *  先按正常算法产 worker（工人军事均衡，用户裁决"按之前算法"），工人起步
+ *  后军事不足才紧急爆兵（防冷启动只产兵不产工人）。 */
+const EMERGENCY_WORKER_GATE = 4;
+/** 容量硬顶余量（2026-08-10 数学防死锁）：res ≥ max(10, pop×5) − 15 时强制
+ *  消费最便宜的（Worker→Vanguard→Ranger）——pop<30 时容量 <150 高水位线
+ *  管不到，硬顶保证任何人口段都不顶满 Core 容量（DEPOSIT_FAILED 死锁）。 */
+const CORE_CAPACITY_MARGIN = 15;
 /**
  * 无 policy 时的默认补员目标（2026-08-06 扩编主动性优化）：原恢复地板 2 使
  * solo 3 worker 起步即永不补员（res 闲置）；workerTarget 梯度实验（3 seeds）：
@@ -527,33 +542,14 @@ export function selectDeterministicCoreAction(
     // 不再用 base 价预算——旧固定价导致 pop≥21 后连串 INSUFFICIENT_RESOURCES
     // 失败（t1 67452-67478 实证）。人口超上限（默认 20 = 动态价线）不再产兵。
     const spawnCosts = unitSpawnCosts(state.population);
-    // 资源高水位消费（2026-08-10 生产实证 t1 死锁根因）：pop≥ceiling 后所有
-    // 正常 SPAWN 分支关闭 → 资源囤积到 Core 容量上限（max(10, pop×5)）→
-    // DEPOSIT_FAILED 满载 worker 卡 Core 格 → 经济死锁，需人工 override spawn
-    // 解锁。用户理念：150（顶级兑换码门槛）够用即可，超出部分花掉造单位。
-    // 优先级高于 populationCeiling / 军事配比（死锁兜底，正常策略层的 ROI
-    // 保护不适用）；价格按动态价；首选军事（交替），买不起回退 Worker，
-    // 仍买不起则本 tick 让位（下 tick 重试）。
-    if (resourceHighWater > 0 && state.resources >= resourceHighWater) {
-      const unitType: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
-      if (state.resources >= spawnCosts[unitType]) {
-        return {
-          action: { type: "SPAWN", unitType },
-          intent: "spawn_high_water_spend",
-          surgeActive: active,
-        };
-      }
-      if (state.resources >= spawnCosts.WORKER) {
-        return {
-          action: { type: "SPAWN", unitType: "WORKER" },
-          intent: "spawn_high_water_worker",
-          surgeActive: active,
-        };
-      }
-    }
-    if (state.population >= populationCeiling) {
-      return { action: null, intent: null, surgeActive: active };
-    }
+    // 威胁感知（官方 _control_core 对照）：可见战斗单位（VANGUARD/RANGER）
+    // 距 Core <=3 格 = 射程内威胁——防御产兵触发条件。
+    const coreThreatened = state.visibleEnemies.some(
+      (enemy) =>
+        enemy.kind === "UNIT" &&
+        enemy.unitType !== "WORKER" &&
+        manhattan(enemy.position, core.position) <= THREAT_SPAWN_DISTANCE,
+    );
     // Core 格被空载/非 Worker 单位占位时阻塞生成（SPAWN 会叠加容量）；
     // 满载 Worker 是"卸货等待"不阻塞（资源满时 DEPOSIT 暂不合法，但 SPAWN
     // 消耗资源后立即可卸——资源满 + 占格 + 无法卸货会形成永久经济死锁）。
@@ -563,15 +559,77 @@ export function selectDeterministicCoreAction(
         unit.position[1] === core.position[1] &&
         !(unit.unitType === "WORKER" && unit.cargo > 0),
     ).length;
-    // 威胁感知（官方 _control_core 对照）：可见战斗单位（VANGUARD/RANGER）
-    // 距 Core <=3 格 = 射程内威胁——防御产兵触发条件。
-    const coreThreatened = state.visibleEnemies.some(
-      (enemy) =>
-        enemy.kind === "UNIT" &&
-        enemy.unitType !== "WORKER" &&
-        manhattan(enemy.position, core.position) <= THREAT_SPAWN_DISTANCE,
-    );
     if (permanentOccupantsOnCore === 0) {
+      const militaryCount = state.vanguards.length + state.rangers.length;
+      // P1 军事危机爆兵（2026-08-10 用户裁决"军事单位减少太多才紧急爆兵，
+      // 守卫起码 8 个 = 4V+4R"）：军事 < 8（且 worker 已起步 >=4，冷启动先
+      // 按正常算法产 worker——工人军事均衡）或 可见威胁缺 Vanguard → 无视
+      // reserve/水位/ceiling 全力产兵——按 4V+4R 编成补缺口（V<4 产
+      // Vanguard 抗线肉盾，V≥4 产 Ranger 火力）。军事归零=裸奔（t2 77003
+      // 被拆教训）；资源不足则让位（下 tick 重试）。放 popCeiling 检查前
+      // （危机是生存行为，与占位检查同级——满载 worker 卡 Core 时同样解锁）。
+      if (
+        (militaryCount < EMERGENCY_MILITARY_FLOOR && state.workers.length >= EMERGENCY_WORKER_GATE) ||
+        (coreThreatened && state.vanguards.length < DEFENSE_VANGUARD_TARGET)
+      ) {
+        const unitType: "VANGUARD" | "RANGER" =
+          state.vanguards.length < EMERGENCY_VANGUARD_TARGET ? "VANGUARD" : "RANGER";
+        if (state.resources >= spawnCosts[unitType]) {
+          return {
+            action: { type: "SPAWN", unitType },
+            intent: "spawn_emergency_military",
+            surgeActive: active,
+          };
+        }
+      }
+      // P2 资源高水位消费（2026-08-10 生产实证 t1 死锁根因 + 用户理念"150
+      // （顶级兑换码门槛）够用即可，超出部分花掉造单位"）：pop≥ceiling 后
+      // 正常 SPAWN 分支关闭 → 资源囤积到 Core 容量上限（max(10, pop×5)）→
+      // DEPOSIT_FAILED 满载 worker 卡 Core 格 → 经济死锁。优先级高于
+      // populationCeiling / 军事配比（死锁兜底）；价格按动态价；首选军事
+      // （交替），买不起回退 Worker。
+      if (resourceHighWater > 0 && state.resources >= resourceHighWater) {
+        const unitType: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
+        if (state.resources >= spawnCosts[unitType]) {
+          return {
+            action: { type: "SPAWN", unitType },
+            intent: "spawn_high_water_spend",
+            surgeActive: active,
+          };
+        }
+        if (state.resources >= spawnCosts.WORKER) {
+          return {
+            action: { type: "SPAWN", unitType: "WORKER" },
+            intent: "spawn_high_water_worker",
+            surgeActive: active,
+          };
+        }
+      }
+      // P3 容量硬顶（2026-08-10 数学防死锁）：res 接近 Core 容量上限
+      // （max(10, pop×5)）时强制消费最便宜的（Worker→Vanguard→Ranger）——
+      // pop<30 时容量 <150 高水位线管不到，硬顶保证任何人口段都不顶满容量
+      // （DEPOSIT_FAILED 死锁的绝对防线）。作为**兜底**放在正常分支之后
+      // （含 popCeiling 停产分支）：正常策略能产时保持原有优先级/intent
+      // （零回归），只有正常停产且容量将满时才介入。
+      const coreCapacity = Math.max(10, state.population * 5);
+      const capacitySpend = (): ReturnType<typeof selectDeterministicCoreAction> => {
+        if (state.resources < coreCapacity - CORE_CAPACITY_MARGIN) {
+          return { action: null, intent: null, surgeActive: active };
+        }
+        for (const unitType of ["WORKER", "VANGUARD", "RANGER"] as const) {
+          if (state.resources >= spawnCosts[unitType]) {
+            return {
+              action: { type: "SPAWN", unitType },
+              intent: "spawn_capacity_spend",
+              surgeActive: active,
+            };
+          }
+        }
+        return { action: null, intent: null, surgeActive: active };
+      };
+      if (state.population >= populationCeiling) {
+        return capacitySpend();
+      }
       const surgeOn = accumulateThreshold > 0 && active;
       if (surgeOn) {
         // 爆兵期：全力产兵（交替 VANGUARD/RANGER，不受 militaryRatio 限制）
@@ -701,6 +759,9 @@ export function selectDeterministicCoreAction(
           }
         }
       }
+      // P3 容量硬顶兜底（正常分支全不产时）：workers 达标/无军事需求且
+      // res 接近 Core 容量 → 强制消费最便宜的（防 DEPOSIT_FAILED 死锁）。
+      return capacitySpend();
     }
   }
   return { action: null, intent: null, surgeActive: active };

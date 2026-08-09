@@ -210,12 +210,19 @@ export function homeCell(core: Position, obstacles: ReadonlySet<string>, index =
  * 实证：守卫站核心行进方向前方格 → 引擎容量拒 → 迁移停滞）。守卫守位
  * 优先核心外环（Chebyshev 2-3，四角对角位优先），既保持拱卫距离（预警/
  * 拦截）又让出 4 邻通道；外环全堵才回退历史 homeCell 四邻（零回归兜底）。
+ *
+ * cornerSpacing（guard-corner-spacing-v1，2026-08-10 用户裁决"近卫军分散
+ * 核心四角 3-5 格站岗，不堵 2 格内"）：2 环（Chebyshev 2）完全让出，守位
+ * 从 3 环四角起步（→4 环四角 →5 环四角 → 三环四轴 → 近轴补充），四角
+ * 对角位优先——拱卫距离更远（3-5 格），核心周边完全清空（核心移动/卸货
+ * 通道 + 工人往返无阻挡）。迁移期疏散仍走历史 ringOrder（零回归）。
  */
 export function guardHomeCell(
   core: Position,
   obstacles: ReadonlySet<string>,
   index = 0,
   avoid?: ReadonlySet<string>,
+  cornerSpacing = false,
 ): Position | null {
   // 疏散环顺序（2026-08-09 迁移实证扩展）：2 环四角 → 2 环四轴 → 3 环四角 →
   // 3 环四轴 → 4 环 → 5 环（Chebyshev）。迁移激活期（LEG_MOVE）军事编队全体
@@ -237,8 +244,26 @@ export function guardHomeCell(
     [-5, -2], [5, -2], [-5, 2], [5, 2],
     [-2, -5], [2, -5], [-2, 5], [2, 5],
   ];
-  for (let offset = 0; offset < ringOrder.length; offset += 1) {
-    const [dx, dy] = ringOrder[(index + offset) % ringOrder.length]!;
+  // 四角站岗环（guard-corner-spacing-v1）：3 环四角 → 4 环四角 → 5 环四角
+  // → 3 环四轴 → 4 环四轴 → 5 环四轴 → 近轴补充（大编队容量，Chebyshev
+  // 3-5 且与角位不共线不重叠）。2 环完全让出。
+  const cornerRingOrder: readonly Position[] = [
+    [3, 3], [-3, 3], [3, -3], [-3, -3],
+    [4, 4], [-4, 4], [4, -4], [-4, -4],
+    [5, 5], [-5, 5], [5, -5], [-5, -5],
+    [3, 0], [0, 3], [-3, 0], [0, -3],
+    [4, 0], [0, 4], [-4, 0], [0, -4],
+    [5, 0], [0, 5], [-5, 0], [0, -5],
+    [3, 1], [3, -1], [-3, 1], [-3, -1],
+    [1, 3], [1, -3], [-1, 3], [-1, -3],
+    [4, 2], [4, -2], [-4, 2], [-4, -2],
+    [2, 4], [2, -4], [-2, 4], [-2, -4],
+    [5, 2], [5, -2], [-5, 2], [-5, -2],
+    [2, 5], [2, -5], [-2, 5], [-2, -5],
+  ];
+  const order = cornerSpacing ? cornerRingOrder : ringOrder;
+  for (let offset = 0; offset < order.length; offset += 1) {
+    const [dx, dy] = order[(index + offset) % order.length]!;
     const cell: Position = [core[0] + dx, core[1] + dy];
     if (obstacles.has(cellKey(cell))) continue;
     if (avoid !== undefined && avoid.has(cellKey(cell))) continue;

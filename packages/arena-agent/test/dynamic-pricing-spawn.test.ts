@@ -88,12 +88,15 @@ test("selectDeterministicCoreAction：pop≥21 用动态价——base 价可负�
 });
 
 test("selectDeterministicCoreAction：populationCeiling=20 → pop≥20 不产（对齐动态价线）", () => {
-  const state = makeState(21, 100, 12, 5, 2);
+  // military=8（4V+4R 守卫编成已足，P1 危机爆兵不触发）+ res=80（低于
+  // P3 硬顶线 105-15=90，P3 兜底不触发）→ ceiling 语义独立验证。
+  // workers=13（units 总数 21 = population，占比 8/21 < 0.4 触发 needMilitary）
+  const state = makeState(21, 80, 13, 4, 4);
   const decision = selectDeterministicCoreAction(state, null, { posture: "aggressive", workerTarget: 12, militaryRatio: 0.4, focusRegion: null, attackPriority: null }, 0.5, 0, false, 2, 20);
   assert.equal(decision.action, null, "pop 21 ≥ ceiling 20 → 不产");
-  // 缺省（Infinity）= 历史行为：不设上限（动态价预算 + 资源 100 可负担 → 产）
+  // 缺省（Infinity）= 历史行为：不设上限（动态价预算 + 资源 80 可负担 → 产）
   const decisionDefault = selectDeterministicCoreAction(state, null, { posture: "aggressive", workerTarget: 12, militaryRatio: 0.4, focusRegion: null, attackPriority: null }, 0.5, 0, false, 2);
-  assert.ok(decisionDefault.action !== null && decisionDefault.action.type === "SPAWN", "缺省上限 + pop21 + 资源 100 → 动态价可负担，产兵（历史行为零回归）");
+  assert.ok(decisionDefault.action !== null && decisionDefault.action.type === "SPAWN", "缺省上限 + pop21 + 资源 80 → 动态价可负担，产兵（历史行为零回归）");
 });
 
 test("sim/contracts pricing 与 domain 共用公式：pop 24 RANGER=16、pop 25 VANGUARD=13（live 实证对照）", () => {

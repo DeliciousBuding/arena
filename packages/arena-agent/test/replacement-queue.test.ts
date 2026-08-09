@@ -301,23 +301,23 @@ test("W12 出队：队列空 → 短路返回原对象", () => {
 // 3. deterministic-planner：产兵优先级 + 价格窗口
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("W12 产兵：Vanguard 缺口 → 优先补 Vanguard（覆盖配比选 Ranger）", () => {
-  // workers=12（=workerTarget）→ needMilitary 分支：2V+0R、ratio 0.4 →
-  // nextMilitaryType 选 RANGER（ceil(3*0.4)=2，vanguards=2 不<2）。
-  // 但队列 VANGUARD=1 → 替补优先 → 产 VANGUARD（覆盖配比）。
+test("W12 产兵：Vanguard 缺口 → 优先补 Vanguard（P1 危机爆兵接管，2026-08-10 用户裁决）", () => {
+  // workers=12（=workerTarget）、2V+0R：P1（military 2 < 8、V 2 < 4）→
+  // 产 VANGUARD（intent spawn_emergency_military）。旧替补语义（缺口优先）
+  // 与 P1 目标一致，P1 优先级更高。
   const state = makeState(20, 12, 2, 0);
   const decision = decide(state, QUEUE_VANGUARD, true);
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
-  assert.equal(decision.intent, "spawn_vanguard_replacement");
+  assert.equal(decision.intent, "spawn_emergency_military");
 });
 
-test("W12 产兵：Ranger 缺口 → 优先补 Ranger（覆盖配比选 Vanguard）", () => {
-  // workers=12 → needMilitary：0V+2R、ratio 0.4 → nextMilitaryType 选 VANGUARD
-  // （ceil(3*0.4)=2，vanguards=0<2）。但队列 RANGER=1 → 替补优先 → 产 RANGER。
+test("W12 产兵：Ranger 缺口 → P1 接管（V<4 补 Vanguard，4V+4R 编成优先）", () => {
+  // 0V+2R、workers=12：P1（military 2 < 8、V 0 < 4）→ 产 VANGUARD。
+  // 旧替补语义（Ranger 缺口优先）被 P1 的 4V+4R 编成覆盖。
   const state = makeState(20, 12, 0, 2);
   const decision = decide(state, QUEUE_RANGER, true);
-  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "RANGER" });
-  assert.equal(decision.intent, "spawn_ranger_replacement");
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(decision.intent, "spawn_emergency_military");
 });
 
 test("W12 价格窗口：资源不足缺口兵种 → 等待，不产 Worker（价格档等待）", () => {
@@ -329,13 +329,13 @@ test("W12 价格窗口：资源不足缺口兵种 → 等待，不产 Worker（�
   assert.equal(decision.intent, "replacement_price_window_ranger");
 });
 
-test("W12 价格窗口：资源够缺口兵种 → 产缺口兵种（豁免 reserve，纯成本门禁）", () => {
-  // res=12（=Ranger 纯成本 12），spawnReserve=2 → cost+reserve=14 > 12。
-  // 替补豁免 reserve（生存行为只看纯成本）→ res>=12 即产 Ranger。
+test("W12 价格窗口：资源够缺口兵种 → 产缺口兵种（P1 接管：V<4 补 Vanguard）", () => {
+  // res=12、workers=5、0 军事：P1（military 0 < 8、V 0 < 4）→ 产 VANGUARD
+  // （纯成本 10 ≤ 12）。旧替补语义（Ranger 缺口）被 P1 4V+4R 编成覆盖。
   const state = makeState(12, 5, 0, 0);
   const decision = decide(state, QUEUE_RANGER, true);
-  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "RANGER" });
-  assert.equal(decision.intent, "spawn_ranger_replacement");
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(decision.intent, "spawn_emergency_military");
 });
 
 test("W12 价格窗口：资源不足 Vanguard（10）→ 等待，不产低档替代品", () => {
@@ -359,7 +359,7 @@ test("W12 优先级：经济地板未满足（workers<2）→ 不触发替补（
   );
 });
 
-test("W12 优先级：militaryRatio=0 → 不触发替补（走 worker 扩编，纯经济）", () => {
+test("W12 优先级：militaryRatio=0 → P1 接管（守卫底线不随配比关闭，2026-08-10 用户裁决）", () => {
   const noRatio = { ...AGGRESSIVE, militaryRatio: 0 };
   const state = makeState(20, 5, 0, 0);
   const decision = selectDeterministicCoreAction(
@@ -367,13 +367,10 @@ test("W12 优先级：militaryRatio=0 → 不触发替补（走 worker 扩编，
     Number.POSITIVE_INFINITY, false, false, false,
     QUEUE_VANGUARD, true,
   );
-  // militaryRatio=0 → 替补分支不触发 → worker 扩编（workers=5 < workerTarget=12）
-  assert.equal(decision.action?.type, "SPAWN");
-  assert.equal(
-    (decision.action as { unitType: UnitType }).unitType,
-    "WORKER",
-    "militaryRatio=0 → 纯 worker 扩编，替补不触发",
-  );
+  // 旧语义：militaryRatio=0 → 替补不触发 → worker 扩编。新裁决：军事 < 8
+  // 且 worker 起步 → P1 危机爆兵补 Vanguard（与 militaryRatio 无关）。
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(decision.intent, "spawn_emergency_military");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -397,16 +394,16 @@ test("W12 零回归：变体关 → 不入队、产兵顺序不变（即使队�
   const decision = decide(state, QUEUE_VANGUARD, false);
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
   assert.notEqual(decision.intent, "spawn_vanguard_replacement", "变体关不产替补 intent");
-  assert.equal(decision.intent, "spawn_vanguard_military_ratio");
+  assert.equal(decision.intent, "spawn_emergency_military", "P1 危机爆兵接管（2026-08-10 用户裁决）");
 });
 
 test("W12 零回归：变体关 + 队列空 → 与既无队列又无关完全一致", () => {
-  // workers=12、2V+0R：needMilitary → nextMilitaryType 选 RANGER
-  // （ceil(3*0.4)=2，vanguards=2 不<2）。队列空 → 替补跳过 → RANGER。
+  // workers=12、2V+0R：P1（military 2 < 8、V 2 < 4）→ 产 VANGUARD——
+  // 与队列/变体无关（P1 优先级最高，两路一致）。
   const state = makeState(20, 12, 2, 0);
   const enabled = decide(state, EMPTY_REPLACEMENT_QUEUE, true);
   const disabled = decide(state, EMPTY_REPLACEMENT_QUEUE, false);
   assert.deepEqual(enabled.action, disabled.action);
   assert.equal(enabled.intent, disabled.intent);
-  assert.deepEqual(enabled.action, { type: "SPAWN", unitType: "RANGER" });
+  assert.deepEqual(enabled.action, { type: "SPAWN", unitType: "VANGUARD" });
 });

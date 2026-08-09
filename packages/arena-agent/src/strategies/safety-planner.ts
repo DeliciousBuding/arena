@@ -868,7 +868,7 @@ export class SafetyPlanner {
       return squad !== undefined && squad.role === "HOME_DEFENSE";
     }
     if (this.config.homeGuardSquad !== true) return false;
-    const count = this.config.homeGuardRangers ?? 1;
+    const count = this.config.homeGuardRangers ?? 4;
     if (count <= 0) return false;
     if (state.core === null) return false;
     const corePosition = state.core.position;
@@ -3266,19 +3266,22 @@ export class SafetyPlanner {
       // 前线的单位（t1 生产实证 dist=92 守卫，名义留守实际裸奔）。距离选择
       // 保证"留守最近的兵、远征用最远的兵"。Ranger 守卫在 decideRanger。
       const reserveGuards = (this.config.homeGuardSquad === true || this.config.tacticalSquads === true)
-        ? this.config.homeGuardVanguards ?? 2
+        ? this.config.homeGuardVanguards ?? 4
         : this.adaptiveReserveGuards(state);
       const reserveGuard = state.core !== null && this.isHomeGuardUnit(state, unit, reserveGuards);
       if (reserveGuard) {
         // guard-spacing-v1（2026-08-09 用户裁决）：守卫站核心外环（Chebyshev
         // 2-3 四角优先），4 邻格让给核心移动/worker 卸货通道——贴脸站位会把
         // 核心堵死（迁移实证：守卫站核心行进方向前方格 → 引擎容量拒 → 停滞）。
+        // guard-corner-spacing-v1（2026-08-10 用户裁决"近卫军分散核心四角
+        // 3-5 格站岗，不堵 2 格内"）：cornerSpacing=true → 2 环完全让出，
+        // 守位从 3 环四角起步（3-5 环四角优先）。
         // migration-lane-v1：迁移激活期额外避开核心路径前方 3 格（核心将
         // 踩过的格不能被占——t1 实证守卫站路径前方对角格 → START_FAILED）。
         const avoid = this.migrationMoving ? this.migrationPathAhead(state.core.position) : undefined;
         const home = state.core === null
           ? null
-          : guardHomeCell(state.core.position, militaryObstacles, index, avoid)
+          : guardHomeCell(state.core.position, militaryObstacles, index, avoid, true)
             ?? (this.config.coreClearance === true
               ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
               : state.core.position);
@@ -3974,9 +3977,11 @@ export class SafetyPlanner {
     // 分支在上方已优先（有敌就开火、家被威胁就回防），这里只拦截"无威胁时的
     // 外出分支"。兵力不足（rangers ≤ 守卫数）时全部守家——家不空防优先。
     if (this.isHomeGuardRanger(state, unit)) {
+      // guard-corner-spacing-v1（2026-08-10 用户裁决）：Ranger 守卫同样站
+      // 核心四角 3-5 格外环（cornerSpacing=true），2 格内完全让出。
       const guardPost = state.core === null
         ? null
-        : guardHomeCell(state.core.position, militaryObstacles, index, this.migrationPathAhead(state.core.position));
+        : guardHomeCell(state.core.position, militaryObstacles, index, this.migrationPathAhead(state.core.position), true);
       if (guardPost !== null && !samePosition(unit.position, guardPost)) {
         const direction = stepToward(unit.position, guardPost, militaryObstacles);
         if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_home_guard"); return; }
