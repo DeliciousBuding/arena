@@ -303,6 +303,19 @@ export interface SafetyPlannerConfig {
   /** 守家 Ranger 编成数（homeGuardSquad 生效，默认 1）。 */
   readonly homeGuardRangers?: number;
   /**
+   * P1 战术小队编成（tactical-squads-v1，2026-08-09，默认关）：给军事单位落
+   * **稳定 squad 身份**（HOME_DEFENSE 2V+1R + 多个 STRIKE 2V+1R + MOBILE
+   * 余量，复用 local-fleet 合约，跨 tick sticky）——替代"每 tick 全局瞬时
+   * 排序"的漂移语义。开启后：
+   *  - 守家编成 = HOME_DEFENSE squad（sticky，成员身份不随移动漂移；
+   *    替代 homeGuardSquad 的每 tick 距离重排）；
+   *  - rally-assault 集结位按 squad slot 分散（不同小队不同集结位，杜绝
+   *    全员共享单一 rally cell / 同一路径目标）；
+   *  - 家防不被借空（home squad 成员绝不参与 STRIKE 借调）。
+   * 默认 false = 历史行为（每 tick 瞬时排序 + 单一集结位，零回归）。
+   */
+  readonly tacticalSquads?: boolean;
+  /**
    * worker 遭遇撤离（v0.3，实验，B10 竞品 "Scout And Observer Response"
    * 对照）：空 worker 视野内（3 格）出现战斗单位（VANGUARD/RANGER）时，
    * 撤离回 Core（EVADE+RETURN 合一——向 Core 步进即远离敌人，敌占格

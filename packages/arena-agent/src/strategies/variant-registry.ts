@@ -285,6 +285,13 @@ export const VARIANT_SAFETY_CONFIG: Readonly<Record<string, Partial<SafetyPlanne
       homeGuardRangers: 1,
     }),
     /**
+     * 战术小队编成（2026-08-09，tactical-squads-v1，P1）：稳定 squad 身份
+     * （HOME_DEFENSE 2V+1R sticky + STRIKE 2V+1R ×N + MOBILE 余量，复用
+     * local-fleet 合约）+ rally 集结位按小队 slot 分散（不同小队不同集结位，
+     * 杜绝全员共享单一 rally cell/同一路径目标）+ 家防不被借空。默认关零回归。
+     */
+    "tactical-squads-v1": Object.freeze({ tacticalSquads: true }),
+    /**
      * 人口上限 20→30（2026-08-08 用户裁决，t1 恢复综合扩张/余额 150）：populationCeiling
      * 是产兵硬门（deterministic selectDeterministicCoreAction 与 SafetyPlanner 共用）——
      * t1 pop 25 时 20 上限导致 4500+ tick 零产兵、res 顶到容量上限（pop×5=125）空转。
