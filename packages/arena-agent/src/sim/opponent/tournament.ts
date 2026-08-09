@@ -613,7 +613,7 @@ function collectKillEvents(
         (raw): raw is string => typeof raw === "string" && playerSet.has(raw),
       );
       if (contributors.length === 0) continue;
-      const targetId = typeof event.values?.targetId === "string" ? event.values.targetId : null;
+      const targetId = typeof event.targetId === "string" ? event.targetId : null;
       const victim =
         targetId !== null && coreIdToPlayer !== undefined ? coreIdToPlayer.get(targetId) : undefined;
       events.push({
