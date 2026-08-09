@@ -5,6 +5,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { TENANTS, DATA_ROOT, calibrationDir, latestRunDir, listCases, parseTick, readJsonlTail, telemetryDir } from "./fs-jsonl.ts";
+import { openAgentDb, knownAgent } from "./agent-ingest.ts";
 import type { SupervisorState } from "./supervisor.ts";
 
 const LIVE_FRESH_MS = 90_000; // outcome.jsonl mtime 新鲜窗口 = 在线
@@ -24,16 +25,31 @@ export interface OverviewTenant {
     workerMaxDistance?: number | null;
     workerMeanDistance?: number | null;
     visibleResources?: number | null;
+    visibleEnemies?: number | null;
+    coreX?: number | null;
+    coreY?: number | null;
+    status?: string | null;
     events?: number;
   } | null;
   window: { avgResources: number | null; avgWorkers: number | null; avgMaxDistance: number | null };
 }
 export interface OverviewPayload { generatedAt: string; dataRoot: string; tenants: OverviewTenant[] }
 
-/** 每租户最新 outcome 快照 + 近 60 tick 均值（资源/人口展示）。 */
+/** 每租户最新 outcome 快照 + 近 60 tick 均值（资源/人口展示）。
+ *  数据源优先 agents 台账（python-mapping-telemetry-v1）：python 客户端
+ *  （t2/t3/t4）不写 TS 格式 JSONL，但每 tick 经 ingest 上报台账——台账
+ *  行新鲜（updated_at < LIVE_FRESH_MS）即用台账字段；JSONL 降级 fallback
+ *  （t1 兼容 + 旧数据展示）。 */
 export function loadOverview(supervisorState: SupervisorState | null): OverviewPayload {
   const tenants: OverviewTenant[] = [];
   for (const tenant of TENANTS) {
+    const ledger = openAgentDb(tenant, false);
+    const agent = knownAgent(ledger, tenant);
+    const ledgerFresh =
+      agent !== null &&
+      agent.updatedAt !== null &&
+      Date.now() - Date.parse(agent.updatedAt) < LIVE_FRESH_MS;
+
     const file = join(telemetryDir(tenant), "outcome.jsonl");
     const rows = readJsonlTail(file, 200);
     const last = rows[rows.length - 1] ?? null;
@@ -49,13 +65,27 @@ export function loadOverview(supervisorState: SupervisorState | null): OverviewP
       fresh = Date.now() - mtime < LIVE_FRESH_MS;
     }
     const sup = supervisorState?.tenants?.find((t) => t.tenantId === tenant) ?? null;
-    tenants.push({
-      tenant,
-      live: sup ? sup.ready === true && sup.alive === true : fresh,
-      supervisor: sup ? { alive: sup.alive, ready: sup.ready, pid: sup.pid ?? null, lifecycle: sup.lifecycle ?? null } : null,
-      fileFresh: fresh,
-      mtime,
-      latest: last
+    const live = sup
+      ? sup.ready === true && sup.alive === true
+      : ledgerFresh || fresh;
+    // 台账字段（python 摘要）：resources/population/units/敌数/核心坐标
+    const latest = ledgerFresh && agent !== null
+      ? {
+          tick: agent.tick,
+          resources: agent.resources,
+          resourceDelta: null,
+          workers: agent.units,
+          workersWithCargo: null,
+          workerMaxDistance: null,
+          workerMeanDistance: null,
+          visibleResources: null,
+          visibleEnemies: agent.visibleEnemies,
+          coreX: agent.coreX,
+          coreY: agent.coreY,
+          status: agent.status,
+          events: 0,
+        }
+      : last
         ? {
             tick: (last.tick as number | undefined) ?? null,
             resources: (last.coreResourcesAfter as number | undefined) ?? null,
@@ -67,7 +97,14 @@ export function loadOverview(supervisorState: SupervisorState | null): OverviewP
             visibleResources: (last.visibleResourceCellCount as number | undefined) ?? null,
             events: Array.isArray(last.events) ? (last.events as unknown[]).length : 0,
           }
-        : null,
+        : null;
+    tenants.push({
+      tenant,
+      live,
+      supervisor: sup ? { alive: sup.alive, ready: sup.ready, pid: sup.pid ?? null, lifecycle: sup.lifecycle ?? null } : null,
+      fileFresh: fresh,
+      mtime,
+      latest,
       window: {
         avgResources: avg((r) => r.coreResourcesAfter),
         avgWorkers: avg((r) => r.workerCount),
