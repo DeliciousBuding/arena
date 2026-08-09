@@ -436,14 +436,17 @@ test("deterministic Core：policy.workerTarget 驱动目标补员（spawn_worker
   const poorPlan = new DeterministicPlanner().decide({ state: poor, policy });
   assert.equal(poorPlan.coreAction, null);
 
-  // workers 已达 workerTarget → 不再补员
+  // workers 已达 workerTarget；但军事=0 < 危机底线 8 且 worker 已起步（>=4）
+  // → P1 危机爆兵补 Vanguard（2026-08-10 用户裁决"守卫起码 8 个"）——
+  // 军事不足时不再"停产"，按 4V+4R 编成爆兵。
   const full = makeState(100, [
     core(0, 0),
     unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0),
     unit("w4", 4, 0), unit("w5", 5, 0), unit("w6", 6, 0),
   ], 20);
   const fullPlan = new DeterministicPlanner().decide({ state: full, policy });
-  assert.equal(fullPlan.coreAction, null);
+  assert.deepEqual(fullPlan.coreAction, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(fullPlan.intents.core, "spawn_emergency_military");
 });
 
 test("deterministic Core：Core 格已有 Unit 时不冒险 SPAWN", () => {
@@ -460,14 +463,16 @@ test("deterministic Core：正常人口继续积累，不保留被压制的 spaw
   assert.deepEqual(plan.coreAction, { type: "SPAWN", unitType: "WORKER" });
   assert.equal(plan.intents.core, "spawn_worker_target");
 
-  // 已达默认目标 4 → 不再补员（res 充足也不产）
+  // 已达默认目标 4 → 不再补员；但军事=0 < 危机底线 8 且 worker 已起步（>=4）
+  // → P1 危机爆兵补 Vanguard（2026-08-10 用户裁决"守卫起码 8 个"）——
+  // 军事不足时不再"停产"，按 4V+4R 编成爆兵。
   const full = makeState(100, [
     core(0, 0),
     unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
   ], 20);
   const fullPlan = new DeterministicPlanner().decide({ state: full });
-  assert.equal(fullPlan.coreAction, null);
-  assert.equal(fullPlan.intents.core, undefined);
+  assert.deepEqual(fullPlan.coreAction, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(fullPlan.intents.core, "spawn_emergency_military");
 });
 
 test("deterministic Core：生存动作 HEAL / REPAIR_SHIELD 继续执行", () => {
@@ -505,13 +510,15 @@ test("deterministic Core：生存动作 START_MOVE / CANCEL_MOVE 沿用 Safety �
 });
 
 test("deterministic Core：资源高水位（>=150）无视 populationCeiling 强制产兵（t1 死锁回归）", () => {
-  // t1 实证（2026-08-10）：pop ≥ ceiling（population-ceiling-40-v1）后所有正常
-  // SPAWN 分支关闭 → 资源囤积到 Core 容量上限 → DEPOSIT_FAILED 死锁，需人工
-  // override spawn 解锁。高水位分支优先级高于 ceiling：res=160、pop=12、
-  // ceiling=10 → 仍 SPAWN VANGUARD（交替首选）。
+  // 4V+4R 军事足（P1 不拦截）→ P2 触发：res=160、pop=12（12 单位）、
+  // ceiling=10 → 高水位分支在 ceiling 前 → 仍 SPAWN VANGUARD（交替首选）。
   const state = makeState(100, [
     core(0, 0),
-    ...Array.from({ length: 12 }, (_, i) => unit(`w${i + 1}`, i + 1, 0)),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+    unit("v1", 5, 0, "VANGUARD"), unit("v2", 6, 0, "VANGUARD"),
+    unit("v3", 7, 0, "VANGUARD"), unit("v4", 8, 0, "VANGUARD"),
+    unit("r1", 9, 0, "RANGER"), unit("r2", 10, 0, "RANGER"),
+    unit("r3", 11, 0, "RANGER"), unit("r4", 12, 0, "RANGER"),
   ], 160);
   const decision = selectDeterministicCoreAction(state, null, undefined, undefined, 0, false, 2, 10);
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
@@ -519,22 +526,146 @@ test("deterministic Core：资源高水位（>=150）无视 populationCeiling �
 });
 
 test("deterministic Core：资源低于高水位不触发（零回归）", () => {
-  // res=149 < 150 → 高水位分支不触发；pop(12) >= ceiling(10) → 正常分支停产 → null。
+  // 4V+4R 军事足 + res=40（低于高水位 150 且低于 P3 硬顶线 cap 60-15=45）
+  // → 全不触发；pop(12) >= ceiling(10) → 停产 → null。
   const state = makeState(100, [
     core(0, 0),
-    ...Array.from({ length: 12 }, (_, i) => unit(`w${i + 1}`, i + 1, 0)),
-  ], 149);
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+    unit("v1", 5, 0, "VANGUARD"), unit("v2", 6, 0, "VANGUARD"),
+    unit("v3", 7, 0, "VANGUARD"), unit("v4", 8, 0, "VANGUARD"),
+    unit("r1", 9, 0, "RANGER"), unit("r2", 10, 0, "RANGER"),
+    unit("r3", 11, 0, "RANGER"), unit("r4", 12, 0, "RANGER"),
+  ], 40);
   const decision = selectDeterministicCoreAction(state, null, undefined, undefined, 0, false, 2, 10);
   assert.equal(decision.action, null);
   assert.equal(decision.intent, null);
 });
 
 test("deterministic Core：高水位关闭（0）时保持历史行为（零回归）", () => {
+  // 4V+4R 军事足 + res=200 + highWater=0 → P1/P2 均不触发；pop(12) >=
+  // ceiling(10) → P3 容量硬顶兜底（cap 60-15=45，res 200 ≥ 45）→ 产最便宜
+  // WORKER——证明 highWater=0 只关 P2，不产任何 high_water intent。
   const state = makeState(100, [
     core(0, 0),
-    ...Array.from({ length: 12 }, (_, i) => unit(`w${i + 1}`, i + 1, 0)),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+    unit("v1", 5, 0, "VANGUARD"), unit("v2", 6, 0, "VANGUARD"),
+    unit("v3", 7, 0, "VANGUARD"), unit("v4", 8, 0, "VANGUARD"),
+    unit("r1", 9, 0, "RANGER"), unit("r2", 10, 0, "RANGER"),
+    unit("r3", 11, 0, "RANGER"), unit("r4", 12, 0, "RANGER"),
   ], 200);
   const decision = selectDeterministicCoreAction(state, null, undefined, undefined, 0, false, 2, 10, false, false, false, undefined, false, 0);
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" });
+  assert.equal(decision.intent, "spawn_capacity_spend");
+});
+
+test("deterministic Core：P1 军事危机爆兵——0 军事时 Vanguard 优先（无视 ceiling）", () => {
+  // 军事 = 0 < 底线 8 且 worker 已起步（>=4）→ 危机爆兵：Vanguard 优先
+  // （4V+4R 编成）。ceiling=1（模拟 pop 超限场景）→ P1 在 ceiling 检查前，
+  // 仍产 Vanguard。
+  const state = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+  ], 20);
+  const decision = selectDeterministicCoreAction(state, null, undefined, undefined, 0, false, 2, 1);
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(decision.intent, "spawn_emergency_military");
+});
+
+test("deterministic Core：P1 危机爆兵——worker 未起步不触发（冷启动先产 worker）", () => {
+  // workers=2 < 起步门 4 → P1 不触发 → 正常补员产 worker（工人军事均衡）。
+  const state = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0),
+  ], 20);
+  const decision = selectDeterministicCoreAction(state, null);
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" });
+  assert.equal(decision.intent, "spawn_worker_target");
+});
+
+test("deterministic Core：P1 危机爆兵——V<4 补 Vanguard、V≥4 补 Ranger（4V+4R 编成）", () => {
+  // 2V+0R、workers=4：军事 2 < 8 → 爆兵；V(2) < 4 → 补 VANGUARD。
+  const twoV = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+    unit("v1", 5, 0, "VANGUARD"), unit("v2", 6, 0, "VANGUARD"),
+  ], 20);
+  const vDecision = selectDeterministicCoreAction(twoV, null);
+  assert.deepEqual(vDecision.action, { type: "SPAWN", unitType: "VANGUARD" });
+
+  // 4V+0R、workers=4：V(4) ≥ 4 → 补 RANGER。
+  const fourV = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+    unit("v1", 5, 0, "VANGUARD"), unit("v2", 6, 0, "VANGUARD"),
+    unit("v3", 7, 0, "VANGUARD"), unit("v4", 8, 0, "VANGUARD"),
+  ], 20);
+  const rDecision = selectDeterministicCoreAction(fourV, null);
+  assert.deepEqual(rDecision.action, { type: "SPAWN", unitType: "RANGER" });
+  assert.equal(rDecision.intent, "spawn_emergency_military");
+});
+
+test("deterministic Core：P1 危机爆兵——4V+4R 编成已足不触发（正常策略接管）", () => {
+  const state = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+    unit("v1", 5, 0, "VANGUARD"), unit("v2", 6, 0, "VANGUARD"),
+    unit("v3", 7, 0, "VANGUARD"), unit("v4", 8, 0, "VANGUARD"),
+    unit("r1", 9, 0, "RANGER"), unit("r2", 10, 0, "RANGER"),
+    unit("r3", 11, 0, "RANGER"), unit("r4", 12, 0, "RANGER"),
+  ], 20);
+  const decision = selectDeterministicCoreAction(state, null);
+  assert.equal(decision.intent, null, "军事 ≥ 8 不触发危机爆兵");
+});
+
+test("deterministic Core：P1 危机爆兵——可见威胁且 Vanguard < 3 时产 Vanguard", () => {
+  // 军事 5 个（≥8 底线未满？5<8 → P1 已触发）——用军事 9 个且 V<3 的场景：
+  // 4V+5R 中 V=4 ≥ 3 不触发威胁；改 2V+7R（军事 9 ≥ 8 底线足）但 V(2) < 3
+  // 且敌 Vanguard 距 Core 2 格（射程内威胁）→ 威胁响应产 Vanguard。
+  const state = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+    unit("v1", 5, 0, "VANGUARD"), unit("v2", 6, 0, "VANGUARD"),
+    unit("r1", 7, 0, "RANGER"), unit("r2", 8, 0, "RANGER"), unit("r3", 9, 0, "RANGER"),
+    unit("r4", 10, 0, "RANGER"), unit("r5", 11, 0, "RANGER"),
+    unit("r6", 12, 0, "RANGER"), unit("r7", 13, 0, "RANGER"),
+  ], 20);
+  const threatened: TickState = {
+    ...state,
+    visibleEnemies: [{ kind: "UNIT", id: "e1", unitType: "VANGUARD", position: [2, 0], hp: 3 }],
+  };
+  const decision = selectDeterministicCoreAction(threatened, null);
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(decision.intent, "spawn_emergency_military");
+});
+
+test("deterministic Core：P3 容量硬顶——正常停产且 res 接近容量时强制消费最便宜", () => {
+  // 4V+4R 军事足（P1 不触发）+ workers=4 达标（正常补员不触发）+ pop 12 →
+  // cap 60、硬顶线 45。res 90 ≥ 45 → 产最便宜 WORKER（pop 12 动态价 base 5）。
+  const state = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+    unit("v1", 5, 0, "VANGUARD"), unit("v2", 6, 0, "VANGUARD"),
+    unit("v3", 7, 0, "VANGUARD"), unit("v4", 8, 0, "VANGUARD"),
+    unit("r1", 9, 0, "RANGER"), unit("r2", 10, 0, "RANGER"),
+    unit("r3", 11, 0, "RANGER"), unit("r4", 12, 0, "RANGER"),
+  ], 90);
+  const decision = selectDeterministicCoreAction(state, null);
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" });
+  assert.equal(decision.intent, "spawn_capacity_spend");
+});
+
+test("deterministic Core：P3 容量硬顶——低于硬顶线不触发（零回归）", () => {
+  // 4V+4R 军事足 + res=40 < 硬顶线 45 → P3 不触发；pop(12) >= ceiling(10)
+  // → 停产 → null。
+  const state = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+    unit("v1", 5, 0, "VANGUARD"), unit("v2", 6, 0, "VANGUARD"),
+    unit("v3", 7, 0, "VANGUARD"), unit("v4", 8, 0, "VANGUARD"),
+    unit("r1", 9, 0, "RANGER"), unit("r2", 10, 0, "RANGER"),
+    unit("r3", 11, 0, "RANGER"), unit("r4", 12, 0, "RANGER"),
+  ], 40);
+  const decision = selectDeterministicCoreAction(state, null, undefined, undefined, 0, false, 2, 10);
   assert.equal(decision.action, null);
   assert.equal(decision.intent, null);
 });

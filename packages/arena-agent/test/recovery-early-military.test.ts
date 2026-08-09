@@ -46,15 +46,17 @@ function makeState(resources: number, workers: number, vanguards: number, ranger
 const AGGRESSIVE = { posture: "aggressive" as const, workerTarget: 12, militaryRatio: 0.4, focusRegion: null as null, attackPriority: "core" as const };
 
 test("RECOVERY 早期防御：worker 4 + 军事 0 → 产 VANGUARD 自卫（不等 workerTarget=12）", () => {
+  // 2026-08-10 用户裁决"守卫起码 8 个"：P1 危机爆兵接管（military 0 < 8 且
+  // worker 起步）——产出同为 VANGUARD，intent 换 spawn_emergency_military。
   const decision = selectDeterministicCoreAction(makeState(20, 4, 0), null, AGGRESSIVE, undefined, 0, false, 2, undefined, false, true);
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
-  assert.equal(decision.intent, "spawn_vanguard_recovery");
+  assert.equal(decision.intent, "spawn_emergency_military");
 });
 
 test("RECOVERY 早期防御：res 刚够纯成本（10）但不够 10+reserve(2) → 仍产 VANGUARD（豁免储备）", () => {
   const decision = selectDeterministicCoreAction(makeState(10, 4, 0), null, AGGRESSIVE, undefined, 0, false, 2, undefined, false, true);
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
-  assert.equal(decision.intent, "spawn_vanguard_recovery");
+  assert.equal(decision.intent, "spawn_emergency_military");
 });
 
 test("RECOVERY 早期防御：worker 3（<floor 4）+ 军事 0 → 继续冷启动产 worker", () => {
@@ -63,10 +65,12 @@ test("RECOVERY 早期防御：worker 3（<floor 4）+ 军事 0 → 继续冷启�
   assert.equal(decision.intent, "spawn_worker_target");
 });
 
-test("RECOVERY 早期防御：已有 1 军事 → 不触发（正常 worker 扩编）", () => {
-  // military=1 不满足 military===0 → worker < target 继续产 worker
+test("RECOVERY 早期防御：已有 1 军事 → P1 危机爆兵接管（military 1 < 8）", () => {
+  // 旧语义：military=1 → recovery 不触发 → 继续产 worker。2026-08-10 用户
+  // 裁决：军事 < 8（守卫编成）且 worker 起步 → P1 危机爆兵补 Vanguard。
   const decision = selectDeterministicCoreAction(makeState(20, 4, 1), null, AGGRESSIVE, undefined, 0, false, 2, undefined, false, true);
-  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" });
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(decision.intent, "spawn_emergency_military");
 });
 
 test("RECOVERY 早期防御：worker 达 target（12）+ 无军事 → 正常 military 产兵路径", () => {
@@ -75,8 +79,10 @@ test("RECOVERY 早期防御：worker 达 target（12）+ 无军事 → 正常 mi
   assert.ok(["VANGUARD", "RANGER"].includes((decision.action as { unitType: string }).unitType), "军事产出应启动");
 });
 
-test("RECOVERY 早期防御：可显式关闭（零回归逃生口）", () => {
+test("RECOVERY 早期防御：可显式关闭（逃生口）", () => {
   const decision = selectDeterministicCoreAction(makeState(20, 4, 0), null, AGGRESSIVE, undefined, 0, false, 2, undefined, false, false);
-  // 关闭后回到 worker 扩编
-  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" });
+  // recoveryEarlyMilitary=false 只关该变体；P1 危机爆兵默认开（2026-08-10
+  // 用户裁决）仍接管：military 0 < 8 且 worker 起步 → 产 VANGUARD。
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(decision.intent, "spawn_emergency_military");
 });

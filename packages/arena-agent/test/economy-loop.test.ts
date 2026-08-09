@@ -211,6 +211,8 @@ test("militaryRatio 消费：workers 达 target 后按策略产兵（VANGUARD）
   const planner = new DeterministicPlanner();
   // v0.2.11：生产 A/B 实测清场方经济 2-4× 优于被压方（敌群挡回仓/采集）。
   // militaryRatio=0.4 + workers 已达 target（4）→ 应 SPAWN VANGUARD。
+  // 2026-08-10 用户裁决"守卫起码 8 个"：军事 0 < 8 且 worker 起步 → P1 危机
+  // 爆兵接管（intent spawn_emergency_military，产出同为 VANGUARD）。
   const policyWithMilitary: MacroPolicy = { posture: "balanced", workerTarget: 4, militaryRatio: 0.4, focusRegion: null, attackPriority: null };
   const state: TickState = {
     ...makeState(100, [coreObj, unit("w1", 1, 0, "WORKER", 1), unit("w2", 2, 0, "WORKER", 1), unit("w3", 3, 0, "WORKER", 1), unit("w4", 4, 0, "WORKER", 1)], 15),
@@ -219,17 +221,21 @@ test("militaryRatio 消费：workers 达 target 后按策略产兵（VANGUARD）
   const plan = planner.decide({ state, policy: policyWithMilitary });
   assert.equal(plan.coreAction?.type, "SPAWN", "workers 达 target 且 militaryRatio>0 应产兵");
   assert.equal(plan.coreAction?.unitType, "VANGUARD", "vanguards 少时先产 VANGUARD");
-  assert.equal(plan.intents.core, "spawn_vanguard_military_ratio");
+  assert.equal(plan.intents.core, "spawn_emergency_military");
 });
 
-test("militaryRatio=0：workers 达 target 后不产兵", () => {
+test("militaryRatio=0：workers 达 target 后按守卫底线产兵（2026-08-10 用户裁决）", () => {
   const planner = new DeterministicPlanner();
+  // 旧语义：militaryRatio=0 时达 target 停产。2026-08-10 用户裁决推翻：
+  // "守卫起码 8 个（4V+4R），军事减少太多才允许紧急爆兵"——military 0 < 8
+  // 且 worker 起步（>=4）→ P1 危机爆兵补 Vanguard（家不空防优先）。
   const state: TickState = {
     ...makeState(100, [coreObj, unit("w1", 1, 0, "WORKER", 1), unit("w2", 2, 0, "WORKER", 1), unit("w3", 3, 0, "WORKER", 1), unit("w4", 4, 0, "WORKER", 1)], 15),
     resourceCells: RESOURCE_CELLS,
   };
   const plan = planner.decide({ state, policy: POLICY });
-  assert.notEqual(plan.coreAction?.type, "SPAWN", "militaryRatio=0 时达 target 不产兵");
+  assert.deepEqual(plan.coreAction, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(plan.intents.core, "spawn_emergency_military");
 });
 
 test("militaryRatio 消费：workers 未达 target 仍补 Worker（经济优先）", () => {
