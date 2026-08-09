@@ -585,14 +585,16 @@ export function selectDeterministicCoreAction(
       const militaryCount = state.vanguards.length + state.rangers.length;
       // P1 军事危机爆兵（2026-08-10 用户裁决"军事单位减少太多才紧急爆兵，
       // 守卫起码 8 个 = 4V+4R"）：军事 < 8（且 worker 已起步 >=4，冷启动先
-      // 按正常算法产 worker——工人军事均衡）或 可见威胁缺 Vanguard → 无视
-      // reserve/水位/ceiling 全力产兵——按 4V+4R 编成补缺口（V<4 产
-      // Vanguard 抗线肉盾，V≥4 产 Ranger 火力）。军事归零=裸奔（t2 77003
-      // 被拆教训）；资源不足则让位（下 tick 重试）。放 popCeiling 检查前
-      // （危机是生存行为，与占位检查同级——满载 worker 卡 Core 时同样解锁）。
+      // 按正常算法产 worker——工人军事均衡）。军事 < 8（且 worker 已起步
+      // >=4）→ 无视 reserve/水位/ceiling 全力产兵——按 4V+4R 编成补缺口
+      // （V<4 产 Vanguard 抗线肉盾，V≥4 产 Ranger 火力）。军事归零=裸奔
+      // （t2 77003 被拆教训）；资源不足则让位（下 tick 重试）。放
+      // popCeiling 检查前（危机是生存行为，与占位检查同级——满载 worker
+      // 卡 Core 时同样解锁）。威胁驱动产兵走 threatDefenseSpawn 分支（不
+      // 在 P1 叠加——避免 threatDefenseSpawn=false 时仍触发威胁产兵，破坏
+      // 默认关闭语义）。
       if (
-        (militaryCount < emergencyMilitaryFloor && state.workers.length >= emergencyWorkerGate) ||
-        (coreThreatened && state.vanguards.length < DEFENSE_VANGUARD_TARGET)
+        militaryCount < emergencyMilitaryFloor && state.workers.length >= emergencyWorkerGate
       ) {
         const unitType: "VANGUARD" | "RANGER" =
           state.vanguards.length < emergencyVanguardTarget ? "VANGUARD" : "RANGER";
