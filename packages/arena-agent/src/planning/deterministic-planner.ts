@@ -417,6 +417,9 @@ function nextMilitaryType(state: TickState, vanguardRatio?: number): "VANGUARD" 
 /**
  * deterministic 的长期目标仍是积累资源，但不能因此失去自恢复能力：
  * - Core HEAL / REPAIR_SHIELD 属于生存动作，直接沿用 Safety 的合法裁决；
+ * - START_MOVE（coreEvade 核心迁移逃生）/ CANCEL_MOVE（迁移取消止损）同为
+ *   生存动作（2026-08-09）：deterministic 的 SPAWN 覆盖会让核心遇险不迁移，
+ *   coreEvade 变体在 deterministic 主路径（生产 t1-t4）静默失效——直接透传；
  * - 补员按 policy.workerTarget 驱动（MacroPolicy 低频战略的消费点之一）：
  *   无 policy 时用 DEFAULT_WORKER_TARGET=4（扩编主动性，2026-08-06 实验取证），
  *   emergency floor=2 兜底；
@@ -472,6 +475,18 @@ export function selectDeterministicCoreAction(
   }
   if (fallbackAction?.type === "REPAIR_SHIELD") {
     return { action: fallbackAction, intent: "repair_shield", surgeActive };
+  }
+  // coreEvade 迁移/取消（生存动作，2026-08-09）：Safety 裁决的 START_MOVE
+  // （核心迁移逃生）与 CANCEL_MOVE（迁移取消止损）直接沿用，不落入下方 SPAWN
+  // 分支——否则 deterministic 主路径（生产 t1-t4）覆盖后核心遇险不迁移，
+  // coreEvade 变体形同虚设。intent 沿用 Safety 侧通用命名（core_evade /
+  // migration_cancel；Safety 的细分原因 core_evade_ttr / migration_cancel_* 在
+  // 透传层不可见，只保留动作级语义）。
+  if (fallbackAction?.type === "START_MOVE") {
+    return { action: fallbackAction, intent: "core_evade", surgeActive };
+  }
+  if (fallbackAction?.type === "CANCEL_MOVE") {
+    return { action: fallbackAction, intent: "migration_cancel", surgeActive };
   }
 
   const workerTarget = Math.max(
