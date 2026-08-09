@@ -504,6 +504,41 @@ test("deterministic Core：生存动作 START_MOVE / CANCEL_MOVE 沿用 Safety �
   assert.deepEqual(spawn.action, { type: "SPAWN", unitType: "WORKER" });
 });
 
+test("deterministic Core：资源高水位（>=150）无视 populationCeiling 强制产兵（t1 死锁回归）", () => {
+  // t1 实证（2026-08-10）：pop ≥ ceiling（population-ceiling-40-v1）后所有正常
+  // SPAWN 分支关闭 → 资源囤积到 Core 容量上限 → DEPOSIT_FAILED 死锁，需人工
+  // override spawn 解锁。高水位分支优先级高于 ceiling：res=160、pop=12、
+  // ceiling=10 → 仍 SPAWN VANGUARD（交替首选）。
+  const state = makeState(100, [
+    core(0, 0),
+    ...Array.from({ length: 12 }, (_, i) => unit(`w${i + 1}`, i + 1, 0)),
+  ], 160);
+  const decision = selectDeterministicCoreAction(state, null, undefined, undefined, 0, false, 2, 10);
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
+  assert.equal(decision.intent, "spawn_high_water_spend");
+});
+
+test("deterministic Core：资源低于高水位不触发（零回归）", () => {
+  // res=149 < 150 → 高水位分支不触发；pop(12) >= ceiling(10) → 正常分支停产 → null。
+  const state = makeState(100, [
+    core(0, 0),
+    ...Array.from({ length: 12 }, (_, i) => unit(`w${i + 1}`, i + 1, 0)),
+  ], 149);
+  const decision = selectDeterministicCoreAction(state, null, undefined, undefined, 0, false, 2, 10);
+  assert.equal(decision.action, null);
+  assert.equal(decision.intent, null);
+});
+
+test("deterministic Core：高水位关闭（0）时保持历史行为（零回归）", () => {
+  const state = makeState(100, [
+    core(0, 0),
+    ...Array.from({ length: 12 }, (_, i) => unit(`w${i + 1}`, i + 1, 0)),
+  ], 200);
+  const decision = selectDeterministicCoreAction(state, null, undefined, undefined, 0, false, 2, 10, false, false, false, undefined, false, 0);
+  assert.equal(decision.action, null);
+  assert.equal(decision.intent, null);
+});
+
 test("DeterministicPlanner：DEPOSIT——cargo>0 回 Core；到位 DEPOSIT", () => {
   const state = makeState(100, [core(0, 0), unit("w1", 3, 0, "WORKER", 3)]);
   const planner = new DeterministicPlanner();
