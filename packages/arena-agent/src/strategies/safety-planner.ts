@@ -65,6 +65,7 @@ import {
   coreShelterTarget,
   isCoreShelter,
   yieldAnchor,
+  guardHomeCell,
 } from "./safety-planner-helpers.ts";
 import { EMPTY_ROSTER_ID_SET, type AllianceRosterRef } from "../alliance/roster-file.ts";
 import {
@@ -2904,9 +2905,12 @@ export class SafetyPlanner {
         : this.adaptiveReserveGuards(state);
       const reserveGuard = state.core !== null && this.isHomeGuardUnit(state, unit, reserveGuards);
       if (reserveGuard) {
+        // guard-spacing-v1（2026-08-09 用户裁决）：守卫站核心外环（Chebyshev
+        // 2-3 四角优先），4 邻格让给核心移动/worker 卸货通道——贴脸站位会把
+        // 核心堵死（迁移实证：守卫站核心行进方向前方格 → 引擎容量拒 → 停滞）。
         const home = state.core === null
           ? null
-          : homeCell(state.core.position, militaryObstacles, index)
+          : guardHomeCell(state.core.position, militaryObstacles, index)
             ?? (this.config.coreClearance === true
               ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
               : state.core.position);
@@ -3548,12 +3552,16 @@ export class SafetyPlanner {
     // home-guard-squad-v1 Ranger 守卫（2026-08-09 用户裁决"守卫至少 2 前锋
     // 1 游侠"）：距 Core 最近的 homeGuardRangers 个 Ranger 常驻守家——不参与
     // 攻坚集结/打野/记忆射击（远程守卫的射程优势在 Core 附近最有价值：敌核
-    // 拆家队接近时 3 格射程先接敌）。守位锚点 home 已算好；射击/回援分支在
-    // 上方已优先（有敌就开火、家被威胁就回防），这里只拦截"无威胁时的外出
-    // 分支"。兵力不足（rangers ≤ 守卫数）时全部守家——家不空防优先。
+    // 拆家队接近时 3 格射程先接敌）。守位锚点独立计算（guard-spacing-v1 外环
+    // 站位——共享 home 是 4 邻锚点，贴脸站会堵核心移动/卸货通道）；射击/回援
+    // 分支在上方已优先（有敌就开火、家被威胁就回防），这里只拦截"无威胁时的
+    // 外出分支"。兵力不足（rangers ≤ 守卫数）时全部守家——家不空防优先。
     if (this.isHomeGuardRanger(state, unit)) {
-      if (home !== null && !samePosition(unit.position, home)) {
-        const direction = stepToward(unit.position, home, militaryObstacles);
+      const guardPost = state.core === null
+        ? null
+        : guardHomeCell(state.core.position, militaryObstacles, index);
+      if (guardPost !== null && !samePosition(unit.position, guardPost)) {
+        const direction = stepToward(unit.position, guardPost, militaryObstacles);
         if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_home_guard"); return; }
       }
       set(unit, { type: "WAIT" }, "ranger_home_guard_hold");
