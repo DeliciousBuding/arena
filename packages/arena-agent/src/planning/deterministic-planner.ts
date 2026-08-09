@@ -841,14 +841,19 @@ export class DeterministicPlanner implements PlanProvider {
     return this.lastWorkerProgressExpectations;
   }
 
-  /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
-   *  保留 World/巡逻/攻坚记忆（不重建 planner）。调用方先校验变体合法性。 */
   /** 迁移计划注入（migration-system-v1 §3.3，评审 P1）：tenant-runtime 每 tick
    *  决策前调用；EXPLORE worker 朝计划路径前向探路。null = 无迁移。 */
   setMigrationPlan(plan: MigrationPlanV1 | null): void {
     this.migrationPlan = plan;
   }
 
+  /** 热加载配置（2026-08-08）：tick 间原子替换 safety/deterministic 参数，
+   *  保留 World/巡逻/攻坚记忆（不重建 planner）。调用方先校验变体合法性。
+   *
+   *  deterministicConfig 是"完整的新 deterministic 表面"（非局部 patch）：
+   *  `mission` 缺省 = 明确清空（回 DEFAULT_MISSION_CONFIG），不存在
+   *  "undefined=保持旧值" 的歧义——移除 worker-mission-v1 + mission 块热载后，
+   *  旧代 missionConfig 不得残留（2026-08-09 审计 R1）。合法新 mission 原子替换。 */
   updateConfig(
     safetyConfig: SafetyPlannerConfig,
     deterministicConfig: {
@@ -874,10 +879,13 @@ export class DeterministicPlanner implements PlanProvider {
     // 把 spin-blockade-v1 映射为 { spinBlockade: true }）。热加载时原子替换——
     // 变体关后下一 tick plan() 不再传 cellBlocker、不 recordPlannedMove（零回归）。
     this.spinBlockadeEnabled = safetyConfig.spinBlockade === true;
-    if (deterministicConfig.mission !== undefined) {
-      this.missionConfig = { ...DEFAULT_MISSION_CONFIG, ...deterministicConfig.mission };
-      this.planner.updateConfig({ mission: this.missionConfig });
-    }
+    // worker-mission-v1 属热面（variants+mission）：mission 缺省 = 明确清空回
+    // DEFAULT_MISSION_CONFIG，并同步转发 WorkerTaskPlanner（旧实现仅在 mission
+    // 定义时转发——去掉该 variant 后旧代 mission 仍生效，2026-08-09 审计 R1）。
+    this.missionConfig = deterministicConfig.mission === undefined
+      ? { ...DEFAULT_MISSION_CONFIG }
+      : { ...DEFAULT_MISSION_CONFIG, ...deterministicConfig.mission };
+    this.planner.updateConfig({ mission: this.missionConfig });
   }
 
   /** Worker 局部活性恢复：清 sticky economic assignment，并同步恢复两套 Safety World。 */
