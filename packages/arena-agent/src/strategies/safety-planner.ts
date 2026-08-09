@@ -444,6 +444,37 @@ export class SafetyPlanner {
   private get migrationMoving(): boolean {
     return this.migrationPlan !== null && this.migrationPlan.state === "LEG_MOVE";
   }
+  /**
+   * 迁移路径前方禁占格（migration-lane-v1，2026-08-09）：核心当前位置之后
+   * 3 格内（Chebyshev ≤3）的路径格——守卫/满载 worker 的守位/等待位必须
+   * 避开这些格（它们即将被核心踩过/核心要移入），否则占住容量 2 →
+   * CORE_MOVE_START_FAILED → 核心横跳停滞（t1 生产实证：守卫站核心路径
+   * 前方对角格 + 满载 worker 挤 4 邻 → 核心 [-562,-111]/[-563,-111] 横跳
+   * 25+ tick、89 次 REPLAN）。核心不在路径上（偏离中）→ 返回空集（不
+   * 干扰 REPLAN 流程）。
+   */
+  private migrationPathAhead(core: Position): ReadonlySet<string> {
+    const plan = this.migrationPlan;
+    const avoid = new Set<string>();
+    if (plan === null) return avoid;
+    const cells = plan.path.cells;
+    let coreIndex = -1;
+    for (let index = 0; index < cells.length; index += 1) {
+      if (cells[index]![0] === core[0] && cells[index]![1] === core[1]) {
+        coreIndex = index;
+        break;
+      }
+    }
+    if (coreIndex < 0) return avoid;
+    const limit = Math.min(cells.length, coreIndex + 4);
+    for (let index = coreIndex + 1; index < limit; index += 1) {
+      const cell = cells[index]!;
+      if (Math.max(Math.abs(cell[0] - core[0]), Math.abs(cell[1] - core[1])) <= 3) {
+        avoid.add(cellKey(cell));
+      }
+    }
+    return avoid;
+  }
 
   /**
    * Worker 局部活性恢复：只清这个 Worker 的短期任务/导航状态，并把下一次巡逻方向
@@ -1989,6 +2020,33 @@ export class SafetyPlanner {
         // 让位超限（连续让位 ≥max tick 仍未卸）→ 强制卸货，防让位饿死循环。
         this.spawnYieldStreak.delete(unit.id);
       }
+      // 迁移激活期持货待命（migration-hold-v1，2026-08-09）：计划 LEG_MOVE
+      // 期间满载 worker 不挤核心——核心 4 邻是移动通道，满载 worker 追核心
+      // 格卸货会把路径格占满（容量 2）→ CORE_MOVE_START_FAILED → 核心
+      // NORMAL 停滞横跳（t1 生产实证：核心 [-562,-111]/[-563,-111] 横跳
+      // 25+ tick，15 tick 内 CORE_MOVE_START_FAILED 2 次、DEPOSIT 只成功 1
+      // 次、89 次 REPLAN）。coreMovingHold 只看引擎 MOVING 态——核心被堵
+      // 停 NORMAL 时不触发，此处用计划态兜底。等待位 = 核心外环避路径格
+      // （guardHomeCell with avoid）；休整期（LEG_SETTLE，migrationMoving
+      // =false）恢复正常回仓卸货（burst 32 tick 移动 + 30-90 tick 休整，
+      // 足够卸完）。
+      if (this.migrationMoving && state.core !== null) {
+        const waitPost = guardHomeCell(
+          state.core.position,
+          movementObstacles,
+          index,
+          this.migrationPathAhead(state.core.position),
+        );
+        if (waitPost !== null && !samePosition(unit.position, waitPost)) {
+          const direction = stepToward(unit.position, waitPost, movementObstacles);
+          if (direction !== null) {
+            set(unit, { type: "MOVE", direction }, "worker_hold_cargo_migrate");
+            return;
+          }
+        }
+        set(unit, { type: "WAIT" }, "worker_hold_cargo_migrate");
+        return;
+      }
       // 核心迁移中交仓待命（core-moving-hold-v1，2026-08-07）：MOVING 期间
       // 引擎拒绝 DEPOSIT（CORE_MOVING/CORE_NOT_PRESENT——生产实测 t2/t3 手操
       // 迁移时 150 tick 内 17/11 次失败），cargo worker 原地持货等核心稳定，
@@ -2668,7 +2726,7 @@ export class SafetyPlanner {
     const approachTarget = state.core === null
       ? null
       : (this.migrationMoving
-          ? guardHomeCell(state.core.position, militaryObstacles, index)
+          ? guardHomeCell(state.core.position, militaryObstacles, index, this.migrationPathAhead(state.core.position))
           : null)
         ?? (this.config.coreClearance === true && coreOccupiedByWorker
           ? (this.coreGuardFallback(state.core.position, militaryObstacles, index)
@@ -2925,9 +2983,12 @@ export class SafetyPlanner {
         // guard-spacing-v1（2026-08-09 用户裁决）：守卫站核心外环（Chebyshev
         // 2-3 四角优先），4 邻格让给核心移动/worker 卸货通道——贴脸站位会把
         // 核心堵死（迁移实证：守卫站核心行进方向前方格 → 引擎容量拒 → 停滞）。
+        // migration-lane-v1：迁移激活期额外避开核心路径前方 3 格（核心将
+        // 踩过的格不能被占——t1 实证守卫站路径前方对角格 → START_FAILED）。
+        const avoid = this.migrationMoving ? this.migrationPathAhead(state.core.position) : undefined;
         const home = state.core === null
           ? null
-          : guardHomeCell(state.core.position, militaryObstacles, index)
+          : guardHomeCell(state.core.position, militaryObstacles, index, avoid)
             ?? (this.config.coreClearance === true
               ? this.coreGuardFallback(state.core.position, militaryObstacles, index)
               : state.core.position);
@@ -3546,7 +3607,7 @@ export class SafetyPlanner {
     const home = state.core === null
       ? null
       : (this.migrationMoving
-          ? guardHomeCell(state.core.position, movementObstacles, index)
+          ? guardHomeCell(state.core.position, movementObstacles, index, this.migrationPathAhead(state.core.position))
           : null)
         ?? (guardAxesPost
           ?? (this.config.terrainGuard === true
@@ -3582,7 +3643,7 @@ export class SafetyPlanner {
     if (this.isHomeGuardRanger(state, unit)) {
       const guardPost = state.core === null
         ? null
-        : guardHomeCell(state.core.position, militaryObstacles, index);
+        : guardHomeCell(state.core.position, militaryObstacles, index, this.migrationPathAhead(state.core.position));
       if (guardPost !== null && !samePosition(unit.position, guardPost)) {
         const direction = stepToward(unit.position, guardPost, militaryObstacles);
         if (direction !== null) { set(unit, { type: "MOVE", direction }, "ranger_home_guard"); return; }
