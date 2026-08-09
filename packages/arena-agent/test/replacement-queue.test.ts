@@ -7,7 +7,7 @@
  * （资源不足缺口兵种 → 等待，不产低档替代品）；worker 阵亡不入队；队列空
  * / 变体关 = 历史产兵顺序不变（零回归）。
  *
- * 参考定位 reference/arena-hero-clone-waaiging/arena_hero_strategy.py HEAD
+ * 参考定位 reference/third-party/arena-hero-clone-waaiging/arena_hero_strategy.py HEAD
  * 26675e36：replacement_queue: Counter[str]（:528），入队 :1157-1172
  * （set-difference + previous_labels），消费 _select_spawn :9605-9665
  * （MODE_AGGRESS：缺口优先 + 价格窗口等待 None）。

@@ -216,7 +216,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // ─────────────────────────────────────────────────────────────────────────────
 // W12 按类型替补队列（replacement-queue-v1，2026-08-09，algorithm-update-plan-v1
 // §4-W12）。问题 A2 缺陷 4：阵亡只靠通用产兵，人口崩塌恢复慢。参考定位
-// reference/arena-hero-clone-waaiging/arena_hero_strategy.py HEAD 26675e36：
+// reference/third-party/arena-hero-clone-waaiging/arena_hero_strategy.py HEAD 26675e36：
 // - replacement_queue: Counter[str]（:528 field，持久化 :852-856）
 // - 入队（:1157-1172）：lost_unit_ids = previous_unit_ids - live_unit_ids，
 //   按 previous_labels[unit_id].object_type 计数（set-difference，不依赖事件

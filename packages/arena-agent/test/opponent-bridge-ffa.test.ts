@@ -13,6 +13,7 @@ const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 function findCoordinationRoot(start: string): string {
   let current = start;
   for (let depth = 0; depth < 12; depth += 1) {
+    if (existsSync(join(current, "reference", "official", "arena-hero-python"))) return current;
     if (existsSync(join(current, "reference", "arena-hero-python"))) return current;
     const parent = dirname(current);
     if (parent === current) break;
@@ -21,12 +22,20 @@ function findCoordinationRoot(start: string): string {
   return join(PACKAGE_ROOT, "..", "..", "..");
 }
 const COORDINATION_ROOT = findCoordinationRoot(PACKAGE_ROOT);
+/** 2026-08-09 重组后：官方 4 仓在 reference/official/，第三方在 reference/third-party/。 */
+function repoDir(name: string): string {
+  for (const subdir of ["third-party", "official"]) {
+    const candidate = join(COORDINATION_ROOT, "reference", subdir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return join(COORDINATION_ROOT, "reference", name);
+}
 const REPOS_AVAILABLE = [
   "arena-hero-python",
   "arena-hero-agent",
   "arena-hero-guide",
   "arena-evolve",
-].every((repo) => existsSync(join(COORDINATION_ROOT, "reference", repo)));
+].every((repo) => existsSync(repoDir(repo)));
 const RULES = "src/sim/contracts/rules-v0.14.json";
 
 test(

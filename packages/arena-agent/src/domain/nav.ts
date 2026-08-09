@@ -313,7 +313,7 @@ function compareTuple(a: readonly number[], b: readonly number[]): number {
 }
 
 /* ---------- W8 探索半径模式化 + wide 合并（2026-08-09）----------
- * 模式化 leash 纯函数 + 常量，对齐 reference/arena-hero-clone-waaiging
+ * 模式化 leash 纯函数 + 常量，对齐 reference/third-party/arena-hero-clone-waaiging
  * arena_hero_strategy.py HEAD 26675e36 半径常量区 :109-130。消费接线由收口
  * 统一处理（safety-planner.ts/worker-task-planner.ts），此处只提供能力。
  *

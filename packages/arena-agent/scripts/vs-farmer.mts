@@ -42,10 +42,11 @@ const OPPONENT_ARG = process.argv.find((arg) => arg.startsWith("--opponent="));
 const OPPONENT: "farmer" | "core" =
   OPPONENT_ARG?.slice("--opponent=".length) === "core" ? "core" : "farmer";
 
-// 协调根 = arena-ts 的父目录（reference/ 下各官方仓库在其下；bridge 按自身位置定位）
+// 协调根 = arena-ts 的父目录（reference/official + reference/third-party 各仓库
+// 在其下；bridge 按自身位置定位）
 const COORDINATION_ROOT = join(fileURLToPath(new URL("..", import.meta.url)), "..", "..", "..");
-const FARMER_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-agent");
-const SDK_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-python");
+const FARMER_REPO = join(COORDINATION_ROOT, "reference", "third-party", "arena-hero-agent");
+const SDK_REPO = join(COORDINATION_ROOT, "reference", "official", "arena-hero-python");
 
 /** 我方：SafetyPlanner aggressive。 */
 const ours: TournEntry = {

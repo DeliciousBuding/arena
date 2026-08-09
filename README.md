@@ -7,6 +7,13 @@
 
 > 正式运行链只有 `arena-hero-ts → arena-agent → SDK submit`。Pi 只能提交候选，永远不持有游戏提交权；Python 实时 runtime 已退役。
 
+## 社区
+
+本项目认可并支持 [LINUX DO](https://linux.do/) 开源社区：
+
+- 游戏官方发布帖：https://linux.do/t/topic/2703804
+- 社区开源 Agent 对照（本项目大混战评估参考）：https://linux.do/t/topic/2721042 · https://linux.do/t/topic/2703873 · https://linux.do/t/topic/2715054 · https://linux.do/t/topic/2726683 · https://linux.do/t/topic/2723397
+
 ## 当前状态
 
 已完成：

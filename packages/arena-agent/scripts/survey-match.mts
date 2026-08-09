@@ -38,8 +38,8 @@ const MANIFEST_PATH = "src/sim/contracts/rules-v0.14.json";
 const TICKS = 200;
 const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
 const COORDINATION_ROOT = join(fileURLToPath(new URL("..", import.meta.url)), "..", "..", "..");
-const FARMER_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-agent");
-const SDK_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-python");
+const FARMER_REPO = join(COORDINATION_ROOT, "reference", "third-party", "arena-hero-agent");
+const SDK_REPO = join(COORDINATION_ROOT, "reference", "official", "arena-hero-python");
 const SURVEY_DIR = join(COORDINATION_ROOT, "data", "runtime", "survey");
 const OUT_DIR = join(COORDINATION_ROOT, "data", "runs", "sim", "survey-scene");
 

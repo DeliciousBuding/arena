@@ -24,22 +24,24 @@ import { DEFAULT_SAFETY_CONFIG } from "../../strategies/safety-planner.ts";
 import type { AggressionLevel } from "../../strategies/safety-planner-config.ts";
 import type { PlanProvider } from "../../runtime/decision-types.ts";
 
-/** 协调根 = 从本文件向上找到第一个含 reference/arena-hero-python 的目录
- *  （主工作树 6 级、.worktrees/<分支> 深一层——硬编码层级在 worktree 会落空）。 */
+/** 协调根 = 从本文件向上找到第一个含 reference/official/arena-hero-python 的目录
+ *  （主工作树 6 级、.worktrees/<分支> 深一层——硬编码层级在 worktree 会落空）。
+ *  兼容旧平铺布局 reference/arena-hero-python（2026-08-09 重组前）。 */
 function findCoordinationRoot(from: string): string {
   let dir = from;
   for (let depth = 0; depth < 12; depth += 1) {
+    if (existsSync(join(dir, "reference", "official", "arena-hero-python"))) return dir;
     if (existsSync(join(dir, "reference", "arena-hero-python"))) return dir;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error("coordination root (reference/arena-hero-python) not found");
+  throw new Error("coordination root (reference/official/arena-hero-python) not found");
 }
 
 export const COORDINATION_ROOT = findCoordinationRoot(fileURLToPath(new URL("..", import.meta.url)));
-const FARMER_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-agent");
-const SDK_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-python");
+const FARMER_REPO = join(COORDINATION_ROOT, "reference", "third-party", "arena-hero-agent");
+const SDK_REPO = join(COORDINATION_ROOT, "reference", "official", "arena-hero-python");
 
 export type OpponentKind = "reference-python" | "http";
 
