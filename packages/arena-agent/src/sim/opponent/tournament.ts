@@ -70,6 +70,8 @@ export interface MatchResult {
 export interface KillEvent {
   readonly tick: number;
   readonly destroyedBy: readonly string[];
+  /** 被摧毁核心的归属玩家 id（core id 尾部参与序反推；无法解析时缺省）。 */
+  readonly victim?: string;
 }
 
 /** 一种可参赛的策略（我的 TS / reference 提取 / HTTP）。标定 score 由外部提供。 */
@@ -598,6 +600,7 @@ function computePerPlayerKills(
 function collectKillEvents(
   records: readonly EpisodeRecord[],
   playerIds: readonly string[],
+  coreIdToPlayer?: ReadonlyMap<string, string>,
 ): readonly KillEvent[] {
   const playerSet = new Set(playerIds);
   const events: KillEvent[] = [];
@@ -610,7 +613,14 @@ function collectKillEvents(
         (raw): raw is string => typeof raw === "string" && playerSet.has(raw),
       );
       if (contributors.length === 0) continue;
-      events.push({ tick: record.tick, destroyedBy: contributors });
+      const targetId = typeof event.values?.targetId === "string" ? event.values.targetId : null;
+      const victim =
+        targetId !== null && coreIdToPlayer !== undefined ? coreIdToPlayer.get(targetId) : undefined;
+      events.push({
+        tick: record.tick,
+        destroyedBy: contributors,
+        ...(victim !== undefined ? { victim } : {}),
+      });
     }
   }
   return events;
@@ -709,6 +719,14 @@ export function runFreeForAll(
       result.finalWorld,
       kills,
     );
+    // core id → player id 映射（合成场景 core id 尾部 = 参与序，username = playerId）
+    const scenarioPlayers = (scenario as { readonly players?: readonly { readonly core?: { readonly id?: string }; readonly username?: string }[] }).players ?? [];
+    const coreIdToPlayer = new Map<string, string>();
+    for (const player of scenarioPlayers) {
+      if (typeof player.core?.id === "string" && typeof player.username === "string") {
+        coreIdToPlayer.set(player.core.id, player.username);
+      }
+    }
     return {
       players: ids,
       winner,
@@ -723,8 +741,8 @@ export function runFreeForAll(
       // arena-bench 击杀归属：CORE_DESTROYED values.destroyed_by（可选字段，向后兼容）
       perPlayerKills: kills,
       perPlayerFirstKillTicks: firstKillTicks,
-      // arena-bench v3.1 击杀时序：逐事件（tick + 归属者），可视化用（可选字段）
-      killEvents: collectKillEvents(result.records, ids),
+      // arena-bench v3.1 击杀时序：逐事件（tick + 归属者 + victim），可视化用（可选字段）
+      killEvents: collectKillEvents(result.records, ids, coreIdToPlayer),
     };
   } finally {
     recorder?.close();
