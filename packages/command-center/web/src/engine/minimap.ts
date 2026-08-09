@@ -101,21 +101,9 @@ export function createMinimap(deps: MinimapDeps) {
     const X = (x: number) => ox + (x - b.minX) * s;
     const Y = (y: number) => oy + (y - b.minY) * s;
     // 底=CSS 深底（透明位图），不再叠全幅白 fill（旧实现产生成片半透明白像素 = "白色乱七八糟"）
-    if (state.chunks && state.chunks.length) {
-      mmCtx.fillStyle = "rgba(120,160,255,.12)";
-      // chunk 是 16×16 世界格区块：先 ×16 转世界坐标再投影（旧实现直接把区块索引当坐标，
-      // 全部挤到中右一坨），并按区块真实像素尺寸绘制 + 视口剔除
-      const chunkPx = Math.max(1.5, 16 * s);
-      const cap = Math.min(state.chunks.length, 300);
-      for (let i = 0; i < cap; i++) {
-        const ch = state.chunks[i];
-        const cx = Number(ch.cx), cy = Number(ch.cy);
-        if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
-        const px = X(cx * 16), py = Y(cy * 16);
-        if (px + chunkPx < 0 || py + chunkPx < 0 || px > MM_W || py > MM_H) continue;
-        mmCtx.fillRect(px, py, chunkPx, chunkPx);
-      }
-    }
+    // 探索分区色块底纹（2026-08-09 用户反馈移除）：旧实现把 chunks 逐块画
+    // 淡蓝方块（cap 300 块铺满小地图 = "一堆色块"），观感脏。小地图保持干净：
+    // 只画租户区域框 + 核心点 + 敌核 + 视野框（探索覆盖看主地图的测绘层）。
     for (const c of mmCoreCells) {
       if (c.controlled !== false) continue;
       mmCtx.fillStyle = "#e0625d";
