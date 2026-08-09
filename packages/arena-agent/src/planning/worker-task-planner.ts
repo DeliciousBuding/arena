@@ -510,16 +510,13 @@ export class WorkerTaskPlanner {
           dummyWorkers.push(worker);
         }
       }
-      const alwaysOutbound = this.mission.alwaysSurvey === true;
       const supplyGapSurvey = this.mission.surveyOnSupplyGap === true && dummyWorkers.length > 0;
-      // 测绘期也适用供给缺口（2026-08-08 审查修复）：burst 分支原恒返回空集 →
-      // 测绘期（恰是迁移后最缺矿期）缺口 worker 仍守家 WAIT。缺口判断只看
-      // dummy 是否非空，测绘期同样生效。
-      const leftoverSurveyors = supplyGapSurvey
-        ? surveyorIds(dummyWorkers, this.mission, false)
-        : options.surveyBurstActive === true
-          ? new Set<string>()
-          : surveyorIds(dummyWorkers, this.mission, false);
+      // 2026-08-10 P0-1 修复：burst 期间 leftover 走空（预留 line 369 已满足
+      // floor/cap=3）。原 supplyGapSurvey 直接走 surveyorIds(cap) 忽略
+      // surveyBurstActive → burst 两路双开火（预留3 + leftover3 = 6，2x cap）。
+      const leftoverSurveyors = options.surveyBurstActive === true
+        ? new Set<string>()
+        : surveyorIds(dummyWorkers, this.mission, false);
       for (const worker of pool) {
         const key = realTargets.get(worker.id);
         if (key !== undefined) {
