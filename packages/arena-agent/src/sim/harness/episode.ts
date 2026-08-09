@@ -26,6 +26,7 @@ import { worldHash } from "../world/canonical.ts";
 import { worldFromScenario } from "../world/loaders.ts";
 import type { SimFeature, SimWorld } from "../world/types.ts";
 import { assertWorldInvariants } from "../world/world.ts";
+import type { SimTelemetrySink } from "../telemetry.ts";
 
 export type PlannerKind = "deterministic" | "safety";
 
@@ -143,6 +144,11 @@ export interface EpisodeConfig {
     readonly world: SimWorld;
     readonly rules: RulesManifest;
   }) => void;
+  /** 模拟器遥测（2026-08-09，agent-telemetry-bridge-v1 §3.4）：每 tick
+   *  per-tenant 结算后上报 tick_summary（复用 SDK tickSummary 契约，经调用方
+   *  run-sim 注入的 sink 走同一 ingest 端点）。返回 null = 该 tenant 不上报。
+   *  只读，不参与模拟语义。 */
+  readonly telemetrySinkFor?: (tenantId: string) => SimTelemetrySink | null;
   /** Synthetic calibration 记录钩子（2026-08-07）：每 tick 结算后回调
    *  before/after 世界 + plans + events——synthetic 对打数据管道用
    *  （projectPlayerState 生成官方格式 calibration case）。只读，不参与
@@ -569,6 +575,7 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
         previousEvents.get(tenant.id) ?? [],
       );
       const state: TickState = reduceTurn(turn);
+      config.telemetrySinkFor?.(tenant.id)?.emitTick(before.tick, state);
       if (config.policyProvider !== undefined) {
         const next = config.policyProvider(tenant.id, before.tick, state);
         if (next !== null) lastPolicy.set(tenant.id, next);

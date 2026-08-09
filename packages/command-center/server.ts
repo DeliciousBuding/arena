@@ -765,7 +765,9 @@ app.post("/api/ingest/agents", async (c) => {
       const ev = raw as Record<string, unknown>;
       const tenant = String(ev.tenant ?? "");
       const kind = String(ev.event ?? "");
-      if (!TENANTS.includes(tenant as (typeof TENANTS)[number])) continue;
+      // 白名单：生产租户 t1-t4 + 模拟器 sim- 前缀命名空间（agent-telemetry-bridge-v1 §3.4）
+      const tenantOk = TENANTS.includes(tenant as (typeof TENANTS)[number]) || tenant.startsWith("sim-");
+      if (!tenantOk) continue;
       if (!["register", "connection", "tick_summary", "disconnected"].includes(kind)) continue;
       const held = open.find((o) => o.tenant === tenant);
       const db = held?.db ?? openAgentDb(tenant, true);
