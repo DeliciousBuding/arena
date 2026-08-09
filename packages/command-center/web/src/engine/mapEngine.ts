@@ -4341,7 +4341,7 @@ export function createMapEngine(host: any) {
       draw();
     },
     resize: () => { resizeCanvas(); draw(); },
-    getState: () => ({ soloTenant: state.soloTenant, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length, jumpPins: state.jumpPins.map((p: any) => ({ x: p.x, y: p.y, at: p.at, label: p.label ?? null })),
+    getState: () => ({ soloTenant: state.soloTenant, overview: state.overview, view: { ...state.view }, layers: { ...state.layers }, tenantsOn: { ...state.tenantsOn }, cellCount: state.cells.length, jumpPins: state.jumpPins.map((p: any) => ({ x: p.x, y: p.y, at: p.at, label: p.label ?? null })),
       cells: state.cells.map((c: any) => ({ id: c.id ?? null, x: c.x, y: c.y, type: c.type, unitType: c.unitType ?? null, controlled: c.controlled ?? null, tenant: c.tenant, fresh: c.fresh ?? true })),
       multi: [...T().multi], mode: T().mode ?? null,
       selected: (() => { const s = T().selected; return s && s.obj ? { id: s.obj.id ?? null, tenant: s.tenant ?? null, pos: s.obj.position ?? null } : null; })() }),
