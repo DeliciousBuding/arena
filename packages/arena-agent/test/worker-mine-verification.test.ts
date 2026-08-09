@@ -262,9 +262,12 @@ test("decide: 站在可见矿上正常 HARVEST（证伪不误伤真矿）", () =
 
 // ---------------- D. surveyOnSupplyGap 供给缺口勘探 ----------------
 
-test("surveyOnSupplyGap: 可采格 < 空 worker 时缺口全部转勘探（不守家 WAIT）", () => {
+test("surveyOnSupplyGap: 可采格 < 空 worker 时受 cap 限制（cap 个勘探 + 其余 WAIT，2026-08-10 修复）", () => {
   const mission = t2Mission({ alwaysSurvey: true });
-  // 1 个可见矿 + 5 个空 worker → 1 人采矿、4 人缺口全转勘探
+  // 1 个可见矿 + 5 个空 worker → 1 人采矿、4 人缺口；cap=3 → 3 个勘探 +
+  // 1 个守家 WAIT（原"全员勘探"导致 t1 经济死锁：17 worker 10 转 EXPLORE
+  // 远游、不采集不卸货、res 跌破 150 兑换门槛。修复：supplyGapSurvey 也
+  // 受 surveyWorkerCap 硬上限，多余 worker 守家 WAIT 等矿刷新）。
   const snap = snapshotOf(makeTurn([
     worker("w1", 1, 0),
     worker("w2", 0, 2),
@@ -278,8 +281,8 @@ test("surveyOnSupplyGap: 可采格 < 空 worker 时缺口全部转勘探（不�
   const tasks = plan.assignments.map((a) => a.task.type);
   assert.ok(tasks.includes("GO_RESOURCE"), "有矿可采的 worker 正常采矿");
   const explorers = tasks.filter((t) => t === "EXPLORE").length;
-  assert.equal(explorers, 4, `供给缺口 4 个 worker 应全部转勘探，实际 ${explorers}`);
-  assert.ok(!tasks.includes("WAIT"), "供给缺口下不应守家 WAIT");
+  assert.equal(explorers, 3, `cap=3 → 3 个勘探（不全员），实际 ${explorers}`);
+  assert.equal(tasks.filter((t) => t === "WAIT").length, 1, "超 cap 的 1 个 worker 守家 WAIT");
 });
 
 test("surveyOnSupplyGap: 矿充足时不超过 cap（零回归）", () => {

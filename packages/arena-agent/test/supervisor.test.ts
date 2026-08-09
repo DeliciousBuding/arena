@@ -94,6 +94,7 @@ function makeTempRepo(
       arenaTokenEnv: envName,
       decisionMode: "deterministic",
       submitEnabled: false,
+      rulesVersion: "v0.14",
       model: { provider: "test", id: "test-model" },
       baseDir: tenant.baseDir ?? "runtime",
     }));
@@ -368,6 +369,7 @@ test("external config/runtime roots support immutable releases", async () => {
     arenaTokenEnv: envName,
     decisionMode: "deterministic",
     submitEnabled: false,
+    rulesVersion: "v0.14",
     model: { provider: "test", id: "test-model" },
     baseDir: runtimeRoot,
   }));

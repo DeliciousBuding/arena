@@ -50,7 +50,8 @@ function enemyAt(position: Position): VisibleEntity {
 }
 
 test("威胁防御产兵：敌距 Core 3 格内 + VANGUARD 未达标 → spawn VANGUARD", () => {
-  // workers 3 < target 4，但敌人 [3,0] 距 Core 3 → 防御优先
+  // workers 3 < target 4，但敌人 [3,0] 距 Core 3 → 生存级 P1 危机接管（2026-08-10：
+  // coreThreatened 且 V<3 → spawn_emergency_military，优先于 threatDefenseSpawn 候选）
   const decision = selectDeterministicCoreAction(
     makeState(15, 3, 0, [enemyAt([3, 0])]),
     null,
@@ -60,10 +61,10 @@ test("威胁防御产兵：敌距 Core 3 格内 + VANGUARD 未达标 → spawn V
     false,
     2,
     undefined, // populationCeiling 默认无限
-    true, // threatDefenseSpawn 显式开启（默认关闭候选）
+    true, // threatDefenseSpawn 显式开启（P1 先接管）
   );
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
-  assert.equal(decision.intent, "spawn_vanguard_defense");
+  assert.equal(decision.intent, "spawn_emergency_military");
 });
 
 test("威胁防御产兵：无威胁保持 worker 补员（原行为回归）", () => {
@@ -132,7 +133,7 @@ test("威胁防御产兵：资源 10（纯成本，豁免 reserve）→ spawn", 
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" }, "威胁产兵豁免 reserve——10 即可产");
 });
 
-test("威胁防御产兵：资源 9（<10）→ 不 spawn", () => {
+test("威胁防御产兵：资源 9（<10）→ threatDefenseSpawn 分支短路 null（不补员）", () => {
   const decision = selectDeterministicCoreAction(
     makeState(9, 3, 0, [enemyAt([3, 0])]),
     null,
@@ -144,7 +145,11 @@ test("威胁防御产兵：资源 9（<10）→ 不 spawn", () => {
     undefined,
     true,
   );
-  assert.equal(decision.action, null, "9 < 10 → 不产 VANGUARD");
+  // P1 危机接管资源不足（9 < Vanguard 10）fall through；threatDefenseSpawn=true
+  // 且威胁 + V<3 但资源不足 → 旧分支短路 null（不 fall through 到 worker 补员，
+  // 威胁时优先防御、防御不可达即不产——避免危险期产 worker 送死）。
+  assert.equal(decision.action, null, "威胁期资源不足 → 不产（短路 null）");
+  assert.equal(decision.intent, null);
 });
 
 test("威胁防御产兵：敌方 WORKER 不触发（非战斗单位）", () => {
@@ -164,18 +169,22 @@ test("威胁防御产兵：Core 格被占（非满载 worker）→ 不 spawn（�
   assert.equal(decision.action, null, "Core 格被占 → 容量预检阻止 spawn");
 });
 
-test("威胁防御产兵：默认关闭（候选）——威胁场景不产兵，走 worker 补员（零回归）", () => {
+test("威胁防御产兵：默认关闭（候选）——P1 危机接管不依赖该开关（2026-08-10 语义更新）", () => {
+  // threatDefenseSpawn 是默认关闭的候选；coreThreatened + V<3 属 P1 生存兜底，
+  // 无条件接管（用户裁决"危机才爆兵"），开关不再影响威胁产兵。
   const decision = selectDeterministicCoreAction(
     makeState(15, 3, 0, [enemyAt([3, 0])]),
     null,
   );
-  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" }, "默认关闭 → 威胁不产兵");
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" }, "P1 危机接管：威胁 + V<3 无条件产 Vanguard");
+  assert.equal(decision.intent, "spawn_emergency_military");
 });
 
-test("威胁防御产兵：默认关闭且 workers 达标 → 不产（纯原行为）", () => {
+test("威胁防御产兵：默认关闭且 workers 达标（4）→ P1 军事归零接管", () => {
+  // workers 4 ≥ 起步门 4，military 0 < 底线 8 → P1 危机接管（与开关无关）
   const decision = selectDeterministicCoreAction(
     makeState(15, 4, 0, [enemyAt([3, 0])]),
     null,
   );
-  assert.equal(decision.action, null, "默认关闭 → workers 达标不产兵");
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" }, "workers 起步后军事归零 → 紧急爆兵");
 });

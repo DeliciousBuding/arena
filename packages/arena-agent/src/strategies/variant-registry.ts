@@ -489,6 +489,19 @@ export interface DeterministicVariantConfig {
   /** 使命层配置（worker-mission-v1，2026-08-08）：值层置信 + SURVEYOR 角色仲裁。
    *  缺省 undefined = 关闭（现行为零回归）。 */
   readonly mission?: MissionConfig;
+  /** 资源高水位消费线（2026-08-10 动态参数化）：缺省 150 = 黑与白公益站注册码
+   *  商店实测价（linuxdoshop.arenahero.io，全店最贵可兑换商品）——资源池维护
+   *  标准"攒够顶级兑换、超出花掉造单位"。也可由 data/shop 快照动态覆盖。0 = 关闭。 */
+  readonly resourceHighWater?: number;
+  /** 军事危机底线（P1 兜底，2026-08-10）：缺省 8 = 4V+4R 守卫编成（用户裁决
+   *  "守卫起码 8 个"）。0 = 关闭危机兜底。 */
+  readonly emergencyMilitaryFloor?: number;
+  /** 危机爆兵 Vanguard 补编目标：缺省 4（四角各 1 前锋）。 */
+  readonly emergencyVanguardTarget?: number;
+  /** 危机爆兵 worker 起步门（冷启动保护）：缺省 4。 */
+  readonly emergencyWorkerGate?: number;
+  /** 容量硬顶余量（P3 兜底）：缺省 15。 */
+  readonly coreCapacityMargin?: number;
 }
 
 export const DETERMINISTIC_VARIANT_CONFIG: Readonly<Record<string, DeterministicVariantConfig>> =

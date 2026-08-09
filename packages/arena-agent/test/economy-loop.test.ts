@@ -155,19 +155,20 @@ test("守家锚点：Vanguard 无敌人时回防到 Core 相邻格而非 Core �
   assert.notDeepEqual(destination, [0, 0], "回防目标不得是 Core 格本身");
 });
 
-test("资源满破锁：满载 Worker 在 Core 格不阻塞 SPAWN（卸货等待非永久占位）", () => {
+test("资源满破锁：满载 Worker 在 Core 格算占位 → 本 tick SPAWN 被拦（防叠加超容量）", () => {
   const planner = new DeterministicPlanner();
-  // 生产死锁闭环（2026-08-05 实测）：res=10 资源满 → resourceSpace=0 →
-  // DEPOSIT 被 validator 修复移除 → 满载 Worker 占 Core 格 → SPAWN 被
-  // unitsOnCore 抑制 → 资源永不消耗 → 永远满。修复：满载 Worker 不算占位，
-  // SPAWN 消耗资源后卸货通道恢复。
+  // 2026-08-05 ed3bc549 起 permanentOccupantsOnCore 算所有占位（含满载
+  // worker）——防 DEPOSIT_SUCCEEDED 同 tick SPAWN 叠加超容量被服务端拒
+  // （t1 tick 80585-80586 实证 CELL_UNIT_LIMIT）。资源满 + 满载 worker 占
+  // core 格 → permanentOccupantsOnCore=1 → SPAWN 分支跳过 → 本 tick null；
+  // worker 让位 MOVE（见下用例"资源满让位"）→ 下 tick core 格空 → SPAWN 产
+  // → 资源消耗 → 卸货通道恢复。死锁由"让位"打破，非本 tick SPAWN。
   const state: TickState = {
     ...makeState(100, [coreObj, unit("w1", 0, 0, "WORKER", 1), unit("w2", 5, 0, "WORKER", 1)]),
     resourceCells: RESOURCE_CELLS,
   };
   const plan = planner.decide({ state, policy: POLICY });
-  assert.equal(plan.coreAction?.type, "SPAWN", "满载 Worker 在 Core 格不得阻塞补员（资源满死锁破除）");
-  assert.equal(plan.intents.core, "spawn_worker_target");
+  assert.notEqual(plan.coreAction?.type, "SPAWN", "满载 worker 占 core 格 → 本 tick SPAWN 被拦（让位后下 tick 产）");
 });
 
 test("资源满让位：满载 Worker 在 Core 格且无法卸货时 MOVE 让出 Core 格", () => {

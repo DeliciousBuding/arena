@@ -53,7 +53,7 @@ function makeState(tick: number, objects: PlayerState["objects"], resources = 6)
   return reduceTurn(turn as unknown as TurnLike);
 }
 
-function unit(id: string, x: number, y: number, unitType: "WORKER" | "VANGUARD" = "WORKER", cargo = 0, hp = 2): PlayerState["objects"][number] {
+function unit(id: string, x: number, y: number, unitType: "WORKER" | "VANGUARD" | "RANGER" = "WORKER", cargo = 0, hp = 2): PlayerState["objects"][number] {
   return { kind: "UNIT", id, controlled: true, position: [x, y], hp, unit_type: unitType, cargo };
 }
 
@@ -509,9 +509,10 @@ test("deterministic Core：生存动作 START_MOVE / CANCEL_MOVE 沿用 Safety �
   assert.deepEqual(spawn.action, { type: "SPAWN", unitType: "WORKER" });
 });
 
-test("deterministic Core：资源高水位（>=150）无视 populationCeiling 强制产兵（t1 死锁回归）", () => {
-  // 4V+4R 军事足（P1 不拦截）→ P2 触发：res=160、pop=12（12 单位）、
-  // ceiling=10 → 高水位分支在 ceiling 前 → 仍 SPAWN VANGUARD（交替首选）。
+test("deterministic Core：资源高水位花完仍 ≥150 才消费（兑换门槛硬约束）", () => {
+  // 4V+4R 军事足（P1 不拦截）→ P2 触发：res=170、pop=12、ceiling=10。
+  // 兑换门槛硬约束（2026-08-10 用户裁决"随时可兑换黑与白"）：花完仍 ≥150
+  // 才花——Vanguard 13，170-13=157 ≥ 150 ✓ → SPAWN VANGUARD（交替首选）。
   const state = makeState(100, [
     core(0, 0),
     unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
@@ -519,10 +520,29 @@ test("deterministic Core：资源高水位（>=150）无视 populationCeiling �
     unit("v3", 7, 0, "VANGUARD"), unit("v4", 8, 0, "VANGUARD"),
     unit("r1", 9, 0, "RANGER"), unit("r2", 10, 0, "RANGER"),
     unit("r3", 11, 0, "RANGER"), unit("r4", 12, 0, "RANGER"),
-  ], 160);
+  ], 170);
   const decision = selectDeterministicCoreAction(state, null, undefined, undefined, 0, false, 2, 10);
   assert.deepEqual(decision.action, { type: "SPAWN", unitType: "VANGUARD" });
   assert.equal(decision.intent, "spawn_high_water_spend");
+});
+
+test("deterministic Core：res≥150 但花完会破门槛 → 不消费走 P3 兜底", () => {
+  // 4V+4R + res=154、pop=12、ceiling=10。Vanguard base 10（pop<21 不涨）
+  // → 154-10=144 < 150 → P2 军事不花；Worker 回退 154-5=149 < 150 → 也不花
+  // （兑换门槛硬约束）；fall through 到 popCeiling → P3 容量硬顶
+  // （cap 60>2×15=30 启用，res 154 ≥ 60-15=45）→ 产最便宜 WORKER（P3 是死锁
+  // 绝对防线，可破门槛）。证明 P2 软约束让位 P3 硬约束。
+  const state = makeState(100, [
+    core(0, 0),
+    unit("w1", 1, 0), unit("w2", 2, 0), unit("w3", 3, 0), unit("w4", 4, 0),
+    unit("v1", 5, 0, "VANGUARD"), unit("v2", 6, 0, "VANGUARD"),
+    unit("v3", 7, 0, "VANGUARD"), unit("v4", 8, 0, "VANGUARD"),
+    unit("r1", 9, 0, "RANGER"), unit("r2", 10, 0, "RANGER"),
+    unit("r3", 11, 0, "RANGER"), unit("r4", 12, 0, "RANGER"),
+  ], 154);
+  const decision = selectDeterministicCoreAction(state, null, undefined, undefined, 0, false, 2, 10);
+  assert.deepEqual(decision.action, { type: "SPAWN", unitType: "WORKER" });
+  assert.equal(decision.intent, "spawn_capacity_spend");
 });
 
 test("deterministic Core：资源低于高水位不触发（零回归）", () => {

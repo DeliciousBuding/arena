@@ -92,6 +92,7 @@ test("runtime config schema: accepts variants field and rejects malformed values
     arenaTokenEnv: "ARENA_HERO_API_KEY_9",
     decisionMode: "deterministic",
     submitEnabled: false,
+    rulesVersion: "v0.14",
     model: { provider: "openai", id: "deepseek-v4-flash" },
   };
   assert.equal(validator.Check({ ...base, variants: ["threat-recall-v1"] }), true);

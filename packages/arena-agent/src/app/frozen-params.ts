@@ -63,4 +63,28 @@ export function assertFrozenStrategyParameters(surface: FrozenStrategySurface): 
   if (reserve !== undefined && reserve !== 1 && reserve !== 2) {
     fail("spawnReserve", reserve, "undefined(default=2)|1|2");
   }
+
+  // 2026-08-10 动态参数化：四层产兵参数（P1 危机底线 / P2 高水位 / P3 硬顶）进入
+  // 生产 config 表面后一律 fail-closed——undefined 走 planner 默认（黑与白 150 /
+  // 守卫 8 / 起步门 4 / margin 15），显式值必须在已审查值域内，防意外数值上线。
+  const highWater = surface.deterministicOverrides.resourceHighWater;
+  if (highWater !== undefined && highWater !== 0 && (!Number.isSafeInteger(highWater) || highWater < 50 || highWater > 1000)) {
+    fail("resourceHighWater", highWater, "undefined(default=150)|0(off)|integer 50..1000");
+  }
+  const milFloor = surface.deterministicOverrides.emergencyMilitaryFloor;
+  if (milFloor !== undefined && (!Number.isSafeInteger(milFloor) || milFloor < 0 || milFloor > 32)) {
+    fail("emergencyMilitaryFloor", milFloor, "undefined(default=8)|integer 0..32");
+  }
+  const vanguardTarget = surface.deterministicOverrides.emergencyVanguardTarget;
+  if (vanguardTarget !== undefined && (!Number.isSafeInteger(vanguardTarget) || vanguardTarget < 0 || vanguardTarget > 16)) {
+    fail("emergencyVanguardTarget", vanguardTarget, "undefined(default=4)|integer 0..16");
+  }
+  const workerGate = surface.deterministicOverrides.emergencyWorkerGate;
+  if (workerGate !== undefined && (!Number.isSafeInteger(workerGate) || workerGate < 0 || workerGate > 16)) {
+    fail("emergencyWorkerGate", workerGate, "undefined(default=4)|integer 0..16");
+  }
+  const margin = surface.deterministicOverrides.coreCapacityMargin;
+  if (margin !== undefined && (!Number.isSafeInteger(margin) || margin < 0 || margin > 60)) {
+    fail("coreCapacityMargin", margin, "undefined(default=15)|integer 0..60");
+  }
 }

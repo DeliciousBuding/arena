@@ -492,13 +492,17 @@ export class WorkerTaskPlanner {
       // 少于预期（worker-mission-v1 回归测试实证）。测绘期已在求解前预留
       // （pre-reserve 分支），此处剩余 worker 均为非勘探者 → WAIT。
       // 全量外出（2026-08-08，用户导向"矿工不许原地守家"，v3 生产行为）：
-      // alwaysSurvey=true 时无矿可采（dummy WAIT 列）的剩余 worker 全部 EXPLORE
-      // （外出测绘/打探，永不守家 WAIT）——守家是军事单位职责；特殊卡位
-      // （blockade）与核心迁移持货由 SafetyPlanner 显式例外。
+      // alwaysSurvey=true 时无矿可采（dummy WAIT 列）的剩余 worker 启用勘探
+      // （外出测绘/打探，找新矿源）——但受 surveyWorkerCap 硬上限约束（2026-08-10
+      // 生产实证修复：t1 alwaysSurvey+supplyGapSurvey 双短路让 cap=3 形同虚设，
+      // 17 worker 10 转 EXPLORE 远游、不采集不卸货、res 跌破 150 兑换门槛——经济
+      // 死锁。修复：supplyGapSurvey/alwaysSurvey 只控制"是否启用勘探"，cap 始终
+      // 限制勘探人数，多余 worker 守家 WAIT（矿刷新时下 tick 立即采集，不用从
+      // 远处跑回来）。守家是军事单位职责；特殊卡位（blockade）与核心迁移持货
+      // 由 SafetyPlanner 显式例外。
       // 供给缺口勘探（surveyOnSupplyGap，2026-08-08，t2 生产实证）：候选可采格
-      // 数量 < 未分配 worker 数（dummyWorkers 非空）时缺口全部转 SURVEYOR——
-      // 矿工供给过剩时边际矿工应去测绘新矿源，而不是守家 WAIT 空耗（t2 实证
-      // 12 空 worker 抢 1-8 可见矿、近核全死种子、守家 WAIT 零产出）。
+      // 数量 < 未分配 worker 数（dummyWorkers 非空）时启用勘探——但同样受 cap
+      // 约束（cap 个去测绘新矿源，其余守家 WAIT 等矿刷新）。
       const realTargets = new Map<string, string>(); // workerId → cellKey
       const dummyWorkers: PlanningUnit[] = [];
       for (let rowIndex = 0; rowIndex < pool.length; rowIndex += 1) {
@@ -512,11 +516,13 @@ export class WorkerTaskPlanner {
       }
       const alwaysOutbound = this.mission.alwaysSurvey === true;
       const supplyGapSurvey = this.mission.surveyOnSupplyGap === true && dummyWorkers.length > 0;
-      // 测绘期也适用供给缺口（2026-08-08 审查修复）：burst 分支原恒返回空集 →
-      // 测绘期（恰是迁移后最缺矿期）缺口 worker 仍守家 WAIT。缺口判断只看
-      // dummy 是否非空，测绘期同样生效。
+      // 勘探集合：supplyGapSurvey 时走 cap 仲裁（2026-08-10 修复：原 new Set(all)
+      // 全员 EXPLORE 导致 t1 经济死锁，res 跌破 150；现 cap 硬上限始终生效）。
+      // supplyGapSurvey=false 时保持原行为（burst 空、非 burst cap 仲裁）。
+      // alwaysSurvey 不再 OR 全员（同上修复：alwaysSurvey=true 只启用勘探，
+      // 不突破 cap；cap 外 dummy 守家 WAIT 等矿刷新）。
       const leftoverSurveyors = supplyGapSurvey
-        ? new Set(dummyWorkers.map((worker) => worker.id))
+        ? surveyorIds(dummyWorkers, this.mission, false)
         : options.surveyBurstActive === true
           ? new Set<string>()
           : surveyorIds(dummyWorkers, this.mission, false);
@@ -535,25 +541,29 @@ export class WorkerTaskPlanner {
         } else {
           assignments.push({
             unitId: worker.id,
-            task: alwaysOutbound || leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
+            task: leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
           });
         }
       }
     } else if (pool.length > 0) {
       // 无候选格（资源全被强制任务占用/全 invisible 被站/无资源）：走角色仲裁。
-      // 供给缺口勘探（surveyOnSupplyGap）：候选格为 0 = 供给完全不足——全部
-      // 转 SURVEYOR 外出测绘，不守家 WAIT（t2 生产实证：近核全死种子时守家
-      // WAIT 零产出，勘探才能找到新矿源）。
+      // 供给缺口勘探（surveyOnSupplyGap）：候选格为 0 = 供给完全不足——启用
+      // 勘探找新矿源。但受 surveyWorkerCap 硬上限约束（2026-08-10 修复：原
+      // supplyGapSurvey 全员 EXPLORE 导致 t1 经济死锁，cap=3 形同虚设；现 cap
+      // 始终生效，cap 个勘探 + 其余守家 WAIT 等矿刷新）。
       const supplyGapSurvey = this.mission.surveyOnSupplyGap === true;
-      const leftoverSurveyors = options.surveyBurstActive === true
-        ? new Set<string>()
-        : supplyGapSurvey
-          ? new Set(pool.map((worker) => worker.id))
+      const alwaysOutbound = this.mission.alwaysSurvey === true;
+      // 2026-08-10 修复：原 supplyGapSurvey 全员 EXPLORE → cap 限制；alwaysSurvey
+      // 不再 OR 全员。cap 始终硬上限，多余 worker 守家 WAIT 等矿刷新。
+      const leftoverSurveyors = supplyGapSurvey
+        ? surveyorIds(pool, this.mission, false)
+        : options.surveyBurstActive === true
+          ? new Set<string>()
           : surveyorIds(pool, this.mission, false);
       for (const worker of pool) {
         assignments.push({
           unitId: worker.id,
-          task: (this.mission.alwaysSurvey === true) || leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
+          task: leftoverSurveyors.has(worker.id) ? { type: "EXPLORE" } : { type: "WAIT" },
         });
       }
     }

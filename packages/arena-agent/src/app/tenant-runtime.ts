@@ -25,6 +25,7 @@ import { loadPersistentEnemyIntel } from "./enemy-intel.ts";
 import type { CoreHuntTarget, CoreWatchMemory } from "../domain/world.ts";
 import { World } from "../domain/world.ts";
 import { loadThreatProfiles, threatProfilesEqual } from "./official-intel.ts";
+import { loadLatestShopHighWater } from "./shop-price.ts";
 import { resolveArenaDataRoot, resolveTenantBaseDir } from "./data-root.ts";
 import { SingleWriterLock } from "./single-writer-lock.ts";
 import { newProcessRunId, readGitSha, writeRunManifest, type RunManifest } from "./run-manifest.ts";
@@ -43,7 +44,7 @@ import { appendMigrationReport, migrationReportPath } from "../migration/report.
 import { coreReceptiveRatio, idealEtaTicks } from "../migration/pacing.ts";
 import { loadMigrationRuntimeConfig, type MigrationRuntimeConfig } from "../migration/config.ts";
 import { checkAndMirrorOfficialManual, type OfficialManualMirror, type ReceiptLike } from "../command-plane/official-bridge.ts";
-import { DeterministicPlanner } from "../planning/deterministic-planner.ts";
+import { RESOURCE_HIGH_WATER, DeterministicPlanner } from "../planning/deterministic-planner.ts";
 import { WorkerTaskPlanner } from "../planning/worker-task-planner.ts";
 import { PiAgentRuntime, type PiRuntimeTelemetry } from "../infrastructure/pi/pi-agent-runtime.ts";
 import { PiSessionFactory } from "../infrastructure/pi/pi-session-factory.ts";
@@ -651,6 +652,14 @@ export async function runTenant(
     // Stable component graph: instantiate the same planner bundle regardless of which registered
     // variants are currently enabled. Hot reload only swaps immutable config values; it never needs
     // to rebuild World/SafetyPlanner/WorkerTaskPlanner or retrofit dependencies such as no-fire.
+    // 商店兑换价（2026-08-10 资源池维护标准，用户裁决"以商店价格为标准"）：
+    // linuxdoshop.arenahero.io 商品价由 docs/progress/shop-price-intel.py 拉取到
+    // <dataRoot>/shop/ 快照（agent 只读不联网，与 leaderboard 同架构纪律）；
+    // 取全店最高可兑换商品价作为高水位——当前黑与白公益站注册码 150（实测
+    // 2026-08-10）。config 显式 resourceHighWater 优先，快照次之，缺省 150。
+    const shopHighWater = loadLatestShopHighWater(join(dataRoot, "shop"));
+    const effectiveResourceHighWater =
+      deterministicVariantConfig.resourceHighWater ?? shopHighWater ?? RESOURCE_HIGH_WATER;
     const planner: DeterministicPlanner | SafetyPlanner =
       decisionMode === "deterministic"
         ? new DeterministicPlanner(
@@ -674,6 +683,17 @@ export async function runTenant(
             surveyResourceCells,
             surveyObstacleCells,
             deterministicVariantConfig.mission,
+            deterministicVariantConfig.recoveryEarlyMilitary,
+            deterministicVariantConfig.homeDefenseBottom,
+            deterministicVariantConfig.replacementQueueEnabled,
+            // 2026-08-10 动态参数化：资源池高水位（默认 150 = 黑与白公益站注册码
+            // 商店实测价）+ P1 危机底线四件套——租户 config 可显式覆盖，缺省
+            // undefined 走 planner 默认值（生产行为零回归）。
+            effectiveResourceHighWater,
+            deterministicVariantConfig.emergencyMilitaryFloor,
+            deterministicVariantConfig.emergencyVanguardTarget,
+            deterministicVariantConfig.emergencyWorkerGate,
+            deterministicVariantConfig.coreCapacityMargin,
           )
         : new SafetyPlanner(baseSafetyConfig, undefined, threatProfiles, allianceRosterRef);
     if (planner instanceof SafetyPlanner) {
@@ -1343,6 +1363,16 @@ export async function runTenant(
           .map((worker) => `${worker.position[0]},${worker.position[1]}`)
           .sort()
           .join("|");
+        // 2026-08-10 新增：结算侧失败计数（军事/迁移/spawn/空枪死锁检测 +
+        // StallRecovery 分 kind 成功判据的数据源）。从 outcomeRecord.failedEvents
+        // 聚合按 eventType 计数；militaryCount 从 vanguard+ranger 算；shotHitCount
+        // 从结算 events 数 SHOT_HIT（空枪判据"无命中"用）。
+        const failedEventCounts: Record<string, number> = {};
+        for (const ev of outcomeRecord.failedEvents ?? []) {
+          failedEventCounts[ev.eventType] = (failedEventCounts[ev.eventType] ?? 0) + 1;
+        }
+        const militaryCount = outcome.state.vanguards.length + outcome.state.rangers.length;
+        const shotHitCount = outcome.state.events.filter((e) => e.eventType === "SHOT_HIT").length;
         const stallEvents = stallDetector.onObservation({
           tick: outcome.tick,
           coreResourceDelta: outcomeRecord.coreResourceDelta,
@@ -1355,6 +1385,9 @@ export async function runTenant(
           waitCount: actionCounts.waitCount,
           intentCounts,
           cargoWorkerFingerprint: cargoWorkerCells.length > 0 ? cargoWorkerCells : null,
+          failedEventCounts,
+          militaryCount,
+          shotHitCount,
         });
         for (const event of stallEvents) {
           appendStallEvent(event);
@@ -1376,6 +1409,13 @@ export async function runTenant(
           coreResourceDelta: outcomeRecord.coreResourceDelta,
           harvestCount: actionCounts.harvestCount,
           depositCount: actionCounts.depositCount,
+          // 2026-08-10：分 kind 成功判据数据源（B6 修复）。军事类
+          // (military_interlock/shot_missed_spiral) 用"失败事件归零"判成功
+          // 而非"经济恢复"——否则军事死锁触发 recovering 后因经济正常立即假
+          // 成功。migration_stall/spawn_stall 同理用各自失败事件归零。经济类
+          // kind 仍用 economyRecovered()。
+          failedEventCounts,
+          shotHitCount,
         });
         if (recoveryTransition !== null) {
           appendJsonlLine(
@@ -1483,6 +1523,12 @@ export async function runTenant(
           // 覆盖，conductor 落线后经 tick 起始快照校验真正 fencing。
           fileEpoch: read.plan.conductorEpoch,
           config: migrationConfig,
+          // 发射防御（2026-08-10 修复）：runtime 已知障碍+资源格 → overlay
+          // 校验下一路径格，防止把核心推进已知不可迁入地形。
+          terrainBlockedCells: new Set([
+            ...state.obstacleCells,
+            ...state.resourceCells,
+          ]),
         });
         // worker 集结带（migration-system-v1 §3.3）：min 叠加既有权威上限；
         // 仅 SafetyPlanner（DeterministicPlanner 的 fallback config 由

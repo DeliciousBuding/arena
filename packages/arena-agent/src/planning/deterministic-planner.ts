@@ -386,9 +386,13 @@ const BOOTSTRAP_WORKER_TARGET = 6;
 const WORKER_SPAWN_COST = 5;
 /** 补员保留资源（不因扩编掏空国库；emergency 时也可用满额 5）。 */
 const WORKER_SPAWN_RESERVE = 2;
-/** 资源高水位消费线（2026-08-10 用户理念）：150 = 顶级兑换码门槛，够用即可；
- *  超出部分花掉造单位。资源 >= 该值时强制 SPAWN（防 Core 容量顶格死锁）。 */
-const RESOURCE_HIGH_WATER = 150;
+/** 资源高水位消费线（2026-08-10 用户裁决：商店实测价为准）：150 = 黑与白公益站
+ *  注册码价格（linuxdoshop.arenahero.io/api/v1/products 实测 2026-08-10，
+ *  全店最贵可兑换商品）。资源池维护标准：攒到 150 可兑换顶级商品，超出部分
+ *  花掉造单位（不囤积）。资源 >= 该值时强制 SPAWN（防 Core 容量顶格死锁）。
+ *  可经 DeterministicVariantConfig.resourceHighWater 覆盖，或由 shop 快照
+ *  （data/shop/，shop-price-intel.py 拉取）按全店最高价动态刷新。 */
+export const RESOURCE_HIGH_WATER = 150;
 /** 军事危机底线（2026-08-10 用户裁决升级"守卫起码 8 个"）：4V+4R = 8。
  *  军事单位（Vanguard+Ranger）少于该值 = 危机 → 紧急爆兵（无视 reserve/
  *  水位/ceiling，按 4V+4R 编成补缺口）。 */
@@ -491,8 +495,24 @@ export function selectDeterministicCoreAction(
    *  无视 populationCeiling/军事配比强制产兵（价格按动态价）——t1 实证
    *  pop≥ceiling 后所有 SPAWN 分支关闭，资源囤积到 Core 容量上限
    *  （max(10, pop×5)）→ DEPOSIT_FAILED 满载 worker 卡 Core 格 → 经济死锁。
-   *  默认 150 = 顶级兑换码门槛（够用即可，超出花掉造单位）。0 = 关闭。 */
+   *  默认 150 = 黑与白公益站注册码商店实测价（linuxdoshop.arenahero.io，
+   *  2026-08-10 全店最贵可兑换商品；够用即可，超出花掉造单位）。0 = 关闭。 */
   resourceHighWater = RESOURCE_HIGH_WATER,
+  /** 军事危机底线（2026-08-10，P1 兜底）：military < 该值且 workers ≥ 起步门
+   *  → 危机 → 无视 reserve/高水位/ceiling 紧急爆兵（4V+4R 编成补缺口）。
+   *  默认 8 = 守卫编成（用户裁决"守卫起码 8 个"）。0 = 关闭。 */
+  emergencyMilitaryFloor = EMERGENCY_MILITARY_FLOOR,
+  /** 危机爆兵 Vanguard 补编目标：V < 该值先补 Vanguard，足后产 Ranger。
+   *  默认 4（四角各 1 前锋）。 */
+  emergencyVanguardTarget = EMERGENCY_VANGUARD_TARGET,
+  /** 危机爆兵 worker 起步门（冷启动保护）：workers < 该值 = 冷启动期，危机
+   *  兜底暂不接管——先按正常算法产 worker（工人军事均衡），起步后才爆兵。
+   *  默认 4。 */
+  emergencyWorkerGate = EMERGENCY_WORKER_GATE,
+  /** 容量硬顶余量（P3 兜底）：resources ≥ capacity − margin 时强制消费最便宜
+   *  兵种（Worker→Vanguard→Ranger），防任何人口段 DEPOSIT_FAILED 死锁。
+   *  默认 15。 */
+  coreCapacityMargin = CORE_CAPACITY_MARGIN,
 ): { readonly action: CoreAction | null; readonly intent: string | null; readonly surgeActive: boolean } {
   if (fallbackAction?.type === "HEAL") {
     return { action: fallbackAction, intent: "core_heal", surgeActive };
@@ -550,14 +570,16 @@ export function selectDeterministicCoreAction(
         enemy.unitType !== "WORKER" &&
         manhattan(enemy.position, core.position) <= THREAT_SPAWN_DISTANCE,
     );
-    // Core 格被空载/非 Worker 单位占位时阻塞生成（SPAWN 会叠加容量）；
-    // 满载 Worker 是"卸货等待"不阻塞（资源满时 DEPOSIT 暂不合法，但 SPAWN
-    // 消耗资源后立即可卸——资源满 + 占格 + 无法卸货会形成永久经济死锁）。
+    // Core 格被任何单位占位时阻塞生成（SPAWN 会叠加容量）。
+    // C6 修复（2026-08-10）：满载 Worker 同样占格——DEPOSIT Phase8 先于
+    // SPAWN Phase12，worker 卸货成功仍占核心格（不移动）→ cell 含 core+worker
+    // = 2 占用 → SPAWN 叠加 = 3 > 容量 2 → CORE_SPAWN_FAILED/CELL_UNIT_LIMIT。
+    // 生产实证 t1 tick 80585-80586：DEPOSIT_SUCCEEDED + CORE_SPAWN_FAILED 同 tick。
+    // 旧逻辑排除满载 worker → 34 次 CELL_UNIT_LIMIT（46%+ spawn 失败率）。
     const permanentOccupantsOnCore = state.units.filter(
       (unit) =>
         unit.position[0] === core.position[0] &&
-        unit.position[1] === core.position[1] &&
-        !(unit.unitType === "WORKER" && unit.cargo > 0),
+        unit.position[1] === core.position[1],
     ).length;
     if (permanentOccupantsOnCore === 0) {
       const militaryCount = state.vanguards.length + state.rangers.length;
@@ -569,11 +591,11 @@ export function selectDeterministicCoreAction(
       // 被拆教训）；资源不足则让位（下 tick 重试）。放 popCeiling 检查前
       // （危机是生存行为，与占位检查同级——满载 worker 卡 Core 时同样解锁）。
       if (
-        (militaryCount < EMERGENCY_MILITARY_FLOOR && state.workers.length >= EMERGENCY_WORKER_GATE) ||
+        (militaryCount < emergencyMilitaryFloor && state.workers.length >= emergencyWorkerGate) ||
         (coreThreatened && state.vanguards.length < DEFENSE_VANGUARD_TARGET)
       ) {
         const unitType: "VANGUARD" | "RANGER" =
-          state.vanguards.length < EMERGENCY_VANGUARD_TARGET ? "VANGUARD" : "RANGER";
+          state.vanguards.length < emergencyVanguardTarget ? "VANGUARD" : "RANGER";
         if (state.resources >= spawnCosts[unitType]) {
           return {
             action: { type: "SPAWN", unitType },
@@ -583,27 +605,31 @@ export function selectDeterministicCoreAction(
         }
       }
       // P2 资源高水位消费（2026-08-10 生产实证 t1 死锁根因 + 用户理念"150
-      // （顶级兑换码门槛）够用即可，超出部分花掉造单位"）：pop≥ceiling 后
-      // 正常 SPAWN 分支关闭 → 资源囤积到 Core 容量上限（max(10, pop×5)）→
-      // DEPOSIT_FAILED 满载 worker 卡 Core 格 → 经济死锁。优先级高于
-      // populationCeiling / 军事配比（死锁兜底）；价格按动态价；首选军事
-      // （交替），买不起回退 Worker。
+      // （顶级兑换码门槛）够用即可，超出部分花掉造单位"）。**兑换门槛硬约束**
+      // （2026-08-10 用户裁决"t1 随时都有资源去兑换黑与白"）：消费后剩余
+      // 必须 >= resourceHighWater（花完仍够兑换），否则不花——只有 P1 危机
+      // /P3 死锁允许跌破。pop≥ceiling 后正常 SPAWN 分支关闭 → 资源囤积到
+      // Core 容量上限（max(10, pop×5)）→ DEPOSIT_FAILED 满载 worker 卡 Core
+      // 格 → 经济死锁；P2 在不破兑换门槛前提下花掉超出部分。价格按动态价。
       if (resourceHighWater > 0 && state.resources >= resourceHighWater) {
         const unitType: "VANGUARD" | "RANGER" = nextMilitaryType(state, vanguardRatio);
-        if (state.resources >= spawnCosts[unitType]) {
+        // 花完仍 >= 高水位才消费（保留兑换能力）；否则保留资源等下 tick 攒够。
+        if (state.resources - spawnCosts[unitType] >= resourceHighWater) {
           return {
             action: { type: "SPAWN", unitType },
             intent: "spawn_high_water_spend",
             surgeActive: active,
           };
         }
-        if (state.resources >= spawnCosts.WORKER) {
+        if (state.resources - spawnCosts.WORKER >= resourceHighWater) {
           return {
             action: { type: "SPAWN", unitType: "WORKER" },
             intent: "spawn_high_water_worker",
             surgeActive: active,
           };
         }
+        // res ≥ 150 但花完会破门槛 → 不消费（保留兑换能力）；fall through
+        // 到正常分支/P3 硬顶（P3 是死锁绝对防线，可破门槛）。
       }
       // P3 容量硬顶（2026-08-10 数学防死锁）：res 接近 Core 容量上限
       // （max(10, pop×5)）时强制消费最便宜的（Worker→Vanguard→Ranger）——
@@ -613,7 +639,13 @@ export function selectDeterministicCoreAction(
       // （零回归），只有正常停产且容量将满时才介入。
       const coreCapacity = Math.max(10, state.population * 5);
       const capacitySpend = (): ReturnType<typeof selectDeterministicCoreAction> => {
-        if (state.resources < coreCapacity - CORE_CAPACITY_MARGIN) {
+        // P3 门：cap > 2×margin 才启用（小 pop cap 退化时关闭——pop=3 cap=15、
+        // margin 15 会把门槛压到 0，导致 res≥0 就兜底产兵，掩盖正常补员路径；
+        // 小 pop 死锁风险低，res 远未近 cap 前早被 P2/正常分支消费）。
+        if (coreCapacity <= coreCapacityMargin * 2) {
+          return { action: null, intent: null, surgeActive: active };
+        }
+        if (state.resources < coreCapacity - coreCapacityMargin) {
           return { action: null, intent: null, surgeActive: active };
         }
         for (const unitType of ["WORKER", "VANGUARD", "RANGER"] as const) {
@@ -818,8 +850,22 @@ export class DeterministicPlanner implements PlanProvider {
   private accumulateThreshold: number;
   /** 爆兵状态（跨 tick 保持：达标后持续爆兵直到资源耗尽回积累期）。 */
   private surgeActive = false;
-  /** 资源高水位消费线（2026-08-10 用户理念，防 Core 容量顶格死锁）。 */
+  /** 资源高水位消费线（2026-08-10 用户理念，防 Core 容量顶格死锁）：默认 150
+   *  = 黑与白公益站注册码商店实测价（linuxdoshop.arenahero.io，全店最贵可兑换
+   *  商品）。可经 config / shop 快照动态覆盖。 */
   private resourceHighWater = RESOURCE_HIGH_WATER;
+  /** 商店快照覆盖值（2026-08-10，data/shop/ 动态源）：租户启动时从全店最高
+   *  可兑换商品价读取（当前 150）；config 显式 resourceHighWater 优先，此值次之，
+   *  热加载后仍保留（updateConfig 不把它冲掉）。null = 无快照（默认 150）。 */
+  private resourceHighWaterOverride: number | null = null;
+  /** 军事危机底线（P1 兜底）：默认 8 = 4V+4R 守卫编成（用户裁决）。 */
+  private emergencyMilitaryFloor = EMERGENCY_MILITARY_FLOOR;
+  /** 危机爆兵 Vanguard 补编目标：默认 4（四角各 1 前锋）。 */
+  private emergencyVanguardTarget = EMERGENCY_VANGUARD_TARGET;
+  /** 危机爆兵 worker 起步门：默认 4（冷启动保护）。 */
+  private emergencyWorkerGate = EMERGENCY_WORKER_GATE;
+  /** 容量硬顶余量（P3 兜底）：默认 15。 */
+  private coreCapacityMargin = CORE_CAPACITY_MARGIN;
   /** 补员 reserve（第十轮实验配置；默认 2 = 生产行为零回归）。 */
   private spawnReserve: number;
   /** 使命层配置（worker-mission-v1）：值层置信 + SURVEYOR 角色仲裁。 */
@@ -887,6 +933,19 @@ export class DeterministicPlanner implements PlanProvider {
     homeDefenseBottom = false,
     /** W12 按类型替补队列开关（replacement-queue-v1，默认关零回归）。 */
     replacementQueue = false,
+    /** 资源高水位消费线（默认 150 = 黑与白公益站注册码商店实测价）。 */
+    resourceHighWater = RESOURCE_HIGH_WATER,
+    /** 商店快照覆盖值（data/shop/，tenant-runtime 启动注入）：全店最高可兑换
+     *  商品价；config 显式 resourceHighWater 优先，此值次之。null = 无快照。 */
+    resourceHighWaterOverride: number | null = null,
+    /** 军事危机底线（默认 8 = 4V+4R 守卫编成）。 */
+    emergencyMilitaryFloor = EMERGENCY_MILITARY_FLOOR,
+    /** 危机爆兵 Vanguard 补编目标（默认 4）。 */
+    emergencyVanguardTarget = EMERGENCY_VANGUARD_TARGET,
+    /** 危机爆兵 worker 起步门（默认 4）。 */
+    emergencyWorkerGate = EMERGENCY_WORKER_GATE,
+    /** 容量硬顶余量（默认 15）。 */
+    coreCapacityMargin = CORE_CAPACITY_MARGIN,
   ) {
     this.planner = planner;
     this.fallbackPlanner = fallbackPlanner;
@@ -901,6 +960,12 @@ export class DeterministicPlanner implements PlanProvider {
     this.recoveryEarlyMilitary = recoveryEarlyMilitary;
     this.homeDefenseBottom = homeDefenseBottom;
     this.replacementQueueEnabled = replacementQueue;
+    this.resourceHighWater = resourceHighWater ?? resourceHighWaterOverride ?? RESOURCE_HIGH_WATER;
+    this.resourceHighWaterOverride = resourceHighWaterOverride;
+    this.emergencyMilitaryFloor = emergencyMilitaryFloor;
+    this.emergencyVanguardTarget = emergencyVanguardTarget;
+    this.emergencyWorkerGate = emergencyWorkerGate;
+    this.coreCapacityMargin = coreCapacityMargin;
     this.threatProfiles = threatProfiles;
     if (initialCoreHuntTargets.length > 0) {
       fallbackPlanner.seedCoreHuntTargets(initialCoreHuntTargets);
@@ -986,6 +1051,11 @@ export class DeterministicPlanner implements PlanProvider {
       readonly homeDefenseBottom?: boolean;
       readonly replacementQueue?: boolean;
       readonly mission?: MissionConfig;
+      readonly resourceHighWater?: number;
+      readonly emergencyMilitaryFloor?: number;
+      readonly emergencyVanguardTarget?: number;
+      readonly emergencyWorkerGate?: number;
+      readonly coreCapacityMargin?: number;
     },
   ): void {
     this.fallbackPlanner.updateConfig(safetyConfig);
@@ -997,6 +1067,13 @@ export class DeterministicPlanner implements PlanProvider {
     this.recoveryEarlyMilitary = deterministicConfig.recoveryEarlyMilitary ?? false;
     this.homeDefenseBottom = deterministicConfig.homeDefenseBottom ?? false;
     this.replacementQueueEnabled = deterministicConfig.replacementQueue ?? false;
+    // 商店快照覆盖在热加载后保留（config 显式值仍优先；shop 价是日级慢变量）。
+    this.resourceHighWater =
+      deterministicConfig.resourceHighWater ?? this.resourceHighWaterOverride ?? RESOURCE_HIGH_WATER;
+    this.emergencyMilitaryFloor = deterministicConfig.emergencyMilitaryFloor ?? EMERGENCY_MILITARY_FLOOR;
+    this.emergencyVanguardTarget = deterministicConfig.emergencyVanguardTarget ?? EMERGENCY_VANGUARD_TARGET;
+    this.emergencyWorkerGate = deterministicConfig.emergencyWorkerGate ?? EMERGENCY_WORKER_GATE;
+    this.coreCapacityMargin = deterministicConfig.coreCapacityMargin ?? CORE_CAPACITY_MARGIN;
     // 打转封锁（W5）：变体开关经 SafetyPlannerConfig.spinBlockade 传递（变体注册表
     // 把 spin-blockade-v1 映射为 { spinBlockade: true }）。热加载时原子替换——
     // 变体关后下一 tick plan() 不再传 cellBlocker、不 recordPlannedMove（零回归）。
@@ -1295,11 +1372,16 @@ export class DeterministicPlanner implements PlanProvider {
       // NOTE: threatDefenseSpawn（pos 9）与 recoveryEarlyMilitary/homeDefenseBottom
       // 的位置映射沿用历史调用约定（不改既有行为——零回归）。pos 11 显式传
       // false 保持 homeDefenseBottom 形参的历史默认值。replacement-queue-v1 的
-      // 两个新形参落在 pos 12-13，resourceHighWater 在 pos 14。
+      // 两个新形参落在 pos 12-13，resourceHighWater 在 pos 14，2026-08-10 动态
+      // 参数化四件套（危机底线/V 目标/起步门/硬顶余量）落在 pos 15-18。
       false,
       this.replacementQueue,
       this.replacementQueueEnabled,
       this.resourceHighWater,
+      this.emergencyMilitaryFloor,
+      this.emergencyVanguardTarget,
+      this.emergencyWorkerGate,
+      this.coreCapacityMargin,
     );
     this.surgeActive = coreDecision.surgeActive;
     if (coreDecision.intent !== null) finalIntents.core = coreDecision.intent;
