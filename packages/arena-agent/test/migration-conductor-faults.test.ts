@@ -14,7 +14,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { conductorStep, CONDUCTOR_LEASE_HORIZON_TICKS, type ConductorHeldState } from "../src/migration/conductor.ts";
+import { conductorStep, CONDUCTOR_LEASE_HORIZON_TICKS, INITIAL_CONDUCTOR_HELD_STATE, type ConductorHeldState } from "../src/migration/conductor.ts";
 import {
   migrationPlanPath,
   readMigrationPlan,
@@ -254,7 +254,10 @@ test("故障2：lease 过期 → isMigrationLeaseFresh=false；step 拒绝续迁
 
   assert.equal(isMigrationLeaseFresh(plan.lease, expiredTick, NOW_BASE_MS), false, "lease 应判定不新鲜");
 
-  const held = { holdEntryCount: 1, holdFirstTick: 5_500, holdTicks: 2, settleElapsed: 0, stallTicks: 0, stallRecordedTick: -1, clearRetries: 0, threatStallTicks: 0, threatFirstTick: 0, threatReplanCount: 0, gapTicks: 0, starveSince: 0, starveCooldownUntil: 0 };
+  const held = {
+    ...INITIAL_CONDUCTOR_HELD_STATE,
+    holdEntryCount: 1, holdFirstTick: 5_500, holdTicks: 2,
+  };
   const result = conductorStep({
     tick: expiredTick,
     nowMs: NOW_BASE_MS,

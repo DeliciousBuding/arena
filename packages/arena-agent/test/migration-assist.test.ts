@@ -440,14 +440,18 @@ test("腿完成 → LEG_SETTLE 清 clearRetries", () => {
 });
 
 test("burst 达标 → LEG_SETTLE 清 clearRetries", () => {
-  const plan = makeMovingPlan({
+  const plan = makeMovingPlan();
+  const config: MigrationRuntimeConfig = {
+    ...DEFAULT_MIGRATION_RUNTIME_CONFIG,
     pace: { ...DEFAULT_MIGRATION_RUNTIME_CONFIG.pace, burstCells: 2 },
-  });
+  };
   const result = step(
     { ...plan, legProgress: { legIndex: 0, cellsThisLeg: 1 } },
     { id: "uuid-A", position: [2, 0], state: "NORMAL", hp: 5 },
     [],
     { ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 1, clearRetries: 2 },
+    10_000,
+    config,
   );
   assert.equal(result.plan?.state, "LEG_SETTLE", "burst 达标 → 休整");
   assert.equal(result.held.clearRetries, 0, "burst 完成 → 清路 episode 结束");

@@ -570,7 +570,10 @@ test("场景9：核心偏离已审走廊 → REPLAN_REQUESTED → PLAN（revisio
 // ---------------------------------------------------------------------------
 
 test("场景8：无计划输入 → plan=null、无转移、held 不变、reasons 注明 IDLE", () => {
-  const held: ConductorHeldState = { holdEntryCount: 2, holdFirstTick: 700, holdTicks: 3, settleElapsed: 12, stallTicks: 0, stallRecordedTick: -1, clearRetries: 0, threatStallTicks: 0, threatFirstTick: 0, threatReplanCount: 0, gapTicks: 0, starveSince: 0, starveCooldownUntil: 0 };
+  const held: ConductorHeldState = {
+    ...INITIAL_CONDUCTOR_HELD_STATE,
+    holdEntryCount: 2, holdFirstTick: 700, holdTicks: 3, settleElapsed: 12,
+  };
   const input: ConductorStepInput = {
     tick: 500,
     nowMs: NOW_BASE_MS,
