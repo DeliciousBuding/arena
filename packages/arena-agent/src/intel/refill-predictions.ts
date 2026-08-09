@@ -137,7 +137,7 @@ export { MIN_WINDOWS, REFILL_GAP_TICKS };
  * （W 源码 _chunk_quota）/ refillProbeAllowed（W 源码 _refill_probe_allowed）/
  * planChunkResurvey（配额定向复察，并发 ≤3、近优先）。未接线 variant-registry
  * /safety-planner，零回归——消费由收口统一处理。
- * 参考：reference/arena-hero-clone-waaiging/arena_hero_strategy.py HEAD 26675e36
+ * 参考：reference/third-party/arena-hero-clone-waaiging/arena_hero_strategy.py HEAD 26675e36
  *   _chunk_quota :2135-2141 / _refill_tick_at_or_after :2143-2145 /
  *   _refill_probe_allowed :2181-2191 / REFILL_PROBE_MAX_DISTANCE=40 :334 /
  *   REFILL_PROBE_BACKTRACK_DISTANCE=12 :335。

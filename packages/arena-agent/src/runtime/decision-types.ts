@@ -20,9 +20,27 @@ export type DecisionModeName = "safety" | "deterministic" | "agent-shadow" | "hy
 export type SubmissionModeName = "disabled" | "live";
 
 /** 确定性 planner 端口（SafetyPlanner 与 DeterministicPlanner 可互换注入——P0-1：
- *  deterministic 模式 = coordinator 短路 + planner 注入，coordinator 不感知差异）。 */
+ *  deterministic 模式 = coordinator 短路 + planner 注入，coordinator 不感知差异）。
+ *
+ * 决策流水线端口（P4g，2026-08-09，可选）：
+ *  - `prefetch` 异步发起决策（不阻塞），结果缓存在 provider 内部——持久桥
+ *    实现 = worker 线程提交请求不等待；内置 planner = 直接同步计算缓存；
+ *  - `decideCached` 取缓存结果（未完成则同步等待，保底逻辑）。必须在
+ *    `prefetch` 之后成对调用。
+ *  两个方法要么都实现要么都不实现；缺省不实现 = 调用方退回同步 `decide`
+ *  （逐 tick 阻塞），行为与无流水线时逐字节一致。
+ *
+ * 流水线调度提示（P4g+，2026-08-09）：`parallelPrefetch` 缺省 false。桥类
+ * provider（持久子进程决策器）prefetch = 非阻塞提交（Python 并行决策），应
+ * 置 true；内置 planner（同步计算缓存）保持 false。episode 的 prefetch 循环
+ * 按此把桥类请求先发出（决策与主线程后续计算重叠），同步计算排后。只影响
+ * 调度顺序，不影响任何 tenant 的请求内容/序列——逐字节一致。 */
 export interface PlanProvider {
   decide(input: { readonly state: TickState; readonly policy?: MacroPolicy }): Plan;
+  prefetch?(input: { readonly state: TickState; readonly policy?: MacroPolicy }): void;
+  decideCached?(): Plan;
+  /** P4g+：prefetch 是否非阻塞发起（真异步，如持久桥）；缺省 false = 同步计算。 */
+  readonly parallelPrefetch?: boolean;
 }
 
 /** 决策上下文：不可变，一次决策全程共享（R9：World 必须在 Tick 开始时快照化）。 */

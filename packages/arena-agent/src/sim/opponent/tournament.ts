@@ -13,7 +13,13 @@
  */
 
 import type { Plan } from "../../domain/model.ts";
-import { runEpisode, type EpisodeTenant } from "../../sim/harness/episode.ts";
+import {
+  runEpisode,
+  type EpisodeRecord,
+  type EpisodeTenant,
+  type PlayerCostLedger,
+} from "../../sim/harness/episode.ts";
+import { createSeededRng } from "../../sim/deterministic/rng.ts";
 import type { SimWorld } from "../../sim/world/types.ts";
 import {
   DEFAULT_PROCEDURAL_PARAMS,
@@ -24,6 +30,8 @@ import {
 import type { PlanProvider } from "../../runtime/decision-types.ts";
 import { SafetyPlanner, DEFAULT_SAFETY_CONFIG, type SafetyPlannerConfig } from "../../strategies/safety-planner.ts";
 import { createEpisodeRecorder } from "./recorder.ts";
+import { OpponentAdapter } from "./opponent-adapter.ts";
+import { BRIDGE_PROJECTION_AUDITED_AGENTS } from "./protocol-bridge.ts";
 
 /** Re-export 程序化生成旋钮（调用方无需直接 import world/procedural）。 */
 export { DEFAULT_PROCEDURAL_PARAMS } from "../world/procedural.ts";
@@ -44,6 +52,15 @@ export interface MatchResult {
   readonly finalPopulation: Readonly<Record<string, number>>;
   /** 对打当轮事件数（用于常观验证）。 */
   readonly eventCount: number;
+  /** 每玩家五维 cost ledger（arena-bench 评测画像用；无 ledger 场景下可能缺省）。 */
+  readonly perPlayerLedgers?: Readonly<Record<string, PlayerCostLedger>>;
+  /** 每玩家击杀数（playerId → CORE_DESTROYED 归属数；arena-bench 用，可选）。
+   *  归属语义：CORE_DESTROYED 无 actorId，击杀记在 values.destroyed_by
+   *  （最终贡献伤害的玩家 username 列表；合成场景 username=playerId，
+   *  多贡献者同记一杀）。 */
+  readonly perPlayerKills?: Readonly<Record<string, number>>;
+  /** 每玩家首杀 tick（playerId → 首个被归属击杀的 tick；无击杀缺省）。 */
+  readonly perPlayerFirstKillTicks?: Readonly<Record<string, number>>;
 }
 
 /** 一种可参赛的策略（我的 TS / reference 提取 / HTTP）。标定 score 由外部提供。 */
@@ -220,11 +237,13 @@ export function makeSafetyEntry(id: string): TournEntry {
   };
 }
 
-/** 计算一个 match 的胜者：核心存活优先；都活 → 资源多；都活且资源平 → 人口多；仍平 → null。 */
+/** 计算一个 match 的胜者：核心存活优先；都活 → 击杀多（v3：与榜单排名判定
+ *  统一，审计 bench-fairness-audit §1.4）；再 → 资源多；再 → 人口多；仍平 → null。 */
 export function decideWinner(
   players: readonly string[],
   before: SimWorld,
   after: SimWorld,
+  kills?: Readonly<Record<string, number>>,
 ): { winner: string | null; coreAlive: Record<string, boolean>; finalResources: Record<string, number>; finalPopulation: Record<string, number> } {
   const coreAlive: Record<string, boolean> = {};
   const finalResources: Record<string, number> = {};
@@ -240,14 +259,18 @@ export function decideWinner(
   if (alive.length === 1) {
     winner = alive[0];
   } else if (alive.length > 1) {
-    // 多存活（含全员存活）：存活者内资源多优先；平 → 人口多；平 → null。
-    // FFA 中间态（部分核心被拆、未到唯一存活）同样按存活阵营资源定胜。
+    // 多存活（含全员存活）：存活者内击杀多优先；平 → 资源；平 → 人口；平 → null。
+    const killOf = (player: string): number => kills?.[player] ?? 0;
     const sorted = [...alive].sort(
-      (a, b) => finalResources[b] - finalResources[a] || finalPopulation[b] - finalPopulation[a],
+      (a, b) =>
+        killOf(b) - killOf(a) ||
+        finalResources[b] - finalResources[a] ||
+        finalPopulation[b] - finalPopulation[a],
     );
     const top = sorted[0];
     const second = sorted[1];
     if (
+      killOf(top) !== killOf(second) ||
       finalResources[top] !== finalResources[second] ||
       finalPopulation[top] !== finalPopulation[second]
     ) {
@@ -325,6 +348,8 @@ export function runMatch(
      *  默认手写布局。true = 用 DEFAULT_PROCEDURAL_PARAMS；传入 params 覆盖。
      *  默认关（不改变现有场景行为）；与 scenario 互斥（scenario 优先）。 */
     procedural?: boolean | ProceduralWorldParams;
+    /** P4g 决策流水线（2026-08-09）：透传到 episode（默认关 = 现有行为）。 */
+    pipeline?: boolean;
   },
 ): MatchResult {
   const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
@@ -370,6 +395,7 @@ export function runMatch(
       plannerFactory: (tenant: EpisodeTenant): PlanProvider => (tenant.id === a.id ? providers[0] : providers[1]),
       validatePlans: opts?.validatePlans ?? true,
       onTickRecorded: recorder?.onTickRecorded,
+      pipeline: opts?.pipeline === true,
     } as never);
     const { winner: w, coreAlive, finalResources, finalPopulation } = decideWinner([a.id, b.id], undefined as never, result.finalWorld);
     return {
@@ -381,6 +407,8 @@ export function runMatch(
       finalResources,
       finalPopulation,
       eventCount: result.records.reduce((n, r) => n + r.events.length, 0),
+      // arena-bench 五维画像：从 EpisodeResult.metrics.perPlayer 透传（可选字段，向后兼容）
+      perPlayerLedgers: result.metrics.perPlayer,
     };
   } finally {
     recorder?.close();
@@ -395,26 +423,91 @@ export function runMatch(
   }
 }
 
-/** N 玩家混战场景：核心均匀分布在圆周（半径 18），各自 1 worker（官方起点
- *  5 资源 + 1 worker，M4-3）+ 近距资源盘。每核资源盘取 RESOURCE_LAYOUTS 前
- *  4 个近距点（±7 内），圆周间距（3 人 ~31、4 人 ~25）远大于盘半径，无跨核
- *  重叠；id 按参与序派生（CORE/WORKER 前缀表）。M4-2：信标归位圆周圆心
- *  [0,0]（半径 18 圆周上所有核心距圆心 18 > 视野 5）；M4-4：seed 同源派生
- *  圆心附近障碍集（OBSTACLE_LAYOUTS_FFA）。 */
-export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): unknown {
+/** makeArenaScenarioN 布局旋钮（全部可选；缺省 = 既有 FFA 布局，逐字节不变）。 */
+export interface ArenaScenarioNOptions {
+  /** 核心圆周半径；缺省 18（既有 FFA 布局）。大地图：30/40（8+ 玩家）。
+   *  信标恒在圆心 [0,0]；资源盘/障碍集按 radius/18 同源缩放（radius 18 恒等）。 */
+  readonly radius?: number;
+  /** 显式指定资源盘/障碍集变体序号（0-based，与 seed 派生同源）；缺省 seed % 变体数。 */
+  readonly resourceLayoutIndex?: number;
+  /** 随机投放：seed 派生起始角旋转 + 参与序洗牌（确定性——同 seed 恒同场景）。
+   *  缺省不启用——保持固定 -π/2 起始角、按参与序落位的既有确定性布局。 */
+  readonly randomDrop?: { readonly seed: number };
+}
+
+/** 按半径缩放 FFA 障碍块（保持 1×2/2×1 块结构：每对首格取整、尾格 = 首格 +
+ *  原始单位增量，任意 scale 下块内相邻性不破）。scale=1（radius 18）时恒等。
+ *  障碍块始终留在圆心附近（|x|+|y| ≤ 10·scale+1），核心在半径 18·scale 圆周
+ *  ——任何 scale 下距核心 Manhattan ≥ 8·scale-1 > 3，不压核心。 */
+function scaleObstacleBlocks(
+  cells: readonly (readonly [number, number])[],
+  scale: number,
+): [number, number][] {
+  const scaled: [number, number][] = [];
+  for (let i = 0; i < cells.length; i += 2) {
+    const anchor = cells[i];
+    const partner = cells[i + 1];
+    const sx = Math.round(anchor[0] * scale);
+    const sy = Math.round(anchor[1] * scale);
+    scaled.push([sx, sy], [sx + partner[0] - anchor[0], sy + partner[1] - anchor[1]]);
+  }
+  return scaled;
+}
+
+/** 随机投放布局：无 randomDrop 时返回恒等序 + 零旋转（与既有布局逐字节一致）；
+ *  启用时用 randomDrop.seed 派生全局旋转角 + Fisher–Yates 参与序洗牌
+ *  （createSeededRng/mulberry32——同 seed 恒同场景）。 */
+function resolveDropArrangement(
+  randomDropSeed: number | undefined,
+  n: number,
+): { readonly angleOffset: number; readonly order: readonly number[] } {
+  const order = Array.from({ length: n }, (_, i) => i);
+  if (randomDropSeed === undefined) {
+    return { angleOffset: 0, order };
+  }
+  const rng = createSeededRng(randomDropSeed);
+  const angleOffset = rng.next() * 2 * Math.PI;
+  for (let i = n - 1; i > 0; i -= 1) {
+    const j = Math.floor(rng.next() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return { angleOffset, order };
+}
+
+/** N 玩家混战场景：核心均匀分布在圆周（radius 参数化，缺省 18），各自 1 worker
+ *  （官方起点 5 资源 + 1 worker，M4-3）+ 近距资源盘（随 radius 缩放）。每核资源盘
+ *  取 RESOURCE_LAYOUTS 前 4 个近距点（radius 18 时 ±7 内），圆周间距（3 人 ~31、
+ *  4 人 ~25）远大于盘半径，无跨核重叠；id 按参与序派生（CORE/WORKER 前缀表 +
+ *  尾部 index——任意 n 全图唯一）。M4-2：信标归位圆周圆心 [0,0]（所有核心距圆心
+ *  = radius > 视野 5）；M4-4：seed 同源派生圆心附近障碍集（OBSTACLE_LAYOUTS_FFA，
+ *  随 radius 缩放、保持 1×2/2×1 块结构，永不压核心）。randomDrop 启用时起始角与
+ *  参与序由 seed 派生（随机投放，确定性）。 */
+export function makeArenaScenarioN(
+  entries: readonly TournEntry[],
+  seed = 1,
+  options?: ArenaScenarioNOptions,
+): unknown {
   const n = Math.max(2, entries.length);
-  const radius = 18;
-  const layoutIndex = Math.abs(seed) % RESOURCE_LAYOUTS.length;
+  // radius 缺省 18 = 既有布局；障碍/资源盘按 radius/18 同源缩放（radius 18 时恒等）
+  const radius = options?.radius ?? 18;
+  if (!Number.isFinite(radius) || radius <= 0) {
+    throw new Error(`makeArenaScenarioN radius must be a positive finite number (got ${String(radius)})`);
+  }
+  const scale = radius / 18;
+  const rawLayoutIndex = options?.resourceLayoutIndex ?? Math.abs(seed) % RESOURCE_LAYOUTS.length;
+  const layoutIndex = ((rawLayoutIndex % RESOURCE_LAYOUTS.length) + RESOURCE_LAYOUTS.length) % RESOURCE_LAYOUTS.length;
   const layout = RESOURCE_LAYOUTS[layoutIndex].slice(0, 4);
-  const obstacles = [...OBSTACLE_LAYOUTS_FFA[layoutIndex]];
-  const players = entries.map((entry, index) => {
-    const angle = (2 * Math.PI * index) / n - Math.PI / 2;
+  const obstacles = scaleObstacleBlocks(OBSTACLE_LAYOUTS_FFA[layoutIndex], scale);
+  const { angleOffset, order } = resolveDropArrangement(options?.randomDrop?.seed, n);
+  const players = order.map((entryIndex, slot) => {
+    const entry = entries[entryIndex];
+    const angle = (2 * Math.PI * slot) / n - Math.PI / 2 + angleOffset;
     const cx = Math.round(radius * Math.cos(angle));
     const cy = Math.round(radius * Math.sin(angle));
     const workers = initialWorkers(
       entry.id,
-      `${WORKER_ID_PREFIXES[index % WORKER_ID_PREFIXES.length]}-0000-0000-0000-000000000000`,
-      index,
+      `${WORKER_ID_PREFIXES[entryIndex % WORKER_ID_PREFIXES.length]}-0000-0000-0000-000000000000`,
+      entryIndex,
       [cx + 1, cy],
     );
     return {
@@ -422,8 +515,8 @@ export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): un
       username: entry.id,
       resources: 5,
       core: {
-        // 前缀表仅 4 项——尾部按参与序派生，n≥5 时也保证全图唯一（防静默覆盖）
-        id: `${CORE_ID_PREFIXES[index % CORE_ID_PREFIXES.length].slice(0, 23)}-${String(index).padStart(12, "0")}`,
+        // 前缀表仅 4 项——尾部按参与序 12 位派生，任意 n（<10^12）也保证全图唯一
+        id: `${CORE_ID_PREFIXES[entryIndex % CORE_ID_PREFIXES.length].slice(0, 23)}-${String(entryIndex).padStart(12, "0")}`,
         position: [cx, cy],
         hp: 5,
         shield: 5,
@@ -438,7 +531,10 @@ export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): un
   });
   const resources = players.flatMap((player) => {
     const corePosition = player.core.position as [number, number];
-    return layout.map(([dx, dy]) => [corePosition[0] + dx, corePosition[1] + dy] as [number, number]);
+    return layout.map(([dx, dy]) => [
+      corePosition[0] + Math.round(dx * scale),
+      corePosition[1] + Math.round(dy * scale),
+    ] as [number, number]);
   });
   return {
     rulesVersion: "v0.14",
@@ -448,6 +544,42 @@ export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): un
     terrain: { obstacles, resources },
     beacon: { position: [0, 0], status: "GROUND", carrierId: null },
   };
+}
+
+/**
+ * 从 EpisodeResult.records 事件统计 CORE_DESTROYED 击杀归属。
+ *
+ * CORE_DESTROYED 事件结构（sim/engine/combat.ts）：无 actorId——击杀归属
+ * 在 values.destroyed_by（最终贡献伤害的玩家 username 列表）。合成场景
+ * username=playerId（makeArenaScenarioN/makeArenaMatchScenario 均如此），
+ * 故按 destroyed_by 直接归到玩家 id；多贡献者同记一杀，无贡献者不记
+ * （perPlayerKills 之和可能小于全场 CORE_DESTROYED 数，调用方按需注明）。
+ */
+function computePerPlayerKills(
+  records: readonly EpisodeRecord[],
+  playerIds: readonly string[],
+): { readonly kills: Readonly<Record<string, number>>; readonly firstKillTicks: Readonly<Record<string, number>> } {
+  const playerSet = new Set(playerIds);
+  const kills: Record<string, number> = {};
+  const firstKillTicks: Record<string, number> = {};
+  for (const playerId of playerIds) {
+    kills[playerId] = 0;
+  }
+  for (const record of records) {
+    for (const event of record.events) {
+      if (event.eventType !== "CORE_DESTROYED") continue;
+      const destroyedBy = event.values?.destroyed_by;
+      if (!Array.isArray(destroyedBy)) continue;
+      for (const rawUsername of destroyedBy) {
+        if (typeof rawUsername !== "string" || !playerSet.has(rawUsername)) continue;
+        kills[rawUsername] += 1;
+        if (firstKillTicks[rawUsername] === undefined) {
+          firstKillTicks[rawUsername] = record.tick;
+        }
+      }
+    }
+  }
+  return { kills, firstKillTicks };
 }
 
 /**
@@ -471,6 +603,16 @@ export function runFreeForAll(
      *  默认圆周布局。true = 用 DEFAULT_PROCEDURAL_PARAMS；传入 params 覆盖。
      *  默认关；与 scenario 互斥（scenario 优先）。 */
     procedural?: boolean | ProceduralWorldParams;
+    /** makeArenaScenarioN 布局旋钮（radius / resourceLayoutIndex / randomDrop）；
+     *  仅缺省合成场景路径（未给 scenario/procedural 时）生效。 */
+    arenaScenarioOptions?: ArenaScenarioNOptions;
+    /** P4g 决策流水线（2026-08-09）：透传到 episode（默认关 = 现有行为）。 */
+    pipeline?: boolean;
+    /** R2 桥状态投影（2026-08-09）：对字段读取已审计的 Python 对手逐 agent
+     *  启用状态投影（只序列化并集字段的非空值；默认关 = 现状逐字节一致）。
+     *  白名单见 BRIDGE_PROJECTION_AUDITED_AGENTS——未审计的第三方/HTTP 端点
+     *  与审计中发现动态读字段的 agent 不投影。 */
+    bridgeProjection?: boolean;
   },
 ): MatchResult {
   const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
@@ -483,7 +625,7 @@ export function runFreeForAll(
           seed,
           typeof opts.procedural === "boolean" ? DEFAULT_PROCEDURAL_PARAMS : opts.procedural,
         )
-      : makeArenaScenarioN(entries, seed));
+      : makeArenaScenarioN(entries, seed, opts?.arenaScenarioOptions));
   const ids = entries.map((entry) => entry.id);
   // build 移入 try：中途抛错时已建 provider 也走 finally close（卫生项同 runMatch）。
   const providers: PlanProvider[] = [];
@@ -501,6 +643,18 @@ export function runFreeForAll(
         });
   try {
     for (const entry of entries) providers.push(entry.build());
+    // R2 桥状态投影：只对白名单内（字段读取已审计）的 OpponentAdapter 启用；
+    // 未审计第三方/HTTP 端点与审计中动态读字段的 agent 不投影（默认关）。
+    if (opts?.bridgeProjection === true) {
+      for (const provider of providers) {
+        if (
+          provider instanceof OpponentAdapter &&
+          BRIDGE_PROJECTION_AUDITED_AGENTS.has(provider.label)
+        ) {
+          provider.setProjection(true);
+        }
+      }
+    }
     const result = runEpisode({
       scenario,
       rulesPath,
@@ -517,11 +671,14 @@ export function runFreeForAll(
       plannerFactory: (tenant: EpisodeTenant): PlanProvider => providers[ids.indexOf(tenant.id)],
       validatePlans: opts?.validatePlans ?? true,
       onTickRecorded: recorder?.onTickRecorded,
+      pipeline: opts?.pipeline === true,
     } as never);
+    const { kills, firstKillTicks } = computePerPlayerKills(result.records, ids);
     const { winner, coreAlive, finalResources, finalPopulation } = decideWinner(
       ids,
       undefined as never,
       result.finalWorld,
+      kills,
     );
     return {
       players: ids,
@@ -532,6 +689,11 @@ export function runFreeForAll(
       finalResources,
       finalPopulation,
       eventCount: result.records.reduce((n, r) => n + r.events.length, 0),
+      // arena-bench 五维画像：从 EpisodeResult.metrics.perPlayer 透传（可选字段，向后兼容）
+      perPlayerLedgers: result.metrics.perPlayer,
+      // arena-bench 击杀归属：CORE_DESTROYED values.destroyed_by（可选字段，向后兼容）
+      perPlayerKills: kills,
+      perPlayerFirstKillTicks: firstKillTicks,
     };
   } finally {
     recorder?.close();

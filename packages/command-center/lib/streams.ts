@@ -5,9 +5,13 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { TENANTS, DATA_ROOT, calibrationDir, latestRunDir, listCases, parseTick, readJsonlTail, telemetryDir } from "./fs-jsonl.ts";
+import { openAgentDb, knownAgent } from "./agent-ingest.ts";
 import type { SupervisorState } from "./supervisor.ts";
 
 const LIVE_FRESH_MS = 90_000; // outcome.jsonl mtime 新鲜窗口 = 在线
+/** 台账与 JSONL 合并的 tick 容差：同一次运行内 ingest flush 滞后约 150 tick，
+ *  超过该差值视为旧 run 残留，不合并（避免旧数据混入主指标）。 */
+const JSONL_MERGE_TICK_TOLERANCE = 600;
 
 export interface OverviewTenant {
   tenant: string;
@@ -24,16 +28,34 @@ export interface OverviewTenant {
     workerMaxDistance?: number | null;
     workerMeanDistance?: number | null;
     visibleResources?: number | null;
+    visibleEnemies?: number | null;
+    coreX?: number | null;
+    coreY?: number | null;
+    status?: string | null;
     events?: number;
   } | null;
   window: { avgResources: number | null; avgWorkers: number | null; avgMaxDistance: number | null };
 }
 export interface OverviewPayload { generatedAt: string; dataRoot: string; tenants: OverviewTenant[] }
 
-/** 每租户最新 outcome 快照 + 近 60 tick 均值（资源/人口展示）。 */
+/** 每租户最新 outcome 快照 + 近 60 tick 均值（资源/人口展示）。
+ *  双源合并（2026-08-10 t1 回归修复）：agents 台账（python-mapping-
+ *  telemetry-v1）与 TS 格式 outcome.jsonl 不再是二选一——台账新鲜（updated_at
+ *  < LIVE_FRESH_MS）即以台账字段为基准（tick/resources/units/敌数/核心坐标），
+ *  JSONL last 行存在且 tick 接近（同一进程同一次运行）时并入 JSONL 独有丰富
+ *  字段（resourceDelta/worker 距离/带货运工/可见资源/事件）；台账不新鲜回退
+ *  JSONL-only fallback（旧数据展示）。python 租户（t2/t3/t4）不写 TS 格式
+ *  JSONL，天然走台账-only 分支。 */
 export function loadOverview(supervisorState: SupervisorState | null): OverviewPayload {
   const tenants: OverviewTenant[] = [];
   for (const tenant of TENANTS) {
+    const ledger = openAgentDb(tenant, false);
+    const agent = knownAgent(ledger, tenant);
+    const ledgerFresh =
+      agent !== null &&
+      agent.updatedAt !== null &&
+      Date.now() - Date.parse(agent.updatedAt) < LIVE_FRESH_MS;
+
     const file = join(telemetryDir(tenant), "outcome.jsonl");
     const rows = readJsonlTail(file, 200);
     const last = rows[rows.length - 1] ?? null;
@@ -49,13 +71,52 @@ export function loadOverview(supervisorState: SupervisorState | null): OverviewP
       fresh = Date.now() - mtime < LIVE_FRESH_MS;
     }
     const sup = supervisorState?.tenants?.find((t) => t.tenantId === tenant) ?? null;
-    tenants.push({
-      tenant,
-      live: sup ? sup.ready === true && sup.alive === true : fresh,
-      supervisor: sup ? { alive: sup.alive, ready: sup.ready, pid: sup.pid ?? null, lifecycle: sup.lifecycle ?? null } : null,
-      fileFresh: fresh,
-      mtime,
-      latest: last
+    const live = sup
+      ? sup.ready === true && sup.alive === true
+      : ledgerFresh || fresh;
+    // 台账字段为基准（python 摘要）：resources/population/units/敌数/核心坐标。
+    // 台账新鲜 + JSONL last 行存在且 tick 接近（同一进程同一次运行，生产 t1
+    // 滞后 ~150 tick）时合并 JSONL 独有丰富字段——否则 t1 主指标行
+    // （增量/事件/最大距离/可见资源）被 null/0 遮蔽（2026-08-10 t1 回归）。
+    const latest = ledgerFresh && agent !== null
+      ? (() => {
+          const lastTick = typeof last?.tick === "number" ? last.tick : null;
+          const tickClose =
+            lastTick !== null &&
+            agent.tick !== null &&
+            Math.abs(lastTick - agent.tick) <= JSONL_MERGE_TICK_TOLERANCE;
+          const base = {
+            tick: agent.tick,
+            resources: agent.resources,
+            resourceDelta: null,
+            // 台账语义：units = 单位总数（python 租户 t2/t3/t4 无 TS JSONL，
+            // 只有台账可读）
+            workers: agent.units,
+            workersWithCargo: null,
+            workerMaxDistance: null,
+            workerMeanDistance: null,
+            visibleResources: null,
+            visibleEnemies: agent.visibleEnemies,
+            coreX: agent.coreX,
+            coreY: agent.coreY,
+            status: agent.status,
+            events: 0,
+          };
+          if (last === null || !tickClose) return base;
+          return {
+            ...base,
+            // JSONL 语义：workerCount = 自有 worker 数（t1）；台账 units =
+            // 单位总数——合并模式下 JSONL 存在即用 workerCount，缺字段回落台账
+            workers: (last.workerCount as number | undefined) ?? agent.units,
+            resourceDelta: (last.coreResourceDelta as number | undefined) ?? null,
+            workerMaxDistance: (last.workerMaxDistanceFromCore as number | undefined) ?? null,
+            workerMeanDistance: (last.workerMeanDistanceFromCore as number | undefined) ?? null,
+            workersWithCargo: (last.workersWithCargo as number | undefined) ?? null,
+            visibleResources: (last.visibleResourceCellCount as number | undefined) ?? null,
+            events: Array.isArray(last.events) ? (last.events as unknown[]).length : 0,
+          };
+        })()
+      : last
         ? {
             tick: (last.tick as number | undefined) ?? null,
             resources: (last.coreResourcesAfter as number | undefined) ?? null,
@@ -67,7 +128,14 @@ export function loadOverview(supervisorState: SupervisorState | null): OverviewP
             visibleResources: (last.visibleResourceCellCount as number | undefined) ?? null,
             events: Array.isArray(last.events) ? (last.events as unknown[]).length : 0,
           }
-        : null,
+        : null;
+    tenants.push({
+      tenant,
+      live,
+      supervisor: sup ? { alive: sup.alive, ready: sup.ready, pid: sup.pid ?? null, lifecycle: sup.lifecycle ?? null } : null,
+      fileFresh: fresh,
+      mtime,
+      latest,
       window: {
         avgResources: avg((r) => r.coreResourcesAfter),
         avgWorkers: avg((r) => r.workerCount),

@@ -190,7 +190,7 @@ test("X1: carrier 被 SWEEP 杀死 → Beacon 落地于死亡位置，同 tick �
   // 同 tick 无任何拾取成功；失去 Beacon 的盾立即 clamp 5
   assert.ok(!tick1.events.some((event) => event.eventType === "BEACON_PICKED_UP"));
   assert.equal(tick1.world.players.get("p1")!.core!.shield, 5);
-  assert.ok(!tick1.events.some((event) => event.eventType === "CORE_SHIELD_CLAMPED"));
+  assert.ok(!tick1.events.some((event) => (event.eventType as string) === "CORE_SHIELD_CLAMPED"));
 
   // tick 2-3：p2 Worker 走到 Beacon 格（[3,1] → [2,1] → [2,0]）
   let tick2 = settle(

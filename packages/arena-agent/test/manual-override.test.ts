@@ -134,7 +134,9 @@ test("manual override: 每 tick 撞障碍——episode 完整跑完、不变量�
   const allEvents = result.records.flatMap((record) => record.events);
   assert.ok(
     allEvents.some(
-      (event) => event.eventType === "UNIT_MOVE_FAILED" || event.eventType === "MOVE_FAILED",
+      (event) =>
+        (event.eventType as string) === "UNIT_MOVE_FAILED" ||
+        (event.eventType as string) === "MOVE_FAILED",
     ),
     "override into obstacle must produce a move-failed event",
   );

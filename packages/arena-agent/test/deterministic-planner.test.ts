@@ -485,6 +485,25 @@ test("deterministic Core：生存动作 HEAL / REPAIR_SHIELD 继续执行", () =
   assert.deepEqual(new DeterministicPlanner().decide({ state: unshielded }).coreAction, { type: "REPAIR_SHIELD" });
 });
 
+test("deterministic Core：生存动作 START_MOVE / CANCEL_MOVE 沿用 Safety 裁决（透传）", () => {
+  // Safety 裁决 START_MOVE（coreEvade 核心迁移逃生）→ deterministic 直接沿用，
+  // 不落入 SPAWN 分支覆盖（生产 t1-t4 主路径下 coreEvade 变体此前静默失效）。
+  const state = makeState(100, [core(0, 0), unit("w1", 1, 0), unit("w2", 2, 0)], 20);
+  const startMove = selectDeterministicCoreAction(state, { type: "START_MOVE", direction: "RIGHT" });
+  assert.deepEqual(startMove.action, { type: "START_MOVE", direction: "RIGHT" });
+  assert.equal(startMove.intent, "core_evade");
+
+  // Safety 裁决 CANCEL_MOVE（迁移取消止损，Core 回 NORMAL）→ 透传。
+  const moving: TickState = { ...state, core: { ...state.core!, state: "MOVING" } };
+  const cancelMove = selectDeterministicCoreAction(moving, { type: "CANCEL_MOVE" });
+  assert.deepEqual(cancelMove.action, { type: "CANCEL_MOVE" });
+  assert.equal(cancelMove.intent, "migration_cancel");
+
+  // SPAWN 默认行为不受透传影响：无生存 fallback 时仍按动态价产兵。
+  const spawn = selectDeterministicCoreAction(state, null);
+  assert.deepEqual(spawn.action, { type: "SPAWN", unitType: "WORKER" });
+});
+
 test("DeterministicPlanner：DEPOSIT——cargo>0 回 Core；到位 DEPOSIT", () => {
   const state = makeState(100, [core(0, 0), unit("w1", 3, 0, "WORKER", 3)]);
   const planner = new DeterministicPlanner();

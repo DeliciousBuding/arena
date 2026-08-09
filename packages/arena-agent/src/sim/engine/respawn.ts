@@ -1,9 +1,12 @@
 /**
- * Respawn resolver（P13）：v0.11 Core 摧毁后的确定性重生。
+ * Respawn resolver（P13）：Core 摧毁后的确定性重生（规则版本无关——
+ * v0.11/v0.14 共用；资产数值从 rules manifest 读取）。
  *
- * 规则来源：docs/game-rules.md §Core destruction and respawn（官方 resolution
+ * 规则来源：官方 docs/game-rules.md §Core destruction and respawn（官方 resolution
  * order 第 12 步 "immediately attempt to respawn newly destroyed Cores and
- * process any previously delayed spawn retries"）。
+ * process any previously delayed spawn retries"）。官方"新玩家激活首 spawn
+ * 走确定性 resolver"在模拟器的最小路径 = scenario 预置初始
+ * RESPAWNING + respawnAtTick（loaders.ts 支持）→ 本 phase 首 tick 解析。
  *
  * 语义要点：
  * - 无重生冷却：combat（P09）把玩家置为 RESPAWNING + respawnAtTick = 当前结算
@@ -22,12 +25,13 @@
  * 确定性：玩家按 compareCodeUnit 排序逐个处理，处理结果增量可见（先
  * respawn 的玩家的新 Core/Worker 影响后续玩家的候选集与密度）；候选排序
  * 只依赖（密度, x, y）数值，与容器插入顺序无关。密度半径等未公开的
- * server 算法细节以本文件常量固定并文档化。
+ * server 算法细节以 DEFAULT_RESPAWN_CONFIG 固定并文档化；外部自定义 rules
+ * 文件可通过 rules.respawn 覆盖（见 resolveRespawnConfig，缺省零变化）。
  */
 
 import { createHash } from "node:crypto";
 import { cellKey, type Position } from "../../domain/model.ts";
-import type { RulesManifest } from "../contracts/rules-manifest.ts";
+import type { RulesManifest, RulesRespawn } from "../contracts/rules-manifest.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
 import type { SimCore, SimFeature, SimPlayer, SimUnit, SimWorld } from "../world/types.ts";
 import { eventOf, outcome, type Phase, type PhaseContext, type ResolutionEvent, type UnknownEffect } from "./phase.ts";
@@ -42,6 +46,34 @@ export const RESPAWN_MIN_PASSABLE_NEIGHBORS = 2;
  * 密度 = 该半径内（含本格）的 Unit+Core 数量，越低越优先。
  */
 export const RESPAWN_DENSITY_RADIUS = 5;
+
+/** respawn resolver 放置参数（rules.respawn 缺省时的现值）。 */
+export interface RespawnConfig {
+  readonly minDistance: number;
+  readonly maxDistance: number;
+  readonly minPassableNeighbors: number;
+  readonly densityRadius: number;
+}
+
+/** 默认 respawn 配置（现值；manifest 未提供 rules.respawn 时使用，行为零变化）。 */
+export const DEFAULT_RESPAWN_CONFIG: RespawnConfig = Object.freeze({
+  minDistance: RESPAWN_DISTANCE_MIN,
+  maxDistance: RESPAWN_DISTANCE_MAX,
+  minPassableNeighbors: RESPAWN_MIN_PASSABLE_NEIGHBORS,
+  densityRadius: RESPAWN_DENSITY_RADIUS,
+});
+
+/** manifest → respawn 配置；manifest 缺省（内置已发布文件）回退默认值。 */
+export function resolveRespawnConfig(rules: RulesManifest): RespawnConfig {
+  const section: RulesRespawn | undefined = rules.rules.respawn;
+  if (section === undefined) return DEFAULT_RESPAWN_CONFIG;
+  return {
+    minDistance: section.minDistance,
+    maxDistance: section.maxDistance,
+    minPassableNeighbors: section.minPassableNeighbors,
+    densityRadius: section.densityRadius,
+  };
+}
 
 const DIRECTION_DELTA: Readonly<Record<"UP" | "DOWN" | "LEFT" | "RIGHT", readonly [number, number]>> = {
   UP: [0, -1],
@@ -123,7 +155,12 @@ function respawnEntityId(working: WorkingState, playerId: string, kind: string):
 }
 
 /** 候选格是否可通行且空（game-rules.md：passable empty spawn cell）。 */
-function isLegalSpawnCell(world: SimWorld, working: WorkingState, cell: Position): boolean {
+function isLegalSpawnCell(
+  world: SimWorld,
+  working: WorkingState,
+  cell: Position,
+  config: RespawnConfig,
+): boolean {
   const key = cellKey(cell);
   if (world.terrain.obstacles.has(key)) return false;
   // Core 不可置于 RESOURCE 地形（Terrain kinds）；掉落堆也占据"空"格
@@ -131,34 +168,34 @@ function isLegalSpawnCell(world: SimWorld, working: WorkingState, cell: Position
   if (world.terrain.piles.has(key)) return false;
   if ((working.entityCountByCell.get(key) ?? 0) > 0) return false;
 
-  // 至少 2 个可通行（非障碍）邻居
+  // 至少 config.minPassableNeighbors 个可通行（非障碍）邻居
   let passableNeighbors = 0;
   for (const delta of Object.values(DIRECTION_DELTA)) {
     const neighbor = [cell[0] + delta[0], cell[1] + delta[1]] as Position;
     if (!world.terrain.obstacles.has(cellKey(neighbor))) passableNeighbors += 1;
   }
-  if (passableNeighbors < RESPAWN_MIN_PASSABLE_NEIGHBORS) return false;
+  if (passableNeighbors < config.minPassableNeighbors) return false;
 
-  // 距最近活 Core 20-30 Manhattan
+  // 距最近活 Core [minDistance, maxDistance] Manhattan
   let nearest = Number.POSITIVE_INFINITY;
   for (const core of working.corePositions) {
     nearest = Math.min(nearest, manhattan(cell, core));
   }
-  return nearest >= RESPAWN_DISTANCE_MIN && nearest <= RESPAWN_DISTANCE_MAX;
+  return nearest >= config.minDistance && nearest <= config.maxDistance;
 }
 
-/** 候选集：每个活 Core 的 20-30 Manhattan 环带（并集去重），确定性枚举。 */
-function spawnCandidates(world: SimWorld, working: WorkingState): Position[] {
+/** 候选集：每个活 Core 的 [minDistance, maxDistance] Manhattan 环带（并集去重），确定性枚举。 */
+function spawnCandidates(world: SimWorld, working: WorkingState, config: RespawnConfig): Position[] {
   const candidates: Position[] = [];
   const seen = new Set<string>();
   const consider = (cell: Position): void => {
     const key = cellKey(cell);
     if (seen.has(key)) return;
     seen.add(key);
-    if (isLegalSpawnCell(world, working, cell)) candidates.push(cell);
+    if (isLegalSpawnCell(world, working, cell, config)) candidates.push(cell);
   };
   for (const [cx, cy] of working.corePositions) {
-    for (let d = RESPAWN_DISTANCE_MIN; d <= RESPAWN_DISTANCE_MAX; d += 1) {
+    for (let d = config.minDistance; d <= config.maxDistance; d += 1) {
       for (let dy = -d; dy <= d; dy += 1) {
         const dx = d - Math.abs(dy);
         consider([cx + dx, cy + dy]);
@@ -169,11 +206,11 @@ function spawnCandidates(world: SimWorld, working: WorkingState): Position[] {
   return candidates;
 }
 
-/** 候选格附近实体密度（Manhattan ≤ RESPAWN_DENSITY_RADIUS 的 Unit+Core 数）。 */
-function densityOf(working: WorkingState, cell: Position): number {
+/** 候选格附近实体密度（Manhattan ≤ config.densityRadius 的 Unit+Core 数）。 */
+function densityOf(working: WorkingState, cell: Position, densityRadius: number): number {
   let count = 0;
   for (const entity of working.entityPositions) {
-    if (manhattan(cell, entity) <= RESPAWN_DENSITY_RADIUS) count += 1;
+    if (manhattan(cell, entity) <= densityRadius) count += 1;
   }
   return count;
 }
@@ -182,11 +219,11 @@ function densityOf(working: WorkingState, cell: Position): number {
  * 选择 spawn 格：密度低优先，其次 x 升序，再 y 升序（纯数值排序，
  * 与容器插入顺序无关）。找不到合法格返回 null。
  */
-function pickSpawnCell(world: SimWorld, working: WorkingState): Position | null {
-  const candidates = spawnCandidates(world, working);
+function pickSpawnCell(world: SimWorld, working: WorkingState, config: RespawnConfig): Position | null {
+  const candidates = spawnCandidates(world, working, config);
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => {
-    const densityDelta = densityOf(working, a) - densityOf(working, b);
+    const densityDelta = densityOf(working, a, config.densityRadius) - densityOf(working, b, config.densityRadius);
     if (densityDelta !== 0) return densityDelta;
     if (a[0] !== b[0]) return a[0] - b[0];
     return a[1] - b[1];
@@ -203,6 +240,7 @@ export function resolveRespawn(world: SimWorld, rules: RulesManifest): RespawnRe
   const unknownEffects: UnknownEffect[] = [];
   const updatedPlayers = new Map<string, SimPlayer>();
   const working = buildWorkingState(world);
+  const config = resolveRespawnConfig(rules);
 
   const respawning = [...world.players.values()]
     .filter((player) => player.status === "RESPAWNING")
@@ -223,7 +261,7 @@ export function resolveRespawn(world: SimWorld, rules: RulesManifest): RespawnRe
       throw new Error(`respawn: deterministic id collision for player ${player.id}`);
     }
 
-    const cell = pickSpawnCell(world, working);
+    const cell = pickSpawnCell(world, working, config);
     if (cell === null) {
       // 保持 RESPAWNING；respawn_at_tick = 下一 Tick（届时用新候选集重试）
       working.players.set(player.id, { ...player, respawnAtTick: working.tick + 1 });

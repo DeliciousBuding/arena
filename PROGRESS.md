@@ -73,3 +73,176 @@ merge-base = 3f3290c；merge 目标 production-runtime-v3 = eddb4f5。
 ## 遗留（拿不准/待定）
 
 （空）
+
+---
+
+# PROGRESS — L-A 模拟器效率与并行利用率优化（执行型，2026-08-09）
+
+工作树：arena-ts 主树 main（HEAD e4bac2e）。并行线：L-B 评测公正性审计 / L-C SDK 层 /
+L-D 网站。地界：`packages/arena-agent/src/sim/`、`src/cli/`、`src/planning/`、`src/runtime/`、
+`scripts/`、`run-arena-report.mts` 及配套；不改 packages/arena-hero-ts 与 reference/ 任何文件；
+`run-sim-server.ts`/`deterministic-planner.ts`/`telemetry.ts`/`safety-planner.ts` 等 7 个 WIP
+文件只读不碰。评测公共数据 `data/runs/sim/arena-bench-v2-*` 只读。
+
+## 开工回执（2026-08-09）
+
+- 目标：15 场全量评测（--pipeline --shard i/5）端到端再降 ≥20%，与串行逐字节一致
+  （diff 仅 generatedAt/wallMs）；2330+ 测试全绿硬基线；报告 + PROGRESS + commit/push。
+- 顺序：①前置测量（桥消息体大小/序列化解析占比、DECISION_BUDGET_MS 影响、桥冷启动占比）
+  → ②实现收益最大的一个无损抓手 → ③同 seed 逐字节验证（≥2 场）→ ④完整 5 分片评测
+  → ⑤报告 + 测试 + push。
+- 最大风险：状态投影破坏逐字节一致性（字段子集被 agent 读取）；桥跨场复用泄漏记忆；
+  WIP 文件冲突（已确认 7 个 dirty 文件全在并行会话手中，本线只读）。
+- 禁止：有损近似、改测试放宽断言、动 data/runtime/。连败 3 次换抓手。
+
+## 进度（2026-08-09，测量阶段完成）
+
+### 前置测量（探针：ffa-std seed=1 1000tick 10 玩家 --pipeline，45-54s/场）
+
+| 项 | 数据 | 结论 |
+|---|---|---|
+| 桥请求体大小 | p50=3.25KB / p90=5.5KB / max=9.3KB | 很小 |
+| Python 侧 parse/validate/dump | parse 0.05ms + validate 0.13ms + dump 0.08ms ≈ 0.3ms | 占决策周期 <3% |
+| TS 侧序列化 | p50=0ms（JSON.stringify） | 可忽略 |
+| 桥 await 阻塞（pipeline 稳态） | p50=0ms / p90=3ms / p99=19ms | 流水线有效 |
+| Python 冷启动 | 8 进程 × ~630ms ≈ 5s/场 ≈ 11% 端到端 | >10% 阈值，候选 |
+| 每 tick 分阶段 | decision 22.3ms + settlement 2.4ms + prefetch 21.5ms + record 0.2ms = 46.5ms | 见下 |
+| prefetch 构成 | **ts-aggressive（内置 DeterministicPlanner）16.4ms** + ts-safety 1.5ms + 8 Python 观察 ~0.4ms×8 | ts-aggressive 35% |
+| decision 构成 | waaiging 等待 avg 11.6ms（p50=0.67 / p99=334ms 长尾）+ waaiging-agg 3.8ms + core-mil 4.4ms + validate/hash | 长尾来自第三方 agent |
+
+### 抓手判定（2026-08-09）
+
+- **Lever 1 状态投影 → 放弃**：消息体 3-9KB、解析 <0.3ms（<3%），收益远低于 10% 阈值。
+- **Lever 2 决策窗口 → 放弃**：arena-bench 路径不传 decisionBudgetMs（runFreeForAll 无此参数）；
+  护栏仅 sim-server 服务模式（WIP 文件），对 bench 零影响。
+- **Lever 3 桥跨场复用 → 量化通过**：冷启动 ~11% 端到端，为候选实现项。
+- **新发现（episode 层调度优化）**：ts-aggressive 的 16.4ms 同步 prefetch 计算挡在 8 个
+  Python 桥提交之前（提交序 = tenant 序），waaiging/waaiging-agg 的请求晚 ~17ms 发出，
+  决策等待被放大。若把桥提交提到内置 planner 同步计算之前（请求序列逐 tenant 不变，
+  逐字节一致），waaiging-agg/core-mil 系统性等待有望归零 → 预期端到端 -30%+。
+
+## 进度（2026-08-09，实现+验证完成）
+
+### 实现（P4g+，随 735c6c5 合入 main）
+
+- `runtime/decision-types.ts`：PlanProvider 新增可选 `parallelPrefetch?: boolean`
+  （缺省 false = 同步计算；真异步桥置 true）。
+- `sim/opponent/opponent-adapter.ts`：OpponentAdapter.parallelPrefetch = decider 原生
+  实现 prefetch/decideCached 时 true。
+- `sim/harness/episode.ts`：pipelinePrefetchOrder 两遍提交（真异步桥先、同步计算后，
+  组内保持原序）。只改调度顺序——每 tenant 请求内容/序列不变，逐字节一致。
+
+### 验证（2026-08-09，全部实测）
+
+- **逐字节一致性**：优化前 pipeline vs 优化后（probe-b1 vs o1）diff=1（仅 generatedAt）；
+  串行 vs 优化后（probe-s1 vs o1）diff=1（仅 generatedAt）——2 场同 seed 过验收线。
+- **加速**：单场探针 46-54s → 33s（1.4-1.6×）；**15 场全量（5 分片并行 + merge）
+  143s+2s = 145s** vs 基线 4-5 分钟（1.7-2.1×，errors=0）。
+- **门禁**：`pnpm -r check` 全绿（tsc + sim isolation + 全量 2330 测试 0 失败）。
+- 报告：`docs/analysis/perf-optimization-2026-08-09.md`（前置测量表/实现/加速/放弃项）。
+- 放弃：状态投影（<3%）、决策窗口（bench 路径无此参数）、桥跨场复用（~11%，低于
+  已实现的调度优化）；详见报告 §4。
+- 遗留：ts-aggressive 16.4ms/tick（WIP 文件只读）、arena-evolve 每 tick 写盘
+  （slotEvery 顺手项）、waaiging 长尾（第三方只读）——报告 §5。
+
+## 进度（2026-08-09，L-C SDK 层，实现+验证完成）
+
+### 交付（reference fork `arena-hero-python-telemetry`，commit ac31314 / 1252fb5）
+
+- **配置注入通道**（`src/arena_hero/config_overrides.py`，16 测试）：`ARENA_CFG_*`
+  env + `arena-config.json` 文件双通道 → `apply_config_overrides(module/instance)`
+  深合并（点分键/类型强转/未知键跳过/损坏静默降级/默认 no-op）+ 
+  `overridden_decide_kwargs`（decide 函数参数合并，core 用）。
+- **telemetry-v2**：`tick_summary` 补 `state_bytes`/`parse_ms`/`prev_decision_ms`；
+  `Turn.decision_ms` 只读计时；SDK_VERSION 0.2.9-telemetry.2；向后兼容。
+- **探针工具**（`probes/probe_tool.py`）：serve（HTTP 决策服务+状态实录）+
+  replay（同序列基线 vs 注入 plan 差异 + 决策阶段计时）。
+- **patch 文件**：`docs/analysis/sdk-config-injection-patch.md`（contestants.ts
+  三变体接线 diff + 证据 + 经验）。
+
+### 验证（同 seed×500 ticks×6 玩家 synthetic，基线 vs 注入）
+
+| 变体 | env | plan 差异 | 真局差异 |
+|---|---|---|---|
+| waaiging-agg | MEMORY_MODE=aggress + AGGRESS_TARGET_VANGUARDS=10/RANGERS=12/BASE_WORKERS=3 | 231/500 | 均资源 6.0→4.0，popPeak 9→12，BEACON_HARVEST_BONUS 0→38，世界翻转 |
+| core-mil | MODE=harvest+TARGET=30（decide_kwargs；TARGET=8 时 119/500） | 1/500（场景资源峰值<30） | 均资源 9.0→19.0，harvest 版胜出 |
+| farmer-eco | WORKER_TARGET=16 + CORE_RESOURCE_RESERVE=5 + EARLY_DEFENSE_RESERVE=10 | 142/500 | 均资源 23→12，popEnd 6→9，spawns W5→W7+V1，farmer 胜出 |
+
+no-op 保证：无 env 同序列 plan 逐字节一致（0/30）。
+
+### 决策计时（SDK 侧 <15% 裁决 → 只测量不优化）
+
+waaiging SDK 0.108ms（7.3%）/ decide 1.375ms；core 0.103ms（13.1%）/ 0.681ms；
+farmer 0.102ms（14.4%）/ 0.610ms —— 大头是第三方策略，唯一无损优化点
+（桥接 json.loads+model_validate 双遍 → validate_json 单遍）建议不做。
+
+### 遗留（转总负责人/L-A）
+
+- contestants.ts 三变体接线 diff 待应用（patch 文件已含完整 diff + core 默认条目
+  需补 harvest 注入 + 桥接 decide_kwargs 合并前置）。
+- probe 状态实录：`data/probe-rec/`（untracked，运行时输出）。
+
+## 进度（2026-08-09，R2 桥状态投影，实现+验证完成）
+
+### 交付（本 commit）
+
+- **字段并集审计**：`docs/analysis/bridge-field-audit.md`——5 Python agent
+  （farmer/core/waaiging/tactic/arena-evolve）决策源码静态分析：并集 = 现状
+  wire 全字段（无整字段可删）；投影 = 值条件省略（恒 null 可选字段，pydantic
+  默认 None 还原）；必保字段（validator：MOVING 迁移字段/RESPAWNING
+  respawn_at_tick/CARRIED carrier_id）逐一判定。5/5 可静态枚举，无降级。
+- **投影实现（默认关）**：`tickStateToProto(..., { projectFields })`
+  （protocol-bridge.ts）+ `OpponentAdapter.setProjection`（opponent-adapter.ts）+
+  `runFreeForAll({ bridgeProjection })` 白名单透传（tournament.ts）。桥端
+  pydantic 缺失字段兼容实测通过（reference SDK 0.2.6）。
+- **逐字节一致性**：4 场同 seed 关/开对比（farmer+core / waaiging+tactic /
+  arena-evolve+core / 5 agent×2，400-1000 tick）——记录 diff 仅
+  `meta.startedAt`，kills/ledger/事件序/每 tick planHash 全一致。
+- **收益测量**：桥消息体积稳定 -16~18%（avg reqBytes 2105→1744 @500t；
+  2651→2218 @1000t）；端到端 avg_tick 无显著变化（噪声内）——与 L-A
+  §1.1 <3% 结论一致，原始 20-30% 预估不成立；投影默认保持关闭。
+
+### 遗留
+
+- 评测路径（run-arena-report）是否启用 bridgeProjection：由总负责人按
+  逐字节一致性结果裁决（当前默认关）。
+
+## 进度（2026-08-09，R1 arena-bench v3 收口，验证+补缺完成）
+
+### 交付（本 commit）
+
+- **判定面（父会话 268f3bc 已落地，R1 验证+补全）**：winner 与排名统一
+  （decideWinner 加击杀键）、排名链加 deposited tie-break、综合分 0.6/0.3/0.1
+  （economy=resourcesPerTick min-max）、schema v3、--seeds 缺省 1-5。
+- **对照组主榜外置（任务书条目面）**：内置 ts-aggressive/ts-safety 不参与主榜
+  composite 排名，单独展示（results.json `leaderboardControl` + report.html
+  对照组条形；methodNotes/results.notes 补 v3 判定与击杀归属口径注释）。
+- **变体三接线（contestants.ts）**：farmer-eco `ARENA_CFG_WORKER_TARGET=8`
+  （任务书值）、core-mil `TARGET=20+MODE=harvest`（父会话接线）、waaiging-agg
+  `ARENA_CFG_MEMORY_MODE=aggress`（R1 查实 TacticMemory.mode 点分路径——父会话
+  判定"无注入键"不成立，实为进攻模式开关）。
+- **探针证据（data/lb-exp/*，gitignored）**：
+  - SDK 层（probe_tool.py replay，任务书允许的现有探针方式；合成 120 tick 弧线）：
+    三键均行为可区分——farmer 20/120、core 113/120、waaiging 113/120 plan 差异
+    tick。
+  - 桥端真局（2 玩家 300 tick，变体固定 id/slot，带 env vs 不带 env）：Δ=0
+    （seed1/2 逐字段一致）——bridge import 官方 SDK 无 config_overrides 模块，
+    ImportError 被吞 → 桥端通道未生效（R2 桥接线遗留）。
+  - 方法论教训：2 玩家对称场有位置伪影（障碍不对称）与"对手 id 字符串"伪影
+    （tenants 按 id 排序影响结算序）；patch 文档"端到端验证"（20→14）与
+    268f3bc 的 Δ0.007/0.027 均为伪影，非注入效果。
+- **v2-vs-v3 重算表**（re-rank-v3.mts；既有 v2 分片
+  data/runs/sim/arena-bench-d874a86e1931，只读）：v2 榜复算与审计 §1 数字逐位
+  一致（ts-aggressive 0.9745/farmer-eco 0.8000/tactic 0.2000）；v3 主榜 core
+  6→1、waaiging 7→2、farmer-eco 3→6（deposited tie-break + kill 30%/economy
+  10% 权重变化）；对照组仅参考（ts-aggressive 1.2658/ts-safety 0.3686）。
+- **冒烟**：`--scenarios ffa-dense,ffa-resource-race --seeds 1 --ticks 300` →
+  schema `arena.bench.report.v3` results.json 输出成功。
+
+### 遗留（转 R2/总负责人）
+
+- **桥端 SDK 配置通道修复**：opponent-bridge.py 改用 SDK fork
+  （arena-hero-python-telemetry）或补官方 SDK config_overrides 模块后，变体
+  env 注入在真局中生效（当前真局与基座同构）。
+- 击杀归属 ≥20% 伤害占比（审计 §6.3）、定时红队场景（§6.6）、事件级明细
+  （§6.14）——v4 候选。

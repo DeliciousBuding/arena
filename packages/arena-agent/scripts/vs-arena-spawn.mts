@@ -1,7 +1,7 @@
 /**
  * vs-arena-spawn — W54 spawn-profile + slot 轮换 runner（2026-08-09）
  *
- * 模拟线上真实开局（reference arena-evolve/evolve/fitness.py）：被测新号
+ * 模拟线上真实开局（reference/third-party arena-evolve/evolve/fitness.py）：被测新号
  * 1 Worker + 5 资源开局；老玩家带兵出生（7W/6R/6V）；弃坑残骸挂机死 Core；
  * 新生弱号。被测者每局轮换出生站点（P0#16 消除固定 slot 结构性偏差）。
  *

@@ -10,12 +10,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import type { Position, TickState, VisibleEntity } from "../src/domain/model.ts";
+import { cellKey, type Position, type TickState, type VisibleEntity } from "../src/domain/model.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../src/strategies/safety-planner.ts";
 import {
+  rallyMemberSlot,
+  rallyPointAtMemberSlot,
   rallyPointAtSlot,
   rallySlotForSquad,
   reconcileTacticalSquads,
+  type SquadMembership,
   type SquadUnit,
 } from "../src/strategies/tactical-squads.ts";
 import type { CoreHuntTarget } from "../src/domain/world.ts";
@@ -382,4 +385,112 @@ test("tactical-squads-v1：关闭后再开启 → 按当前 units 重建（不�
   const allIds = rebuilt.flatMap((s) => [...s.vanguardIds, ...s.rangerIds]);
   assert.equal(new Set(allIds).size, allIds.length, "重建编成无重复单位");
   assert.equal(allIds.length, 9, "6V+3R 应全部分配");
+});
+
+// ---------- P1 战术小队：rally member slot（tactical-squad-rally-v1） ----------
+
+test("tactical-squads: rallyMemberSlot 8 squad × 3 成员 slot 全唯一（24 不碰撞）", () => {
+  const slots = new Set<number>();
+  for (let s = 0; s < 8; s++) {
+    for (let m = 0; m < 3; m++) slots.add(rallyMemberSlot(s, m));
+  }
+  assert.equal(slots.size, 24, `8×3 成员 slot 应全唯一，实际 ${slots.size}`);
+  // 同 squad 成员连续（3i, 3i+1, 3i+2）
+  assert.deepEqual(
+    [rallyMemberSlot(1, 0), rallyMemberSlot(1, 1), rallyMemberSlot(1, 2)],
+    [3, 4, 5],
+  );
+  // 第 9 个 squad 起取模回绕（超常规模，fail-safe）
+  assert.equal(rallyMemberSlot(8, 0), rallyMemberSlot(0, 0));
+});
+
+test("tactical-squads: rallyPointAtMemberSlot 同 squad 成员不同格 / 跨 squad 不共用单格", () => {
+  const target: Position = [49, 0];
+  const home: Position = [0, 0];
+  const obstacles = new Set<string>();
+  const resources = new Set<string>();
+  const m = reconcileTacticalSquads(sixV3R(), null, TENANT, { homeAnchor: [0, 0] });
+  const strikes = m.squads.filter((s) => s.role === "STRIKE");
+  assert.equal(strikes.length, 2, "6V+3R 应有两个 strike 小队");
+  const cells: string[] = [];
+  for (const squad of strikes) {
+    const members = [...squad.vanguardIds, ...squad.rangerIds];
+    members.forEach((id, mi) => {
+      const p = rallyPointAtMemberSlot(target, home, obstacles, resources, rallyMemberSlot(squad.index, mi));
+      cells.push(`${squad.id}#${id}@${p.join(",")}`);
+    });
+  }
+  const cellSet = new Set(cells.map((c) => c.split("@")[1]!));
+  assert.equal(
+    cellSet.size,
+    cells.length,
+    `两个 strike squad 6 成员集结位应全互异（不共用单格），实际 ${JSON.stringify(cells)}`,
+  );
+});
+
+test("tactical-squads: rallyPointAtMemberSlot 障碍/资源 fail-safe（跳过占用格，全堵回退敌核）", () => {
+  const target: Position = [49, 0];
+  const home: Position = [0, 0];
+  // squad index 1 成员 slot 3 → 名义格 [54,0]
+  const slot = rallyMemberSlot(1, 0);
+  assert.equal(slot, 3);
+  const blocked = new Set([cellKey([54, 0])]);
+  const p = rallyPointAtMemberSlot(target, home, blocked, new Set(), slot);
+  assert.notDeepEqual(p, [54, 0], "成员集结位被占时应跳过占用格");
+  assert.ok(!blocked.has(cellKey(p)), `返回格不应是障碍格，实际 ${JSON.stringify(p)}`);
+  // 全堵 → 回退敌核格
+  const ring0: Position[] = [[44, 0], [44, 5], [44, -5], [54, 0], [49, 5], [49, -5], [54, 5], [54, -5]];
+  const allBlocked = new Set(ring0.map((c) => cellKey(c)));
+  const fallback = rallyPointAtMemberSlot(target, home, allBlocked, new Set(), slot);
+  assert.deepEqual(fallback, target, "8 方位全堵应回退敌核格");
+});
+
+test("tactical-squads: rally member slot 输入顺序无关（成员序号稳定）", () => {
+  const a = reconcileTacticalSquads(sixV3R(), null, TENANT, { homeAnchor: [0, 0] });
+  const b = reconcileTacticalSquads([...sixV3R()].reverse(), null, TENANT, { homeAnchor: [0, 0] });
+  const slotsOf = (mem: SquadMembership) =>
+    mem.squads.map((s) => ({
+      id: s.id,
+      slots: [...s.vanguardIds, ...s.rangerIds].map((_, mi) => rallyMemberSlot(s.index, mi)),
+    }));
+  assert.deepEqual(slotsOf(b), slotsOf(a), "输入顺序变化不应改变成员 slot 分配");
+});
+
+// ---------- P1 战术小队：per-squad rally gate（tactical-squad-rally-v1） ----------
+
+test("tactical-squads-v1：一个 squad 到齐不放行另一个（strike:0 到齐压上，strike:1 继续集结）", () => {
+  const planner = new SafetyPlanner(squadConfig({ tacticalSquads: true }));
+  seedCore(planner);
+  // strike:0（v02/v03/r01）全员已在集结区 [44,0]（dist 5 ≤ 5+2）；strike:1（v04/v05/r02）仍在赶路。
+  const plan = planner.decide({
+    state: makeState(2, [[5, 0], [5, 1], [44, 0], [44, 0], [20, 0], [20, 1]], [[5, 2], [44, 0], [20, 2]]),
+    policy: PRESSURE_POLICY,
+  });
+  assert.equal(plan.intents["v02"], "vanguard_pressure_memory", `strike:0 到齐应压上，实际=${plan.intents["v02"]}`);
+  assert.equal(plan.intents["v03"], "vanguard_pressure_memory", `strike:0 到齐应压上，实际=${plan.intents["v03"]}`);
+  assert.equal(plan.intents["r01"], "ranger_move", `strike:0 Ranger 到齐应前压，实际=${plan.intents["r01"]}`);
+  assert.equal(plan.intents["v04"], "vanguard_rally", `strike:1 未到齐应继续集结，实际=${plan.intents["v04"]}`);
+  assert.equal(plan.intents["v05"], "vanguard_rally", `strike:1 未到齐应继续集结，实际=${plan.intents["v05"]}`);
+  assert.equal(plan.intents["r02"], "ranger_rally", `strike:1 Ranger 未到齐应继续集结，实际=${plan.intents["r02"]}`);
+});
+
+test("tactical-squads-v1：各 squad timeout 独立（strike:0 超时压上，strike:1 首到晚 20 tick 仍在集结）", () => {
+  const planner = new SafetyPlanner(squadConfig({ tacticalSquads: true }));
+  seedCore(planner);
+  const baseV: Position[] = [[5, 0], [5, 1], [44, 0], [5, 2], [20, 0], [20, 1]];
+  const baseR: Position[] = [[5, 3], [5, 4], [20, 2]];
+  // tick2：strike:0 的 v02 首到集结区（firstArriveTick=2）；strike:1 无人到。
+  planner.decide({ state: makeState(2, baseV, baseR), policy: PRESSURE_POLICY });
+  // tick22：strike:1 的 v04 才首到（firstArriveTick=22）。
+  const tick22V: Position[] = [...baseV];
+  tick22V[4] = [44, 0];
+  planner.decide({ state: makeState(22, tick22V, baseR), policy: PRESSURE_POLICY });
+  // tick42：strike:0 首到 40 tick 超时 → 压上；strike:1 首到仅 20 tick → 仍集结。
+  const plan = planner.decide({ state: makeState(42, tick22V, baseR), policy: PRESSURE_POLICY });
+  assert.equal(plan.intents["v02"], "vanguard_pressure_memory", `strike:0 超时应压上，实际=${plan.intents["v02"]}`);
+  assert.equal(plan.intents["v03"], "vanguard_pressure_memory", `strike:0 超时应压上，实际=${plan.intents["v03"]}`);
+  assert.equal(plan.intents["r01"], "ranger_move", `strike:0 Ranger 超时应前压，实际=${plan.intents["r01"]}`);
+  assert.equal(plan.intents["v04"], "vanguard_rally", `strike:1 未超时应继续集结，实际=${plan.intents["v04"]}`);
+  assert.equal(plan.intents["v05"], "vanguard_rally", `strike:1 未超时应继续集结，实际=${plan.intents["v05"]}`);
+  assert.equal(plan.intents["r02"], "ranger_rally", `strike:1 Ranger 未超时应继续集结，实际=${plan.intents["r02"]}`);
 });

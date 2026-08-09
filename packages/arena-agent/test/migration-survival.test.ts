@@ -249,6 +249,110 @@ test("编成缺口：已请求且缺口未恢复 → 保持（不重复写、sin
 });
 
 // ---------------------------------------------------------------------------
+// per-game-tick 去重：run-conductor 5s 轮询 vs ~15s 游戏 tick（同 tick 不得 3x 压缩）
+// ---------------------------------------------------------------------------
+
+test("同 tick 3 次轮询：threatStallTicks 只按游戏 tick 增长", () => {
+  const plan = makeSettlePlan();
+  const core = { id: "uuid-A", position: [0, 0] as readonly [number, number], state: "NORMAL" as const, hp: 5 };
+  const first = step(plan, core, militaryUnits(6), NEAR_ENEMY, INITIAL_CONDUCTOR_HELD_STATE, 10_000);
+  assert.equal(first.held.threatStallTicks, 1, "首个游戏 tick 贴脸计数 1");
+  assert.equal(first.held.threatStallRecordedTick, 10_000, "计数同时记录当前游戏 tick");
+  const poll2 = step(first.plan!, core, militaryUnits(6), NEAR_ENEMY, first.held, 10_000);
+  assert.equal(poll2.held.threatStallTicks, 1, "同 tick 第二次轮询不得累加");
+  const poll3 = step(poll2.plan!, core, militaryUnits(6), NEAR_ENEMY, poll2.held, 10_000);
+  assert.equal(poll3.held.threatStallTicks, 1, "同 tick 第三次轮询仍不得累加");
+  const nextTick = step(poll3.plan!, core, militaryUnits(6), NEAR_ENEMY, poll3.held, 10_001);
+  assert.equal(nextTick.held.threatStallTicks, 2, "下一游戏 tick 才累加");
+  assert.equal(nextTick.held.threatStallRecordedTick, 10_001);
+});
+
+test("同 tick 3 次轮询：settleElapsed 只按游戏 tick 增长", () => {
+  const plan = makeSettlePlan();
+  const core = { id: "uuid-A", position: [0, 0] as readonly [number, number], state: "NORMAL" as const, hp: 5 };
+  const first = step(plan, core, militaryUnits(6), [], INITIAL_CONDUCTOR_HELD_STATE, 10_000);
+  assert.equal(first.held.settleElapsed, 1);
+  assert.equal(first.held.settleRecordedTick, 10_000);
+  const poll2 = step(first.plan!, core, militaryUnits(6), [], first.held, 10_000);
+  assert.equal(poll2.held.settleElapsed, 1, "同 tick 第二次轮询不得累加");
+  const poll3 = step(poll2.plan!, core, militaryUnits(6), [], poll2.held, 10_000);
+  assert.equal(poll3.held.settleElapsed, 1, "同 tick 第三次轮询仍不得累加");
+  const nextTick = step(poll3.plan!, core, militaryUnits(6), [], poll3.held, 10_001);
+  assert.equal(nextTick.held.settleElapsed, 2, "下一游戏 tick 才累加");
+  assert.equal(nextTick.held.settleRecordedTick, 10_001);
+});
+
+test("同 tick 3 次轮询：gapTicks 只按游戏 tick 增长", () => {
+  const plan = makeSettlePlan();
+  const core = { id: "uuid-A", position: [0, 0] as readonly [number, number], state: "NORMAL" as const, hp: 5 };
+  const first = step(plan, core, militaryUnits(4), [], INITIAL_CONDUCTOR_HELD_STATE, 10_000);
+  assert.equal(first.held.gapTicks, 1);
+  assert.equal(first.held.gapRecordedTick, 10_000);
+  const poll2 = step(first.plan!, core, militaryUnits(4), [], first.held, 10_000);
+  assert.equal(poll2.held.gapTicks, 1, "同 tick 第二次轮询不得累加");
+  const poll3 = step(poll2.plan!, core, militaryUnits(4), [], poll2.held, 10_000);
+  assert.equal(poll3.held.gapTicks, 1, "同 tick 第三次轮询仍不得累加");
+  const nextTick = step(poll3.plan!, core, militaryUnits(4), [], poll3.held, 10_001);
+  assert.equal(nextTick.held.gapTicks, 2, "下一游戏 tick 才累加");
+  assert.equal(nextTick.held.gapRecordedTick, 10_001);
+});
+
+test("威胁升级：PLAN_AUDITED 保留威胁窗口（threatReplanCount/threatFirstTick）→ 窗口内第 3 次升级 → ABORT", () => {
+  const core = { id: "uuid-A", position: [0, 0] as readonly [number, number], state: "NORMAL" as const, hp: 5 };
+  // 第 1 次升级：SETTLE 贴脸 10 tick → REPLAN（威胁窗口开启，升级计数 1）
+  let held: ConductorHeldState = INITIAL_CONDUCTOR_HELD_STATE;
+  let current = makeSettlePlan();
+  for (let tick = 10_000; tick < 10_009; tick += 1) {
+    const result = step(current, core, [], NEAR_ENEMY, held, tick);
+    held = result.held;
+    current = result.plan!;
+  }
+  const firstEscalation = step(current, core, [], NEAR_ENEMY, held, 10_009);
+  assert.equal(firstEscalation.plan?.state, "PLAN");
+  assert.equal(firstEscalation.held.threatReplanCount, 1);
+  held = firstEscalation.held;
+  current = firstEscalation.plan!;
+
+  // PLAN 审计（敌核暂时离开 → 审计通过）→ LEG_MOVE；威胁窗口必须跨 REPLAN 保留
+  const audited = step(current, core, [], [], held, 10_010);
+  assert.equal(audited.plan?.state, "LEG_MOVE");
+  assert.equal(audited.held.threatReplanCount, 1, "PLAN_AUDITED 不得清空升级计数");
+  assert.equal(audited.held.settleElapsed, 0, "episode 计数器仍清零");
+  assert.equal(audited.held.stallTicks, 0);
+  held = audited.held;
+
+  // 回到 SETTLE 做第 2 次升级（窗口内）→ REPLAN
+  current = makeSettlePlan({ revision: 3 });
+  for (let tick = 10_011; tick < 10_020; tick += 1) {
+    const result = step(current, core, [], NEAR_ENEMY, held, tick);
+    held = result.held;
+    current = result.plan!;
+  }
+  const secondEscalation = step(current, core, [], NEAR_ENEMY, held, 10_020);
+  assert.equal(secondEscalation.plan?.state, "PLAN");
+  assert.equal(secondEscalation.held.threatReplanCount, 2, "窗口内第 2 次升级 → REPLAN");
+  held = secondEscalation.held;
+  current = secondEscalation.plan!;
+
+  // PLAN 审计（敌核离开）→ LEG_MOVE；升级计数保留到 2
+  const audited2 = step(current, core, [], [], held, 10_021);
+  assert.equal(audited2.plan?.state, "LEG_MOVE");
+  assert.equal(audited2.held.threatReplanCount, 2);
+  held = audited2.held;
+
+  // 第 3 次升级（窗口内）→ THREAT_ESCALATED → ABORT（死路径修复）
+  current = makeSettlePlan({ revision: 4 });
+  for (let tick = 10_022; tick < 10_031; tick += 1) {
+    const result = step(current, core, [], NEAR_ENEMY, held, tick);
+    held = result.held;
+    current = result.plan!;
+  }
+  const abort = step(current, core, [], NEAR_ENEMY, held, 10_031);
+  assert.equal(abort.plan?.state, "ABORT", "窗口内第 3 次升级 → ABORT（死路径修复）");
+  assert.ok(abort.transitions.some((t) => t.event === "THREAT_ESCALATED"), "应记录 THREAT_ESCALATED");
+});
+
+// ---------------------------------------------------------------------------
 // 卸货 wait-ring：核心格容量纪律（assist）
 // ---------------------------------------------------------------------------
 

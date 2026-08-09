@@ -177,6 +177,12 @@ export interface ConductorHeldState {
   readonly starveSince: number;
   /** W40：饿死触发冷却截止 tick（触发后设 = tick + cooldown；此前不再触发）。 */
   readonly starveCooldownUntil: number;
+  /** per-tick 去重（run-conductor 5s poll vs ~15s tick）：最近一次记录/复位对应计数器的游戏 tick（-1 = 无）。 */
+  readonly settleRecordedTick: number;
+  readonly holdRecordedTick: number;
+  readonly threatStallRecordedTick: number;
+  readonly gapRecordedTick: number;
+  readonly starveRecordedTick: number;
 }
 
 export interface ConductorTransitionRecord {
@@ -217,6 +223,11 @@ export const INITIAL_CONDUCTOR_HELD_STATE: ConductorHeldState = {
   gapTicks: 0,
   starveSince: 0,
   starveCooldownUntil: 0,
+  settleRecordedTick: -1,
+  holdRecordedTick: -1,
+  threatStallRecordedTick: -1,
+  gapRecordedTick: -1,
+  starveRecordedTick: -1,
 };
 
 const chebyshev = (first: readonly [number, number], second: { readonly x: number; readonly y: number }): number =>
@@ -269,6 +280,11 @@ function countStall(held: ConductorHeldState, tick: number): ConductorHeldState 
 /** M6：stall 复位并记录当前 tick，防止本 tick 后续轮询重新计 1。 */
 function resetStall(held: ConductorHeldState, tick: number): ConductorHeldState {
   return { ...held, stallTicks: 0, stallRecordedTick: tick };
+}
+
+/** 通用 per-tick 计数器：同一游戏 tick 多次轮询只累计一次（run-conductor 5s poll vs ~15s tick）。 */
+function countOnDistinctTick(recordedTick: number, tick: number, count: number): number {
+  return recordedTick === tick ? count : count + 1;
 }
 
 /** 走廊审计参数（§4：宽度走 config，阈值/窗口走领域常量）。 */
@@ -392,19 +408,20 @@ function escalateThreat(
     return waitStep(
       input,
       plan,
-      { ...held, threatStallTicks: 0 },
+      { ...held, threatStallTicks: 0, threatStallRecordedTick: input.tick },
       transitions,
       reasons,
       `${context}：敌核离开警戒半径 → 贴脸计数复位（升级计数 ${held.threatReplanCount} 保留）`,
     );
   }
 
-  const stallTicks = held.threatStallTicks + 1;
+  // per-tick 去重：同游戏 tick 多次轮询不得 3x 压缩贴脸计数。
+  const stallTicks = countOnDistinctTick(held.threatStallRecordedTick, input.tick, held.threatStallTicks);
   if (stallTicks < threatConfig.escalateTicks) {
     return waitStep(
       input,
       plan,
-      { ...held, threatStallTicks: stallTicks, threatFirstTick: held.threatFirstTick > 0 ? held.threatFirstTick : input.tick },
+      { ...held, threatStallTicks: stallTicks, threatStallRecordedTick: input.tick, threatFirstTick: held.threatFirstTick > 0 ? held.threatFirstTick : input.tick },
       transitions,
       reasons,
       `${context}：活跃敌核贴脸持续 ${stallTicks}/${threatConfig.escalateTicks} tick（≤${threatConfig.escalateRadius} 格），计数中——未受击不放弃防御姿态`,
@@ -419,7 +436,7 @@ function escalateThreat(
     transition(plan.state, { type: "THREAT_ESCALATED" }); // 状态机校验：LEG_SETTLE/DEFENSIVE_HOLD → ABORT
     return {
       plan: refreshLease({ ...plan, state: "ABORT" }, input),
-      held: { ...held, threatStallTicks: 0, threatFirstTick: 0, threatReplanCount: 0 },
+      held: { ...held, threatStallTicks: 0, threatStallRecordedTick: input.tick, threatFirstTick: 0, threatReplanCount: 0 },
       transitions: [...transitions, {
         from: plan.state,
         to: "ABORT",
@@ -435,7 +452,7 @@ function escalateThreat(
   transition(plan.state, { type: "REPLAN_REQUESTED" }); // 状态机校验：LEG_SETTLE/DEFENSIVE_HOLD → PLAN
   return {
     plan: refreshLease({ ...plan, state: "PLAN", revision: plan.revision + 1 }, input),
-    held: { ...held, threatStallTicks: 0, threatFirstTick: input.tick, threatReplanCount: replanCount },
+    held: { ...held, threatStallTicks: 0, threatStallRecordedTick: input.tick, threatFirstTick: input.tick, threatReplanCount: replanCount },
     transitions: [...transitions, {
       from: plan.state,
       to: "PLAN",
@@ -474,7 +491,7 @@ function applyReplenishDetection(
     if (plan.replenish === undefined && held.gapTicks === 0) return { plan, held, reasons };
     return {
       plan: refreshLease({ ...plan, replenish: undefined }, input),
-      held: { ...held, gapTicks: 0 },
+      held: { ...held, gapTicks: 0, gapRecordedTick: input.tick },
       reasons: [...reasons, `编成缺口恢复（军事单位 ${militaryCount} ≥ ${replenishConfig.minMilitaryCount}）→ replenish 请求清除`],
     };
   }
@@ -482,18 +499,18 @@ function applyReplenishDetection(
   if (plan.replenish !== undefined) {
     return { plan, held, reasons }; // 已请求，缺口未恢复 → 保持
   }
-  const gapTicks = held.gapTicks + 1;
+  const gapTicks = countOnDistinctTick(held.gapRecordedTick, input.tick, held.gapTicks);
   if (gapTicks < replenishConfig.minGapTicks) {
     return {
       plan,
-      held: { ...held, gapTicks },
+      held: { ...held, gapTicks, gapRecordedTick: input.tick },
       reasons: [...reasons, `编成缺口持续 ${gapTicks}/${replenishConfig.minGapTicks}（军事 ${militaryCount} < ${replenishConfig.minMilitaryCount}），防阵亡瞬间误报`],
     };
   }
   const sinceTick = input.tick - (gapTicks - 1); // 缺口首现 tick
   return {
     plan: refreshLease({ ...plan, replenish: { gap, missingRole: missingSquadRole(militaryCount), sinceTick } }, input),
-    held: { ...held, gapTicks: 0 },
+    held: { ...held, gapTicks: 0, gapRecordedTick: input.tick },
     reasons: [...reasons, `编成缺口确认（军事 ${militaryCount} < ${replenishConfig.minMilitaryCount}，缺口 ${gap}，自 tick ${sinceTick}）→ 写 plan.replenish（产兵交 planner/经济层）`],
   };
 }
@@ -654,8 +671,21 @@ function planPhaseStep(
       },
       input,
     ),
-    // 新腿序列：HOLD 重复窗口清空（防 REPLAN 后立即再触发振荡）
-    held: INITIAL_CONDUCTOR_HELD_STATE,
+    // 新腿序列：episode 计数器清空（HOLD 重复窗口防 REPLAN 后振荡），但 M8 威胁
+    // 升级窗口必须跨 REPLAN 保留（threatReplanCount/threatFirstTick）——否则第 3 次
+    // THREAT_ESCALATED → ABORT 永远不可达（2026-08-09 审查：原全 INITIAL 清空死路径）。
+    // 各计数器记录当前 tick：审计 tick 本身不计为停滞/休整/防御 tick（起步握手窗）。
+    held: {
+      ...INITIAL_CONDUCTOR_HELD_STATE,
+      threatReplanCount: held.threatReplanCount,
+      threatFirstTick: held.threatFirstTick,
+      stallRecordedTick: input.tick,
+      settleRecordedTick: input.tick,
+      holdRecordedTick: input.tick,
+      threatStallRecordedTick: input.tick,
+      gapRecordedTick: input.tick,
+      starveRecordedTick: input.tick,
+    },
     transitions: [...transitions, {
       from: plan.state,
       to: "LEG_MOVE",
@@ -688,7 +718,7 @@ function legMoveStep(
   if (core.state === "MOVING") {
     // M6：MOVING = 引擎正在推进，不算停滞（失败签名 = MOVING→NORMAL 位置未变，
     // 由下方 NORMAL 未推进分支从 0 重新计数捕获）。
-    return waitStep(input, plan, resetStall(held, input.tick), transitions, reasons, "LEG_MOVE：核心 MOVING 中（引擎 4 tick/格），等待到达");
+    return waitStep(input, plan, { ...resetStall(held, input.tick), clearRetries: 0 }, transitions, reasons, "LEG_MOVE：核心 MOVING 中（引擎 4 tick/格），等待到达");
   }
   const position = core.position;
   if (position === null) {
@@ -738,7 +768,7 @@ function legMoveStep(
         { ...plan, state: "LEG_SETTLE", legProgress: { ...plan.legProgress, cellsThisLeg: Math.max(plan.legProgress.cellsThisLeg, pathIndex - legStartIndex) } },
         input,
       ),
-      held: { ...resetStall(held, input.tick), settleElapsed: 0 },
+      held: { ...resetStall(held, input.tick), settleElapsed: 0, clearRetries: 0 },
       transitions: [...transitions, {
         from: plan.state,
         to: "LEG_SETTLE",
@@ -757,7 +787,7 @@ function legMoveStep(
         { ...plan, state: "LEG_SETTLE", legProgress: { ...plan.legProgress, cellsThisLeg: nextCellsThisLeg } },
         input,
       ),
-      held: { ...resetStall(held, input.tick), settleElapsed: 0 },
+      held: { ...resetStall(held, input.tick), settleElapsed: 0, clearRetries: 0 },
       transitions: [...transitions, {
         from: plan.state,
         to: "LEG_SETTLE",
@@ -771,7 +801,7 @@ function legMoveStep(
     return waitStep(
       input,
       { ...plan, legProgress: { ...plan.legProgress, cellsThisLeg: nextCellsThisLeg } },
-      resetStall(held, input.tick),
+      { ...resetStall(held, input.tick), clearRetries: 0 },
       transitions,
       reasons,
       `LEG_MOVE：burst 推进 ${nextCellsThisLeg}/${input.config.pace.burstCells}（已到 (${position[0]},${position[1]})）`,
@@ -799,14 +829,19 @@ function legMoveStep(
     }
     // 已有清路请求：验证目标格是否已清空（单位坐标观测，M6 §5）。
     if (plan.clearRequests !== undefined && plan.clearRequests.length > 0) {
-      const cleared = plan.clearRequests.every((request) =>
-        !input.units.some(
-          (unit) =>
+      // fail-closed：存在 position=null 单位（坐标不可观测）→ 不得判定清路完成
+      // （占位者可能在清路格上）；units=[] 确实无单位可观察 → 视为已清。
+      const isClearRequestBlocked = (request: { readonly x: number; readonly y: number }): boolean =>
+        input.units.some(
+          (unit): boolean =>
             unit.position !== null &&
             unit.position[0] === request.x &&
             unit.position[1] === request.y,
-        ),
-      );
+        );
+      const cleared =
+        input.units.length === 0 ||
+        (input.units.every((unit) => unit.position !== null) &&
+          plan.clearRequests.every((request) => !isClearRequestBlocked(request)));
       if (cleared) {
         return waitStep(
           input,
@@ -906,7 +941,8 @@ function legSettleStep(
   }
   plan = replenish.plan;
 
-  const settleElapsed = held.settleElapsed + 1;
+  // per-tick 去重：同游戏 tick 多次轮询不得 3x 压缩休整计数。
+  const settleElapsed = countOnDistinctTick(held.settleRecordedTick, input.tick, held.settleElapsed);
   const leg = plan.legs[plan.legProgress.legIndex];
   if (leg === undefined) {
     return waitStep(input, plan, held, transitions, reasons, "LEG_SETTLE：legProgress.legIndex 越界（计划损坏，fail-closed）");
@@ -925,7 +961,7 @@ function legSettleStep(
     return waitStep(
       input,
       plan,
-      { ...held, settleElapsed },
+      { ...held, settleElapsed, settleRecordedTick: input.tick },
       transitions,
       reasons,
       `LEG_SETTLE：休整 ${settleElapsed}/${input.config.pace.settleTarget}（满载 worker ${cargoWorkerCount(input)}、尾巴 ${stragglersReady(input) ? "就绪" : "未就绪"}）——readiness 未达成`,
@@ -947,7 +983,9 @@ function legSettleStep(
       },
       input,
     ),
-    held: { ...held, settleElapsed },
+    held: nextPhase === "LEG_MOVE"
+      ? { ...resetStall({ ...held, settleElapsed, settleRecordedTick: input.tick }, input.tick), clearRetries: 0 }
+      : { ...held, settleElapsed, settleRecordedTick: input.tick },
     transitions: [...transitions, {
       from: plan.state,
       to: nextPhase,
@@ -973,7 +1011,8 @@ function defensiveHoldStep(
   transitions: readonly ConductorTransitionRecord[],
   reasons: readonly string[],
 ): ConductorStepResult {
-  const holdTicks = held.holdTicks + 1;
+  // per-tick 去重：同游戏 tick 多次轮询不得 3x 压缩滞回计数。
+  const holdTicks = countOnDistinctTick(held.holdRecordedTick, input.tick, held.holdTicks);
   const hp = input.core?.hp ?? null;
   const hpFull = hp === null || hp >= CONDUCTOR_CORE_HP_FULL;
   const hitRecently = input.events.some((event) => event.type === CORE_DAMAGED_EVENT) && hp !== null && hp < CONDUCTOR_CORE_HP_FULL;
@@ -987,7 +1026,7 @@ function defensiveHoldStep(
     return waitStep(
       input,
       plan,
-      { ...held, holdTicks },
+      { ...held, holdTicks, holdRecordedTick: input.tick },
       transitions,
       reasons,
       `DEFENSIVE_HOLD：活跃敌核/受击威胁仍在，继续防御（holdTicks ${holdTicks}，hp ${hp ?? "未知"}）`,
@@ -997,7 +1036,7 @@ function defensiveHoldStep(
     const result = transition(plan.state, { type: "THREAT_CLEARED" });
     return {
       plan: refreshLease({ ...plan, state: "LEG_SETTLE" }, input),
-      held: { ...held, holdTicks },
+      held: { ...held, holdTicks, holdRecordedTick: input.tick },
       transitions: [...transitions, {
         from: plan.state,
         to: "LEG_SETTLE",
@@ -1013,7 +1052,7 @@ function defensiveHoldStep(
   return waitStep(
     input,
     plan,
-    { ...held, holdTicks },
+    { ...held, holdTicks, holdRecordedTick: input.tick },
     transitions,
     reasons,
     `DEFENSIVE_HOLD：无威胁，等待滞回（holdTicks ${holdTicks} < ${CONDUCTOR_HOLD_MIN_TICKS} 或 HP ${hp ?? "未知"} 未满）`,
@@ -1151,13 +1190,11 @@ function detectStarvation(
     (resource) => input.tick - resource.lastSeenTick <= minAreaSeen,
   );
 
-  let starveSince = held.starveSince;
-  if (harvested || freshSighting) {
-    starveSince = 0;
-  } else {
-    starveSince += 1;
-  }
-  const updatedHeld: ConductorHeldState = { ...held, starveSince };
+  // per-tick 去重：同游戏 tick 多次轮询不得 3x 压缩饿死计数；重置也记录当前 tick。
+  const starveSince = harvested || freshSighting
+    ? 0
+    : countOnDistinctTick(held.starveRecordedTick, input.tick, held.starveSince);
+  const updatedHeld: ConductorHeldState = { ...held, starveSince, starveRecordedTick: input.tick };
 
   // 触发前置：Core 非 MOVING（正在移动不触发；coreEvade/移动让位给既有机制）
   const core = input.core;

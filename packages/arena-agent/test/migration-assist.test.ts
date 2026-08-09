@@ -353,6 +353,138 @@ test("中段推进复位 stall：核心到达下一格不误判", () => {
 });
 
 // ---------------------------------------------------------------------------
+// conductor：清路验证 fail-closed（position=null 单位不可观测 → 不得判 cleared）
+// ---------------------------------------------------------------------------
+
+test("清路验证 fail-closed：存在 position=null 单位 → 不得判 cleared（计入重试，最终 REPLAN）", () => {
+  const plan = makeMovingPlan({
+    clearRequests: [{ x: 1, y: 0, reason: "destination" }],
+    assist: { clearAheadCells: 1, clearAheadReason: "blocked-retry" },
+  });
+  const nullPositionUnits: ConductorStepInput["units"] = [
+    { id: "v1", unitType: "VANGUARD", cargo: 0, position: null },
+  ];
+  const first = step(
+    plan,
+    { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 },
+    nullPositionUnits,
+    { ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 2, clearRetries: 0 },
+    10_000,
+  );
+  assert.equal(first.plan?.clearRequests?.length, 1, "不可观测 → 不得清除 clearRequests");
+  assert.equal(first.held.clearRetries, 1, "不可观测 → 计入一次重试");
+  const sameTick = step(first.plan!, { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 }, nullPositionUnits, first.held, 10_000);
+  assert.equal(sameTick.held.clearRetries, 1, "同 tick 重复轮询不得累加重试");
+  const nextTick = step(sameTick.plan!, { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 }, nullPositionUnits, sameTick.held, 10_001);
+  assert.equal(nextTick.held.clearRetries, 2, "下一游戏 tick 重试 +1");
+  const replan = step(nextTick.plan!, { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 }, nullPositionUnits, nextTick.held, 10_002);
+  assert.equal(replan.plan?.state, "PLAN", "连续 3 次不可观测 → REPLAN（fail-closed 不无限自清）");
+});
+
+test("清路验证：units=[]（确无单位可观察）→ 视为已清", () => {
+  const plan = makeMovingPlan({
+    clearRequests: [{ x: 1, y: 0, reason: "destination" }],
+    assist: { clearAheadCells: 1, clearAheadReason: "blocked-retry" },
+  });
+  const result = step(
+    plan,
+    { id: "uuid-A", position: [0, 0], state: "NORMAL", hp: 5 },
+    [],
+    { ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 2, clearRetries: 0 },
+    10_000,
+  );
+  assert.equal(result.plan?.clearRequests, undefined, "无单位可观察 → 清路完成");
+  assert.equal(result.held.clearRetries, 0);
+  assert.equal(result.held.stallTicks, 0);
+});
+
+// ---------------------------------------------------------------------------
+// conductor：clearRetries episode 复位（MOVING/推进/腿完成/burst 完成 → 清零）
+// ---------------------------------------------------------------------------
+
+test("MOVING 复位 stall 同时清 clearRetries：清路 episode 结束不跨 episode 继承", () => {
+  const plan = makeMovingPlan();
+  const result = step(
+    plan,
+    { id: "uuid-A", position: [0, 0], state: "MOVING", hp: 5 },
+    [],
+    { ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 1, clearRetries: 2 },
+  );
+  assert.equal(result.held.stallTicks, 0);
+  assert.equal(result.held.clearRetries, 0, "MOVING = 引擎推进，清路 episode 结束");
+});
+
+test("推进复位 stall 同时清 clearRetries", () => {
+  const plan = makeMovingPlan();
+  const result = step(
+    plan,
+    { id: "uuid-A", position: [1, 0], state: "NORMAL", hp: 5 },
+    [],
+    { ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 1, clearRetries: 2 },
+  );
+  assert.equal(result.plan?.state, "LEG_MOVE");
+  assert.equal(result.held.stallTicks, 0);
+  assert.equal(result.held.clearRetries, 0, "真实推进 → 清路 episode 结束");
+});
+
+test("腿完成 → LEG_SETTLE 清 clearRetries", () => {
+  const plan = makeMovingPlan();
+  const result = step(
+    plan,
+    { id: "uuid-A", position: [5, 0], state: "NORMAL", hp: 5 },
+    [],
+    { ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 1, clearRetries: 2 },
+  );
+  assert.equal(result.plan?.state, "LEG_SETTLE", "到达腿终点 → 休整");
+  assert.equal(result.held.clearRetries, 0, "腿完成 → 清路 episode 结束");
+});
+
+test("burst 达标 → LEG_SETTLE 清 clearRetries", () => {
+  const plan = makeMovingPlan();
+  const config: MigrationRuntimeConfig = {
+    ...DEFAULT_MIGRATION_RUNTIME_CONFIG,
+    pace: { ...DEFAULT_MIGRATION_RUNTIME_CONFIG.pace, burstCells: 2 },
+  };
+  const result = step(
+    { ...plan, legProgress: { legIndex: 0, cellsThisLeg: 1 } },
+    { id: "uuid-A", position: [2, 0], state: "NORMAL", hp: 5 },
+    [],
+    { ...INITIAL_CONDUCTOR_HELD_STATE, stallTicks: 1, clearRetries: 2 },
+    10_000,
+    config,
+  );
+  assert.equal(result.plan?.state, "LEG_SETTLE", "burst 达标 → 休整");
+  assert.equal(result.held.clearRetries, 0, "burst 完成 → 清路 episode 结束");
+});
+
+// ---------------------------------------------------------------------------
+// conductor：SETTLE→LEG_MOVE 重入复位 stall（起步握手窗不计停滞）
+// ---------------------------------------------------------------------------
+
+test("SETTLE→LEG_MOVE：reset stall 并记录当前 tick（旧 burst 残留 stall 不继承）", () => {
+  const plan = makeMovingPlan({
+    state: "LEG_SETTLE" as const,
+    legProgress: { legIndex: 0, cellsThisLeg: 1 },
+  });
+  const held: ConductorHeldState = {
+    ...INITIAL_CONDUCTOR_HELD_STATE,
+    settleElapsed: 120, // 达到 maxSettle → 强制退出
+    stallTicks: 3,
+    stallRecordedTick: 9_000,
+    clearRetries: 2,
+  };
+  const result = step(plan, { id: "uuid-A", position: [1, 0], state: "NORMAL", hp: 5 }, [], held, 10_000);
+  assert.equal(result.plan?.state, "LEG_MOVE", "settle 强制退出 → 回 LEG_MOVE");
+  assert.equal(result.held.stallTicks, 0, "SETTLE→LEG_MOVE 重入必须复位 stall");
+  assert.equal(result.held.stallRecordedTick, 10_000, "复位记录当前游戏 tick（同 tick 轮询不重计）");
+  assert.equal(result.held.clearRetries, 0, "episode 边界清 clearRetries");
+  const sameTick = step(result.plan!, { id: "uuid-A", position: [1, 0], state: "NORMAL", hp: 5 }, [], result.held, 10_000);
+  assert.equal(sameTick.held.stallTicks, 0, "复位 tick 内轮询不计停滞");
+  const nextTick = step(sameTick.plan!, { id: "uuid-A", position: [1, 0], state: "NORMAL", hp: 5 }, [], sameTick.held, 10_001);
+  assert.equal(nextTick.held.stallTicks, 1, "复位后首个新游戏 tick 才计停滞");
+});
+
+// ---------------------------------------------------------------------------
 // assist：手动迁移检测 + 手动窗口抑制
 // ---------------------------------------------------------------------------
 

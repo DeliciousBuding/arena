@@ -1,0 +1,194 @@
+{
+  "rulesVersion": "v0.14",
+  "tick": 1,
+  "seed": 42,
+  "players": [
+    {
+      "id": "p1",
+      "username": "p1",
+      "resources": 5,
+      "core": {
+        "id": "491977e4-d3db-417b-8d82-000000000000",
+        "position": [
+          0,
+          -18
+        ],
+        "hp": 5,
+        "shield": 5,
+        "state": "NORMAL",
+        "moveDirection": null,
+        "moveProgress": null,
+        "moveRequiredTicks": null,
+        "destination": null
+      },
+      "units": [
+        {
+          "id": "22222222-0000-0000-0000-000000000000",
+          "position": [
+            1,
+            -18
+          ],
+          "hp": 2,
+          "unitType": "WORKER",
+          "cargo": 0
+        }
+      ]
+    },
+    {
+      "id": "p2",
+      "username": "p2",
+      "resources": 5,
+      "core": {
+        "id": "9fe0ca6d-53cb-4dd5-a8f8-000000000001",
+        "position": [
+          16,
+          9
+        ],
+        "hp": 5,
+        "shield": 5,
+        "state": "NORMAL",
+        "moveDirection": null,
+        "moveProgress": null,
+        "moveRequiredTicks": null,
+        "destination": null
+      },
+      "units": [
+        {
+          "id": "33333333-0000-0000-0000-000001000000",
+          "position": [
+            17,
+            9
+          ],
+          "hp": 2,
+          "unitType": "WORKER",
+          "cargo": 0
+        }
+      ]
+    },
+    {
+      "id": "p3",
+      "username": "p3",
+      "resources": 5,
+      "core": {
+        "id": "1c8a4b2e-7f6d-4a3e-9c1b-000000000002",
+        "position": [
+          -16,
+          9
+        ],
+        "hp": 5,
+        "shield": 5,
+        "state": "NORMAL",
+        "moveDirection": null,
+        "moveProgress": null,
+        "moveRequiredTicks": null,
+        "destination": null
+      },
+      "units": [
+        {
+          "id": "44444444-0000-0000-0000-000002000000",
+          "position": [
+            -15,
+            9
+          ],
+          "hp": 2,
+          "unitType": "WORKER",
+          "cargo": 0
+        }
+      ]
+    }
+  ],
+  "terrain": {
+    "obstacles": [
+      [
+        -4,
+        4
+      ],
+      [
+        -4,
+        5
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        -5,
+        -4
+      ],
+      [
+        -4,
+        -4
+      ],
+      [
+        5,
+        -3
+      ],
+      [
+        4,
+        -3
+      ]
+    ],
+    "resources": [
+      [
+        5,
+        -18
+      ],
+      [
+        0,
+        -15
+      ],
+      [
+        -3,
+        -18
+      ],
+      [
+        0,
+        -21
+      ],
+      [
+        21,
+        9
+      ],
+      [
+        16,
+        12
+      ],
+      [
+        13,
+        9
+      ],
+      [
+        16,
+        6
+      ],
+      [
+        -11,
+        9
+      ],
+      [
+        -16,
+        12
+      ],
+      [
+        -19,
+        9
+      ],
+      [
+        -16,
+        6
+      ]
+    ]
+  },
+  "beacon": {
+    "position": [
+      0,
+      0
+    ],
+    "status": "GROUND",
+    "carrierId": null
+  }
+}

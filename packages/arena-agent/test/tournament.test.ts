@@ -9,14 +9,18 @@ import assert from "node:assert/strict";
 import {
   makeArenaScenario,
   makeArenaMatchScenario,
+  makeArenaScenarioN,
   decideWinner,
   makeSafetyEntry,
+  runFreeForAll,
   type TournEntry,
 } from "../src/sim/opponent/tournament.ts";
 import { runMatrix, type MatrixOpponent } from "../src/sim/opponent/matrix.ts";
 import { formatWinRateCI, wilson95 } from "../src/sim/opponent/stats.ts";
 import { DEFAULT_SAFETY_CONFIG, SafetyPlanner } from "../src/strategies/safety-planner.ts";
 import type { SimWorld } from "../src/sim/world/types.ts";
+import { worldFromScenario } from "../src/sim/world/loaders.ts";
+import { assertWorldInvariants } from "../src/sim/world/world.ts";
 
 interface ScenarioShape {
   readonly players: readonly {
@@ -307,4 +311,128 @@ test("matrix：2 版本 × 2 对手 = 4 组合（交叉全组合）", () => {
   assert.equal(combos.length, 4, "2 版本 × 2 对手 = 4 组合");
   const comboKeys = combos.map((c) => `${c.version.entry.id}:${c.opponent.name}`).sort();
   assert.deepEqual(comboKeys, ["mine-a:t-opp-a", "mine-a:t-opp-b", "mine-b:t-opp-a", "mine-b:t-opp-b"]);
+});
+
+// ---------- 大混战场景参数化（agent-ecosystem 收口 A） ----------
+
+interface FfaScenarioShape {
+  readonly players: readonly {
+    readonly id: string;
+    readonly resources: number;
+    readonly core: { readonly id: string; readonly position: readonly [number, number] };
+    readonly units: readonly { readonly id: string }[];
+  }[];
+  readonly terrain: {
+    readonly obstacles: readonly (readonly [number, number])[];
+    readonly resources: readonly (readonly [number, number])[];
+  };
+  readonly beacon: { readonly position: readonly [number, number] };
+}
+
+const manhattan = (a: readonly [number, number], b: readonly [number, number]): number =>
+  Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+test("ffa: makeArenaScenarioN 参数化——缺省行为与既有布局逐字节一致（radius 18 恒等）", () => {
+  const entries = ["mine", "p2", "p3", "p4"].map((id) => makeSafetyEntry(id));
+  const baseline = makeArenaScenarioN(entries, 7);
+  // 显式 radius 18 / 显式同源布局序号 / 空 options → 全部与缺省完全一致
+  assert.deepEqual(makeArenaScenarioN(entries, 7, { radius: 18 }), baseline, "radius 缺省 = 18");
+  assert.deepEqual(makeArenaScenarioN(entries, 7, { resourceLayoutIndex: 7 % 6 }), baseline, "layout 序号缺省 = seed 派生");
+  assert.deepEqual(makeArenaScenarioN(entries, 7, {}), baseline, "空 options 不改布局");
+  assert.deepEqual(makeArenaScenarioN(entries, 7, { randomDrop: undefined }), baseline, "randomDrop 缺省关闭");
+  // 开启随机投放才会改变布局
+  assert.notDeepEqual(makeArenaScenarioN(entries, 7, { randomDrop: { seed: 42 } }), baseline);
+  // 非法 radius 拒绝（防静默退化地图）
+  assert.throws(() => makeArenaScenarioN(entries, 7, { radius: 0 }), /radius/);
+  assert.throws(() => makeArenaScenarioN(entries, 7, { radius: Number.NaN }), /radius/);
+});
+
+test("ffa: 8 玩家大地图（radius 30）——id 全图唯一 + 布局缩放合法 + 可载入世界", () => {
+  const entries = Array.from({ length: 8 }, (_, i) => makeSafetyEntry(`mine-${i}`));
+  const scenario = makeArenaScenarioN(entries, 11, { radius: 30 }) as FfaScenarioShape;
+  assert.equal(scenario.players.length, 8);
+  const corePositions = scenario.players.map((p) => p.core.position);
+  assert.equal(new Set(corePositions.map(([x, y]) => `${x},${y}`)).size, 8, "核心位置唯一");
+  for (const [cx, cy] of corePositions) {
+    assert.ok(cx * cx + cy * cy <= 30 * 30 + 1, "核心在 radius 30 圆周内");
+  }
+  // n≥8：4 条核心前缀 / 5 条 worker 前缀取模复用，尾部 index 派生保证全图唯一
+  const allIds = [
+    ...scenario.players.map((p) => p.core.id),
+    ...scenario.players.flatMap((p) => p.units.map((u) => u.id)),
+  ];
+  assert.equal(allIds.length, 16, "8 core + 8 worker");
+  assert.equal(new Set(allIds).size, 16, "n=8 core/worker id 全图唯一（前缀取模不冲突）");
+  for (const id of allIds) assert.match(id, UUID_RE, "canonical UUID");
+  // 信标仍圆心；资源盘随 radius 缩放（radius 30 → 盘格 ±12 内）且 8 核 × 4 = 32 格
+  assert.deepEqual(scenario.beacon.position, [0, 0]);
+  assert.equal(scenario.terrain.resources.length, 32, "8 核 × 4 近距资源");
+  for (let i = 0; i < 8; i += 1) {
+    const [cx, cy] = corePositions[i];
+    for (const [x, y] of scenario.terrain.resources.slice(i * 4, i * 4 + 4)) {
+      assert.ok(Math.abs(x - cx) <= 12 && Math.abs(y - cy) <= 12, "资源盘随 radius 缩放（±12 内）");
+    }
+  }
+  // 障碍随 radius 缩放（8 格 4 块；不压信标/核心/资源盘；核心周围 3 格无阻碍）
+  assert.equal(scenario.terrain.obstacles.length, 8, "4 块 × 2 格障碍");
+  for (const [ox, oy] of scenario.terrain.obstacles) {
+    assert.ok(manhattan([ox, oy], [0, 0]) >= 1, "不压信标 [0,0]");
+    for (const [cx, cy] of corePositions) {
+      assert.ok(manhattan([ox, oy], [cx, cy]) > 3, "核心周围 3 格无阻碍");
+    }
+    for (const [rx, ry] of scenario.terrain.resources) {
+      assert.ok(!(ox === rx && oy === ry), "障碍不与资源盘格重叠");
+    }
+  }
+  // 通过真实载入器 + 硬不变量（id 唯一 / occupancy / 敌我不共格）
+  assertWorldInvariants(worldFromScenario(scenario));
+});
+
+test("ffa: 8 玩家大地图（radius 30）短局跑通——世界构建 + 同 seed 确定性", () => {
+  const entries = Array.from({ length: 8 }, (_, i) => makeSafetyEntry(`mine-${i}`));
+  const opts = { validatePlans: false, refillEveryTicks: null, arenaScenarioOptions: { radius: 30 } };
+  const result = runFreeForAll(entries, 13, 30, MANIFEST_PATH, opts);
+  assert.equal(result.players.length, 8);
+  assert.equal(result.tickCount, 30);
+  assert.ok(result.eventCount > 0, "对局有事件产出");
+  for (const id of entries.map((e) => e.id)) {
+    assert.ok(id in result.coreAlive, `coreAlive 收录 ${id}`);
+    assert.ok(id in result.finalResources, `finalResources 收录 ${id}`);
+    assert.ok(id in result.finalPopulation, `finalPopulation 收录 ${id}`);
+  }
+  if (result.winner !== null) assert.ok(result.players.includes(result.winner));
+  // 确定性：同 seed + 同 options → 逐字段一致
+  const again = runFreeForAll(entries, 13, 30, MANIFEST_PATH, opts);
+  assert.equal(again.eventCount, result.eventCount);
+  assert.deepEqual(again.coreAlive, result.coreAlive);
+  assert.deepEqual(again.finalResources, result.finalResources);
+  assert.deepEqual(again.finalPopulation, result.finalPopulation);
+  assert.equal(again.winner, result.winner);
+});
+
+test("ffa: 随机投放（randomDrop）确定性——同 seed 恒同场景、异 seed 位置不同", () => {
+  const entries = Array.from({ length: 8 }, (_, i) => makeSafetyEntry(`mine-${i}`));
+  const a = makeArenaScenarioN(entries, 3, { radius: 30, randomDrop: { seed: 42 } }) as FfaScenarioShape;
+  const aAgain = makeArenaScenarioN(entries, 3, { radius: 30, randomDrop: { seed: 42 } }) as FfaScenarioShape;
+  const b = makeArenaScenarioN(entries, 3, { radius: 30, randomDrop: { seed: 43 } }) as FfaScenarioShape;
+  assert.deepEqual(a, aAgain, "同 randomDrop seed 恒同场景（旋转 + 洗牌确定性）");
+  const positionsOf = (s: FfaScenarioShape): readonly string[] =>
+    s.players.map((p) => p.core.position.join(","));
+  assert.equal(new Set(positionsOf(a)).size, 8, "随机投放下核心位置仍唯一");
+  assert.notDeepEqual(positionsOf(a), positionsOf(b), "异 seed 投放位置不同");
+  // 随机投放场景同样通过载入器 + 硬不变量
+  assertWorldInvariants(worldFromScenario(a));
+  // runFreeForAll 透传 arenaScenarioOptions：同 seed 结果一致
+  const runOpts = {
+    validatePlans: false,
+    refillEveryTicks: null,
+    arenaScenarioOptions: { radius: 30, randomDrop: { seed: 42 } },
+  };
+  const r1 = runFreeForAll(entries, 5, 20, MANIFEST_PATH, runOpts);
+  const r2 = runFreeForAll(entries, 5, 20, MANIFEST_PATH, runOpts);
+  assert.equal(r1.eventCount, r2.eventCount);
+  assert.deepEqual(r1.coreAlive, r2.coreAlive);
+  assert.deepEqual(r1.finalResources, r2.finalResources);
 });

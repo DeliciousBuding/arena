@@ -31,6 +31,7 @@ const encoder = new TextEncoder();
 
 const child = spawn(python, [bridgeScript, ...bridgeArgs], {
   stdio: ["pipe", "pipe", "inherit"],
+  ...(workerData.env !== undefined ? { env: workerData.env } : {}),
 });
 
 // 孤儿进程防护（M2 卫生项）：worker 线程退出（正常结束/被 parentPort.close
@@ -88,18 +89,32 @@ async function waitForResponse() {
 
 parentPort.on("message", async (request) => {
   if (request === "close") {
-    Atomics.store(flags, 0, FLAG_CLOSE);
+    // 优雅退出：发协议内定义的退出哨兵行 → bridge 识别后静默 return（走
+    // finally：强制 flush 状态槽 + 遥测 disconnected/剩余事件批量上报），
+    // 进程自己干净退出，无需杀进程。
+    // （stdin.end() 在本环境 worker 线程里会挂起——不能依赖 EOF。）
+    try {
+      child.stdin.write("__arena_quit__\n");
+    } catch {
+      /* 已退出 */
+    }
+    // 等待窗口：python 退出前 close() 会 join 遥测线程（最多 3s）完成上报；
+    // 超时才强杀（进程异常卡死时的兜底）。
+    const exitDeadline = Date.now() + 3000;
+    while (child.exitCode === null && Date.now() < exitDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (child.exitCode === null) {
+      try {
+        child.kill();
+      } catch {
+        /* 已退出 */
+      }
+    }
+    // 主线程 close() 在 Atomics.wait(FLAG_IDLE, 2000) 上等收尾——必须显式
+    // 置回 IDLE 通知它"收尾完成"，否则主线程立即 terminate 本 worker。
+    Atomics.store(flags, 0, FLAG_IDLE);
     Atomics.notify(flags, 0);
-    try {
-      child.stdin.end();
-    } catch {
-      /* 已退出 */
-    }
-    try {
-      child.kill();
-    } catch {
-      /* 已退出 */
-    }
     parentPort.close();
     return;
   }

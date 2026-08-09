@@ -49,6 +49,8 @@ export interface SyncBridgeConfig {
   readonly bridgeScript: string;
   /** 传给桥接脚本的额外参数（--farmer-repo / --sdk-repo / --state-slot）。 */
   readonly bridgeArgs: readonly string[];
+  /** L-C config-injection：spawn 桥进程时附加的环境变量（ARENA_CFG_* 等）。 */
+  readonly env?: Record<string, string>;
 }
 
 /**
@@ -77,13 +79,18 @@ export class PersistentSyncBridge {
           python: config.python,
           bridgeScript: config.bridgeScript,
           bridgeArgs: config.bridgeArgs,
+          ...(config.env !== undefined ? { env: config.env } : {}),
         },
       },
     );
   }
 
-  /** 同步往返：发送请求 JSON → 阻塞等待响应 JSON。失败抛错（fail-fast）。 */
-  exchange(requestJson: string): string {
+  /**
+   * 提交请求（流水线预取，P4g）：写请求 JSON 到帧槽 → postMessage 唤醒 worker，
+   * 立即返回不阻塞。结果由 awaitResponse() 取回。与 awaitResponse 严格成对
+   * 交替使用：同一时刻至多一个未决请求（单槽帧协议天然保证）。
+   */
+  submit(requestJson: string): void {
     if (this.closed) {
       throw new Error("sync bridge: exchange after close");
     }
@@ -97,7 +104,14 @@ export class PersistentSyncBridge {
     Atomics.store(this.flags, 1, bytes.length);
     this.frame.set(bytes, 0);
     this.worker.postMessage(requestJson);
+  }
 
+  /**
+   * 取回 submit 发起的请求结果（流水线预取，P4g）：阻塞等待响应（未完成则
+   * 等——保底逻辑；10s 超时 fail-fast）。submit 后只能调用一次。
+   */
+  awaitResponse(): string {
+    const waitStartedAt = Date.now();
     const deadline = Date.now() + DECISION_TIMEOUT_MS;
     while (Date.now() < deadline) {
       Atomics.wait(this.flags, 0, FLAG_BUSY, 200);
@@ -106,6 +120,12 @@ export class PersistentSyncBridge {
         const length = Atomics.load(this.flags, 1);
         const payload = new TextDecoder().decode(this.frame.slice(0, length));
         Atomics.store(this.flags, 0, FLAG_IDLE);
+        // 临时计时（ARENA_BRIDGE_TIMING=1 时输出；默认关 = 零行为变化）。
+        if (process.env.ARENA_BRIDGE_TIMING === "1") {
+          console.error(
+            `[sync-bridge timing] awaitBlockedMs=${Date.now() - waitStartedAt} respBytes=${Buffer.byteLength(payload)}`,
+          );
+        }
         return payload;
       }
       if (flag === FLAG_ERROR) {
@@ -121,13 +141,32 @@ export class PersistentSyncBridge {
     throw new Error(`sync bridge: decision timeout (${DECISION_TIMEOUT_MS}ms)`);
   }
 
-  /** 关闭：通知 worker 终止子进程并释放。 */
+  /** 同步往返：发送请求 JSON → 阻塞等待响应 JSON。失败抛错（fail-fast）。
+   *  语义与既有行为逐字节一致（submit + awaitResponse 的组合）。 */
+  exchange(requestJson: string): string {
+    const startedAt = Date.now();
+    this.submit(requestJson);
+    const response = this.awaitResponse();
+    // 临时计时（ARENA_BRIDGE_TIMING=1 时输出到 stderr；默认关 = 零行为变化）。
+    if (process.env.ARENA_BRIDGE_TIMING === "1") {
+      console.error(
+        `[sync-bridge timing] roundtrip=${Date.now() - startedAt}ms ` +
+          `reqBytes=${Buffer.byteLength(requestJson)} respBytes=${Buffer.byteLength(response)}`,
+      );
+    }
+    return response;
+  }
+
+  /** 关闭：通知 worker 优雅终止子进程（EOF/哨兵退出窗口内完成状态槽与遥测
+   *  flush），并释放。 */
   close(): void {
     if (this.closed) return;
     this.closed = true;
     try {
       this.worker.postMessage("close");
-      Atomics.wait(this.flags, 0, FLAG_IDLE, 2000);
+      // worker 收尾（子进程优雅退出 + 遥测 flush）后置回 FLAG_IDLE；
+      // 等待窗口 ≥ worker 的优雅窗口，防提前 terminate 打断上报。
+      Atomics.wait(this.flags, 0, FLAG_IDLE, 4000);
     } catch {
       // worker 可能已退出——忽略。
     }
@@ -151,6 +190,14 @@ export function createReferenceBridge(options: {
   readonly bridgeScript?: string;
   /** python-agents.json 注册名；默认 farmer。 */
   readonly agent?: string;
+  /** P4c+d（2026-08-09）：遥测台账 instance 用 seed 推导（--seed <n>
+   *  → bridge 端 instance=<agent>-s<n>）；null/缺省 = 不传（bridge 按
+   *  --state-slot 文件名 / sim-<agent> 兜底）。 */
+  readonly seed?: number | null;
+  /** P4c+d：台账 instance 显式覆盖（优先于 --seed/--state-slot 推导）。 */
+  readonly instance?: string | null;
+  /** L-C config-injection：spawn 桥进程时附加的环境变量（ARENA_CFG_* 等）。 */
+  readonly env?: Record<string, string>;
 }): { readonly bridge: PersistentSyncBridge; readonly stateSlot: string } {
   const stateSlot =
     options.stateSlot ?? join(tmpdir(), `arena-ref-${randomUUID()}.pkl`);
@@ -170,10 +217,17 @@ export function createReferenceBridge(options: {
   if (options.sdkRepoDir !== undefined && options.sdkRepoDir.length > 0) {
     bridgeArgs.push("--sdk-repo", options.sdkRepoDir);
   }
+  if (options.seed !== undefined && options.seed !== null) {
+    bridgeArgs.push("--seed", String(options.seed));
+  }
+  if (options.instance !== undefined && options.instance !== null && options.instance.length > 0) {
+    bridgeArgs.push("--instance", options.instance);
+  }
   const bridge = new PersistentSyncBridge({
     python: options.python ?? "python",
     bridgeScript,
     bridgeArgs,
+    ...(options.env !== undefined ? { env: options.env } : {}),
   });
   return { bridge, stateSlot };
 }

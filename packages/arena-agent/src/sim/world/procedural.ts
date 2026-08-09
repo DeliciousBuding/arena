@@ -1,7 +1,7 @@
 /**
  * 程序化世界生成器（W53）——合成场景真实性校准。
  *
- * 移植 reference/arena-evolve/ahsim/world.py 的 _generate +
+ * 移植 reference/third-party/arena-evolve/ahsim/world.py 的 _generate +
  * _break_large_clusters + _seed_initial_resources，保留官方风格：
  *   - 32×32 chunk 化生成（每 chunk 派生独立 seeded RNG）；
  *   - 每 chunk 十字主干通道（local x=0 整列 + local y=0 整行 EMPTY）→

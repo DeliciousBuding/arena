@@ -18,6 +18,7 @@ import {
 } from "./errors.ts";
 import type { PlayerState, Received, Tick } from "./types.ts";
 import { apiError, encodePlan, parseAccepted, parseStreamMessage } from "./protocol.ts";
+import { buildTelemetry, identityEvent, tickSummary, type TelemetrySink } from "./telemetry.ts";
 import { Turn } from "./turn.ts";
 
 export const DEFAULT_BASE_URL = "https://api.arenahero.io";
@@ -233,9 +234,12 @@ export class ArenaHeroClient {
   private _activeTurn: Turn | null = null;
   private _latestReceipts: Partial<Record<CommandSource, Received>> = {};
   private _abortController: AbortController | null = null;
+  private readonly _telemetry: TelemetrySink;
 
   constructor(options: ClientOptions) {
     this.config = buildConfig(options);
+    this._telemetry = buildTelemetry(this.config.apiKey, this.config.baseUrl);
+    this._telemetry.emit(identityEvent(this.config.apiKey, this.config.baseUrl));
   }
 
   get latestReceipts(): Readonly<Record<string, Received>> {
@@ -261,6 +265,7 @@ export class ArenaHeroClient {
           ws = await this._connect(queue, abort.signal);
           this._socket = ws;
           delay = this.config.reconnectMinDelay;
+          this._telemetry.emit({ event: "connection", status: "up" });
           for (;;) {
             // idle 超时兜底：连接建立后长时间收不到任何消息（半开连接/服务端
             // 会话静默结束）→ 强制断开，走下方统一重连路径（2026-08-07 t1/t2
@@ -282,6 +287,11 @@ export class ArenaHeroClient {
           }
           // 其他 close code（1001/1006/1011...）：进入重连
         } catch (exc) {
+          this._telemetry.emit({
+            event: "connection",
+            status: "error",
+            error: exc instanceof Error ? `${exc.constructor.name}: ${exc.message}` : String(exc),
+          });
           overrideDelay = this._classifyError(exc);
         } finally {
           // AsyncGenerator 消费者可能在任意 yield 处 break/return。握手完成后
@@ -391,6 +401,8 @@ export class ArenaHeroClient {
     }
     this._abortController?.abort();
     this._socket?.close();
+    this._telemetry.emit({ event: "disconnected" });
+    this._telemetry.close();
   }
 
   private _closeCode: number | null = null;
@@ -524,6 +536,7 @@ export class ArenaHeroClient {
     if (this._activeTurn !== null) {
       this._activeTurn._seal();
     }
+    this._telemetry.emit(tickSummary(this._currentTick, message));
     const turn = new Turn(
       this._currentTick,
       message,

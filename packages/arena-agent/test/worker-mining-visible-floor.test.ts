@@ -168,3 +168,43 @@ test("plan: 多 worker 单矿唯一分配（只有一人领取）", () => {
 });
 
 export {};
+
+// ===========================================================================
+// 领取租约 × visible-floor（2026-08-09）：租约不得破坏"可见矿跳过 floor"语义，
+// 也不得绕过 maxCollectionDistance 硬距离门。
+// ===========================================================================
+
+test("claim lease: 可见矿 floor 豁免跨 tick 保留（租约不破坏 visible-floor）", () => {
+  const planner = new WorkerTaskPlanner({ mission: t1Mission() });
+  const mine = "11,0"; // dist 11：floor=-20 下旧逻辑会误判不可采
+  const plan1 = planner.plan(snapshotOf(makeTurn([worker("w1", 0, 0)], { tick: 77000, resourceCells: new Set([mine]) })));
+  assert.equal(plan1.assignments.find((a) => a.unitId === "w1")?.task.type, "GO_RESOURCE", "T1 可见矿应采（floor 豁免）");
+  assert.equal(plan1.assignments.find((a) => a.unitId === "w1")?.task.targetCellKey, mine);
+  // T2：更近 w2 出现，w1 原地不动 → 租约 + floor 豁免共同保留 w1（net 低于 floor 但可见豁免）
+  const plan2 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", 0, 0), worker("w2", 6, 0)], { tick: 77001, resourceCells: new Set([mine]) })),
+    plan1.assignments,
+  );
+  const w1Task = plan2.assignments.find((a) => a.unitId === "w1")?.task;
+  assert.equal(w1Task?.type, "GO_RESOURCE", "T2 w1 应继续持有（可见 floor 豁免 + 租约）");
+  assert.equal(w1Task?.targetCellKey, mine);
+  const w2Task = plan2.assignments.find((a) => a.unitId === "w2")?.task;
+  assert.ok(!(w2Task?.type === "GO_RESOURCE" && w2Task.targetCellKey === mine), "w2 不得抢已领取可见矿");
+});
+
+test("claim lease: 租约不绕过 maxCollectionDistance 硬距离门（超距释放）", () => {
+  const planner = new WorkerTaskPlanner({ mission: t1Mission() }); // maxCollectionDistance=24
+  const mine = "11,0";
+  const plan1 = planner.plan(snapshotOf(makeTurn([worker("w1", 0, 0)], { tick: 77000, resourceCells: new Set([mine]) })));
+  assert.equal(plan1.assignments.find((a) => a.unitId === "w1")?.task.targetCellKey, mine, "T1 dist 11 领取");
+  // T2：w1 被推到 dist 29（> 24）→ 超距不可采 → 租约释放，w2（dist 11）领取
+  const plan2 = planner.plan(
+    snapshotOf(makeTurn([worker("w1", 40, 0), worker("w2", 0, 0)], { tick: 77001, resourceCells: new Set([mine]) })),
+    plan1.assignments,
+  );
+  const w1Task = plan2.assignments.find((a) => a.unitId === "w1")?.task;
+  assert.ok(!(w1Task?.type === "GO_RESOURCE" && w1Task.targetCellKey === mine), `超距后 w1 不得继续持有，实际 ${JSON.stringify(w1Task)}`);
+  const w2Task = plan2.assignments.find((a) => a.unitId === "w2")?.task;
+  assert.equal(w2Task?.type, "GO_RESOURCE", "w2 应领取（硬距离门内）");
+  assert.equal(w2Task?.targetCellKey, mine);
+});

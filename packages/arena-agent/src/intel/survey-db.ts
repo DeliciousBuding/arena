@@ -222,24 +222,93 @@ CREATE TABLE IF NOT EXISTS resource_seen_history (
   PRIMARY KEY (cell, tick)
 );
 CREATE INDEX IF NOT EXISTS idx_resource_seen_history_cell ON resource_seen_history(cell, tick);
-CREATE INDEX IF NOT EXISTS idx_resource_seen_history_tick ON resource_seen_history(tick);`;
+CREATE INDEX IF NOT EXISTS idx_resource_seen_history_tick ON resource_seen_history(tick);
+
+-- 第三方 agent 注册与心跳（2026-08-09，用户裁决"并进 survey.db"）：
+-- SDK fork（arena-hero-python-telemetry）通过 command-center
+-- POST /api/ingest/agents 上报 register/connection/tick_summary/disconnected。
+-- agents = 每 (tenant, instance) 一行的最新台账（upsert；同 agent 不同 seed
+--   = 不同 instance = 独立行，多租户区分）；agent_events = 事件流水。
+-- 本组表只由 ingest 端点写入（单一 writer），survey:sync CLI 不触碰。
+CREATE TABLE IF NOT EXISTS agents (
+  tenant TEXT NOT NULL,
+  instance TEXT NOT NULL,
+  tick INTEGER,
+  resources INTEGER,
+  population INTEGER,
+  core_x INTEGER,
+  core_y INTEGER,
+  units INTEGER,
+  visible_enemies INTEGER,
+  status TEXT,
+  sdk_version TEXT,
+  base_url TEXT,
+  pid INTEGER,
+  platform TEXT,
+  mode TEXT NOT NULL DEFAULT 'production',
+  connection_state TEXT NOT NULL DEFAULT 'down',
+  first_seen TEXT,
+  last_heartbeat TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant, instance)
+);
+CREATE TABLE IF NOT EXISTS agent_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT NOT NULL,
+  instance TEXT NOT NULL,
+  event TEXT NOT NULL,
+  tick INTEGER,
+  detail TEXT,
+  ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_tenant_ts ON agent_events(tenant, ts);`;
 
 /** 打开（或创建）某租户的测绘库。write=true 时确保目录存在。 */
 export function openSurveyDb(dataRoot: string, tenant: string, write = false): DatabaseSync {
   const dir = join(dataRoot, "runtime", "survey");
   if (write) mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(join(dir, `${tenant}.db`));
+  // 双写竞争（2026-08-10 P1）：survey:sync CLI（TS calibration 回放域，
+  // ~15min 对全部 4 租户持写锁做 SAVEPOINT 单事务）与 ingest（python 实时域，
+  // 每 5s flush）并发写同一 survey/<tenant>.db；node:sqlite 默认
+  // busy_timeout=0ms，撞上即 "database is locked"，SCHEMA/迁移整体失败——
+  // busy_timeout 让等待替代失败（与 map-store.ts 同参；须先于 WAL pragma：
+  // journal 切换需独占锁）。
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
   if (write) {
-    migrateUnitsSeenXY(db); // 数据架构审计 A2：旧库补 x/y 列 + 回填
-    migrateCoreHuntSanity(db); // 数据质量 A5：核心时间戳倒挂修复（first<=last）
-    migrateResourceSanity(db); // 数据质量 A10：矿时间戳倒挂 + seen_count 重建（force 重跑污染）
-    migrateNotableSanity(db, dataRoot, tenant); // 叙事 A11：CORE_DESTROYED 敌我/摧毁者回填（旧库）
-    migrateUnitsSeenArchive(db); // 共享记忆分层 A13：旧目击归档 heat_archive + 清理原始行
-    migrateDropControlledSeen(db); // 记忆收敛 A14：清理我方目击行（units_seen 纯敌方记忆）
+    try {
+      migrateUnitsSeenXY(db); // 数据架构审计 A2：旧库补 x/y 列 + 回填
+      migrateCoreHuntSanity(db); // 数据质量 A5：核心时间戳倒挂修复（first<=last）
+      migrateResourceSanity(db); // 数据质量 A10：矿时间戳倒挂 + seen_count 重建（force 重跑污染）
+      migrateNotableSanity(db, dataRoot, tenant); // 叙事 A11：CORE_DESTROYED 敌我/摧毁者回填（旧库）
+      migrateUnitsSeenArchive(db); // 共享记忆分层 A13：旧目击归档 heat_archive + 清理原始行
+      migrateDropControlledSeen(db); // 记忆收敛 A14：清理我方目击行（units_seen 纯敌方记忆）
+      migrateAgentMode(db); // agent-ecosystem-v1 P1：agents 表补 mode 列（旧库）
+    } catch (err) {
+      // busy_timeout 下并发写应等待而非抛错；走到这里是真失败（库损坏/
+      // 磁盘/迁移缺陷）。schema 未就绪的连接不可用——关闭并上抛，由
+      // 调用方决定重试（syncTenantSurvey 依赖完整库，不静默吞）。
+      db.close();
+      throw err;
+    }
   }
   return db;
+}
+
+/** 旧库迁移（2026-08-09，agent-ecosystem-v1 P1）：agents 表补
+ *  mode TEXT NOT NULL DEFAULT 'production' 列——旧库由 ingest 端点建表时
+ *  尚无该列，ALTER 补齐；幂等：列已存在则跳过。 */
+function migrateAgentMode(db: DatabaseSync): void {
+  try {
+    const cols = db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "mode")) {
+      db.exec("ALTER TABLE agents ADD COLUMN mode TEXT NOT NULL DEFAULT 'production';");
+    }
+  } catch {
+    // 并发 write 开打碰撞时容错；下次 sync 重试即可
+  }
 }
 
 /** 旧库迁移（2026-08-08，数据架构审计 A2）：units_seen 补 x/y INTEGER 列并
@@ -751,6 +820,17 @@ export function markResourceState(
   `).run(state, tick, cell);
 }
 
+/** 负态 TTL 过期（P2，2026-08-10）：harvested/empty 格超过阈值未恢复 →
+ *  复位 visible（待复查）。对照 world.ts 资源记忆 64-tick TTL；refill 同格
+ *  周期实证 avg 37 tick（survey-sync 注释），128 = 2 倍余量。幂等（WHERE 只
+ *  命中过期负态行）。在 survey-sync 每 run 开头执行。返回受影响行数。 */
+export function expireNegativeResourceStates(db: DatabaseSync, beforeTick: number): number {
+  return Number(db.prepare(`
+    UPDATE resources SET state = 'visible'
+    WHERE state IN ('harvested', 'empty') AND last_state_tick < ?
+  `).run(beforeTick).changes);
+}
+
 export { dirname };
 
 
@@ -931,3 +1011,5 @@ export function coreSpendsSummary(db: DatabaseSync): readonly CoreSpendSummary[]
     maxTick: Number(r.max_tick),
   }));
 }
+
+

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# pre-push hook：防删库/防重写机器兜底（branch-governance-v1 §5.3）。
+# main / production-runtime-v3 只允许快进推送（禁止 force-push / 历史重写）；
+# 推送前门禁：本地有未提交改动时拒绝推送 main（生产冻结：main 工作树必须干净）。
+set -u
+
+PROTECTED=(main production-runtime-v3)
+FORCE_FLAGS=0
+for arg in "$@"; do
+  case "$arg" in
+    --force|--force-with-lease|-f) FORCE_FLAGS=1 ;;
+  esac
+done
+
+# 若远程分支是受保护分支，且远程 oid 不是本地 oid 的祖先（= 重写历史）
+# 或命令带 --force → 拒绝。
+while read local_ref local_oid remote_ref remote_oid; do
+  [ -z "$local_ref" ] && continue
+  branch="${remote_ref#refs/heads/}"
+  for protected in "${PROTECTED[@]}"; do
+    [ "$branch" != "$protected" ] && continue
+    if [ "$FORCE_FLAGS" = "1" ]; then
+      echo "pre-push: BLOCKED force-push to '$branch' (branch-governance-v1 §5.3)"
+      exit 1
+    fi
+    if [ "$remote_oid" != "$local_oid" ] && [ "$(git rev-parse --verify --quiet "$remote_oid")" != "" ]; then
+      if ! git merge-base --is-ancestor "$remote_oid" "$local_oid" 2>/dev/null; then
+        echo "pre-push: BLOCKED non-fast-forward rewrite of '$branch'"
+        exit 1
+      fi
+    fi
+  done
+done
+
+# main 工作树干净门禁（生产冻结 §3.1-4）：推送 main 前本地必须无改动。
+if git rev-parse --abbrev-ref HEAD >/dev/null 2>&1; then
+  dirty=$(git status --porcelain 2>/dev/null | wc -l)
+  if [ "$dirty" -gt 0 ]; then
+    echo "pre-push: BLOCKED dirty worktree ($dirty files) while on $(git rev-parse --abbrev-ref HEAD); commit/stash first (branch-governance-v1 §3.1-4)"
+    exit 1
+  fi
+fi
+exit 0

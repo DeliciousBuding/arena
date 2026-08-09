@@ -35,7 +35,7 @@ const REPO_ROOT = resolve(here, "..", "..", "..");
 function findCoordinationRoot(start: string): string {
   let current = start;
   for (let depth = 0; depth < 12; depth += 1) {
-    if (existsSync(join(current, "reference", "arena-hero-python", "src", "arena_hero"))) return current;
+    if (existsSync(join(current, "reference", "official", "arena-hero-python", "src", "arena_hero"))) return current;
     const parent = dirname(current);
     if (parent === current) break;
     current = parent;
@@ -45,7 +45,7 @@ function findCoordinationRoot(start: string): string {
 const COORDINATION_ROOT = findCoordinationRoot(REPO_ROOT);
 const localMirrorCandidates = [
   // arena-hero-python is a standard src-layout package; coordination-root probing makes this work from worktrees.
-  join(COORDINATION_ROOT, "reference", "arena-hero-python", "src", "arena_hero"),
+  join(COORDINATION_ROOT, "reference", "official", "arena-hero-python", "src", "arena_hero"),
   // Legacy layout kept as a compatibility fallback for older mirrors.
   join(COORDINATION_ROOT, "reference", "arena-hero-python", "arena_hero"),
   // Historical relative fallback for unusual checkout layouts.

@@ -17,7 +17,8 @@ import { DEFAULT_SAFETY_CONFIG, SafetyPlanner, type SafetyPlannerConfig } from "
 import { loadRulesManifest, type RulesManifest } from "../contracts/rules-manifest.ts";
 import { createSeededRng } from "../deterministic/rng.ts";
 import { compareCodeUnit } from "../deterministic/uuid.ts";
-import type { ResolutionEvent, UnknownEffect } from "../engine/phase.ts";
+import { EVENT_CATEGORY_TYPES } from "../engine/phase.ts";
+import type { EventCategoryId, EventType, ResolutionEvent, UnknownEffect } from "../engine/phase.ts";
 import { initialChunkKeys } from "../engine/refill.ts";
 import { settleTick, type SettlementContext } from "../engine/settlement.ts";
 import { privateEventsForPlayer } from "../visibility/private-events.ts";
@@ -26,6 +27,7 @@ import { worldHash } from "../world/canonical.ts";
 import { worldFromScenario } from "../world/loaders.ts";
 import type { SimFeature, SimWorld } from "../world/types.ts";
 import { assertWorldInvariants } from "../world/world.ts";
+import type { SimTelemetrySink } from "../telemetry.ts";
 
 export type PlannerKind = "deterministic" | "safety";
 
@@ -66,6 +68,7 @@ export interface EpisodeTickPlayerMeasurement {
  * - finalPopulation  ← finalWorld 玩家单位数
  * - finalResources   ← finalWorld 玩家资源
  * - aliveTicks  ← 每 tick after.core!==null 计 1（与 reference ticks_alive 同语义）
+ * - populationPeak   ← 每 tick after 玩家单位数的最大值（arena-bench 扩张力指标）
  *
  * 默认追加：不破坏现有 metrics 字段；现有消费者读 ticks/illegalPlans 等不受影响。
  */
@@ -84,6 +87,15 @@ export interface PlayerCostLedger {
   readonly finalPopulation: number;
   readonly finalResources: number;
   readonly aliveTicks: number;
+  /** 每 tick 玩家单位数的最大值（arena-bench 扩张力指标；恒 ≥ 0）。 */
+  readonly populationPeak: number;
+  /** 注册表类别聚合计数（movement/combat/economy/beacon/respawn）；
+   *  新增事件类型加入 EVENT_CATEGORY_TYPES 后自动被统计（P4h）。 */
+  readonly eventCounts: Readonly<Record<EventCategoryId, number>>;
+  /** 未识别事件计数（事件类型不在注册表内；eventOf 已校验，正常恒为 0）。 */
+  readonly unrecognizedEventCount: number;
+  /** P4e 决策超时次数（每 tick 超预算被丢弃的 decide 次数；未启用恒 0）。 */
+  readonly decisionTimeouts: number;
 }
 
 export interface EpisodeTickMeasurement {
@@ -143,6 +155,11 @@ export interface EpisodeConfig {
     readonly world: SimWorld;
     readonly rules: RulesManifest;
   }) => void;
+  /** 模拟器遥测（2026-08-09，agent-telemetry-bridge-v1 §3.4）：每 tick
+   *  per-tenant 结算后上报 tick_summary（复用 SDK tickSummary 契约，经调用方
+   *  run-sim 注入的 sink 走同一 ingest 端点）。返回 null = 该 tenant 不上报。
+   *  只读，不参与模拟语义。 */
+  readonly telemetrySinkFor?: (tenantId: string) => SimTelemetrySink | null;
   /** Synthetic calibration 记录钩子（2026-08-07）：每 tick 结算后回调
    *  before/after 世界 + plans + events——synthetic 对打数据管道用
    *  （projectPlayerState 生成官方格式 calibration case）。只读，不参与
@@ -165,6 +182,47 @@ export interface EpisodeConfig {
   /** 被测者在 id-sorted tenants 中的 index（slot 轮换用）。缺省 0。
    *  仅当 rotateSlot=true 时读取。 */
   readonly mySlot?: number;
+  /**
+   * P4e per-tick 决策预算护栏（agent-ecosystem P4e，2026-08-09）：
+   * 单 tick 决策预算（ms）。planner.decide 耗时超过预算时丢弃本次结果，
+   * 本 tick 重放该 tenant 上次执行计划（lastPlan 语义；无上次计划用空计划
+   * WAIT），并计入 per-player 指标 decisionTimeouts（EpisodeRecord +
+   * PlayerCostLedger + summarizeEpisode）。连续超时达 decisionBudgetStrikes
+   * 次后跳过该 tenant 后续 decide（直接空计划，记录在
+   * EpisodeRecord.decisionTimeoutSkipped）。
+   *
+   * JS 无法强杀同步函数——护栏语义 = 丢弃 + 降级 + 指标，不中断循环；
+   * 慢 planner 仍会占满本 tick 的墙钟时间，只是结果不再进入 settlement。
+   * 缺省 undefined = 不启用（与历史行为逐字节一致）；sim-server 服务模式
+   * 启用时传 200。
+   */
+  readonly decisionBudgetMs?: number;
+  /** P4e 连续超时阈值（缺省 3）：连续超预算 N 次后跳过该 tenant 后续 decide。 */
+  readonly decisionBudgetStrikes?: number;
+  /**
+   * P4f early-stop 护栏（agent-ecosystem P4f，2026-08-09）：缺省 false =
+   * 历史行为零回归（固定跑满 config.ticks）。true 时每 tick 结算后检查存活
+   * 玩家数（有 Core/单位/ACTIVE 者），存活数为 0 → 提前终止
+   * （metrics.endedEarly/endReason/endedAtTick），后续 tick 不跑。
+   * 只省资源，不判胜负（官方"无终局"语义保持）。
+   */
+  readonly earlyStop?: boolean;
+  /**
+   * P4g 决策流水线（2026-08-09，性能优化）：缺省 false = 现有行为逐字节不变
+   * （主线程每 tick 同步等待每个 tenant 的桥决策，Atomics.wait 空闲）。
+   * true 时：tick N 结算完成后用结算后世界（= tick N+1 的 before 世界）提前
+   * 发起每个 tenant 的观察+决策（PlanProvider.prefetch 异步不阻塞——持久桥
+   * 在 worker 线程/独立 Python 进程并行决策，主线程继续做记录/账本），
+   * tick N+1 开始时 decideCached 取结果（桥已完成时等待≈0；未完成则等待——
+   * 保底逻辑）→ validatePlan → settleTick → 记录。决策与结算重叠，消除主
+   * 线程每 tick 同步等待桥决策的空闲。
+   *
+   * 语义：决策基于结算后世界（与串行模式同一观察，逐字节同结果——对
+   * 持久桥请求序列不变、对内置 planner 调用序列不变）；时间点前移一个
+   * tick 窗口，对启发式策略几乎无感。不实现 prefetch/decideCached 的
+   * provider 在本模式下退回同步 decide（混合流水线，行为不变）。
+   */
+  readonly pipeline?: boolean;
 }
 
 /**
@@ -192,6 +250,12 @@ export interface EpisodeRecord {
   readonly events: readonly ResolutionEvent[];
   readonly unsupported: readonly SimFeature[];
   readonly unknownEffects: readonly UnknownEffect[];
+  /** P4e 本 tick 决策超时次数（tenantId → 次数，0/1 per tenant per tick；
+   *  未启用决策预算时恒为空对象）。 */
+  readonly decisionTimeouts: Readonly<Record<string, number>>;
+  /** P4e 本 tick 因连续超时达标被跳过 decide 的 tenant（直接提交空计划 WAIT）。
+   *  未启用决策预算时恒为空数组。 */
+  readonly decisionTimeoutSkipped: readonly string[];
 }
 
 export interface EpisodeResult {
@@ -199,6 +263,7 @@ export interface EpisodeResult {
   readonly finalWorldHash: string;
   readonly records: readonly EpisodeRecord[];
   readonly metrics: {
+    /** 实际结算 tick 数（early-stop 触发时 < config.ticks；否则 === config.ticks）。 */
     readonly ticks: number;
     readonly illegalPlans: number;
     readonly repairedPlans: number;
@@ -211,6 +276,12 @@ export interface EpisodeResult {
      * 现有消费者读 ticks/illegalPlans 等不受影响（默认关 = 仅追加，不改既有语义）。
      */
     readonly perPlayer: Readonly<Record<string, PlayerCostLedger>>;
+    /** P4f 是否提前终止（early-stop；缺省 earlyStop=false 恒 false）。 */
+    readonly endedEarly: boolean;
+    /** P4f 提前终止原因（null = 未提前终止；当前只有 "all-dead"）。 */
+    readonly endReason: "all-dead" | null;
+    /** P4f 提前终止时的最后结算 tick（null = 未提前终止）。 */
+    readonly endedAtTick: number | null;
   };
 }
 
@@ -321,6 +392,21 @@ interface MutableCostLedger {
   finalPopulation: number;
   finalResources: number;
   aliveTicks: number;
+  populationPeak: number;
+  /** 注册表类别聚合计数（movement/combat/economy/beacon/respawn）。
+   *  新增事件类型加入 EVENT_CATEGORY_TYPES 后自动被统计（P4h）。 */
+  eventCounts: Record<EventCategoryId, number>;
+  /** 未识别事件计数（事件类型不在注册表内；eventOf 已校验，正常恒为 0，
+   *  直接构造 ResolutionEvent 的旁路在此拦截，防静默漏计）。 */
+  unrecognizedEventCount: number;
+  /** P4e 决策超时次数（每 tick 超预算被丢弃的 decide 次数；未启用恒 0）。 */
+  decisionTimeouts: number;
+}
+
+function emptyEventCounts(): Record<EventCategoryId, number> {
+  return Object.fromEntries(
+    Object.keys(EVENT_CATEGORY_TYPES).map((category) => [category, 0]),
+  ) as Record<EventCategoryId, number>;
 }
 
 function createEmptyLedger(): MutableCostLedger {
@@ -339,8 +425,19 @@ function createEmptyLedger(): MutableCostLedger {
     finalPopulation: 0,
     finalResources: 0,
     aliveTicks: 0,
+    populationPeak: 0,
+    eventCounts: emptyEventCounts(),
+    unrecognizedEventCount: 0,
+    decisionTimeouts: 0,
   };
 }
+
+/** 事件类型 → 类别反查表（注册表推导；ledger 按类别聚合统计用）。 */
+const EVENT_TYPE_TO_CATEGORY: ReadonlyMap<EventType, EventCategoryId> = new Map(
+  (Object.entries(EVENT_CATEGORY_TYPES) as Array<[EventCategoryId, readonly EventType[]]>).flatMap(
+    ([category, types]) => types.map((type) => [type, category] as const),
+  ),
+);
 
 /**
  * 构造 entityId → playerId 反查表（core.id / unit.id → owner playerId）。
@@ -378,8 +475,19 @@ function accumulateEventsIntoLedger(
   owners: Map<string, string>,
 ): void {
   for (const event of events) {
+    // 类别聚合统计（注册表驱动）：新增事件类型进 EVENT_CATEGORY_TYPES 即被统计。
+    const category = EVENT_TYPE_TO_CATEGORY.get(event.eventType);
     const actorOwner = event.actorId !== null ? owners.get(event.actorId) ?? null : null;
     const targetOwner = event.targetId !== null ? owners.get(event.targetId) ?? null : null;
+    if (category === undefined) {
+      // 未识别事件防漏：类型不在注册表内（eventOf 创建入口已校验，正常
+      // 恒为 0；直接构造 ResolutionEvent 的旁路在此拦截，不再静默跳过）。
+      if (actorOwner !== null) ledgers.get(actorOwner)!.unrecognizedEventCount += 1;
+      else if (targetOwner !== null) ledgers.get(targetOwner)!.unrecognizedEventCount += 1;
+      continue;
+    }
+    if (actorOwner !== null) ledgers.get(actorOwner)!.eventCounts[category] += 1;
+    else if (targetOwner !== null) ledgers.get(targetOwner)!.eventCounts[category] += 1;
     switch (event.eventType) {
       case "HARVEST_SUCCEEDED":
       case "BEACON_HARVEST_BONUS": {
@@ -489,10 +597,61 @@ function accumulateTickStateIntoLedger(
     if (ledger === undefined) continue;
     if (player.core !== null) ledger.aliveTicks += 1;
     if (beaconOwner === playerId) ledger.beaconTicks += 1;
+    if (player.units.length > ledger.populationPeak) {
+      ledger.populationPeak = player.units.length;
+    }
   }
 }
 
 type LoadedEpisodeConfig = Omit<EpisodeConfig, "scenario">;
+
+/** 空计划（全 WAIT）：P4e 超时无上次计划 / 连续超时跳过 decide 时的降级计划。 */
+function emptyPlanFor(tick: number): Plan {
+  return { tick, unitActions: {}, coreAction: null, intents: {} };
+}
+
+/**
+ * P4f 存活玩家数：存活 = status ACTIVE 或有 Core/有单位。
+ *
+ * RESPAWNING（core=null, units=[]）玩家不算存活——但只有全员无 Core/无单位
+ * 时才触发 early-stop：多人对局中任一玩家存活时，RESPAWNING 玩家不会终止
+ * episode（且其重生依赖活 Core 的 20-30 曼哈顿环带，稍后即可重生回 ACTIVE）；
+ * 而全员 RESPAWNING 时重生不可能（无活 Core 即无 spawn 候选格），等同于
+ * 全员死亡。语义上只省资源，不判胜负（官方"无终局"保持）。
+ */
+function alivePlayerCount(world: SimWorld): number {
+  let alive = 0;
+  for (const player of world.players.values()) {
+    if (player.status === "ACTIVE" || player.core !== null || player.units.length > 0) {
+      alive += 1;
+    }
+  }
+  return alive;
+}
+
+/** 单 tenant 的观察 + 策略解析（P4g 流水线预取与串行路径共用）：simTurnLike →
+ *  reduceTurn → 遥测上报 → policyProvider 更新。纯观察（无世界副作用）；
+ *  telemetry/policyProvider 每 (tenant, tick) 恰好调用一次——串行在 tick 迭代内
+ *  调用，流水线在上一轮迭代末尾的 prefetch 处调用（同一 world/events → 同结果）。
+ */
+function observeAndPolicy(
+  world: SimWorld,
+  tenant: EpisodeTenant,
+  rules: RulesManifest,
+  events: readonly ResolutionEvent[],
+  config: LoadedEpisodeConfig,
+  lastPolicy: Map<string, MacroPolicy | undefined>,
+): { readonly state: TickState; readonly policy: MacroPolicy | undefined } {
+  const turn: TurnLike = simTurnLike(world, tenant.id, rules, events);
+  const state: TickState = reduceTurn(turn);
+  config.telemetrySinkFor?.(tenant.id)?.emitTick(world.tick, state);
+  if (config.policyProvider !== undefined) {
+    const next = config.policyProvider(tenant.id, world.tick, state);
+    if (next !== null) lastPolicy.set(tenant.id, next);
+  }
+  const policy = lastPolicy.get(tenant.id) ?? tenant.policy;
+  return { state, policy };
+}
 
 /** 共享确定性 runner：初始世界已解析。wallMs 是唯一非确定字段。 */
 function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): EpisodeResult {
@@ -518,6 +677,10 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
         }),
   };
   const validate = config.validatePlans ?? true;
+  // 临时分阶段计时（ARENA_EPISODE_TIMING=1 时按 tick 输出摘要；默认关 = 零行为变化）。
+  const phaseTiming = process.env.ARENA_EPISODE_TIMING === "1";
+  let timingSum = { decision: 0, settlement: 0, record: 0, prefetch: 0, tick: 0 };
+  let timingTicks = 0;
   // Slot 轮换（W54）：id-sorted tenants → 按站点序循环移位。id 集合不变，
   // validateConfig 已过；privateEventsForPlayer 按 playerId 过滤（顺序无关）。
   // 调用方需把 scenario players[] 按站点序构造（被测者在 site rotatedSlot）。
@@ -547,39 +710,209 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
   const costLedgers = new Map<string, MutableCostLedger>(
     [...world.players.keys()].map((playerId) => [playerId, createEmptyLedger()]),
   );
+  // P4e 决策预算护栏状态：上次执行计划（超时重放源，lastPlan 语义）、
+  // 连续超时 strike 计数、已跳过 decide 的 tenant 集合。
+  const decisionBudgetMs = config.decisionBudgetMs;
+  const strikesBeforeSkip = config.decisionBudgetStrikes ?? 3;
+  const lastExecutedPlan = new Map<string, Plan>();
+  const decisionTimeoutStrikes = new Map<string, number>();
+  const decisionTimeoutSkipped = new Set<string>();
+  // P4f early-stop 记录（未触发时确定性 false/null/null）。
+  let endedEarly = false;
+  let endReason: "all-dead" | null = null;
+  let endedAtTick: number | null = null;
+  // P4g 决策流水线（pipeline=true）：tick N 结算后 prefetch tick N+1 决策，
+  // tick N+1 开始时 decideCached 取。仅 provider 同时实现 prefetch/decideCached
+  // 的 tenant 走流水线；其余 tenant 退回同步 decide（混合流水线，行为不变）。
+  const pipeline = config.pipeline === true;
+  const pipelineTenantIds = new Set(
+    pipeline
+      ? tenants
+          .filter((tenant) => {
+            const planner = planners.get(tenant.id)!;
+            return (
+              typeof planner.prefetch === "function" &&
+              typeof planner.decideCached === "function"
+            );
+          })
+          .map((tenant) => tenant.id)
+      : [],
+  );
+  /** P4g+（2026-08-09）：prefetch 提交顺序——parallelPrefetch（真异步桥）在先，
+   *  同步计算（内置 planner）在后：桥请求先发出 → Python 决策与主线程后续的
+   *  同步 prefetch 计算重叠（waaiging 等长尾决策等待显著缩短）。只影响调度
+   *  顺序，每个 tenant 的请求内容/序列不变 → 逐字节一致。 */
+  const pipelinePrefetchOrder = pipeline
+    ? tenants
+        .filter((tenant) => pipelineTenantIds.has(tenant.id))
+        .sort((a, b) => {
+          const aAsync = planners.get(a.id)?.parallelPrefetch === true ? 0 : 1;
+          const bAsync = planners.get(b.id)?.parallelPrefetch === true ? 0 : 1;
+          return aAsync - bAsync;
+        })
+    : [];
+  /** tenantId → 预取上下文（state/policy）：prefetch 时计算并缓存，decideCached
+   *  后 validatePlan/manualOverride 使用（同一观察，串行模式每 tick 一次）。 */
+  const prefetchedContext = new Map<string, { readonly state: TickState; readonly policy: MacroPolicy | undefined }>();
+
+  /** 用给定世界（= 下一 tick 的 before 世界）发起所有流水线 tenant 的 prefetch。
+   *  观察 + 策略与串行路径同一实现（observeAndPolicy），逐字节同结果；跳过
+   *  （decisionTimeoutSkipped）tenant 不发起（其 pending 请求为空，迭代处重算
+   *  观察走空计划降级——请求/响应交替不破）。提交顺序走
+   *  pipelinePrefetchOrder（真异步桥先发，同步计算排后——P4g+ 调度）。 */
+  const prefetchNextTick = (nextWorld: SimWorld): void => {
+    for (const tenant of pipelinePrefetchOrder) {
+      if (decisionTimeoutSkipped.has(tenant.id)) continue;
+      // 临时 per-tenant 计时（ARENA_EPISODE_TIMING=1）。
+      const tenantStartedAt = phaseTiming ? performance.now() : 0;
+      const observed = observeAndPolicy(
+        nextWorld,
+        tenant,
+        rules,
+        previousEvents.get(tenant.id) ?? [],
+        config,
+        lastPolicy,
+      );
+      prefetchedContext.set(tenant.id, observed);
+      planners.get(tenant.id)!.prefetch!({ state: observed.state, policy: observed.policy });
+      if (phaseTiming) {
+        console.error(
+          `[episode timing] prefetch tenant=${tenant.id} ms=${(performance.now() - tenantStartedAt).toFixed(2)}`,
+        );
+      }
+    }
+  };
+
+  // 流水线：循环外先跑 tick 1 的 Alliance 钩子 + 预取（钩子必须先于决策发起——
+  // 与串行模式"迭代开头钩子 → tenant planner"的相对顺序一致）。
+  if (pipeline) {
+    config.onBeforePlanners?.({ tick: world.tick, world, rules });
+    prefetchNextTick(world);
+  }
 
   for (let step = 0; step < config.ticks; step += 1) {
     const tickStarted = performance.now();
     const before = world;
 
-    // Alliance 前置钩子：在 per-tenant planner 前提供全景 SimWorld
-    config.onBeforePlanners?.({ tick: before.tick, world: before, rules });
+    // Alliance 前置钩子：在 per-tenant planner 前提供全景 SimWorld。
+    // 流水线模式下本 tick 的钩子在上一轮迭代末尾（prefetch 前）已调用
+    // （tick 1 在循环外预取前调用）——保证 director 注入先于决策发起。
+    if (!pipeline) {
+      config.onBeforePlanners?.({ tick: before.tick, world: before, rules });
+    }
 
+    const decisionStarted = performance.now();
     const settlementPlans = new Map<string, Plan>();
     const plans: Record<string, Plan> = {};
     const planHashes: Record<string, string> = {};
     const validations: Record<string, ValidationSummary> = {};
+    const tickDecisionTimeouts: Record<string, number> = {};
+    const tickDecisionSkipped: string[] = [];
 
     for (const tenant of tenants) {
       const planner = planners.get(tenant.id)!;
-      const turn: TurnLike = simTurnLike(
-        world,
-        tenant.id,
-        rules,
-        previousEvents.get(tenant.id) ?? [],
-      );
-      const state: TickState = reduceTurn(turn);
-      if (config.policyProvider !== undefined) {
-        const next = config.policyProvider(tenant.id, before.tick, state);
-        if (next !== null) lastPolicy.set(tenant.id, next);
+      const pipelineTenant = pipelineTenantIds.has(tenant.id);
+      // 临时 per-tenant 计时（ARENA_EPISODE_TIMING=1）。
+      const tenantStartedAt = phaseTiming ? performance.now() : 0;
+      let state: TickState;
+      let policy: MacroPolicy | undefined;
+      let proposed: Plan;
+      if (pipelineTenant) {
+        // 流水线：本 tick 决策已在上一轮迭代末尾 prefetch（观察基于结算后
+        // 世界 = 本 tick 的 before 世界，与串行同一观察）。decideCached 取
+        // 结果——桥已完成时等待≈0；未完成则等待（保底逻辑）。
+        // 被跳过 tenant 未发起 prefetch——重算观察（telemetry/policy 每
+        // tick 恰好一次，与串行一致），走空计划降级。
+        const observed = prefetchedContext.get(tenant.id);
+        if (observed !== undefined) {
+          state = observed.state;
+          policy = observed.policy;
+        } else {
+          const recomputed = observeAndPolicy(
+            world,
+            tenant,
+            rules,
+            previousEvents.get(tenant.id) ?? [],
+            config,
+            lastPolicy,
+          );
+          state = recomputed.state;
+          policy = recomputed.policy;
+        }
+        if (decisionTimeoutSkipped.has(tenant.id)) {
+          proposed = emptyPlanFor(state.tick);
+          tickDecisionSkipped.push(tenant.id);
+        } else {
+          const decidedAt = performance.now();
+          proposed = planner.decideCached!();
+          if (phaseTiming) {
+            console.error(
+              `[episode timing] tenant ${tenant.id} decideCachedMs=${(performance.now() - decidedAt).toFixed(2)}`,
+            );
+          }
+          if (decisionBudgetMs !== undefined && performance.now() - decidedAt > decisionBudgetMs) {
+            const strikes = (decisionTimeoutStrikes.get(tenant.id) ?? 0) + 1;
+            decisionTimeoutStrikes.set(tenant.id, strikes);
+            if (strikes >= strikesBeforeSkip) decisionTimeoutSkipped.add(tenant.id);
+            const last = lastExecutedPlan.get(tenant.id);
+            proposed = last === undefined ? emptyPlanFor(state.tick) : { ...last, tick: state.tick };
+            tickDecisionTimeouts[tenant.id] = (tickDecisionTimeouts[tenant.id] ?? 0) + 1;
+            const ledger = costLedgers.get(tenant.id);
+            if (ledger !== undefined) ledger.decisionTimeouts += 1;
+          } else {
+            decisionTimeoutStrikes.set(tenant.id, 0);
+          }
+        }
+      } else {
+        const observed = observeAndPolicy(
+          world,
+          tenant,
+          rules,
+          previousEvents.get(tenant.id) ?? [],
+          config,
+          lastPolicy,
+        );
+        state = observed.state;
+        policy = observed.policy;
+
+        // P4e 决策预算护栏（同步循环内无强杀；语义 = 丢弃 + 降级 + 指标）：
+        // - 超预算 → 丢弃本次结果，重放上次执行计划（lastPlan 语义；无上次
+        //   计划用空计划 WAIT），计 1 次超时（tickDecisionTimeouts + ledger）；
+        // - 连续超时达 strikesBeforeSkip → 跳过该 tenant 后续 decide（直接
+        //   空计划），记录在 tickDecisionSkipped（DECISION_TIMEOUT_SKIPPED）。
+        const skipDecision = decisionTimeoutSkipped.has(tenant.id);
+        if (skipDecision) {
+          proposed = emptyPlanFor(state.tick);
+          tickDecisionSkipped.push(tenant.id);
+        } else {
+          const decidedAt = performance.now();
+          proposed = planner.decide({ state, policy });
+          if (decisionBudgetMs !== undefined && performance.now() - decidedAt > decisionBudgetMs) {
+            const strikes = (decisionTimeoutStrikes.get(tenant.id) ?? 0) + 1;
+            decisionTimeoutStrikes.set(tenant.id, strikes);
+            if (strikes >= strikesBeforeSkip) decisionTimeoutSkipped.add(tenant.id);
+            const last = lastExecutedPlan.get(tenant.id);
+            proposed = last === undefined ? emptyPlanFor(state.tick) : { ...last, tick: state.tick };
+            tickDecisionTimeouts[tenant.id] = (tickDecisionTimeouts[tenant.id] ?? 0) + 1;
+            const ledger = costLedgers.get(tenant.id);
+            if (ledger !== undefined) ledger.decisionTimeouts += 1;
+          } else {
+            decisionTimeoutStrikes.set(tenant.id, 0);
+          }
+        }
       }
-      const policy = lastPolicy.get(tenant.id) ?? tenant.policy;
-      const proposed = planner.decide({ state, policy });
+
       let finalPlan = proposed;
       let summary: ValidationSummary = { valid: true, repaired: false, issueCount: 0 };
 
       if (validate) {
+        const validateStartedAt = phaseTiming ? performance.now() : 0;
         const result: ValidationResult = validatePlan(state, proposed);
+        if (phaseTiming) {
+          console.error(
+            `[episode timing] tenant ${tenant.id} validateMs=${(performance.now() - validateStartedAt).toFixed(2)}`,
+          );
+        }
         summary = {
           valid: result.valid,
           repaired: result.repaired,
@@ -595,13 +928,27 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
 
       const settledPlan =
         config.manualOverrideProvider?.(tenant.id, before.tick, state, finalPlan) ?? finalPlan;
+      lastExecutedPlan.set(tenant.id, settledPlan);
       settlementPlans.set(tenant.id, settledPlan);
       plans[tenant.id] = settledPlan;
       planHashes[tenant.id] = hashPlan(settledPlan);
       validations[tenant.id] = summary;
+      // 临时 per-tenant 计时（ARENA_EPISODE_TIMING=1）。
+      if (phaseTiming) {
+        console.error(
+          `[episode timing] tenant ${tenant.id} total=${(performance.now() - tenantStartedAt).toFixed(2)}ms ` +
+            `pipeline=${String(pipelineTenant)}`,
+        );
+      }
     }
 
+    const decisionEnded = performance.now();
     const result = settleTick(world, settlementPlans, context);
+    const settlementEnded = performance.now();
+    if (phaseTiming) {
+      timingSum.decision += decisionEnded - decisionStarted;
+      timingSum.settlement += settlementEnded - decisionEnded;
+    }
     world = result.world;
     for (const tenant of tenants) {
       previousEvents.set(
@@ -609,6 +956,20 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
         privateEventsForPlayer(before, world, tenant.id, result.events),
       );
     }
+    const prefetchStarted = performance.now();
+    // P4g 决策流水线：结算完成后立即发起 tick N+1 的观察+决策（prefetch 异步
+    // 不阻塞——持久桥在 worker 线程/独立 Python 进程并行决策），把本 tick 剩余
+    // 的 ledger/记录/observer 工作叠在 Python 决策之下；tick N+1 开始时
+    // decideCached 取结果（等待≈0，未完成则等待保底）。末 tick 不预取。
+    if (pipeline && step + 1 < config.ticks) {
+      // 先跑下一 tick 的 Alliance 钩子（director 注入先于决策发起——与串行
+      // 模式"迭代开头钩子 → planner 决策"的相对顺序一致；此时 world = 结算后
+      // 世界 = 下一 tick 的 before 世界，tick = world.tick）。
+      config.onBeforePlanners?.({ tick: world.tick, world, rules });
+      prefetchNextTick(world);
+    }
+    const prefetchEnded = performance.now();
+    if (phaseTiming) timingSum.prefetch += prefetchEnded - prefetchStarted;
     for (const feature of result.unsupported) seenUnsupported.add(feature);
     totalEvents += result.events.length;
     // W51: 累计 per-player cost ledger（before+after 合并覆盖被摧毁/新生实体）。
@@ -624,6 +985,8 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
       events: result.events,
       unsupported: result.unsupported,
       unknownEffects: result.unknownEffects,
+      decisionTimeouts: tickDecisionTimeouts,
+      decisionTimeoutSkipped: tickDecisionSkipped,
     });
     if (config.onTickRecorded !== undefined) {
       config.onTickRecorded({
@@ -648,6 +1011,32 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
         players: Object.freeze(players),
       }));
     }
+
+    // 临时分阶段计时：tick 级摘要（ARENA_EPISODE_TIMING=1）。
+    if (phaseTiming) {
+      timingSum.record += performance.now() - prefetchEnded;
+      timingSum.tick += performance.now() - tickStarted;
+      timingTicks += 1;
+      if (timingTicks % 100 === 0) {
+        const t = timingSum;
+        console.error(
+          `[episode timing] ticks=${timingTicks} avg_tick=${(t.tick / timingTicks).toFixed(1)}ms ` +
+            `decision=${(t.decision / timingTicks).toFixed(1)}ms ` +
+            `settlement=${(t.settlement / timingTicks).toFixed(1)}ms ` +
+            `prefetch=${(t.prefetch / timingTicks).toFixed(1)}ms ` +
+            `record=${(t.record / timingTicks).toFixed(1)}ms`,
+        );
+      }
+    }
+
+    // P4f early-stop：全员无存活（无 Core/无单位）→ 提前终止，后续 tick 不跑。
+    // 只省资源，不判胜负（官方"无终局"语义保持）。
+    if (config.earlyStop === true && alivePlayerCount(world) === 0) {
+      endedEarly = true;
+      endReason = "all-dead";
+      endedAtTick = before.tick;
+      break;
+    }
   }
 
   // W51: 快照终局 finalPopulation/finalResources 到 ledger。
@@ -662,18 +1051,34 @@ function runLoadedEpisode(config: LoadedEpisodeConfig, loaded: SimWorld): Episod
     perPlayer[playerId] = Object.freeze({ ...ledger });
   }
 
+  // 临时分阶段计时汇总（ARENA_EPISODE_TIMING=1）。
+  if (phaseTiming && timingTicks > 0) {
+    const t = timingSum;
+    console.error(
+      `[episode timing] TOTAL ticks=${timingTicks} avg_tick=${(t.tick / timingTicks).toFixed(1)}ms ` +
+        `decision=${(t.decision / timingTicks).toFixed(1)}ms ` +
+        `settlement=${(t.settlement / timingTicks).toFixed(1)}ms ` +
+        `prefetch=${(t.prefetch / timingTicks).toFixed(1)}ms ` +
+        `record=${(t.record / timingTicks).toFixed(1)}ms ` +
+        `sum=${((t.decision + t.settlement + t.prefetch + t.record) / timingTicks).toFixed(1)}ms`,
+    );
+  }
+
   return {
     finalWorld: world,
     finalWorldHash: worldHash(world),
     records,
     metrics: {
-      ticks: config.ticks,
+      ticks: records.length,
       illegalPlans,
       repairedPlans,
       unsupported: [...seenUnsupported].sort(compareCodeUnit),
       totalEvents,
       wallMs: performance.now() - started,
       perPlayer: Object.freeze(perPlayer),
+      endedEarly,
+      endReason,
+      endedAtTick,
     },
   };
 }

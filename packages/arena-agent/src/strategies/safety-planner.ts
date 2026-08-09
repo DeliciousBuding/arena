@@ -49,8 +49,8 @@ import {
 } from "./safety-planner-config.ts";
 import {
   EMPTY_SQUAD_MEMBERSHIP,
-  rallyPointAtSlot,
-  rallySlotForSquad,
+  rallyMemberSlot,
+  rallyPointAtMemberSlot,
   reconcileTacticalSquads,
   type SquadMembership,
   type SquadUnit,
@@ -162,6 +162,14 @@ const HARVEST_MEM_STUCK_TICKS = 8;
 const TTR_PRE_EVADE_TICKS = 16;
 /** B9 迁移取消冷却（coreMigrationCancel）：取消后 N tick 内不重触发 START_MOVE。 */
 const CORE_MIGRATION_CANCEL_COOLDOWN = 10;
+/**
+ * ranger_memory_shot 记忆新鲜度上限（2026-08-10 修复）：记忆射击只打"短暂
+ * 视野丢失"的静止敌核——死核/迁移核/重生核的旧格记忆对空枪（t1 生产实证
+ * 338 次 SHOT_MISSED）。strike-core-v1 把 enemyCoreMemoryTicks 提到 1200，
+ * 记忆射击不该继承攻坚记忆窗口（攻坚打记忆格有 Vanguard 协同，记忆射击是
+ * 纯猜格）。min 收窄到 60 = 原默认值，覆盖"短视野丢失"语义，堵死核残留放大。
+ */
+const RANGER_MEMORY_SHOT_MAX_AGE = 60;
 /** 守卫轮换治疗（B8 候选）：HP ≤ 该值即回 Core 补血（掉血过半）。 */
 const HEAL_ROTATION_HP: Record<UnitType, number> = { WORKER: 1, VANGUARD: 2, RANGER: 1 };
 /** 守卫"战斗中不回修"的反击范围（敌进入守卫反击射程 = 战斗压力，带伤值守）。 */
@@ -277,6 +285,27 @@ const RANGER_SPREAD_DELTAS: readonly (readonly [number, number])[] = [
 ];
 /** 军事打野沿环扫描时间预算：同一八分点目标 >N tick 未到达强制换向（防障碍点卡死）。 */
 const SCAVENGE_HOLD_TICKS = 24;
+/**
+ * 军事散开一格（2026-08-10，vanguard_pressure 互堵修复）：从本格 8 邻选
+ * "非障碍、己方占用 <2（容量 2）、无可见敌"的最近格——横竖优先（数组序，
+ * 确定性）。全部满/被堵 → null（原地等本 tick 腾位，不硬挤 CELL_UNIT_LIMIT）。
+ * 只保证"不挤满格"，方向性由调用方 stepToward 到目标继续承担。
+ */
+function nearestFreeAdjacent(
+  from: Position,
+  obstacles: ReadonlySet<string>,
+  occupancy: ReadonlyMap<string, number>,
+  enemies: readonly VisibleEntity[],
+): Position | null {
+  for (const [dx, dy] of RANGER_SPREAD_DELTAS) {
+    const candidate: Position = [from[0] + dx, from[1] + dy];
+    if (obstacles.has(cellKey(candidate))) continue;
+    if ((occupancy.get(cellKey(candidate)) ?? 0) >= 2) continue;
+    if (enemies.some((enemy) => samePosition(enemy.position, candidate))) continue;
+    return candidate;
+  }
+  return null;
+}
 /** 产兵让位连续上限（spawn-yield-v1）：满载 worker 连续让位 ≥N tick 后
  *  强制卸货——防"核心永远想产兵、worker 永远卸不了"的让位饿死循环
  *  （核心每 tick 产 1 兵后资源下降，正常情况让位 1-2 tick 即恢复卸货）。 */
@@ -436,6 +465,9 @@ const LOCAL_SQUAD_TENANT_ID = "local";
 export class SafetyPlanner {
   readonly world: World;
   readonly phase: PhaseMachine;
+  /** P4g 流水线预取缓存（决策流水线，2026-08-09）：prefetch 同步计算缓存，
+   *  decideCached 取——决策输入与串行 decide 相同，结果逐字节一致。 */
+  private prefetchedPlanValue: Plan | null = null;
   private configValue: SafetyPlannerConfig;
   /** P1 战术小队（tactical-squads-v1，默认关）：当前 tick 编成 + 上 tick 成员
    *  归属（sticky 输入）。关闭时恒为空（零回归）。 */
@@ -644,6 +676,11 @@ export class SafetyPlanner {
   /** 攻坚集结状态（2026-08-08，rally-assault-v1）：targetKey -> { ready, firstArriveTick }。
    *  集结位在敌核外圈，组齐（ready）或超时后成建制压上；目标被重新目击/更换时重置。 */
   private readonly rallyTargets = new Map<string, { ready: boolean; firstArriveTick: number }>();
+  /** 攻坚集结目标复位（P2 2026-08-10）：上一次主核心目标 cellKey。目标变化
+   *  （新 coreHunt 目标/迁移/遗忘）时复位旧 key 的 ready——rallyTargets 只
+   *  set 不 delete，旧目标 key 永久残留（长局无界增长），且 ready 置真后
+   *  永不复位（换目标后旧 ready 残留，新集结直接压上不再重新集结）。 */
+  private lastRallyHuntKey: string | null = null;
   /** W62 环形扇区扫荡状态（2026-08-09，assault-sector-sweep-v1，竞品
    *  `_assault_frontier_target` :6955 对照）：全队共享前沿航点几何——
    *  assaultSweepStep 是周期步进计数器（半径在 MIN→MAX 间振荡 + 扇区旋转），
@@ -849,10 +886,11 @@ export class SafetyPlanner {
     return this.tacticalSquadsValue.squads.find((squad) => squad.id === squadId);
   }
 
-  /** P1 战术小队（tactical-squads-v1）：按单位所属 squad 的 slot 选 rally 集结
-   *  位——不同小队集结到不同格（杜绝全员共享单一 rally cell / 同一路径目标）；
-   *  关闭时回落历史单一集结位（slot=0，零回归）。 */
-  private rallyPointForSquad(
+  /** P1 战术小队（tactical-squads-v1）：按单位所属 squad + 成员序号选 rally 集结
+   *  位——同 squad 的 2V+1R 各占不同格（不共用容量 2 的单格），不同 squad 也不
+   *  共用单格（8 squad × 3 成员 = 24 格互异）；关闭或单位无编成时回落历史单一
+   *  集结位（slot=0 语义，零回归）。 */
+  private rallyPointForUnit(
     unit: UnitSnapshot,
     target: Position,
     home: Position,
@@ -863,8 +901,13 @@ export class SafetyPlanner {
       return this.rallyPoint(target, home, obstacles, resourceCells);
     }
     const squad = this.squadOf(unit.id);
-    const slot = squad === undefined ? 0 : rallySlotForSquad(squad.index);
-    return rallyPointAtSlot(target, home, obstacles, resourceCells, slot);
+    if (squad === undefined) {
+      return this.rallyPoint(target, home, obstacles, resourceCells);
+    }
+    const members = [...squad.vanguardIds, ...squad.rangerIds];
+    const memberIndex = members.indexOf(unit.id);
+    const slot = rallyMemberSlot(squad.index, memberIndex === -1 ? 0 : memberIndex);
+    return rallyPointAtMemberSlot(target, home, obstacles, resourceCells, slot);
   }
 
   /** 启动播种（持久敌情测绘，2026-08-07）：从历史 calibration cases 提取的最后
@@ -1202,10 +1245,11 @@ export class SafetyPlanner {
     return target;
   }
 
-  /** 攻坚组是否"已到齐"（rally-assault-v1）：敌核外圈集结区（≤RALLY_DISTANCE+
-   *  RALLY_ARRIVE_RADIUS）内军事单位 ≥RALLY_READY_COUNT，或首到后超时强制压上
-   *  （防某单位被障碍卡住导致永久空等）。目标切换/被重新目击时重置 ready。 */
-  private rallyReady(target: Position, key: string, state: TickState): boolean {
+  /** 攻坚组是否"已到齐"（rally-assault-v1 历史全局门）：敌核外圈集结区
+   *  （≤RALLY_DISTANCE+RALLY_ARRIVE_RADIUS）内军事单位 ≥RALLY_READY_COUNT，或
+   *  首到后超时强制压上（防某单位被障碍卡住导致永久空等）。目标切换/被重新
+   *  目击时重置 ready。战术小队关闭（或单位无编成）时使用，零回归。 */
+  private globalRallyReady(target: Position, key: string, state: TickState): boolean {
     const arrived = [...state.vanguards, ...state.rangers].filter(
       (u) => chebyshev(u.position, target) <= RALLY_DISTANCE + RALLY_ARRIVE_RADIUS,
     ).length;
@@ -1224,6 +1268,83 @@ export class SafetyPlanner {
       return true;
     }
     return rec.ready;
+  }
+
+  /** 攻坚组是否"已到齐"（tactical-squads-v1 小队版）：按 squad 独立门——本 squad
+   *  全部存活成员到齐（arrived ≥ members.length）即放行本 squad，或本 squad 首到
+   *  后 RALLY_TIMEOUT_TICKS 超时强制压上。记录键 = `${squad.id}@${targetKey}`，
+   *  不同 squad 的到齐/超时互不影响（一个 squad 到齐不放行另一个）。 */
+  private squadRallyReady(target: Position, targetKey: string, state: TickState, squad: TacticalSquad): boolean {
+    const members = [...squad.vanguardIds, ...squad.rangerIds];
+    if (members.length === 0) return true;
+    const memberPositions = new Map<string, Position>();
+    for (const u of state.vanguards) memberPositions.set(u.id, u.position);
+    for (const u of state.rangers) memberPositions.set(u.id, u.position);
+    const arrived = members.filter((id) => {
+      const position = memberPositions.get(id);
+      return position !== undefined && chebyshev(position, target) <= RALLY_DISTANCE + RALLY_ARRIVE_RADIUS;
+    }).length;
+    const key = `${squad.id}@${targetKey}`;
+    const rec = this.rallyTargets.get(key);
+    if (rec === undefined) {
+      // 首个成员调用即评估到齐/超时（不因"建记录先返回 false"晚一 tick 放行——
+      // ranger 先于 vanguard 决策时同 squad 到齐也须同 tick 放行）。
+      this.rallyTargets.set(key, { ready: false, firstArriveTick: -1 });
+    }
+    const record = this.rallyTargets.get(key)!;
+    if (arrived >= members.length) {
+      record.ready = true;
+      return true;
+    }
+    if (record.firstArriveTick === -1 && arrived > 0) record.firstArriveTick = state.tick;
+    if (record.firstArriveTick !== -1 && state.tick - record.firstArriveTick >= RALLY_TIMEOUT_TICKS) {
+      record.ready = true;
+      return true;
+    }
+    return record.ready;
+  }
+
+  /** 攻坚组是否"已到齐"（rally-assault-v1）：战术小队开启时按单位所属 squad
+   *  独立门（squad 到齐/超时才放行，一个 squad 到齐不放行另一个）；关闭或单位
+   *  无编成时回落历史全局门（≥RALLY_READY_COUNT 或全局首到超时，零回归）。 */
+  private rallyReady(target: Position, key: string, state: TickState, unit: UnitSnapshot): boolean {
+    if (this.config.tacticalSquads === true) {
+      const squad = this.squadOf(unit.id);
+      if (squad !== undefined) return this.squadRallyReady(target, key, state, squad);
+    }
+    return this.globalRallyReady(target, key, state);
+  }
+
+  /** 攻坚集结状态随核心目标变化复位（rally-assault-v1，P2 2026-08-10）：
+   *  rallyTargets 只 set 不 delete（globalRallyReady/squadRallyReady 首次
+   *  命中即建 key）→ 目标遗忘/更换后旧 key 永久残留（长局无界增长）；且
+   *  ready 置真后永不复位 → 换目标后旧 ready 残留（新集结直接压上不再重新
+   *  集结）。主目标格变化 → 旧 key 复位（ready=false 需重新集结，计时重置）。
+   *  目标格相同（同格重标）→ 不动（ready 保留；旧集结计时继续走，配合
+   *  dropRallyTargetsAt 的遗忘删除覆盖同格重种场景）。 */
+  private reconcileRallyTargets(): void {
+    const target = this.currentHuntTarget();
+    const huntKey = target === null ? null : cellKey(target.position);
+    if (huntKey === this.lastRallyHuntKey) return; // 主目标未变
+    const prevKey = this.lastRallyHuntKey;
+    this.lastRallyHuntKey = huntKey;
+    if (prevKey === null) return;
+    // 目标格变化：旧集结作废，需重新集结
+    const rec = this.rallyTargets.get(prevKey);
+    if (rec !== undefined) {
+      rec.ready = false;
+      rec.firstArriveTick = -1;
+    }
+  }
+
+  /** 核心被遗忘（forgetCoreHuntAt）时删除对应 rallyTargets key（P2 2026-08-10）：
+   *  目标已被遗忘 → 该格的集结记录全部作废删除（全局 key + squad key
+   *  `${squad.id}@${targetKey}`），防旧 key 永久残留（无界增长）。 */
+  private dropRallyTargetsAt(targetCell: string): void {
+    this.rallyTargets.delete(targetCell);
+    for (const key of [...this.rallyTargets.keys()]) {
+      if (key.endsWith(`@${targetCell}`)) this.rallyTargets.delete(key);
+    }
   }
 
   private huntSweepPoint(target: Position, index: number, reach: number): Position {
@@ -1595,12 +1716,20 @@ export class SafetyPlanner {
         event.position !== undefined
       ) {
         this.world.forgetCoreHuntAt(event.position);
+        // 核心被遗忘 → 该格集结记录一并清理（P2：rallyTargets 只 set 不
+        // delete，旧目标 key 永久残留导致无界增长）。
+        this.dropRallyTargetsAt(cellKey(event.position));
         // 同步清理 enemyMemory（pressure_memory/ranger_memory_shot 读它）——
         // 死核残留让 Ranger 对死核格空放枪（该格常站着己方 Vanguard，观感像
         // 打友军）、Vanguard 全吸到死核格 capacity_wait（t1 69640 拆核实证）。
         this.world.forgetEnemyCoreAt(event.position, event.targetId);
       }
     }
+    // 攻坚集结状态随核心目标变化复位（P2）：目标格变化 → 旧 key 的 ready
+    // 置 false（需重新集结，不继承旧目标的 ready）；目标格相同 → 保留 ready
+    // 但重置集结计时。配合上面 forget 时的 key 删除，rallyTargets 不再
+    // 无界增长。
+    this.reconcileRallyTargets();
     this.effectivePolicy = input.policy ?? null;
     // focusRegion 防呆（生产实测 2026-08-05）：policy 层曾输出 [1500,1500]/
     // [-1500,1500]/[0,0] 等不可达远点，全部 worker 被 go_focus 直线支走 → 0 采集、
@@ -1842,8 +1971,19 @@ export class SafetyPlanner {
     }
     // 清理已死亡单位的短期状态残留：worker 死亡/重生 id 变化，旧 id 永不再命中。
     // 活性恢复冷却同时按 tick 到期删除，避免长期运行 Map 增长。
-    if (this.spawnYieldStreak.size > 0 || this.workerLivenessRecoveryUntil.size > 0) {
+    // P2（2026-08-10）：moveFailedStreak / lastHarvestTick / conflictBackoffUntil
+    // 一并纳入每 tick 存活剪枝。存活集合取 state.units（己方 worker+vanguard+
+    // ranger；敌方在 visibleEnemies，不会误保）——moveFailedStreak 也被
+    // Vanguard 攻坚消费（vanguard_pressure 绕行），不能只按 workers 剪。
+    if (
+      this.spawnYieldStreak.size > 0 ||
+      this.workerLivenessRecoveryUntil.size > 0 ||
+      this.moveFailedStreak.size > 0 ||
+      this.lastHarvestTick.size > 0 ||
+      this.conflictBackoffUntil.size > 0
+    ) {
       const alive = new Set(state.workers.map((worker) => worker.id));
+      const aliveUnits = new Set(state.units.map((unit) => unit.id));
       for (const unitId of this.spawnYieldStreak.keys()) {
         if (!alive.has(unitId)) this.spawnYieldStreak.delete(unitId);
       }
@@ -1853,13 +1993,33 @@ export class SafetyPlanner {
     }
     // 清理已死亡单位的短期状态残留：worker 死亡/重生 id 变化，旧 id 永不再命中。
     // 活性恢复冷却同时按 tick 到期删除，避免长期运行 Map 增长。
-    if (this.spawnYieldStreak.size > 0 || this.workerLivenessRecoveryUntil.size > 0) {
+    // P2（2026-08-10）：moveFailedStreak / lastHarvestTick / conflictBackoffUntil
+    // 一并纳入每 tick 存活剪枝。存活集合取 state.units（己方 worker+vanguard+
+    // ranger；敌方在 visibleEnemies，不会误保）——moveFailedStreak 也被
+    // Vanguard 攻坚消费（vanguard_pressure 绕行），不能只按 workers 剪。
+    if (
+      this.spawnYieldStreak.size > 0 ||
+      this.workerLivenessRecoveryUntil.size > 0 ||
+      this.moveFailedStreak.size > 0 ||
+      this.lastHarvestTick.size > 0 ||
+      this.conflictBackoffUntil.size > 0
+    ) {
       const alive = new Set(state.workers.map((worker) => worker.id));
+      const aliveUnits = new Set(state.units.map((unit) => unit.id));
       for (const unitId of this.spawnYieldStreak.keys()) {
         if (!alive.has(unitId)) this.spawnYieldStreak.delete(unitId);
       }
       for (const [unitId, untilTick] of this.workerLivenessRecoveryUntil) {
         if (!alive.has(unitId) || untilTick <= state.tick) this.workerLivenessRecoveryUntil.delete(unitId);
+      }
+      for (const unitId of this.moveFailedStreak.keys()) {
+        if (!aliveUnits.has(unitId)) this.moveFailedStreak.delete(unitId);
+      }
+      for (const unitId of this.lastHarvestTick.keys()) {
+        if (!aliveUnits.has(unitId)) this.lastHarvestTick.delete(unitId);
+      }
+      for (const unitId of this.conflictBackoffUntil.keys()) {
+        if (!aliveUnits.has(unitId)) this.conflictBackoffUntil.delete(unitId);
       }
     }
     }
@@ -2030,6 +2190,22 @@ export class SafetyPlanner {
     return { tick: state.tick, unitActions: actions, coreAction, intents };
   }
 
+  /** 流水线预取（P4g，决策流水线）：同步计算并缓存——决策输入与串行 decide
+   *  相同，结果逐字节一致；仅时间点前移（结算后即算，不阻塞调用方）。 */
+  prefetch(input: SafetyPlannerInput): void {
+    this.prefetchedPlanValue = this.decide(input);
+  }
+
+  /** 取流水线预取结果（P4g）：必须在 prefetch 之后成对调用。 */
+  decideCached(): Plan {
+    const plan = this.prefetchedPlanValue;
+    this.prefetchedPlanValue = null;
+    if (plan === null) {
+      throw new Error("safety planner: decideCached without prefetch");
+    }
+    return plan;
+  }
+
   /** worker 巡逻目标点（worker-dense-scan-v1，2026-08-07）：密集模式用 16 方位
    *  （exploreTargetDense，相邻方位间距减半——8 方位在半径 24 处相邻 ~18 格 >
    *  视野 3×2 盲区大）；默认 8 方位 exploreTarget（零回归）。 */
@@ -2169,9 +2345,24 @@ export class SafetyPlanner {
         return;
       }
       if (home !== null && samePosition(unit.position, home)) {
+        // 核心迁移中（引擎 MOVING）DEPOSIT 必失败（CORE_MOVING，规则：迁移中
+        // Core 不接收卸货——t1 生产实测 24 次）。无条件拦截（不依赖
+        // coreMovingHold 开关——历史行为是每 tick 白跑失败一次）；满载 worker
+        // 移出核心格待命，不堵迁移路径/生产通道。
+        const coreMoving = state.core?.state === "MOVING";
+        if (coreMoving) {
+          const exit = homeCell(home, movementObstacles, index)
+            ?? this.coreGuardFallback(home, movementObstacles, index);
+          if (exit !== null && !samePosition(unit.position, exit)) {
+            const direction = stepToward(unit.position, exit, movementObstacles);
+            if (direction !== null) { set(unit, { type: "MOVE", direction }, "worker_hold_cargo_off_core"); return; }
+          }
+          set(unit, { type: "WAIT" }, "worker_hold_cargo_moving");
+          return;
+        }
         if (state.resourceSpace > 0) set(unit, { type: "DEPOSIT" }, "deposit");
         else if (this.config.coreClearance === true) {
-          // 核心满/迁移中卸不了 → 离开核心格待命，不堵通道（guide 竞品
+          // 核心满卸不了 → 离开核心格待命，不堵通道（guide 竞品
           // "Core 满仓分散待命并腾空生产格" 对齐——满载 worker 占核心格会
           // 挡 SPAWN/后续卸货）。
           const exit = homeCell(home, movementObstacles, index)
@@ -3122,10 +3313,10 @@ export class SafetyPlanner {
           const key = cellKey(enemyCoreMemory.position);
           if (
             this.config.rallyAssault === true &&
-            !this.rallyReady(enemyCoreMemory.position, key, state) &&
+            !this.rallyReady(enemyCoreMemory.position, key, state, unit) &&
             chebyshev(unit.position, enemyCoreMemory.position) > RALLY_ATTACK_RADIUS
           ) {
-            const point = this.rallyPointForSquad(unit, enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
+            const point = this.rallyPointForUnit(unit, enemyCoreMemory.position, state.core.position, militaryObstacles, state.resourceCells);
             if (!samePosition(unit.position, point)) {
               const direction = stepToward(unit.position, point, militaryObstacles);
               if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_rally");
@@ -3322,12 +3513,43 @@ export class SafetyPlanner {
         }
       }
       if (target !== null && !samePosition(unit.position, target)) {
+        const occupancy = occupancyCounts(state);
         const stuckTicks = this.moveFailedStreak.get(unit.id) ?? 0;
-        const direction =
+        const baseDirection =
           this.config.moveFailedAvoidance === true && stuckTicks >= 2
             ? detourDirection(unit.position, target, militaryObstacles)
             : stepToward(unit.position, target, militaryObstacles);
-        if (direction !== null) set(unit, { type: "MOVE", direction }, "vanguard_pressure");
+        let direction = baseDirection;
+        let intent = "vanguard_pressure";
+        if (direction !== null) {
+          // 容量预检（2026-08-10 修复）：第一步落点或目标格总占用（己方+core+
+          // 可见敌）≥2（容量 2）→ 硬挤必被引擎拒（CELL_UNIT_LIMIT/
+          // MOVE_CONTESTED，t1 生产实证 vanguard_pressure 642+302 次互堵——
+          // 全员追同一敌格/核心格挤成一团卡死）→ 改向最近空邻格散开一格
+          // （仍朝目标方向推进，不扎堆）；无空邻格 → 原地等本 tick 腾位。
+          // occupancyCounts 只计己方+core，敌单位单独补 1（容量 2 下同格敌
+          // 最多 2，近似 1 覆盖常见单敌场景；多敌同格属引擎已拒的非法态）。
+          const stepCell = move(unit.position, direction);
+          const stepOccupancy = occupancy.get(cellKey(stepCell)) ?? 0;
+          const stepEnemy = enemies.some((enemy) => samePosition(enemy.position, stepCell));
+          const stepTotal = stepOccupancy + (stepEnemy ? 1 : 0);
+          const targetOccupancy = occupancy.get(cellKey(target)) ?? 0;
+          const targetEnemy = enemies.some((enemy) => samePosition(enemy.position, target));
+          const targetTotal = targetOccupancy + (targetEnemy ? 1 : 0);
+          const stepBlocked = stepTotal >= 2;
+          const targetBlocked = targetTotal >= 2;
+          if (stepBlocked || targetBlocked) {
+            const spread = nearestFreeAdjacent(unit.position, militaryObstacles, occupancy, enemies);
+            if (spread !== null && !samePosition(unit.position, spread)) {
+              const spreadDirection = stepToward(unit.position, spread, militaryObstacles);
+              if (spreadDirection !== null) {
+                direction = spreadDirection;
+                intent = "vanguard_pressure_spread";
+              }
+            }
+          }
+        }
+        if (direction !== null) set(unit, { type: "MOVE", direction }, intent);
       }
       return;
     }
@@ -3558,6 +3780,11 @@ export class SafetyPlanner {
       const predicted = predictedEnemyCell(unit.position, nearest.position);
       if (
         predicted !== null &&
+        // 预测格必须是敌人"一步可达"的格：障碍格敌人永远走不进去（t1 生产
+        // 实测 79857-80001：敌方 WORKER 被障碍列 [-539,-80] 隔开，游侠群
+        // 连开 320+ 枪全部 SHOT_MISSED——预判射击只查了弹道中间格，漏查
+        // 终点格障碍，且 shoot_cell 提前 return 把游侠钉在原地不走位）。
+        !obstacles.has(cellKey(predicted)) &&
         canShoot(unit.position, predicted, obstacles) &&
         !samePosition(predicted, nearest.position)
       ) {
@@ -3573,7 +3800,14 @@ export class SafetyPlanner {
     // cell-fire（射程内）——短暂视野丢失不浪费射程压制（Vanguard memory
     // 推进的 Ranger 版：Vanguard 走向记忆，Ranger 打记忆）。
     if (this.config.rangerMemoryShot === true && this.effectiveAggression === "aggressive") {
-      const coreMemory = this.world.enemyHints(this.config.enemyCoreMemoryTicks ?? 60).find(
+      // 新鲜度窗口独立收窄（2026-08-10 修复）：记忆射击语义 = 短暂视野丢失
+      // 的压制，不继承 strike-core 的 1200 tick 攻坚记忆窗口（死核/迁移核/
+      // 重生核残留 → 空枪，t1 生产实证 338 次 SHOT_MISSED）。
+      const memoryShotWindow = Math.min(
+        this.config.enemyCoreMemoryTicks ?? 60,
+        RANGER_MEMORY_SHOT_MAX_AGE,
+      );
+      const coreMemory = this.world.enemyHints(memoryShotWindow).find(
         (hint) =>
           hint.kind === "CORE" &&
           hint.prevPosition !== undefined &&
@@ -3800,10 +4034,10 @@ export class SafetyPlanner {
         this.config.rallyAssault === true &&
         rallyCore !== undefined &&
         chebyshev(state.core.position, rallyCore.position) <= BOUNDED_RAID_DISTANCE &&
-        !this.rallyReady(rallyCore.position, cellKey(rallyCore.position), state) &&
+        !this.rallyReady(rallyCore.position, cellKey(rallyCore.position), state, unit) &&
         chebyshev(unit.position, rallyCore.position) > RALLY_ATTACK_RADIUS
       ) {
-        const point = this.rallyPointForSquad(unit, rallyCore.position, state.core.position, militaryObstacles, state.resourceCells);
+        const point = this.rallyPointForUnit(unit, rallyCore.position, state.core.position, militaryObstacles, state.resourceCells);
         if (!samePosition(unit.position, point)) {
           const direction = stepToward(unit.position, point, militaryObstacles);
           if (direction !== null) set(unit, { type: "MOVE", direction }, "ranger_rally");

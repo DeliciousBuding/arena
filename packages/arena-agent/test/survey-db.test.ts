@@ -74,6 +74,19 @@ function makeState(tick: number, overrides: Partial<TickState> = {}): TickState 
   };
 }
 
+test("survey-db: openSurveyDb 写路径设置 busy_timeout=5000（ingest/sync 双写竞争 P1）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-busy-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    // 列名是 timeout（SQLite 对 PRAGMA busy_timeout 查询的返回列）
+    const row = db.prepare("PRAGMA busy_timeout").get() as { timeout: number };
+    assert.equal(row.timeout, 5000, "busy_timeout 生效：锁竞争时等待 5s 替代直接抛 database is locked");
+    db.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("survey-db: resources upsert 去重 + seen_count 累积 + 状态回写", () => {
   const dir = mkdtempSync(join(tmpdir(), "survey-db-"));
   try {
@@ -229,6 +242,37 @@ test("survey-sync: 矿生命周期状态回写——采集/耗尽事件 → harv
     const revived = knownResources(db).find((r) => r.x === 1 && r.y === 2);
     assert.equal(revived?.state, "visible", "refill 后恢复 visible（发现→采→空→refill 闭环）");
     db.close();
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("survey-sync: 负态 TTL——harvested/empty 旧行 sync 后回 visible（P2）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "survey-sync-ttl-"));
+  try {
+    const db = openSurveyDb(dir, "t1", true);
+    // 构造负态旧行：t100 可见 → t100 harvested（同 tick）；t400 empty
+    upsertResources(db, [{ x: 1, y: 2 }], 100);
+    markResourceState(db, "1,2", "harvested", 100);
+    upsertResources(db, [{ x: 3, y: 4 }], 100);
+    markResourceState(db, "3,4", "empty", 400);
+    db.close();
+    // 新 run 地平线 = t500（仅障碍 case，不重观察矿格）→ TTL 阈值 = 500-128 = 372：
+    // harvested(t100) 过期回 visible；empty(t400) 未过期保留。
+    const cal = join(dir, "runtime", "t1", "calibration", "runA", "cases");
+    mkdirSync(cal, { recursive: true });
+    writeFileSync(join(cal, "0000000500.json"), JSON.stringify({
+      before: { state: { objects: [{ kind: "OBSTACLE", positions: [[9, 9]] }] } },
+    }));
+    syncTenantSurvey(dir, "t1");
+    const after = openSurveyDb(dir, "t1", false);
+    const old = knownResources(after).find((r) => r.x === 1 && r.y === 2);
+    assert.ok(old, "harvested 超过 TTL 的旧行应复位回可见集合");
+    assert.equal(old!.state, "visible", "harvested 旧行（last_state_tick=100 < 372）复位 visible");
+    const fresh = knownResources(after, { states: ["empty"] }).find((r) => r.x === 3 && r.y === 4);
+    assert.ok(fresh, "empty 未过期行保留负态");
+    assert.equal(fresh!.state, "empty", "empty 新行（last_state_tick=400 ≥ 372）不触发 TTL");
+    after.close();
   } finally {
     cleanup(dir);
   }

@@ -17,6 +17,10 @@ interface OverviewTenant {
     resources?: number | null;
     resourceDelta?: number | null;
     workers?: number | null;
+    visibleEnemies?: number | null;
+    coreX?: number | null;
+    coreY?: number | null;
+    status?: string | null;
     tick?: number | null;
   };
 }
@@ -84,15 +88,23 @@ export function TopBar() {
           <p className="subtitle">COMMAND CENTER</p>
         </div>
       </div>
-      <div className="empire-strip" title="帝国总览：各租户 资源 / 工人 / 增量（点击租户卡可聚焦）">
+      <div className="empire-strip" title="帝国总览：各租户 资源 / 单位 / 增量 / 敌数（单位=可见世界全部 UNIT，含敌方/先锋/游侠；增量仅在 JSONL 数据源存在，台账模式为 —；点击租户卡可聚焦）">
         {overview.map((t) => {
           const color = TENANT_COLORS[t.tenant] ?? "#69b3d8";
           const L = t.latest ?? {};
-          const d = L.resourceDelta ?? 0;
+          const d = L.resourceDelta ?? null;
           return (
             <div key={t.tenant} className="empire-cell" style={{ ["--tc" as string]: color }}>
               <b><i>{TENANT_LABEL[t.tenant] ?? t.tenant.toUpperCase()}</i> {L.resources ?? "—"}</b>
-              <span>工人 {L.workers ?? "—"} · <em className={d > 0 ? "delta-pos" : d < 0 ? "delta-neg" : ""}>{d > 0 ? `+${d}` : d}</em></span>
+              <span>
+                单位 {L.workers ?? "—"} ·{" "}
+                {d === null ? (
+                  <em>—</em>
+                ) : (
+                  <em className={d > 0 ? "delta-pos" : d < 0 ? "delta-neg" : ""}>{d > 0 ? `+${d}` : d}</em>
+                )}
+                {L.visibleEnemies != null ? <em className="enemy-count"> · 敌 {L.visibleEnemies}</em> : null}
+              </span>
             </div>
           );
         })}

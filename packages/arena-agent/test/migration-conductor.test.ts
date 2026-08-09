@@ -570,7 +570,10 @@ test("场景9：核心偏离已审走廊 → REPLAN_REQUESTED → PLAN（revisio
 // ---------------------------------------------------------------------------
 
 test("场景8：无计划输入 → plan=null、无转移、held 不变、reasons 注明 IDLE", () => {
-  const held: ConductorHeldState = { holdEntryCount: 2, holdFirstTick: 700, holdTicks: 3, settleElapsed: 12, stallTicks: 0, stallRecordedTick: -1, clearRetries: 0, threatStallTicks: 0, threatFirstTick: 0, threatReplanCount: 0, gapTicks: 0, starveSince: 0, starveCooldownUntil: 0 };
+  const held: ConductorHeldState = {
+    ...INITIAL_CONDUCTOR_HELD_STATE,
+    holdEntryCount: 2, holdFirstTick: 700, holdTicks: 3, settleElapsed: 12,
+  };
   const input: ConductorStepInput = {
     tick: 500,
     nowMs: NOW_BASE_MS,
@@ -591,4 +594,41 @@ test("场景8：无计划输入 → plan=null、无转移、held 不变、reason
   // 新进程（held=null）同样零影响，返回初始 held
   const fresh = conductorStep({ ...input, held: null });
   assert.deepEqual(fresh.held, INITIAL_CONDUCTOR_HELD_STATE);
+});
+// ---------------------------------------------------------------------------
+// per-game-tick 去重：DEFENSIVE_HOLD 中 holdTicks 只按游戏 tick 增长
+// ---------------------------------------------------------------------------
+
+function holdStep(
+  plan: MigrationPlanV1,
+  held: Readonly<ConductorHeldState> | null,
+  tick: number,
+): ConductorStepResult {
+  return conductorStep({
+    tick,
+    nowMs: NOW_BASE_MS + tick * TICK_MS,
+    core: { id: "uuid-A", position: [3, 0], state: "NORMAL", hp: CONDUCTOR_CORE_HP_FULL },
+    events: [],
+    units: [],
+    survey: { resources: DESERT_RESOURCES.map((r) => ({ ...r, lastSeenTick: tick })), enemyCores: [] },
+    config: DEFAULT_MIGRATION_RUNTIME_CONFIG,
+    held,
+    plan,
+  });
+}
+
+test("同 tick 3 次轮询：holdTicks 只按游戏 tick 增长（run-conductor 5s poll vs ~15s tick）", () => {
+  const plan = makeInitialPlan(29, 10_000, { state: "DEFENSIVE_HOLD" as const });
+  const held: ConductorHeldState = { ...INITIAL_CONDUCTOR_HELD_STATE, holdTicks: 2 };
+  const first = holdStep(plan, held, 10_000);
+  assert.equal(first.plan?.state, "DEFENSIVE_HOLD");
+  assert.equal(first.held.holdTicks, 3, "首个游戏 tick 滞回计数 +1");
+  assert.equal(first.held.holdRecordedTick, 10_000, "计数同时记录当前游戏 tick");
+  const poll2 = holdStep(first.plan!, first.held, 10_000);
+  assert.equal(poll2.held.holdTicks, 3, "同 tick 第二次轮询不得累加");
+  const poll3 = holdStep(poll2.plan!, poll2.held, 10_000);
+  assert.equal(poll3.held.holdTicks, 3, "同 tick 第三次轮询仍不得累加");
+  const nextTick = holdStep(poll3.plan!, poll3.held, 10_001);
+  assert.equal(nextTick.held.holdTicks, 4, "下一游戏 tick 才累加");
+  assert.equal(nextTick.held.holdRecordedTick, 10_001);
 });

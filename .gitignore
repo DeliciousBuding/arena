@@ -12,6 +12,7 @@ venv/
 logs/
 alerts/
 /telemetry/
+docs/analysis/*.log
 
 # 外部克隆的 skill 仓库（独立版本管理）
 .agents/
@@ -51,3 +52,4 @@ packages/command-center/web/dist/
 
 # neat-freak bundle 备份（含 hash 校验）
 .backups/
+/data/

@@ -22,6 +22,8 @@ import { supervisorState, supervisorAllianceDirectorState } from "./lib/supervis
 import { loadMergedMap, getMapSig } from "./lib/map.ts";
 import { loadOverview, loadStream, loadReplay, loadPlan, loadWorld, loadEvents } from "./lib/streams.ts";
 import { loadSurveyDb, loadLifecycleDb, loadSurvey, loadResourceTimeline, loadSpendTrend, loadUnitLifecycleDb, loadChunksDb } from "./lib/survey.ts";
+import { openAgentDb, applyAgentEvent, knownAgent, recentAgentEvents, type AgentRow } from "./lib/agent-ingest.ts";
+import { openRegistryDb, registerAgent, issueKey, listAgents, revokeAgent } from "./lib/registry.ts";
 import { loadMinePatterns, refreshMinePatterns } from "./lib/mine-patterns.ts";
 import { loadTenantSurveyCached, startSurveyCacheLoop } from "./lib/survey-cache.ts";
 import { loadDeeds, startDeedsCacheLoop } from "./lib/deeds.ts";
@@ -746,6 +748,177 @@ app.post("/api/redeem", async (c) => {
 // 重启不丢——审计与联调用，只返回最近窗口。
 app.get("/api/redeem/history", (c) => {
   return c.json({ generatedAt: new Date().toISOString(), records: loadRedeemHistory(), count: redeemLog.length });
+});
+
+// ---------- Agent 遥测桥（2026-08-09，agent-telemetry-bridge-v1） ----------
+
+// SDK 遥测唯一写入口（agents/agent_events 单一 writer）。只接受已知租户；
+// 事件 schema 见 docs/design/agent-telemetry-bridge-v1.md §4。
+app.post("/api/ingest/agents", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { events?: unknown } | null;
+  if (!body || !Array.isArray(body.events) || body.events.length === 0) {
+    return c.json({ error: "events 数组必填" }, 400);
+  }
+  let accepted = 0;
+  let failed = 0;
+  const open: Array<{ tenant: string; db: DatabaseSync }> = [];
+  try {
+    for (const raw of body.events) {
+      const ev = raw as Record<string, unknown>;
+      const tenant = String(ev.tenant ?? "");
+      const kind = String(ev.event ?? "");
+      // 白名单：生产租户 t1-t4 + 模拟器 sim- 前缀命名空间（agent-telemetry-bridge-v1 §3.4）
+      const tenantOk = TENANTS.includes(tenant as (typeof TENANTS)[number]) || tenant.startsWith("sim-");
+      if (!tenantOk) continue;
+      if (!["register", "connection", "tick_summary", "disconnected"].includes(kind)) continue;
+      const held = open.find((o) => o.tenant === tenant);
+      const db = held?.db ?? openAgentDb(tenant, true);
+      if (!held) open.push({ tenant, db });
+      try {
+        applyAgentEvent(db, ev as never);
+      } catch (err) {
+        // 单事件隔离（2026-08-10 P1）：一个事件失败（BUSY 超时/坏数据）不再
+        // 拖垮整批——此前整批 500 且已落库事件形成半写；失败记日志继续下一
+        // 事件，响应返回 failed 计数（busy_timeout 已让锁等待替代失败，此
+        // 分支仅兜底真异常）。
+        console.error(`[ingest/agents] applyAgentEvent 失败: ${err instanceof Error ? err.message : String(err)}`, { tenant, event: kind });
+        failed += 1;
+        continue;
+      }
+      accepted += 1;
+    }
+  } finally {
+    for (const o of open) o.db.close();
+  }
+  return c.json({ accepted, failed, at: new Date().toISOString() });
+});
+
+// Agent 统一台账视图：自有（TS 数据流）+ 第三方（SDK 心跳）同屏。
+app.get("/api/agents", async (c) => {
+  const sup = await supervisorState();
+  const overview = loadOverview(sup);
+  const result = [];
+  for (const tenant of TENANTS) {
+    const ov = overview.tenants.find((t) => t.tenant === tenant) ?? null;
+    let agent: AgentRow | null = null;
+    let events: Array<Record<string, unknown>> = [];
+    let db: DatabaseSync | null = null;
+    try {
+      db = openAgentDb(tenant, false);
+      agent = knownAgent(db, tenant);
+      events = recentAgentEvents(db, tenant, 20);
+    } catch {
+      // 库尚未创建：无台账数据
+    } finally {
+      db?.close();
+    }
+    const world = loadWorld(tenant) as { state?: { objects?: unknown[]; resources?: number; population?: number } | null; tick?: number | null } | null;
+    const coreObj = Array.isArray(world?.state?.objects)
+      ? (world.state.objects as Array<{ kind?: string; controlled?: boolean; position?: readonly [number, number] }>)
+          .find((o) => o.kind === "CORE" && o.controlled === true) ?? null
+      : null;
+    result.push({
+      tenant,
+      source: agent ? "sdk" : "ts",
+      live: ov?.live ?? false,
+      supervisor: ov?.supervisor ?? null,
+      agent,
+      latest: agent
+        ? {
+            tick: agent.tick,
+            resources: agent.resources,
+            population: agent.population,
+            core: agent.coreX !== null && agent.coreY !== null ? [agent.coreX, agent.coreY] : null,
+            units: agent.units,
+            visibleEnemies: agent.visibleEnemies,
+            status: agent.status,
+            heartbeatAt: agent.lastHeartbeat,
+          }
+        : {
+            tick: ov?.latest?.tick ?? null,
+            resources: ov?.latest?.resources ?? null,
+            population: ov?.latest?.workers ?? null,
+            core: coreObj?.position ? [coreObj.position[0], coreObj.position[1]] : null,
+            units: null,
+            visibleEnemies: null,
+            status: null,
+            heartbeatAt: null,
+          },
+      events,
+    });
+  }
+  return c.json({ generatedAt: new Date().toISOString(), agents: result });
+});
+
+// ---------- Agent Registry（2026-08-09，agent-ecosystem-v1 §2.1） ----------
+
+// key 分配 + 注册后台：SQLite data/runtime/registry.db。生产 agent 登记官方
+// key 尾缀；simulation 签发一次性明文模拟 key（simkey-<24 hex>，库存哈希）。
+// 任何列表/查询响应都不返回明文 key。
+
+app.post("/api/registry/agents", async (c) => {
+  const b = (await c.req.json().catch(() => null)) as {
+    username?: unknown;
+    mode?: unknown;
+    api_key_tail?: unknown;
+  } | null;
+  if (!b) return c.json({ error: "JSON body 必填" }, 400);
+  const username = String(b.username ?? "").trim();
+  if (!username) return c.json({ error: "username 必填" }, 400);
+  const mode = String(b.mode ?? "").trim();
+  if (mode !== "production" && mode !== "simulation") {
+    return c.json({ error: "mode 必须是 production 或 simulation" }, 400);
+  }
+  const apiKeyTail = b.api_key_tail === undefined || b.api_key_tail === null
+    ? undefined
+    : String(b.api_key_tail).trim();
+  if (mode === "production" && !apiKeyTail) {
+    return c.json({ error: "production 模式需要 api_key_tail" }, 400);
+  }
+  const db = openRegistryDb();
+  try {
+    return c.json(registerAgent(db, { username, mode, apiKeyTail }), 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : "注册失败" }, 400);
+  } finally {
+    db.close();
+  }
+});
+
+app.get("/api/registry/agents", (c) => {
+  const db = openRegistryDb();
+  try {
+    return c.json({ generatedAt: new Date().toISOString(), agents: listAgents(db) });
+  } finally {
+    db.close();
+  }
+});
+
+// 补发模拟 key（仅 simulation 且未吊销的 agent；明文只出现一次）
+app.post("/api/registry/keys", async (c) => {
+  const b = (await c.req.json().catch(() => null)) as { agent_id?: unknown } | null;
+  const agentId = String(b?.agent_id ?? "").trim();
+  if (!agentId) return c.json({ error: "agent_id 必填" }, 400);
+  const db = openRegistryDb();
+  try {
+    const issued = issueKey(db, agentId);
+    if (!issued) return c.json({ error: "agent 不存在 / 非 simulation 模式 / 已吊销" }, 404);
+    return c.json(issued, 201);
+  } finally {
+    db.close();
+  }
+});
+
+// 吊销 agent：agents + 全部未吊销 key 置 revoked_at
+app.delete("/api/registry/agents/:id", (c) => {
+  const db = openRegistryDb();
+  try {
+    const agent = revokeAgent(db, c.req.param("id"));
+    if (!agent) return c.json({ error: "agent 不存在" }, 404);
+    return c.json(agent);
+  } finally {
+    db.close();
+  }
 });
 
 // ---------- 静态文件 ----------

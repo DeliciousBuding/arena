@@ -25,6 +25,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { VISION_RADIUS, visionLineBlocked } from "../domain/world.ts";
 import {
+  expireNegativeResourceStates,
   markResourceState,
   markSyncMeta,
   openSurveyDb,
@@ -43,6 +44,11 @@ import {
   upsertChunk,
 } from "./survey-db.ts";
 import { chunkKeyFor } from "../domain/world.ts";
+
+/** 负态 TTL（P2，2026-08-10）：harvested/empty 格超过该 tick 数未恢复
+ *  → 复位 visible 待复查。依据：refill 同格周期实证 avg 37 tick（下方
+ *  生命周期回写注释），world.ts 资源记忆 64-tick TTL——128 = 2 倍余量。 */
+const NEGATIVE_STATE_TTL_TICKS = 128;
 
 export interface SyncOptions {
   /** 已打开的测绘库（缺省 = 自动打开 write）。 */
@@ -352,6 +358,14 @@ export function syncTenantSurvey(
     if (!existsSync(casesDir)) continue;
     const files = readdirSync(casesDir).filter((f) => f.endsWith(".json")).sort();
     if (files.length === 0) continue;
+    // 负态 TTL（P2，2026-08-10）：harvested/empty 无 TTL → refill 后未被重
+    // 观察的格永久排除（对照 world.ts 64-tick TTL；refill 同格周期实证
+    // avg 37 tick，阈值 128 = 2 倍余量）。每 run 开头执行一次（幂等）：
+    // 过期负态复位 visible 待复查，等待后续 case 重观察确认/再标记。
+    const runMaxTick = Number(files[files.length - 1]!.replace(/^0+/, "").replace(/\.json$/, ""));
+    if (Number.isFinite(runMaxTick)) {
+      expireNegativeResourceStates(db, runMaxTick - NEGATIVE_STATE_TTL_TICKS);
+    }
     // 已同步水位：跳过 tick <= lastTick 的 case（force 忽略）
     const skipBelow = options.force === true ? -1 : (meta?.lastTick ?? -1);
     let maxTick = meta?.lastTick ?? -1;

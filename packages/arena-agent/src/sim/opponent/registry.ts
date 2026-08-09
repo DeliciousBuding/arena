@@ -24,22 +24,24 @@ import { DEFAULT_SAFETY_CONFIG } from "../../strategies/safety-planner.ts";
 import type { AggressionLevel } from "../../strategies/safety-planner-config.ts";
 import type { PlanProvider } from "../../runtime/decision-types.ts";
 
-/** 协调根 = 从本文件向上找到第一个含 reference/arena-hero-python 的目录
- *  （主工作树 6 级、.worktrees/<分支> 深一层——硬编码层级在 worktree 会落空）。 */
+/** 协调根 = 从本文件向上找到第一个含 reference/official/arena-hero-python 的目录
+ *  （主工作树 6 级、.worktrees/<分支> 深一层——硬编码层级在 worktree 会落空）。
+ *  兼容旧平铺布局 reference/arena-hero-python（2026-08-09 重组前）。 */
 function findCoordinationRoot(from: string): string {
   let dir = from;
   for (let depth = 0; depth < 12; depth += 1) {
+    if (existsSync(join(dir, "reference", "official", "arena-hero-python"))) return dir;
     if (existsSync(join(dir, "reference", "arena-hero-python"))) return dir;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error("coordination root (reference/arena-hero-python) not found");
+  throw new Error("coordination root (reference/official/arena-hero-python) not found");
 }
 
 export const COORDINATION_ROOT = findCoordinationRoot(fileURLToPath(new URL("..", import.meta.url)));
-const FARMER_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-agent");
-const SDK_REPO = join(COORDINATION_ROOT, "reference", "arena-hero-python");
+const FARMER_REPO = join(COORDINATION_ROOT, "reference", "third-party", "arena-hero-agent");
+const SDK_REPO = join(COORDINATION_ROOT, "reference", "official", "arena-hero-python");
 
 export type OpponentKind = "reference-python" | "http";
 
@@ -92,13 +94,24 @@ export function resolveOpponent(name: string): OpponentSpec {
   return builtin;
 }
 
-/** 由 spec 构造可参赛条目（每 seed 独立 state-slot，随用随起）。 */
-export function opponentEntry(spec: OpponentSpec, seed: number): TournEntry {
-  const opponentId = `${spec.name}-s${seed}`;
+/** 由 spec 构造可参赛条目（每 seed 独立 state-slot，随用随起）。
+ *  opts.id/desc 覆盖默认 <name>-s<seed> / spec.desc（配置变体条目用：
+ *  变体 id 不是注册名，仍以 base agent 构造、仅改名与说明）。 */
+export function opponentEntry(
+  spec: OpponentSpec,
+  seed: number,
+  opts: {
+    readonly id?: string;
+    readonly desc?: string;
+    /** L-C config-injection：spawn 桥进程时附加的环境变量（ARENA_CFG_* 等）。 */
+    readonly env?: Record<string, string>;
+  } = {},
+): TournEntry {
+  const opponentId = opts.id ?? `${spec.name}-s${seed}`;
   if (spec.kind === "http") {
     return {
       id: opponentId,
-      desc: spec.desc,
+      desc: opts.desc ?? spec.desc,
       build: () => new OpponentAdapter(new HttpDecider(spec.endpoint!), opponentId, spec.name),
     };
   }
@@ -106,7 +119,7 @@ export function opponentEntry(spec: OpponentSpec, seed: number): TournEntry {
   mkdirSync(slotDir, { recursive: true });
   return {
     id: opponentId,
-    desc: spec.desc,
+    desc: opts.desc ?? spec.desc,
     build: () => {
       const decider = new PersistentSubprocessDecider({
         farmerRepoDir: FARMER_REPO,
@@ -114,6 +127,11 @@ export function opponentEntry(spec: OpponentSpec, seed: number): TournEntry {
         farmerPath: join(FARMER_REPO, "arena_farmer.py"),
         stateSlot: join(slotDir, `slot-${seed}-${randomUUID()}.pkl`),
         agent: spec.pythonAgent,
+        // P4c+d：桥进程带 --seed/--instance——遥测台账 instance=<name>-s<seed>
+        // （同 agent 多 seed 实例可区分；instance 显式传 opponentId 与 id 对齐）。
+        seed,
+        instance: opponentId,
+        ...(opts.env !== undefined ? { env: opts.env } : {}),
       });
       return new OpponentAdapter(decider, opponentId, spec.name);
     },

@@ -417,6 +417,9 @@ function nextMilitaryType(state: TickState, vanguardRatio?: number): "VANGUARD" 
 /**
  * deterministic 的长期目标仍是积累资源，但不能因此失去自恢复能力：
  * - Core HEAL / REPAIR_SHIELD 属于生存动作，直接沿用 Safety 的合法裁决；
+ * - START_MOVE（coreEvade 核心迁移逃生）/ CANCEL_MOVE（迁移取消止损）同为
+ *   生存动作（2026-08-09）：deterministic 的 SPAWN 覆盖会让核心遇险不迁移，
+ *   coreEvade 变体在 deterministic 主路径（生产 t1-t4）静默失效——直接透传；
  * - 补员按 policy.workerTarget 驱动（MacroPolicy 低频战略的消费点之一）：
  *   无 policy 时用 DEFAULT_WORKER_TARGET=4（扩编主动性，2026-08-06 实验取证），
  *   emergency floor=2 兜底；
@@ -472,6 +475,18 @@ export function selectDeterministicCoreAction(
   }
   if (fallbackAction?.type === "REPAIR_SHIELD") {
     return { action: fallbackAction, intent: "repair_shield", surgeActive };
+  }
+  // coreEvade 迁移/取消（生存动作，2026-08-09）：Safety 裁决的 START_MOVE
+  // （核心迁移逃生）与 CANCEL_MOVE（迁移取消止损）直接沿用，不落入下方 SPAWN
+  // 分支——否则 deterministic 主路径（生产 t1-t4）覆盖后核心遇险不迁移，
+  // coreEvade 变体形同虚设。intent 沿用 Safety 侧通用命名（core_evade /
+  // migration_cancel；Safety 的细分原因 core_evade_ttr / migration_cancel_* 在
+  // 透传层不可见，只保留动作级语义）。
+  if (fallbackAction?.type === "START_MOVE") {
+    return { action: fallbackAction, intent: "core_evade", surgeActive };
+  }
+  if (fallbackAction?.type === "CANCEL_MOVE") {
+    return { action: fallbackAction, intent: "migration_cancel", surgeActive };
   }
 
   const workerTarget = Math.max(
@@ -677,6 +692,9 @@ export interface BlockadeSink extends CellBlocker {
 export class DeterministicPlanner implements PlanProvider {
   private readonly planner: WorkerTaskPlanner;
   private readonly fallbackPlanner: SafetyPlanner;
+  /** P4g 流水线预取缓存（决策流水线，2026-08-09）：prefetch 同步计算缓存，
+   *  decideCached 取——决策输入与串行 decide 相同，结果逐字节一致。 */
+  private prefetchedPlanValue: Plan | null = null;
   /** 只用于“资源格已被其他 Worker 占用”时继续探索；永远看不到 resourceCells，
    *  因此不会把额外 Worker 再次派往同一可见资源格。 */
   private readonly patrolPlanner: SafetyPlanner;
@@ -902,6 +920,9 @@ export class DeterministicPlanner implements PlanProvider {
     currentTick?: number,
   ): { readonly previousDirection: number; readonly nextDirection: number; readonly clearedMoveFailures: number; readonly cooldownUntilTick: number | null } {
     this.previousAssignments = this.previousAssignments.filter((assignment) => assignment.unitId !== unitId);
+    // GO_RESOURCE 领取租约释放（2026-08-09）：worker 局部活性恢复时不得继续锁
+    // 住已领取矿格（否则恢复冷却结束后其他 worker 无法接替）。
+    this.planner.recoverWorker(unitId);
     const fallback = this.fallbackPlanner.recoverWorker(unitId, currentTick);
     // patrol planner 独立持有 World；也必须清，否则下一 Tick fallback 仍可能从旧状态回灌。
     this.patrolPlanner.recoverWorker(unitId, currentTick);
@@ -1225,6 +1246,22 @@ export class DeterministicPlanner implements PlanProvider {
       coreAction: coreDecision.action,
       intents: finalIntents,
     };
+  }
+
+  /** 流水线预取（P4g，决策流水线）：同步计算并缓存——决策输入与串行 decide
+   *  相同，结果逐字节一致；仅时间点前移（结算后即算，不阻塞调用方）。 */
+  prefetch(input: DeterministicPlannerInput): void {
+    this.prefetchedPlanValue = this.decide(input);
+  }
+
+  /** 取流水线预取结果（P4g）：必须在 prefetch 之后成对调用。 */
+  decideCached(): Plan {
+    const plan = this.prefetchedPlanValue;
+    this.prefetchedPlanValue = null;
+    if (plan === null) {
+      throw new Error("deterministic planner: decideCached without prefetch");
+    }
+    return plan;
   }
 
   /** Task → UnitAction（确定性映射；核心语义见文件头注释）。 */
