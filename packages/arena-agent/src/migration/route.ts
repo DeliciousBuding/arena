@@ -177,7 +177,13 @@ export function planRoute(
     for (let i = 0; i < NEIGHBOR_OFFSETS.length; i += 1) {
       const [dx, dy] = NEIGHBOR_OFFSETS[i]!;
       const point = { x: x + dx, y: y + dy };
-      if (!blocked.has(cellKey(point.x, point.y))) candidates.push({ point, order: i });
+      if (blocked.has(cellKey(point.x, point.y))) continue;
+      // 对角步禁止穿角：两个正交中间格必须都可通行（引擎 4 向移动 +
+      // overlay 对角分解走"先水平"轴，中间格被障碍占则分解第一步即被拒）。
+      if (dx !== 0 && dy !== 0) {
+        if (blocked.has(cellKey(x + dx, y)) || blocked.has(cellKey(x, y + dy))) continue;
+      }
+      candidates.push({ point, order: i });
     }
     // 邻居按"到目标 Chebyshev 距离"升序 → 无障碍时天然走直线，
     // 只有直线被堵才偏离绕行；同距按固定偏移序，结果可复现。
