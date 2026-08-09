@@ -227,10 +227,11 @@ CREATE INDEX IF NOT EXISTS idx_resource_seen_history_tick ON resource_seen_histo
 -- 第三方 agent 注册与心跳（2026-08-09，用户裁决"并进 survey.db"）：
 -- SDK fork（arena-hero-python-telemetry）通过 command-center
 -- POST /api/ingest/agents 上报 register/connection/tick_summary/disconnected。
--- agents = 每租户一行的最新台账（upsert）；agent_events = 事件流水。
+-- agents = 每 (tenant, instance) 一行的最新台账（upsert；同 agent 不同 seed
+--   = 不同 instance = 独立行，多租户区分）；agent_events = 事件流水。
 -- 本组表只由 ingest 端点写入（单一 writer），survey:sync CLI 不触碰。
 CREATE TABLE IF NOT EXISTS agents (
-  tenant TEXT PRIMARY KEY,
+  tenant TEXT NOT NULL,
   instance TEXT NOT NULL,
   tick INTEGER,
   resources INTEGER,
@@ -248,7 +249,8 @@ CREATE TABLE IF NOT EXISTS agents (
   connection_state TEXT NOT NULL DEFAULT 'down',
   first_seen TEXT,
   last_heartbeat TEXT,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant, instance)
 );
 CREATE TABLE IF NOT EXISTS agent_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

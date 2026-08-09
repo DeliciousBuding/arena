@@ -16,7 +16,7 @@ import { DATA_ROOT } from "./fs-jsonl.ts";
 
 const AGENT_SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
-  tenant TEXT PRIMARY KEY,
+  tenant TEXT NOT NULL,
   instance TEXT NOT NULL,
   tick INTEGER,
   resources INTEGER,
@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS agents (
   connection_state TEXT NOT NULL DEFAULT 'down',
   first_seen TEXT,
   last_heartbeat TEXT,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant, instance)
 );
 CREATE TABLE IF NOT EXISTS agent_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,8 +54,7 @@ INSERT INTO agents (
   visible_enemies, status, sdk_version, base_url, pid, platform, mode,
   connection_state, first_seen, last_heartbeat, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'production'), ?, ?, ?, ?)
-ON CONFLICT(tenant) DO UPDATE SET
-  instance = excluded.instance,
+ON CONFLICT(tenant, instance) DO UPDATE SET
   tick = COALESCE(excluded.tick, agents.tick),
   resources = COALESCE(excluded.resources, agents.resources),
   population = COALESCE(excluded.population, agents.population),
@@ -181,11 +181,11 @@ export function applyAgentEvent(db: DatabaseSync, event: AgentIngestEvent): void
   ).run(event.tenant, instance, event.event, tick, event.error ?? null, event.ts);
 }
 
-/** 查询某租户的 agent 台账行（无数据返回 null）。 */
+/** 查询某租户的 agent 台账行（无数据返回 null；多实例租户取最新心跳行）。 */
 export function knownAgent(db: DatabaseSync, tenant: string): AgentRow | null {
-  const rows = db.prepare("SELECT * FROM agents WHERE tenant = ?").all(tenant) as Array<
-    Record<string, unknown>
-  >;
+  const rows = db.prepare(
+    "SELECT * FROM agents WHERE tenant = ? ORDER BY updated_at DESC LIMIT 1",
+  ).all(tenant) as Array<Record<string, unknown>>;
   if (rows.length === 0) return null;
   const r = rows[0]!;
   return {

@@ -14,6 +14,7 @@
 
 import type { Plan } from "../../domain/model.ts";
 import { runEpisode, type EpisodeTenant } from "../../sim/harness/episode.ts";
+import { createSeededRng } from "../../sim/deterministic/rng.ts";
 import type { SimWorld } from "../../sim/world/types.ts";
 import {
   DEFAULT_PROCEDURAL_PARAMS,
@@ -395,26 +396,91 @@ export function runMatch(
   }
 }
 
-/** N 玩家混战场景：核心均匀分布在圆周（半径 18），各自 1 worker（官方起点
- *  5 资源 + 1 worker，M4-3）+ 近距资源盘。每核资源盘取 RESOURCE_LAYOUTS 前
- *  4 个近距点（±7 内），圆周间距（3 人 ~31、4 人 ~25）远大于盘半径，无跨核
- *  重叠；id 按参与序派生（CORE/WORKER 前缀表）。M4-2：信标归位圆周圆心
- *  [0,0]（半径 18 圆周上所有核心距圆心 18 > 视野 5）；M4-4：seed 同源派生
- *  圆心附近障碍集（OBSTACLE_LAYOUTS_FFA）。 */
-export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): unknown {
+/** makeArenaScenarioN 布局旋钮（全部可选；缺省 = 既有 FFA 布局，逐字节不变）。 */
+export interface ArenaScenarioNOptions {
+  /** 核心圆周半径；缺省 18（既有 FFA 布局）。大地图：30/40（8+ 玩家）。
+   *  信标恒在圆心 [0,0]；资源盘/障碍集按 radius/18 同源缩放（radius 18 恒等）。 */
+  readonly radius?: number;
+  /** 显式指定资源盘/障碍集变体序号（0-based，与 seed 派生同源）；缺省 seed % 变体数。 */
+  readonly resourceLayoutIndex?: number;
+  /** 随机投放：seed 派生起始角旋转 + 参与序洗牌（确定性——同 seed 恒同场景）。
+   *  缺省不启用——保持固定 -π/2 起始角、按参与序落位的既有确定性布局。 */
+  readonly randomDrop?: { readonly seed: number };
+}
+
+/** 按半径缩放 FFA 障碍块（保持 1×2/2×1 块结构：每对首格取整、尾格 = 首格 +
+ *  原始单位增量，任意 scale 下块内相邻性不破）。scale=1（radius 18）时恒等。
+ *  障碍块始终留在圆心附近（|x|+|y| ≤ 10·scale+1），核心在半径 18·scale 圆周
+ *  ——任何 scale 下距核心 Manhattan ≥ 8·scale-1 > 3，不压核心。 */
+function scaleObstacleBlocks(
+  cells: readonly (readonly [number, number])[],
+  scale: number,
+): [number, number][] {
+  const scaled: [number, number][] = [];
+  for (let i = 0; i < cells.length; i += 2) {
+    const anchor = cells[i];
+    const partner = cells[i + 1];
+    const sx = Math.round(anchor[0] * scale);
+    const sy = Math.round(anchor[1] * scale);
+    scaled.push([sx, sy], [sx + partner[0] - anchor[0], sy + partner[1] - anchor[1]]);
+  }
+  return scaled;
+}
+
+/** 随机投放布局：无 randomDrop 时返回恒等序 + 零旋转（与既有布局逐字节一致）；
+ *  启用时用 randomDrop.seed 派生全局旋转角 + Fisher–Yates 参与序洗牌
+ *  （createSeededRng/mulberry32——同 seed 恒同场景）。 */
+function resolveDropArrangement(
+  randomDropSeed: number | undefined,
+  n: number,
+): { readonly angleOffset: number; readonly order: readonly number[] } {
+  const order = Array.from({ length: n }, (_, i) => i);
+  if (randomDropSeed === undefined) {
+    return { angleOffset: 0, order };
+  }
+  const rng = createSeededRng(randomDropSeed);
+  const angleOffset = rng.next() * 2 * Math.PI;
+  for (let i = n - 1; i > 0; i -= 1) {
+    const j = Math.floor(rng.next() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return { angleOffset, order };
+}
+
+/** N 玩家混战场景：核心均匀分布在圆周（radius 参数化，缺省 18），各自 1 worker
+ *  （官方起点 5 资源 + 1 worker，M4-3）+ 近距资源盘（随 radius 缩放）。每核资源盘
+ *  取 RESOURCE_LAYOUTS 前 4 个近距点（radius 18 时 ±7 内），圆周间距（3 人 ~31、
+ *  4 人 ~25）远大于盘半径，无跨核重叠；id 按参与序派生（CORE/WORKER 前缀表 +
+ *  尾部 index——任意 n 全图唯一）。M4-2：信标归位圆周圆心 [0,0]（所有核心距圆心
+ *  = radius > 视野 5）；M4-4：seed 同源派生圆心附近障碍集（OBSTACLE_LAYOUTS_FFA，
+ *  随 radius 缩放、保持 1×2/2×1 块结构，永不压核心）。randomDrop 启用时起始角与
+ *  参与序由 seed 派生（随机投放，确定性）。 */
+export function makeArenaScenarioN(
+  entries: readonly TournEntry[],
+  seed = 1,
+  options?: ArenaScenarioNOptions,
+): unknown {
   const n = Math.max(2, entries.length);
-  const radius = 18;
-  const layoutIndex = Math.abs(seed) % RESOURCE_LAYOUTS.length;
+  // radius 缺省 18 = 既有布局；障碍/资源盘按 radius/18 同源缩放（radius 18 时恒等）
+  const radius = options?.radius ?? 18;
+  if (!Number.isFinite(radius) || radius <= 0) {
+    throw new Error(`makeArenaScenarioN radius must be a positive finite number (got ${String(radius)})`);
+  }
+  const scale = radius / 18;
+  const rawLayoutIndex = options?.resourceLayoutIndex ?? Math.abs(seed) % RESOURCE_LAYOUTS.length;
+  const layoutIndex = ((rawLayoutIndex % RESOURCE_LAYOUTS.length) + RESOURCE_LAYOUTS.length) % RESOURCE_LAYOUTS.length;
   const layout = RESOURCE_LAYOUTS[layoutIndex].slice(0, 4);
-  const obstacles = [...OBSTACLE_LAYOUTS_FFA[layoutIndex]];
-  const players = entries.map((entry, index) => {
-    const angle = (2 * Math.PI * index) / n - Math.PI / 2;
+  const obstacles = scaleObstacleBlocks(OBSTACLE_LAYOUTS_FFA[layoutIndex], scale);
+  const { angleOffset, order } = resolveDropArrangement(options?.randomDrop?.seed, n);
+  const players = order.map((entryIndex, slot) => {
+    const entry = entries[entryIndex];
+    const angle = (2 * Math.PI * slot) / n - Math.PI / 2 + angleOffset;
     const cx = Math.round(radius * Math.cos(angle));
     const cy = Math.round(radius * Math.sin(angle));
     const workers = initialWorkers(
       entry.id,
-      `${WORKER_ID_PREFIXES[index % WORKER_ID_PREFIXES.length]}-0000-0000-0000-000000000000`,
-      index,
+      `${WORKER_ID_PREFIXES[entryIndex % WORKER_ID_PREFIXES.length]}-0000-0000-0000-000000000000`,
+      entryIndex,
       [cx + 1, cy],
     );
     return {
@@ -422,8 +488,8 @@ export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): un
       username: entry.id,
       resources: 5,
       core: {
-        // 前缀表仅 4 项——尾部按参与序派生，n≥5 时也保证全图唯一（防静默覆盖）
-        id: `${CORE_ID_PREFIXES[index % CORE_ID_PREFIXES.length].slice(0, 23)}-${String(index).padStart(12, "0")}`,
+        // 前缀表仅 4 项——尾部按参与序 12 位派生，任意 n（<10^12）也保证全图唯一
+        id: `${CORE_ID_PREFIXES[entryIndex % CORE_ID_PREFIXES.length].slice(0, 23)}-${String(entryIndex).padStart(12, "0")}`,
         position: [cx, cy],
         hp: 5,
         shield: 5,
@@ -438,7 +504,10 @@ export function makeArenaScenarioN(entries: readonly TournEntry[], seed = 1): un
   });
   const resources = players.flatMap((player) => {
     const corePosition = player.core.position as [number, number];
-    return layout.map(([dx, dy]) => [corePosition[0] + dx, corePosition[1] + dy] as [number, number]);
+    return layout.map(([dx, dy]) => [
+      corePosition[0] + Math.round(dx * scale),
+      corePosition[1] + Math.round(dy * scale),
+    ] as [number, number]);
   });
   return {
     rulesVersion: "v0.14",
@@ -471,6 +540,9 @@ export function runFreeForAll(
      *  默认圆周布局。true = 用 DEFAULT_PROCEDURAL_PARAMS；传入 params 覆盖。
      *  默认关；与 scenario 互斥（scenario 优先）。 */
     procedural?: boolean | ProceduralWorldParams;
+    /** makeArenaScenarioN 布局旋钮（radius / resourceLayoutIndex / randomDrop）；
+     *  仅缺省合成场景路径（未给 scenario/procedural 时）生效。 */
+    arenaScenarioOptions?: ArenaScenarioNOptions;
   },
 ): MatchResult {
   const refillConfig = resolveTournamentRefillConfig(opts?.refillEveryTicks);
@@ -483,7 +555,7 @@ export function runFreeForAll(
           seed,
           typeof opts.procedural === "boolean" ? DEFAULT_PROCEDURAL_PARAMS : opts.procedural,
         )
-      : makeArenaScenarioN(entries, seed));
+      : makeArenaScenarioN(entries, seed, opts?.arenaScenarioOptions));
   const ids = entries.map((entry) => entry.id);
   // build 移入 try：中途抛错时已建 provider 也走 finally close（卫生项同 runMatch）。
   const providers: PlanProvider[] = [];
