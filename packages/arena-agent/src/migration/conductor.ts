@@ -138,6 +138,8 @@ export interface ConductorStepInput {
   readonly survey: {
     readonly resources: readonly { readonly x: number; readonly y: number; readonly lastSeenTick: number }[];
     readonly enemyCores: readonly { readonly x: number; readonly y: number; readonly lastSeenTick: number }[];
+    /** 静态地形障碍（OBSTACLE 格，引擎不可通行；缺失 = 空数组，兼容旧观测源）。 */
+    readonly obstacles?: readonly { readonly x: number; readonly y: number }[];
   };
   readonly config: MigrationRuntimeConfig;
   /** 上一步的持有状态（HOLD 滞回计数等；null = 新进程重启续传）。 */
@@ -266,14 +268,18 @@ function corridorAuditOptions(config: MigrationRuntimeConfig): CorridorAuditOpti
 }
 
 /**
- * 障碍集 = 新鲜资源格 + 活跃敌核格（裁决：陈旧目击不设障——§3.2"超过
- * 4-8 tick 的数据不作为'现在还有矿'的强证据"，资源 4 tick refill）。
+ * 障碍集 = 静态地形障碍 + 新鲜资源格 + 活跃敌核格（裁决：陈旧目击不设障
+ * ——§3.2"超过 4-8 tick 的数据不作为'现在还有矿'的强证据"，资源 4 tick
+ * refill；静态障碍永久有效）。
  */
 function collectObstacles(
   survey: ConductorStepInput["survey"],
   tick: number,
 ): readonly (readonly [number, number])[] {
   const obstacles: (readonly [number, number])[] = [];
+  for (const obstacle of survey.obstacles ?? []) {
+    obstacles.push([obstacle.x, obstacle.y]);
+  }
   for (const resource of survey.resources) {
     if (tick - resource.lastSeenTick <= MIGRATION_RESOURCE_FRESH_WINDOW) {
       obstacles.push([resource.x, resource.y]);
