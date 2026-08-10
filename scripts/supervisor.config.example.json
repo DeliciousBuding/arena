@@ -1,0 +1,27 @@
+{
+  "_comment": "Arena 生产监督器配置样例（2026-08-10 配置化）。生产实际文件位于 <dataRoot>/runtime/configs/supervisor.config.json（gitignored，data 未跟踪）。优先级：env(ARENA_WATCHDOG_*) > 本文件 > 内置默认；文件缺失 = 纯内置默认（向后兼容）。所有字段可省略。",
+  "watchdog": {
+    "tenants": ["t1", "t2", "t3", "t4"],
+    "dataRoot": "ARENA_REPO_ROOT/data",
+    "port": 8120,
+    "stallMaxAgeS": 600,
+    "lockFreshS": 600,
+    "bootGraceMs": 30000,
+    "gracefulWaitS": 8,
+    "logPath": "USER_HOME/arena-watchdog.log",
+    "supervisorLogPath": "USER_HOME/arena-supervisor.log"
+  },
+  "supervisor": {
+    "configs": ["t1", "t2", "t3", "t4"],
+    "mode": "deterministic",
+    "live": true,
+    "recordCalibration": true,
+    "allianceShadow": {
+      "enabled": true,
+      "intervalTicks": 3,
+      "director": { "enabled": true, "periodTicks": 4, "maxSkewTicks": 2 }
+    },
+    "respawn": { "limit": 10, "delayMs": 5000 },
+    "shutdownTimeoutMs": 8000
+  }
+}

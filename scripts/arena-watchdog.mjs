@@ -30,44 +30,103 @@
  */
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HOME = homedir();
-const LOG = join(HOME, "arena-watchdog.log");
-const SUPERVISOR_LOG = join(HOME, "arena-supervisor.log");
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 /** PowerShell 探测命令超时（毫秒）：PowerShell 挂死不能拖死看护——计划任务
  *  静默运行、无可见 console，挂死 = 看护静默失效（同 v4 教训）。 */
 const PORT_PROBE_TIMEOUT_MS = 30_000;
 const PID_PROBE_TIMEOUT_MS = 30_000;
-const DATA_ROOT = "ARENA_REPO_ROOT/data";
+/** 配置优先级：env(ARENA_WATCHDOG_*) > supervisor.config.json > 内置默认。
+ *  config 文件位于 <dataRoot>/runtime/configs/supervisor.config.json（与租户
+ *  配置同目录，gitignored；data 未跟踪）。缺失 = 纯内置默认（向后兼容
+ *  旧行为零变化）。2026-08-10 配置化：消灭 watchdog/supervisor 双默认漂移
+ *  ——SUPERVISOR_ARGS 由配置生成，单一事实源。 */
+const DEFAULT_DATA_ROOT = "ARENA_REPO_ROOT/data";
+const DEFAULT_PORT = 8120;
+const ENV = process.env;
+
+function envNumber(name, fallback) {
+  const raw = ENV[name];
+  const value = raw === undefined ? undefined : Number(raw);
+  return raw === undefined || !Number.isFinite(value) ? fallback : value;
+}
+function envString(name, fallback) {
+  const raw = ENV[name];
+  return raw === undefined || raw.length === 0 ? fallback : raw;
+}
+
+const BOOT_DATA_ROOT = envString("ARENA_WATCHDOG_DATA_ROOT", DEFAULT_DATA_ROOT);
+
+/** 读配置（缺失/损坏 = null，全部走默认；损坏配置打日志不崩溃）。 */
+function loadSupervisorConfig() {
+  try {
+    const raw = readFileSync(join(BOOT_DATA_ROOT, "runtime", "configs", "supervisor.config.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+const CONFIG = loadSupervisorConfig();
+
+const DATA_ROOT = envString("ARENA_WATCHDOG_DATA_ROOT", CONFIG?.watchdog?.dataRoot ?? DEFAULT_DATA_ROOT);
+const PORT = envNumber("ARENA_WATCHDOG_PORT", CONFIG?.watchdog?.port ?? DEFAULT_PORT);
 const RUNTIME_ROOT = join(DATA_ROOT, "runtime");
-const READY_URL = "http://127.0.0.1:8120/ready";
-const SHUTDOWN_URL = "http://127.0.0.1:8120/shutdown";
+const READY_URL = `http://127.0.0.1:${PORT}/ready`;
+const SHUTDOWN_URL = `http://127.0.0.1:${PORT}/shutdown`;
+const RESTART_URL = `http://127.0.0.1:${PORT}/restart`;
 const MAINTENANCE_LEASE = join(RUNTIME_ROOT, "maintenance.lease");
-const TENANTS = ["t1", "t2", "t3", "t4"];
+const TENANTS = CONFIG?.watchdog?.tenants ?? ["t1", "t2", "t3", "t4"];
 /** outcome JSONL 超过该秒数未更新 = stall（与旧版一致）。 */
-const STALL_MAX_AGE_S = 600;
+const STALL_MAX_AGE_S = envNumber("ARENA_WATCHDOG_STALL_MAX_AGE_S", CONFIG?.watchdog?.stallMaxAgeS ?? 600);
 /** 启动宽限：8120 有监听但 /ready 未 true 时再等该毫秒复查（防慢启动被误杀）。 */
-const BOOT_GRACE_MS = 30_000;
+const BOOT_GRACE_MS = envNumber("ARENA_WATCHDOG_BOOT_GRACE_MS", CONFIG?.watchdog?.bootGraceMs ?? 30_000);
 /** 优雅关停后等待秒数，仍监听则 taskkill 兜底（与旧版一致）。 */
-const GRACEFUL_WAIT_S = 8;
-const SUPERVISOR_ARGS = [
-  `--data-root=${DATA_ROOT}`,
-  "--configs=t1,t2,t3,t4",
-  "--mode=deterministic",
-  "--live",
-  "--record-calibration",
-  "--record-alliance-shadow",
-  "--alliance-shadow-interval-ticks=3",
-  "--alliance-director-shadow",
-  "--alliance-director-period-ticks=4",
-  "--alliance-director-max-skew-ticks=2",
-  "--port=8120",
-];
+const GRACEFUL_WAIT_S = envNumber("ARENA_WATCHDOG_GRACEFUL_WAIT_S", CONFIG?.watchdog?.gracefulWaitS ?? 8);
+/** 启动宽限：lock 龄低于该秒数 = 租户刚启动尚未产出首个 outcome，不判 stall。
+ *  2026-08-10 修复：旧逻辑用"lock 新于 outcome 则恒跳过"，启动即崩的租户
+ *  锁恒新于 outcome → 永久盲区；改为 lock 绝对龄宽限。 */
+const LOCK_FRESH_S = envNumber("ARENA_WATCHDOG_LOCK_FRESH_S", CONFIG?.watchdog?.lockFreshS ?? 600);
+const LOG = envString("ARENA_WATCHDOG_LOG", CONFIG?.watchdog?.logPath ?? join(HOME, "arena-watchdog.log"));
+const SUPERVISOR_LOG = envString("ARENA_WATCHDOG_SUPERVISOR_LOG", CONFIG?.watchdog?.supervisorLogPath ?? join(HOME, "arena-supervisor.log"));
+
+/** 由 supervisor 配置段生成 SUPERVISOR_ARGS（单一事实源，2026-08-10）。 */
+function buildSupervisorArgs() {
+  const sup = CONFIG?.supervisor ?? {};
+  const args = [
+    `--data-root=${DATA_ROOT}`,
+    `--configs=${(sup.configs ?? TENANTS).join(",")}`,
+    `--mode=${sup.mode ?? "deterministic"}`,
+  ];
+  if (sup.live !== false) args.push("--live");
+  if (sup.recordCalibration !== false) args.push("--record-calibration");
+  const shadow = sup.allianceShadow ?? {};
+  if (shadow.enabled !== false) {
+    args.push("--record-alliance-shadow", `--alliance-shadow-interval-ticks=${shadow.intervalTicks ?? 3}`);
+    const director = shadow.director ?? {};
+    if (director.enabled !== false) {
+      args.push(
+        "--alliance-director-shadow",
+        `--alliance-director-period-ticks=${director.periodTicks ?? 4}`,
+        `--alliance-director-max-skew-ticks=${director.maxSkewTicks ?? 2}`,
+      );
+    }
+  }
+  const respawn = sup.respawn ?? {};
+  const respawnLimit = envNumber("ARENA_WATCHDOG_RESPAWN_LIMIT", respawn.limit);
+  const respawnDelayMs = envNumber("ARENA_WATCHDOG_RESPAWN_DELAY_MS", respawn.delayMs);
+  if (respawnLimit !== undefined) args.push(`--respawn-limit=${respawnLimit}`);
+  if (respawnDelayMs !== undefined) args.push(`--respawn-delay-ms=${respawnDelayMs}`);
+  args.push(`--port=${PORT}`);
+  return args;
+}
+const SUPERVISOR_ARGS = buildSupervisorArgs();
 /** 本机 node（watchdog 自身运行时）——不依赖 npm/pnpm 包装（pnpm 化后
  *  npm run 已不可靠；v4 曾用 npm run arena:supervisor，workspace 布局下
  *  无法解析）。 */
@@ -99,8 +158,39 @@ function now() {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
 }
 
+/** 日志轮转阈值（16MB×4，与 supervisor.jsonl jsonl-writer 同款语义；
+ *  2026-08-10：此前无限 append，长跑后历史不可查）。 */
+const LOG_MAX_BYTES = 16 * 1024 * 1024;
+const LOG_MAX_BACKUPS = 4;
+
+/** 超限时轮转：LOG → LOG.1 → ... → LOG.4（旧日志截断丢弃）。 */
+function rotateLog(path) {
+  try {
+    if (!existsSync(path) || statSync(path).size < LOG_MAX_BYTES) return;
+    for (let i = LOG_MAX_BACKUPS; i >= 1; i -= 1) {
+      const rotated = `${path}.${i}`;
+      if (existsSync(rotated)) rmSync(rotated, { force: true });
+    }
+    for (let i = LOG_MAX_BACKUPS - 1; i >= 1; i -= 1) {
+      const from = `${path}.${i}`;
+      if (existsSync(from)) renameSync(from, `${path}.${i + 1}`);
+    }
+    renameSync(path, `${path}.1`);
+  } catch {
+    // 轮转失败不阻塞看护（下轮重试）
+  }
+}
+
+/** 文本日志行（历史格式保留；带轮转）。 */
 function log(line) {
+  rotateLog(LOG);
   appendFileSync(LOG, `${now()} ${line}\n`);
+}
+
+/** 结构化事件（JSONL，2026-08-10 增加）：供命令中心/审计工具直接消费。 */
+function logEvent(type, fields = {}) {
+  rotateLog(LOG);
+  appendFileSync(LOG, `${JSON.stringify({ type, ts: new Date().toISOString(), ...fields })}\n`);
 }
 
 /** 维护租约：第一行 = 过期 epoch；有效期内不拉起生产。 */
@@ -161,7 +251,7 @@ export function probePort8120(exec = execFileSync, timeoutMs = PORT_PROBE_TIMEOU
   try {
     const out = exec(
       "powershell",
-      ["-NoProfile", "-Command", "Get-NetTCPConnection -LocalPort 8120 -State Listen -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count"],
+      ["-NoProfile", "-Command", `Get-NetTCPConnection -LocalPort ${PORT} -State Listen -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count`],
       { encoding: "utf8", shell: false, timeout: timeoutMs },
     );
     const count = Number(out.trim());
@@ -207,7 +297,7 @@ async function restartTenant(tenantId) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
     const headers = token !== null ? { "x-arena-token": token } : undefined;
-    const response = await fetch(`${READY_URL.replace(/\/ready$/, "/restart")}?tenant=${encodeURIComponent(tenantId)}`, {
+    const response = await fetch(`${RESTART_URL}?tenant=${encodeURIComponent(tenantId)}`, {
       method: "POST",
       headers,
       signal: controller.signal,
@@ -277,11 +367,6 @@ async function killStrays() {
   }
   return finalPids !== null;
 }
-
-/** 启动宽限：lock 龄低于该秒数 = 租户刚启动尚未产出首个 outcome，不判 stall。
- *  2026-08-10 修复：旧逻辑用"lock 新于 outcome 则恒跳过"，启动即崩的租户
- *  锁恒新于 outcome → 永久盲区；改为 lock 绝对龄宽限。 */
-const LOCK_FRESH_S = 600;
 
 /** stall 检查：outcome 超龄 / decision 停摆 / economy 停摆（独立脚本判定）。 */
 function stalledTenant() {
@@ -356,8 +441,21 @@ async function main() {
   const ready = await fetchReady();
   if (ready !== null && ready.ready) {
     const stalled = stalledTenant();
-    if (stalled === null) return;
+    if (stalled === null) {
+      // 健康巡检（每分钟一次 JSONL 摘要；供命令中心/审计消费）
+      logEvent("watchdog_tick", {
+        ready: true,
+        tenants: (ready.tenants ?? []).map((tenant) => ({
+          id: tenant.tenantId,
+          pid: tenant.pid,
+          lifecycle: tenant.lifecycle,
+          respawnCount: tenant.respawnCount ?? 0,
+        })),
+      });
+      return;
+    }
     log(`STALL detected (${stalled} outcome stale > ${STALL_MAX_AGE_S}s or decision inactive) -> recovering`);
+    logEvent("stall_detected", { tenant: stalled, thresholdS: STALL_MAX_AGE_S });
   } else if (ready !== null && !ready.ready && !shouldFullRecover(ready)) {
     // supervisor 应答但未全 ready，且有租户存活 = 部分故障。优先检查 respawn
     // 已耗尽的死租户（2026-08-10：/ready 暴露 respawnCount + respawnLimit）：
@@ -370,6 +468,7 @@ async function main() {
         && tenant.respawnCount >= ready.respawnLimit,
     );
     if (exhausted !== undefined) {
+      logEvent("tenant_exhausted", { tenant: exhausted.tenantId, respawnCount: exhausted.respawnCount, respawnLimit: ready.respawnLimit });
       await restartTenant(exhausted.tenantId);
       return;
     }
@@ -379,6 +478,7 @@ async function main() {
       return;
     }
     log(`partial ready but STALL detected (${stalled}) -> recovering`);
+    logEvent("stall_detected", { tenant: stalled, thresholdS: STALL_MAX_AGE_S, partial: true });
   } else {
     // 网络失败 / 无法解析 / 全租户 down = supervisor 可能已死 → 整体恢复。
     // 启动宽限：8120 有监听但未 ready → 等 BOOT_GRACE_MS 再查一次
@@ -391,6 +491,7 @@ async function main() {
       }
     }
     log("NOT ready -> recovering");
+    logEvent("recover_start", { reason: "not ready / unreachable" });
   }
 
   await gracefulShutdown();
