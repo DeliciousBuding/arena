@@ -3583,7 +3583,14 @@ export class SafetyPlanner {
       // Vanguard 先走到 target（无敌人时 = Core 格）才打野——守家锚点在途/
       // Core 格被 Worker 回仓占用时永远到不了 → 打野永不触发、Vanguard 枯竭后
       // 空转守家。无敌人时 target 恒为 Core 位置，该到位限制无意义。
-      if (enemies.length === 0 && state.resourceCells.size === 0 && state.core !== null) {
+      // GAP 5.3 fix（2026-08-10，t1 生产实证 tick 83782）：资源枯竭判定从
+      // `size === 0` 放宽为"可见资源 < worker 采集需求"——旧版只有 0 可见资源
+      // 才打野，t1 视野常年 4 格可见资源（< 17 worker 需求）→ 22+ Vanguard
+      // 全部守家空转（守家锚点 4 格容量 2×4=8 严重超订 → pressure_spread 互堵），
+      // 不打野 → 地图不扩展 → 发现资源少 → 经济饿死。资源不足时非守卫军事
+      // （守卫由上方 homeGuardSquad 分支留守）打野扩展测绘。
+      const resourceScarce = state.resourceCells.size < state.workers.length;
+      if (enemies.length === 0 && resourceScarce && state.core !== null) {
         // W62 环形扇区扫荡（assault-sector-sweep-v1，2026-08-09，竞品
         // `_assault_frontier_target` :6955 对照）：aggressive 军事打野改用
         // 全队共享前沿航点（半径振荡 + 扇区旋转 + 全员到齐门控），替代 per-unit

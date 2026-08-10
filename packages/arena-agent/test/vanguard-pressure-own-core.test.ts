@@ -57,17 +57,27 @@ test("GAP 5.2: 无敌人 + 视野有资源 → Vanguard 走向守家锚点而非
   assert.notEqual(action?.direction, "LEFT", "不得压向自家 Core 格");
 });
 
-test("GAP 5.2: 无敌人 + 无资源 → 打野（scavenge），不压自家 Core", () => {
+test("GAP 5.3: 无敌人 + 资源不足（可见 < worker 数）→ 打野，不守家空转", () => {
   const planner = new SafetyPlanner(AGGRESSIVE);
-  const plan = planner.decide({ state: makeState(1, [5, 0], []), policy: AGGRESSIVE_POLICY });
+  // 1 worker + 0 visible resource: 0 < 1 → scarce → scavenge
+  const state = makeState(1, [5, 0], []);
+  const withWorker: TickState = {
+    ...state,
+    workers: [{ id: "w1", position: [0, 1], hp: 2, unitType: "WORKER", cargo: 0 }],
+    units: [
+      { id: "v1", position: [5, 0], hp: 4, unitType: "VANGUARD", cargo: 0 },
+      { id: "w1", position: [0, 1], hp: 2, unitType: "WORKER", cargo: 0 },
+    ],
+  };
+  const plan = planner.decide({ state: withWorker, policy: AGGRESSIVE_POLICY });
   const intent = plan.intents["v1"];
   assert.ok(
     intent === "vanguard_scavenge" || intent === "vanguard_hunt" || intent === "vanguard_sector_sweep",
-    `无资源时应打野而非压自家 Core（实际 intent=${intent}）`,
+    `资源不足时应打野（实际 intent=${intent}）`,
   );
 });
 
-test("GAP 5.2: 无敌人 + 有敌核记忆 → 前压记忆（不回归）", () => {
+test("GAP 5.3: 无敌人 + 有敌核记忆 → 前压记忆（不回归）", () => {
   const planner = new SafetyPlanner(AGGRESSIVE);
   // tick1：Vanguard 见敌 Core [40,0]（Chebyshev 40 ≤64）→ 记入 coreHuntMemory
   const seenState = makeState(1, [5, 0], []);
