@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { useEngine, getEngine } from "../lib/bridge";
 import { TENANT_COLORS } from "@/engine/tactical";
 
@@ -9,7 +10,8 @@ const TENANT_LABEL: Record<string, string> = { t1: "租户 1", t2: "租户 2", t
 
 const PREFS_KEY = "arena-cc-web.prefs";
 /** 侧栏分区折叠（2026-08-08）：1080p 下"图层/租户视图"在折叠线以下，点标题可收起大区块。
- *  子元素保持挂载（display:none），引擎依赖的 #tenantCards/#layerToggles 等 id 不丢失。 */
+ *  子元素保持挂载（display:none），引擎依赖的 #tenantCards/#layerToggles 等 id 不丢失。
+ *  Radix Collapsible 提供 Enter/Space 键盘切换 + aria-expanded；视觉仍由 style.css 负责。 */
 function CollapsiblePanel({ id, title, children, className = "" }: { id: string; title: ReactNode; children: React.ReactNode; className?: string }) {
   const [open, setOpen] = useState(() => {
     try { const p = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"); return p[`sec_${id}`] !== false; } catch { return true; }
@@ -18,14 +20,17 @@ function CollapsiblePanel({ id, title, children, className = "" }: { id: string;
     try { const p = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"); p[`sec_${id}`] = open; localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch { /* 忽略 */ }
   }, [open]);
   return (
-    <section className={`panel collapsible${className ? " " + className : ""}${open ? "" : " closed"}`}>
-      <h3 className="panel-title sec-head" role="button" tabIndex={0} aria-expanded={open}
-        onClick={() => setOpen(!open)}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(!open); } }}>
-        <span className="sec-title">{title}</span><span className="sec-chev">{open ? <ChevronDown className="sec-chev-ico" /> : <ChevronRight className="sec-chev-ico" />}</span>
-      </h3>
-      <div className="sec-body" hidden={!open}>{children}</div>
-    </section>
+    <Collapsible asChild open={open} onOpenChange={setOpen}>
+      <section className={`panel collapsible${className ? " " + className : ""}${open ? "" : " closed"}`}>
+        <CollapsibleTrigger asChild>
+          <h3 className="panel-title sec-head" role="button" tabIndex={0}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.currentTarget.click(); } }}>
+            <span className="sec-title">{title}</span><span className="sec-chev">{open ? <ChevronDown className="sec-chev-ico" /> : <ChevronRight className="sec-chev-ico" />}</span>
+          </h3>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="sec-body">{children}</CollapsibleContent>
+      </section>
+    </Collapsible>
   );
 }
 

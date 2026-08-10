@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { shopRequest } from "../../lib/shopApi";
 import { TENANT_COLORS } from "@/engine/tactical";
 
@@ -145,11 +147,14 @@ export function IntelPanel() {
         <Button variant="ghost" size="icon-sm" className={`rp-refresh${refreshing ? " busy" : ""}`} title={refreshing ? "正在拉取官方排行榜…" : "立即拉取官方排行榜（POST /api/leaderboard/refresh）"} disabled={refreshing} onClick={refreshOfficial}><RotateCw className="rp-refresh-ico" /></Button>
       </div>
 
-      <div id="intelTabs" className="intel-tabs" role="tablist">
-        {([["threat", `威胁排行 ${data?.profiles?.length ?? 0}`], ["beacon", `信标持有 ${data?.beacon_ticks_held?.length ?? 0}`], ["core", `核心摧毁 ${data?.core_destruction_participations?.length ?? 0}`]] as Array<[string, string]>).map(([id, label]) => (
-          <button key={id} data-intel-tab={id} className={tab === id ? "active" : ""} type="button" onClick={() => setTab(id)}>{label}</button>
-        ))}
-      </div>
+      <Tabs value={tab} onValueChange={(v) => v && setTab(v)}>
+        <TabsList id="intelTabs" className="intel-tabs h-auto p-0 gap-[6px] rounded-none bg-transparent">
+          {([["threat", `威胁排行 ${data?.profiles?.length ?? 0}`], ["beacon", `信标持有 ${data?.beacon_ticks_held?.length ?? 0}`], ["core", `核心摧毁 ${data?.core_destruction_participations?.length ?? 0}`]] as Array<[string, string]>).map(([id, label]) => (
+            <TabsTrigger key={id} data-intel-tab={id} value={id}
+              className="px-[11px] py-[5px] text-[10.5px] font-mono rounded-full data-[state=active]:bg-transparent data-[state=active]:ring-0">{label}</TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
       <div className="intel-summary">
         <span className="is-chip"><i className="is-dot ours" />我方在榜 <b>{oursOnBoard}</b></span>
         <span className="is-chip" title={`榜单内 ${metOnBoard} · 榜外 ${Math.max(0, encTotal - metOnBoard)}`}><i className="is-dot met" />遭遇玩家 <b>{encTotal}</b></span>
@@ -157,11 +162,12 @@ export function IntelPanel() {
           <button type="button" className="chip-link" onClick={() => setExpand(!expand)}>{expand ? "收起（前 30）" : `展开全部 ${allProfiles.length}`}</button>
         ) : null}
       </div>
-      <div className="intel-filters" role="group" aria-label="排行榜过滤">
+      <ToggleGroup type="single" value={filter} onValueChange={(v) => v && setFilter(v as Filter)} className="intel-filters" aria-label="排行榜过滤">
         {([["all", "全部"], ["ours", "我方"], ["met", "遭遇"]] as Array<[Filter, string]>).map(([id, label]) => (
-          <button key={id} type="button" className={`chip${filter === id ? " active" : ""}`} onClick={() => setFilter(id)}>{label}</button>
+          <ToggleGroupItem key={id} value={id}
+            className="chip px-[12px] py-[4px] text-[10.5px] font-mono rounded-full border-[var(--border-strong)] data-[state=on]:bg-transparent data-[state=on]:ring-0">{label}</ToggleGroupItem>
         ))}
-      </div>
+      </ToggleGroup>
       <div id="intelBody" className="intel-body">
         {err ? <div className="stream-empty">威胁情报加载失败：{err}</div>
           : !data ? <div className="stream-empty">加载威胁情报…</div>

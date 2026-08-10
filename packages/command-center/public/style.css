@@ -118,9 +118,6 @@
 }
 [data-theme="light"] .side-panel.left { background: rgba(247,247,245,.72); }
 [data-theme="light"] .side-panel.right { background: linear-gradient(180deg, rgba(255,255,255,.94), rgba(247,247,245,.97)); }
-[data-theme="light"] .btn { background: rgba(0,0,0,.04); border-color: var(--border-strong); }
-[data-theme="light"] .btn:hover { background: rgba(0,0,0,.07); border-color: rgba(0,0,0,.35); }
-[data-theme="light"] .btn.primary { background: linear-gradient(180deg, #2a2a2c, #1a1a1c); color: #fafafa; }
 [data-theme="light"] .empire-cell { background: rgba(0,0,0,.04); border-color: var(--border-faint); }
 [data-theme="light"] .empire-cell:hover { background: rgba(0,0,0,.07); }
 [data-theme="light"] .tick-bar { background: rgba(0,0,0,.10); }
@@ -130,8 +127,8 @@
 
 /* ---------- 主题切换平滑过渡（2026-08-09）：UI 层 color/bg/border 0.3s 缓动 ---------- */
 /* Canvas 地图不参与（避免重绘开销）；仅 UI 容器/按钮/卡片平滑切换 */
-#topbar, .side-panel, .side-panel-body, .empire-cell, .badge, .tick-bar, .rb-track,
-.panel, .tenant-card, .btn, .health-chip, .ar-item, .ds-v, .skeleton {
+#topbar, .side-panel, .side-panel-body, .empire-cell, .tick-bar, .rb-track,
+.panel, .tenant-card, .health-chip, .ar-item, .ds-v, .skeleton {
   transition: background-color .3s var(--ease), color .3s var(--ease), border-color .3s var(--ease);
 }
 
@@ -196,24 +193,7 @@ body {
 .top-status { display: flex; align-items: center; gap: 10px; }
 #clock { font-size: 11px; color: var(--text-dim); }
 #dataRoot { font-size: 10px; max-width: 24vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#topbar .badge {
-  font-family: var(--font-mono); font-size: 9px; letter-spacing: .12em;
-  padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border-strong);
-  background: rgba(255,255,255,.05); color: var(--text-dim);
-  transition: all .4s var(--ease); position: relative;
-}
-#topbar .badge.ok { color: var(--green-resource); border-color: rgba(127,216,165,.4); background: rgba(127,216,165,.08); }
-#topbar .badge.ok::before {
-  content: ""; position: absolute; left: 7px; top: 50%; width: 4px; height: 4px; margin-top: -2px;
-  border-radius: 50%; background: var(--green-resource); box-shadow: 0 0 8px rgba(127,216,165,.9);
-  animation: dotPulse 2.2s ease-in-out infinite;
-}
-#topbar .badge.ok { padding-left: 15px; }
 @keyframes dotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
-#topbar .badge.err { color: var(--danger); border-color: rgba(252,86,70,.45); background: rgba(252,86,70,.1); }
-#topbar .btn { min-height: 26px; padding: 0 11px; font-size: 12px; }
-/* 注：#topbar .badge / .btn 规则仍被 TopBar 的 <span class="badge"> / <button class="btn"> 使用
-   （组件迁移未持久化，见对话记录）。原语迁移生效后这些才变死 CSS 可删。 */
 /* ---------- 帝国总览资源条（群星 topbar：每租户 资源/工人/增量 数据格） ---------- */
 .empire-strip { display: flex; align-items: stretch; gap: 4px; }
 .empire-cell {
@@ -253,29 +233,6 @@ body {
   100% { color: inherit; text-shadow: none; }
 }
 .tick-meter.warn .tick-bar i { background: linear-gradient(90deg, rgba(240,136,62,.4), rgba(240,136,62,.95)); box-shadow: 0 0 8px rgba(240,136,62,.55); }
-.badge.wait { color: var(--warn); border-color: rgba(240,136,62,.45); background: rgba(240,136,62,.08); }
-
-/* ---------- 按钮：现代极简（暗底中性线，primary 白底黑字） ---------- */
-.btn {
-  min-height: 34px; padding: 0 15px; border-radius: var(--radius-md);
-  border: 1px solid var(--border-strong); background: rgba(255,255,255,.05);
-  color: var(--text); font-size: 13px; cursor: pointer;
-  font-family: var(--font-sans); font-weight: var(--weight-medium);
-  transition: background .2s ease, border-color .2s ease, transform .18s var(--ease), box-shadow .25s ease;
-  position: relative; white-space: nowrap;
-}
-.btn:hover { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.4); transform: translateY(-1px); box-shadow: 0 0 12px rgba(255,255,255,.1); }
-.btn:active { transform: scale(.97); }
-.btn.primary {
-  background: linear-gradient(180deg, #fafafa, #e8e8e8); color: #14100a; font-weight: var(--weight-semibold); border-color: rgba(255,255,255,.6);
-  box-shadow: 0 1px 3px rgba(0,0,0,.5), inset 0 1px rgba(255,255,255,.25), 0 0 10px rgba(255,255,255,.14);
-}
-.btn.primary:hover { background: linear-gradient(180deg, #ffffff, #d9d9d9); box-shadow: 0 2px 14px rgba(255,255,255,.4); border-color: #ffffff; }
-.btn.primary:active { background: linear-gradient(180deg, #e0e0e0, #cccccc); }
-.btn.active { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.45); color: #fff; box-shadow: 0 0 10px rgba(255,255,255,.1); }
-.btn.ghost { border-color: transparent; background: transparent; color: var(--text-dim); min-height: 28px; }
-.btn.ghost:hover { background: rgba(255,255,255,.08); color: #fff; box-shadow: none; }
-.btn:focus-visible { outline: 2px solid rgba(255,255,255,.6); outline-offset: 2px; }
 
 /* ---------- 布局（三栏：左栏 | 地图 | 右栏，左右可折叠窄条） ---------- */
 #layout { flex: 1; min-height: 0; display: flex; align-items: stretch; }
@@ -344,8 +301,8 @@ body {
   transition: transform .28s var(--ease);
 }
 .rp-tab:hover { color: var(--text-dim); background: rgba(255,255,255,.03); border-radius: 6px 6px 0 0; }
-.rp-tab.active { color: #fff; }
-.rp-tab.active::after { transform: scaleX(1); }
+.rp-tab[data-state="active"] { color: #fff; }
+.rp-tab[data-state="active"]::after { transform: scaleX(1); }
 .rp-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* 面板内容：进入微动效 + 自适应滚动 */
@@ -527,7 +484,6 @@ body {
 .toggles input:checked { border-color: rgba(255,255,255,.5); background: rgba(255,255,255,.12); }
 .toggles input:checked::before { transform: scale(1); }
 .view-switch { display: flex; gap: 8px; margin-top: 10px; }
-.view-switch .btn { flex: 1; min-height: 32px; font-size: 12px; }
 
 /* ---------- 地图（flex 中间栏） ---------- */
 #mapPane {
@@ -692,8 +648,8 @@ body {
   background: #fff; border-radius: 2px; transform: scaleX(0); transform-origin: center; transition: transform .3s var(--ease);
 }
 .tabs button:hover { color: var(--text-dim); }
-.tabs button.active { color: #fff; background: rgba(255,255,255,.05); border-radius: 6px 6px 0 0; }
-.tabs button.active::after { transform: scaleX(1); }
+.tabs button[data-state="active"] { color: #fff; background: rgba(255,255,255,.05); border-radius: 6px 6px 0 0; }
+.tabs button[data-state="active"]::after { transform: scaleX(1); }
 /* 标签页决策计数徽标 */
 .tab-badge {
   display: inline-flex; align-items: center; justify-content: center;
@@ -704,7 +660,7 @@ body {
   transition: background .2s ease, color .2s ease;
 }
 .tabs button:hover .tab-badge { color: var(--text-dim); }
-.tabs button.active .tab-badge { color: #fff; background: rgba(255,255,255,.16); }
+.tabs button[data-state="active"] .tab-badge { color: #fff; background: rgba(255,255,255,.16); }
 #streamBody { flex: 1; overflow-y: auto; padding: 8px 14px; scroll-behavior: smooth; transition: opacity .3s ease, transform .4s var(--ease), visibility 0s linear .4s; }
 .stream-line {
   display: flex; align-items: baseline; gap: 10px;
@@ -760,7 +716,6 @@ body {
 .ir-stale { color: var(--warn); font-weight: 600; margin-left: 4px; cursor: help; }
 .shop-cookie-row { display: flex; gap: 8px; }
 .shop-cookie-row .input { flex: 1; }
-.shop-cookie-row .btn { flex: none; }
 .shop-account {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   padding: 8px 12px; border-radius: var(--radius-md);
@@ -844,7 +799,7 @@ body {
   padding: 5px 11px; border-radius: 999px; cursor: pointer; transition: all .2s var(--ease);
 }
 .intel-tabs button:hover { color: var(--text); border-color: rgba(255,255,255,.3); }
-.intel-tabs button.active { color: #fff; background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.35); }
+.intel-tabs button[data-state="active"] { color: #fff; background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.35); }
 /* 摘要行：我方/遭遇计数 + 展开按钮 */
 .intel-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .is-chip {
@@ -871,13 +826,13 @@ body {
   padding: 4px 12px; border-radius: 999px; cursor: pointer; transition: all .2s var(--ease);
 }
 .intel-filters .chip:hover { color: var(--text); border-color: rgba(255,255,255,.3); }
-.intel-filters .chip.active { color: #fff; background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.4); }
+.intel-filters .chip[data-state="on"] { color: #fff; background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.4); }
 /* 事迹筛选 chips（StreamPane deeds tab，2026-08-08）：折叠/只看类别/星级下限 */
 .deeds-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 6px 10px 2px; border-bottom: 1px solid var(--border-faint); }
 .deeds-filters .df-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; color: var(--text-faint); margin-right: 2px; }
 .deeds-filters .chip { appearance: none; background: transparent; border: 1px solid var(--border-strong); color: var(--text-dim); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .04em; border-radius: 999px; padding: 1px 7px; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease; }
 .deeds-filters .chip:hover { color: var(--text); border-color: rgba(255,255,255,.3); }
-.deeds-filters .chip.active { color: #fff; background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.4); }
+.deeds-filters .chip[data-state="on"] { color: #fff; background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.4); }
 .intel-body { display: flex; flex-direction: column; gap: 3px; padding-right: 2px; }
 .intel-row {
   display: flex; align-items: center; gap: 10px;
@@ -1809,7 +1764,6 @@ body {
   border-radius: var(--radius-sm);
 }
 .tenant-card:focus-visible,
-.btn:focus-visible,
 .tab:focus-visible,
 [role="button"]:focus-visible {
   outline-offset: 1px;
@@ -1841,7 +1795,6 @@ body {
   #dataRoot { display: none; }
   .empire-strip { display: none; }
   .tick-meter .tick-label { display: none; }
-  #topbar .btn { padding: 0 8px; font-size: 11px; min-height: 24px; }
   body { font-size: 13px; }
 }
 .map-drawer-toggle { display: none; }
@@ -1853,7 +1806,6 @@ body {
 }
 .empty-state .empty-icon { font-size: 20px; opacity: .6; }
 .empty-state .empty-hint { font-size: 11px; }
-.empty-state .btn { margin-top: 4px; }
 
 /* ---------- prefers-reduced-motion 已有，补 skeleton/动画遵守 ---------- */
 @media (prefers-reduced-motion: reduce) {

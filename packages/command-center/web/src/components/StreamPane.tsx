@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useEngine, getEngine } from "../lib/bridge";
 
 const TENANTS = ["t1", "t2", "t3", "t4"];
@@ -204,20 +206,23 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
           </span>
         )}
       </div>
-      <div id="streamTabs" className="tabs" role="tablist">
-        {[{ id: "all", label: "统一决策" }, ...TENANTS.map((t) => ({ id: t, label: t.toUpperCase() })), { id: "events", label: "事件" }, { id: "deeds", label: "事迹" }].map((tb) => {
-          const n = tb.id === "deeds"
-            ? journal?.deeds?.length ?? 0
-            : tb.id === "events"
-            ? TENANTS.reduce((a, t) => a + (payload?.events[t]?.length ?? 0), 0)
-            : (prefs.quiet ? kept : rows).filter((r) => tb.id === "all" || r.tenant === tb.id).length;
-          return (
-            <button key={tb.id} data-tab={tb.id} className={tab === tb.id ? "active" : ""} role="tab" onClick={() => setPrefs({ tab: tb.id })}>
-              {tb.label}{n > 0 ? <span className="tab-badge">{Math.min(n, 999)}</span> : null}
-            </button>
-          );
-        })}
-      </div>
+      <Tabs value={tab} onValueChange={(v) => setPrefs({ tab: v })}>
+        <TabsList id="streamTabs" className="tabs h-auto gap-[2px] px-[14px] pt-[8px] pb-0 rounded-none bg-transparent">
+          {[{ id: "all", label: "统一决策" }, ...TENANTS.map((t) => ({ id: t, label: t.toUpperCase() })), { id: "events", label: "事件" }, { id: "deeds", label: "事迹" }].map((tb) => {
+            const n = tb.id === "deeds"
+              ? journal?.deeds?.length ?? 0
+              : tb.id === "events"
+              ? TENANTS.reduce((a, t) => a + (payload?.events[t]?.length ?? 0), 0)
+              : (prefs.quiet ? kept : rows).filter((r) => tb.id === "all" || r.tenant === tb.id).length;
+            return (
+              <TabsTrigger key={tb.id} data-tab={tb.id} value={tb.id}
+                className="gap-0 px-[14px] py-[9px] pb-[10px] rounded-none data-[state=active]:bg-transparent data-[state=active]:ring-0">
+                {tb.label}{n > 0 ? <span className="tab-badge">{Math.min(n, 999)}</span> : null}
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
+      </Tabs>
       <div id="streamBody" ref={bodyRef} onScroll={onScroll}>
         {tab === "events" ? (
           eventRows.length === 0 ? (
@@ -241,15 +246,21 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
           )
         ) : tab === "deeds" ? (
           <>
-            <div className="deeds-filters" role="group" aria-label="事迹筛选">
+            <div className="deeds-filters">
               <span className="df-label">类别</span>
-              {([["all", "全部"], ["milestone", "里程碑"], ["harvest", "采集"], ["deposit", "交付"], ["spawn", "产兵"], ["death", "阵亡"], ["conflict", "冲突"], ["economy", "经济"], ["other", "其他"]] as Array<[string, string]>).map(([id, label]) => (
-                <button key={id} type="button" className={`chip${deedCat === id ? " active" : ""}`} onClick={() => setDeedCat(id)}>{label}</button>
-              ))}
+              <ToggleGroup type="single" value={deedCat} onValueChange={(v) => v && setDeedCat(v)} className="inline-flex flex-wrap items-center gap-[5px]" aria-label="事迹类别">
+                {([["all", "全部"], ["milestone", "里程碑"], ["harvest", "采集"], ["deposit", "交付"], ["spawn", "产兵"], ["death", "阵亡"], ["conflict", "冲突"], ["economy", "经济"], ["other", "其他"]] as Array<[string, string]>).map(([id, label]) => (
+                  <ToggleGroupItem key={id} value={id}
+                    className="chip px-[7px] py-[1px] text-[10.5px] font-mono rounded-full border-[var(--border-strong)] data-[state=on]:bg-transparent data-[state=on]:ring-0">{label}</ToggleGroupItem>
+                ))}
+              </ToggleGroup>
               <span className="df-label">星级</span>
-              {([[0, "全部"], [2, "★2+"], [3, "★3+"]] as Array<[number, string]>).map(([v, label]) => (
-                <button key={v} type="button" className={`chip${deedStar === v ? " active" : ""}`} onClick={() => setDeedStar(v)}>{label}</button>
-              ))}
+              <ToggleGroup type="single" value={String(deedStar)} onValueChange={(v) => v && setDeedStar(Number(v))} className="inline-flex flex-wrap items-center gap-[5px]" aria-label="事迹星级">
+                {([[0, "全部"], [2, "★2+"], [3, "★3+"]] as Array<[number, string]>).map(([v, label]) => (
+                  <ToggleGroupItem key={v} value={String(v)}
+                    className="chip px-[7px] py-[1px] text-[10.5px] font-mono rounded-full border-[var(--border-strong)] data-[state=on]:bg-transparent data-[state=on]:ring-0">{label}</ToggleGroupItem>
+                ))}
+              </ToggleGroup>
             </div>
             {(journal?.deeds?.length ?? 0) === 0 ? (
               <div className="stream-empty">{journal ? "暂无联盟事迹（30s 刷新）" : "加载联盟事迹…"}</div>
