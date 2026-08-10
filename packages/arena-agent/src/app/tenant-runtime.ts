@@ -1380,6 +1380,7 @@ export async function runTenant(
           failedEventCounts: stallFailedEventCounts,
           militaryCount: stallMilitaryCount,
           shotHitCount: stallShotHitCount,
+          coreState: outcomeRecord.coreState ?? null,
         });
         for (const event of stallEvents) {
           appendStallEvent(event);

@@ -712,7 +712,6 @@ export class SafetyPlanner {
    *  敌 Core 恰在缝里（t1 敌 Core 距 Core ~15 格、角度 -62°，NE/NW 环线差 8 格）
    *  → 军事永不出视野接敌。改沿环扫描（到达八分点后 direction+1 扫圆周，
    *  扫满 8 点进下一环）+ 时间预算（同一目标 >SCAVENGE_HOLD_TICKS 未到达强制换向）。 */
-  private scavengeSweep = new Map<string, { ring: number; reached: number; lastReach: number }>();
   /** 敌情狩猎清扫状态（2026-08-07）：huntArriveAt = 单位进入某基地清扫圈的起始
    *  tick（unitId → {key, tick}）；huntSweptAt = 基地已清扫 tick（key → tick，
    *  目标 lastSeenTick > sweptAt 视为"清扫后重新发现"，恢复狩猎）。 */
