@@ -34,8 +34,14 @@ import { fileURLToPath } from "node:url";
 /** 帧槽总字节数（16MB：PlayerState JSON 上限远低于此，留足余量）。 */
 const FRAME_CAPACITY = 16 * 1024 * 1024;
 
-/** 单 tick 决策超时（对齐 Rust 线 DECISION_TIMEOUT_MS=10s——榜二决策 ms 级）。 */
-export const DECISION_TIMEOUT_MS = 10_000;
+/** 单 tick 决策超时（对齐 Rust 线 DECISION_TIMEOUT_MS=10s——榜二决策 ms 级）。
+ *  弱机（2C4G worker 10 桥并发首 tick 加载）可经 env
+ *  `ARENA_BRIDGE_DECISION_TIMEOUT_MS` 放大（分布式部署用，默认不变）。
+ *  非法值（NaN/<1s）回落默认。 */
+export const DECISION_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.ARENA_BRIDGE_DECISION_TIMEOUT_MS ?? 10_000);
+  return Number.isFinite(raw) && raw >= 1000 ? raw : 10_000;
+})();
 
 const FLAG_IDLE = 0;
 const FLAG_BUSY = 1;
@@ -47,7 +53,8 @@ export interface SyncBridgeConfig {
   readonly python: string;
   /** 桥接脚本路径（opponent-bridge.py）。 */
   readonly bridgeScript: string;
-  /** 传给桥接脚本的额外参数（--farmer-repo / --sdk-repo / --state-slot）。 */
+  /** 传给桥接脚本的额外参数（--sdk-repo / --state-slot；--farmer-repo 已于
+   *  2026-08-10 废弃——bridge 从 python-agents.json 注册表解析仓库）。 */
   readonly bridgeArgs: readonly string[];
   /** L-C config-injection：spawn 桥进程时附加的环境变量（ARENA_CFG_* 等）。 */
   readonly env?: Record<string, string>;
@@ -189,7 +196,9 @@ export class PersistentSyncBridge {
  */
 export function createReferenceBridge(options: {
   readonly python?: string;
-  readonly farmerRepoDir: string;
+  /** 兼容占位（2026-08-10 死参数清理）：历史调用方仍传；bridge 已从
+   *  python-agents.json 注册表解析仓库，此字段不再传递到 --farmer-repo。 */
+  readonly farmerRepoDir?: string;
   readonly sdkRepoDir?: string;
   readonly stateSlot?: string;
   readonly bridgeScript?: string;
@@ -211,12 +220,7 @@ export function createReferenceBridge(options: {
   const bridgeScript =
     options.bridgeScript ??
     fileURLToPath(new URL("../../../scripts/opponent-bridge.py", import.meta.url));
-  const bridgeArgs = [
-    "--state-slot",
-    stateSlot,
-    "--farmer-repo",
-    options.farmerRepoDir,
-  ];
+  const bridgeArgs = ["--state-slot", stateSlot];
   // 只在非默认对手时显式传 --agent：默认 farmer 保持与旧 bridge 脚本 wire 兼容。
   if (options.agent !== undefined && options.agent !== "farmer") {
     bridgeArgs.push("--agent", options.agent);
