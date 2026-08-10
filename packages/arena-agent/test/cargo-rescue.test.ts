@@ -176,6 +176,75 @@ test("cargo-rescue：仅 1 个满载 worker cargo 不变 → 不触发靠拢（m
     "单个 worker cargo 不变不应触发 Core 靠拢（可能是正常排队）");
 });
 
+// ===== GAP 5.4：迁移死循环修复 =====
+
+test("GAP 5.4：Core MOVING 期间满载 worker 持货不算被堵（不清零→stuck 不累积）", () => {
+  const planner = new SafetyPlanner(RESCUE_CONFIG);
+  const w1 = worker("w1", [8, 0], 1);
+  const w2 = worker("w2", [-8, 0], 1);
+  // tick 1-7：Core NORMAL + resourceSpace=0 → stuck 累积（旧行为，触发靠拢前置）
+  for (let tick = 1; tick <= 7; tick += 1) {
+    planner.decide({
+      state: makeState({ tick, workers: [w1, w2], resourceSpace: 0 }),
+    });
+  }
+  // tick 8：触发靠拢 → Core MOVING（迁移开始）
+  const plan8 = planner.decide({
+    state: makeState({ tick: 8, workers: [w1, w2], resourceSpace: 0 }),
+  });
+  assert.equal(plan8.intents.core, "cargo_blocked_self_heal");
+  // tick 9-12：Core MOVING（引擎推进中）→ GAP 5.4 清空 stuck → 迁移结束回到
+  // NORMAL 后不会因为"迁移期无法卸货"而立即再次触发靠拢（死循环断裂）
+  for (let tick = 9; tick <= 12; tick += 1) {
+    planner.decide({
+      state: makeState({ tick, workers: [w1, w2], resourceSpace: 0, coreState: "MOVING" }),
+    });
+  }
+  // tick 13：Core 回到 NORMAL——stuck 记录已被 MOVING 期清空，6 tick 内不会
+  // 立即重触发（迁移循环断裂）；但 resourceSpace=0 让 cargo 继续不变，6 tick
+  // 后会重新累积（真实阻塞仍可被救——只是不再自激循环）
+  for (let tick = 13; tick <= 17; tick += 1) {
+    const plan = planner.decide({
+      state: makeState({ tick, workers: [w1, w2], resourceSpace: 0 }),
+    });
+    assert.notEqual(plan.intents.core, "cargo_blocked_self_heal",
+      `tick ${tick} MOVING 期后 stuck 应已清空，不立即重触发（实际 ${plan.intents.core}）`);
+  }
+});
+
+test("GAP 5.4：满载 worker 距 Core >20 → 不触发靠拢（远归途 worker 非被堵）", () => {
+  const planner = new SafetyPlanner(RESCUE_CONFIG);
+  // worker 距 Core 25（> CARGO_RESCUE_MAX_DISTANCE=20）——归途采集者，不是被堵
+  const w1 = worker("w1", [25, 0], 1);
+  const w2 = worker("w2", [-25, 0], 1);
+  for (let tick = 1; tick <= 7; tick += 1) {
+    planner.decide({
+      state: makeState({ tick, workers: [w1, w2], resourceSpace: 0 }),
+    });
+  }
+  const plan = planner.decide({
+    state: makeState({ tick: 8, workers: [w1, w2], resourceSpace: 0 }),
+  });
+  assert.notEqual(plan.intents.core, "cargo_blocked_self_heal",
+    "远距满载 worker 不应触发 Core 靠拢（归途非被堵）");
+});
+
+test("GAP 5.4：满载 worker 距 Core 15（≤20）→ 仍触发靠拢（近距离阻塞可救）", () => {
+  const planner = new SafetyPlanner(RESCUE_CONFIG);
+  const w1 = worker("w1", [15, 0], 1);
+  const w2 = worker("w2", [-15, 0], 1);
+  for (let tick = 1; tick <= 7; tick += 1) {
+    planner.decide({
+      state: makeState({ tick, workers: [w1, w2], resourceSpace: 0 }),
+    });
+  }
+  const plan = planner.decide({
+    state: makeState({ tick: 8, workers: [w1, w2], resourceSpace: 0 }),
+  });
+  assert.equal(plan.intents.core, "cargo_blocked_self_heal",
+    "20 格内满载 worker 仍应触发靠拢（近距离阻塞）");
+});
+
 test("cargo-rescue：cargo 变化（卸货成功）→ 重置 stuck 计数 → 不触发靠拢", () => {
   const planner = new SafetyPlanner(RESCUE_CONFIG);
   const w1 = worker("w1", [0, 0], 1); // 在核心格 → 会 DEPOSIT → cargo 变化

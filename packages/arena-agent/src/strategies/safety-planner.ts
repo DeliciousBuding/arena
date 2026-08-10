@@ -391,6 +391,13 @@ const CARGO_RESCUE_LOGISTICS_HOLD_RADIUS = 8;
 const CARGO_RESCUE_FAR_RANGE_THRESHOLD = 12;
 const CARGO_RESCUE_FAR_STALL_TICKS = 60;
 const CARGO_RESCUE_FAR_COOLDOWN_TICKS = 8;
+/** GAP 5.4（2026-08-10，t1 生产实证 tick 83922）：cargo rescue 触发目标距离上限。
+ *  超过该距离的满载 worker 是"归途中的采集者"（cargo 在返航途中天然不变，
+ *  不是被堵），Core 追它只会把自己拖进无限迁移循环（t1 实证：核心每 8 tick
+ *  迁移 1 格连续 30+ tick，经济冻结在 res=100）。只有距 Core 近的 worker 才
+ *  可能是真卸货阻塞（入口满/路径被堵）。20 = 覆盖 FAR_RANGE 场景（原 26 格
+ *  目标设计意图）但排除 39+ 平均返航距离的假阳性。 */
+const CARGO_RESCUE_MAX_DISTANCE = 20;
 const CARGO_QUEUE_ENTRY_LIMIT = 2;
 /** near_core_deposit 锁半径（Manhattan，竞品 arena_hero_strategy.py roles.py:158
  *  `dist_core <= 4`）：满载 worker 距 Core ≤ 该值时禁止因邻接敌改 RETREAT——
@@ -2036,6 +2043,15 @@ export class SafetyPlanner {
       // 清理死亡/已卸货 worker 的 stuck 记录
       for (const unitId of this.cargoStuckSince.keys()) {
         if (!aliveCargoWorkers.has(unitId)) this.cargoStuckSince.delete(unitId);
+      }
+      // GAP 5.4 fix（2026-08-10，t1 生产实证 tick 83922）：Core MOVING 期间
+      // 满载 worker 持货待命是设计行为（GAP 3.2 语义，迁移期不 DEPOSIT）——
+      // cargo 不变≠被堵。旧版迁移期继续累积 stuck → cargoRescue 触发 → Core
+      // 追远 worker → 更长时间 MOVING → 更多 stuck → **无限迁移循环**（t1
+      // 实证：核心每 8 tick 迁移 1 格连续 30+ tick，经济冻结 res=100）。
+      // 迁移期清空 stuck 记录（真实近核阻塞在 NORMAL 后 6 tick 内会重新累积）。
+      if (state.core?.state === "MOVING") {
+        this.cargoStuckSince.clear();
       }
       // 推进/重置 stuck 计数
       const previousCargo = this.cargoStuckCargoSnapshot;
@@ -4822,9 +4838,14 @@ export class SafetyPlanner {
           //   让 Core 每 40 tick 移 1 格，26 格需 1040 tick 永不到达。远距离
           //   stall 超时检测用实例字段 cargoSelfHealStallTicks（下 tick 超时检测读它）。
           const targetDistance = manhattan(target.position, core.position);
+          // GAP 5.4 fix（2026-08-10，t1 生产实证 tick 83922）：超过
+          // CARGO_RESCUE_MAX_DISTANCE（20）的满载 worker 是"归途中的采集者"
+          // （cargo 在返航途中天然不变），不是卸货被堵——Core 追它只会无限
+          // 迁移（t1 实证：worker 平均距核 39，核心每 8 tick 追 1 格连续
+          // 30+ tick，经济冻结）。超过上限不触发 rescue，等 worker 自己回来。
           if (targetDistance <= CARGO_RESCUE_MIN_DISTANCE) {
             // 近距离不迁移：fall through 到 heal/repair/spawn
-          } else {
+          } else if (targetDistance <= CARGO_RESCUE_MAX_DISTANCE) {
             const progressingNearby = state.workers.some(
               (w) =>
                 w.cargo > 0 &&
