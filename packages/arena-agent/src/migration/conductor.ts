@@ -298,15 +298,9 @@ function corridorAuditOptions(config: MigrationRuntimeConfig): CorridorAuditOpti
 }
 
 /**
- * 障碍集 = 静态地形障碍 + 已知资源格 + 活跃敌核格。
- *
- * 资源格**永久设障**（2026-08-10 修复）：规则表 RESOURCE | Core may migrate:
- * no——资源格对 Core 迁入是静态不可通行地形。旧实现按 4-8 tick 新鲜窗口
- * 设障，陈旧资源目击 = "当可走" → 路径一路规划进资源格，核心走到格前
- * START_MOVE 被引擎拒（CORE_DESTINATION_TERRAIN_BLOCKED，t1 生产实证 139
- * 次 + REPLAN 循环停滞）。资源格可能已被采掉（=EMPTY 可走），但对迁移而言
- * "宁可绕路、不可撞墙卡死核心"——绕路代价 ≪ TERRAIN_BLOCKED 停滞代价。
- * 静态障碍永久有效；活跃敌核格（fresh 窗口内）维持设障。
+ * 障碍集 = 静态地形障碍 + 新鲜资源格 + 活跃敌核格（裁决：陈旧目击不设障
+ * ——§3.2"超过 4-8 tick 的数据不作为'现在还有矿'的强证据"，资源 4 tick
+ * refill；静态障碍永久有效）。
  */
 function collectObstacles(
   survey: ConductorStepInput["survey"],
@@ -317,7 +311,9 @@ function collectObstacles(
     obstacles.push([obstacle.x, obstacle.y]);
   }
   for (const resource of survey.resources) {
-    obstacles.push([resource.x, resource.y]);
+    if (tick - resource.lastSeenTick <= MIGRATION_RESOURCE_FRESH_WINDOW) {
+      obstacles.push([resource.x, resource.y]);
+    }
   }
   for (const enemy of survey.enemyCores) {
     if (tick - enemy.lastSeenTick <= MIGRATION_ENEMY_ACTIVE_WINDOW) {
@@ -1131,15 +1127,6 @@ function pickStarveTarget(
   const surveyInput: TargetSurveyInput = {
     resources: input.survey.resources,
     enemyCores: input.survey.enemyCores,
-    // 地形硬门槛（2026-08-10 修复）：候选目标自身在障碍/资源格上 = Core 无法
-    // 迁入该格（规则表 RESOURCE/OBSTACLE | Core may migrate: no）——饿死兜底
-    // 候选是已知矿格（资源格），旧实现一路规划进资源格 → 最后一步必被引擎拒
-    // （CORE_DESTINATION_TERRAIN_BLOCKED，t1 生产实证 139 次）。障碍+资源全量
-    // 传入，scoreTarget 硬性拒绝。
-    obstacleCells: [
-      ...(input.survey.obstacles ?? []).map((cell): readonly [number, number] => [cell.x, cell.y]),
-      ...input.survey.resources.map((cell): readonly [number, number] => [cell.x, cell.y]),
-    ],
     lastTarget: lastTarget === undefined ? null : { x: lastTarget.x, y: lastTarget.y },
   };
   const selected = selectTarget(candidates, surveyInput, targetConfigWithCommitment, input.tick);
