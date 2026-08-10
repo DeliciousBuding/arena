@@ -113,6 +113,9 @@ if (DATA_ROOT === undefined) throw new Error(`--data-root or ARENA_DATA_ROOT req
 
 const ROSTER_SIZE = Math.min(PLAYERS, 10); // 与 run-arena-report rosterSize 一致（条目数上限）
 
+/** CPU 甜点并发（自动模式下限基准）。 */
+const CPU_OPTIMAL = Math.max(1, Math.floor((totalmem() / (1024 ** 3)) / 8));
+
 /* ------------------------------------------------------------------ *
  * runId / 目录契约（与 run-arena-report 逐字一致）
  * ------------------------------------------------------------------ */
@@ -313,12 +316,18 @@ async function main(): Promise<number> {
   const startedAt = Date.now();
   let lastHeartbeat = 0;
   let lastFinishedAt: number | null = null;
+  // 动态并发（设计 §3.1）：内存充裕升、连续门控降
+  let targetConcurrency = CONCURRENCY;
+  let gateHits = 0;
 
   const progress = () => {
     const finished = done + failed;
     const remaining = total - finished;
     const estimate = estimator.estimateSeconds();
-    const effectiveConcurrency = Math.max(1, Math.min(CONCURRENCY, Math.max(1, running.size + Math.max(0, queue.length > 0 ? 1 : 0))));
+    const effectiveConcurrency = Math.max(
+      1,
+      Math.min(targetConcurrency, Math.max(1, running.size + (queue.length > 0 ? 1 : 0))),
+    );
     const etaSeconds = (remaining / effectiveConcurrency) * estimate;
     const eta = new Date(Date.now() + etaSeconds * 1000);
     const finishedAt = lastFinishedAt ?? startedAt;
@@ -370,11 +379,17 @@ async function main(): Promise<number> {
   const children = new Set<ChildProcess>();
 
   const schedule = () => {
-    while (running.size < CONCURRENCY && queue.length > 0) {
+    while (running.size < targetConcurrency && queue.length > 0) {
       // 内存门控只拦截"有场在跑"时的追加并发（等场次完成释放内存）；
       // 场上全空时强制启动（否则无场可释放，永远死等）。
       if (freeMemoryGb() < MAX_FREE_GB && running.size > 0) {
-        log("warn", `内存空闲 ${Math.round(freeMemoryGb() * 10) / 10}GB < ${MAX_FREE_GB}GB，暂缓启动新场`);
+        gateHits += 1;
+        log("warn", `内存空闲 ${Math.round(freeMemoryGb() * 10) / 10}GB < ${MAX_FREE_GB}GB，暂缓启动新场（连续 ${gateHits} 次）`);
+        if (gateHits >= 3 && targetConcurrency > 1) {
+          targetConcurrency -= 1;
+          gateHits = 0;
+          log("warn", `动态并发：连续门控，降至 ${targetConcurrency}`);
+        }
         return;
       }
       const job = queue.shift()!;
@@ -390,6 +405,12 @@ async function main(): Promise<number> {
           lastFinishedAt = Date.now();
           job.status = "done";
           job.elapsedMs = Math.round(elapsedSeconds * 1000);
+          // 动态并发：内存充裕且场次满负荷时尝试升并发（上限 CPU 甜点）
+          if (running.size >= targetConcurrency && targetConcurrency < CPU_OPTIMAL && freeMemoryGb() >= MAX_FREE_GB + 3) {
+            targetConcurrency += 1;
+            log("info", `动态并发：内存充裕（${Math.round(freeMemoryGb() * 10) / 10}GB），升至 ${targetConcurrency}`);
+          }
+          gateHits = 0;
           log(
             "info",
             `完成 ${job.scenario} seed=${job.seed}（${Math.round(elapsedSeconds)}s，第 ${job.attempts} 次尝试）` +
