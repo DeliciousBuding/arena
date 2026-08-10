@@ -419,25 +419,26 @@ async function main(): Promise<number> {
         });
     }
     if (running.size === 0 && queue.length === 0 && done + failed === total) {
+      resolveFinish?.();
       void finish();
     }
   };
 
   let finished = false;
-  let finishPromise: Promise<void> | null = null;
+  let resolveFinish: (() => void) | null = null;
+  const finishedPromise = new Promise<void>((resolvePromise) => {
+    resolveFinish = resolvePromise;
+  });
   const finish = () => {
-    if (finishPromise !== null) return finishPromise;
-    finishPromise = (async () => {
-      finished = true;
-      const elapsed = (Date.now() - startedAt) / 1000;
-      log("info", `跑批结束：${done} 场完成，${failed} 场失败，${retried} 次重试，耗时 ${formatDuration(elapsed)}`);
-      writeProgress();
-      if (failed > 0) {
-        log("warn", `存在失败场次（${failed}），merge 将带 errors 汇总`);
-      }
-      await mergeAndReport();
-    })();
-    return finishPromise;
+    if (finished) return;
+    finished = true;
+    const elapsed = (Date.now() - startedAt) / 1000;
+    log("info", `跑批结束：${done} 场完成，${failed} 场失败，${retried} 次重试，耗时 ${formatDuration(elapsed)}`);
+    writeProgress();
+    if (failed > 0) {
+      log("warn", `存在失败场次（${failed}），merge 将带 errors 汇总`);
+    }
+    void mergeAndReport();
   };
 
   // Ctrl+C 优雅退出：杀全部子进程，已完成场次已落盘
@@ -464,7 +465,9 @@ async function main(): Promise<number> {
   }, 15_000);
 
   schedule();
-  await finishPromise;
+  log("info", `调度已启动：running=${running.size} queue=${queue.length}`);
+  await finishedPromise;
+  log("info", "全部场次结束，进入汇总");
   clearInterval(heartbeatTimer);
   return 0; // 失败场次已在 errors 中呈现，退出码统一 0
 }
