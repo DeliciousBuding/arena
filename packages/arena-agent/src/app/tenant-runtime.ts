@@ -90,6 +90,16 @@ export const RULES_VERSION = "v0.14";
  *  MacroPolicy 周期）是"足够确认异常、又不会频繁误报"的折中。 */
 export const STALL_WARNING_TICKS = 16;
 
+/** 审计 SR1（2026-08-10）：migration_stall 恢复时抑制 overlay START_MOVE
+ *  的窗口——迁移路径不可行（START_FAILED 反复）时停止无效尝试，给外部
+ *  conductor 重写计划文件的时间。与 migrationMoveSuppressedUntilTick 配合。 */
+const STALL_MIGRATION_HOLD_TICKS = 40;
+/** 审计 SR1（2026-08-10）：spawn_stall 恢复时强制 worker 让位窗口——
+ *  核心格被满载 worker 占导致 CORE_SPAWN_FAILED，forceWorkerYield 窗口内
+ *  产兵让位分支无条件启用（不依赖 config.spawnYield）。12 tick 覆盖
+ *  一次让位移动 + 卸货。 */
+const STALL_SPAWN_YIELD_TICKS = 12;
+
 /** 威胁画像热刷新间隔（2026-08-08）：leaderboard 快照由外部计划任务每 15 分钟
  *  拉取（ArenaLeaderboardIntel → docs/progress/leaderboard-intel.py），四线每 5
  *  分钟重读一次（间隔 < 快照间隔，保证拉取后 5 分钟内生效；内容不变零抖动）。 */
@@ -487,6 +497,10 @@ export async function runTenant(
     // policy 层感知（低频策略 prompt 摘要）；commandState 告知策略层当前指挥状态。
     const stallDetector = new StallDetector();
     const stallRecovery = new StallRecovery();
+    // 审计 SR1（2026-08-10）：migration_stall 恢复窗口——抑制 overlay 的
+    // START_MOVE（迁移路径不可行时继续发只会反复 START_FAILED；外部
+    // conductor 重写计划文件后自动恢复）。
+    let migrationMoveSuppressedUntilTick = 0;
     // WorkerLivenessTracker 与 StallDetector 分层：前者按 unitId 抓局部假活/振荡并
     // 做 targeted recovery；后者继续负责半数/全租户经济停摆与全局恢复。
     const workerLiveness = new WorkerLivenessTracker();
@@ -1455,6 +1469,13 @@ export async function runTenant(
               break;
             }
             case "trigger_migration_replan":
+              // 审计 SR1（2026-08-10）：迁移路径不可行（START_FAILED 反复）时
+              // 不能只记遥测——抑制后续 START_MOVE 直到迁移计划被外部重写
+              // （conductor 重规划后文件 revision 变化，overlay 自动恢复）。
+              migrationMoveSuppressedUntilTick = Math.max(
+                migrationMoveSuppressedUntilTick,
+                outcome.tick + STALL_MIGRATION_HOLD_TICKS,
+              );
               appendJsonlLine(
                 join(dirs.telemetryDir, "runtime.jsonl"),
                 JSON.stringify(sanitizeValue({
@@ -1463,10 +1484,17 @@ export async function runTenant(
                   tick: outcome.tick,
                   telemetryType: "stall_recovery_side_effect",
                   sideEffect: "trigger_migration_replan",
+                  suppressUntilTick: migrationMoveSuppressedUntilTick,
                 })),
               );
               break;
             case "trigger_worker_yield":
+              // 审计 SR1（2026-08-10）：spawn_stall = 核心格被满载 worker 占用
+              // 导致 CORE_SPAWN_FAILED。真实干预 = 强制让位窗口（不依赖
+              // config.spawnYield 开关），让核心格/邻格 worker 让位卸货。
+              if (planner instanceof SafetyPlanner) {
+                planner.forceWorkerYield(outcome.tick + STALL_SPAWN_YIELD_TICKS);
+              }
               appendJsonlLine(
                 join(dirs.telemetryDir, "runtime.jsonl"),
                 JSON.stringify(sanitizeValue({
@@ -1475,6 +1503,7 @@ export async function runTenant(
                   tick: outcome.tick,
                   telemetryType: "stall_recovery_side_effect",
                   sideEffect: "trigger_worker_yield",
+                  yieldUntilTick: outcome.tick + STALL_SPAWN_YIELD_TICKS,
                 })),
               );
               break;
@@ -1627,6 +1656,13 @@ export async function runTenant(
           planActive: result.active,
         });
         let assistPlan = result.plan;
+        // 审计 SR1（2026-08-10）：migration_stall 恢复窗口内抑制 START_MOVE
+        // ——迁移路径不可行（START_FAILED 反复）时停止无效尝试，给外部
+        // conductor 重写计划文件的时间（重写后 overlay 自动恢复）。优先级
+        // 高于手动窗口（恢复期不应尝试迁移）。
+        if (state.tick <= migrationMoveSuppressedUntilTick && assistPlan.coreAction?.type === "START_MOVE") {
+          assistPlan = { ...assistPlan, coreAction: null };
+        }
         // 手动窗口抑制（§4-E）：用户手操核心方向时 planner 不抢方向（START_MOVE → null）。
         if (assist.suppressCoreOrder && assistPlan.coreAction?.type === "START_MOVE") {
           assistPlan = { ...assistPlan, coreAction: null };

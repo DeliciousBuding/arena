@@ -304,6 +304,11 @@ export class StallRecovery {
     this.state = "idle";
     this.activeKind = null;
     this.startTick = null;
+    // 审计 SR2（2026-08-10）：sideEffectApplied 在 resetToIdle 里归零——
+    // 不依赖调用方每 tick 调 recoverySideEffect() 的时机，自包含保证
+    // 下一轮 recovering 的副作用一定触发（原实现依赖调用方在 idle 态
+    // 也调用本方法，属脆弱耦合）。
+    this.sideEffectApplied = false;
     if (outcome === undefined || outcome === "recovered" || outcome === "expired") {
       this.failureRounds = 0;
     }

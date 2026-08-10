@@ -186,10 +186,10 @@ test("WorkerLiveness: GO_RESOURCE 虽持续 MOVE 但远离目标仍判 economic_
   assert.equal(events[0]?.kind, "economic_no_progress");
 });
 
-test("WorkerLiveness: capacity_wait:DEPOSIT 属于容量系统，不做 Worker 局部 reset", () => {
+test("WorkerLiveness: capacity_wait:DEPOSIT 计入经济无推进（GAP 1.2——入口满拒需恢复）", () => {
   const tracker = new WorkerLivenessTracker({ graceTicks: 0, economicNoProgressTicks: 3, idleWaitTicks: 3 });
   const events = [];
-  for (let tick = 1; tick <= 12; tick += 1) {
+  for (let tick = 1; tick <= 10; tick += 1) {
     events.push(...feed(
       tracker,
       tick,
@@ -201,7 +201,15 @@ test("WorkerLiveness: capacity_wait:DEPOSIT 属于容量系统，不做 Worker �
       { kind: "target", taskType: "DEPOSIT", target: [0, 0] },
     ));
   }
-  assert.equal(events.length, 0);
+  // GAP 1.2（2026-08-10）：满载 worker 被入口满拒（capacity_wait:DEPOSIT）
+  // 时 cargo 不变 → economic_no_progress 累加 → 触发 recoverWorker。旧版
+  // 只在 intentionalWait 豁免（不触发 idle_wait）但不在 ECONOMIC_INTENTS
+  // → 无任何恢复路径（C7 只覆盖军事单位）。intentionalWait 豁免的是
+  // idle_wait（等待本身不算闲置），不豁免 economic_no_progress（卸不了货
+  // 是真问题，需恢复换路径）。10 tick 窗口只含首次触发（3 tick 触发 +
+  // 8 tick 冷却 = 11 内不会二次触发）。
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.kind, "economic_no_progress");
 });
 
 test("WorkerLiveness: 人类显式接管期间不自动恢复", () => {

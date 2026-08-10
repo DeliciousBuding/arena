@@ -535,6 +535,38 @@ export class SafetyPlanner {
   setMigrationPlan(plan: MigrationPlanV1 | null): void {
     this.migrationPlan = plan;
   }
+  /** 审计 GAP 3.2（2026-08-10）：C2 Core 重生（全新 UUID 替换）时清空全部
+   *  per-unit 状态 Map——旧 army 全员死亡、新 army 全新 id，旧 id 残留
+   *  无界累积且可能误命中（healRotationActive 过期条目阻塞活单位轮换等）。
+   *  与 world.clearBattlefieldMemory() 配套（world 侧清战场记忆，本方法清
+   *  SafetyPlanner 自身状态）。 */
+  private resetPerUnitState(): void {
+    this.unitRingSince.clear();
+    this.spawnYieldStreak.clear();
+    this.blockadeAssignment.clear();
+    this.coreLockHands.clear();
+    this.blockadeLockedSince.clear();
+    this.vanguardBlockadeAssignment.clear();
+    this.vanguardBlockadeLockedSince.clear();
+    this.harvestMemStuck.clear();
+    this.lastWorkerPos.clear();
+    this.workerPositionTrail.clear();
+    this.militaryStuckStreak.clear();
+    this.rangerConsecutiveMisses.clear();
+    this.workerLivenessRecoveryUntil.clear();
+    this.detachedReturnUntil.clear();
+    this.reinforceUntil.clear();
+    this.huntArriveAt.clear();
+    this.huntSweptAt.clear();
+    this.scoutEvadeState.clear();
+    this.healRotationActive.clear();
+    this.cargoStuckSince.clear();
+    this.cargoStuckCargoSnapshot = new Map();
+    this.tacticalSquadPrevious = new Map();
+    this.coreSorties.clear();
+    this.rallyTargets.clear();
+    this.lastRallyHuntKey = null;
+  }
   private migrationPlan: MigrationPlanV1 | null = null;
   /** 迁移激活期判定：计划存在且处于 LEG_MOVE（核心移动中，4 邻必须畅通）。 */
   private get migrationMoving(): boolean {
@@ -664,6 +696,17 @@ export class SafetyPlanner {
   /** 产兵让位连续计数（spawn-yield-v1）：满载 worker 连续让位 tick 数——超过
    *  spawnYieldMaxTicks 强制卸货，防"核心永远想产兵、worker 永远卸不了"。 */
   private spawnYieldStreak = new Map<string, number>();
+  /** spawn_stall 强制让位窗口截止 tick（审计 SR1 2026-08-10）：tenant-runtime
+   *  在 spawn_stall 恢复副作用触发时调用 forceWorkerYield(tick+N)——窗口内
+   *  decideWorker 的产兵让位分支无条件启用（不依赖 config.spawnYield 开关），
+   *  让核心格/邻格满载 worker 让位，解除 CORE_SPAWN_FAILED|CELL_UNIT_LIMIT
+   *  死锁（核心被自己满载 worker 占格 → 产不出兵 → worker 更卸不了货）。 */
+  private workerYieldForceUntilTick = 0;
+  /** spawn_stall 恢复：强制让位窗口（tick 截止）。窗口内产兵让位分支
+   *  无条件启用，即使 config.spawnYield 未开。 */
+  forceWorkerYield(untilTick: number): void {
+    this.workerYieldForceUntilTick = untilTick;
+  }
   /** 锁阵本 tick 配对（worker-blockade-v1）：unitId → lockPoint（敌方下一步
    *  要进的格，站桩即挡）。decide 入口由 enemyReturnPath + 环境锁点计算一次，
    *  decideWorker 消费（多 worker 共享同一分配，防扎堆/重复锁同一目标）。 */
@@ -1903,6 +1946,11 @@ export class SafetyPlanner {
     // Core id 不变 → 零变化（生产 t1/t2 无对手不重生，零回归）。
     if (state.core !== null && this.lastCoreId !== null && state.core.id !== this.lastCoreId) {
       const cleared = this.world.clearBattlefieldMemory();
+      // 审计 GAP 3.2（2026-08-10）：Core 重生 = 全新 UUID 替换，旧 army 全部
+      // 死亡、新 army 全新 id——SafetyPlanner 的 per-unit Maps 若保留旧 id
+      // 残留会无界累积（且 healRotationActive 过期条目可能阻塞活单位的
+      // 治疗轮换）。与 world 战场记忆一起清空。
+      this.resetPerUnitState();
       this.coreRecoveryCount += 1;
       this.recoveryLog.push(`tick ${state.tick}: core ${this.lastCoreId.slice(0, 8)} → ${state.core.id.slice(0, 8)}，清战场记忆 ${cleared} 条`);
     }
@@ -2183,27 +2231,6 @@ export class SafetyPlanner {
       !(this.currentThreat?.level === "BREAKOUT");
     if (!blockadeActive) {
       this.blockadeAssignment = new Map();
-    }
-    // 清理已死亡单位的短期状态残留：worker 死亡/重生 id 变化，旧 id 永不再命中。
-    // 活性恢复冷却同时按 tick 到期删除，避免长期运行 Map 增长。
-    // P2（2026-08-10）：moveFailedStreak / lastHarvestTick / conflictBackoffUntil
-    // 一并纳入每 tick 存活剪枝。存活集合取 state.units（己方 worker+vanguard+
-    // ranger；敌方在 visibleEnemies，不会误保）——moveFailedStreak 也被
-    // Vanguard 攻坚消费（vanguard_pressure 绕行），不能只按 workers 剪。
-    if (
-      this.spawnYieldStreak.size > 0 ||
-      this.workerLivenessRecoveryUntil.size > 0 ||
-      this.moveFailedStreak.size > 0 ||
-      this.lastHarvestTick.size > 0 ||
-      this.conflictBackoffUntil.size > 0
-    ) {
-      const alive = new Set(state.workers.map((worker) => worker.id));
-      const aliveUnits = new Set(state.units.map((unit) => unit.id));
-      for (const unitId of this.spawnYieldStreak.keys()) {
-        if (!alive.has(unitId)) this.spawnYieldStreak.delete(unitId);
-      }
-    if (!blockadeActive) {
-      this.blockadeAssignment = new Map();
       this.coreLockHands = new Set();
     }
     // 清理已死亡单位的短期状态残留：worker 死亡/重生 id 变化，旧 id 永不再命中。
@@ -2212,12 +2239,28 @@ export class SafetyPlanner {
     // 一并纳入每 tick 存活剪枝。存活集合取 state.units（己方 worker+vanguard+
     // ranger；敌方在 visibleEnemies，不会误保）——moveFailedStreak 也被
     // Vanguard 攻坚消费（vanguard_pressure 绕行），不能只按 workers 剪。
+    // P3（2026-08-10，审计 GAP 3.1）：unitRingSince / militaryStuckStreak /
+    // rangerConsecutiveMisses / harvestMemStuck / blockadeLockedSince /
+    // vanguardBlockadeLockedSince / detachedReturnUntil / reinforceUntil /
+    // healRotationActive / scoutEvadeState 一并纳入存活剪枝——长局单位反复
+    // 死亡/重生时旧 id 残留无界增长；healRotationActive 的过期条目还可能
+    // 阻塞活单位的治疗轮换名额。
     if (
       this.spawnYieldStreak.size > 0 ||
       this.workerLivenessRecoveryUntil.size > 0 ||
       this.moveFailedStreak.size > 0 ||
       this.lastHarvestTick.size > 0 ||
-      this.conflictBackoffUntil.size > 0
+      this.conflictBackoffUntil.size > 0 ||
+      this.unitRingSince.size > 0 ||
+      this.militaryStuckStreak.size > 0 ||
+      this.rangerConsecutiveMisses.size > 0 ||
+      this.harvestMemStuck.size > 0 ||
+      this.blockadeLockedSince.size > 0 ||
+      this.vanguardBlockadeLockedSince.size > 0 ||
+      this.detachedReturnUntil.size > 0 ||
+      this.reinforceUntil.size > 0 ||
+      this.healRotationActive.size > 0 ||
+      this.scoutEvadeState.size > 0
     ) {
       const alive = new Set(state.workers.map((worker) => worker.id));
       const aliveUnits = new Set(state.units.map((unit) => unit.id));
@@ -2239,7 +2282,36 @@ export class SafetyPlanner {
       for (const unitId of this.workerPositionTrail.keys()) {
         if (!aliveUnits.has(unitId)) this.workerPositionTrail.delete(unitId);
       }
-    }
+      for (const unitId of this.unitRingSince.keys()) {
+        if (!aliveUnits.has(unitId)) this.unitRingSince.delete(unitId);
+      }
+      for (const unitId of this.militaryStuckStreak.keys()) {
+        if (!aliveUnits.has(unitId)) this.militaryStuckStreak.delete(unitId);
+      }
+      for (const unitId of this.rangerConsecutiveMisses.keys()) {
+        if (!aliveUnits.has(unitId)) this.rangerConsecutiveMisses.delete(unitId);
+      }
+      for (const unitId of this.harvestMemStuck.keys()) {
+        if (!aliveUnits.has(unitId)) this.harvestMemStuck.delete(unitId);
+      }
+      for (const unitId of this.blockadeLockedSince.keys()) {
+        if (!aliveUnits.has(unitId)) this.blockadeLockedSince.delete(unitId);
+      }
+      for (const unitId of this.vanguardBlockadeLockedSince.keys()) {
+        if (!aliveUnits.has(unitId)) this.vanguardBlockadeLockedSince.delete(unitId);
+      }
+      for (const unitId of this.detachedReturnUntil.keys()) {
+        if (!aliveUnits.has(unitId)) this.detachedReturnUntil.delete(unitId);
+      }
+      for (const unitId of this.reinforceUntil.keys()) {
+        if (!aliveUnits.has(unitId)) this.reinforceUntil.delete(unitId);
+      }
+      for (const unitId of this.healRotationActive.keys()) {
+        if (!aliveUnits.has(unitId)) this.healRotationActive.delete(unitId);
+      }
+      for (const unitId of this.scoutEvadeState.keys()) {
+        if (!aliveUnits.has(unitId)) this.scoutEvadeState.delete(unitId);
+      }
     }
     if (blockadeActive) {
       const hints = this.world.enemyHints();
@@ -2532,7 +2604,11 @@ export class SafetyPlanner {
       // 移入核心格、38 次已在核心格；现核心区 9 次仍在发生）。产兵价值 >
       // 1 资源卸货，让位净赚。已在核心格 → 让出（复用 coreClearance 出口）；
       // 在邻格 → WAIT 不进核心格（下 tick 核心 spawn 完成后正常卸货）。
-      if (this.config.spawnYield === true && home !== null && this.coreWantsSpawn(state)) {
+      if (
+        (this.config.spawnYield === true || state.tick <= this.workerYieldForceUntilTick) &&
+        home !== null &&
+        this.coreWantsSpawn(state)
+      ) {
         const yieldMaxTicks = this.config.spawnYieldMaxTicks ?? SPAWN_YIELD_MAX_TICKS;
         const streak = this.spawnYieldStreak.get(unit.id) ?? 0;
         if (streak < yieldMaxTicks && samePosition(unit.position, home)) {
