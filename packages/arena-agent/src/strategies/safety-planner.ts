@@ -1578,6 +1578,56 @@ export class SafetyPlanner {
     return core;
   }
 
+  /** _vacate_core_for_logistics egress 评分（Pattern 2, 2026-08-10，竞品
+   *  `_vacate_core_for_logistics` :3417-3444 对照）：Core 格被占时让位 worker
+   *  的出口选择——不仅看"非障碍"，还看 onward_open（候选格四邻开放数，防进
+   *  死胡同再卡 → 横跳振荡）+ threat（候选格周围敌数，远敌优先）+ direction
+   *  rank（确定性 tiebreaker）。统一 spawn-yield / worker_clear_core /
+   *  worker_clear_core_empty 三套碎片的出口链。 */
+  private egressExit(
+    home: Position,
+    obstacles: ReadonlySet<string>,
+    occupancy: ReadonlyMap<string, number>,
+    enemies: readonly VisibleEntity[],
+    index: number,
+  ): Position | null {
+    const enemyCells = new Set(enemies.map((enemy) => cellKey(enemy.position)));
+    const cardinals: readonly { readonly delta: readonly [number, number]; readonly rank: number }[] = [
+      { delta: [0, -1], rank: 0 },
+      { delta: [1, 0], rank: 1 },
+      { delta: [0, 1], rank: 2 },
+      { delta: [-1, 0], rank: 3 },
+    ];
+    const candidates: { readonly negOnwardOpen: number; readonly enemyCount: number; readonly rank: number; readonly position: Position }[] = [];
+    for (const { delta, rank } of cardinals) {
+      const candidate: Position = [home[0] + delta[0], home[1] + delta[1]];
+      const candidateKey = cellKey(candidate);
+      if (obstacles.has(candidateKey)) continue;
+      if (enemyCells.has(candidateKey)) continue;
+      if ((occupancy.get(candidateKey) ?? 0) >= 2) continue;
+      let onwardOpen = 0;
+      let nearbyEnemies = 0;
+      for (const { delta: onwardDelta } of cardinals) {
+        const onward: Position = [candidate[0] + onwardDelta[0], candidate[1] + onwardDelta[1]];
+        const onwardKey = cellKey(onward);
+        if (samePosition(onward, home)) continue;
+        if (obstacles.has(onwardKey)) continue;
+        if (enemyCells.has(onwardKey)) { nearbyEnemies += 1; continue; }
+        onwardOpen += 1;
+      }
+      candidates.push({ negOnwardOpen: -onwardOpen, enemyCount: nearbyEnemies, rank, position: candidate });
+    }
+    if (candidates.length > 0) {
+      candidates.sort((a, b) =>
+        a.negOnwardOpen - b.negOnwardOpen
+        || a.enemyCount - b.enemyCount
+        || a.rank - b.rank,
+      );
+      return candidates[0]!.position;
+    }
+    return this.coreGuardFallback(home, obstacles, index);
+  }
+
   /** 邻近敌核心（raid-defense-v1，2026-08-07）：coreHuntTargets 中 CORE 目击
    *  （sticky 记忆）距我方 Core ≤ raidCoreRadius → 站立威胁——即使该玩家从不
    *  进攻，也可能随时派小股来偷家/骚扰（用户裁决"别人可以只派一些人来打"）。
@@ -2370,8 +2420,7 @@ export class SafetyPlanner {
         const yieldMaxTicks = this.config.spawnYieldMaxTicks ?? SPAWN_YIELD_MAX_TICKS;
         const streak = this.spawnYieldStreak.get(unit.id) ?? 0;
         if (streak < yieldMaxTicks && samePosition(unit.position, home)) {
-          const exit = homeCell(home, movementObstacles, index)
-            ?? this.coreGuardFallback(home, movementObstacles, index);
+          const exit = this.egressExit(home, movementObstacles, occupancyCounts(state), state.visibleEnemies, index);
           if (exit !== null && !samePosition(unit.position, exit)) {
             const direction = stepToward(unit.position, exit, movementObstacles);
             if (direction !== null) {
@@ -2431,8 +2480,7 @@ export class SafetyPlanner {
         // 不站桩核心格，2026-08-08 生产实证 t1 worker 在 MOVING 核心格上站桩）；
         // 不在核心格 → 原地持货等核心稳定（核心回 NORMAL 后恢复交仓）。
         if (home !== null && samePosition(unit.position, home)) {
-          const exit = homeCell(home, movementObstacles, index)
-            ?? this.coreGuardFallback(home, movementObstacles, index);
+          const exit = this.egressExit(home, movementObstacles, occupancyCounts(state), state.visibleEnemies, index);
           if (exit !== null && !samePosition(unit.position, exit)) {
             const direction = stepToward(unit.position, exit, movementObstacles);
             if (direction !== null) { set(unit, { type: "MOVE", direction }, "worker_hold_cargo_off_core"); return; }
@@ -2448,8 +2496,7 @@ export class SafetyPlanner {
         // 移出核心格待命，不堵迁移路径/生产通道。
         const coreMoving = state.core?.state === "MOVING";
         if (coreMoving) {
-          const exit = homeCell(home, movementObstacles, index)
-            ?? this.coreGuardFallback(home, movementObstacles, index);
+          const exit = this.egressExit(home, movementObstacles, occupancyCounts(state), state.visibleEnemies, index);
           if (exit !== null && !samePosition(unit.position, exit)) {
             const direction = stepToward(unit.position, exit, movementObstacles);
             if (direction !== null) { set(unit, { type: "MOVE", direction }, "worker_hold_cargo_off_core"); return; }
@@ -2462,8 +2509,7 @@ export class SafetyPlanner {
           // 核心满卸不了 → 离开核心格待命，不堵通道（guide 竞品
           // "Core 满仓分散待命并腾空生产格" 对齐——满载 worker 占核心格会
           // 挡 SPAWN/后续卸货）。
-          const exit = homeCell(home, movementObstacles, index)
-            ?? this.coreGuardFallback(home, movementObstacles, index);
+          const exit = this.egressExit(home, movementObstacles, occupancyCounts(state), state.visibleEnemies, index);
           if (exit !== null && !samePosition(unit.position, exit)) {
             const direction = stepToward(unit.position, exit, movementObstacles);
             if (direction !== null) { set(unit, { type: "MOVE", direction }, "worker_clear_core"); return; }
