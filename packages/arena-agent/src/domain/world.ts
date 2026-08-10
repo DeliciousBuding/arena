@@ -284,6 +284,12 @@ export class World {
 
   private tick = 0;
   private readonly obstacleMemory = new Set<string>();
+  /** 格级"已观测且确认为空地"集合（fog-of-war shooting gate，2026-08-10）。
+   *  obstacleMemory 只记障碍，不记空地——agent 无法区分"已观测空"和"未观测
+   *  迷雾"，lineBlocked 对后者当作空地 → 射击线中间格在迷雾中可能是障碍
+   *  → SHOT_MISSED。surveyedEmpty 记所有进入过友方视野且不在障碍列表的格，
+   *  使 isCellObserved 能区分三态（障碍/已观测空/未观测迷雾）。 */
+  private readonly surveyedEmpty = new Set<string>();
   private readonly resourceMemory = new Map<string, ResourceMemory>();
   private readonly enemyMemory = new Map<string, EnemyMemory>();
   /** 近核入侵观察（2026-08-08，core-threat-watch-v1）。 */
@@ -381,6 +387,7 @@ export class World {
     // 世界重置检测：tick 回退（服务器世界重置/异常）→ 全清本地记忆，避免幽灵障碍/资源
     if (this.tick > state.tick) {
       this.obstacleMemory.clear();
+      this.surveyedEmpty.clear();
       this.resourceMemory.clear();
       this.enemyMemory.clear();
       this.failedCells.clear();
@@ -412,6 +419,28 @@ export class World {
     if (this.beaconHistory.length > BEACON_HISTORY_MAX) this.beaconHistory.shift();
     for (const cell of state.obstacleCells) this.obstacleMemory.add(cell);
     for (const cell of state.obstacleCells) this.chunkMemory.set(chunkKeyFor(parseCellKey(cell)), state.tick);
+
+    // fog-of-war shooting gate（2026-08-10）：记录进入友方视野半径内且不在
+    // 障碍列表的格为"已观测空地"。lineBlocked 只查障碍集——不在障碍集
+    // 中的格被当作空地，但"从未观测的迷雾格"也恰不在障碍集中 → 误判可射击
+    // → 引擎知道是障碍 → SHOT_MISSED。surveyedEmpty 使 isCellObserved 能区分
+    // "已观测空"和"未观测迷雾"，decideRanger 对迷雾中间格保守不开火。
+    // 不查视线遮挡（乐观近似：被障碍遮挡的格也被标空，但那障碍本身在障碍集
+    // 中会被 lineBlocked 拦截，不影响射击线判定）。
+    const visibleObstacles = state.obstacleCells;
+    const surveyUnit = (origin: Position, radius: number): void => {
+      for (let dx = -radius; dx <= radius; dx += 1) {
+        const remaining = radius - Math.abs(dx);
+        for (let dy = -remaining; dy <= remaining; dy += 1) {
+          const key = cellKey([origin[0] + dx, origin[1] + dy]);
+          if (!visibleObstacles.has(key)) this.surveyedEmpty.add(key);
+        }
+      }
+    };
+    if (state.core !== null) surveyUnit(state.core.position, VISION_RADIUS.CORE);
+    for (const unit of state.units) {
+      surveyUnit(unit.position, VISION_RADIUS[unit.unitType]);
+    }
 
     const visibleResources = new Set(state.resourceCells);
     for (const cell of visibleResources) {
@@ -690,6 +719,14 @@ export class World {
 
   obstacles(extra: ReadonlySet<string> = new Set()): ReadonlySet<string> {
     return new Set([...this.obstacleMemory, ...extra]);
+  }
+
+  /** 格级已观测判定（fog-of-war shooting gate）：格在障碍记忆或空地记忆
+   *  中 = 已观测。两者都不在 = 从未进入友方视野 = 迷雾。decideRanger 对
+   *  射击线中间格未观测时保守不开火，避免迷雾障碍导致 SHOT_MISSED。 */
+  isCellObserved(cell: Position): boolean {
+    const key = cellKey(cell);
+    return this.obstacleMemory.has(key) || this.surveyedEmpty.has(key);
   }
 
   /**
