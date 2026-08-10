@@ -9,8 +9,8 @@
  *
  * 对手（--opponent）：
  *   farmer（默认）：榜二 arena_farmer（守矿型，CoreFarmer）
- *   core         ：官方完整参考 agent（arena_core_agent.py，5895 行，
- *                  含搜索/战斗小队/核心推演——更接近真实对手）
+ *   core         ：VelvetEvening 社区双策略指南 agent（arena_core_agent.py，
+ *                  5895 行，含搜索/战斗小队/核心推演——更接近真实对手）
  *
  * 链路（平台层全量验证）：
  *   runEpisode → plannerFactory 注入 OpponentAdapter

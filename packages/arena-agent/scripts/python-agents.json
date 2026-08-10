@@ -25,7 +25,7 @@
       "slotEvery": 25,
       "state_paths": ["STATE_PATH", "STATE_TEMP_PATH"],
       "decide_kwargs": ["target", "mode"],
-      "desc": "官方完整参考 agent（arena_core_agent.py，5895 行，搜索/战斗小队/核心推演）"
+      "desc": "VelvetEvening 社区双策略指南 agent（arena_core_agent.py，5895 行，搜索/战斗小队/核心推演）"
     },
     "waaiging": {
       "repo": "arena-hero-clone-waaiging",
@@ -55,7 +55,7 @@
       "module": "bot.strategy",
       "decide": "decide",
       "slot": "process-memory",
-      "desc": "arena-hero-tactic 均衡扩张+防守战术（12/4/4 编制，MemoryMap 螺旋扫掠/信标控制/Core 防御；decide 模块级函数，官方 Turn API，决策与 I/O 解耦）"
+      "desc": "arena-hero-tactic@c4ab72f 均衡扩张+防守战术（12/4/4 编制，MemoryMap 螺旋扫掠/信标控制/Core 防御；2026-08-10 版：军事单位 worker 级引导寻路 + V/R 半血回城 HEAL + A* 破口袋寻路/卡死自愈；decide 模块级函数，官方 Turn API，决策与 I/O 解耦）"
     }
   }
 }

@@ -84,8 +84,8 @@ export function defaultContestants(): Contestant[] {
     pythonContestant(
       "core",
       "core",
-      "core（官方参考）",
-      "默认配置（arena-hero-guide arena_core_agent，mode=harvest/target=30）",
+      "core（双策略指南）",
+      "默认配置（VelvetEvening 社区指南 arena_core_agent，mode=harvest/target=30）",
     ),
     pythonContestant(
       "waaiging",
