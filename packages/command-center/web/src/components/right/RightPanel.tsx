@@ -1,11 +1,19 @@
+import { lazy, Suspense } from "react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useShell, RIGHT_TABS, type RightTab } from "../../lib/shell";
 import { StreamPane } from "../StreamPane";
-import { IntelPanel } from "./IntelPanel";
-import { RedeemPanel } from "./RedeemPanel";
-import { SurveyPanel } from "./SurveyPanel";
-import { AdvicePanel } from "./AdvicePanel";
-import { SituationPanel } from "./SituationPanel";
+
+// 非默认面板按需加载（2026-08-10 性能优化）：首屏只打包决策流 + 地图引擎，
+// 其余 5 面板（威胁情报/参谋建议/测绘/联盟态势/兑换码）首次切到时才拉 chunk。
+const IntelPanel = lazy(() => import("./IntelPanel").then((m) => ({ default: m.IntelPanel })));
+const RedeemPanel = lazy(() => import("./RedeemPanel").then((m) => ({ default: m.RedeemPanel })));
+const SurveyPanel = lazy(() => import("./SurveyPanel").then((m) => ({ default: m.SurveyPanel })));
+const AdvicePanel = lazy(() => import("./AdvicePanel").then((m) => ({ default: m.AdvicePanel })));
+const SituationPanel = lazy(() => import("./SituationPanel").then((m) => ({ default: m.SituationPanel })));
+
+function PanelFallback() {
+  return <div className="rp-pane" data-panel="lazy"><div className="stream-empty">加载面板…</div></div>;
+}
 
 /** 右栏：VSCode 风格 tab 容器（决策流 / 威胁情报 / 参谋建议 / 测绘 / 联盟态势 / 兑换码）。
  *  激活面板随 tab 切换；切回时重挂载 → 数据自动刷新。
@@ -35,11 +43,11 @@ export function RightPanel() {
       </Tabs>
       <div className="rp-body">
         {rightTab === "logs" ? <StreamPane embedded />
-          : rightTab === "intel" ? <IntelPanel />
-          : rightTab === "advice" ? <AdvicePanel />
-          : rightTab === "survey" ? <SurveyPanel />
-          : rightTab === "situation" ? <SituationPanel />
-          : <RedeemPanel />}
+          : rightTab === "intel" ? <Suspense fallback={<PanelFallback />}><IntelPanel /></Suspense>
+          : rightTab === "advice" ? <Suspense fallback={<PanelFallback />}><AdvicePanel /></Suspense>
+          : rightTab === "survey" ? <Suspense fallback={<PanelFallback />}><SurveyPanel /></Suspense>
+          : rightTab === "situation" ? <Suspense fallback={<PanelFallback />}><SituationPanel /></Suspense>
+          : <Suspense fallback={<PanelFallback />}><RedeemPanel /></Suspense>}
       </div>
     </div>
   );

@@ -433,27 +433,36 @@ async function poll() {
 }
 
 let pollStreamsTick = 0;
+let lastStreamSig = "";
+/** 决策流轮询（2026-08-10 优化）：世界 tick ~15s，决策/事件本质按 tick 变化——
+ *  3s 轮询 5 次里 4 次冗余（trace 实测主线程 93% busy 的轮询风暴源头之一）。
+ *  15s 对齐 tick + emit 前签名去重：同一 tick 段重复响应不触发 React 重渲。 */
 async function pollStreams() {
   pollStreamsTick++;
-  // events 降频（2026-08-09）：事件非实时决策数据，3s→15s（5 次跳 4 次）；
-  // stream 仍 3s（决策流实时性要求高）。all tab 预取 events 同步降频。
-  const shouldPollEvents = pollStreamsTick % 5 === 1;
+  // events 与 stream 同频 15s（事件非实时决策数据，此前 3s→15s 的降频由同 tick 覆盖）
   const active = state.tab === 'all' ? TENANTS : state.tab === 'events' ? [] : [state.tab];
   if (state.tab === 'events') {
-    if (!shouldPollEvents) return;
     const results = await Promise.allSettled(TENANTS.map((t) => getJSON(`/api/events?tenant=${t}&n=80`)));
     state.events = {};
     results.forEach((r, i) => { if (r.status === 'fulfilled') state.events[TENANTS[i]] = r.value.events ?? []; });
   } else {
     const results = await Promise.allSettled(active.map((t) => getJSON(`/api/stream?tenant=${t}&n=80`)));
     results.forEach((r, i) => { if (r.status === 'fulfilled') state.streams[active[i]] = r.value.rows ?? []; });
-    // 统一决策页预取事件：事件页徽标即时显示 + 切页秒开（降频 15s，本地文件读取开销可忽略）
-    if (state.tab === 'all' && shouldPollEvents) {
+    // 统一决策页预取事件：事件页徽标即时显示 + 切页秒开
+    if (state.tab === 'all' && pollStreamsTick % 2 === 1) {
       const evResults = await Promise.allSettled(TENANTS.map((t) => getJSON(`/api/events?tenant=${t}&n=80`)));
       state.events = {};
       evResults.forEach((r, i) => { if (r.status === 'fulfilled') state.events[TENANTS[i]] = r.value.events ?? []; });
     }
   }
+  // 签名去重：内容未变（同 tick 段）不 emit，StreamPane 不重渲
+  const sig = TENANTS.map((t) => {
+    const rows = state.streams[t] ?? [];
+    const first = rows[0];
+    return `${t}:${rows.length}:${first?.tick ?? 0}:${first?.deadlineOutcome ?? ""}`;
+  }).join("|") + `|ev:${TENANTS.reduce((a, t) => a + (state.events[t]?.length ?? 0), 0)}`;
+  if (sig === lastStreamSig) return;
+  lastStreamSig = sig;
   emit('streams', { tab: state.tab, streams: state.streams, events: state.events });
 }
 
@@ -2188,7 +2197,8 @@ async function boot() {
     setTimeout(pollLoop, delay);
   }
   pollLoop();
-  setInterval(() => { pollStreams(); }, POLL_MS);
+  // 决策流 15s 对齐世界 tick（2026-08-10：3s 轮询冗余，见 pollStreams 注释）
+  setInterval(() => { pollStreams(); }, 15000);
   // 高刷/低耗调度（175Hz 显示器）：有动画/回放/单位移动/命令倒计时时 rAF 全速
   // （~175fps），空闲时降频 setTimeout（~8fps）只做轻量检查——175Hz 下 rAF 每帧
   // 回调（5.7ms 一次）即使不 draw 也会空转 CPU，降频后显著省电/省 CPU。
@@ -4345,7 +4355,17 @@ export function createMapEngine(host: any) {
       cells: state.cells.map((c: any) => ({ id: c.id ?? null, x: c.x, y: c.y, type: c.type, unitType: c.unitType ?? null, controlled: c.controlled ?? null, tenant: c.tenant, fresh: c.fresh ?? true })),
       multi: [...T().multi], mode: T().mode ?? null,
       selected: (() => { const s = T().selected; return s && s.obj ? { id: s.obj.id ?? null, tenant: s.tenant ?? null, pos: s.obj.position ?? null } : null; })() }),
-    subscribe: (cb: any) => { _subs.add(cb); return () => _subs.delete(cb); },
+    subscribe: (cb: any) => {
+      _subs.add(cb);
+      // catch-up（2026-08-10）：快照型 topic 立即回放当前值——组件重挂载（如右栏
+      // 切 tab）时不错过上一轮 emit；pollStreams 已签名去重，重复回放幂等无害。
+      try {
+        cb('streams', { tab: state.tab, streams: state.streams, events: state.events });
+        cb('overview', state.overview);
+        cb('solo', state.soloTenant);
+      } catch (e) { console.error('subscribe catch-up', e); }
+      return () => _subs.delete(cb);
+    },
     toast: (msg: any, tone: any) => toast(msg, tone),
   };
   boot().catch((err) => {

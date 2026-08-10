@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useEngine, getEngine } from "../lib/bridge";
@@ -79,6 +79,70 @@ function savePrefs(p: Prefs) {
 
 const shortId = (id: string | null | undefined): string => (id ? String(id).slice(0, 8) : "");
 
+/** 决策行（memo）：引用稳定（引擎每轮复用行对象），tick 间只有变化行重渲。
+ *  2026-08-10 性能优化：此前 120 行内联 JSX 每 3s 全量重渲（主线程 93% busy 主因）。 */
+const StreamRowItem = memo(function StreamRowItem({ r, tenant }: { r: StreamRow; tenant: string }) {
+  const color = TENANT_COLORS[tenant] ?? "var(--text-dim)";
+  const outcome = String(r.deadlineOutcome ?? "");
+  const submit = String(r.submitResult ?? "");
+  const quiet = String(outcome) === "not_applicable";
+  const outCls = submit === "accepted" ? "accepted" : submit === "rejected" ? "rejected" : (outcome.includes("timeout") || outcome.includes("missed")) ? "timeout" : "";
+  const kindCn = DECISION_KIND_CN[outcome] ?? "决策";
+  const badge = submit !== "" ? (DECISION_KIND_CN[submit] ?? submit) : outcome !== "" ? (DECISION_KIND_CN[outcome] ?? outcome) : "—";
+  const lat = [];
+  if (r.agentLatencyMs != null) lat.push(`agent ${fmt(r.agentLatencyMs)}ms`);
+  if (r.selectionLatencyMs != null) lat.push(`select ${fmt(r.selectionLatencyMs)}ms`);
+  const extra = [];
+  if (r.abortRequested) extra.push("中止请求");
+  if (r.rotationGeneration != null) extra.push(`rot ${r.rotationGeneration}`);
+  const detail = [lat.join(" · "), extra.join(" · ")].filter(Boolean).join(" · ");
+  return (
+    <div key={`${tenant}:${r.tick}:${outcome}:${submit}`} className={`stream-line${quiet ? " st-quiet" : ""} clickable`} style={{ ["--tc" as string]: color }}
+      title={`${tenant.toUpperCase()} · tick ${fmt(r.tick)}\n决策 ${kindCn}${submit ? ` · 提交 ${DECISION_KIND_CN[submit] ?? submit}` : ""}${lat.length ? `\n延迟 ${lat.join(" · ")}` : ""}${extra.length ? `\n${extra.join(" · ")}` : ""}\n点击聚焦该租户决策动线`}
+      onClick={() => { const e = getEngine(); if (e) e.focusTenant(tenant); }}>
+      <span className="st-tenant">{tenant.toUpperCase()}</span>
+      <span className="st-tick">{fmt(r.tick)}</span>
+      <span className="st-kind" style={{ color }}>{kindCn}</span>
+      <span className="st-detail">{detail}</span>
+      <span className={`st-badge ${outCls}`}>{badge}</span>
+    </div>
+  );
+});
+
+const EventRowItem = memo(function EventRowItem({ e, tenant }: { e: EventRow; tenant: string }) {
+  const color = TENANT_COLORS[tenant] ?? "var(--text-dim)";
+  const evColor = e.kind.startsWith("SHOT") || e.kind.includes("DESTROYED") || e.kind.includes("FAILED") ? "var(--danger)"
+    : e.kind.includes("SUCCEEDED") || e.kind === "SPAWN" || e.kind === "PICKUP_BEACON" || e.kind === "HEAL" ? "var(--green-resource)" : "var(--text-dim)";
+  const detail = [e.actor ? `actor ${shortId(e.actor)}` : "", e.target ? `target ${shortId(e.target)}` : "", e.amount != null ? `×${e.amount}` : ""].filter(Boolean).join(" ");
+  return (
+    <div key={`${tenant}:${e.tick}:${e.kind}:${e.actor ?? ""}:${e.target ?? ""}`} className="stream-line" style={{ ["--tc" as string]: color }}>
+      <span className="st-tenant">{tenant.toUpperCase()}</span>
+      <span className="st-tick">{fmt(e.tick)}</span>
+      <span className="st-ico" style={{ color: evColor }} title={EVENT_KIND_CN[e.kind] ?? e.kind}>{EVENT_ICON[e.kind] ?? "·"}</span>
+      <span className="st-kind" style={{ color: evColor }}>{EVENT_KIND_CN[e.kind] ?? e.kind}</span>
+      <span className="st-detail">{detail}</span>
+    </div>
+  );
+});
+
+const DeedRowItem = memo(function DeedRowItem({ d }: { d: JournalDeed }) {
+  const color = TENANT_COLORS[d.tenant ?? ""] ?? "var(--text-dim)";
+  const star = d.star ?? 0;
+  const pos = d.position;
+  return (
+    <div key={d.id} className={`stream-line${pos ? " clickable" : ""}`} style={{ ["--tc" as string]: color }}
+      title={pos ? `点击定位 (${pos[0]}, ${pos[1]})` : undefined}
+      onClick={pos ? () => { const e = getEngine(); if (e) { e.jumpTo(pos[0], pos[1]); e.toast(`定位事迹「${d.title ?? ""}」`); } } : undefined}>
+      <span className="st-tenant">{d.tenant ? d.tenant.toUpperCase() : "盟"}</span>
+      <span className="st-tick">{fmt(d.tick)}</span>
+      <span className="st-ico" title={d.title ?? d.kind ?? "事迹"}>{DEED_ICON[d.kind ?? ""] ?? "·"}</span>
+      <span className="st-kind">{d.title ?? d.kind ?? "事迹"}</span>
+      <span className="st-detail">{d.detail ?? ""}</span>
+      <span className={`st-badge${star >= 3 ? " deed-hot" : " deed"}`}>★{star}</span>
+    </div>
+  );
+});
+
 export function StreamPane({ embedded = false }: { embedded?: boolean }) {
   const engine = useEngine();
   const [payload, setPayload] = useState<StreamsPayload | null>(null);
@@ -126,20 +190,21 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefs.tab, engine]);
 
-  const rows: StreamRow[] = [];
+  // pair 保留原始行对象引用（引擎每轮复用），memo 浅比较才能跳过未变化行
+  const rowPairs: Array<{ r: StreamRow; t: string }> = [];
   const tab = prefs.tab;
   for (const t of (tab === "all" ? TENANTS : tab === "events" ? [] : [tab])) {
-    for (const r of payload?.streams[t] ?? []) rows.push({ ...r, tenant: t });
+    for (const r of payload?.streams[t] ?? []) rowPairs.push({ r, t });
   }
-  rows.sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0));
+  rowPairs.sort((a, b) => (b.r.tick ?? 0) - (a.r.tick ?? 0));
 
   const quietRow = (r: StreamRow) => String(r.deadlineOutcome ?? "") === "not_applicable";
-  const kept = prefs.quiet ? rows.filter((r) => !quietRow(r)) : rows;
+  const kept = prefs.quiet ? rowPairs.filter((p) => !quietRow(p.r)) : rowPairs;
   const shown = kept.slice(0, 120);
-  const quietCount = prefs.quiet ? 0 : rows.filter(quietRow).length;
-  const liveRow = shown.length > 0 ? shown[0] : null;
-  const eventRows = tab === "events"
-    ? TENANTS.flatMap((t) => (payload?.events[t] ?? []).map((e) => ({ ...e, tenant: t }))).sort((a, b) => (b.tick ?? 0) - (a.tick ?? 0)).slice(0, 120)
+  const quietCount = prefs.quiet ? 0 : rowPairs.filter((p) => quietRow(p.r)).length;
+  const liveRow = shown.length > 0 ? shown[0].r : null;
+  const eventPairs = tab === "events"
+    ? TENANTS.flatMap((t) => (payload?.events[t] ?? []).map((e) => ({ e, t }))).sort((a, b) => (b.e.tick ?? 0) - (a.e.tick ?? 0)).slice(0, 120)
     : [];
 
   const setPrefs = (patch: Partial<Prefs>) => setPrefsState((p) => ({ ...p, ...patch }));
@@ -181,13 +246,13 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
           <span id="streamToggle" className="stream-toggle static" aria-expanded="true">
             <span className={`st-dot${newDot ? " has-new" : ""}`} />
             <span className="st-title">决策流 · LIVE{prefs.quiet ? " · 只看决策" : ""}</span>
-            <span id="streamCount" className="mono st-count">{prefs.quiet ? `${shown.length} 条实际决策` : `${rows.length} 条 · ${rows.length - quietCount} 实际决策`}</span>
+            <span id="streamCount" className="mono st-count">{prefs.quiet ? `${shown.length} 条实际决策` : `${rowPairs.length} 条 · ${rowPairs.length - quietCount} 实际决策`}</span>
           </span>
         ) : (
           <button id="streamToggle" type="button" className="stream-toggle" aria-expanded={!prefs.collapsed} onClick={toggle}>
             <span className={`st-dot${newDot ? " has-new" : ""}`} />
             <span className="st-title">决策流 · LIVE{prefs.quiet ? " · 只看决策" : ""}</span>
-            <span id="streamCount" className="mono st-count">{prefs.quiet ? `${shown.length} 条实际决策` : `${rows.length} 条 · ${rows.length - quietCount} 实际决策`}</span>
+            <span id="streamCount" className="mono st-count">{prefs.quiet ? `${shown.length} 条实际决策` : `${rowPairs.length} 条 · ${rowPairs.length - quietCount} 实际决策`}</span>
             <span className="st-chev">{prefs.collapsed ? "▸" : "▾"}</span>
           </button>
         )}
@@ -213,7 +278,7 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
               ? journal?.deeds?.length ?? 0
               : tb.id === "events"
               ? TENANTS.reduce((a, t) => a + (payload?.events[t]?.length ?? 0), 0)
-              : (prefs.quiet ? kept : rows).filter((r) => tb.id === "all" || r.tenant === tb.id).length;
+              : (prefs.quiet ? kept : rowPairs).filter((p) => tb.id === "all" || p.t === tb.id).length;
             return (
               <TabsTrigger key={tb.id} data-tab={tb.id} value={tb.id}
                 className="gap-0 px-[14px] py-[9px] pb-[10px] rounded-none data-[state=active]:bg-transparent data-[state=active]:ring-0">
@@ -225,24 +290,12 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
       </Tabs>
       <div id="streamBody" ref={bodyRef} onScroll={onScroll}>
         {tab === "events" ? (
-          eventRows.length === 0 ? (
+          eventPairs.length === 0 ? (
             <div className="stream-empty">暂无事件数据</div>
           ) : (
-            eventRows.map((e) => {
-              const color = TENANT_COLORS[e.tenant] ?? "var(--text-dim)";
-              const evColor = e.kind.startsWith("SHOT") || e.kind.includes("DESTROYED") || e.kind.includes("FAILED") ? "var(--danger)"
-                : e.kind.includes("SUCCEEDED") || e.kind === "SPAWN" || e.kind === "PICKUP_BEACON" || e.kind === "HEAL" ? "var(--green-resource)" : "var(--text-dim)";
-              const detail = [e.actor ? `actor ${shortId(e.actor)}` : "", e.target ? `target ${shortId(e.target)}` : "", e.amount != null ? `×${e.amount}` : ""].filter(Boolean).join(" ");
-              return (
-                <div key={`${e.tenant}:${e.tick}:${e.kind}:${e.actor ?? ""}:${e.target ?? ""}`} className="stream-line" style={{ ["--tc" as string]: color }}>
-                  <span className="st-tenant">{e.tenant.toUpperCase()}</span>
-                  <span className="st-tick">{fmt(e.tick)}</span>
-                  <span className="st-ico" style={{ color: evColor }} title={EVENT_KIND_CN[e.kind] ?? e.kind}>{EVENT_ICON[e.kind] ?? "·"}</span>
-                  <span className="st-kind" style={{ color: evColor }}>{EVENT_KIND_CN[e.kind] ?? e.kind}</span>
-                  <span className="st-detail">{detail}</span>
-                </div>
-              );
-            })
+            eventPairs.map(({ e, t }) => (
+              <EventRowItem key={`${t}:${e.tick}:${e.kind}:${e.actor ?? ""}:${e.target ?? ""}`} e={e} tenant={t} />
+            ))
           )
         ) : tab === "deeds" ? (
           <>
@@ -265,55 +318,17 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
             {(journal?.deeds?.length ?? 0) === 0 ? (
               <div className="stream-empty">{journal ? "暂无联盟事迹（30s 刷新）" : "加载联盟事迹…"}</div>
             ) : (
-              journal?.deeds?.map((d) => {
-              const color = TENANT_COLORS[d.tenant ?? ""] ?? "var(--text-dim)";
-              const star = d.star ?? 0;
-              const pos = d.position;
-              return (
-                <div key={d.id} className={`stream-line${pos ? " clickable" : ""}`} style={{ ["--tc" as string]: color }}
-                  title={pos ? `点击定位 (${pos[0]}, ${pos[1]})` : undefined}
-                  onClick={pos ? () => { const e = getEngine(); if (e) { e.jumpTo(pos[0], pos[1]); e.toast(`定位事迹「${d.title ?? ""}」`); } } : undefined}>
-                  <span className="st-tenant">{d.tenant ? d.tenant.toUpperCase() : "盟"}</span>
-                  <span className="st-tick">{fmt(d.tick)}</span>
-                  <span className="st-ico" title={d.title ?? d.kind ?? "事迹"}>{DEED_ICON[d.kind ?? ""] ?? "·"}</span>
-                  <span className="st-kind">{d.title ?? d.kind ?? "事迹"}</span>
-                  <span className="st-detail">{d.detail ?? ""}</span>
-                  <span className={`st-badge${star >= 3 ? " deed-hot" : " deed"}`}>★{star}</span>
-                </div>
-              );
-            })
+              journal?.deeds?.map((d) => (
+                <DeedRowItem key={d.id} d={d} />
+              ))
             )}
           </>
         ) : shown.length === 0 ? (
           <div className="stream-empty">{prefs.quiet ? "暂无实际决策（可关闭「只看决策」查看全部行）" : "暂无决策数据"}</div>
         ) : (
-          shown.map((r) => {
-            const color = TENANT_COLORS[r.tenant] ?? "var(--text-dim)";
-            const outcome = String(r.deadlineOutcome ?? "");
-            const submit = String(r.submitResult ?? "");
-            const quiet = quietRow(r);
-            const outCls = submit === "accepted" ? "accepted" : submit === "rejected" ? "rejected" : (outcome.includes("timeout") || outcome.includes("missed")) ? "timeout" : "";
-            const kindCn = DECISION_KIND_CN[outcome] ?? "决策";
-            const badge = submit !== "" ? (DECISION_KIND_CN[submit] ?? submit) : outcome !== "" ? (DECISION_KIND_CN[outcome] ?? outcome) : "—";
-            const lat = [];
-            if (r.agentLatencyMs != null) lat.push(`agent ${fmt(r.agentLatencyMs)}ms`);
-            if (r.selectionLatencyMs != null) lat.push(`select ${fmt(r.selectionLatencyMs)}ms`);
-            const extra = [];
-            if (r.abortRequested) extra.push("中止请求");
-            if (r.rotationGeneration != null) extra.push(`rot ${r.rotationGeneration}`);
-            const detail = [lat.join(" · "), extra.join(" · ")].filter(Boolean).join(" · ");
-            return (
-              <div key={`${r.tenant}:${r.tick}:${outcome}:${submit}`} className={`stream-line${quiet ? " st-quiet" : ""} clickable`} style={{ ["--tc" as string]: color }}
-                title={`${r.tenant.toUpperCase()} · tick ${fmt(r.tick)}\n决策 ${kindCn}${submit ? ` · 提交 ${DECISION_KIND_CN[submit] ?? submit}` : ""}${lat.length ? `\n延迟 ${lat.join(" · ")}` : ""}${extra.length ? `\n${extra.join(" · ")}` : ""}\n点击聚焦该租户决策动线`}
-                onClick={() => { const e = getEngine(); if (e) e.focusTenant(r.tenant); }}>
-                <span className="st-tenant">{r.tenant.toUpperCase()}</span>
-                <span className="st-tick">{fmt(r.tick)}</span>
-                <span className="st-kind" style={{ color }}>{kindCn}</span>
-                <span className="st-detail">{detail}</span>
-                <span className={`st-badge ${outCls}`}>{badge}</span>
-              </div>
-            );
-          })
+          shown.map(({ r, t }) => (
+            <StreamRowItem key={`${t}:${r.tick}:${String(r.deadlineOutcome ?? "")}:${String(r.submitResult ?? "")}`} r={r} tenant={t} />
+          ))
         )}
       </div>
       <button id="streamJump" className="stream-jump" type="button" hidden onClick={jumpTop}>↑ 最新</button>
