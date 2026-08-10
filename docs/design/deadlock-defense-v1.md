@@ -11,7 +11,7 @@
 |---|---|---|---|
 | L1 资源顶格 | res ≥ Core 容量（max(10, pop×5)）→ DEPOSIT_FAILED | 满载 worker 卡 Core 格，采集-卸货停摆 | P3 硬顶 + yieldDirection |
 | L2 容量天花板 | pop ≥ populationCeiling → 所有 SPAWN 分支关闭 | res 囤积 → 触发 L1 | P2 高水位 + P3 硬顶 |
-| L3 兑换门槛跌破 | P2 消费后 res < 150 → 无法兑换黑与白 | 失去兑换能力（用户裁决红线） | P2 花完仍 ≥150 门 ✅ |
+| L3 兑换门槛跌破 | P2 消费后 res < 150 → 无法兑换黑与白 | 失去兑换能力（兑换红线） | P2 花完仍 ≥150 门 ✅ |
 | L4 通道占用 | 军事/满载 worker 站 Core 格 → SPAWN/DEPOSIT 被拒 | 同 tick 经济停摆 | core-clearance + yieldDirection |
 | L5 迁移交仓 | Core MOVING 时 DEPOSIT 被引擎拒（CORE_MOVING） | cargo worker 追移动核心空跑 | core-moving-hold 变体 |
 | L6 产兵成本 | 动态定价 pop≥21 后成本涨，固定价预算 → INSUFFICIENT | 连串 SPAWN_FAILED | unitSpawnCosts 动态价 ✅ |
@@ -34,7 +34,7 @@ P4 正常策略（surge/威胁/补员/军事配比）     —— 完全保留历
 ```
 
 **优先级裁决**：P1 > P3 > P2 > P4。P1（危机）和 P3（死锁）是"可破门槛"的
-两类豁免；P2 和 P4 不得让 res 跌破 150（用户裁决"随时可兑换黑与白"）。
+两类豁免；P2 和 P4 不得让 res 跌破 150（兑换红线"随时可兑换黑与白"）。
 
 ## 2. 通道死锁防护（L4，已落地 ✅）
 
@@ -65,7 +65,7 @@ P4 正常策略（surge/威胁/补员/军事配比）     —— 完全保留历
   cargoTot>0）即告警——t1 容量死锁 60+ tick 才被人工发现的教训。
 - watchdog 巡检：进程 alive 但 tick 流停更（L7）+ 经济停滞（L1/L4）双维度。
 
-## 6. 兑换门槛硬约束（L3，2026-08-10 用户裁决落地 ✅）
+## 6. 兑换门槛硬约束（L3，2026-08-10 落地 ✅）
 
 资源池维护标准：**t1 平时 res ≥ 150（黑与白公益站注册码商店实测价）**，
 随时可兑换；只有 P1 危机 / P3 死锁允许跌破。
