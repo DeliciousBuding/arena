@@ -1554,6 +1554,22 @@ body {
   transition: all .22s var(--ease);
 }
 .sit-journal:hover { background: rgba(255,255,255,.05); border-color: var(--border-strong); }
+
+/* ---------- 联盟态势：经济测绘 + 行动清单（2026-08-10 并入） ---------- */
+.sit-block { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.sit-sv-list { display: flex; flex-direction: column; gap: 6px; }
+.sit-sv {
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr);
+  column-gap: 8px; row-gap: 4px; align-items: center;
+  background: rgba(255,255,255,.025); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 10px;
+}
+.sit-sv-name { font-size: 12px; letter-spacing: .04em; }
+.sit-sv-line { font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sit-sv-econ { grid-column: 2 / 4; display: flex; align-items: baseline; gap: 10px; font-size: 11px; }
+.sit-sv-econ b { font-variant-numeric: tabular-nums; }
+.sit-sv-bar { grid-column: 1 / 4; height: 4px; margin-top: 1px; }
+.sit-dir-row { padding: 2px 0 0; }
 .sit-j-star { font-size: 11px; color: var(--warn); flex: none; }
 .sit-j-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 11px; line-height: 1.5; }
 .sit-j-body b { color: var(--text); font-weight: 600; }

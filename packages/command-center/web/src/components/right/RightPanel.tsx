@@ -4,18 +4,17 @@ import { useShell, RIGHT_TABS, type RightTab } from "../../lib/shell";
 import { StreamPane } from "../StreamPane";
 
 // 非默认面板按需加载（2026-08-10 性能优化）：首屏只打包决策流 + 地图引擎，
-// 其余 5 面板（威胁情报/参谋建议/测绘/联盟态势/兑换码）首次切到时才拉 chunk。
+// 其余 3 面板（威胁情报/联盟态势/兑换码）首次切到时才拉 chunk。
+// 参谋建议与地图测绘已于 2026-08-10 并入联盟态势，不再独立成 tab。
 const IntelPanel = lazy(() => import("./IntelPanel").then((m) => ({ default: m.IntelPanel })));
 const RedeemPanel = lazy(() => import("./RedeemPanel").then((m) => ({ default: m.RedeemPanel })));
-const SurveyPanel = lazy(() => import("./SurveyPanel").then((m) => ({ default: m.SurveyPanel })));
-const AdvicePanel = lazy(() => import("./AdvicePanel").then((m) => ({ default: m.AdvicePanel })));
 const SituationPanel = lazy(() => import("./SituationPanel").then((m) => ({ default: m.SituationPanel })));
 
 function PanelFallback() {
   return <div className="rp-pane" data-panel="lazy"><div className="stream-empty">加载面板…</div></div>;
 }
 
-/** 右栏：VSCode 风格 tab 容器（决策流 / 威胁情报 / 参谋建议 / 测绘 / 联盟态势 / 兑换码）。
+/** 右栏：VSCode 风格 tab 容器（决策流 / 威胁情报 / 联盟态势 / 兑换码）。
  *  激活面板随 tab 切换；切回时重挂载 → 数据自动刷新。
  *  Radix Tabs 提供 roving tablist + 方向键；激活态视觉仍由 style.css `.rp-tab` 负责
  *  （下划线动画），故覆盖原语内建激活背景。 */
@@ -44,8 +43,6 @@ export function RightPanel() {
       <div className="rp-body">
         {rightTab === "logs" ? <StreamPane embedded />
           : rightTab === "intel" ? <Suspense fallback={<PanelFallback />}><IntelPanel /></Suspense>
-          : rightTab === "advice" ? <Suspense fallback={<PanelFallback />}><AdvicePanel /></Suspense>
-          : rightTab === "survey" ? <Suspense fallback={<PanelFallback />}><SurveyPanel /></Suspense>
           : rightTab === "situation" ? <Suspense fallback={<PanelFallback />}><SituationPanel /></Suspense>
           : <Suspense fallback={<PanelFallback />}><RedeemPanel /></Suspense>}
       </div>
