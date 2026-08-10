@@ -11,7 +11,8 @@
  *     --players N < 条目数取前 N 个，≥ 条目数全上）
  *   - 判定（每场，v3）：存活 → 击杀数 → 累计存款 deposited → 资源 → 人口
  *     （并列同分同排；v3 新增 deposited tie-break，审计 §6.4）
- *   - 胜者（v3）：与排名同链第 1 名（decideWinner 加击杀键，审计 §1.4）
+ *   - 胜者（v3）：与排名同链第 1 名（decideWinner 加击杀 + deposited 键，
+ *     v3.3 补齐 deposited tie-break——审计 §1.4/§6.4）
  *   - 综合分（v3）：avgRank(反向 min-max) 60% + killRate 30% +
  *     resourcesPerTick 10%（v2 的 survivalMedian 20% 因同 tick 重生恒 1.0 移除，
  *     审计 §1.2/§6.2；字段保留兼容旧消费者）
@@ -1211,7 +1212,9 @@ async function writeRunArtifacts(args: {
      *  分数用主榜同一归一化基准计算（可横向参考），单独展示。 */
     leaderboardControl: leaderboardSection.control,
     /** v3 判定口径（审计 bench-fairness-audit-2026-08-09 §6 落地）：
-     *  1) winner 与排名统一：存活→击杀→资源→人口（decideWinner 加 kills 键）；
+     *  1) winner 与排名同链：存活→击杀→deposited→资源→人口（decideWinner
+     *     加 kills + deposited 键，与 rankMatchPlayers 链一致——v3.3 补齐
+     *     deposited tie-break，修复全员存活击杀平时 winner≠rank1 的系统矛盾）；
      *  2) 排名 tie-break：存活→击杀→deposited→资源→人口（并列不再落
      *     playerId 字典序，消除出生位噪声）；
      *  3) 综合分 = rank 60% + kill 30% + economy 10%（economy=resourcesPerTick
@@ -1221,7 +1224,7 @@ async function writeRunArtifacts(args: {
      *     ≥20% 伤害占比归属需改结算层，v3 不实施，逐字节一致性优先）；
      *  5) 内置条目（kind=builtin）为对照组，不参与主榜 composite 排名。 */
     notes: [
-      "winner/排名统一链：存活→击杀→资源→人口（审计 §1.4）",
+      "winner/排名同链：存活→击杀→deposited→资源→人口（审计 §1.4/§6.4，v3.3 补齐 deposited）",
       "排名 tie-break 新增 deposited（累计存款）（审计 §6.4）",
       "综合分：rank 60% + kill 30% + economy 10%；survivalMedian 20% 移除（恒 1.0，审计 §1.2）",
       "击杀归属口径：destroyed_by 同 tick 集火多记/最后一击偏置保留（审计 §2d），聚合层注释",
@@ -1333,11 +1336,18 @@ function buildLeaderboard(scenarios: readonly ScenarioSummary[]): LeaderboardSec
   const controlRows = rows.filter((row) => isControl.has(row.contestantId));
   const rankNormalize = minMaxNormalize(mainRows.map((row) => row.avgRank));
   const killNormalize = minMaxNormalize(mainRows.map((row) => row.killRate));
-  const economyStats = scenarios
-    .map((scenario) => Object.values(scenario.perEntry))
-    .flat()
-    .map((stats) => stats.resourcesPerTick);
-  const economyNormalize = minMaxNormalize(economyStats);
+  // 经济维度与 rank/kill 同基准：条目级跨场景均值池 min-max（2026-08-10
+  // 评分口径一致性修复——原实现用场景级全量池，与另两维基准不一致）。
+  const economyNormalize = minMaxNormalize(
+    mainRows.map((row) =>
+      mean(
+        scenarios
+          .map((scenario) => scenario.perEntry[row.contestantId])
+          .filter((stats): stats is EntryScenarioStats => stats !== undefined)
+          .map((stats) => stats.resourcesPerTick),
+      ),
+    ),
+  );
   const scoreRow = (row: LeaderboardRow): LeaderboardRow => {
     const ownEconomy = mean(
       scenarios

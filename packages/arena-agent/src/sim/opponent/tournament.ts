@@ -260,12 +260,14 @@ export function makeSafetyEntry(id: string): TournEntry {
 }
 
 /** 计算一个 match 的胜者：核心存活优先；都活 → 击杀多（v3：与榜单排名判定
- *  统一，审计 bench-fairness-audit §1.4）；再 → 资源多；再 → 人口多；仍平 → null。 */
+ *  统一，审计 bench-fairness-audit §1.4）；再 → 累计存款 deposited（v3 排名
+ *  链同款 tie-break，审计 §6.4）；再 → 资源多；再 → 人口多；仍平 → null。 */
 export function decideWinner(
   players: readonly string[],
   before: SimWorld,
   after: SimWorld,
   kills?: Readonly<Record<string, number>>,
+  deposited?: Readonly<Record<string, number>>,
 ): { winner: string | null; coreAlive: Record<string, boolean>; finalResources: Record<string, number>; finalPopulation: Record<string, number> } {
   const coreAlive: Record<string, boolean> = {};
   const finalResources: Record<string, number> = {};
@@ -281,11 +283,14 @@ export function decideWinner(
   if (alive.length === 1) {
     winner = alive[0];
   } else if (alive.length > 1) {
-    // 多存活（含全员存活）：存活者内击杀多优先；平 → 资源；平 → 人口；平 → null。
+    // 多存活（含全员存活）：存活者内击杀多优先；平 → 累计存款；平 → 资源；
+    // 平 → 人口；全平 → null（与 run-arena-report rankMatchPlayers 同链）。
     const killOf = (player: string): number => kills?.[player] ?? 0;
+    const depositedOf = (player: string): number => deposited?.[player] ?? 0;
     const sorted = [...alive].sort(
       (a, b) =>
         killOf(b) - killOf(a) ||
+        depositedOf(b) - depositedOf(a) ||
         finalResources[b] - finalResources[a] ||
         finalPopulation[b] - finalPopulation[a],
     );
@@ -293,6 +298,7 @@ export function decideWinner(
     const second = sorted[1];
     if (
       killOf(top) !== killOf(second) ||
+      depositedOf(top) !== depositedOf(second) ||
       finalResources[top] !== finalResources[second] ||
       finalPopulation[top] !== finalPopulation[second]
     ) {
@@ -735,11 +741,20 @@ export function runFreeForAll(
       pipeline: opts?.pipeline === true,
     } as never);
     const { kills, firstKillTicks } = computePerPlayerKills(result.records, ids);
+    // deposited tie-break 与排名链同款（v3 §2/审计 §6.4）：metrics.perPlayer 为
+    // per-player cost ledger（含 deposited 累计存款）
+    const depositedByPlayer = Object.fromEntries(
+      Object.entries(result.metrics.perPlayer).map(([playerId, ledger]) => [
+        playerId,
+        ledger.deposited,
+      ]),
+    );
     const { winner, coreAlive, finalResources, finalPopulation } = decideWinner(
       ids,
       undefined as never,
       result.finalWorld,
       kills,
+      depositedByPlayer,
     );
     // core id → player id 映射（合成场景 core id 尾部 = 参与序，username = playerId）
     const scenarioPlayers = (scenario as { readonly players?: readonly { readonly core?: { readonly id?: string }; readonly username?: string }[] }).players ?? [];
