@@ -22,7 +22,12 @@ const FLAG_RESPONSE = 2;
 const FLAG_ERROR = 3;
 const FLAG_CLOSE = 4;
 
-const DECISION_TIMEOUT_MS = 10_000;
+// 与主线程 sync-bridge.ts 同源：env ARENA_BRIDGE_DECISION_TIMEOUT_MS 可放大
+// （弱机 2C4G 10 桥并发首决策；默认 10s，非法值回落）。
+const DECISION_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.ARENA_BRIDGE_DECISION_TIMEOUT_MS ?? 10_000);
+  return Number.isFinite(raw) && raw >= 1000 ? raw : 10_000;
+})();
 
 const { buffer, python, bridgeScript, bridgeArgs } = workerData;
 const flags = new Int32Array(buffer, 0, 2);
