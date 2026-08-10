@@ -18,18 +18,28 @@ MAINTENANCE_LEASE="$RUNTIME_ROOT/maintenance.lease"
 
 now() { date '+%Y-%m-%d %H:%M:%S'; }
 
-# 租户范围门禁（fail closed）：ARENA_TENANTS 必须是非空逗号列表，逐项校验
-# 命名规则 ^[a-z0-9][a-z0-9._-]{0,63}$；缺失或任一非法即拒绝继续，绝不以
-# 缺省租户集继续恢复（避免恢复错对象）。
+# 租户范围门禁（fail closed）：ARENA_TENANTS 必须是非空逗号列表，整体匹配
+# ^[a-z0-9][a-z0-9._-]{0,63}(,[a-z0-9][a-z0-9._-]{0,63})*$——无前导/尾随/
+# 连续逗号，每段均为合法租户名；随后用 read -a 按逗号拆分（不丢空段）逐项
+# 再校验一次并拒绝重复，绝不以缺省租户集继续恢复（避免恢复错对象）。
 TENANT_LIST=""
 TENANTS_CSV=""
 if [ -z "${ARENA_TENANTS:-}" ]; then
   echo "$(now) ABORT: ARENA_TENANTS is required (non-empty comma-separated tenant list)" >> "$LOG"
   exit 1
 fi
-for TENANT in $(printf '%s' "$ARENA_TENANTS" | tr ',' '\n'); do
-  if [[ ! "$TENANT" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]]; then
+if [[ ! "$ARENA_TENANTS" =~ ^[a-z0-9][a-z0-9._-]{0,63}(,[a-z0-9][a-z0-9._-]{0,63})*$ ]]; then
+  echo "$(now) ABORT: ARENA_TENANTS must be a comma-separated list of valid tenant names (no leading/trailing/consecutive commas)" >> "$LOG"
+  exit 1
+fi
+IFS=',' read -r -a TENANT_ARRAY <<< "$ARENA_TENANTS"
+for TENANT in "${TENANT_ARRAY[@]}"; do
+  if [ -z "$TENANT" ] || [[ ! "$TENANT" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]]; then
     echo "$(now) ABORT: invalid tenant name in ARENA_TENANTS: '$TENANT'" >> "$LOG"
+    exit 1
+  fi
+  if [ -n "$TENANT_LIST" ] && [[ " $TENANT_LIST " == *" $TENANT "* ]]; then
+    echo "$(now) ABORT: duplicate tenant name in ARENA_TENANTS: '$TENANT'" >> "$LOG"
     exit 1
   fi
   TENANT_LIST="${TENANT_LIST:+$TENANT_LIST }$TENANT"
