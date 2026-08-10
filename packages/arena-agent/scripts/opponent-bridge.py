@@ -250,7 +250,7 @@ def _tick_summary(
 ) -> dict:
     """从官方 PlayerState 推导 tick_summary 摘要（字段 snake_case）。
 
-    载荷形状对齐 fork SDK（reference/third-party/arena-hero-python-telemetry/
+    载荷形状对齐 fork SDK（arena-hero-sdk-py/
     src/arena_hero/client.py _materialize 的 tick_summary）：
     v1 测绘 resource_cells/obstacle_cells/units_seen/enemy_cores；v2 计时
     state_bytes/parse_ms/prev_decision_ms；v3 构成 controlled_by_type +

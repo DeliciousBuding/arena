@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Launches one bot instance per tenant using the arena-hero-tactic repo's
-  own .venv python (fork SDK editable install: arena-hero-python-telemetry,
+  own .venv python (fork SDK editable install: arena-hero-sdk-py,
   0.2.9-telemetry.3), with cwd = data/runtime/waaiging/<t> so each instance's
   .env (API key / telemetry endpoint / tenant) and runtime files resolve per
   instance. v2 memory filename (.arena_hero_state.json) differs from waaiging
@@ -29,7 +29,7 @@
 .NOTES
   One-time setup (done by the deploy session):
     python -m venv reference/third-party/arena-hero-tactic/.venv
-    .venv\Scripts\python.exe -m pip install -e reference/third-party/arena-hero-python-telemetry python-dotenv
+    .venv\Scripts\python.exe -m pip install -e arena-hero-sdk-py python-dotenv
   After launch verify:
     - tactic.log grows every tick
     - tactic.err.log stays small (only startup noise / transient errors)

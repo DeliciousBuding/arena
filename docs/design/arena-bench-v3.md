@@ -47,7 +47,7 @@ R1（2026-08-09）：变体三接线 + 对照组主榜外置 + 探针证据 + v2
   （reference/official/arena-hero-python，registry.ts SDK_REPO），其无
   `config_overrides` 模块，ImportError 被 try/except 吞掉 → env 注入 no-op
   （2 玩家 300 tick × seed1/2 固定 id/slot 对局：变体带 env vs 不带 env 逐字段
-  Δ=0）。修复 = 桥改用 SDK fork（arena-hero-python-telemetry）或补官方 SDK
+  Δ=0）。修复 = 桥改用 SDK fork（arena-hero-sdk-py）或补官方 SDK
   模块——**R2 桥接线遗留**（"桥接 decide_kwargs 合并前置"）。
 
 ## 4. 场景（v3）

@@ -1,7 +1,7 @@
 # Network Resilience v1 — SDK 请求层综合设计（antibot / 轮询 / Cloudflare）
 
 状态：2026-08-10 设计定稿（实现随本文档逐项落地）
-范围：`arena-hero-ts`（生产唯一实现线）客户端请求层；`arena-hero-python-telemetry`
+范围：`arena-hero-ts`（生产唯一实现线）客户端请求层；`arena-hero-sdk-py`
 fork 同步原则（能力注入统一在 SDK fork 层，第三方 agent 零感知）。
 
 ## 0. 现状与实测基线（2026-08-10）

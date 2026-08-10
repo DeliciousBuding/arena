@@ -225,7 +225,7 @@ CREATE INDEX IF NOT EXISTS idx_resource_seen_history_cell ON resource_seen_histo
 CREATE INDEX IF NOT EXISTS idx_resource_seen_history_tick ON resource_seen_history(tick);
 
 -- 第三方 agent 注册与心跳（2026-08-09，用户裁决"并进 survey.db"）：
--- SDK fork（arena-hero-python-telemetry）通过 command-center
+-- SDK fork（arena-hero-sdk-py）通过 command-center
 -- POST /api/ingest/agents 上报 register/connection/tick_summary/disconnected。
 -- agents = 每 (tenant, instance) 一行的最新台账（upsert；同 agent 不同 seed
 --   = 不同 instance = 独立行，多租户区分）；agent_events = 事件流水。
