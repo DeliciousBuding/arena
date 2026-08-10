@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync, type Stats }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { PythonTenantManager, type PythonAgentSpec } from "../src/app/python-tenant-manager.ts";
+import { PythonTenantManager, PythonTenantRegistry, type PythonAgentSpec } from "../src/app/python-tenant-manager.ts";
 
 let nextPid = 51000;
 
@@ -183,6 +183,41 @@ test("python heartbeat: stale stdout log -> kill + respawn (dead-detection)", as
     // SIGTERM 后 fake child 不自动退出 → 8s 强杀路径；这里验证事件已发即可
     await manager.stop();
   } finally {
+    env.cleanup();
+  }
+});
+
+test("python registry reload: changed spec restarts, added starts, removed stops", async () => {
+  const env = makeTestEnv();
+  const spawned = new Map<string, Record<string, string>>();
+  const children = new Map<string, FakePyChild>();
+  const base = makeSpec(env.cwd, { tenantId: "t5", args: ["--log-file", "tactic.log"] });
+  const registry = new PythonTenantRegistry([base], {}, {
+    spawn: captureEnv(spawned, children),
+    heartbeatPollMs: 1000,
+  });
+  try {
+    registry.start();
+    const first = children.get("t5")!;
+    // spec 变更 → 旧实例 stop（SIGTERM）+ 新 spec 重建
+    await registry.reload([{ ...base, args: ["--genes", "x.json"] }]);
+    assert.notEqual(children.get("t5"), first, "变更后重建新 child");
+    assert.ok(first.killed.includes("SIGTERM"), "旧实例收到 SIGTERM");
+    const afterRestart = registry.status();
+    assert.equal(afterRestart.length, 1);
+    assert.equal(afterRestart[0].respawnCount, 0, "重建重置计数");
+    assert.deepEqual(afterRestart[0].pid, children.get("t5")!.pid);
+    // 新增 t6
+    await registry.reload([{ ...base, args: ["--genes", "x.json"] }, { ...base, tenantId: "t6" }]);
+    assert.ok(children.has("t6"), "新增租户启动");
+    assert.equal(registry.status().length, 2);
+    // 删除 t6
+    await registry.reload([{ ...base, args: ["--genes", "x.json"] }]);
+    assert.equal(registry.status().length, 1);
+    assert.ok(children.get("t6")!.killed.includes("SIGTERM"), "删除租户被 stop");
+    assert.equal(registry.status()[0].tenantId, "t5");
+  } finally {
+    await registry.stop();
     env.cleanup();
   }
 });

@@ -68,7 +68,8 @@ const ENV_WHITELIST = ["ARENA_HERO_API_KEY", "ARENA_HERO_TELEMETRY_ENDPOINT", "A
 const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"];
 
 export class PythonTenantManager extends EventEmitter {
-  private readonly spec: PythonAgentSpec;
+  /** 当前 spec（reload 热重载比较用）。 */
+  readonly spec: PythonAgentSpec;
   private readonly options: PythonTenantManagerOptions;
   private readonly venvPython: string;
   private readonly module: string;
@@ -289,27 +290,35 @@ export class PythonTenantManager extends EventEmitter {
 }
 
 /** 多 python 租户聚合（2026-08-10）：run-supervisor 持有；提供统一
- *  start/stop/status/restart 与 supervisor.jsonl 事件落盘。 */
+ *  start/stop/status/restart 与 supervisor.jsonl 事件落盘。
+ *  reload()：热重载（改 supervisor.config.json 的 pythonAgents 即切换
+ *  agent/租户，无需重启 supervisor——2026-08-10 轮流测第三方 agent 需要）。 */
 export class PythonTenantRegistry {
   private readonly managers: PythonTenantManager[] = [];
+  private readonly onEvent: (tenantId: string, type: string, detail?: string, pid?: number) => void;
+  private readonly managerOptions: PythonTenantManagerOptions;
 
   constructor(
     specs: readonly PythonAgentSpec[],
     options: { onEvent?: (tenantId: string, type: string, detail?: string, pid?: number) => void } = {},
     managerOptions: PythonTenantManagerOptions = {},
   ) {
-    for (const spec of specs) {
-      const manager = new PythonTenantManager(spec, managerOptions);
-      for (const type of ["spawned", "exited", "restarting", "exhausted", "heartbeat_lost", "error"] as const) {
-        manager.on(type, (payload: { tenantId: string; pid?: number; exitCode?: number | null; respawnCount?: number }) => {
-          const detail = type === "exited"
-            ? `exitCode=${payload.exitCode ?? ""} respawnCount=${payload.respawnCount ?? 0}`
-            : JSON.stringify(payload);
-          options.onEvent?.(spec.tenantId, type, detail, payload.pid ?? manager.status().pid ?? undefined);
-        });
-      }
-      this.managers.push(manager);
+    this.onEvent = options.onEvent ?? (() => {});
+    this.managerOptions = managerOptions;
+    for (const spec of specs) this.managers.push(this.bindManager(spec));
+  }
+
+  private bindManager(spec: PythonAgentSpec): PythonTenantManager {
+    const manager = new PythonTenantManager(spec, this.managerOptions);
+    for (const type of ["spawned", "exited", "restarting", "exhausted", "heartbeat_lost", "error"] as const) {
+      manager.on(type, (payload: { tenantId: string; pid?: number; exitCode?: number | null; respawnCount?: number }) => {
+        const detail = type === "exited"
+          ? `exitCode=${payload.exitCode ?? ""} respawnCount=${payload.respawnCount ?? 0}`
+          : JSON.stringify(payload);
+        this.onEvent(spec.tenantId, type, detail, payload.pid ?? manager.status().pid ?? undefined);
+      });
     }
+    return manager;
   }
 
   start(): void {
@@ -328,6 +337,38 @@ export class PythonTenantRegistry {
   restartTenant(tenantId: string): boolean {
     const manager = this.managers.find((m) => m.status().tenantId === tenantId);
     return manager !== undefined ? manager.restart() : false;
+  }
+
+  /** 热重载：对比 specs，删除的停掉、新增的启动、变更的重启（先优雅
+   *  stop 旧实例再以新 spec 重建，避免同租户双连官方会话）。 */
+  async reload(specs: readonly PythonAgentSpec[]): Promise<{ started: string[]; restarted: string[]; stopped: string[] }> {
+    const changes = { started: [] as string[], restarted: [] as string[], stopped: [] as string[] };
+    const existing = new Map(this.managers.map((manager) => [manager.spec.tenantId, manager]));
+    const nextIds = new Set(specs.map((spec) => spec.tenantId));
+    for (const [tenantId, manager] of existing) {
+      if (!nextIds.has(tenantId)) {
+        await manager.stop();
+        this.managers.splice(this.managers.indexOf(manager), 1);
+        changes.stopped.push(tenantId);
+      }
+    }
+    for (const spec of specs) {
+      const manager = existing.get(spec.tenantId);
+      if (manager === undefined) {
+        const created = this.bindManager(spec);
+        this.managers.push(created);
+        created.start();
+        changes.started.push(spec.tenantId);
+      } else if (JSON.stringify(manager.spec) !== JSON.stringify(spec)) {
+        await manager.stop();
+        const index = this.managers.indexOf(manager);
+        const replacement = this.bindManager(spec);
+        this.managers[index] = replacement;
+        replacement.start();
+        changes.restarted.push(spec.tenantId);
+      }
+    }
+    return changes;
   }
 }
 

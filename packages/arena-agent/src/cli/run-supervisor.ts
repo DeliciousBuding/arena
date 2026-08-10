@@ -1,7 +1,7 @@
 /** Multi-tenant process supervisor CLI. Debug port is bound before any child spawn. */
 
 import { parseArgs } from "node:util";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { TenantSupervisor } from "../app/tenant-supervisor.ts";
 import { DebugServer } from "../app/debug-server.ts";
@@ -185,8 +185,8 @@ async function main(): Promise<void> {
   const debugServer = new DebugServer({
     repoRoot,
     supervisor,
-    pythonTenantStatus: pythonAgentSpecs.length > 0 ? () => pythonRegistry.status() : undefined,
-    pythonTenantRestart: pythonAgentSpecs.length > 0 ? (tenantId) => pythonRegistry.restartTenant(tenantId) : undefined,
+    pythonTenantStatus: () => pythonRegistry.status(),
+    pythonTenantRestart: (tenantId) => pythonRegistry.restartTenant(tenantId),
     allianceDirectorView: () => centralAlliance?.view() ?? {
       enabled: false, mode: "ASSIST_ONLY", actionOwnership: "none", available: false,
     },
@@ -254,10 +254,29 @@ async function main(): Promise<void> {
 
   try {
     await supervisor.start();
+    pythonRegistry.start();
     if (pythonAgentSpecs.length > 0) {
-      pythonRegistry.start();
       console.log(`[supervisor] python tenants managed: ${pythonAgentSpecs.map((spec) => spec.tenantId).join(",")}`);
     }
+    // pythonAgents 热重载（2026-08-10）：30s 轮询 config mtime，变更即
+    // reload（切换第三方 agent 只改 supervisor.config.json，无需重启）。
+    const pythonConfigPath = join(dataRoot, "runtime", "configs", "supervisor.config.json");
+    let lastPythonConfigMtime = existsSync(pythonConfigPath) ? statSync(pythonConfigPath).mtimeMs : 0;
+    const pythonReloadTimer = setInterval(async () => {
+      try {
+        if (!existsSync(pythonConfigPath)) return;
+        const mtimeMs = statSync(pythonConfigPath).mtimeMs;
+        if (mtimeMs === lastPythonConfigMtime) return;
+        lastPythonConfigMtime = mtimeMs;
+        const changes = await pythonRegistry.reload(loadPythonAgentSpecs(dataRoot));
+        if (changes.started.length > 0 || changes.restarted.length > 0 || changes.stopped.length > 0) {
+          console.log(`[supervisor] pythonAgents reloaded started=${changes.started.join(",") || "-"} restarted=${changes.restarted.join(",") || "-"} stopped=${changes.stopped.join(",") || "-"}`);
+        }
+      } catch (error) {
+        console.error(`[supervisor] pythonAgents reload failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }, 30_000);
+    pythonReloadTimer.unref?.();
     const outcome = await Promise.race([
       supervisor.waitForAllExited().then(() => "children_exited" as const),
       signalPromise,
@@ -266,6 +285,7 @@ async function main(): Promise<void> {
       console.log(`[supervisor] received ${outcome}, shutting down all tenants`);
       await supervisor.shutdown();
     }
+    clearInterval(pythonReloadTimer);
     await pythonRegistry.stop();
     const failed = supervisor.status().some((status) => status.lifecycle === "failed" || status.exitCode !== 0);
     process.exitCode = failed ? 1 : 0;
