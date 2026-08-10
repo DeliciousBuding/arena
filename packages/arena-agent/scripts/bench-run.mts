@@ -371,12 +371,10 @@ async function main(): Promise<number> {
 
   const schedule = () => {
     while (running.size < CONCURRENCY && queue.length > 0) {
-      if (freeMemoryGb() < MAX_FREE_GB) {
+      // 内存门控只拦截"有场在跑"时的追加并发（等场次完成释放内存）；
+      // 场上全空时强制启动（否则无场可释放，永远死等）。
+      if (freeMemoryGb() < MAX_FREE_GB && running.size > 0) {
         log("warn", `内存空闲 ${Math.round(freeMemoryGb() * 10) / 10}GB < ${MAX_FREE_GB}GB，暂缓启动新场`);
-        // 若场上全空（内存迟迟不释放），定时唤醒继续调度
-        if (running.size === 0) {
-          setTimeout(schedule, 15_000);
-        }
         return;
       }
       const job = queue.shift()!;
