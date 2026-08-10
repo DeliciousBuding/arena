@@ -5,8 +5,9 @@
  * 硬编码 worktree 路径）+ PowerShell 探测带 30s 超时；错误 worktree 路径
  * 报错退出（v4 MSYS 路径静默失效教训）。
  * 每分钟由计划任务调用一次；检查本地 supervisor /ready；异常则确认旧进程
- * 死透 → 清理死锁 → 重启 live supervisor（t1 由 TS supervisor 管理；
- * t2/t3/t4 由独立 python 客户端直连官方 API，2026-08-09 切换）。
+ * 死透 → 清理死锁 → 重启 live supervisor（t1-t4 全 TS 线；t2/t3/t4 曾于
+ * 2026-08-09 切到独立 python 客户端（arena-hero-tactic v2 进化版），
+ * 2026-08-10 用户裁决暂回 TS 管，进化版搞稳后再议）。
  *
  * 与旧 bash 版（arena-watchdog.sh）的行为契约完全一致，仅把脆弱的面包屑
  * （curl + grep JSON 解析、netstat 端口探测）换成 Node fetch + 结构化解析：
@@ -42,7 +43,7 @@ const RUNTIME_ROOT = join(DATA_ROOT, "runtime");
 const READY_URL = "http://127.0.0.1:8120/ready";
 const SHUTDOWN_URL = "http://127.0.0.1:8120/shutdown";
 const MAINTENANCE_LEASE = join(RUNTIME_ROOT, "maintenance.lease");
-const TENANTS = ["t1"];
+const TENANTS = ["t1", "t2", "t3", "t4"];
 /** outcome JSONL 超过该秒数未更新 = stall（与旧版一致）。 */
 const STALL_MAX_AGE_S = 600;
 /** 启动宽限：8120 有监听但 /ready 未 true 时再等该毫秒复查（防慢启动被误杀）。 */
@@ -51,7 +52,7 @@ const BOOT_GRACE_MS = 30_000;
 const GRACEFUL_WAIT_S = 8;
 const SUPERVISOR_ARGS = [
   `--data-root=${DATA_ROOT}`,
-  "--configs=t1",
+  "--configs=t1,t2,t3,t4",
   "--mode=deterministic",
   "--live",
   "--record-calibration",
