@@ -31,10 +31,18 @@
 [CmdletBinding()]
 param(
   [string[]]$Tenants = @('t2', 't3', 't4'),
-  [string]$Repo = 'ARENA_REPO_ROOT\reference\third-party\arena-hero-clone-waaiging',
-  [string]$Runtime = 'ARENA_REPO_ROOT\data\runtime\waaiging'
+  [string]$Repo = '',
+  [string]$Runtime = ''
 )
 $ErrorActionPreference = 'Stop'
+if (-not $Repo) {
+  $Repo = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'reference\third-party\arena-hero-clone-waaiging'
+}
+if (-not $Runtime) {
+  $dataRoot = if ($env:ARENA_DATA_ROOT) { $env:ARENA_DATA_ROOT }
+              else { Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'data' }
+  $Runtime = Join-Path $dataRoot 'runtime\waaiging'
+}
 
 $python = Join-Path $Repo '.venv\Scripts\python.exe'
 $tactic = Join-Path $Repo 'arena_hero_tactic.py'

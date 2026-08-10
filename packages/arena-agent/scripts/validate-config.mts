@@ -7,13 +7,15 @@
  */
 import { loadRuntimeConfig } from "../src/app/runtime-config.ts";
 import { resolveVariantsConfig, resolveDeterministicVariantsConfig } from "../src/strategies/variant-registry.ts";
+import { resolve } from "node:path";
 
 const names = process.argv.slice(2).length > 0
   ? process.argv.slice(2)
   : ["t1", "t2", "t3", "t4"];
 
+const dataRoot = process.env.ARENA_DATA_ROOT ?? resolve(import.meta.dirname, "../../../..");
 for (const name of names) {
-  const cfg = loadRuntimeConfig(`ARENA_REPO_ROOT/data/runtime/configs/${name}.json`);
+  const cfg = loadRuntimeConfig(`${dataRoot}/runtime/configs/${name}.json`);
   const safety = resolveVariantsConfig(cfg.variants);
   const det = resolveDeterministicVariantsConfig(cfg.variants);
   console.log(name, "OK variants=", JSON.stringify(cfg.variants), "safety=", JSON.stringify(safety), "det=", JSON.stringify(det));

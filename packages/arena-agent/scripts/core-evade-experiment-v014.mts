@@ -15,6 +15,7 @@
  * 用法：cd packages/arena-agent && npx tsx scripts/core-evade-experiment-v014.mts
  */
 import { runEpisode } from "../../../../arena-ts/packages/arena-agent/src/sim/harness/episode.ts";
+import { resolve } from "node:path";
 
 function threatScenario(seed: number) {
   return {
@@ -51,7 +52,7 @@ const TICKS = 150;
 function runVariant(coreEvade: boolean, coreEvadeTtr: boolean, seed: number) {
   const result = runEpisode({
     scenario: threatScenario(seed),
-    rulesPath: "ARENA_REPO_ROOT/arena-ts/packages/arena-agent/src/sim/contracts/rules-v0.14.json",
+    rulesPath: resolve(import.meta.dirname, "../src/sim/contracts/rules-v0.14.json"),
     seed,
     ticks: TICKS,
     tenants: [

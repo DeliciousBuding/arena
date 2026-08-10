@@ -8,7 +8,8 @@ import { join, resolve } from "node:path";
 import { runEpisode } from "../src/sim/harness/episode.ts";
 
 const SCENARIO_PATH = resolve("scripts/scenarios/core-evade-danger.json");
-const OUT_DIR = resolve("ARENA_REPO_ROOT/data/runs/sim/b9-experiment-20260807");
+const DATA_ROOT = process.env.ARENA_DATA_ROOT ?? resolve(import.meta.dirname, "../../../..");
+const OUT_DIR = resolve(DATA_ROOT, "runs/sim/b9-experiment-20260807");
 mkdirSync(OUT_DIR, { recursive: true });
 const RULES_PATH = "src/sim/contracts/rules-v0.14.json";
 

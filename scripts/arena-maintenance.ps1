@@ -14,9 +14,13 @@ param(
   [string]$Action,
   [int]$TtlSeconds = 600,
   [string]$Reason = 'maintenance',
-  [string]$DataRoot = 'ARENA_REPO_ROOT\data'
+  [string]$DataRoot = ''
 )
 $ErrorActionPreference = 'Stop'
+if (-not $DataRoot) {
+  $DataRoot = if ($env:ARENA_DATA_ROOT) { $env:ARENA_DATA_ROOT }
+              else { Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'data' }
+}
 $runtime = Join-Path $DataRoot 'runtime'
 $lease = Join-Path $runtime 'maintenance.lease'
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null

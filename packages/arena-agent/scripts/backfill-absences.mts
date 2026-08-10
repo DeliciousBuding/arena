@@ -1,7 +1,7 @@
 /** 格级负观测回填工具（2026-08-08，A15）：对 calibration case 跑
  *  collectResourceAbsences 写 resource_absences（不重写其他表，幂等 upsert）。
  *  用于历史 case 补录负观测（survey:sync 只处理水位后新 case）。用法：
- *    npx tsx scripts/backfill-absences.mts --data-root=ARENA_REPO_ROOT/data \
+ *    npx tsx scripts/backfill-absences.mts --data-root=<ARENA_DATA_ROOT> \
  *      --tenants=t1,t2,t3,t4 [--runs=30]
  *  --runs=N 只处理最近 N 个 run（默认全部）；无计划任务，手动/CI 用。
  */

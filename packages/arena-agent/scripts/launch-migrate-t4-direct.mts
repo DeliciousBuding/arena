@@ -3,8 +3,10 @@
  *  分阶段小步走。 */
 import { spawn } from "node:child_process";
 import { openSync } from "node:fs";
+import { resolve } from "node:path";
 const root = process.cwd();
-const logPath = "ARENA_REPO_ROOT/data/runtime/t4/core-migrate-direct.log";
+const dataRoot = process.env.ARENA_DATA_ROOT ?? resolve(root, "../data");
+const logPath = `${dataRoot}/runtime/t4/core-migrate-direct.log`;
 const errPath = logPath + ".err";
 const log = openSync(logPath, "a");
 const err = openSync(errPath, "a");

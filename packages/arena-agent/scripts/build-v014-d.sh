@@ -9,8 +9,10 @@ set -euo pipefail
 
 BATCH="${1:-d}"
 
-DATA_ROOT="ARENA_REPO_ROOT/data/runtime"
-AGENT_ROOT="ARENA_REPO_ROOT/arena-ts/packages/arena-agent"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ARENA_TS_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+AGENT_ROOT="${ARENA_AGENT_ROOT:-$ARENA_TS_ROOT/packages/arena-agent}"
+DATA_ROOT="${ARENA_DATA_ROOT:-$(dirname "$ARENA_TS_ROOT")/data}/runtime"
 
 echo "[1/5] graceful shutdown (POST /shutdown)"
 curl -s -X POST http://127.0.0.1:8120/shutdown || true

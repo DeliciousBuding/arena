@@ -5,9 +5,9 @@
  * 绝不选"远离目标"的方向；4 邻全被占则等待。
  */
 import { readFileSync, writeFileSync, existsSync, readdirSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-const DATA_ROOT = "ARENA_REPO_ROOT/data";
+const DATA_ROOT = process.env.ARENA_DATA_ROOT ?? resolve(import.meta.dirname, "../../../..");
 const TARGET: [number, number] = [-600, -145];
 const INTERVAL_MS = 3000;
 const MAX_STEPS = 120;

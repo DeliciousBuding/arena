@@ -1,9 +1,11 @@
 /** 后台启动 core-migrate-driver v2：node --import tsx 运行（与 supervisor 同款）。 */
 import { spawn } from "node:child_process";
 import { openSync } from "node:fs";
+import { resolve } from "node:path";
 
 const root = process.cwd();
-const logPath = "ARENA_REPO_ROOT/data/runtime/t4/core-migrate-v2.log";
+const dataRoot = process.env.ARENA_DATA_ROOT ?? resolve(root, "../data");
+const logPath = `${dataRoot}/runtime/t4/core-migrate-v2.log`;
 const errPath = logPath + ".err";
 const log = openSync(logPath, "a");
 const err = openSync(errPath, "a");
