@@ -1556,6 +1556,8 @@ body {
 .sit-journal:hover { background: rgba(255,255,255,.05); border-color: var(--border-strong); }
 
 /* ---------- 联盟态势：经济测绘 + 行动清单（2026-08-10 并入） ---------- */
+/* 嵌入式（威胁情报内 tab，2026-08-10）：去外层面板 padding/滚动/动画，由情报中心容器承载 */
+.sit-embedded { display: flex; flex-direction: column; gap: 10px; }
 .sit-block { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .sit-sv-list { display: flex; flex-direction: column; gap: 6px; }
 .sit-sv {

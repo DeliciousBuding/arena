@@ -259,7 +259,9 @@ function AdviceSection({ payload, director }: { payload: AdvicePayload | null; d
   );
 }
 
-export function SituationPanel() {
+/** 联盟态势（2026-08-10 起作为威胁情报的内部「态势」tab 渲染，非独立右栏 tab）。
+ *  embedded 模式：不渲染自身头部（情报中心已有），根容器去面板壳/动画。 */
+export function SituationPanel({ embedded }: { embedded?: boolean }) {
   const engine = useEngine();
   const [data, setData] = useState<SnapshotData | null>(null);
   const [journal, setJournal] = useState<JournalData | null>(null);
@@ -337,14 +339,16 @@ export function SituationPanel() {
   const headline = journal?.headline;
 
   return (
-    <div className="rp-pane">
-      <div className="rp-pane-head">
-        <div>
-          <p className="dialog-eyebrow">ALLIANCE SITUATION · 实时态势</p>
-          <h2>联盟态势</h2>
+    <div className={embedded ? "sit-embedded" : "rp-pane"}>
+      {!embedded ? (
+        <div className="rp-pane-head">
+          <div>
+            <p className="dialog-eyebrow">ALLIANCE SITUATION · 实时态势</p>
+            <h2>联盟态势</h2>
+          </div>
+          <Button variant="ghost" size="icon-sm" className="rp-refresh" title="刷新态势快照" onClick={() => { setErr(""); setData(null); load(); }}><RotateCw className="rp-refresh-ico" /></Button>
         </div>
-        <Button variant="ghost" size="icon-sm" className="rp-refresh" title="刷新态势快照" onClick={() => { setErr(""); setData(null); load(); }}><RotateCw className="rp-refresh-ico" /></Button>
-      </div>
+      ) : null}
       {at ? <span className="sit-gen dim">{at.replace("T", " ").slice(5, 16)} UTC · 回合 {fmt(data?.currentTick)} · 15s 刷新</span> : null}
 
       <div className="sit-global">

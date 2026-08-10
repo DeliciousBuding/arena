@@ -1,13 +1,12 @@
 import { createContext, useContext } from "react";
-import { ScrollText, Target, Activity, Gift, type LucideIcon } from "lucide-react";
+import { ScrollText, Target, Gift, type LucideIcon } from "lucide-react";
 
-/** 右栏面板标签：决策流 / 威胁情报 / 联盟态势 / 兑换码（参谋建议与地图测绘已并入联盟态势，2026-08-10） */
-export type RightTab = "logs" | "intel" | "situation" | "redeem";
+/** 右栏面板标签：决策流 / 威胁情报 / 兑换码（参谋建议、测绘、联盟态势已并入威胁情报，2026-08-10） */
+export type RightTab = "logs" | "intel" | "redeem";
 
 export const RIGHT_TABS: Array<{ id: RightTab; label: string; icon: LucideIcon; railTitle: string }> = [
   { id: "logs", label: "决策流", icon: ScrollText, railTitle: "决策流 · 实时决策" },
-  { id: "intel", label: "威胁情报", icon: Target, railTitle: "威胁情报 · 排行榜" },
-  { id: "situation", label: "联盟态势", icon: Activity, railTitle: "联盟态势 · 资源/威胁/测绘/行动清单" },
+  { id: "intel", label: "威胁情报", icon: Target, railTitle: "威胁情报 · 态势/排行/信标/核心" },
   { id: "redeem", label: "兑换码", icon: Gift, railTitle: "官方商店 · 兑换码" },
 ];
 

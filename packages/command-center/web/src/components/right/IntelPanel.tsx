@@ -5,6 +5,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { shopRequest } from "../../lib/shopApi";
 import { TENANT_COLORS } from "@/engine/tactical";
+import { SituationPanel } from "./SituationPanel";
 
 const fmt = (n: number | null | undefined): string => {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
@@ -46,10 +47,12 @@ function encounterTooltip(entries: EncounterEntry[]): string {
   return "遭遇详情：" + entries.map((e) => `${e.tenant.toUpperCase()} 目击 tick ${e.lastSeenTick ?? "—"} · 距我方核心 ${e.distanceToFriendlyCore ?? "—"} · 威胁 ${e.raidRisk ?? "—"}`).join("；");
 }
 
-/** 威胁情报面板（右栏卡片，替代原模态对话框）。 */
+/** 威胁情报面板（右栏卡片，替代原模态对话框）。2026-08-10 起为情报中心：
+ *  内置「态势」tab（原联盟态势：租户现状/威胁扇区/敌情目击/经济测绘/行动清单），
+ *  与排行榜三 tab（威胁/信标/核心）并排；右栏不再有独立的联盟态势 tab。 */
 export function IntelPanel() {
   const [data, setData] = useState<IntelData | null>(null);
-  const [tab, setTab] = useState("threat");
+  const [tab, setTab] = useState("situation");
   const [filter, setFilter] = useState<Filter>("all");
   const [expand, setExpand] = useState(false);
   const [err, setErr] = useState("");
@@ -141,20 +144,26 @@ export function IntelPanel() {
     <div id="intelDialog" className="intel-panel rp-pane" data-panel="intel">
       <div className="rp-pane-head">
         <div>
-          <p className="dialog-eyebrow">THREAT INTEL · OFFICIAL LEADERBOARD</p>
-          <h2>威胁情报 · 排行榜</h2>
+          <p className="dialog-eyebrow">{tab === "situation" ? "ALLIANCE SITUATION · 实时态势" : "THREAT INTEL · OFFICIAL LEADERBOARD"}</p>
+          <h2>{tab === "situation" ? "联盟态势" : "威胁情报 · 排行榜"}</h2>
         </div>
-        <Button variant="ghost" size="icon-sm" className={`rp-refresh${refreshing ? " busy" : ""}`} title={refreshing ? "正在拉取官方排行榜…" : "立即拉取官方排行榜（POST /api/leaderboard/refresh）"} disabled={refreshing} onClick={refreshOfficial}><RotateCw className="rp-refresh-ico" /></Button>
+        {tab === "situation" ? null : (
+          <Button variant="ghost" size="icon-sm" className={`rp-refresh${refreshing ? " busy" : ""}`} title={refreshing ? "正在拉取官方排行榜…" : "立即拉取官方排行榜（POST /api/leaderboard/refresh）"} disabled={refreshing} onClick={refreshOfficial}><RotateCw className="rp-refresh-ico" /></Button>
+        )}
       </div>
 
       <Tabs value={tab} onValueChange={(v) => v && setTab(v)}>
         <TabsList id="intelTabs" className="intel-tabs h-auto p-0 gap-[6px] rounded-none bg-transparent">
-          {([["threat", `威胁排行 ${data?.profiles?.length ?? 0}`], ["beacon", `信标持有 ${data?.beacon_ticks_held?.length ?? 0}`], ["core", `核心摧毁 ${data?.core_destruction_participations?.length ?? 0}`]] as Array<[string, string]>).map(([id, label]) => (
+          {([["situation", "态势"], ["threat", `威胁排行 ${data?.profiles?.length ?? 0}`], ["beacon", `信标持有 ${data?.beacon_ticks_held?.length ?? 0}`], ["core", `核心摧毁 ${data?.core_destruction_participations?.length ?? 0}`]] as Array<[string, string]>).map(([id, label]) => (
             <TabsTrigger key={id} data-intel-tab={id} value={id}
               className="px-[11px] py-[5px] text-[10.5px] font-mono rounded-full data-[state=active]:bg-transparent data-[state=active]:ring-0">{label}</TabsTrigger>
           ))}
         </TabsList>
       </Tabs>
+      {tab === "situation" ? (
+        <SituationPanel embedded />
+      ) : (
+        <>
       <div className="intel-summary">
         <span className="is-chip"><i className="is-dot ours" />我方在榜 <b>{oursOnBoard}</b></span>
         <span className="is-chip" title={`榜单内 ${metOnBoard} · 榜外 ${Math.max(0, encTotal - metOnBoard)}`}><i className="is-dot met" />遭遇玩家 <b>{encTotal}</b></span>
@@ -186,6 +195,8 @@ export function IntelPanel() {
         {data?.stale ? <span className="ir-stale" title="官方排行榜约 15 分钟一档，快照已过期">已过期 · 点 ↻ 拉取最新</span> : null}
         {tab === "threat" && (encTotal > 0 || oursOnBoard > 0) ? ` · 我方 ${oursOnBoard} 个账号 · 遭遇 ${encTotal} 位玩家` : ""}
       </p>
+        </>
+      )}
     </div>
   );
 }

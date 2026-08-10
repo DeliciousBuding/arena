@@ -10,7 +10,7 @@
  *
  * 覆盖（全部安全/只读，人类指挥链会写后立即清除）：
  *   1. 页面加载零 console/pageerror
- *   2. 右栏六 tab（决策流/威胁情报/参谋建议/测绘/联盟态势/兑换码）渲染
+ *   2. 右栏三 tab（决策流/威胁情报/兑换码）渲染；威胁情报 = 情报中心（态势/排行/信标/核心）
  *   3. 决策流有数据（条数 > 0）
  *   4. 聚焦租户 → HUD + 舰队索引可见
  *   5. 计划箭头/意图标签层渲染（画布租户色像素 > 阈值）
@@ -142,10 +142,10 @@ async function main() {
     await sleep(8000);
     errs.length ? bad("页面加载零错误", errs.slice(0, 3).join(" | ")) : ok("页面加载零错误");
 
-    // 2) 右栏六 tab
-    const tabs = await page.$$eval(".rp-tab", (els) => els.map((e) => e.getAttribute("data-rp-tab")));
-    const want = ["logs", "intel", "advice", "survey", "situation", "redeem"];
-    JSON.stringify(tabs) === JSON.stringify(want) ? ok("右栏六 tab", tabs.join(",")) : bad("右栏六 tab", "got " + tabs.join(","));
+    // 2) 右栏三 tab（参谋建议/测绘/联盟态势已并入威胁情报，2026-08-10）
+    const tabs = await page.$eval(".rp-tab", (els) => els.map((e) => e.getAttribute("data-rp-tab")));
+    const want = ["logs", "intel", "redeem"];
+    JSON.stringify(tabs) === JSON.stringify(want) ? ok("右栏三 tab", tabs.join(",")) : bad("右栏三 tab", "got " + tabs.join(","));
 
     // 2b) 全局威胁玫瑰数据管道：/api/alliance/snapshot 被页面拉取（威胁扇区玫瑰数据源）
     // 首次拉取可能恰逢服务重启/慢请求 → 轮询等待（最多 12s），而非单点检查
@@ -156,22 +156,13 @@ async function main() {
     }
     snapReq ? ok("全局威胁玫瑰数据管道", "snapshot 已拉取") : bad("全局威胁玫瑰数据管道", "12s 内未发现 snapshot 请求");
 
-    // 3) 决策流有数据
-    for (const tab of ["logs", "intel", "advice", "survey", "situation", "redeem"]) {
+    // 3) 决策流有数据；情报中心（态势）与兑换码渲染非空
+    for (const tab of ["logs", "intel", "redeem"]) {
       await page.click(`.rp-tab[data-rp-tab="${tab}"]`, { timeout: 4000 }).catch(() => {});
-      await sleep(tab === "intel" || tab === "survey" || tab === "situation" ? 4000 : 1000);
+      await sleep(tab === "intel" ? 4000 : 1000);
       const txt = await page.evaluate(() => (document.querySelector(".rp .rp-body")?.innerText ?? "").slice(0, 120));
       if (tab === "logs") {
         /条/.test(txt) ? ok("决策流有数据", txt.slice(0, 40)) : bad("决策流有数据", txt.slice(0, 40));
-      } else if (tab === "survey") {
-        // 测绘 tab 首帧可能是"加载测绘数据…"：轮询等真实内容（CPU 高占用时初始化更慢）
-        let real = false;
-        for (let i = 0; i < 8 && !real; i++) {
-          const cur = await page.evaluate(() => (document.querySelector(".rp .rp-body")?.innerText ?? "").trim());
-          real = cur.length > 20 && !cur.startsWith("加载测绘");
-          if (!real) await sleep(1000);
-        }
-        real ? ok("tab survey 渲染", txt.slice(0, 40)) : bad("tab survey 渲染", txt.slice(0, 40));
       } else {
         txt.length > 20 ? ok(`tab ${tab} 渲染`, txt.slice(0, 40)) : bad(`tab ${tab} 渲染`, txt.slice(0, 40));
       }
