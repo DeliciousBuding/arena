@@ -94,6 +94,8 @@ export const DecisionTraceSchema = Type.Object({
     status: Type.Optional(Type.Union([Type.Literal("GROUND"), Type.Literal("CARRIED"), Type.Null()])),
     carrierId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   })),
+  // GAP 1.3 遥测（2026-08-10）：渐进冷却升级累计计数（96/192/384 tick 升级次数）。
+  failedCooldownEscalationCount: Type.Optional(Type.Integer()),
 });
 
 export const OutcomeTraceSchema = Type.Object({

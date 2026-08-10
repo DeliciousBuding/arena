@@ -1209,6 +1209,11 @@ export async function runTenant(
             status: outcome.state.beacon.status,
             carrierId: outcome.state.beacon.carrierId,
           },
+          // GAP 1.3 遥测（审计 fc1e4d3f 2026-08-10）：渐进冷却升级累计计数——
+          // resourceFailCounts 达 3/6/10 触发 96/192/384 tick 冷却升级的次数。
+          // 此前升级逻辑存在但无任何遥测（decision.jsonl 查不到 96/192/384），
+          // 无法验证"死矿格是否被升级冷却压制"。累计值，跨 tick 只增。
+          failedCooldownEscalationCount: planner.world.failedCooldownEscalationCount,
           // 威胁评估诊断（v0.3-lite）：outcome.state 可见敌/受击 + 近核入侵观察
           // （core-threat-watch-v1）长 TTL 记忆——威胁遥测持续显示入侵（ALERT
           // invasion_watch），指挥面板可实时看到"敌贴脸但当前不可见"。

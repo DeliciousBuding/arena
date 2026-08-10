@@ -339,6 +339,11 @@ export class World {
   worldResetCount = 0;
   /** 最近一次世界重置发生时的 tick（从未重置 = null）。 */
   lastWorldResetTick: number | null = null;
+  /** GAP 1.3 遥测（审计 fc1e4d3f 2026-08-10）：渐进冷却升级触发次数（计数器
+   *  达 3/6/10 → 冷却升级 96/192/384）。此前升级只存在于代码，无任何遥测
+   *  可验证；decision.jsonl 只含 intentCounts，升级统计缺位。累计计数
+   *  （跨 tick 只增），决策层读差值或快照。 */
+  failedCooldownEscalationCount = 0;
 
   /**
    * C2 RECOVERY（竞品 lifecycle overlay 对照）：Core 重生（替换，全新 UUID）
@@ -834,10 +839,13 @@ export class World {
     this.resourceFailCounts.set(key, failCount);
     if (failCount === 3) {
       this.extendedFailedCooldowns.set(key, 96);
+      this.failedCooldownEscalationCount += 1;
     } else if (failCount === 6) {
       this.extendedFailedCooldowns.set(key, 192);
+      this.failedCooldownEscalationCount += 1;
     } else if (failCount >= 10) {
       this.extendedFailedCooldowns.set(key, 384);
+      this.failedCooldownEscalationCount += 1;
     }
   }
 
