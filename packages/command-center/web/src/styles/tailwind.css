@@ -1,0 +1,179 @@
+/* ============================================================
+   Tailwind v4 + shadcn 设计系统层（2026-08-10）
+   ------------------------------------------------------------
+   设计意图：token 单一事实源（SSOT）仍为 public/style.css 的
+   :root / [data-theme="light"]。本文件只做「桥接」——
+   用 @theme inline 把 shadcn 语义变量映射到现有 SSOT 变量，
+   使 bg-background / text-foreground 等工具类随 [data-theme]
+   切换自动跟随，零 token 分叉。
+   详见 DESIGN.md；组件层在 src/components/ui/。
+   ============================================================ */
+
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* 暗色 = 默认（:root，无 data-theme 或 data-theme="dark"）；
+   浅色 = [data-theme="light"] 覆盖。index.html 首载脚本恒设 data-theme。
+   shadcn 的 dark: 变体映射到 [data-theme="dark"]，兼容既有约定。 */
+@custom-variant dark (&:is([data-theme="dark"], [data-theme="dark"] *));
+
+/* ---------- shadcn 语义变量桥接现有 token（暗色默认） ---------- */
+/* 注意 --accent 命名冲突：现有 --accent = 单一白色强调（primary 白底黑字）；
+   shadcn --accent = hover 表面（语义不同）。本桥接跳过 shadcn 的 accent 语义，
+   全部走 --primary（白色强调）/ --secondary（表面）/ --muted（弱底），
+   避免覆盖现有 .btn.primary 等对 --accent 的引用。 */
+:root {
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card: var(--surface-solid);
+  --card-foreground: var(--text);
+  --popover: var(--surface-raised);
+  --popover-foreground: var(--text);
+  --primary: var(--accent);              /* 单一白色强调 → primary 按钮白底黑字 */
+  --primary-foreground: var(--bg);       /* primary 上文字 = 背景色（反相：暗底白字 / 浅底深字） */
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text);
+  --muted: rgba(255, 255, 255, .05);
+  --muted-foreground: var(--text-dim);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text);
+  --border: var(--border);
+  --input: var(--border-strong);
+  --ring: var(--accent);                 /* 焦点环 = 白强调（唯一高亮态） */
+  --radius: var(--radius-md);            /* 基础圆角 = 8px（控件档） */
+}
+
+/* ---------- 浅色主题覆盖（仅 --muted 需反相为黑线弱底，其余随 --bg 等自动翻转） ---------- */
+[data-theme="light"] {
+  --muted: rgba(0, 0, 0, .05);
+}
+
+/* ---------- @theme inline：把 shadcn 变量映射到 Tailwind 工具类命名空间 ----------
+ * inline = 不往 :root 重复 emit 变量，工具类直接内联 var(...) 引用，
+ * 故 [data-theme="light"] 改 --bg → --background → bg-background 全链路自动跟随。 */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* 语义色（数据/状态，DESIGN.md §2） */
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-resource: var(--green-resource);
+  --color-signal: var(--cyan-signal);
+
+  /* 租户身份色（地图/小色块/流内租户列；不整卡染色） */
+  --color-t1: var(--t1);
+  --color-t2: var(--t2);
+  --color-t3: var(--t3);
+  --color-t4: var(--t4);
+
+  /* 圆角显式 3 档（DESIGN.md §4：5/8/12，覆盖 Tailwind 默认 0.25rem） */
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* 阴影 token（DESIGN.md §1.2 阴影代边框）：暴露 style.css 的 --shadow-* 给
+     shadow-card / shadow-panel / shadow-float 工具类。inline = 不重复 emit 到
+     :root，工具类直接内联 var(--shadow-card)，故 [data-theme="light"] 重定义
+     --shadow-card 时全链路自动翻转——原语不再写死暗色 rgba，浅色主题阴影正确。 */
+  --shadow-sm: var(--shadow-card);
+  --shadow-card: var(--shadow-card);
+  --shadow-panel: var(--shadow-panel);
+  --shadow-float: var(--shadow-float);
+
+  /* 字体（沿用现有 Geist 栈，含 CJK 黑体回退） */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-display: var(--font-display);
+}
+
+/* ---------- 基线：默认边框色 + 焦点环颜色 + reduced-motion，保证全站一致 ---------- */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-border);
+    outline-color: color-mix(in srgb, var(--ring) 55%, transparent);
+  }
+
+  /* 焦点可见性基线（DESIGN.md §6 focus-visible 白 outline）：所有可交互元素
+     键盘聚焦时显示 2px 白强调环 + 1px 偏移，统一鼠标点击不显、键盘聚焦必显。
+     Radix/shadcn 组件已自带 focus-visible:outline-ring，此处兜底原生元素。 */
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--ring) 70%, transparent);
+    outline-offset: 1px;
+  }
+  /* 鼠标点击后不残留焦点环（保持 :focus-visible 语义，符合 a11y） */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* lucide 图标随文字尺寸（1em）：默认 24px 会撑爆紧凑面板的 11-13px 文字行，
+     改为 1em 后图标自动匹配容器字号，保持视觉对齐与基线一致。 */
+  svg.lucide {
+    width: 1em;
+    height: 1em;
+    stroke-width: 1.5;
+    flex: none;
+  }
+
+  /* 纯图标容器（无文字）显式定档，避免继承浏览器默认 16px 偏大 */
+  .rail-tab-icon { width: 18px; height: 18px; }
+  .side-toggle-icon { width: 16px; height: 16px; }
+  .rp-refresh-ico { width: 14px; height: 14px; }
+  /* 刷新按钮 .busy 旋转动画（与原 ↻ 文字一致） */
+  .rp-refresh.busy .rp-refresh-ico { animation: rp-refresh-spin 1s linear infinite; }
+  @keyframes rp-refresh-spin { to { transform: rotate(360deg); } }
+
+  /* Badge pulse 态（live/实时呼吸点）：随 variant 文字色发光脉冲。
+     替代旧 #topbar .badge.ok::before，让 Badge 原语自包含。 */
+  .badge-pulse-dot {
+    width: 5px; height: 5px; flex: none; border-radius: 999px;
+    background: currentColor;
+    box-shadow: 0 0 8px color-mix(in srgb, currentColor 90%, transparent);
+    animation: badge-pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes badge-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.78); } }
+
+  /* Skeleton shimmer（ui/skeleton.tsx 的自包含加载脉冲）：
+     扫光从左到右横移，色随前景弱透白，1.6s expo-out 循环。 */
+  .ui-skeleton::after {
+    content: ""; position: absolute; inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-foreground) 7%, transparent), transparent);
+    animation: ui-skeleton-shimmer 1.6s var(--ease) infinite;
+  }
+  @keyframes ui-skeleton-shimmer { 100% { transform: translateX(100%); } }
+
+  /* prefers-reduced-motion 全量降级（DESIGN.md §1.7 / §5）：前庭/动效敏感用户
+     关闭所有 transition/animation，仅保留透明度淡入保证反馈可感知。 */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after,
+    ::backdrop {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
