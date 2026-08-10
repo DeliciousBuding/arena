@@ -53,7 +53,7 @@ import { MacroPolicyOrchestrator } from "../runtime/macro-policy-orchestrator.ts
 import { serializeMacroPolicy } from "../runtime/macro-policy.ts";
 import type { MacroDecisionPointV1 } from "../offline-learning/runtime/macro-decision-point.ts";
 import { StallDetector, type StallEvent } from "../runtime/stall-detector.ts";
-import { StallRecovery } from "../runtime/stall-recovery.ts";
+import { StallRecovery, type RecoverySideEffect } from "../runtime/stall-recovery.ts";
 import {
   WorkerLivenessTracker,
   MOVE_CONTESTED_BLOCK_PENALTY,
@@ -1347,6 +1347,24 @@ export async function runTenant(
           .map((worker) => `${worker.position[0]},${worker.position[1]}`)
           .sort()
           .join("|");
+        // 2026-08-10 GAP fix：4 新 stall 模式（military_interlock /
+        // shot_missed_spiral / migration_stall / spawn_stall）的数据源是
+        // failedEventCounts + militaryCount + shotHitCount。82c1ca7 新增了
+        // 这些字段到 StallObservation 接口，但调用方未传入 → 4 模式恒
+        // false（obs.failedEventCounts === undefined → failedCount=0）。
+        // 修复：从已计算的 failedEvents 数组聚合 counts，从 events 取
+        // SHOT_HIT 计数，从 units 取军事单位数。
+        const stallFailedEventCounts: Record<string, number> = {};
+        for (const ev of failedEvents) {
+          const type = ev.eventType;
+          stallFailedEventCounts[type] = (stallFailedEventCounts[type] ?? 0) + 1;
+        }
+        const stallShotHitCount = outcome.state.events.filter(
+          (event) => event.eventType === "SHOT_HIT",
+        ).length;
+        const stallMilitaryCount =
+          outcome.state.vanguards.length + outcome.state.rangers.length;
+
         const stallEvents = stallDetector.onObservation({
           tick: outcome.tick,
           coreResourceDelta: outcomeRecord.coreResourceDelta,
@@ -1359,6 +1377,9 @@ export async function runTenant(
           waitCount: actionCounts.waitCount,
           intentCounts,
           cargoWorkerFingerprint: cargoWorkerCells.length > 0 ? cargoWorkerCells : null,
+          failedEventCounts: stallFailedEventCounts,
+          militaryCount: stallMilitaryCount,
+          shotHitCount: stallShotHitCount,
         });
         for (const event of stallEvents) {
           appendStallEvent(event);
@@ -1380,6 +1401,8 @@ export async function runTenant(
           coreResourceDelta: outcomeRecord.coreResourceDelta,
           harvestCount: actionCounts.harvestCount,
           depositCount: actionCounts.depositCount,
+          failedEventCounts: stallFailedEventCounts,
+          shotHitCount: stallShotHitCount,
         });
         if (recoveryTransition !== null) {
           appendJsonlLine(
@@ -1403,6 +1426,57 @@ export async function runTenant(
               kind: recoveryTransition.kind ?? null,
               tick: recoveryTransition.tick,
             };
+          }
+        }
+        // GAP 1.1 fix（2026-08-10）：per-kind 恢复副作用。StallRecovery 在
+        // recovering 状态的首个 tick 返回一次 side effect，调用方据此执行
+        // 代码级干预（MacroPolicy 只能间接引导，某些 stall 需直接操作记忆）。
+        // clear_enemy_core_memory：shot_missed_spiral 清陈旧敌核记忆 → 游侠
+        //   不再对死核/迁移核空枪。
+        // trigger_migration_replan：migration_stall 重规划迁移路径。
+        // trigger_worker_yield：spawn_stall 让 Core 格 worker 让位。
+        const recoverySideEffect = stallRecovery.recoverySideEffect();
+        if (recoverySideEffect !== null && planner instanceof SafetyPlanner) {
+          switch (recoverySideEffect) {
+            case "clear_enemy_core_memory": {
+              const cleared = planner.world.clearCoreHuntMemory();
+              appendJsonlLine(
+                join(dirs.telemetryDir, "runtime.jsonl"),
+                JSON.stringify(sanitizeValue({
+                  processRunId,
+                  tenantId: config.tenantId,
+                  tick: outcome.tick,
+                  telemetryType: "stall_recovery_side_effect",
+                  sideEffect: "clear_enemy_core_memory",
+                  clearedCount: cleared,
+                })),
+              );
+              break;
+            }
+            case "trigger_migration_replan":
+              appendJsonlLine(
+                join(dirs.telemetryDir, "runtime.jsonl"),
+                JSON.stringify(sanitizeValue({
+                  processRunId,
+                  tenantId: config.tenantId,
+                  tick: outcome.tick,
+                  telemetryType: "stall_recovery_side_effect",
+                  sideEffect: "trigger_migration_replan",
+                })),
+              );
+              break;
+            case "trigger_worker_yield":
+              appendJsonlLine(
+                join(dirs.telemetryDir, "runtime.jsonl"),
+                JSON.stringify(sanitizeValue({
+                  processRunId,
+                  tenantId: config.tenantId,
+                  tick: outcome.tick,
+                  telemetryType: "stall_recovery_side_effect",
+                  sideEffect: "trigger_worker_yield",
+                })),
+              );
+              break;
           }
         }
         // 经济趋势缓冲（策略 prompt 输入；保留最近 32 ticks）

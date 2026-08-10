@@ -122,6 +122,55 @@ function escalationPolicy(base: MacroPolicy): MacroPolicy {
   };
 }
 
+/** GAP 1.1 fix（2026-08-10）：per-kind 定向恢复策略。旧实现对所有 kind 统一
+ *  返回 { ...base, focusRegion: null }——对经济类 stall 有效（清除远征焦点
+ *  让 worker 回仓巡逻），但对军事/迁移/spawn 类 stall 与根因无关。
+ *
+ *  MacroPolicy 字段有限（posture/workerTarget/militaryRatio/focusRegion/
+ *  attackPriority），只能间接引导执行层。各 kind 的语义：
+ *  - military_interlock：军事单位互堵（MOVE_FAILED ≥ ceil(military/2)）。
+ *    aggressive 姿态鼓励接战而非巡逻 + focusRegion=null 让单位散开。
+ *  - shot_missed_spiral：游侠连发空枪。balanced 姿态降低接战冲动让游侠
+ *    重新走位（aggressive 会继续硬射）。配合 sideEffect 清除陈旧记忆。
+ *  - migration_stall：Core 迁移失败。balanced 不叠加迁移期的军事压力。
+ *  - spawn_stall：Core 产兵失败（格被占/资源不足）。降 workerTarget 减轻
+ *    产兵压力，让占用格的单位先让位。
+ *  - 经济类（cargo_blocked 等）：focusRegion=null（原行为）。 */
+function recoveryPolicyForKind(kind: StallKind, base: MacroPolicy): MacroPolicy {
+  switch (kind) {
+    case "military_interlock":
+      return { ...base, posture: "aggressive", focusRegion: null };
+    case "shot_missed_spiral":
+      return { ...base, posture: "balanced", focusRegion: null };
+    case "migration_stall":
+      return { ...base, posture: "balanced", focusRegion: null };
+    case "spawn_stall":
+      return {
+        ...base,
+        posture: "balanced",
+        focusRegion: null,
+        workerTarget: Math.max(1, base.workerTarget - 2),
+      };
+    default:
+      return { ...base, focusRegion: null };
+  }
+}
+
+/** 2026-08-10 GAP 1.1：per-kind 恢复副作用。MacroPolicy 只能间接引导，
+ *  某些 stall 的根因需要代码级干预（清记忆/触发 replan/触发让位）。
+ *  调用方（tenant-runtime）在 recovering 状态时检查此方法并执行对应操作。
+ *  null = 无副作用（经济类 stall 只需 policy 覆盖）。 */
+export type RecoverySideEffect =
+  /** shot_missed_spiral：清除陈旧敌核记忆（coreHuntMemory）——游侠记忆
+   *  射击打的是死核/迁移核/重生核的旧格记忆，清除后不再对空枪。 */
+  | "clear_enemy_core_memory"
+  /** migration_stall：触发迁移 conductor 重规划——当前迁移路径不可行，
+   *  需重新计算目标/路径。 */
+  | "trigger_migration_replan"
+  /** spawn_stall：触发 worker 让位——Core 格被满载 worker 占用导致
+   *  SPAWN 失败，SafetyPlanner 的 spawnYield 机制让 worker 主动移开。 */
+  | "trigger_worker_yield";
+
 export class StallRecovery {
   private readonly recoveryTicks: number;
   private readonly escalateAfterFailures: number;
@@ -153,13 +202,37 @@ export class StallRecovery {
 
   /** 当前应下发给执行层的 policy（recovering/escalating 时为覆盖值，否则原样）。 */
   policyFor(base: MacroPolicy): MacroPolicy {
-    if (this.state === "recovering") {
-      return { ...base, focusRegion: null };
+    if (this.state === "recovering" && this.activeKind !== null) {
+      return recoveryPolicyForKind(this.activeKind, base);
     }
     if (this.state === "escalating") {
       return escalationPolicy(base);
     }
     return base;
+  }
+
+  /** GAP 1.1 fix（2026-08-10）：per-kind 恢复副作用。调用方在 recovering
+   *  状态时检查此方法并执行对应代码级干预。null = 无副作用。
+   *  仅在 recovering 状态进入的第一个 tick 返回副作用（一次性触发，
+   *  防止每 tick 重复清记忆/重规划）。 */
+  private sideEffectApplied = false;
+  recoverySideEffect(): RecoverySideEffect | null {
+    if (this.state !== "recovering" || this.activeKind === null) {
+      this.sideEffectApplied = false;
+      return null;
+    }
+    if (this.sideEffectApplied) return null;
+    this.sideEffectApplied = true;
+    switch (this.activeKind) {
+      case "shot_missed_spiral":
+        return "clear_enemy_core_memory";
+      case "migration_stall":
+        return "trigger_migration_replan";
+      case "spawn_stall":
+        return "trigger_worker_yield";
+      default:
+        return null;
+    }
   }
 
   /**
