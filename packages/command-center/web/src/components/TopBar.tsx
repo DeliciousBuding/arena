@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Sun, Moon } from "lucide-react";
+import { Sun, Moon, PanelLeftOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useEngine } from "@/lib/bridge";
@@ -31,7 +31,7 @@ interface OverviewTenant {
 
 export function TopBar() {
   const engine = useEngine();
-  const { openRight } = useShell();
+  const { openRight, toggleLeft } = useShell();
   const [tick, setTick] = useState<TickPayload | null>(null);
   const [refreshOk, setRefreshOk] = useState<boolean>(true);
   const [encounteredCount, setEncounteredCount] = useState(0);
@@ -83,6 +83,9 @@ export function TopBar() {
   return (
     <header id="topbar">
       <div className="brand">
+        <Button id="drawerToggle" variant="ghost" size="icon-sm" className="map-drawer-toggle" title="展开/收起左侧面板（租户/图层）" onClick={toggleLeft} aria-label="左侧面板">
+          <PanelLeftOpen className="side-toggle-icon" />
+        </Button>
         <img src="/assets/game/units/core.png" alt="" className="brand-icon" draggable="false" />
         <div className="brand-text">
           <h1>Arena 指挥面板</h1>

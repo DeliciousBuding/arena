@@ -771,9 +771,11 @@ body {
 .redeem-result.err { color: var(--danger); background: rgba(252,86,70,.08); border: 1px solid rgba(252,86,70,.35); }
 .dialog-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
 .dialog-history { margin-top: 4px; border-top: 1px solid var(--border-faint); padding-top: 12px; }
-.dialog-history h3 { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .16em; color: var(--text-faint); margin-bottom: 8px; }
+.dialog-history h3 { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .16em; color: var(--text-faint); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.dialog-history .dh-clear { margin-left: auto; padding: 2px 8px; font-size: 10px; }
 .dialog-history ul { list-style: none; max-height: 130px; overflow-y: auto; }
 .dialog-history li { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); display: flex; gap: 10px; padding: 3px 0; border-bottom: 1px dashed var(--border-faint); }
+.dialog-history li.dh-empty { color: var(--text-faint); border-bottom: 0; }
 .dialog-history li .h-time { color: var(--text-faint); }
 .dialog-history li .h-status { margin-left: auto; }
 
@@ -1768,16 +1770,17 @@ body {
   outline-offset: 1px;
 }
 
-/* ---------- 响应式断点（此前 0 条；保持三栏优先，窄屏侧栏转抽屉） ---------- */
+/* ---------- 响应式断点（2026-08-10 接线完成：React 层为权威，见
+   web/DESIGN-SYSTEM.md §7.5；本 CSS 只提供折叠/抽屉的视觉与豁免规则） ---------- */
 @media (max-width: 1320px) {
-  /* 中窄屏：右栏默认折叠（用户可手动展开），地图扩宽 */
+  /* 中窄屏：右栏默认折叠（AppShell 初始折叠），用户展开自动钉住 .user-pinned */
   .side-panel.right:not(.user-pinned) { width: 40px !important; }
   .side-panel.right:not(.user-pinned) .side-panel-body { opacity: 0; pointer-events: none; }
   .empire-cell { min-width: 40px; padding: 2px 6px; }
   .empire-cell span { font-size: 7px; }
 }
 @media (max-width: 1100px) {
-  /* 窄屏：左栏转抽屉浮层，地图全宽 */
+  /* 窄屏：左栏转抽屉浮层（AppShell 初始收起），顶栏 #drawerToggle 汉堡按钮滑入/滑出 */
   .side-panel.left {
     position: absolute; left: 0; top: 0; bottom: 0; z-index: 20;
     width: 292px !important; box-shadow: var(--shadow-float);

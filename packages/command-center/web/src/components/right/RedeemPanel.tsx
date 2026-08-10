@@ -104,9 +104,9 @@ export function RedeemPanel() {
       {result && <div id="redeemResult" className={`redeem-result ${result.cls}`}>{result.msg}</div>}
 
       <div className="dialog-history">
-        <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>我的兑换订单
+        <h3>我的兑换订单
           {history.length > 0 && (
-            <Button variant="ghost" size="sm" style={{ marginLeft: "auto", padding: "2px 8px", fontSize: 10 }} title="清空本地兑换记录" onClick={() => { clearRedeemHistory(); setHistory([]); }}>清空</Button>
+            <Button variant="ghost" size="sm" className="dh-clear" title="清空本地兑换记录" onClick={() => { clearRedeemHistory(); setHistory([]); }}>清空</Button>
           )}
         </h3>
         <ul id="redeemHistory">
@@ -116,7 +116,7 @@ export function RedeemPanel() {
               <span>{h.code}</span>
               <span className="h-status">{h.status}</span>
             </li>
-          )) : <li style={{ color: "var(--text-faint)" }}>暂无本地记录</li>}
+          )) : <li className="dh-empty">暂无本地记录</li>}
         </ul>
       </div>
       <p className="dialog-note">价格与库存来自官方商店（动态变化），可手动刷新。Cookie 仅保存在本机浏览器，请求时经内存转发，不落盘服务器。</p>

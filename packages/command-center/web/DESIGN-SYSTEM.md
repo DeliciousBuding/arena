@@ -192,3 +192,29 @@ min-height:72px; font-size:var(--fs-sm); color:var(--text-faint)`——极简产
 类之一（或统一到 `.stream-empty`），不另起裸 `<div>` 文本。加载骨架（`.skeleton`
 复合卡 / `Skeleton` 原语）见 §7.1/§7.3，按信息密度选用。
 
+### 7.5 响应式断点接线（2026-08-10，React 层驱动 + CSS 层豁免）
+
+style.css 的响应式断点（1320/1100/760）曾只写 CSS 无交互入口——`.user-pinned`
+与 `.open` 类无人设置：1280 屏右栏永远 40px 不可展开、<1100 左栏抽屉无入口。
+**接线完成（React 层为权威）**：
+
+| 断点 | 行为 | 实现 |
+|---|---|---|
+| `>1320px` | 三栏全开（左 292 / 地图 / 右 340） | AppShell 默认 `leftCollapsed=false` + `rightCollapsed=false`（无媒体查询干预） |
+| `1320-1101px` | 右栏**默认折叠**（40px rail），用户可展开；展开自动钉住 | AppShell `matchMedia(NARROW_MQ)` 初始默认折叠；用户 `openRight`/toggle 展开时 `pinned={narrow && !rightCollapsed}` → `SidePanel` 加 `.user-pinned` → CSS `:not(.user-pinned)` 强压规则豁免 |
+| `≤1100px` | 左栏转抽屉浮层（初始收起）+ 顶栏汉堡按钮（`#drawerToggle`）滑入/滑出；右栏仍默认折叠 | AppShell `matchMedia(DRAWER_MQ)` 初始 `leftCollapsed=true`；`SidePanel` 展开时渲染 `.open` class → CSS `translateX(0)`；按钮 `.map-drawer-toggle` 由 CSS 断点控制显示 |
+| `≤760px` | 顶栏收纳（隐藏 subtitle/empire-strip/tick-label） | 纯 CSS（原实现，不动） |
+
+**契约要点**：
+1. **偏好优先**：`hasCollapsedPref()` 检查 localStorage 是否显式存过折叠偏好——
+   存过则尊重用户值（跨屏一致）；未存过才用断点默认。首次交互后 `saveShellPrefs`
+   写回，后续刷新按用户最后状态。
+2. **`.user-pinned` 是 React 专属豁免标记**（仅 `SidePanel` 渲染），CSS 侧
+   `:not(.user-pinned)` 是它的唯一消费方——禁止在组件里手写该 class。
+3. **`.open` class**（抽屉滑出态）仅 `≤1100px` 断点有规则，宽屏无副作用。
+4. 断点常量 `NARROW_MQ`/`DRAWER_MQ` 与 style.css 媒体查询**必须保持一致**
+   （改 CSS 断点同时改 AppShell 常量）。
+5. 侧栏折叠/展开的宽度与 transform 过渡动画由 style.css 的
+   `transition: width/transform` 负责；React 只驱动最终值，不参与动画时序。
+
+

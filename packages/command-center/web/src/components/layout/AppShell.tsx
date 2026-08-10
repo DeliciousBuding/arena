@@ -11,6 +11,10 @@ import { SidePanel } from "./SidePanel";
 const PREFS_KEY = "arena-cc-web.prefs";
 const LEFT_WIDTH = 292;
 const RIGHT_WIDTH = 340;
+/** 响应式断点（与 public/style.css 的 @media 对齐）：
+ *  1320 以下右栏默认折叠（用户可展开 = 钉住）；1100 以下左栏转抽屉浮层。 */
+const NARROW_MQ = "(max-width: 1320px)";
+const DRAWER_MQ = "(max-width: 1100px)";
 
 interface ShellPrefs {
   leftCollapsed: boolean;
@@ -33,6 +37,15 @@ function loadShellPrefs(): ShellPrefs {
   }
 }
 
+/** 用户是否明确设置过侧栏折叠偏好（未设置过时由断点默认决定）。 */
+function hasCollapsedPref(key: "leftCollapsed" | "rightCollapsed"): boolean {
+  try {
+    return typeof (JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") as Record<string, unknown>)[key] === "boolean";
+  } catch {
+    return false;
+  }
+}
+
 function saveShellPrefs(p: ShellPrefs) {
   try {
     const all = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
@@ -41,12 +54,24 @@ function saveShellPrefs(p: ShellPrefs) {
 }
 
 /** 三栏应用壳：顶栏 + 左栏（资源/图层）+ 地图 + 右栏（日志/面板）。
- *  左右栏均可折叠为窄条（VSCode 侧边栏模式），折叠/展开后通知引擎重算画布尺寸。 */
+ *  左右栏均可折叠为窄条（VSCode 侧边栏模式），折叠/展开后通知引擎重算画布尺寸。
+ *  响应式（2026-08-10 接线）：1320 以下右栏默认折叠，用户展开后自动钉住
+ *  （.user-pinned 豁免 CSS 强制折叠）；1100 以下左栏转抽屉，顶栏汉堡按钮滑入/滑出。 */
 export function AppShell() {
   const layoutRef = useRef<HTMLElement>(null);
-  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(loadShellPrefs().leftCollapsed);
-  const [rightCollapsed, setRightCollapsed] = useState<boolean>(loadShellPrefs().rightCollapsed);
+  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() =>
+    hasCollapsedPref("leftCollapsed") ? loadShellPrefs().leftCollapsed : window.matchMedia(DRAWER_MQ).matches);
+  const [rightCollapsed, setRightCollapsed] = useState<boolean>(() =>
+    hasCollapsedPref("rightCollapsed") ? loadShellPrefs().rightCollapsed : window.matchMedia(NARROW_MQ).matches);
   const [rightTab, setRightTabState] = useState<RightTab>(loadShellPrefs().rightTab);
+  const [narrow, setNarrow] = useState<boolean>(() => window.matchMedia(NARROW_MQ).matches);
+
+  useEffect(() => {
+    const mqNarrow = window.matchMedia(NARROW_MQ);
+    const onNarrow = () => setNarrow(mqNarrow.matches);
+    mqNarrow.addEventListener("change", onNarrow);
+    return () => mqNarrow.removeEventListener("change", onNarrow);
+  }, []);
 
   useEffect(() => {
     saveShellPrefs({ leftCollapsed, rightCollapsed, rightTab });
@@ -110,7 +135,7 @@ export function AppShell() {
           <Sidebar />
         </SidePanel>
         <MapHost hostRef={layoutRef} />
-        <SidePanel side="right" open={!rightCollapsed} width={RIGHT_WIDTH} onToggle={() => setRightCollapsed((v) => !v)} rail={rightRail}>
+        <SidePanel side="right" open={!rightCollapsed} width={RIGHT_WIDTH} onToggle={() => setRightCollapsed((v) => !v)} rail={rightRail} pinned={narrow && !rightCollapsed}>
           <RightPanel />
         </SidePanel>
       </main>
