@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { RotateCw } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   shopCookieValue, saveShopCookie, shopRequest, loadRedeemHistory, pushRedeemHistory, clearRedeemHistory,
   type ShopProduct, type ShopMe,
@@ -81,12 +83,12 @@ export function RedeemPanel() {
           <p className="dialog-eyebrow">OFFICIAL STORE · LINUXDO</p>
           <h2>官方商店 · 兑换码</h2>
         </div>
-        <button type="button" className="btn ghost rp-refresh" title="刷新价格与库存" onClick={refresh} disabled={loading}>{loading ? "…" : "↻"}</button>
+        <Button variant="ghost" size="icon-sm" className={`rp-refresh${loading ? " busy" : ""}`} title="刷新价格与库存" onClick={refresh} disabled={loading}><RotateCw className="rp-refresh-ico" /></Button>
       </div>
 
       <div className="shop-cookie-row">
         <input id="shopCookie" className="input" type="password" placeholder="官方商店登录 Cookie（linuxdoshop.arenahero.io）" autoComplete="off" spellCheck={false} value={cookie} onChange={(e) => setCookie(e.target.value)} />
-        <button type="button" id="cookieSave" className="btn" onClick={saveCookie}>保存</button>
+        <Button id="cookieSave" variant="default" size="sm" onClick={saveCookie}>保存</Button>
       </div>
       <div id="shopAccount" className="shop-account" hidden={!account && !accErr}>
         {account ? <span className="acc-name">@{account.username ?? "?"} · 资源 <b>{fmt(account.resources)}</b></span> : <span className="acc-err">连接失败：{accErr}（Cookie 可能已失效）</span>}
@@ -104,7 +106,7 @@ export function RedeemPanel() {
       <div className="dialog-history">
         <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>我的兑换订单
           {history.length > 0 && (
-            <button type="button" className="btn ghost" style={{ marginLeft: "auto", padding: "2px 8px", fontSize: 10 }} title="清空本地兑换记录" onClick={() => { clearRedeemHistory(); setHistory([]); }}>清空</button>
+            <Button variant="ghost" size="sm" style={{ marginLeft: "auto", padding: "2px 8px", fontSize: 10 }} title="清空本地兑换记录" onClick={() => { clearRedeemHistory(); setHistory([]); }}>清空</Button>
           )}
         </h3>
         <ul id="redeemHistory">

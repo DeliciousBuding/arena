@@ -4,9 +4,11 @@
  * + /api/deeds/journal 事迹叙事。纯只读，15s 轮询；点击目击/事迹可跳转大地图定位。
  */
 import { useEffect, useState } from "react";
+import { RotateCw } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useEngine } from "../../lib/bridge";
+import { TENANT_COLORS } from "@/engine/tactical";
 
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
 const DIRS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 const DIR_VEC: Record<string, [number, number]> = { N: [0, -1], NE: [1, -1], E: [1, 0], SE: [1, 1], S: [0, 1], SW: [-1, 1], W: [-1, 0], NW: [-1, -1] };
 const KIND_CN: Record<string, string> = { CORE: "敌核", UNIT: "单位", WORKER: "工", VANGUARD: "锋", RANGER: "射" };
@@ -56,7 +58,7 @@ function MemberCard({ t, m, ts, onFocus, onSector }: { t: string; m: Member; ts?
         <b>{t.toUpperCase()}</b>
         <span className={`sit-status${m.status === "READY" ? " ok" : ""}`}>{m.status ?? "—"}</span>
         <span className="sit-m-pos mono dim">({fmt(m.core.position?.[0])},{fmt(m.core.position?.[1])})</span>
-        <button type="button" className="sit-focus" title={`地图聚焦 ${t.toUpperCase()} 核心`} onClick={(e) => { e.stopPropagation(); onFocus?.(t); }}>聚焦</button>
+        <Button variant="ghost" size="sm" className="sit-focus" title={`地图聚焦 ${t.toUpperCase()} 核心`} onClick={(e) => { e.stopPropagation(); onFocus?.(t); }}>聚焦</Button>
       </div>
       <div className="sit-m-stats">
         <div className="sit-stat">
@@ -179,7 +181,7 @@ export function SituationPanel() {
           <p className="dialog-eyebrow">ALLIANCE SITUATION · 实时态势</p>
           <h2>联盟态势</h2>
         </div>
-        <button type="button" className="btn ghost rp-refresh" title="刷新态势快照" onClick={() => {
+        <Button variant="ghost" size="icon-sm" className="rp-refresh" title="刷新态势快照" onClick={() => {
           setErr(""); setData(null);
           Promise.all([fetch("/api/alliance/snapshot", { cache: "no-store" }), fetch("/api/deeds/journal", { cache: "no-store" })])
             .then(async ([s, j]) => {
@@ -189,7 +191,7 @@ export function SituationPanel() {
               setData(sd); setJournal(jd); setAt(sd.generatedAt ?? sd.cachedAt ?? "");
             })
             .catch((e) => setErr(String((e as Error).message ?? e)));
-        }}>↻</button>
+        }}><RotateCw className="rp-refresh-ico" /></Button>
       </div>
       {at ? <span className="sit-gen dim">{at.replace("T", " ").slice(5, 16)} UTC · tick {fmt(data?.currentTick)} · 15s 刷新</span> : null}
 

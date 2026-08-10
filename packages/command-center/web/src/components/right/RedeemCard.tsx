@@ -1,4 +1,6 @@
 import type { ShopProduct } from "../../lib/shopApi";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
 const fmt = (n: number | null | undefined): string => {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
@@ -34,13 +36,13 @@ export function RedeemCard({ product, busy, onRedeem }: RedeemCardProps) {
         <span className="si-name">{product.name ?? "未命名商品"}</span>
         <div className="si-meta">
           <span className="cost">{(product.resource_cost ?? "?") + " Core"}</span>
-          {badge ? <span className={`stock ${badge.cls}`}>{badge.label}</span> : null}
+          {badge ? <Badge variant={badge.cls === "out" ? "danger" : badge.cls === "low" ? "warn" : "success"} size="sm" className="stock">{badge.label}</Badge> : null}
           {limit !== null && limit !== undefined ? <span className="limit">限购 {limit}/人</span> : null}
         </div>
       </div>
-      <button type="button" className="btn primary si-btn" disabled={soldOut || busy} onClick={() => onRedeem(product)}>
+      <Button variant="primary" size="sm" className="si-btn" disabled={soldOut || busy} onClick={() => onRedeem(product)}>
         {busy ? "…" : "兑换"}
-      </button>
+      </Button>
     </div>
   );
 }
