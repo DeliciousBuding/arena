@@ -79,6 +79,11 @@ export interface TenantStatus {
   readonly desiredConfigHash: string | null;
   readonly activeStrategyHash: string | null;
   readonly lastConfigError: string | null;
+  /** 意外退出自动重启计数（2026-08-10 暴露：watchdog 据此区分"自愈中/已
+   *  耗尽"，耗尽时调 /restart 单租户重启而非整体重启）。 */
+  readonly respawnCount: number;
+  /** 最近一次 ready 时间戳（ms epoch；从未 ready = null）。 */
+  readonly lastReadyAt: number | null;
 }
 
 export interface SupervisorReloadResult {
@@ -136,6 +141,8 @@ interface TenantChild {
   lastConfigError: string | null;
   /** 意外退出自动重启计数（超限交 watchdog 全量恢复）。 */
   respawnCount: number;
+  /** 最近一次 ready 时间戳（ms epoch；从未 ready = null）。 */
+  lastReadyAt: number | null;
 }
 
 interface LockContent {
@@ -292,6 +299,7 @@ export class TenantSupervisor {
       activeStrategyHash: null,
       lastConfigError: null,
       respawnCount: 0,
+      lastReadyAt: null,
     };
     if (previous !== null) {
       entry.child = child;
@@ -437,6 +445,8 @@ export class TenantSupervisor {
         desiredConfigHash: entry.desiredConfigHash,
         activeStrategyHash: entry.activeStrategyHash,
         lastConfigError: entry.lastConfigError,
+        respawnCount: entry.respawnCount,
+        lastReadyAt: entry.lastReadyAt,
       });
     }
     return statuses;
@@ -462,6 +472,62 @@ export class TenantSupervisor {
   }
 
   /** Ask each child to clean itself through IPC; force-kill the complete tree on timeout. */
+  /** 单租户意外退出自动重启上限（watchdog 借 /ready 暴露，判断"自愈中/已耗尽"）。 */
+  get respawnLimit(): number {
+    return this.options.respawnLimit ?? 10;
+  }
+
+  /** 单租户重启（2026-08-10，watchdog 耗尽恢复用）：终止现有 child（若在
+   *  运行，走与 shutdownInternal 同款 IPC 优雅关停 + 超时强杀），重置
+   *  respawnCount 后重建 child。返回 true = 已接管。 */
+  async restartTenant(tenantId: string): Promise<boolean> {
+    const entry = this.children.get(tenantId);
+    if (entry === undefined || this.shuttingDown) return false;
+    if (!entry.exited) {
+      entry.terminating = true;
+      entry.lifecycle = "terminating";
+      this.emit("terminating", tenantId, "tenant restart requested");
+      try {
+        if (entry.child.connected && typeof entry.child.send === "function") {
+          entry.child.send({ type: "arena.shutdown" }, () => {});
+        } else {
+          entry.child.kill("SIGTERM");
+        }
+      } catch (error) {
+        entry.lastError = error instanceof Error ? error.message : String(error);
+      }
+      await this.waitForChildExit(entry);
+    }
+    entry.respawnCount = 0;
+    entry.terminating = false;
+    entry.lastError = null;
+    this.spawnTenant(entry.spec, entry);
+    return true;
+  }
+
+  /** 等待单租户 child 退出（轮询 + 超时强杀树，语义同 shutdown 的 timeout_killed）。 */
+  private async waitForChildExit(entry: TenantChild, timeoutMs = 8000): Promise<void> {
+    if (entry.exited) return;
+    await new Promise<void>((resolve) => {
+      const startedAt = Date.now();
+      const poll = setInterval(() => {
+        if (entry.exited || Date.now() - startedAt > timeoutMs) {
+          clearInterval(poll);
+          resolve();
+        }
+      }, 100);
+      poll.unref?.();
+    });
+    if (!entry.exited) {
+      this.emit("timeout_killed", entry.spec.tenantId, `tenant restart kill after ${timeoutMs}ms`, entry.pid);
+      try {
+        await (this.options.forceKillTree ?? forceKillProcessTree)(entry.child);
+      } catch (error) {
+        entry.lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+
   shutdown(): Promise<void> {
     if (this.shutdownPromise !== null) return this.shutdownPromise;
     this.shuttingDown = true;
@@ -674,6 +740,7 @@ export class TenantSupervisor {
       if (entry.lifecycle !== "ready") {
         entry.lifecycle = "ready";
         entry.everReady = true;
+        entry.lastReadyAt = Date.now();
         entry.lastError = null;
         this.emit("ready", entry.spec.tenantId, undefined, entry.pid);
       }

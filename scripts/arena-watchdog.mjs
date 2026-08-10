@@ -189,15 +189,52 @@ function arenaPids() {
   }
 }
 
-/** 优雅关停：POST /shutdown → 等 GRACEFUL_WAIT_S → 仍监听则 taskkill 树。 */
-async function gracefulShutdown() {
+/** 读 debug-token（watchdog 恢复操作认证用；缺失返回 null，调用方保持旧行为）。 */
+function readDebugToken() {
+  try {
+    const token = readFileSync(join(RUNTIME_ROOT, "debug-token"), "utf8").trim();
+    return token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 单租户重启（2026-08-10：respawn 耗尽后只重启该租户，不再整体重启拖垮
+ *  四租户）。POST /restart?tenant=<id>，带 debug-token。返回 true = 已发出。 */
+async function restartTenant(tenantId) {
+  const token = readDebugToken();
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
-    await fetch(SHUTDOWN_URL, { method: "POST", signal: controller.signal });
+    const headers = token !== null ? { "x-arena-token": token } : undefined;
+    const response = await fetch(`${READY_URL.replace(/\/ready$/, "/restart")}?tenant=${encodeURIComponent(tenantId)}`, {
+      method: "POST",
+      headers,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    log(`tenant restart requested (${tenantId}) -> HTTP ${response.status}${token === null ? " (no token)" : ""}`);
+    return true;
+  } catch {
+    log(`tenant restart request failed (${tenantId})`);
+    return false;
+  }
+}
+
+/** 优雅关停：POST /shutdown（带 debug-token 认证，2026-08-10：此前无 token
+ *  必 401，恢复路径白等 8s 后 taskkill 强杀 → recorder/manifest 不落盘
+ *  torn run）→ 等 GRACEFUL_WAIT_S → 仍监听则 taskkill 树。 */
+async function gracefulShutdown() {
+  const token = readDebugToken();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const headers = token !== null && token.length > 0 ? { "x-arena-token": token } : undefined;
+    const response = await fetch(SHUTDOWN_URL, { method: "POST", headers, signal: controller.signal });
+    log(`gracefulShutdown: POST /shutdown -> HTTP ${response.status}${token === null ? " (no token file)" : ""}`);
     clearTimeout(timer);
   } catch {
-    // 无 8120 服务（可能已死）→ 直接走进程清理
+    log("gracefulShutdown: POST /shutdown failed (supervisor may be dead)");
   }
   await new Promise((resolve) => setTimeout(resolve, GRACEFUL_WAIT_S * 1000));
   if (probePort8120()) {
@@ -241,6 +278,11 @@ async function killStrays() {
   return finalPids !== null;
 }
 
+/** 启动宽限：lock 龄低于该秒数 = 租户刚启动尚未产出首个 outcome，不判 stall。
+ *  2026-08-10 修复：旧逻辑用"lock 新于 outcome 则恒跳过"，启动即崩的租户
+ *  锁恒新于 outcome → 永久盲区；改为 lock 绝对龄宽限。 */
+const LOCK_FRESH_S = 600;
+
 /** stall 检查：outcome 超龄 / decision 停摆 / economy 停摆（独立脚本判定）。 */
 function stalledTenant() {
   for (const tenant of TENANTS) {
@@ -253,13 +295,16 @@ function stalledTenant() {
     } catch {
       // lockDir 缺失 = 该租户未运行，跳过
     }
-    if (!existsSync(outcomePath) || lockPath === null) continue;
-    const outcomeMtime = statSync(outcomePath).mtimeMs;
-    const lockMtime = statSync(lockPath).mtimeMs;
-    // 启动宽限：lock 新于 outcome = 本轮尚未产出首个 outcome，不判 stall
-    if (outcomeMtime < lockMtime) continue;
-    const ageS = (Date.now() - outcomeMtime) / 1000;
-    if (ageS > STALL_MAX_AGE_S) return tenant;
+    if (!existsSync(outcomePath)) continue;
+    const outcomeAgeS = (Date.now() - statSync(outcomePath).mtimeMs) / 1000;
+    if (outcomeAgeS > STALL_MAX_AGE_S) {
+      // outcome 超龄：仅当锁很新（启动宽限内）才跳过；锁缺失/陈旧 = 判 stall
+      if (lockPath !== null) {
+        const lockAgeS = (Date.now() - statSync(lockPath).mtimeMs) / 1000;
+        if (lockAgeS < LOCK_FRESH_S) continue;
+      }
+      return tenant;
+    }
 
     // 决策停摆（0 动作）与经济停摆（满载不卸货）用既有脚本判定（保持同一套阈值）
     for (const script of ["check-decision-stall.sh", "check-economy-stall.sh"]) {
@@ -314,9 +359,20 @@ async function main() {
     if (stalled === null) return;
     log(`STALL detected (${stalled} outcome stale > ${STALL_MAX_AGE_S}s or decision inactive) -> recovering`);
   } else if (ready !== null && !ready.ready && !shouldFullRecover(ready)) {
-    // supervisor 应答但未全 ready，且有租户存活 = 部分故障：信任内部
-    // auto-respawn 自愈；只有整体停摆（stall）才介入，避免单租户崩溃
-    // 拖垮四租户连带重启。
+    // supervisor 应答但未全 ready，且有租户存活 = 部分故障。优先检查 respawn
+    // 已耗尽的死租户（2026-08-10：/ready 暴露 respawnCount + respawnLimit）：
+    // 耗尽 = supervisor 内部自愈已放弃 → 调 /restart 单租户重启，绝不整体
+    // 重启拖垮四租户；未耗尽 = 信任内部 auto-respawn；stall 检测作整体兜底。
+    const exhausted = (ready.tenants ?? []).find(
+      (tenant) => tenant.alive === false
+        && typeof tenant.respawnCount === "number"
+        && typeof ready.respawnLimit === "number"
+        && tenant.respawnCount >= ready.respawnLimit,
+    );
+    if (exhausted !== undefined) {
+      await restartTenant(exhausted.tenantId);
+      return;
+    }
     const stalled = stalledTenant();
     if (stalled === null) {
       log("partial ready (some tenants down) -> supervisor self-recovering, full restart skipped");

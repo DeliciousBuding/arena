@@ -1262,3 +1262,61 @@ test("Supervisor + central Alliance shadow: frames -> ASSIST directives -> ACK, 
     repo.cleanup();
   }
 });
+
+test("restartTenant: 已死租户重置 respawnCount 并重建 child（watchdog 耗尽恢复路径）", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  const supervisor = new TenantSupervisor({
+    repoRoot: repo.root,
+    configs: ["t1.json"],
+    spawnChild: fakeSpawn(children),
+    respawnLimit: 2,
+    respawnDelayMs: 0,
+  });
+  try {
+    await supervisor.start();
+    const first = children.get("t1")!;
+    first.emitExit(1, null); // 意外退出 → auto-respawn 1/2
+    await waitUntil(() => children.get("t1") !== first);
+    const second = children.get("t1")!;
+    second.emitExit(1, null); // auto-respawn 2/2
+    await waitUntil(() => children.get("t1") !== second);
+    const third = children.get("t1")!;
+    third.emitExit(1, null); // 达到上限 → 不再自动重建
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(children.get("t1"), third, "respawn 耗尽后 supervisor 不再自动重建");
+    let status = supervisor.status().find((s) => s.tenantId === "t1")!;
+    assert.equal(status.respawnCount, 2);
+
+    const restarted = await supervisor.restartTenant("t1");
+    assert.equal(restarted, true);
+    assert.notEqual(children.get("t1"), third, "restartTenant 重建新 child");
+    status = supervisor.status().find((s) => s.tenantId === "t1")!;
+    assert.equal(status.respawnCount, 0, "restartTenant 重置 respawnCount");
+    assert.equal(status.lifecycle, "starting");
+  } finally {
+    const current = children.get("t1");
+    if (current !== undefined) current.autoExitOnSend = true;
+    await supervisor.shutdown();
+    repo.cleanup();
+  }
+});
+
+test("restartTenant: 未知租户返回 false", async () => {
+  const repo = makeTempRepo();
+  const children = new Map<string, FakeChild>();
+  const supervisor = new TenantSupervisor({
+    repoRoot: repo.root,
+    configs: ["t1.json"],
+    spawnChild: fakeSpawn(children),
+  });
+  try {
+    await supervisor.start();
+    assert.equal(await supervisor.restartTenant("no-such-tenant"), false);
+  } finally {
+    const current = children.get("t1");
+    if (current !== undefined) current.autoExitOnSend = true;
+    await supervisor.shutdown();
+    repo.cleanup();
+  }
+});
