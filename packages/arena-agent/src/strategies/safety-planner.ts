@@ -4000,12 +4000,13 @@ export class SafetyPlanner {
     const target = this.effectiveAggression === "aggressive"
       ? fireable.sort(aggressiveShotPriority)[0]
       : fireable.sort((a, b) => defensiveShotPriority(unit.position, a, b))[0];
+    // C1 扩展（2026-08-10）：连续 miss 回退。per-ranger SHOT_MISSED 连续
+    // 计数（SHOT_HIT 归零）。达上限后跳过直射 AND 预判射击——t1 实证：
+    // 旧版只跳过直射，ranger 落入 shoot_cell 继续空枪（predictedEnemyCell
+    // 对静止目标总偏移 1 格 → 62% 预判带非零偏移 → 必 miss）。现在达
+    // 上限后全部跳过，落入下方走位/重新定位找更好角度。
+    const consecutiveMisses = this.rangerConsecutiveMisses.get(unit.id) ?? 0;
     if (target !== undefined) {
-      // C1 扩展（2026-08-10）：直射 miss 回退。直射（targetId≠null）不经过
-      // C1 的 shoot_cell 静止检查——ranger 对射程内敌人连开 N 枪全 miss 时
-      // 不发直射，落入下方走位/预判分支重新找角度。t1 实证：ranger 连打
-      // 20+ tick 同一静止敌全 miss，C1 的 shoot_cell 跳过管不到直射分支。
-      const consecutiveMisses = this.rangerConsecutiveMisses.get(unit.id) ?? 0;
       if (consecutiveMisses < RANGER_DIRECT_SHOT_MISS_LIMIT) {
         set(unit, { type: "SHOOT", targetId: target.id, expectedCell: target.position }, "shoot");
         return;
@@ -4024,7 +4025,7 @@ export class SafetyPlanner {
       ? enemies.filter((enemy) => enemy.kind === "CORE" || (projectedFriendlyDamage.get(enemy.id) ?? 0) < enemy.hp)
       : enemies;
     const nearest = nearestEnemy(predictionPool, unit.position);
-    if (nearest !== null) {
+    if (nearest !== null && consecutiveMisses < RANGER_DIRECT_SHOT_MISS_LIMIT) {
       const predicted = predictedEnemyCell(unit.position, nearest.position);
       // C1 修复（2026-08-10）：预判射击对"确认静止"的敌人跳过——
       // 生产实证 shoot_cell 367 发 → 360 次 SHOT_MISSED（98% 空枪率），
