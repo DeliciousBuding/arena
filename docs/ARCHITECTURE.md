@@ -1,10 +1,10 @@
 # Arena Bot 架构（Python 版，legacy）
 
-> ⚠️ **本文件描述已删除的 Python runtime，只是不可执行的历史快照。**
-> 当前权威架构见 [共享 TS 架构](../../docs/ts-architecture.md)，运维见 [共享 Supervisor 手册](../../docs/ops/supervisor-runbook.md)。
+> ⚠️ **本文件描述早期 Python runtime 的历史快照，仅作参考，不再可执行。**
+> 当前实现见 [README](../README.md) 与 `docs/` 目录；本文仅作历史参考。
 > 不要按本文命令恢复 Python 运行链。
 
-最后更新：2026-08-02（重构后）
+最后更新：2026-08-10
 
 ## 分层
 
@@ -85,5 +85,5 @@ PATROL ⇄ GO_HARVEST（跨 Tick 目标记忆）→ cargo>0 → RETURN → DEPOS
 ## 规则契约
 
 - 规则 v0.10 / SDK 0.2.6（2026-08-02 核对，上游 commit ad6fc27 / 4a29585）
-- 契约文档 `docs/game-rules.md`；数值速查 `../../docs/reference-numbers.md`
-- 升级路径：更新 `../../reference/` 官方镜像 → 同步公共规则文档与 TS schema/实现 → Runtime-Golden 门禁
+- 契约文档 `docs/game-rules.md`
+- 升级路径：更新上游官方镜像 → 同步公共规则文档与 schema/实现 → Runtime-Golden 门禁
