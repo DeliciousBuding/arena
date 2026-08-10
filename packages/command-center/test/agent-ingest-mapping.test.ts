@@ -20,7 +20,8 @@ function freshDb(): DatabaseSync {
 CREATE TABLE IF NOT EXISTS agents (
   tenant TEXT NOT NULL, instance TEXT NOT NULL, tick INTEGER,
   resources INTEGER, population INTEGER, core_x INTEGER, core_y INTEGER,
-  units INTEGER, visible_enemies INTEGER, status TEXT, sdk_version TEXT,
+  units INTEGER, vanguards INTEGER, rangers INTEGER,
+  visible_enemies INTEGER, status TEXT, sdk_version TEXT,
   base_url TEXT, pid INTEGER, platform TEXT,
   mode TEXT NOT NULL DEFAULT 'production',
   connection_state TEXT NOT NULL DEFAULT 'down',

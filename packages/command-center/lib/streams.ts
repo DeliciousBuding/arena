@@ -26,6 +26,9 @@ export interface OverviewTenant {
     workers?: number | null;
     /** 单位总数（台账 units 为准：含工人/先锋/游侠；纯 JSONL 无台账时回落 workerCount） */
     units?: number | null;
+    /** 我方先锋/游侠数（telemetry-v3 台账 controlled_by_type，SDK 捕获） */
+    vanguards?: number | null;
+    rangers?: number | null;
     /** 人口（台账 population；纯 JSONL 无此字段时为空） */
     population?: number | null;
     workersWithCargo?: number | null;
@@ -97,6 +100,8 @@ export function loadOverview(supervisorState: SupervisorState | null): OverviewP
             // 只有台账可读）；workers 回落台账 units（无 JSONL 时总数兜底）
             workers: agent.units,
             units: agent.units,
+            vanguards: agent.vanguards,
+            rangers: agent.rangers,
             population: agent.population,
             workersWithCargo: null,
             workerMaxDistance: null,
@@ -131,6 +136,8 @@ export function loadOverview(supervisorState: SupervisorState | null): OverviewP
             resourceDelta: (last.coreResourceDelta as number | undefined) ?? null,
             workers: (last.workerCount as number | undefined) ?? null,
             units: (last.workerCount as number | undefined) ?? null,
+            vanguards: null,
+            rangers: null,
             population: null,
             workersWithCargo: (last.workersWithCargo as number | undefined) ?? null,
             workerMaxDistance: (last.workerMaxDistanceFromCore as number | undefined) ?? null,

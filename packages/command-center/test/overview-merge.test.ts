@@ -95,6 +95,9 @@ test("loadOverview: 台账新鲜 → latest = 台账基准 ∪ JSONL 丰富字�
     // JSONL workerCount 只覆盖 workers 字段——侧栏/顶栏"单位"不再错显
     assert.equal(merged.units, 12, "台账单位总数不被 JSONL workerCount 覆盖");
     assert.equal(merged.population, 10, "台账人口保持");
+    // vanguards/rangers（telemetry-v3）：台账 controlled_by_type 落库透传
+    assert.equal(merged.vanguards, null, "无 controlled_by_type 时为空");
+    assert.equal(merged.rangers, null, "无 controlled_by_type 时为空");
 
     // 场景 B：JSONL tick 远离（旧 run 残留）→ 不合并，回落台账-only
     writeOutcome(dir, 30000);

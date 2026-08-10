@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS agents (
   core_x INTEGER,
   core_y INTEGER,
   units INTEGER,
+  vanguards INTEGER,
+  rangers INTEGER,
   visible_enemies INTEGER,
   status TEXT,
   sdk_version TEXT,
@@ -102,9 +104,9 @@ CREATE INDEX IF NOT EXISTS idx_resource_seen_history_tick ON resource_seen_histo
 const AGENT_UPSERT = `
 INSERT INTO agents (
   tenant, instance, tick, resources, population, core_x, core_y, units,
-  visible_enemies, status, sdk_version, base_url, pid, platform, mode,
-  connection_state, first_seen, last_heartbeat, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'production'), ?, ?, ?, ?)
+  vanguards, rangers, visible_enemies, status, sdk_version, base_url, pid,
+  platform, mode, connection_state, first_seen, last_heartbeat, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'production'), ?, ?, ?, ?)
 ON CONFLICT(tenant, instance) DO UPDATE SET
   tick = COALESCE(excluded.tick, agents.tick),
   resources = COALESCE(excluded.resources, agents.resources),
@@ -112,6 +114,8 @@ ON CONFLICT(tenant, instance) DO UPDATE SET
   core_x = COALESCE(excluded.core_x, agents.core_x),
   core_y = COALESCE(excluded.core_y, agents.core_y),
   units = COALESCE(excluded.units, agents.units),
+  vanguards = COALESCE(excluded.vanguards, agents.vanguards),
+  rangers = COALESCE(excluded.rangers, agents.rangers),
   visible_enemies = COALESCE(excluded.visible_enemies, agents.visible_enemies),
   status = COALESCE(excluded.status, agents.status),
   sdk_version = COALESCE(excluded.sdk_version, agents.sdk_version),
@@ -136,6 +140,9 @@ export interface AgentIngestEvent {
   readonly population?: number | null;
   readonly core?: readonly [number, number] | null;
   readonly units?: number | null;
+  /** 我方单位构成（telemetry-v3，2026-08-10）：controlled UNIT 按类型计数
+   *  {WORKER: n, VANGUARD: n, RANGER: n}；落 agents 表 vanguards/rangers。 */
+  readonly controlled_by_type?: Readonly<Record<string, number>>;
   readonly visible_enemies?: number | null;
   readonly api_key_tail?: string;
   readonly base_url?: string;
@@ -163,6 +170,8 @@ export interface AgentRow {
   readonly coreX: number | null;
   readonly coreY: number | null;
   readonly units: number | null;
+  readonly vanguards: number | null;
+  readonly rangers: number | null;
   readonly visibleEnemies: number | null;
   readonly status: string | null;
   readonly sdkVersion: string | null;
@@ -192,6 +201,7 @@ export function openAgentDb(tenant: string, write = false): DatabaseSync {
   if (write) {
     ensureAgentModeColumn(db); // 旧库补 mode 列（幂等）
     ensureAgentCompositePk(db); // 旧库单列 PK → (tenant, instance) 复合 PK（幂等）
+    ensureAgentVanguardRangerColumns(db); // 旧库补 vanguards/rangers 列（幂等）
   }
   return db;
 }
@@ -253,6 +263,23 @@ function ensureAgentModeColumn(db: DatabaseSync): void {
   }
 }
 
+/** 旧库迁移（2026-08-10，telemetry-v3 通用化）：agents 表补 vanguards/
+ *  rangers 列（我方单位构成，SDK controlled_by_type 落库）。幂等：列已存在
+ *  则跳过。仅 write 打开时执行（面板只读连接不触发 DDL）。 */
+function ensureAgentVanguardRangerColumns(db: DatabaseSync): void {
+  try {
+    const cols = db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "vanguards")) {
+      db.exec("ALTER TABLE agents ADD COLUMN vanguards INTEGER;");
+    }
+    if (!cols.some((c) => c.name === "rangers")) {
+      db.exec("ALTER TABLE agents ADD COLUMN rangers INTEGER;");
+    }
+  } catch {
+    // 并发 write 开打碰撞时容错；下次写入重试即可
+  }
+}
+
 /** 将 SDK 上报的一条 telemetry 事件写入台账（agents + agent_events +
  *  tick_summary 附带测绘字段时写测绘表）。 */
 export function applyAgentEvent(db: DatabaseSync, event: AgentIngestEvent): void {
@@ -264,6 +291,11 @@ export function applyAgentEvent(db: DatabaseSync, event: AgentIngestEvent): void
   // 只认合法 mode；缺省/非法 → null（INSERT 回落 'production'，UPDATE 保留现值，
   // 避免 tick_summary 等无 mode 事件把已登记的 simulation 覆盖回 production）
   const modeValue = event.mode === "production" || event.mode === "simulation" ? event.mode : null;
+  // 我方单位构成（telemetry-v3）：SDK 只列存在的类型键（缺键=0）；
+  // 旧客户端无 controlled_by_type 字段 → null（未知，不显示假 0）。
+  const cbt = event.controlled_by_type;
+  const vanguards = cbt === undefined ? null : (cbt.VANGUARD ?? 0);
+  const rangers = cbt === undefined ? null : (cbt.RANGER ?? 0);
 
   db.prepare(AGENT_UPSERT).run(
     event.tenant,
@@ -274,6 +306,8 @@ export function applyAgentEvent(db: DatabaseSync, event: AgentIngestEvent): void
     coreX,
     coreY,
     event.units ?? null,
+    vanguards,
+    rangers,
     event.visible_enemies ?? null,
     event.status ?? null,
     event.sdk_version ?? null,
@@ -376,6 +410,8 @@ export function knownAgent(db: DatabaseSync, tenant: string): AgentRow | null {
     coreX: r.core_x === null ? null : Number(r.core_x),
     coreY: r.core_y === null ? null : Number(r.core_y),
     units: r.units === null ? null : Number(r.units),
+    vanguards: r.vanguards === null ? null : Number(r.vanguards),
+    rangers: r.rangers === null ? null : Number(r.rangers),
     visibleEnemies: r.visible_enemies === null ? null : Number(r.visible_enemies),
     status: r.status === null ? null : String(r.status),
     sdkVersion: r.sdk_version === null ? null : String(r.sdk_version),
