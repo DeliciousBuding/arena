@@ -20,6 +20,7 @@ interface OverviewTenant {
     resources?: number | null;
     resourceDelta?: number | null;
     workers?: number | null;
+    units?: number | null;
     visibleEnemies?: number | null;
     coreX?: number | null;
     coreY?: number | null;
@@ -97,7 +98,7 @@ export function TopBar() {
             <div key={t.tenant} className="empire-cell" style={{ ["--tc" as string]: color }}>
               <b><i>{TENANT_LABEL[t.tenant] ?? t.tenant.toUpperCase()}</i> {L.resources ?? "—"}</b>
               <span>
-                单位 {L.workers ?? "—"} ·{" "}
+                单位 {L.units ?? L.workers ?? "—"} ·{" "}
                 {d === null ? (
                   <em>—</em>
                 ) : (

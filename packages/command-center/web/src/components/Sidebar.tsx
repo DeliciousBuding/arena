@@ -48,6 +48,7 @@ interface OverviewTenant {
     resources?: number | null;
     resourceDelta?: number | null;
     workers?: number | null;
+    units?: number | null;
     workerMaxDistance?: number | null;
     workerMeanDistance?: number | null;
     visibleResources?: number | null;
@@ -228,8 +229,8 @@ function TenantCards() {
             <>
             <div className="metrics">
               <div className="metric"><span className="v">{fmt(L.resources)}</span><span className="k">资源</span></div>
-              <div className="metric" title="当前可见单位数（含工人/先锋/游侠）">
-                <span className="v">{fmt(L.workers)}</span><span className="k">单位</span>
+              <div className="metric" title="单位总数（含工人/先锋/游侠，台账上报）">
+                <span className="v">{fmt(L.units ?? L.workers)}</span><span className="k">单位</span>
               </div>
               <div className="metric" title="当前可见敌方单位数（智能体上报）">
                 <span className="v">{fmt(L.visibleEnemies)}</span><span className="k">敌方</span>

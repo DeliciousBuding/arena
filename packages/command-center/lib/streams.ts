@@ -24,6 +24,10 @@ export interface OverviewTenant {
     resources?: number | null;
     resourceDelta?: number | null;
     workers?: number | null;
+    /** 单位总数（台账 units 为准：含工人/先锋/游侠；纯 JSONL 无台账时回落 workerCount） */
+    units?: number | null;
+    /** 人口（台账 population；纯 JSONL 无此字段时为空） */
+    population?: number | null;
     workersWithCargo?: number | null;
     workerMaxDistance?: number | null;
     workerMeanDistance?: number | null;
@@ -90,8 +94,10 @@ export function loadOverview(supervisorState: SupervisorState | null): OverviewP
             resources: agent.resources,
             resourceDelta: null,
             // 台账语义：units = 单位总数（python 租户 t2/t3/t4 无 TS JSONL，
-            // 只有台账可读）
+            // 只有台账可读）；workers 回落台账 units（无 JSONL 时总数兜底）
             workers: agent.units,
+            units: agent.units,
+            population: agent.population,
             workersWithCargo: null,
             workerMaxDistance: null,
             workerMeanDistance: null,
@@ -105,8 +111,10 @@ export function loadOverview(supervisorState: SupervisorState | null): OverviewP
           if (last === null || !tickClose) return base;
           return {
             ...base,
-            // JSONL 语义：workerCount = 自有 worker 数（t1）；台账 units =
-            // 单位总数——合并模式下 JSONL 存在即用 workerCount，缺字段回落台账
+            // JSONL 语义：workerCount = 自有 worker 数（t1，只算 WORKER）；
+            // units/population 保持台账值（JSONL 无单位总数/人口字段，
+            // 2026-08-10 修复：此前 workers 被 workerCount 覆盖成 17，
+            // 而台账 units=51 是含先锋/游侠的单位总数——侧栏/顶栏"单位"错显）
             workers: (last.workerCount as number | undefined) ?? agent.units,
             resourceDelta: (last.coreResourceDelta as number | undefined) ?? null,
             workerMaxDistance: (last.workerMaxDistanceFromCore as number | undefined) ?? null,
@@ -122,6 +130,8 @@ export function loadOverview(supervisorState: SupervisorState | null): OverviewP
             resources: (last.coreResourcesAfter as number | undefined) ?? null,
             resourceDelta: (last.coreResourceDelta as number | undefined) ?? null,
             workers: (last.workerCount as number | undefined) ?? null,
+            units: (last.workerCount as number | undefined) ?? null,
+            population: null,
             workersWithCargo: (last.workersWithCargo as number | undefined) ?? null,
             workerMaxDistance: (last.workerMaxDistanceFromCore as number | undefined) ?? null,
             workerMeanDistance: (last.workerMeanDistanceFromCore as number | undefined) ?? null,

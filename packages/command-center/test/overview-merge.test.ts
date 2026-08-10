@@ -38,7 +38,7 @@ function writeOutcome(dir: string, tick: number): void {
     tick,
     coreResourcesAfter: 5,
     coreResourceDelta: 3,
-    workerCount: 12,
+    workerCount: 7,
     workersWithCargo: 4,
     workerMaxDistanceFromCore: 210.5,
     workerMeanDistanceFromCore: 87.3,
@@ -90,7 +90,11 @@ test("loadOverview: 台账新鲜 → latest = 台账基准 ∪ JSONL 丰富字�
     assert.equal(merged.visibleResources, 14);
     assert.equal(merged.events, 2);
     // workers 语义：合并模式用 JSONL workerCount（自有 worker 数，t1 语义）
-    assert.equal(merged.workers, 12);
+    assert.equal(merged.workers, 7);
+    // units/population 语义（2026-08-10 修复）：单位总数/人口以台账为准，
+    // JSONL workerCount 只覆盖 workers 字段——侧栏/顶栏"单位"不再错显
+    assert.equal(merged.units, 12, "台账单位总数不被 JSONL workerCount 覆盖");
+    assert.equal(merged.population, 10, "台账人口保持");
 
     // 场景 B：JSONL tick 远离（旧 run 残留）→ 不合并，回落台账-only
     writeOutcome(dir, 30000);
@@ -102,6 +106,8 @@ test("loadOverview: 台账新鲜 → latest = 台账基准 ∪ JSONL 丰富字�
     assert.equal(base.visibleResources, null);
     assert.equal(base.events, 0);
     assert.equal(base.workers, 12, "无 JSONL 时回落台账 units");
+    assert.equal(base.units, 12, "台账单位总数");
+    assert.equal(base.population, 10, "台账人口");
   } finally {
     delete process.env.ARENA_DATA_ROOT;
     cleanup(dir);
