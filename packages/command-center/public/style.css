@@ -212,6 +212,8 @@ body {
 @keyframes dotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
 #topbar .badge.err { color: var(--danger); border-color: rgba(252,86,70,.45); background: rgba(252,86,70,.1); }
 #topbar .btn { min-height: 26px; padding: 0 11px; font-size: 12px; }
+/* 注：#topbar .badge / .btn 规则仍被 TopBar 的 <span class="badge"> / <button class="btn"> 使用
+   （组件迁移未持久化，见对话记录）。原语迁移生效后这些才变死 CSS 可删。 */
 /* ---------- 帝国总览资源条（群星 topbar：每租户 资源/工人/增量 数据格） ---------- */
 .empire-strip { display: flex; align-items: stretch; gap: 4px; }
 .empire-cell {
