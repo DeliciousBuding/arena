@@ -73,7 +73,7 @@ function captureEnv(spawned: Map<string, Record<string, string>>, children: Map<
   };
 }
 
-test("python spawn: env whitelist injection + proxy strip + PYTHONPATH", async () => {
+test("python spawn: env whitelist injection + proxy kept by default + PYTHONPATH", async () => {
   const env = makeTestEnv();
   process.env.HTTP_PROXY = "http://127.0.0.1:7897";
   const spawned = new Map<string, Record<string, string>>();
@@ -82,6 +82,7 @@ test("python spawn: env whitelist injection + proxy strip + PYTHONPATH", async (
   const manager = new PythonTenantManager(makeSpec(env.cwd, { args: ["--log-file", "tactic.log"] }), {
     spawn: captureEnv(spawned, children, argsSeen),
     heartbeatPollMs: 1000,
+    forceKillTree: async () => {}, // fake child 无真实进程：避免 taskkill 误杀/拖慢
   });
   try {
     manager.start();
@@ -90,16 +91,56 @@ test("python spawn: env whitelist injection + proxy strip + PYTHONPATH", async (
     assert.equal(childEnv.ARENA_HERO_TELEMETRY_ENDPOINT, "http://127.0.0.1:8787/api/ingest/agents");
     assert.equal(childEnv.ARENA_HERO_TENANT, "t2");
     assert.equal(childEnv.SOME_OTHER_VAR, undefined, ".env 非白名单变量不注入");
-    assert.equal(childEnv.HTTP_PROXY, undefined, "HTTP_PROXY 剥离");
+    assert.equal(childEnv.HTTP_PROXY, "http://127.0.0.1:7897", "默认保留代理（官方 API 需走代理）");
     assert.equal(childEnv.PYTHONPATH, "D:/fake/repo/arena-hero-tactic");
     assert.deepEqual(argsSeen[0], ["-m", "bot.main", "--log-file", "tactic.log"], "args 透传给模块");
     const status = manager.status();
     assert.equal(status.tenantId, "t2");
     assert.equal(status.alive, true);
     assert.equal(status.lifecycle, "starting");
-  } finally {
+    // stripProxy: true 显式剥离
     await manager.stop();
+    const stripped = new PythonTenantManager(makeSpec(env.cwd, { stripProxy: true }), {
+      spawn: captureEnv(spawned, children),
+      heartbeatPollMs: 1000,
+    });
+    stripped.start();
+    const strippedEnv = spawned.get("t2")!;
+    assert.equal(strippedEnv.HTTP_PROXY, undefined, "stripProxy=true 时剥离代理");
+    await stripped.stop();
+  } finally {
     delete process.env.HTTP_PROXY;
+    env.cleanup();
+  }
+});
+
+test("python boot grace: stale log within grace not killed, after grace killed", async () => {
+  const env = makeTestEnv();
+  const spawned = new Map<string, Record<string, string>>();
+  const children = new Map<string, FakePyChild>();
+  // tactic.log 写入过去时间 = 心跳超时（但 bootGraceMs 内不判死）
+  const logPath = join(env.cwd, "tactic.log");
+  writeFileSync(logPath, "tick\n");
+  utimesSync(logPath, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+  const manager = new PythonTenantManager(makeSpec(env.cwd, { heartbeatTtlMs: 60_000, bootGraceMs: 80 }), {
+    spawn: captureEnv(spawned, children),
+    heartbeatPollMs: 25,
+    forceKillTree: async () => {},
+  });
+  let heartbeatLost = 0;
+  manager.on("heartbeat_lost", () => { heartbeatLost += 1; });
+  try {
+    manager.start();
+    const first = children.get("t2")!;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(heartbeatLost, 0, "boot grace 内心跳 stale 不判死");
+    assert.equal(manager.status().alive, true, "boot grace 内 alive");
+    // 超过 boot grace（80ms）后 stale 判死
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(heartbeatLost, 1, "超过 boot grace 后心跳超时判死");
+    assert.ok(first.killed.includes("SIGTERM"), "超时后 SIGTERM 终止");
+    await manager.stop();
+  } finally {
     env.cleanup();
   }
 });
@@ -111,6 +152,7 @@ test("python respawn: unexpected exit backoffs and respawns with count", async (
   const manager = new PythonTenantManager(makeSpec(env.cwd), {
     spawn: captureEnv(spawned, children),
     heartbeatPollMs: 1000,
+    forceKillTree: async () => {},
   });
   try {
     manager.start();
@@ -137,6 +179,7 @@ test("python respawn: limit exhausted -> dead + exhausted event", async () => {
   const manager = new PythonTenantManager(makeSpec(env.cwd, { respawnLimit: 2 }), {
     spawn: captureEnv(spawned, children),
     heartbeatPollMs: 1000,
+    forceKillTree: async () => {},
   });
   let exhausted = 0;
   manager.on("exhausted", () => { exhausted += 1; });
@@ -168,9 +211,10 @@ test("python heartbeat: stale stdout log -> kill + respawn (dead-detection)", as
   const logPath = join(env.cwd, "tactic.log");
   writeFileSync(logPath, "tick\n");
   utimesSync(logPath, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
-  const manager = new PythonTenantManager(makeSpec(env.cwd, { heartbeatTtlMs: 60_000 }), {
+  const manager = new PythonTenantManager(makeSpec(env.cwd, { heartbeatTtlMs: 60_000, bootGraceMs: 0 }), {
     spawn: captureEnv(spawned, children),
     heartbeatPollMs: 25,
+    forceKillTree: async () => {},
   });
   let heartbeatLost = 0;
   manager.on("heartbeat_lost", () => { heartbeatLost += 1; });
@@ -195,6 +239,7 @@ test("python registry reload: changed spec restarts, added starts, removed stops
   const registry = new PythonTenantRegistry([base], {}, {
     spawn: captureEnv(spawned, children),
     heartbeatPollMs: 1000,
+    forceKillTree: async () => {},
   });
   try {
     registry.start();
@@ -229,6 +274,7 @@ test("python stop: SIGTERM graceful, no respawn after stop", async () => {
   const manager = new PythonTenantManager(makeSpec(env.cwd), {
     spawn: captureEnv(spawned, children),
     heartbeatPollMs: 1000,
+    forceKillTree: async () => {},
   });
   try {
     manager.start();

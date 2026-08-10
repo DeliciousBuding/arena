@@ -8,8 +8,8 @@
  *   自动重启（ps1 只启动不看护，死后永久死）
  * - 退出码采集 + lastError 台账（ps1 丢弃 exit code，err.log 每次覆盖）
  * - 日志追加 + 轮转语义（ps1 覆盖 tactic.log/err.log，历史证据截断）
- * - 代理剥离（2026-08-09 python 掉线根因：httpx 走 HTTP_PROXY →
- *   TransportError 循环；ps1 未复刻 env -u 修复）
+ * - 代理 env：默认保留（2026-08-10 现场证实官方 API 需走代理，直连 hang
+ *   无输出；08-09 曾剥离代理并归因掉线，经证为误判——stripProxy 显式开关）
  * - .env 白名单注入（值从不打印、不落仓）
  */
 
@@ -33,6 +33,14 @@ export interface PythonAgentSpec {
   readonly cwd: string;
   /** 心跳超时判死（ms）；缺省 60_000（> 3 tick，15s/tick）。 */
   readonly heartbeatTtlMs?: number;
+  /** 启动宽限（ms）：spawn 后此窗口内心跳 stale 不判死（连接建立期）。
+   *  缺省 90_000（官方 API 首连/鉴权可达 30-60s）。 */
+  readonly bootGraceMs?: number;
+  /** 剥离代理 env（HTTP_PROXY 等）。缺省 false = 保留代理。
+   *  2026-08-10 现场证据：官方 API 必须走代理（直连 hang 无输出）；
+   *  08-09 曾默认剥离（当时 TransportError 循环归因代理），经证为误判
+   *  或代理当时故障——现改为显式开关，保留代理为默认。 */
+  readonly stripProxy?: boolean;
   /** 意外退出自动重启上限；缺省 5。 */
   readonly respawnLimit?: number;
   /** 重启基础延迟（指数退避，上限 120s）；缺省 5_000。 */
@@ -63,8 +71,8 @@ export interface PythonTenantManagerOptions {
 /** .env 白名单（键名）：值只注入进程 env，从不打印/落仓。 */
 const ENV_WHITELIST = ["ARENA_HERO_API_KEY", "ARENA_HERO_TELEMETRY_ENDPOINT", "ARENA_HERO_TENANT"];
 
-/** 代理 env：2026-08-09 python 掉线根因（httpx 走 127.0.0.1:7897 →
- *  TransportError 循环）；管理面启动时全部剥离。 */
+/** 代理 env：stripProxy=true 时从子进程 env 剥离（逃生口）；默认保留
+ *  （2026-08-10 现场：官方 API 需走代理，剥离后直连 hang 无输出）。 */
 const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"];
 
 export class PythonTenantManager extends EventEmitter {
@@ -74,6 +82,8 @@ export class PythonTenantManager extends EventEmitter {
   private readonly venvPython: string;
   private readonly module: string;
   private readonly heartbeatTtlMs: number;
+  private readonly bootGraceMs: number;
+  private readonly stripProxy: boolean;
   private readonly respawnLimit: number;
   private readonly respawnDelayMs: number;
 
@@ -98,6 +108,8 @@ export class PythonTenantManager extends EventEmitter {
     this.venvPython = spec.venvPython ?? join(spec.repoPath, ".venv", "Scripts", "python.exe");
     this.module = spec.module ?? "bot.main";
     this.heartbeatTtlMs = spec.heartbeatTtlMs ?? 60_000;
+    this.bootGraceMs = spec.bootGraceMs ?? 90_000;
+    this.stripProxy = spec.stripProxy ?? false;
     this.respawnLimit = spec.respawnLimit ?? 5;
     this.respawnDelayMs = spec.respawnDelayMs ?? 5_000;
     this.heartbeatPollMs = options.heartbeatPollMs ?? 15_000;
@@ -213,16 +225,21 @@ export class PythonTenantManager extends EventEmitter {
     });
   }
 
-  /** 心跳探活：stdoutLog mtime = 心跳（bot 每 tick 写日志）；TTL 超时判死。 */
+  /** 心跳探活：stdoutLog mtime = 心跳（bot 每 tick 写日志）；TTL 超时判死。
+   *  启动宽限（bootGraceMs）内不判死：官方 API 首连/鉴权可达 30-60s，
+   *  且部分客户端连接期不打印任何输出。首次心跳新鲜 → lifecycle running。 */
   private startHeartbeatWatch(): void {
     this.heartbeatTimer = setInterval(() => {
       const mtimeMs = this.stdoutLogMtime();
       if (mtimeMs !== null) this.lastHeartbeatAt = mtimeMs;
       if (this.child === null || this.exited || this.stopping || this.lifecycle === "terminating") return;
-      if (mtimeMs !== null && Date.now() - mtimeMs > this.heartbeatTtlMs) {
+      const bootedMs = Date.now() - (this.spawnedAt ?? Date.now());
+      if (mtimeMs !== null && bootedMs > this.bootGraceMs && Date.now() - mtimeMs > this.heartbeatTtlMs) {
         this.lastError = `heartbeat stale > ${this.heartbeatTtlMs}ms (stdout log not advancing)`;
         this.emit("heartbeat_lost", { tenantId: this.spec.tenantId, staleMs: Date.now() - mtimeMs });
         void this.killChild(); // exit 事件驱动 respawn
+      } else if (this.lifecycle === "starting" && mtimeMs !== null && Date.now() - mtimeMs <= this.heartbeatTtlMs) {
+        this.lifecycle = "running";
       }
     }, this.heartbeatPollMs);
     this.heartbeatTimer.unref?.();
@@ -265,11 +282,12 @@ export class PythonTenantManager extends EventEmitter {
     }
   }
 
-  /** 进程 env：继承 + PYTHONPATH=repo + .env 白名单注入 + 代理剥离。 */
+  /** 进程 env：继承 + PYTHONPATH=repo + .env 白名单注入；stripProxy 时剥离
+   *  代理 env（默认保留：2026-08-10 现场证实官方 API 需走代理，直连 hang）。 */
   private buildEnv(): Record<string, string> {
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env)) {
-      if (value !== undefined && !PROXY_ENV_KEYS.includes(key)) env[key] = value;
+      if (value !== undefined && (!this.stripProxy || !PROXY_ENV_KEYS.includes(key))) env[key] = value;
     }
     env.PYTHONPATH = this.spec.repoPath;
     try {
