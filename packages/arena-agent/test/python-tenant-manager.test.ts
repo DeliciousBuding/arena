@@ -63,9 +63,10 @@ function makeSpec(cwd: string, overrides: Partial<PythonAgentSpec> = {}): Python
   };
 }
 
-function captureEnv(spawned: Map<string, Record<string, string>>, children: Map<string, FakePyChild>) {
-  return (_command: string, _args: readonly string[], spec: PythonAgentSpec, env: Record<string, string>) => {
+function captureEnv(spawned: Map<string, Record<string, string>>, children: Map<string, FakePyChild>, argsSeen?: string[][]) {
+  return (_command: string, args: readonly string[], spec: PythonAgentSpec, env: Record<string, string>) => {
     spawned.set(spec.tenantId, env);
+    argsSeen?.push([...args]);
     const child = new FakePyChild();
     children.set(spec.tenantId, child);
     return child as unknown as ChildProcess;
@@ -77,8 +78,9 @@ test("python spawn: env whitelist injection + proxy strip + PYTHONPATH", async (
   process.env.HTTP_PROXY = "http://127.0.0.1:7897";
   const spawned = new Map<string, Record<string, string>>();
   const children = new Map<string, FakePyChild>();
-  const manager = new PythonTenantManager(makeSpec(env.cwd), {
-    spawn: captureEnv(spawned, children),
+  const argsSeen: string[][] = [];
+  const manager = new PythonTenantManager(makeSpec(env.cwd, { args: ["--log-file", "tactic.log"] }), {
+    spawn: captureEnv(spawned, children, argsSeen),
     heartbeatPollMs: 1000,
   });
   try {
@@ -90,6 +92,7 @@ test("python spawn: env whitelist injection + proxy strip + PYTHONPATH", async (
     assert.equal(childEnv.SOME_OTHER_VAR, undefined, ".env 非白名单变量不注入");
     assert.equal(childEnv.HTTP_PROXY, undefined, "HTTP_PROXY 剥离");
     assert.equal(childEnv.PYTHONPATH, "D:/fake/repo/arena-hero-tactic");
+    assert.deepEqual(argsSeen[0], ["-m", "bot.main", "--log-file", "tactic.log"], "args 透传给模块");
     const status = manager.status();
     assert.equal(status.tenantId, "t2");
     assert.equal(status.alive, true);

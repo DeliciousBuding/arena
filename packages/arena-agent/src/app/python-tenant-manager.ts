@@ -26,6 +26,9 @@ export interface PythonAgentSpec {
   readonly venvPython?: string;
   /** 客户端模块入口；缺省 bot.main。 */
   readonly module?: string;
+  /** 附加模块参数（如 --log-file tactic.log：心跳依赖 stdout log mtime
+   *  每 tick 刷新，客户端必须把日志写到 <cwd>/tactic.log）。 */
+  readonly args?: string[];
   /** 实例工作目录（每租户独立 .env / 日志 / memory 文件）。 */
   readonly cwd: string;
   /** 心跳超时判死（ms）；缺省 60_000（> 3 tick，15s/tick）。 */
@@ -162,7 +165,7 @@ export class PythonTenantManager extends EventEmitter {
       closeSync(out);
       closeSync(err);
       return spawned;
-    }))(this.venvPython, ["-m", this.module], this.spec, env);
+    }))(this.venvPython, ["-m", this.module, ...(this.spec.args ?? [])], this.spec, env);
 
     this.child = child;
     this.exited = false;
