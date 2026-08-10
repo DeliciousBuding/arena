@@ -84,6 +84,8 @@ export interface TenantStatus {
   readonly respawnCount: number;
   /** 最近一次 ready 时间戳（ms epoch；从未 ready = null）。 */
   readonly lastReadyAt: number | null;
+  /** 当前 child 启动时间戳（ms epoch；/metrics 用）。 */
+  readonly spawnedAt: number | null;
 }
 
 export interface SupervisorReloadResult {
@@ -143,6 +145,8 @@ interface TenantChild {
   respawnCount: number;
   /** 最近一次 ready 时间戳（ms epoch；从未 ready = null）。 */
   lastReadyAt: number | null;
+  /** 当前 child 启动时间戳（ms epoch）。 */
+  spawnedAt: number | null;
 }
 
 interface LockContent {
@@ -300,6 +304,7 @@ export class TenantSupervisor {
       lastConfigError: null,
       respawnCount: 0,
       lastReadyAt: null,
+      spawnedAt: Date.now(),
     };
     if (previous !== null) {
       entry.child = child;
@@ -315,6 +320,7 @@ export class TenantSupervisor {
       entry.activeConfigHash = null;
       entry.activeStrategyHash = null;
       entry.lastConfigError = null;
+      entry.spawnedAt = Date.now();
       this.refreshDesiredConfig(entry);
     }
     child.stdout?.on("data", (chunk) => process.stdout.write(`[${spec.tenantId}] ${chunk}`));
@@ -447,6 +453,7 @@ export class TenantSupervisor {
         lastConfigError: entry.lastConfigError,
         respawnCount: entry.respawnCount,
         lastReadyAt: entry.lastReadyAt,
+        spawnedAt: entry.spawnedAt,
       });
     }
     return statuses;
