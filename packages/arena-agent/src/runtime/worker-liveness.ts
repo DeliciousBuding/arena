@@ -123,6 +123,12 @@ const ECONOMIC_INTENTS = new Set([
   "DEPOSIT",
   "harvest",
   "return_home",
+  // GAP 1.2 fix（2026-08-10）：capacity_wait:DEPOSIT 需计入经济无推进——
+  // 满载 worker 被入口满拒（capacity_wait:DEPOSIT）时 cargo 不变 →
+  // economicNoProgress 累加 → 6 tick 后 economic_no_progress liveness
+  // 事件触发 recoverWorker。旧版在 intentionalWait 豁免 + 不在
+  // ECONOMIC_INTENTS → 无任何恢复路径（C7 只覆盖军事单位）。
+  "capacity_wait:DEPOSIT",
 ]);
 
 /** 有意等待：这些等待是协议/战术语义，不应被 generic idle detector 打断。 */

@@ -3115,8 +3115,12 @@ export class SafetyPlanner {
           patrolPoint = this.workerPatrolPoint(home, beacon, memory.patrolDirection, patrolRadius);
           target = patrolPoint;
         } else if (hungerGateBlocksRingUp) {
-          // W38：饥饿门控阻止升环 → 保持在当前环继续巡逻（不回家，资源充足
-          // 时近环覆盖已足够，无需远征）。
+          // GAP 4.4 fix（2026-08-10）：饥饿门控阻止升环 → 步进方位扫当前环
+          // 8 方位，不停在已到达的巡逻点站桩。旧版 target = patrolPoint
+          // （已到达）→ stepToward 返回 null → WAIT → 卡 200 tick 不探索。
+          // 方位步进 +3（与 recoverWorker 同口径）确保扫不同扇区。
+          memory.patrolDirection = (memory.patrolDirection + 3) % EXPLORE_DIRECTION_COUNT;
+          patrolPoint = this.workerPatrolPoint(home, beacon, memory.patrolDirection, patrolRadius);
           target = patrolPoint;
         } else {
           memory.patrolReturning = true;
@@ -3702,8 +3706,8 @@ export class SafetyPlanner {
         // 8 格内小振荡）。升环后重置停留计时。
         const ringSince = this.unitRingSince.get(unit.id) ?? state.tick;
         const ringHoldExceeded =
-          (this.config.militaryRingHoldTicks ?? 0) > 0 &&
-          state.tick - ringSince >= (this.config.militaryRingHoldTicks ?? 0);
+          (this.config.militaryRingHoldTicks ?? SCAVENGE_HOLD_TICKS) > 0 &&
+          state.tick - ringSince >= (this.config.militaryRingHoldTicks ?? SCAVENGE_HOLD_TICKS);
         if (samePosition(unit.position, patrolPoint) || ringHoldExceeded) {
           this.unitRingSince.set(unit.id, state.tick);
           if (memory.patrolRing < EXPLORE_RING_COUNT - 1) {
@@ -4099,6 +4103,7 @@ export class SafetyPlanner {
       if (
         coreMemory !== undefined &&
         canShoot(unit.position, coreMemory.position, obstacles) &&
+        !this.shootingLineObscured(unit.position, coreMemory.position) &&
         // 不打被自己单位占位的格（t1 69640 拆核后实证：死核格上站着己方
         // Vanguard，空放枪观感像打友军 + 浪费 DPS）——占位说明该格当前无敌人。
         !state.units.some((u) => samePosition(u.position, coreMemory.position)) &&
@@ -4442,8 +4447,8 @@ export class SafetyPlanner {
       : exploreTarget(home, beacon, memory.patrolDirection, patrolRadius);
     const ringSince = this.unitRingSince.get(unit.id) ?? state.tick;
     const ringHoldExceeded =
-      (this.config.militaryRingHoldTicks ?? 0) > 0 &&
-      state.tick - ringSince >= (this.config.militaryRingHoldTicks ?? 0);
+      (this.config.militaryRingHoldTicks ?? SCAVENGE_HOLD_TICKS) > 0 &&
+      state.tick - ringSince >= (this.config.militaryRingHoldTicks ?? SCAVENGE_HOLD_TICKS);
     if (samePosition(unit.position, patrolPoint) || ringHoldExceeded) {
       this.unitRingSince.set(unit.id, state.tick);
       if (memory.patrolRing < EXPLORE_RING_COUNT - 1) {

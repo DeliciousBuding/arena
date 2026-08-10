@@ -194,9 +194,13 @@ export class StallDetector {
       failedCount("UNIT_MOVE_FAILED") >= Math.ceil(militaryCount / 2) &&
       shotHit === 0 &&
       failedCount("UNIT_DAMAGED") === 0;
-    // 空枪空转：有 SHOT_MISSED 且无 SHOT_HIT（游侠连发空枪，无命中压制）。
+    // 空枪空转：有 SHOT_MISSED 且命中数远少于 miss（shotHit * 3 < shotMissed）。
+    // GAP 3.3 fix（2026-08-10）：旧版 shotHit === 0 要求零命中，单 ranger
+    // 偶发命中掩盖其他 ranger 的连续空枪。改为 miss ≥ 3× hit 的比率门控——
+    // 10 miss + 1 hit 仍触发（1*3=3 < 10），10 miss + 4 hit 不触发（4*3=12 > 10）。
+    const shotMissed = failedCount("SHOT_MISSED");
     results.shot_missed_spiral =
-      failedCount("SHOT_MISSED") > 0 && shotHit === 0;
+      shotMissed > 0 && shotHit * 3 < shotMissed;
     // 迁移卡死：CORE_MOVE_START_FAILED（任何原因——TERRAIN_BLOCKED/CELL_UNIT_LIMIT）。
     results.migration_stall = failedCount("CORE_MOVE_START_FAILED") > 0;
     // 产兵饿死：CORE_SPAWN_FAILED（核心格被占/资源不足）。
