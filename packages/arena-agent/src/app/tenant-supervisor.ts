@@ -362,10 +362,13 @@ export class TenantSupervisor {
 
   /** 单租户意外退出自动重启（2026-08-08）：避免单线死 → watchdog 全量重启 →
    *  空窗（t3 worker 减员即发生在该空窗）。带重启上限防崩溃循环；超限交
-   *  watchdog 全量恢复。返回 true = 已接管（不触发 final-exit 通知）。 */
+   *  watchdog 全量恢复。返回 true = 已接管（不触发 final-exit 通知）。
+   *  2026-08-10 生产稳定性修复：重试上限 3→10、固定 5s 延时 → 指数退避
+   *  （base×2^(n-1)，cap 120s）——t1 反复崩溃时不再 3 次耗尽后拖垮四租户
+   *  整体重启，退避封顶防崩溃循环打满日志/CPU。 */
   private scheduleRespawn(entry: TenantChild, code: number | null, signal: string | null): boolean {
     if (entry.terminating || this.shuttingDown) return false;
-    const limit = this.options.respawnLimit ?? 3;
+    const limit = this.options.respawnLimit ?? 10;
     if (entry.respawnCount >= limit) {
       entry.lastError = `unexpected exit code=${String(code)} signal=${String(signal)}; respawn limit ${limit} reached`;
       return false;
@@ -373,8 +376,9 @@ export class TenantSupervisor {
     entry.respawnCount += 1;
     entry.lifecycle = "starting";
     this.emit("restarting", entry.spec.tenantId, `auto-respawn ${entry.respawnCount}/${limit} after exit code=${String(code)}`, entry.pid);
-    const delayMs = this.options.respawnDelayMs ?? 5000;
-    setTimeout(() => { void this.respawnTenant(entry); }, delayMs).unref?.();
+    const baseMs = this.options.respawnDelayMs ?? 5000;
+    const backoffMs = Math.min(baseMs * 2 ** (entry.respawnCount - 1), 120_000);
+    setTimeout(() => { void this.respawnTenant(entry); }, backoffMs).unref?.();
     return true;
   }
 

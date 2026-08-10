@@ -24,6 +24,8 @@ const ENV_DEFAULTS = {
   "shutdown-timeout-ms": "ARENA_SHUTDOWN_TIMEOUT_MS",
   port: "ARENA_DEBUG_PORT",
   "debug-host": "ARENA_DEBUG_HOST",
+  "respawn-limit": "ARENA_RESPAWN_LIMIT",
+  "respawn-delay-ms": "ARENA_RESPAWN_DELAY_MS",
 } as const;
 
 async function main(): Promise<void> {
@@ -50,6 +52,8 @@ async function main(): Promise<void> {
       "shutdown-timeout-ms": { type: "string" },
       port: { type: "string" },
       "debug-host": { type: "string" },
+      "respawn-limit": { type: "string" },
+      "respawn-delay-ms": { type: "string" },
     },
   });
 
@@ -124,6 +128,8 @@ async function main(): Promise<void> {
 
   const shutdownTimeoutMs = parseInteger(option("shutdown-timeout-ms"), 8000, 1, "--shutdown-timeout-ms");
   const port = parseInteger(option("port"), 8120, 0, "--port");
+  const respawnLimit = parseInteger(option("respawn-limit"), 10, 1, "--respawn-limit");
+  const respawnDelayMs = parseInteger(option("respawn-delay-ms"), 5000, 100, "--respawn-delay-ms");
   let centralAlliance: CentralAllianceShadowRuntime | null = null;
   const supervisor = new TenantSupervisor({
     repoRoot,
@@ -133,6 +139,8 @@ async function main(): Promise<void> {
     configs: configNames,
     tenantArgs,
     shutdownTimeoutMs,
+    respawnLimit,
+    respawnDelayMs,
     onChildMessage: (tenantId, message) => centralAlliance?.onChildMessage(tenantId, message),
     onEvent: (event) => {
       console.log(`[supervisor] ${event.at} ${event.type} ${event.tenantId}${event.detail ? `: ${event.detail}` : ""}`);

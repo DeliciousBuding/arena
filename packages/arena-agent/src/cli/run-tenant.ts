@@ -143,7 +143,30 @@ async function main(): Promise<void> {
   }
 }
 
-void main()
+/**
+ * 全局异常日志（2026-08-10 生产稳定性修复）：此前任何未捕获异常都会让
+ * 租户进程无痕退出（exit code=1 且无 stderr 输出——supervisor 只能看到
+ * "unexpected exit code=1"）。注册完整堆栈日志 + 区分退出码（2=未捕获
+ * 异常，3=未处理 rejection），供 supervisor auto-respawn 循环取证。
+ */
+function installGlobalErrorLoggers(): void {
+  process.on("uncaughtException", (error) => {
+    console.error(
+      `[run-tenant] uncaughtException (exit 2): ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
+    );
+    process.exit(2);
+  });
+  process.on("unhandledRejection", (reason) => {
+    const detail = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+    console.error(`[run-tenant] unhandledRejection (exit 3): ${detail}`);
+    process.exit(3);
+  });
+}
+
+void (async () => {
+  installGlobalErrorLoggers();
+  await main();
+})()
   .catch((error) => {
     console.error(`run-tenant 失败: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;

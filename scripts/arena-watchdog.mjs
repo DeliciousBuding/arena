@@ -9,6 +9,11 @@
  * 2026-08-09 切到独立 python 客户端（arena-hero-tactic v2 进化版），
  * 2026-08-10 用户裁决暂回 TS 管，进化版搞稳后再议）。
  *
+ * v7（2026-08-10）：单租户崩溃不再整体重启——/ready 503 响应解析 tenants
+ * 详情（shouldFullRecover 纯函数），有租户存活 = 部分故障，信任 supervisor
+ * 内部 auto-respawn（10 次 + 指数退避）自愈，stall 检测作整体兜底；只有
+ * 网络失败/全租户 down 才走整体恢复。
+ *
  * 与旧 bash 版（arena-watchdog.sh）的行为契约完全一致，仅把脆弱的面包屑
  * （curl + grep JSON 解析、netstat 端口探测）换成 Node fetch + 结构化解析：
  * - /ready JSON 用 response.json() 解析（旧 grep '"ready":true' 靠首字段
@@ -116,19 +121,37 @@ function leaseActive() {
   }
 }
 
-/** GET /ready，结构化解析（旧 curl + grep 的替换；失败 = null）。 */
+/** GET /ready，结构化解析（旧 curl + grep 的替换；失败 = null）。
+ *  非 2xx（如单租户 dead 时的 503）也解析 body——503 响应携带 tenants
+ *  详情，是"supervisor 活着但部分租户未 ready"与"supervisor 已死"的
+ *  唯一区分依据（2026-08-10 修复：此前 503 直接返回 null，watchdog 把
+ *  单租户故障误判为整体故障 → 四租户连带重启）。 */
 async function fetchReady() {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);
     const response = await fetch(READY_URL, { signal: controller.signal });
     clearTimeout(timer);
-    if (!response.ok) return null;
     const data = await response.json();
     return typeof data?.ready === "boolean" ? data : null;
   } catch {
     return null;
   }
+}
+
+/** 判定是否需要整体恢复（纯函数，便于单测）：
+ *  - ready 且无 stall → false（健康）
+ *  - ready=false 但 tenants 中存在 alive 租户 → false（supervisor 进程
+ *    活着、内部 auto-respawn 自愈中；由 stall 检测兜底，避免单租户崩溃
+ *    拖垮四租户）
+ *  - ready=false 且无任何 alive 租户 / 无 tenants 信息 → true（整体故障）
+ *  - ready=null（网络失败/无法解析）→ true（supervisor 可能已死）
+ */
+export function shouldFullRecover(ready) {
+  if (ready === null) return true;
+  if (ready.ready) return false;
+  const tenants = ready.tenants ?? [];
+  return !tenants.some((tenant) => tenant.alive === true);
 }
 
 /** 8120 是否仍被监听（旧 netstat 的 Windows 等价；失败 = true 保守，避免
@@ -277,7 +300,10 @@ function restartSupervisor() {
   log(`supervisor restarted (pid ${child.pid})`);
 }
 
-/** 主流程：lease → ready/stall → 恢复（优雅关停 → 清残留 → 清锁 → 重启）。 */
+/** 主流程：lease → ready/stall → 恢复（优雅关停 → 清残留 → 清锁 → 重启）。
+ *  2026-08-10 修复：单租户崩溃（/ready 503 + tenants 仍有 alive）不再触发
+ *  整体重启——supervisor 内部 auto-respawn（10 次 + 指数退避）自愈，stall
+ *  检测（outcome >600s / 决策停摆）作整体兜底。 */
 async function main() {
   const lease = leaseActive();
   if (lease.active) return;
@@ -287,7 +313,18 @@ async function main() {
     const stalled = stalledTenant();
     if (stalled === null) return;
     log(`STALL detected (${stalled} outcome stale > ${STALL_MAX_AGE_S}s or decision inactive) -> recovering`);
+  } else if (ready !== null && !ready.ready && !shouldFullRecover(ready)) {
+    // supervisor 应答但未全 ready，且有租户存活 = 部分故障：信任内部
+    // auto-respawn 自愈；只有整体停摆（stall）才介入，避免单租户崩溃
+    // 拖垮四租户连带重启。
+    const stalled = stalledTenant();
+    if (stalled === null) {
+      log("partial ready (some tenants down) -> supervisor self-recovering, full restart skipped");
+      return;
+    }
+    log(`partial ready but STALL detected (${stalled}) -> recovering`);
   } else {
+    // 网络失败 / 无法解析 / 全租户 down = supervisor 可能已死 → 整体恢复。
     // 启动宽限：8120 有监听但未 ready → 等 BOOT_GRACE_MS 再查一次
     if (probePort8120()) {
       await new Promise((resolve) => setTimeout(resolve, BOOT_GRACE_MS));
