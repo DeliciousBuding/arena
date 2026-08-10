@@ -193,7 +193,7 @@ export function SituationPanel() {
             .catch((e) => setErr(String((e as Error).message ?? e)));
         }}><RotateCw className="rp-refresh-ico" /></Button>
       </div>
-      {at ? <span className="sit-gen dim">{at.replace("T", " ").slice(5, 16)} UTC · tick {fmt(data?.currentTick)} · 15s 刷新</span> : null}
+      {at ? <span className="sit-gen dim">{at.replace("T", " ").slice(5, 16)} UTC · 回合 {fmt(data?.currentTick)} · 15s 刷新</span> : null}
 
       <div className="sit-global">
         {data?.treasuryTenant ? (
@@ -243,7 +243,7 @@ export function SituationPanel() {
                 {s.sourceTenant ? <i className="sit-sight-src dot" style={{ background: TENANT_COLORS[s.sourceTenant] ?? "var(--text-dim)" }} title={`由 ${s.sourceTenant.toUpperCase()} 目击`} /> : null}
                 <span className={`sit-sight-vis${s.currentlyVisible ? " on" : ""}`}>{s.currentlyVisible ? "可见" : "记忆"}</span>
                 <span className="sit-sight-pos mono dim">({fmt(s.position?.[0])},{fmt(s.position?.[1])})</span>
-                <span className="sit-sight-age mono dim">{age !== null && age >= 0 ? `${age}t 前` : "—"}</span>
+                <span className="sit-sight-age mono dim">{age !== null && age >= 0 ? `${age} 回合前` : "—"}</span>
               </button>
             );
           })}
@@ -266,7 +266,7 @@ export function SituationPanel() {
               </li>
             ))}
           </ul>
-        ) : <div className="sv-empty dim">暂无手操——agent 全自动运行中</div>}
+        ) : <div className="sv-empty dim">暂无手动操作——智能体全自动运行中</div>}
       </div>
     </div>
   );

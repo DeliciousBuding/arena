@@ -21,14 +21,15 @@ interface ShellPrefs {
 function loadShellPrefs(): ShellPrefs {
   try {
     const p = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") as ShellPrefs;
-    const validTab = RIGHT_TABS.some((t) => t.id === p.rightTab) ? (p.rightTab as RightTab) : "logs";
+    // 默认右栏 = 威胁情报（2026-08-10 产品化：决策流是开发调试视角，玩家首看威胁）
+    const validTab = RIGHT_TABS.some((t) => t.id === p.rightTab) ? (p.rightTab as RightTab) : "intel";
     return {
       leftCollapsed: !!p.leftCollapsed,
       rightCollapsed: !!p.rightCollapsed,
       rightTab: validTab,
     };
   } catch {
-    return { leftCollapsed: false, rightCollapsed: false, rightTab: "logs" };
+    return { leftCollapsed: false, rightCollapsed: false, rightTab: "intel" };
   }
 }
 

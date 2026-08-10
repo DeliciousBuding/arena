@@ -117,7 +117,7 @@ function AllianceRoot({ audit }: { audit: AuditOverview | null }) {
   const items: Array<{ k: string; v: string; cls?: string; title?: string }> = [
     { k: "未采", v: fmt(g?.totalNeverHarvested), title: "全联盟发现后从未开采的矿数" },
     { k: "失联", v: fmt(g?.totalOverdueRefills), cls: (g?.totalOverdueRefills ?? 0) > 0 ? "warn" : "", title: "预测该刷新却未再出现（需复测）" },
-    { k: "停滞", v: stallAvg ?? "—", title: "WAIT 决策占比（4 租户均值）" },
+    { k: "停滞", v: stallAvg ?? "—", title: "等待决策占比（4 租户均值）" },
   ];
   return (
     <div className="alliance-root" data-alliance-root>
@@ -146,7 +146,7 @@ function TenantDataStrip({ a }: { a: AuditTenant | undefined }) {
         <span className="ds-k">矿</span>
         <span className="ds-v"><b className={overdue > 0 ? "warn" : ""}>{fmt(m?.neverHarvested)}</b> 未采 · <b className={overdue > 0 ? "warn" : ""}>{fmt(overdue)}</b> 失联</span>
         <span className="ds-sep" />
-        <span className="ds-v" title={`WAIT 决策占比 · 总矿 ${fmt(m?.total)} · 积压 ${fmt(m?.maxGapAgeTicks)} tick · 分工 ${fmt(a?.mining?.assigned)} · 核心Δ ${fmt(a?.trend?.coreDelta)} · 探索 ${fmt(a?.exploration?.exploredChunks)} 区块`}>
+        <span className="ds-v" title={`等待决策占比 · 总矿 ${fmt(m?.total)} · 积压 ${fmt(m?.maxGapAgeTicks)} 回合 · 分工 ${fmt(a?.mining?.assigned)} · 核心Δ ${fmt(a?.trend?.coreDelta)} · 探索 ${fmt(a?.exploration?.exploredChunks)} 区块`}>
           <b className={stallCls}>{stall !== null ? Math.round(stall * 100) + "%" : "—"}</b> 停滞
         </span>
       </div>
@@ -228,15 +228,15 @@ function TenantCards() {
             <>
             <div className="metrics">
               <div className="metric"><span className="v">{fmt(L.resources)}</span><span className="k">资源</span></div>
-              <div className="metric" title="单位=可见世界全部 UNIT（台账模式含敌方/先锋/游侠；JSONL 回退为自有工人数）">
+              <div className="metric" title="当前可见单位数（含工人/先锋/游侠）">
                 <span className="v">{fmt(L.workers)}</span><span className="k">单位</span>
               </div>
-              <div className="metric" title="当前可见敌方单位数（台账模式 python 租户上报）">
+              <div className="metric" title="当前可见敌方单位数（智能体上报）">
                 <span className="v">{fmt(L.visibleEnemies)}</span><span className="k">敌方</span>
               </div>
             </div>
             <div className="row3">
-              <span>tick <b>{fmt(L.tick)}</b></span>
+              <span>回合 <b>{fmt(L.tick)}</b></span>
             </div>
             <TenantDataStrip a={A} />
             </>
@@ -256,7 +256,7 @@ function Legend() {
       <li><span className="sw resource" />资源</li>
       <li><span className="sw obstacle" />障碍</li>
       <li><span className="sw beacon" />冠军信标</li>
-      <li><span className="sw memory" />已探索记忆（非当前 tick 淡显）</li>
+      <li><span className="sw memory" />已探索记忆（非本回合淡显）</li>
       <li><span className="sw enemy-mem" />敌情记忆（出视野半透明 · 悬停看最后目击）</li>
     </ul>
   );

@@ -90,15 +90,15 @@ const StreamRowItem = memo(function StreamRowItem({ r, tenant }: { r: StreamRow;
   const kindCn = DECISION_KIND_CN[outcome] ?? "决策";
   const badge = submit !== "" ? (DECISION_KIND_CN[submit] ?? submit) : outcome !== "" ? (DECISION_KIND_CN[outcome] ?? outcome) : "—";
   const lat = [];
-  if (r.agentLatencyMs != null) lat.push(`agent ${fmt(r.agentLatencyMs)}ms`);
-  if (r.selectionLatencyMs != null) lat.push(`select ${fmt(r.selectionLatencyMs)}ms`);
+  if (r.agentLatencyMs != null) lat.push(`决策 ${fmt(r.agentLatencyMs)}ms`);
+  if (r.selectionLatencyMs != null) lat.push(`选择 ${fmt(r.selectionLatencyMs)}ms`);
   const extra = [];
   if (r.abortRequested) extra.push("中止请求");
-  if (r.rotationGeneration != null) extra.push(`rot ${r.rotationGeneration}`);
+  if (r.rotationGeneration != null) extra.push(`轮次 ${r.rotationGeneration}`);
   const detail = [lat.join(" · "), extra.join(" · ")].filter(Boolean).join(" · ");
   return (
     <div key={`${tenant}:${r.tick}:${outcome}:${submit}`} className={`stream-line${quiet ? " st-quiet" : ""} clickable`} style={{ ["--tc" as string]: color }}
-      title={`${tenant.toUpperCase()} · tick ${fmt(r.tick)}\n决策 ${kindCn}${submit ? ` · 提交 ${DECISION_KIND_CN[submit] ?? submit}` : ""}${lat.length ? `\n延迟 ${lat.join(" · ")}` : ""}${extra.length ? `\n${extra.join(" · ")}` : ""}\n点击聚焦该租户决策动线`}
+      title={`${tenant.toUpperCase()} · 回合 ${fmt(r.tick)}\n决策 ${kindCn}${submit ? ` · 提交 ${DECISION_KIND_CN[submit] ?? submit}` : ""}${lat.length ? `\n延迟 ${lat.join(" · ")}` : ""}${extra.length ? `\n${extra.join(" · ")}` : ""}\n点击聚焦该租户决策动线`}
       onClick={() => { const e = getEngine(); if (e) e.focusTenant(tenant); }}>
       <span className="st-tenant">{tenant.toUpperCase()}</span>
       <span className="st-tick">{fmt(r.tick)}</span>
@@ -273,7 +273,7 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
       </div>
       <Tabs value={tab} onValueChange={(v) => setPrefs({ tab: v })}>
         <TabsList id="streamTabs" className="tabs h-auto gap-[2px] px-[14px] pt-[8px] pb-0 rounded-none bg-transparent">
-          {[{ id: "all", label: "统一决策" }, ...TENANTS.map((t) => ({ id: t, label: t.toUpperCase() })), { id: "events", label: "事件" }, { id: "deeds", label: "事迹" }].map((tb) => {
+          {[{ id: "all", label: "全局" }, ...TENANTS.map((t) => ({ id: t, label: t.toUpperCase() })), { id: "events", label: "事件" }, { id: "deeds", label: "事迹" }].map((tb) => {
             const n = tb.id === "deeds"
               ? journal?.deeds?.length ?? 0
               : tb.id === "events"

@@ -32,7 +32,6 @@ export function TopBar() {
   const engine = useEngine();
   const { openRight } = useShell();
   const [tick, setTick] = useState<TickPayload | null>(null);
-  const [dataRoot, setDataRoot] = useState<string>("");
   const [refreshOk, setRefreshOk] = useState<boolean>(true);
   const [encounteredCount, setEncounteredCount] = useState(0);
   const [overview, setOverview] = useState<OverviewTenant[]>([]);
@@ -50,7 +49,6 @@ export function TopBar() {
     if (!engine) return;
     return engine.subscribe((topic, payload) => {
       if (topic === "tick") setTick(payload as TickPayload);
-      else if (topic === "dataRoot") setDataRoot(String(payload ?? ""));
       else if (topic === "refresh") setRefreshOk(payload !== false);
       else if (topic === "overview") {
         const ov = payload as { tenants?: OverviewTenant[] } | null;
@@ -90,7 +88,7 @@ export function TopBar() {
           <p className="subtitle">COMMAND CENTER</p>
         </div>
       </div>
-      <div className="empire-strip" title="帝国总览：各租户 资源 / 单位 / 增量 / 敌数（单位=可见世界全部 UNIT，含敌方/先锋/游侠；增量仅在 JSONL 数据源存在，台账模式为 —；点击租户卡可聚焦）">
+      <div className="empire-strip" title="帝国总览：各租户 资源 / 单位 / 增量 / 敌方单位数（点击租户卡可聚焦该租户）">
         {overview.map((t) => {
           const color = TENANT_COLORS[t.tenant] ?? "var(--t1)";
           const L = t.latest ?? {};
@@ -113,10 +111,9 @@ export function TopBar() {
       </div>
       <div className="top-status">
         <span id="clock" className="mono dim">{tick?.clock ?? "—"}</span>
-        <span id="dataRoot" className="mono dim" title="数据根（只读）">{dataRoot}</span>
         <Badge id="refreshBadge" variant={refreshOk ? "success" : "danger"} size="sm" pulse={refreshOk}>{refreshOk ? "实时" : "离线"}</Badge>
-        <span className="tick-meter mono" title="世界 tick 周期（估计）：游戏每 ~15s 一个 tick，进度条表示距下一 tick">
-          <span id="tickLabel" className={`dim${urgent ? " warn" : ""}`}>tick {tick ? `${tick.tick} · ${Math.round((tick.period ?? 15000) / 1000)}s${tick.remain != null ? ` · 剩 ${Math.max(0, Math.round(tick.remain))}s` : ""}` : "—"}</span>
+        <span className="tick-meter mono" title="世界回合周期（约 15 秒一回合，进度条表示距下一回合）">
+          <span id="tickLabel" className={`dim${urgent ? " warn" : ""}`}>回合 {tick ? `${tick.tick} · ${Math.round((tick.period ?? 15000) / 1000)}s${tick.remain != null ? ` · 剩 ${Math.max(0, Math.round(tick.remain))}s` : ""}` : "—"}</span>
           <span className={`tick-bar${urgent ? " warn" : ""}`}><i id="tickFill" style={{ transform: `scaleX(${frac.toFixed(3)})` }} /></span>
         </span>
         <Button id="intelBtn" variant="default" size="sm" title="官方排行榜威胁画像（谁在打我们）" onClick={() => openRight("intel")}>
@@ -129,16 +126,16 @@ export function TopBar() {
           size="sm"
           title={(() => {
             const g = health?.global;
-            if (!g) return "数据管线健康状态（加载中）";
+            if (!g) return "数据同步状态（加载中）";
             const parts = [];
-            if (g.missingTenants?.length) parts.push(`测绘缺失 ${g.missingTenants.join(",").toUpperCase()}`);
-            if (g.staleTenants?.length) parts.push(`测绘滞后 ${g.staleTenants.join(",").toUpperCase()}`);
-            parts.push(`最大滞后 ${g.maxLagTicks ?? 0} tick · 平均 ${g.avgLagTicks ?? 0} tick`);
-            return "数据管线健康 · " + parts.join(" · ");
+            if (g.missingTenants?.length) parts.push(`数据缺失 ${g.missingTenants.join(",").toUpperCase()}`);
+            if (g.staleTenants?.length) parts.push(`数据滞后 ${g.staleTenants.join(",").toUpperCase()}`);
+            parts.push(`最大滞后 ${g.maxLagTicks ?? 0} 回合 · 平均 ${g.avgLagTicks ?? 0} 回合`);
+            return "数据同步 · " + parts.join(" · ");
           })()}>
           {health?.global?.healthy === false
-            ? (health.global.missingTenants?.length ? "测绘缺失" : `测绘滞后 ${health.global.maxLagTicks ?? "?"}t`)
-            : "测绘同步"}
+            ? (health.global.missingTenants?.length ? "数据缺失" : `数据滞后 ${health.global.maxLagTicks ?? "?"} 回合`)
+            : "数据同步"}
         </Badge>
         <Button id="themeToggle" variant="ghost" size="icon-sm"
           title={theme === "dark" ? "切换到浅色主题（UI 层；地图保持暗色场景）" : "切换到深色主题"}
