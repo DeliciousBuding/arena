@@ -190,7 +190,7 @@ function TenantCards() {
       <AllianceRoot audit={audit} />
       {tenants.map((t) => {
         const tenant = String(t.tenant ?? "");
-        const color = TENANT_COLORS[tenant] ?? "#999";
+        const color = TENANT_COLORS[tenant] ?? "var(--text-dim)";
         const st = statusOf(t);
         const L = t.latest ?? {};
         const A = audit?.tenants?.[tenant] as AuditTenant | undefined;
@@ -380,7 +380,7 @@ function CommandStatusPanel() {
           const applied = tele?.applied?.length ?? 0;
           const rej = tele?.rejected?.length ?? 0;
           const done = tele?.satisfied?.length ?? 0;
-          const color = TENANT_COLORS[t] ?? "#999";
+          const color = TENANT_COLORS[t] ?? "var(--text-dim)";
           return (
             <li key={t} className={"cmd-row" + (n > 0 ? " active" : "")} data-tenant={t}>
               <span className="cmd-tenant" style={{ color }}>{t.toUpperCase()}</span>

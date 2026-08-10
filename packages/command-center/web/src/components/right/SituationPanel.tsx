@@ -54,7 +54,7 @@ function MemberCard({ t, m, ts, onFocus, onSector }: { t: string; m: Member; ts?
   return (
     <div className="sit-member" data-tenant={t}>
       <div className="sit-m-head">
-        <span className="sit-chip" style={{ background: TENANT_COLORS[t] ?? "#888" }} />
+        <span className="sit-chip" style={{ background: TENANT_COLORS[t] ?? "var(--text-dim)" }} />
         <b>{t.toUpperCase()}</b>
         <span className={`sit-status${m.status === "READY" ? " ok" : ""}`}>{m.status ?? "—"}</span>
         <span className="sit-m-pos mono dim">({fmt(m.core.position?.[0])},{fmt(m.core.position?.[1])})</span>
@@ -198,7 +198,7 @@ export function SituationPanel() {
       <div className="sit-global">
         {data?.treasuryTenant ? (
           <span className="sit-g-chip" title="联盟金库（当前资源最高租户）">
-            <i className="sit-g-dot" style={{ background: TENANT_COLORS[data.treasuryTenant] ?? "#999" }} />
+            <i className="sit-g-dot" style={{ background: TENANT_COLORS[data.treasuryTenant] ?? "var(--text-dim)" }} />
             金库 <b>{data.treasuryTenant.toUpperCase()}</b>
           </span>
         ) : null}
@@ -240,7 +240,7 @@ export function SituationPanel() {
               <button key={s.key} type="button" className="sit-sight-row" title={`${s.evidence ?? "目击"} · 首次 ${s.firstSeenTick} · 置信 ${Math.round((s.confidence ?? 0) * 100)}%`} onClick={() => jump(s.position?.[0], s.position?.[1], s.ownerUsername)}>
                 <span className="sit-sight-kind">{KIND_CN[s.kind] ?? s.kind}</span>
                 <b className="sit-sight-name">{s.ownerUsername}</b>
-                {s.sourceTenant ? <i className="sit-sight-src dot" style={{ background: TENANT_COLORS[s.sourceTenant] ?? "#999" }} title={`由 ${s.sourceTenant.toUpperCase()} 目击`} /> : null}
+                {s.sourceTenant ? <i className="sit-sight-src dot" style={{ background: TENANT_COLORS[s.sourceTenant] ?? "var(--text-dim)" }} title={`由 ${s.sourceTenant.toUpperCase()} 目击`} /> : null}
                 <span className={`sit-sight-vis${s.currentlyVisible ? " on" : ""}`}>{s.currentlyVisible ? "可见" : "记忆"}</span>
                 <span className="sit-sight-pos mono dim">({fmt(s.position?.[0])},{fmt(s.position?.[1])})</span>
                 <span className="sit-sight-age mono dim">{age !== null && age >= 0 ? `${age}t 前` : "—"}</span>
@@ -261,7 +261,7 @@ export function SituationPanel() {
               <li key={i} className="sit-sight-row" title={a.note ?? ""}>
                 <span className="mono dim">{new Date(a.at).toLocaleTimeString("zh-CN", { hour12: false })}</span>
                 <span className="sit-sight-kind">{AUDIT_KIND_CN[a.kind] ?? a.kind}</span>
-                <span className="sit-sight-src dot" style={{ background: TENANT_COLORS[a.tenant] ?? "#999" }} title={a.tenant.toUpperCase()} />
+                <span className="sit-sight-src dot" style={{ background: TENANT_COLORS[a.tenant] ?? "var(--text-dim)" }} title={a.tenant.toUpperCase()} />
                 <span className="sit-sight-name">{a.action ?? a.note ?? "—"}</span>
               </li>
             ))}

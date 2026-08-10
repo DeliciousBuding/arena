@@ -198,7 +198,7 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
         )}
         {!embedded && prefs.collapsed && liveRow && (
           <span id="streamLive" className="st-live">
-            <span className="sl-t" style={{ color: TENANT_COLORS[liveRow.tenant] ?? "#999" }}>{liveRow.tenant.toUpperCase()}</span>
+            <span className="sl-t" style={{ color: TENANT_COLORS[liveRow.tenant] ?? "var(--text-dim)" }}>{liveRow.tenant.toUpperCase()}</span>
             <span className="sl-tick">#{fmt(liveRow.tick)}</span>
             <span className="sl-text">{DECISION_KIND_CN[String(liveRow.deadlineOutcome ?? "")] ?? "决策"}</span>
           </span>
@@ -224,9 +224,9 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
             <div className="stream-empty">暂无事件数据</div>
           ) : (
             eventRows.map((e) => {
-              const color = TENANT_COLORS[e.tenant] ?? "#999";
-              const evColor = e.kind.startsWith("SHOT") || e.kind.includes("DESTROYED") || e.kind.includes("FAILED") ? "#dd626d"
-                : e.kind.includes("SUCCEEDED") || e.kind === "SPAWN" || e.kind === "PICKUP_BEACON" || e.kind === "HEAL" ? "#57bd84" : "#a2a2a8";
+              const color = TENANT_COLORS[e.tenant] ?? "var(--text-dim)";
+              const evColor = e.kind.startsWith("SHOT") || e.kind.includes("DESTROYED") || e.kind.includes("FAILED") ? "var(--danger)"
+                : e.kind.includes("SUCCEEDED") || e.kind === "SPAWN" || e.kind === "PICKUP_BEACON" || e.kind === "HEAL" ? "var(--green-resource)" : "var(--text-dim)";
               const detail = [e.actor ? `actor ${shortId(e.actor)}` : "", e.target ? `target ${shortId(e.target)}` : "", e.amount != null ? `×${e.amount}` : ""].filter(Boolean).join(" ");
               return (
                 <div key={`${e.tenant}:${e.tick}:${e.kind}:${e.actor ?? ""}:${e.target ?? ""}`} className="stream-line" style={{ ["--tc" as string]: color }}>
@@ -255,7 +255,7 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
               <div className="stream-empty">{journal ? "暂无联盟事迹（30s 刷新）" : "加载联盟事迹…"}</div>
             ) : (
               journal?.deeds?.map((d) => {
-              const color = TENANT_COLORS[d.tenant ?? ""] ?? "#999";
+              const color = TENANT_COLORS[d.tenant ?? ""] ?? "var(--text-dim)";
               const star = d.star ?? 0;
               const pos = d.position;
               return (
@@ -277,7 +277,7 @@ export function StreamPane({ embedded = false }: { embedded?: boolean }) {
           <div className="stream-empty">{prefs.quiet ? "暂无实际决策（可关闭「只看决策」查看全部行）" : "暂无决策数据"}</div>
         ) : (
           shown.map((r) => {
-            const color = TENANT_COLORS[r.tenant] ?? "#999";
+            const color = TENANT_COLORS[r.tenant] ?? "var(--text-dim)";
             const outcome = String(r.deadlineOutcome ?? "");
             const submit = String(r.submitResult ?? "");
             const quiet = quietRow(r);

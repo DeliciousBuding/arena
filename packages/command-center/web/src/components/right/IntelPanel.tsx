@@ -117,13 +117,13 @@ export function IntelPanel() {
         <span className="ir-rank">{typeof r.rank === "number" ? `#${r.rank}` : "—"}</span>
         <span className="ir-name">{r.username}</span>
         {oursTenant ? (
-          <span className="ir-badge ours" style={{ ["--rc" as string]: TENANT_COLORS[oursTenant] ?? "#fff" }} title={`我方账号 · ${oursTenant.toUpperCase()}`}>
+          <span className="ir-badge ours" style={{ ["--rc" as string]: TENANT_COLORS[oursTenant] ?? "var(--accent)" }} title={`我方账号 · ${oursTenant.toUpperCase()}`}>
             <i className="ir-tdot" />我们 · {oursTenant.toUpperCase()}
           </span>
         ) : null}
         {encounters?.length ? (
           <span className="ir-badge met" title={encounterTooltip(encounters)}>
-            <span className="ir-tenant-dots">{encounters.map((e) => <i key={e.tenant} className="dot" style={{ background: TENANT_COLORS[e.tenant] ?? "#999" }} />)}</span>
+            <span className="ir-tenant-dots">{encounters.map((e) => <i key={e.tenant} className="dot" style={{ background: TENANT_COLORS[e.tenant] ?? "var(--text-dim)" }} />)}</span>
             遭遇
           </span>
         ) : null}

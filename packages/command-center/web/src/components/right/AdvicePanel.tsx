@@ -112,7 +112,7 @@ export function AdvicePanel() {
                   {a.confidence != null ? (
                     <span className="adv-conf mono" title={"置信度 " + Math.round(a.confidence * 100) + "%"} style={{ color: a.confidence >= 0.8 ? "var(--success)" : "var(--text-dim)" }}>{Math.round(a.confidence * 100)}%</span>
                   ) : null}
-                  {a.tenant ? <span className="adv-tenant" style={{ color: TENANT_COLORS[a.tenant] ?? "#999" }}>{a.tenant.toUpperCase()}</span> : null}
+                  {a.tenant ? <span className="adv-tenant" style={{ color: TENANT_COLORS[a.tenant] ?? "var(--text-dim)" }}>{a.tenant.toUpperCase()}</span> : null}
                   <span className="adv-cat mono dim">{CAT_CN[a.category] ?? a.category}</span>
                 </div>
                 <b className="adv-title">{a.title}</b>

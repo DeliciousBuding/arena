@@ -46,7 +46,7 @@ function TenantCard({ t, d }: { t: string; d: SurveyData }) {
   return (
     <div className="sv-card">
       <div className="sv-head">
-        <span className="sv-chip" style={{ background: TENANT_COLORS[t] ?? "#888" }} />
+        <span className="sv-chip" style={{ background: TENANT_COLORS[t] ?? "var(--text-dim)" }} />
         <b>{t.toUpperCase()}</b>
         <span className="sv-sub">矿 {fmt(d.resources?.length)} · 障碍 {fmt(d.obstacles?.length)} · 敌核 {fmt(d.coreHunts?.length)} · 探索分区 {fmt(d.chunks?.length)}</span>
       </div>
@@ -58,7 +58,7 @@ function TenantCard({ t, d }: { t: string; d: SurveyData }) {
           {spendBar.length ? (
             <div className="sv-bar">
               {spendBar.map((x) => (
-                <span key={x.kind} className="sv-bar-seg" style={{ width: `${x.pct}%`, background: x.kind === "spawn" ? "#7fc99a" : x.kind === "repair" ? "#5fd4e8" : "#f0883e" }} title={`${KIND_CN[x.kind] ?? x.kind} ${x.total}`} />
+                <span key={x.kind} className="sv-bar-seg" style={{ width: `${x.pct}%`, background: x.kind === "spawn" ? "var(--green-resource)" : x.kind === "repair" ? "var(--cyan-signal)" : "var(--warn)" }} title={`${KIND_CN[x.kind] ?? x.kind} ${x.total}`} />
               ))}
             </div>
           ) : null}
