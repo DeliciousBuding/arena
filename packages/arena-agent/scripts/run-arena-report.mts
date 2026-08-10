@@ -16,8 +16,10 @@
  *   - 综合分（v3）：avgRank(反向 min-max) 60% + killRate 30% +
  *     resourcesPerTick 10%（v2 的 survivalMedian 20% 因同 tick 重生恒 1.0 移除，
  *     审计 §1.2/§6.2；字段保留兼容旧消费者）
- *   - 对照组：内置 ts-aggressive/ts-safety 不参与主榜 composite 排名
- *     （单独展示 leaderboardControl，审计 §6.9）
+ *   - 对照组：内置 ts-aggressive/ts-safety 与社区条目同场参赛、同归一化池
+ *     一条龙排序（v3.4 同榜裁决 2026-08-10——同场对抗数据真实，分榜是外推
+ *     口径逼的，非设计本意；kind=builtin 徽章保留在条目上；leaderboardControl
+ *     保留为兼容字段）
  * 报告：data/runs/sim/arena-bench-<id>/ 下 results.json（schema
  *       arena.bench.report.v3，v2 字段向后兼容）
  *       + report.html（深色主题，SVG 内嵌：综合榜单/场景×条目热图/雷达图）。
@@ -1208,8 +1210,9 @@ async function writeRunArtifacts(args: {
       })),
     })),
     leaderboard: leaderboardSection.main,
-    /** 内置对照组（ts-aggressive/ts-safety）：不参与主榜 composite 排名，
-     *  分数用主榜同一归一化基准计算（可横向参考），单独展示。 */
+    /** 内置对照组（ts-aggressive/ts-safety）：v3.4 同榜裁决后为兼容字段——
+     *  与主榜同一归一化池分数（0-1 无外推）、行 = 对照子集；新消费者读
+     *  leaderboard（10 条一条龙）即可。 */
     leaderboardControl: leaderboardSection.control,
     /** v3 判定口径（审计 bench-fairness-audit-2026-08-09 §6 落地）：
      *  1) winner 与排名同链：存活→击杀→deposited→资源→人口（decideWinner
@@ -1222,13 +1225,15 @@ async function writeRunArtifacts(args: {
      *  4) 击杀归属保持 v2 口径（CORE_DESTROYED.destroyed_by，聚合层注释：
      *     最后 tick 偏置/同 tick 集火多记/sweep 伤害不入 damageDealt 账本——
      *     ≥20% 伤害占比归属需改结算层，v3 不实施，逐字节一致性优先）；
-     *  5) 内置条目（kind=builtin）为对照组，不参与主榜 composite 排名。 */
+     *  5) 归一化池 = 全部参赛条目（含内置对照）——10 条同池 0-1 一条龙
+     *     （v3.4 同榜裁决 2026-08-10，取代"对照套主榜基准外推 >1"口径；
+     *     kind=builtin 徽章保留在条目上）。 */
     notes: [
       "winner/排名同链：存活→击杀→deposited→资源→人口（审计 §1.4/§6.4，v3.3 补齐 deposited）",
       "排名 tie-break 新增 deposited（累计存款）（审计 §6.4）",
       "综合分：rank 60% + kill 30% + economy 10%；survivalMedian 20% 移除（恒 1.0，审计 §1.2）",
       "击杀归属口径：destroyed_by 同 tick 集火多记/最后一击偏置保留（审计 §2d），聚合层注释",
-      "内置 ts-aggressive/ts-safety 为对照组：不参与主榜 composite（leaderboardControl）",
+      "同榜裁决（v3.4 2026-08-10）：内置 ts-aggressive/ts-safety 同池一条龙排序（10 条 0-1）",
     ],
     errors: errors.map((error) => ({
       scenario: error.scenario,
@@ -1304,10 +1309,12 @@ function minMaxNormalize(values: readonly number[]): (value: number) => number {
   return (value) => (value - min) / (max - min);
 }
 
-/** 跨场景聚合榜单（v3 综合分 0.6/0.3/0.1）：main = 非内置条目（参与主榜
- *  composite 排名）；control = 内置对照组（ts-aggressive/ts-safety）——用同一
- *  归一化基准计算分数、但不参与主榜排序、单独展示（任务书条目面；审计 §6.9
- *  内置去特权）。归一化 min-max 只在 main 行上做，control 行套用同基准。 */
+/** 跨场景聚合榜单（v3.4 同榜裁决 2026-08-10）：**全部参赛条目**（含内置
+ *  对照 ts-aggressive/ts-safety）同一归一化池 0-1 排序——内置条目同场参赛、
+ *  数据真实（avgRank/killRate/资源全有），"分开两个榜"是被外推分数口径逼
+ *  的，非设计本意；kind=builtin 徽章保留在条目上。归一化 min-max 在全部
+ *  参赛行上做（10 条一条龙）；leaderboardControl 保留为兼容字段（同池分数、
+ *  对照子集，旧消费者零改动降级）。 */
 function buildLeaderboard(scenarios: readonly ScenarioSummary[]): LeaderboardSection {
   const contestants = defaultContestants();
   const contestantIds = contestants.map((contestant) => contestant.id);
@@ -1332,14 +1339,13 @@ function buildLeaderboard(scenarios: readonly ScenarioSummary[]): LeaderboardSec
   const isControl = new Set(
     contestants.filter((contestant) => contestant.kind === "builtin").map((contestant) => contestant.id),
   );
-  const mainRows = rows.filter((row) => !isControl.has(row.contestantId));
-  const controlRows = rows.filter((row) => isControl.has(row.contestantId));
-  const rankNormalize = minMaxNormalize(mainRows.map((row) => row.avgRank));
-  const killNormalize = minMaxNormalize(mainRows.map((row) => row.killRate));
+  // 归一化池 = 全部参赛条目（10 条同池，0-1 无外推）
+  const rankNormalize = minMaxNormalize(rows.map((row) => row.avgRank));
+  const killNormalize = minMaxNormalize(rows.map((row) => row.killRate));
   // 经济维度与 rank/kill 同基准：条目级跨场景均值池 min-max（2026-08-10
   // 评分口径一致性修复——原实现用场景级全量池，与另两维基准不一致）。
   const economyNormalize = minMaxNormalize(
-    mainRows.map((row) =>
+    rows.map((row) =>
       mean(
         scenarios
           .map((scenario) => scenario.perEntry[row.contestantId])
@@ -1365,9 +1371,10 @@ function buildLeaderboard(scenarios: readonly ScenarioSummary[]): LeaderboardSec
     };
     return { ...scored, composite: 0.6 * scored.rankScore + 0.3 * scored.killScore + 0.1 * scored.economyScore };
   };
+  const scoredAll = rows.map(scoreRow).sort((a, b) => b.composite - a.composite);
   return {
-    main: mainRows.map(scoreRow).sort((a, b) => b.composite - a.composite),
-    control: controlRows.map(scoreRow).sort((a, b) => b.composite - a.composite),
+    main: scoredAll,
+    control: scoredAll.filter((row) => isControl.has(row.contestantId)),
   };
 }
 
