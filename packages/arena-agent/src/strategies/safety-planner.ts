@@ -171,6 +171,7 @@ const CORE_MIGRATION_CANCEL_COOLDOWN = 10;
  * 纯猜格）。min 收窄到 60 = 原默认值，覆盖"短视野丢失"语义，堵死核残留放大。
  */
 const RANGER_MEMORY_SHOT_MAX_AGE = 60;
+const RANGER_DIRECT_SHOT_MISS_LIMIT = 3;
 /** 守卫轮换治疗（B8 候选）：HP ≤ 该值即回 Core 补血（掉血过半）。 */
 const HEAL_ROTATION_HP: Record<UnitType, number> = { WORKER: 1, VANGUARD: 2, RANGER: 1 };
 /** 守卫"战斗中不回修"的反击范围（敌进入守卫反击射程 = 战斗压力，带伤值守）。 */
@@ -679,6 +680,7 @@ export class SafetyPlanner {
    *  用 lastWorkerPos（实际存所有单位位置）检测位置未变，连续 ≥3 tick
    *  → 强制 spread 到相邻空格（复用 nearestFreeAdjacent）。 */
   private militaryStuckStreak = new Map<string, number>();
+  private rangerConsecutiveMisses = new Map<string, number>();
   /** Worker 活性恢复冷却：unitId → 截止 tick。冷却内不主动领取 stale memory mine，
    *  让 reset+rotate 真正获得一段探索窗口，防下一 Tick 又被同一历史任务吸回去。 */
   private workerLivenessRecoveryUntil = new Map<string, number>();
@@ -1811,6 +1813,18 @@ export class SafetyPlanner {
     }
     if (state.core !== null) this.lastCoreId = state.core.id;
     this.world.observe(state);
+    const rangerIds = new Set(state.rangers.map((r) => r.id));
+    for (const event of state.events) {
+      if (event.actorId === null || !rangerIds.has(event.actorId)) continue;
+      if (event.eventType === "SHOT_MISSED") {
+        this.rangerConsecutiveMisses.set(
+          event.actorId,
+          (this.rangerConsecutiveMisses.get(event.actorId) ?? 0) + 1,
+        );
+      } else if (event.eventType === "SHOT_HIT") {
+        this.rangerConsecutiveMisses.set(event.actorId, 0);
+      }
+    }
     this.phase.update({
       population: state.population,
       resources: state.resources,
@@ -3878,8 +3892,11 @@ export class SafetyPlanner {
       ? fireable.sort(aggressiveShotPriority)[0]
       : fireable.sort((a, b) => defensiveShotPriority(unit.position, a, b))[0];
     if (target !== undefined) {
-      set(unit, { type: "SHOOT", targetId: target.id, expectedCell: target.position }, "shoot");
-      return;
+      const consecutiveMisses = this.rangerConsecutiveMisses.get(unit.id) ?? 0;
+      if (consecutiveMisses < RANGER_DIRECT_SHOT_MISS_LIMIT) {
+        set(unit, { type: "SHOOT", targetId: target.id, expectedCell: target.position }, "shoot");
+        return;
+      }
     }
 
     // Upstream v0.12 cell fire: fire at the predicted next cell of the nearest

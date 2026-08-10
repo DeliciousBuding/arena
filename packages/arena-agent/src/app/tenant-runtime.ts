@@ -1449,7 +1449,7 @@ export async function runTenant(
         // recovering 状态的首个 tick 返回一次 side effect，调用方据此执行
         // 代码级干预（MacroPolicy 只能间接引导，某些 stall 需直接操作记忆）。
         const recoverySideEffect = stallRecovery.recoverySideEffect();
-        if (recoverySideEffect !== null && planner instanceof SafetyPlanner) {
+        if (recoverySideEffect !== null) {
           switch (recoverySideEffect) {
             case "clear_enemy_core_memory": {
               const cleared = planner.world.clearCoreHuntMemory();
