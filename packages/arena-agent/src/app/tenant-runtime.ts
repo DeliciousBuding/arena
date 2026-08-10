@@ -54,7 +54,7 @@ import { MacroPolicyOrchestrator } from "../runtime/macro-policy-orchestrator.ts
 import { serializeMacroPolicy } from "../runtime/macro-policy.ts";
 import type { MacroDecisionPointV1 } from "../offline-learning/runtime/macro-decision-point.ts";
 import { StallDetector, type StallEvent } from "../runtime/stall-detector.ts";
-import { StallRecovery } from "../runtime/stall-recovery.ts";
+import { StallRecovery, type RecoverySideEffect } from "../runtime/stall-recovery.ts";
 import {
   WorkerLivenessTracker,
   MOVE_CONTESTED_BLOCK_PENALTY,
@@ -1443,6 +1443,53 @@ export async function runTenant(
               kind: recoveryTransition.kind ?? null,
               tick: recoveryTransition.tick,
             };
+          }
+        }
+        // GAP 1.1 fix（2026-08-10）：per-kind 恢复副作用。StallRecovery 在
+        // recovering 状态的首个 tick 返回一次 side effect，调用方据此执行
+        // 代码级干预（MacroPolicy 只能间接引导，某些 stall 需直接操作记忆）。
+        const recoverySideEffect = stallRecovery.recoverySideEffect();
+        if (recoverySideEffect !== null && planner instanceof SafetyPlanner) {
+          switch (recoverySideEffect) {
+            case "clear_enemy_core_memory": {
+              const cleared = planner.world.clearCoreHuntMemory();
+              appendJsonlLine(
+                join(dirs.telemetryDir, "runtime.jsonl"),
+                JSON.stringify(sanitizeValue({
+                  processRunId,
+                  tenantId: config.tenantId,
+                  tick: outcome.tick,
+                  telemetryType: "stall_recovery_side_effect",
+                  sideEffect: "clear_enemy_core_memory",
+                  clearedCount: cleared,
+                })),
+              );
+              break;
+            }
+            case "trigger_migration_replan":
+              appendJsonlLine(
+                join(dirs.telemetryDir, "runtime.jsonl"),
+                JSON.stringify(sanitizeValue({
+                  processRunId,
+                  tenantId: config.tenantId,
+                  tick: outcome.tick,
+                  telemetryType: "stall_recovery_side_effect",
+                  sideEffect: "trigger_migration_replan",
+                })),
+              );
+              break;
+            case "trigger_worker_yield":
+              appendJsonlLine(
+                join(dirs.telemetryDir, "runtime.jsonl"),
+                JSON.stringify(sanitizeValue({
+                  processRunId,
+                  tenantId: config.tenantId,
+                  tick: outcome.tick,
+                  telemetryType: "stall_recovery_side_effect",
+                  sideEffect: "trigger_worker_yield",
+                })),
+              );
+              break;
           }
         }
         // 经济趋势缓冲（策略 prompt 输入；保留最近 32 ticks）

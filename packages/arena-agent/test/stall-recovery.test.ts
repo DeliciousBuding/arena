@@ -332,3 +332,90 @@ test("StallRecovery C8: failureRounds 在 recovered 时归零（不累积到 esc
   assert.equal(thirdFail?.outcome, "failed");
   assert.equal(recovery.stateOf(), "idle");
 });
+
+// === 2026-08-10 GAP 1.1 测试：per-kind 定向恢复策略 + 副作用 ===
+
+test("StallRecovery GAP 1.1: military_interlock → aggressive posture + focusRegion=null", () => {
+  const recovery = new StallRecovery();
+  recovery.observe([event("military_interlock", 100)], { tick: 100, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(recovery.stateOf(), "recovering");
+  const policy = recovery.policyFor(BASE);
+  assert.equal(policy.posture, "aggressive", "军事互堵 → aggressive 鼓励接战");
+  assert.equal(policy.focusRegion, null, "focusRegion=null 让单位散开");
+  assert.equal(policy.workerTarget, BASE.workerTarget, "workerTarget 不变");
+});
+
+test("StallRecovery GAP 1.1: shot_missed_spiral → balanced posture（不硬射）", () => {
+  const recovery = new StallRecovery();
+  recovery.observe([event("shot_missed_spiral", 200)], { tick: 200, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(recovery.stateOf(), "recovering");
+  const policy = recovery.policyFor(BASE);
+  assert.equal(policy.posture, "balanced", "空枪螺旋 → balanced 降低接战冲动");
+  assert.equal(policy.focusRegion, null);
+});
+
+test("StallRecovery GAP 1.1: spawn_stall → workerTarget 减 2（减轻产兵压力）", () => {
+  const recovery = new StallRecovery();
+  recovery.observe([event("spawn_stall", 300)], { tick: 300, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(recovery.stateOf(), "recovering");
+  const policy = recovery.policyFor(BASE);
+  assert.equal(policy.posture, "balanced");
+  assert.equal(policy.workerTarget, BASE.workerTarget - 2, "降 workerTarget 减轻产兵压力");
+  assert.equal(policy.focusRegion, null);
+});
+
+test("StallRecovery GAP 1.1: economy kind → focusRegion=null（原行为不变）", () => {
+  const recovery = new StallRecovery();
+  recovery.observe([event("cargo_blocked", 400)], { tick: 400, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(recovery.stateOf(), "recovering");
+  const policy = recovery.policyFor(BASE);
+  assert.equal(policy.posture, BASE.posture, "经济类不改 posture");
+  assert.equal(policy.focusRegion, null);
+  assert.equal(policy.workerTarget, BASE.workerTarget);
+});
+
+test("StallRecovery GAP 1.1: recoverySideEffect 对 shot_missed_spiral 返回 clear_enemy_core_memory", () => {
+  const recovery = new StallRecovery();
+  // idle 状态 → null
+  assert.equal(recovery.recoverySideEffect(), null);
+  recovery.observe([event("shot_missed_spiral", 500)], { tick: 500, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  // recovering 首次 → clear_enemy_core_memory
+  assert.equal(recovery.recoverySideEffect(), "clear_enemy_core_memory");
+  // 再次调用 → null（一次性触发）
+  assert.equal(recovery.recoverySideEffect(), null);
+});
+
+test("StallRecovery GAP 1.1: recoverySideEffect 对 migration_stall 返回 trigger_migration_replan", () => {
+  const recovery = new StallRecovery();
+  recovery.observe([event("migration_stall", 600)], { tick: 600, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(recovery.recoverySideEffect(), "trigger_migration_replan");
+  assert.equal(recovery.recoverySideEffect(), null, "一次性触发");
+});
+
+test("StallRecovery GAP 1.1: recoverySideEffect 对 spawn_stall 返回 trigger_worker_yield", () => {
+  const recovery = new StallRecovery();
+  recovery.observe([event("spawn_stall", 700)], { tick: 700, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(recovery.recoverySideEffect(), "trigger_worker_yield");
+  assert.equal(recovery.recoverySideEffect(), null, "一次性触发");
+});
+
+test("StallRecovery GAP 1.1: economy kind → recoverySideEffect 返回 null", () => {
+  const recovery = new StallRecovery();
+  recovery.observe([event("no_production", 800)], { tick: 800, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(recovery.recoverySideEffect(), null, "经济类无副作用");
+});
+
+test("StallRecovery GAP 1.1: 副作用在恢复后重置（可再次触发）", () => {
+  const recovery = new StallRecovery({ recoveryTicks: 128, cooldownTicks: 0 });
+  // 第一次 shot_missed_spiral
+  recovery.observe([event("shot_missed_spiral", 1000)], { tick: 1000, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(recovery.recoverySideEffect(), "clear_enemy_core_memory");
+  assert.equal(recovery.recoverySideEffect(), null, "一次性");
+  // 恢复
+  recovery.observe(noEvents(), { tick: 1001, coreResourceDelta: 0, harvestCount: 0, depositCount: 0, failedEventCounts: {}, shotHitCount: 1 });
+  assert.equal(recovery.stateOf(), "idle");
+  assert.equal(recovery.recoverySideEffect(), null, "idle 时返回 null");
+  // 第二次触发 → 副作用可再次触发
+  recovery.observe([event("shot_missed_spiral", 1002)], { tick: 1002, coreResourceDelta: 0, harvestCount: 0, depositCount: 0 });
+  assert.equal(recovery.recoverySideEffect(), "clear_enemy_core_memory", "新 recovering 周期可再次触发");
+});

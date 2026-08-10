@@ -954,6 +954,17 @@ export class World {
     return existed;
   }
 
+  /** GAP 1.1 recovery（2026-08-10）：清除所有敌核记忆。shot_missed_spiral
+   *  恢复时调用——游侠记忆射击打的是陈旧敌核记忆格（死核/迁移核/重生核
+   *  的旧格），清除后游侠不再对空枪。 */
+  clearCoreHuntMemory(): number {
+    const count = this.coreHuntMemory.size;
+    this.coreHuntMemory.clear();
+    this.coreHuntMissingCount.clear();
+    this.enemyCoreForceRecords.clear();
+    return count;
+  }
+
   /** 旧核验证协议：DESTRUCTION_PARTICIPATION（CORE）事件同步清理 enemyMemory
    *  （2026-08-08 生产实证 t1：敌核 3fc73555 在 [-632,-126] 被拆后 enemyMemory
    *  的 CORE 条目残留 ~60 tick——ranger_memory_shot / vanguard_pressure_memory

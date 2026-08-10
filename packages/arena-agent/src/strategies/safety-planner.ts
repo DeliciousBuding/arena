@@ -4467,6 +4467,20 @@ export class SafetyPlanner {
           return { type: "CANCEL_MOVE" };
         }
       }
+      // GAP 3.1 fix（2026-08-10）：MOVING 期间允许 HEAL / REPAIR_SHIELD。
+      // 竞品语义"例行 heal/repair 不取消迁移"——START_MOVE 是多 tick 自
+      // 动推进，期间 Core 的单 tick action 空闲可用于 heal/repair。长距离
+      // 迁移（600+ tick）此前完全无防御恢复能力 → Core 被打残也无法修盾
+      // /回血。SPAWN 仍需 NORMAL（core.state !== "NORMAL" 拦截），迁移期
+      // 不产兵。优先级：CANCEL_MOVE > HEAL > REPAIR_SHIELD > null。
+      if (core.hp < 5) {
+        intents.core = "core_heal_moving";
+        return { type: "HEAL" };
+      }
+      if (core.shield < this.shieldCap(state) && state.resources >= 1) {
+        intents.core = "repair_shield_moving";
+        return { type: "REPAIR_SHIELD" };
+      }
       return null;
     }
     if (this.config.coreEvade === true) {
