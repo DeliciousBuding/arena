@@ -1436,7 +1436,7 @@ export async function runTenant(
         // trigger_migration_replan：migration_stall 重规划迁移路径。
         // trigger_worker_yield：spawn_stall 让 Core 格 worker 让位。
         const recoverySideEffect = stallRecovery.recoverySideEffect();
-        if (recoverySideEffect !== null && planner instanceof SafetyPlanner) {
+        if (recoverySideEffect !== null) {
           switch (recoverySideEffect) {
             case "clear_enemy_core_memory": {
               const cleared = planner.world.clearCoreHuntMemory();

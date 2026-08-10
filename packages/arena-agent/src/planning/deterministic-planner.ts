@@ -1040,6 +1040,15 @@ export class DeterministicPlanner implements PlanProvider {
     return fallback;
   }
 
+  /** GAP 1.1 fix（2026-08-10）：暴露内部 fallback SafetyPlanner 的 World
+   *  供 stall recovery 副作用使用（clearCoreHuntMemory 等）。deterministic
+   *  模式下 planner 是 DeterministicPlanner，tenant-runtime 的副作用 gate
+   *  原用 `instanceof SafetyPlanner` 在 deterministic 下恒 false → 副作用
+   *  从不执行。添加此 getter 后两种 planner 都有 world 属性，gate 可移除。 */
+  get world(): World {
+    return this.fallbackPlanner.world;
+  }
+
   decide(input: DeterministicPlannerInput): Plan {
     // SafetyPlanner 已包含跨 Tick World（障碍/资源线索/Worker 巡逻状态）。先生成完整
     // 基线计划，再用 WorkerTaskPlanner 覆盖可见资源的全局唯一分配。这样 deterministic

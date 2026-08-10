@@ -171,6 +171,12 @@ const CORE_MIGRATION_CANCEL_COOLDOWN = 10;
  * 纯猜格）。min 收窄到 60 = 原默认值，覆盖"短视野丢失"语义，堵死核残留放大。
  */
 const RANGER_MEMORY_SHOT_MAX_AGE = 60;
+/** C1 扩展（2026-08-10）：直射连续 miss 上限。ranger 对射程内敌人连开 N 枪
+ *  全 miss 时不发直射，落入下方走位/预判分支重新找角度。t1 生产实证：
+ *  ranger 连打 20+ tick 同一静止敌全 miss（直射 targetId≠null 不经过 C1 的
+ *  shoot_cell 静止检查）。3 = 给 2 次试射机会（1 次可能是噪声），第 3 次
+ *  miss 后换角度。SHOT_HIT 归零。 */
+const RANGER_DIRECT_SHOT_MISS_LIMIT = 3;
 /** 守卫轮换治疗（B8 候选）：HP ≤ 该值即回 Core 补血（掉血过半）。 */
 const HEAL_ROTATION_HP: Record<UnitType, number> = { WORKER: 1, VANGUARD: 2, RANGER: 1 };
 /** 守卫"战斗中不回修"的反击范围（敌进入守卫反击射程 = 战斗压力，带伤值守）。 */
@@ -676,6 +682,11 @@ export class SafetyPlanner {
    *  用 lastWorkerPos（实际存所有单位位置）检测位置未变，连续 ≥3 tick
    *  → 强制 spread 到相邻空格（复用 nearestFreeAdjacent）。 */
   private militaryStuckStreak = new Map<string, number>();
+  /** C1 扩展（2026-08-10）：per-ranger 连续 SHOT_MISSED 计数。直射分支
+   *  （targetId≠null）不经过 C1 的 shoot_cell 静止检查——ranger 对射程内
+   *  敌人连开 N 枪全 miss 时不发直射，落入下方走位/预判分支重新找角度。
+   *  SHOT_HIT 归零；非射击 tick 不变（只连续 miss 才累加）。 */
+  private rangerConsecutiveMisses = new Map<string, number>();
   /** Worker 活性恢复冷却：unitId → 截止 tick。冷却内不主动领取 stale memory mine，
    *  让 reset+rotate 真正获得一段探索窗口，防下一 Tick 又被同一历史任务吸回去。 */
   private workerLivenessRecoveryUntil = new Map<string, number>();
@@ -1808,6 +1819,22 @@ export class SafetyPlanner {
     }
     if (state.core !== null) this.lastCoreId = state.core.id;
     this.world.observe(state);
+    // C1 扩展（2026-08-10）：per-ranger SHOT_MISSED 连续计数。observe 在
+    // decide 之前调用，state.events 是上一 tick 的结算事件——按 actorId
+    // 追踪每个 ranger 的连续 miss 数。SHOT_HIT 归零，非射击 tick 不变。
+    // decideRanger 直射分支据此跳过"连开 N 枪全空"的目标。
+    const rangerIds = new Set(state.rangers.map((r) => r.id));
+    for (const event of state.events) {
+      if (event.actorId === null || !rangerIds.has(event.actorId)) continue;
+      if (event.eventType === "SHOT_MISSED") {
+        this.rangerConsecutiveMisses.set(
+          event.actorId,
+          (this.rangerConsecutiveMisses.get(event.actorId) ?? 0) + 1,
+        );
+      } else if (event.eventType === "SHOT_HIT") {
+        this.rangerConsecutiveMisses.set(event.actorId, 0);
+      }
+    }
     this.phase.update({
       population: state.population,
       resources: state.resources,
@@ -3868,8 +3895,16 @@ export class SafetyPlanner {
       ? fireable.sort(aggressiveShotPriority)[0]
       : fireable.sort((a, b) => defensiveShotPriority(unit.position, a, b))[0];
     if (target !== undefined) {
-      set(unit, { type: "SHOOT", targetId: target.id, expectedCell: target.position }, "shoot");
-      return;
+      // C1 扩展（2026-08-10）：直射 miss 回退。直射（targetId≠null）不经过
+      // C1 的 shoot_cell 静止检查——ranger 对射程内敌人连开 N 枪全 miss 时
+      // 不发直射，落入下方走位/预判分支重新找角度。t1 实证：ranger 连打
+      // 20+ tick 同一静止敌全 miss，C1 的 shoot_cell 跳过管不到直射分支。
+      const consecutiveMisses = this.rangerConsecutiveMisses.get(unit.id) ?? 0;
+      if (consecutiveMisses < RANGER_DIRECT_SHOT_MISS_LIMIT) {
+        set(unit, { type: "SHOOT", targetId: target.id, expectedCell: target.position }, "shoot");
+        return;
+      }
+      // 连续 miss 达上限：跳过直射，落入下方预判/走位逻辑（重新找角度或 kite）
     }
 
     // Upstream v0.12 cell fire: fire at the predicted next cell of the nearest
