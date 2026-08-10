@@ -819,9 +819,17 @@ function spawnChildProcess(repoRoot: string, args: readonly string[], spec: Tena
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     windowsHide: true,
     detached: process.platform !== "win32",
-    env: migrationConfigPath === undefined
-      ? undefined
-      : { ...process.env, ARENA_MIGRATION_CONFIG: migrationConfigPath },
+    // 台账按租户隔离（2026-08-10 修复）：此前 watchdog 硬编码
+    // ARENA_HERO_TENANT=t1 注入 supervisor，所有租户进程继承后全部上报进
+    // t1 台账（t2/t3/t4 的 survey 库停更 2.5h+，面板显示"掉线"实为标签错乱）。
+    // SDK telemetry 按此 env 打 tenant 标签，必须按租户注入。
+    env: {
+      ...process.env,
+      ARENA_HERO_TENANT: spec.tenantId,
+      ...(migrationConfigPath === undefined
+        ? {}
+        : { ARENA_MIGRATION_CONFIG: migrationConfigPath }),
+    },
   });
 }
 

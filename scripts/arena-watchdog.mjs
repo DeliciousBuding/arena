@@ -515,11 +515,13 @@ function restartSupervisor() {
     detached: true,
     stdio: ["ignore", out, out],
     shell: false,
-    // t1 台账依赖 SDK 遥测 env：不带则台账停更（2026-08-09 15:13 根因）。
+    // 遥测 endpoint 注入（supervisor → 租户继承；2026-08-09 15:13 起）。
+    // ARENA_HERO_TENANT 不再在此硬编码（2026-08-10 修复）：此前硬编码 t1
+    // 使所有租户进程继承后全部上报进 t1 台账（t2/t3/t4 survey 库停更 2.5h+）。
+    // 现由 run-supervisor 按租户注入（tenant-supervisor spawnChildProcess）。
     env: {
       ...process.env,
       ARENA_HERO_TELEMETRY_ENDPOINT: "http://127.0.0.1:8787/api/ingest/agents",
-      ARENA_HERO_TENANT: "t1",
     },
   });
   child.unref();
