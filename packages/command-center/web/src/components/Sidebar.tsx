@@ -105,16 +105,19 @@ function useAuditOverview(): AuditOverview | null {
   return ao;
 }
 
-/** 目录树根节点：全联盟加总（未采/失联/分工兑现/对齐）——一眼看联盟整体健康。 */
+/** 目录树根节点：全联盟加总（未采/失联/停滞）——一眼看联盟整体健康。
+ *  2026-08-10 精简：删分工/对齐（分析型数据，非状态）；卡内数据条同源三指标。 */
 function AllianceRoot({ audit }: { audit: AuditOverview | null }) {
   const g = audit?.global ?? null;
-  const f = g?.miningFulfillment;
-  const al = g?.alignment;
+  const stallAvg = (() => {
+    const rates = Object.values(audit?.tenants ?? {}).map((x) => x?.trend?.stallRate ?? null).filter((x): x is number => x != null);
+    if (!rates.length) return null;
+    return Math.round((rates.reduce((a, x) => a + x, 0) / rates.length) * 100) + "%";
+  })();
   const items: Array<{ k: string; v: string; cls?: string; title?: string }> = [
     { k: "未采", v: fmt(g?.totalNeverHarvested), title: "全联盟发现后从未开采的矿数" },
     { k: "失联", v: fmt(g?.totalOverdueRefills), cls: (g?.totalOverdueRefills ?? 0) > 0 ? "warn" : "", title: "预测该刷新却未再出现（需复测）" },
-    { k: "分工", v: f ? `${fmt(f.harvested)}/${fmt(f.assigned)}` : "—", cls: (f?.effectiveRate ?? 0) > 0 ? "pos" : "", title: "分工兑现 harvested/assigned" },
-    { k: "对齐", v: al ? `${fmt(al.misaligned)}✗/${fmt(al.aligned)}✓` : "—", cls: (al?.misaligned ?? 0) > 0 ? "warn" : "", title: "决策-分配对齐 misaligned/aligned" },
+    { k: "停滞", v: stallAvg ?? "—", title: "WAIT 决策占比（4 租户均值）" },
   ];
   return (
     <div className="alliance-root" data-alliance-root>
@@ -130,38 +133,22 @@ function AllianceRoot({ audit }: { audit: AuditOverview | null }) {
   );
 }
 
-/** 单租户数据线条：矿 total/未采/失联 · 积压 gapAge · 采集 assigned · 停滞率 · 核心增量。
- *  与资源/工人实时指标并排，构成左侧「目录树」节点详情。 */
+/** 单租户矿健康数据条（2026-08-10 精简：3 行 6 指标 → 1 行 3 指标）。
+ *  未采/失联/停滞 是唯一值得一眼盯的状态；积压/分工/核心Δ/探索移入悬停说明。 */
 function TenantDataStrip({ a }: { a: AuditTenant | undefined }) {
   const m = a?.mines;
-  const gap = m?.maxGapAgeTicks ?? null;
-  const gapCls = gap !== null && gap > 1500 ? "danger" : gap !== null && gap > 600 ? "warn" : "";
-  const cd = a?.trend?.coreDelta ?? null;
   const stall = a?.trend?.stallRate ?? null;
   const stallCls = stall !== null && stall > 0.7 ? "warn" : "";
-  const explored = a?.exploration?.exploredChunks ?? null;
+  const overdue = m?.overdueRefills ?? 0;
   return (
     <div className="data-strip" data-tenant-strip>
       <div className="ds-row">
         <span className="ds-k">矿</span>
-        <span className="ds-v"><b>{fmt(m?.total)}</b> 总 · <b>{fmt(m?.neverHarvested)}</b> 未采 · <b className={((m?.overdueRefills ?? 0) > 0) ? "warn" : ""}>{fmt(m?.overdueRefills)}</b> 失联</span>
-      </div>
-      <div className="ds-row">
-        <span className="ds-k">积压</span>
-        <span className={`ds-v ${gapCls}`} title="发现后仍未采的最长时长"><b>{fmt(gap)}</b> tick</span>
+        <span className="ds-v"><b className={overdue > 0 ? "warn" : ""}>{fmt(m?.neverHarvested)}</b> 未采 · <b className={overdue > 0 ? "warn" : ""}>{fmt(overdue)}</b> 失联</span>
         <span className="ds-sep" />
-        <span className="ds-k">采集</span>
-        <span className="ds-v"><b>{fmt(a?.mining?.assigned)}</b> 分工</span>
-        <span className="ds-sep" />
-        <span className="ds-k">停滞</span>
-        <span className={`ds-v ${stallCls}`} title="WAIT 决策占比"><b>{stall !== null ? Math.round(stall * 100) + "%" : "—"}</b></span>
-      </div>
-      <div className="ds-row">
-        <span className="ds-k">核心Δ</span>
-        <span className={`ds-v ${(cd ?? 0) > 0 ? "pos" : (cd ?? 0) < 0 ? "neg" : ""}`} title="本窗口核心资源净变化"><b>{cd !== null && cd > 0 ? "+" : ""}{fmt(cd)}</b></span>
-        <span className="ds-sep" />
-        <span className="ds-k">探索</span>
-        <span className="ds-v"><b>{fmt(explored)}</b> 区块</span>
+        <span className="ds-v" title={`WAIT 决策占比 · 总矿 ${fmt(m?.total)} · 积压 ${fmt(m?.maxGapAgeTicks)} tick · 分工 ${fmt(a?.mining?.assigned)} · 核心Δ ${fmt(a?.trend?.coreDelta)} · 探索 ${fmt(a?.exploration?.exploredChunks)} 区块`}>
+          <b className={stallCls}>{stall !== null ? Math.round(stall * 100) + "%" : "—"}</b> 停滞
+        </span>
       </div>
     </div>
   );
@@ -241,23 +228,15 @@ function TenantCards() {
             <>
             <div className="metrics">
               <div className="metric"><span className="v">{fmt(L.resources)}</span><span className="k">资源</span></div>
-              <div className="metric" title="增量：仅 JSONL 数据源（t1）有值；台账模式下后端恒为 null，显示 —">
-                <span className={`v ${(L.resourceDelta ?? 0) > 0 ? "delta-pos" : (L.resourceDelta ?? 0) < 0 ? "delta-neg" : ""}`}>{fmt(L.resourceDelta, 0)}</span><span className="k">增量</span>
-              </div>
               <div className="metric" title="单位=可见世界全部 UNIT（台账模式含敌方/先锋/游侠；JSONL 回退为自有工人数）">
                 <span className="v">{fmt(L.workers)}</span><span className="k">单位</span>
               </div>
               <div className="metric" title="当前可见敌方单位数（台账模式 python 租户上报）">
                 <span className="v">{fmt(L.visibleEnemies)}</span><span className="k">敌方</span>
               </div>
-              <div className="metric"><span className="v">{fmt(L.events)}</span><span className="k">事件</span></div>
             </div>
             <div className="row3">
               <span>tick <b>{fmt(L.tick)}</b></span>
-              <span title="核心坐标（台账模式 python 租户上报）">核心 <b>{L.coreX != null && L.coreY != null ? `[${L.coreX}, ${L.coreY}]` : "—"}</b></span>
-              <span>最大距离 <b>{fmt(L.workerMaxDistance)}</b></span>
-              <span>均值 <b>{fmt(L.workerMeanDistance)}</b></span>
-              <span>可见资源 <b>{fmt(L.visibleResources)}</b></span>
             </div>
             <TenantDataStrip a={A} />
             </>
@@ -280,6 +259,20 @@ function Legend() {
       <li><span className="sw memory" />已探索记忆（非当前 tick 淡显）</li>
       <li><span className="sw enemy-mem" />敌情记忆（出视野半透明 · 悬停看最后目击）</li>
     </ul>
+  );
+}
+
+/** 图例折叠行（2026-08-10）：符号说明属低频参考，默认收起，点「图例」展开。 */
+function LegendFold() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="legend-fold">
+      <button type="button" className="legend-fold-btn" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="lf-title">图例</span>
+        <span className="sec-chev">{open ? <ChevronDown className="sec-chev-ico" /> : <ChevronRight className="sec-chev-ico" />}</span>
+      </button>
+      {open && <Legend />}
+    </div>
   );
 }
 
@@ -326,89 +319,17 @@ function ViewSwitch() {
   );
 }
 
-/* ---------------- 人类指挥状态（全局视图可见，4 租户） ---------------- */
-interface CmdStore { mode?: string; actions?: unknown[]; goals?: unknown[]; telemetry?: { applied?: string[]; rejected?: { unitId: string; reason: string }[]; satisfied?: string[] } | null }
-function useCommandStores(): Record<string, CmdStore> {
-  const [stores, setStores] = useState<Record<string, CmdStore>>({});
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      const results = await Promise.allSettled(TENANTS.map((t) => fetch("/api/commands?tenant=" + t, { cache: "no-store" }).then((r) => r.json())));
-      if (!alive) return;
-      const next: Record<string, CmdStore> = {};
-      results.forEach((r, i) => { if (r.status === "fulfilled") next[TENANTS[i]] = r.value as CmdStore; });
-      setStores(next);
-    };
-    load();
-    const timer = setInterval(load, 3000);
-    return () => { alive = false; clearInterval(timer); };
-  }, []);
-  return stores;
-}
-async function ccPostJson(path: string, body: unknown): Promise<boolean> {
-  try {
-    const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    return res.ok;
-  } catch { return false; }
-}
-function CommandStatusPanel() {
-  const stores = useCommandStores();
-  const engine = useEngine();
-  const total = TENANTS.reduce((acc, t) => {
-    const st = stores[t];
-    return acc + (st ? (st.actions?.length ?? 0) + (st.goals?.length ?? 0) : 0);
-  }, 0);
-  const anyOverride = TENANTS.some((t) => stores[t]?.mode === "override");
+/** 显示分区（2026-08-10 合并：图例/图层/租户视图 三个分区 → 一个「显示」，
+ *  侧栏 6 分区 → 4 分区。图层与租户视图是地图操作高频项；图例折叠为低频参考。 */
+function DisplayPanel() {
   return (
-    <CollapsiblePanel id="cmd" className="cmd-panel" title={<><span className="sec-title-inline">人类指挥 · HUMAN COMMAND</span>{total > 0 ? <span className="cmd-total mono" title="全联盟人类指令总数">{total}</span> : null}</>}>
-      <div className="cmd-toggle-row">
-        <span className="cmd-toggle-label">{anyOverride ? "接管中 · 命令优先于 agent" : "已交还 agent 全权"}</span>
-        <Button
-          className={`cmd-toggle-btn${anyOverride ? " active" : ""}`}
-          variant={anyOverride ? "primary" : "default"}
-          size="sm"
-          title={anyOverride ? "一键交还 agent 全权（清空人类指令）" : "启用人类最高控制权"}
-          onClick={async () => {
-            const nextMode = anyOverride ? "disabled" : "override";
-            if (nextMode === "disabled" && total > 0 && !window.confirm("确认清空全部人类指令并交还 agent 全权？")) return;
-            for (const t of TENANTS) {
-              if (nextMode === "disabled") await ccPostJson("/api/command/clear", { tenant: t });
-              await ccPostJson("/api/command/mode", { tenant: t, mode: nextMode });
-            }
-            setTimeout(() => window.location.reload(), 400);
-          }}
-        >{anyOverride ? "交还 Agent" : "人类接管"}</Button>
-      </div>
-      <ul className="cmd-list">
-        {TENANTS.map((t) => {
-          const st = stores[t];
-          const n = st ? (st.actions?.length ?? 0) + (st.goals?.length ?? 0) : 0;
-          const tele = st?.telemetry;
-          const applied = tele?.applied?.length ?? 0;
-          const rej = tele?.rejected?.length ?? 0;
-          const done = tele?.satisfied?.length ?? 0;
-          const color = TENANT_COLORS[t] ?? "var(--text-dim)";
-          return (
-            <li key={t} className={"cmd-row" + (n > 0 ? " active" : "")} data-tenant={t}>
-              <span className="cmd-tenant" style={{ color }}>{t.toUpperCase()}</span>
-              <span className="cmd-n mono">{n} 指令</span>
-              <span className="cmd-tele mono">
-                {applied > 0 ? <b className="ok">✓{applied}</b> : null}
-                {rej > 0 ? <b className="no">✗{rej}</b> : null}
-                {done > 0 ? <b className="done">✓{done}</b> : null}
-                {n === 0 ? <span className="dim">—</span> : null}
-              </span>
-              <Button variant="ghost" size="sm" className="cmd-clear" title={`清空 ${t.toUpperCase()} 人类指令`} disabled={n === 0}
-                onClick={async () => {
-                  if (!window.confirm(`确认清空 ${t.toUpperCase()} 全部人类指令（${n} 条）并交还该租户 agent 全权？`)) return;
-                  await ccPostJson("/api/command/clear", { tenant: t });
-                  setTimeout(() => window.location.reload(), 300);
-                }}>清空</Button>
-            </li>
-          );
-        })}
-      </ul>
-    </CollapsiblePanel>
+    <>
+      <div className="db-label">图层 · LAYERS</div>
+      <LayerToggles />
+      <div className="db-label">租户 · TENANTS</div>
+      <ViewSwitch />
+      <LegendFold />
+    </>
   );
 }
 
@@ -429,10 +350,7 @@ export function Sidebar() {
   return (
     <aside id="sidebar">
       <CollapsiblePanel id="tenants" title="租户 · TENANTS"><TenantCards /></CollapsiblePanel>
-      <CommandStatusPanel />
-      <CollapsiblePanel id="legend" title="图例 · LEGEND"><Legend /></CollapsiblePanel>
-      <CollapsiblePanel id="layers" title="图层 · LAYERS"><LayerToggles /></CollapsiblePanel>
-      <CollapsiblePanel id="view" title="租户视图 · VIEW"><ViewSwitch /></CollapsiblePanel>
+      <CollapsiblePanel id="display" title="显示 · DISPLAY"><DisplayPanel /></CollapsiblePanel>
       <EngineContainers />
     </aside>
   );
