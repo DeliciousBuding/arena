@@ -2035,13 +2035,27 @@ export class SafetyPlanner {
       for (const worker of state.workers) {
         if (worker.cargo <= 0) continue;
         const prev = previousCargo.get(worker.id);
-        if (prev !== undefined && worker.cargo === prev) {
-          // cargo 不变 → 保持/推进 stuckSince（首次不变时初始化）
+        // GAP 5.5 fix（2026-08-10，t1 生产实证 tick 83997）：cargo 不变 + **位置
+        // 不变**才算被堵——返航中的 worker（cargo 天然不变、位置持续移动）不是
+        // 被堵，只是回程中；旧版只看 cargo 会把"返航者"误判为被堵 → Core 追
+        // 返航 worker 迁移（每 5-10 tick 1 格，永远追不到）→ 迁移期 worker 更
+        // 无法卸货 → 恶性循环。位置持续移动（最近 2 tick 不同）的 worker 一律
+        // 不算 stuck。workerPositionTrail 在 observe 开头对全部单位维护（≤6）。
+        const trail = this.workerPositionTrail.get(worker.id) ?? [];
+        const lastPos = trail[trail.length - 1];
+        const prevPos = trail[trail.length - 2];
+        const notMoving =
+          lastPos !== undefined &&
+          prevPos !== undefined &&
+          lastPos[0] === prevPos[0] &&
+          lastPos[1] === prevPos[1];
+        if (prev !== undefined && worker.cargo === prev && notMoving) {
+          // cargo 不变且位置不动 → 保持/推进 stuckSince（首次不变时初始化）
           if (!this.cargoStuckSince.has(worker.id)) {
             this.cargoStuckSince.set(worker.id, state.tick);
           }
         } else {
-          // cargo 变化（卸货成功/新采）→ 重置
+          // cargo 变化（卸货成功/新采）或位置移动（返航中）→ 重置
           this.cargoStuckSince.delete(worker.id);
         }
       }

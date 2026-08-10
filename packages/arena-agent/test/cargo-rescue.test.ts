@@ -246,6 +246,42 @@ test("GAP 5.4：满载 worker 距 Core 15（≤20）→ 仍触发靠拢（近距
     "20 格内满载 worker 仍应触发靠拢（近距离阻塞）");
 });
 
+test("GAP 5.5：返航中的满载 worker（位置持续移动）→ 不算被堵 → 不触发靠拢", () => {
+  const planner = new SafetyPlanner(RESCUE_CONFIG);
+  // w1/w2 每 tick 向 Core 移动 1 格（返航），cargo 不变但位置在动——不是被堵
+  const w1 = worker("w1", [15, 0], 1);
+  const w2 = worker("w2", [-15, 0], 1);
+  for (let tick = 1; tick <= 7; tick += 1) {
+    const state = makeState({
+      tick,
+      workers: [worker("w1", [15 - tick, 0], 1), worker("w2", [-15 + tick, 0], 1)],
+      resourceSpace: 0,
+    });
+    planner.decide({ state });
+  }
+  const plan = planner.decide({
+    state: makeState({ tick: 8, workers: [worker("w1", [7, 0], 1), worker("w2", [-7, 0], 1)], resourceSpace: 0 }),
+  });
+  assert.notEqual(plan.intents.core, "cargo_blocked_self_heal",
+    "返航中（位置移动）的满载 worker 不应触发 Core 靠拢");
+});
+
+test("GAP 5.5：位置不动 + cargo 不变（真被堵）→ 仍触发靠拢", () => {
+  const planner = new SafetyPlanner(RESCUE_CONFIG);
+  const w1 = worker("w1", [8, 0], 1);
+  const w2 = worker("w2", [-8, 0], 1);
+  for (let tick = 1; tick <= 7; tick += 1) {
+    planner.decide({
+      state: makeState({ tick, workers: [w1, w2], resourceSpace: 0 }),
+    });
+  }
+  const plan = planner.decide({
+    state: makeState({ tick: 8, workers: [w1, w2], resourceSpace: 0 }),
+  });
+  assert.equal(plan.intents.core, "cargo_blocked_self_heal",
+    "静止 + cargo 不变 = 真被堵，应触发靠拢");
+});
+
 test("cargo-rescue：cargo 变化（卸货成功）→ 重置 stuck 计数 → 不触发靠拢", () => {
   const planner = new SafetyPlanner(RESCUE_CONFIG);
   const w1 = worker("w1", [0, 0], 1); // 在核心格 → 会 DEPOSIT → cargo 变化
