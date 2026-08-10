@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, X } from "lucide-react";
 import { useEngine, getEngine } from "../lib/bridge";
+import { TENANT_COLORS } from "@/engine/tactical";
 
 const TENANTS = ["t1", "t2", "t3", "t4"];
 const TENANT_LABEL: Record<string, string> = { t1: "租户 1", t2: "租户 2", t3: "租户 3", t4: "租户 4" };
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
 
 const PREFS_KEY = "arena-cc-web.prefs";
 /** 侧栏分区折叠（2026-08-08）：1080p 下"图层/租户视图"在折叠线以下，点标题可收起大区块。
@@ -20,7 +21,7 @@ function CollapsiblePanel({ id, title, children, className = "" }: { id: string;
       <h3 className="panel-title sec-head" role="button" tabIndex={0} aria-expanded={open}
         onClick={() => setOpen(!open)}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(!open); } }}>
-        <span className="sec-title">{title}</span><span className="sec-chev">{open ? "▾" : "▸"}</span>
+        <span className="sec-title">{title}</span><span className="sec-chev">{open ? <ChevronDown className="sec-chev-ico" /> : <ChevronRight className="sec-chev-ico" />}</span>
       </h3>
       <div className="sec-body" hidden={!open}>{children}</div>
     </section>
@@ -212,7 +213,7 @@ function TenantCards() {
                 className="tc-exit" role="button" tabIndex={0} title="返回全局联盟（Esc / G 也可）"
                 onClick={(ev) => { ev.stopPropagation(); getEngine()?.exitSolo(); }}
                 onKeyDown={(ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); getEngine()?.exitSolo(); } }}
-              >✕ 返回全局</div>
+              ><X className="tc-exit-ico" /> 返回全局</div>
             )}
             <div className="row1">
               <span className={`dot ${st.cls}`} title={st.label} />
@@ -221,7 +222,7 @@ function TenantCards() {
               <button type="button" className={`tc-fold${isFolded ? " folded" : ""}`} title={isFolded ? "展开详情" : "折叠详情"}
                 aria-expanded={!isFolded}
                 onClick={(ev) => { ev.stopPropagation(); setCollapsed((p) => ({ ...p, [tenant]: !isFolded })); }}>
-                {isFolded ? "▸" : "▾"}
+                {isFolded ? <ChevronRight className="tc-fold-ico" /> : <ChevronDown className="tc-fold-ico" />}
               </button>
             </div>
             {isFolded ? (

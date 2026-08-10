@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
+import { RotateCw } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { shopRequest } from "../../lib/shopApi";
+import { TENANT_COLORS } from "@/engine/tactical";
 
 const fmt = (n: number | null | undefined): string => {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   return Math.abs(n) >= 1000 ? n.toLocaleString("en-US") : String(n);
 };
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
 /** 快照年龄 → 人类可读（刚刚 / N 分钟前 / N 小时前）。 */
 const ageText = (s?: number): string => {
   if (s === undefined || s === null || !Number.isFinite(s)) return "";
@@ -140,7 +142,7 @@ export function IntelPanel() {
           <p className="dialog-eyebrow">THREAT INTEL · OFFICIAL LEADERBOARD</p>
           <h2>威胁情报 · 排行榜</h2>
         </div>
-        <button type="button" className={`btn ghost rp-refresh${refreshing ? " busy" : ""}`} title={refreshing ? "正在拉取官方排行榜…" : "立即拉取官方排行榜（POST /api/leaderboard/refresh）"} disabled={refreshing} onClick={refreshOfficial}>{refreshing ? "…" : "↻"}</button>
+        <Button variant="ghost" size="icon-sm" className={`rp-refresh${refreshing ? " busy" : ""}`} title={refreshing ? "正在拉取官方排行榜…" : "立即拉取官方排行榜（POST /api/leaderboard/refresh）"} disabled={refreshing} onClick={refreshOfficial}><RotateCw className="rp-refresh-ico" /></Button>
       </div>
 
       <div id="intelTabs" className="intel-tabs" role="tablist">

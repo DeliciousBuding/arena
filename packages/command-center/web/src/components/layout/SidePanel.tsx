@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from "lucide-react";
 
 export interface SidePanelProps {
   side: "left" | "right";
@@ -22,7 +23,9 @@ export function SidePanel({ side, open, width, onToggle, rail, children }: SideP
     >
       <div className="side-panel-body">{children}</div>
       <button type="button" className="side-toggle" title={open ? (side === "left" ? "折叠左栏" : "折叠右栏") : "展开"} onClick={onToggle} aria-expanded={open}>
-        {side === "left" ? (open ? "«" : "»") : (open ? "»" : "«")}
+        {side === "left"
+          ? (open ? <PanelLeftClose className="side-toggle-icon" /> : <PanelLeftOpen className="side-toggle-icon" />)
+          : (open ? <PanelRightClose className="side-toggle-icon" /> : <PanelRightOpen className="side-toggle-icon" />)}
       </button>
       <div className="side-rail" aria-hidden={open}>
         {rail}
