@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Arena 本地看护：每分钟检查本地 supervisor /ready；异常则确认旧进程死透 →
 # 清理死锁 → 重启 live supervisor。日志追加到 ~/arena-watchdog.log。
+# 租户范围由环境变量 ARENA_TENANTS 显式提供（逗号分隔，非空），本脚本不
+# 内置任何租户名；缺失或非法一律 fail closed，不进入恢复路径。
 set -u
 
 LOG="$HOME/arena-watchdog.log"
@@ -15,6 +17,28 @@ READY_URL="http://127.0.0.1:8120/ready"
 MAINTENANCE_LEASE="$RUNTIME_ROOT/maintenance.lease"
 
 now() { date '+%Y-%m-%d %H:%M:%S'; }
+
+# 租户范围门禁（fail closed）：ARENA_TENANTS 必须是非空逗号列表，逐项校验
+# 命名规则 ^[a-z0-9][a-z0-9._-]{0,63}$；缺失或任一非法即拒绝继续，绝不以
+# 缺省租户集继续恢复（避免恢复错对象）。
+TENANT_LIST=""
+TENANTS_CSV=""
+if [ -z "${ARENA_TENANTS:-}" ]; then
+  echo "$(now) ABORT: ARENA_TENANTS is required (non-empty comma-separated tenant list)" >> "$LOG"
+  exit 1
+fi
+for TENANT in $(printf '%s' "$ARENA_TENANTS" | tr ',' '\n'); do
+  if [[ ! "$TENANT" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]]; then
+    echo "$(now) ABORT: invalid tenant name in ARENA_TENANTS: '$TENANT'" >> "$LOG"
+    exit 1
+  fi
+  TENANT_LIST="${TENANT_LIST:+$TENANT_LIST }$TENANT"
+  if [ -n "$TENANTS_CSV" ]; then
+    TENANTS_CSV="$TENANTS_CSV,$TENANT"
+  else
+    TENANTS_CSV="$TENANT"
+  fi
+done
 
 # 维护租约：维护者只写一个有明确过期时间的 lease，watchdog 在 lease 有效时
 # 暂不拉起实例；即使维护者崩溃，lease 过期后下一轮自动恢复。
@@ -38,7 +62,7 @@ if [ "$READY" = '"ready":true' ]; then
   # （SDK 侧 idle 超时是主修复，此处兜底）。
   STALL_MAX_AGE_S=600
   STALL_TENANT=""
-  for TENANT in t1 t2 t3 t4; do
+  for TENANT in $TENANT_LIST; do
     OUTCOME="$RUNTIME_ROOT/$TENANT/telemetry/outcome.jsonl"
     LOCK=$(ls "$RUNTIME_ROOT/$TENANT/locks/"*.lock 2>/dev/null | head -1)
     # 启动宽限：本轮 run 尚未产出首个 outcome 时（lock 新于 outcome），
@@ -138,21 +162,21 @@ if [ -n "$STRAYS" ]; then
 fi
 
 # 3) 清理死锁——只有上面的最终进程门禁确认所有 writer/supervisor 都已退出后才允许。
-rm -f "$RUNTIME_ROOT/t1/locks/"*.lock "$RUNTIME_ROOT/t2/locks/"*.lock "$RUNTIME_ROOT/t3/locks/"*.lock "$RUNTIME_ROOT/t4/locks/"*.lock
+for TENANT in $TENANT_LIST; do
+  rm -f "$RUNTIME_ROOT/$TENANT/locks/"*.lock
+done
 
 # 4) 重启 live supervisor（脱离当前会话，日志追加；--record-calibration 旁路
 #    只记录 raw Runtime-Golden dataset；后续校准严格离线执行）
 cd "$REPO" || exit 1
 # 遥测上报：command-center ingest endpoint，租户进程继承
 export ARENA_HERO_TELEMETRY_ENDPOINT=http://127.0.0.1:8787/api/ingest/agents
-export ARENA_HERO_TENANT=t1
-nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs=t1,t2,t3,t4 --mode=deterministic --live --record-calibration --record-alliance-shadow --alliance-shadow-interval-ticks=3 --alliance-director-shadow --alliance-director-period-ticks=4 --alliance-director-max-skew-ticks=2 --port=8120 >> "$SUPERVISOR_LOG" 2>&1 &
-echo "$(now) supervisor restarted (pid $!, alliance-shadow=3 director=ASSIST_ONLY/period4/skew2)" >> "$LOG"
+# 主租户身份标签取 ARENA_TENANTS 首项（supervisor 级遥测归属）
+export ARENA_HERO_TENANT="${TENANTS_CSV%%,*}"
+nohup npm run arena:supervisor -- --data-root="$DATA_ROOT" --configs="$TENANTS_CSV" --mode=deterministic --live --record-calibration --record-alliance-shadow --alliance-shadow-interval-ticks=3 --alliance-director-shadow --alliance-director-period-ticks=4 --alliance-director-max-skew-ticks=2 --port=8120 >> "$SUPERVISOR_LOG" 2>&1 &
+echo "$(now) supervisor restarted (pid $!, tenants=$TENANTS_CSV, alliance-shadow=3 director=ASSIST_ONLY/period4/skew2)" >> "$LOG"
 # 测绘库增量同步（survey-db 联动）：重启后同步最新 run 的 calibration case
 # → 测绘库（幂等；供下次启动 seed + 面板 /api/survey）。
 # 只读 calibration + 写 survey 库，与 supervisor 无 writer 冲突。
 # 必须显式 --data-root（CLI 默认解析到 worktree 内 data，不存在会静默空跑）。
-(cd "$REPO" && npm run survey:sync --silent -- --data-root="$DATA_ROOT" --tenants=t1,t2,t3,t4 --latest-only) >> "$LOG" 2>&1 || true
-
-
-
+(cd "$REPO" && npm run survey:sync --silent -- --data-root="$DATA_ROOT" --tenants="$TENANTS_CSV" --latest-only) >> "$LOG" 2>&1 || true
