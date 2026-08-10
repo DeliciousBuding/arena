@@ -300,6 +300,11 @@ interface BenchMatch {
     readonly destroyedBy: readonly string[];
     readonly victim?: string;
   }[];
+  /** per-tick 资源/人口采样（每 50 tick；v3.1 可观测性，向后兼容）。 */
+  readonly perTickSamples?: readonly {
+    readonly tick: number;
+    readonly players: Readonly<Record<string, { readonly resources: number; readonly population: number }>>;
+  }[];
 }
 
 /** 每场景×条目跨 seeds 聚合指标（设计 §4）。 */
@@ -560,6 +565,7 @@ function runSingleMatch(
     rank,
     perPlayer,
     ...(result.killEvents === undefined ? {} : { killEvents: result.killEvents }),
+    ...(result.perTickSamples === undefined ? {} : { perTickSamples: result.perTickSamples }),
   };
 }
 
@@ -619,6 +625,11 @@ interface WorkerMatchFile {
     readonly tick: number;
     readonly destroyedBy: readonly string[];
     readonly victim?: string;
+  }[];
+  /** per-tick 资源/人口采样（v3.1；worker 序列化必须带上，否则主进程读回时丢失）。 */
+  readonly perTickSamples?: readonly {
+    readonly tick: number;
+    readonly players: Readonly<Record<string, { readonly resources: number; readonly population: number }>>;
   }[];
   /** 单场耗时（ms）。 */
   readonly elapsedMs: number;
@@ -690,6 +701,7 @@ function runWorkerProcess(): number {
       rank: match.rank,
       perPlayer: match.perPlayer,
       ...(match.killEvents === undefined ? {} : { killEvents: match.killEvents }),
+      ...(match.perTickSamples === undefined ? {} : { perTickSamples: match.perTickSamples }),
       elapsedMs: Date.now() - startedAt,
     };
     atomicWriteJson(join(invocation.outDir, workerResultFileName(invocation.scenario, invocation.seed)), file);
@@ -768,6 +780,7 @@ function runOneWorkerMatch(job: { readonly scenario: string; readonly seed: numb
           rank: raw.rank,
           perPlayer: raw.perPlayer,
           ...(raw.killEvents === undefined ? {} : { killEvents: raw.killEvents }),
+          ...(raw.perTickSamples === undefined ? {} : { perTickSamples: raw.perTickSamples }),
         });
       } catch (error) {
         rejectPromise(new Error(`结果 JSON 读取失败：${error instanceof Error ? error.message : String(error)}`));
@@ -1172,6 +1185,7 @@ async function writeRunArtifacts(args: {
         winner: match.winner,
         rank: match.rank,
         killEvents: match.killEvents ?? [],
+        ...(match.perTickSamples === undefined ? {} : { perTickSamples: match.perTickSamples }),
         perPlayer: Object.fromEntries(
           Object.entries(match.perPlayer).map(([playerId, data]) => [
             playerId,

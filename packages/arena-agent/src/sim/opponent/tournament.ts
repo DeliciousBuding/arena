@@ -17,6 +17,7 @@ import {
   runEpisode,
   type EpisodeRecord,
   type EpisodeTenant,
+  type EpisodeTickMeasurement,
   type PlayerCostLedger,
 } from "../../sim/harness/episode.ts";
 import { createSeededRng } from "../../sim/deterministic/rng.ts";
@@ -64,6 +65,16 @@ export interface MatchResult {
   /** 逐击杀事件（tick 升序；arena-bench v3.1 击杀时序可视化用，可选）。
    *  语义同 perPlayerKills 的 destroyed_by 归属。 */
   readonly killEvents?: readonly KillEvent[];
+  /** per-tick 资源/人口采样（每 50 tick 一点；arena-bench v3.1 效率曲线可视化用，可选）。
+   *  数据来自 episode onTickSettled 回调（resources = 玩家当前资源，population = 全部单位数）。 */
+  readonly perTickSamples?: readonly PerTickSample[];
+}
+
+/** 单个 per-tick 采样点（效率曲线数据源）。 */
+export interface PerTickSample {
+  readonly tick: number;
+  /** playerId → 该 tick 的资源 + 人口快照。 */
+  readonly players: Readonly<Record<string, { readonly resources: number; readonly population: number }>>;
 }
 
 /** 单次核心摧毁事件（击杀时序图数据源）。 */
@@ -694,6 +705,7 @@ export function runFreeForAll(
         }
       }
     }
+    const perTickSamples: PerTickSample[] = [];
     const result = runEpisode({
       scenario,
       rulesPath,
@@ -710,6 +722,16 @@ export function runFreeForAll(
       plannerFactory: (tenant: EpisodeTenant): PlanProvider => providers[ids.indexOf(tenant.id)],
       validatePlans: opts?.validatePlans ?? true,
       onTickRecorded: recorder?.onTickRecorded,
+      // arena-bench v3.1 可观测性：每 50 tick 采样 per-player 资源/人口（效率曲线数据源）
+      onTickSettled: (measurement: EpisodeTickMeasurement) => {
+        if (measurement.tick > 0 && measurement.tick % 50 === 0) {
+          const players: Record<string, { resources: number; population: number }> = {};
+          for (const player of measurement.players) {
+            players[player.playerId] = { resources: player.resources, population: player.population };
+          }
+          perTickSamples.push(Object.freeze({ tick: measurement.tick, players: Object.freeze(players) }));
+        }
+      },
       pipeline: opts?.pipeline === true,
     } as never);
     const { kills, firstKillTicks } = computePerPlayerKills(result.records, ids);
@@ -743,6 +765,8 @@ export function runFreeForAll(
       perPlayerFirstKillTicks: firstKillTicks,
       // arena-bench v3.1 击杀时序：逐事件（tick + 归属者 + victim），可视化用（可选字段）
       killEvents: collectKillEvents(result.records, ids, coreIdToPlayer),
+      // arena-bench v3.1 效率曲线：每 50 tick 采样 per-player 资源/人口（可选字段）
+      perTickSamples: perTickSamples.length > 0 ? perTickSamples : undefined,
     };
   } finally {
     recorder?.close();
