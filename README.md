@@ -2,7 +2,16 @@
 
 为 [Arena Hero](https://doc.arenahero.io/zh-Hans/) Agent 开发准备的开源项目：**确定性模拟器、多策略混战评估、实时可视化面板**。
 
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6)
+![pnpm](https://img.shields.io/badge/pnpm-10-f69220)
+![Simulator](https://img.shields.io/badge/Deterministic-Simulator-38bdf8)
+![FFA](https://img.shields.io/badge/FFA-Evaluation-22c55e)
+![License](https://img.shields.io/badge/License-Apache--2.0-brightgreen)
+
 模拟器按官方规则实现并与官方 SDK 对齐验证；混战评估把多套社区 Agent 与自定义策略放进同一张地图自由对抗；面板实时展示各实例的决策与地图状态。
+
+> 在线评测榜单（35 场多智能体对抗结果可视化）：**[Arena Hero Leaderboard](https://deliciousbuding.github.io/arena-hero-leaderboard/)**
+
 
 ## 三大组件
 
@@ -78,6 +87,10 @@ command-center   实时可视化面板
 - [Torther 的进化框架](https://linux.do/t/topic/2723397)
 
 游戏官方：[Arena Hero](https://app.arenahero.io/) · [官方文档](https://doc.arenahero.io/zh-Hans/) · [LINUX DO 发布帖](https://linux.do/t/topic/2703804)
+
+## 相关项目
+
+- [arena-hero-leaderboard](https://github.com/DeliciousBuding/arena-hero-leaderboard) — 评测榜单展示站（GitHub Pages 静态部署，在线地址见上）
 
 ## License
 

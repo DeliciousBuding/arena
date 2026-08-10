@@ -1,18 +1,9 @@
 # docs/ — TS 公共文档
 
-本目录只保留可随 `arena-ts` 公开的运行时、SDK、协议和规则文档。项目状态、运维、设计、迁移记录和生成状态位于同级私有协调仓库的 `../docs/`。
+本目录只保留可随 `arena-ts` 公开的运行时、SDK、协议和规则文档。项目状态、运维、设计、迁移记录和生成状态位于同级私有协调仓库，**公开镜像不提供**（需要时在本地工作树读取 `../docs/`，或直接看本目录的公共文档）。
 
 > 官方中文站（doc.arenahero.io/zh-Hans）与英文站同源同版本；本目录保留英文 bundle，
 > 抓取中文明文会命中边缘缓存洞（偶发 8KB 空壳响应），故放弃，需要时以本目录 + 线上英文站为准。
-
-## 共享权威入口
-
-| 要做什么 | 读 |
-|----------|----|
-| 当前进度 / 门禁 / 未通过项 | `../../docs/progress/MASTER.md` |
-| 运维与部署 | `../../docs/ops/` |
-| 架构、迁移与数据管线 | `../../docs/ts-architecture.md`、`../../docs/migration-plan.md`、`../../docs/design/` |
-| 生成状态与长期路线 | `../../docs/generated/status.md`、`../../docs/roadmap-long-term.md` |
 
 ## 本仓公共文档
 
@@ -30,12 +21,10 @@
 
 | 要做什么 | 读 |
 |----------|----|
-| 任何规则依赖的战术/对战 | `game-rules.md` + `../../docs/reference-numbers.md` |
+| 任何规则依赖的战术/对战 | `game-rules.md`（上游同步源在 `reference/`，头注含 revision） |
 | SDK 客户端 | `sdk-quickstart.md` → `sdk-reference.md` |
-| 术语对照 | `../../docs/reference-glossary.md` |
 | 协议/前端/原生客户端 | `agent-quickstart.md` → `agent-command-loop.md` → `api-*.md` |
 | 直接操作模式 | `direct-play.md` |
-| 版本与兼容性 | `../../docs/reference-source-and-version.md`、`../../docs/reference-changelog.md` |
 
 ## 文件清单
 
