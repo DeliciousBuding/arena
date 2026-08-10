@@ -4,6 +4,7 @@
  * 给手操指挥一个一眼可读的「该做什么」清单。纯只读，数据源 /api/alliance/advice（30s 缓存）。
  */
 import { useEffect, useState } from "react";
+import { TENANT_COLORS } from "@/engine/tactical";
 
 interface Advice {
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "INFO";
@@ -27,7 +28,6 @@ interface DirectorPayload {
 
 const SEV_CN: Record<string, string> = { CRITICAL: "危急", HIGH: "高", MEDIUM: "中", INFO: "提示" };
 const CAT_CN: Record<string, string> = { ECONOMY: "经济", MILITARY: "军事", THREAT: "威胁", CONFLICT: "冲突", INTEL: "情报" };
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
 
 /** 证据链摘要：后端 /api/alliance/advice 的 evidence 对象 → 一行人类可读来源。 */
 const EVIDENCE_TYPE_CN: Record<string, string> = { world: "世界态", heat: "敌情热区", intel: "情报", economy: "经济", survey: "测绘" };
