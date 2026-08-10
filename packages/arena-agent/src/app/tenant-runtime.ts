@@ -1389,9 +1389,10 @@ export async function runTenant(
           waitCount: actionCounts.waitCount,
           intentCounts,
           cargoWorkerFingerprint: cargoWorkerCells.length > 0 ? cargoWorkerCells : null,
-          failedEventCounts,
-          militaryCount,
-          shotHitCount,
+          failedEventCounts: stallFailedEventCounts,
+          militaryCount: stallMilitaryCount,
+          shotHitCount: stallShotHitCount,
+          coreState: outcomeRecord.coreState ?? null,
         });
         for (const event of stallEvents) {
           appendStallEvent(event);

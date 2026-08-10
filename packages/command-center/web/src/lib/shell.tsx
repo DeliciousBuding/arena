@@ -1,15 +1,16 @@
 import { createContext, useContext } from "react";
+import { ScrollText, Target, Lightbulb, Map, Activity, Gift, type LucideIcon } from "lucide-react";
 
 /** 右栏面板标签：决策流 / 威胁情报 / 参谋建议 / 测绘 / 联盟态势 / 兑换码 */
 export type RightTab = "logs" | "intel" | "advice" | "survey" | "situation" | "redeem";
 
-export const RIGHT_TABS: Array<{ id: RightTab; label: string; railIcon: string; railTitle: string }> = [
-  { id: "logs", label: "决策流", railIcon: "≣", railTitle: "决策流 · 日志" },
-  { id: "intel", label: "威胁情报", railIcon: "◎", railTitle: "威胁情报 · 排行榜" },
-  { id: "advice", label: "参谋建议", railIcon: "⚑", railTitle: "参谋建议 · 该做什么清单" },
-  { id: "survey", label: "测绘", railIcon: "◈", railTitle: "测绘 · 矿/探索/生命周期" },
-  { id: "situation", label: "联盟态势", railIcon: "◉", railTitle: "联盟态势 · 实时资源/威胁扇区" },
-  { id: "redeem", label: "兑换码", railIcon: "⛃", railTitle: "官方商店 · 兑换码" },
+export const RIGHT_TABS: Array<{ id: RightTab; label: string; icon: LucideIcon; railTitle: string }> = [
+  { id: "logs", label: "决策流", icon: ScrollText, railTitle: "决策流 · 日志" },
+  { id: "intel", label: "威胁情报", icon: Target, railTitle: "威胁情报 · 排行榜" },
+  { id: "advice", label: "参谋建议", icon: Lightbulb, railTitle: "参谋建议 · 该做什么清单" },
+  { id: "survey", label: "测绘", icon: Map, railTitle: "测绘 · 矿/探索/生命周期" },
+  { id: "situation", label: "联盟态势", icon: Activity, railTitle: "联盟态势 · 实时资源/威胁扇区" },
+  { id: "redeem", label: "兑换码", icon: Gift, railTitle: "官方商店 · 兑换码" },
 ];
 
 export interface ShellState {

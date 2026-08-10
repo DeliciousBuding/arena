@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getEngine } from "../../lib/bridge";
 import { ShellContext, RIGHT_TABS, type RightTab } from "../../lib/shell";
+import { TENANT_COLORS } from "@/engine/tactical";
 import { TopBar } from "../TopBar";
 import { MapHost } from "../MapHost";
 import { Sidebar } from "../Sidebar";
@@ -10,7 +11,6 @@ import { SidePanel } from "./SidePanel";
 const PREFS_KEY = "arena-cc-web.prefs";
 const LEFT_WIDTH = 292;
 const RIGHT_WIDTH = 340;
-const TENANT_COLORS: Record<string, string> = { t1: "#69b3d8", t2: "#57bd84", t3: "#a892d6", t4: "#dd626d" };
 
 interface ShellPrefs {
   leftCollapsed: boolean;
@@ -95,7 +95,7 @@ export function AppShell() {
           title={t.railTitle}
           onClick={() => openRight(t.id)}
         >
-          {t.railIcon}
+          <t.icon className="rail-tab-icon" aria-hidden={true} />
         </button>
       ))}
     </div>

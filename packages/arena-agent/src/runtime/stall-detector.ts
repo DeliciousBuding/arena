@@ -56,6 +56,10 @@ export interface StallObservation {
   readonly militaryCount?: number;
   /** SHOT_HIT 计数（空枪判据"无命中"用；undefined 视为 0）。 */
   readonly shotHitCount?: number;
+  /** GAP 3.2（2026-08-10）：Core 状态——MOVING 时 noProduction 误报豁免
+   *  （迁移期持货待命是预期行为，非死锁）。undefined = 调用方未提供，
+   *  不豁免（向后兼容）。 */
+  readonly coreState?: string | null;
 }
 
 export interface StallEvent {
@@ -160,11 +164,15 @@ export class StallDetector {
     if (obs.tick < this.warmupTicks) {
       return results;
     }
+    // GAP 3.2 fix（2026-08-10）：Core MOVING 时 noProduction 误报豁免——
+    // 迁移期 worker 持货待命（不 DEPOSIT）是预期行为，非死锁。长距离迁移
+    // 600+ tick 在中后期触发 no_production 连续 16 tick 会误报警。
     const noProduction =
       obs.workerCount > 0 &&
       obs.coreResourceDelta === 0 &&
       obs.harvestCount === 0 &&
-      obs.depositCount === 0;
+      obs.depositCount === 0 &&
+      obs.coreState !== "MOVING";
     results.no_production = noProduction;
     results.patrol_only =
       noProduction &&

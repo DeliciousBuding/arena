@@ -298,6 +298,12 @@ export class World {
   /** 分级冷却（2026-08-08，缺席实证）：cellKey → 失败冷却 tick 数覆盖（缺席
    *  统计高频格升级冷却，见 seedFailedCooldownTiers）。无记录 = 走默认冷却。 */
   private readonly extendedFailedCooldowns = new Map<string, number>();
+  /** GAP 1.3（渐进冷却升级，2026-08-10）：运行时反复失败的资源格计数器。
+   *  markResourceFailed 每次累加，达阈值（3→96/6→192/10→384）升级
+   *  extendedFailedCooldowns。矿刷新（visible）时在 observe 中重置。防
+   *  32-tick 周期振荡——worker 反复被派到同一死矿格，每次只冷 32 tick
+   *  过后又试，永不升级。 */
+  private readonly resourceFailCounts = new Map<string, number>();
   private readonly unitMoveFailures = new Map<string, Map<string, number>>();
   private readonly unitMemories = new Map<string, UnitMemory>();
   /** chunk 观察记忆（frontier 探索）：chunkKey → 最近一次观察 tick。
@@ -451,6 +457,10 @@ export class World {
         firstSeenTick: previous?.firstSeenTick ?? state.tick,
         lastSeenTick: state.tick,
       });
+      // GAP 1.3：矿刷新（visible）→ 重置失败计数。矿之前被证伪是因为空了，
+      // 现在 visible = refill 了，旧失败不计——否则刚刷新就因旧 3 次计数
+      // 仍在 96 tick 冷却中被跳过。
+      this.resourceFailCounts.delete(cell);
     }
     for (const [cell, memory] of this.resourceMemory) {
       if (visibleResources.has(cell)) continue;
@@ -777,7 +787,18 @@ export class World {
    *  t2 实证 osc=11/11）。与 refill 兼容：矿真的刷新后重新可见，visible 优先
    *  于失败冷却，证伪只压 stale/seeded 记忆，不拦真矿。 */
   markResourceFailed(position: Position): void {
-    this.failedCells.set(cellKey(position), this.tick);
+    const key = cellKey(position);
+    this.failedCells.set(key, this.tick);
+    // GAP 1.3 渐进冷却升级：同一格反复失败 → 升级冷却防 32-tick 周期振荡
+    const failCount = (this.resourceFailCounts.get(key) ?? 0) + 1;
+    this.resourceFailCounts.set(key, failCount);
+    if (failCount === 3) {
+      this.extendedFailedCooldowns.set(key, 96);
+    } else if (failCount === 6) {
+      this.extendedFailedCooldowns.set(key, 192);
+    } else if (failCount >= 10) {
+      this.extendedFailedCooldowns.set(key, 384);
+    }
   }
 
   /** 分级冷却播种（2026-08-08，缺席实证）：survey-db 缺席统计（视野确认无矿

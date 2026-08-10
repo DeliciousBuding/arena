@@ -23,7 +23,7 @@ export function RightPanel() {
             aria-selected={rightTab === t.id}
             onClick={() => setRightTab(t.id)}
           >
-            <span className="rp-tab-ico" aria-hidden="true">{t.railIcon}</span>
+            <t.icon className="rp-tab-ico" aria-hidden={true} />
             {t.label}
           </button>
         ))}
