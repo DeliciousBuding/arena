@@ -3,6 +3,10 @@
  * 我方 SafetyPlanner（aggressive）vs 参考对手（--opponent farmer|core），
  * 多 seed 出胜率/资源/人口榜。
  *
+ * 注意（2026-08-10）：本脚本是 vs-arena.mts 的 farmer/core 历史子集——只支持
+ * 这两个内置对手；新 agent（tactic/waaiging/arena-evolve/HTTP 端点等）请用
+ * vs-arena.mts（--opponents 任意注册名/端点）。
+ *
  * 对手桥（路线 A，2026-08-08）：PersistentSubprocessDecider——常驻 Python 进程
  * （worker + Atomics 同步 RPC），每 tick 不再重建进程/import pydantic，
  * 热往返 ~12ms（对比旧 spawnSync --one-shot 的 ~300ms）。state-slot 语义不变。

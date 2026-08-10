@@ -9,16 +9,20 @@
   （turn.unit(id).move(...) / worker.harvest() / turn.plan 读取），bridge 负责
   把 turn.plan 序列化输出。farmer 的 choose_actions(turn) 即此契约的实例方法版。
 
-桥接协议（R48，与 arena-sim-bridge crate 对偶）：
+桥接协议：
 - stdin 每行一个 JSON：{"tick": N, "state": <官方 PlayerState 形状>}
 - stdout 每行一个 JSON：官方 CommandPlan（turn.plan.model_dump()）
+  （历史注记：该协议最初按 R48 与 Rust 线 arena-sim-bridge crate 对偶设计；
+  Rust 线 2026-08-07 退役后由 TS 模拟器独占消费，wire 协议不变。）
 
 跨 tick 记忆（--state-slot）：
   Windows 桥接常用 "--one-shot"（每 tick 新起进程），此时对手的记忆会随进程
   退出丢失。--state-slot 把记忆写进磁盘槽：启动恢复、决策后存回。槽类型由
   注册表声明：pickle（farmer 的 __dict__）/ json（core 的原子持久化）/
   process-memory（arena-evolve：常驻内存 + 磁盘镜像——先试整实例 pickle，
-  不可 pickle 则退而求其次存内部 memory 状态，恢复时经 load_memory 重建）。
+  不可 pickle 则退而求其次存内部 memory 状态，恢复时经 load_memory 重建；
+  模块级 decide 对手如 tactic（无 construct → 无 instance）走模块级记忆单例
+  bot.memory.WORLD_MEMORY，以 MemoryMap.to_dict/load_dict 落盘同格式槽）。
   --slot-every N：写盘降频（常驻进程记忆在进程内持续，槽仅备份/恢复用；
   默认注册表值；--one-shot 强制每 tick 写——跨进程记忆必须完整；常驻模式
   stdin EOF 退出前强制 flush 一次槽）。
@@ -26,8 +30,6 @@
 用法：
   python scripts/opponent-bridge.py \
     [--agent farmer|core|<注册名>] \
-    [--farmer-repo <arena-hero-agent-path>] \
-    [--core-repo <arena-hero-guide-path>] \
     [--sdk-repo <arena-hero-python-path>] \
     [--worker-target 12] [--beacon-policy retreat] \
     [--mode control|harvest] [--target 30] \
@@ -46,6 +48,7 @@ instance=``<agent>-s<seed>``（``--seed``/``--state-slot`` 推导）或 ``--inst
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import pickle
@@ -94,8 +97,6 @@ def _resolve_reference_repo(name: str) -> Path:
 
 
 COORDINATION_ROOT = _find_coordination_root(Path(__file__).resolve().parent)
-DEFAULT_FARMER_REPO = _resolve_reference_repo("arena-hero-agent")
-DEFAULT_CORE_REPO = _resolve_reference_repo("arena-hero-guide")
 DEFAULT_SDK_REPO = _resolve_reference_repo("arena-hero-python")
 REGISTRY_PATH = Path(__file__).resolve().parent / "python-agents.json"
 
@@ -239,27 +240,77 @@ class _HttpTelemetrySink:
             pass  # 上报失败静默。
 
 
-def _tick_summary(tick: int, state) -> dict:
-    """从官方 PlayerState 推导 tick_summary 摘要（字段 snake_case）。"""
+def _tick_summary(
+    tick: int,
+    state,
+    *,
+    state_bytes: int | None = None,
+    parse_ms: float | None = None,
+    prev_decision_ms: float | None = None,
+) -> dict:
+    """从官方 PlayerState 推导 tick_summary 摘要（字段 snake_case）。
+
+    载荷形状对齐 fork SDK（reference/third-party/arena-hero-python-telemetry/
+    src/arena_hero/client.py _materialize 的 tick_summary）：
+    v1 测绘 resource_cells/obstacle_cells/units_seen/enemy_cores；v2 计时
+    state_bytes/parse_ms/prev_decision_ms；v3 构成 controlled_by_type +
+    status。bridge 不依赖 fork SDK 也能填齐全部字段。
+    """
     core = None
     units = 0
     visible_enemies = 0
+    controlled_by_type: dict[str, int] = {}
+    units_seen: list[list] = []
+    enemy_cores: list[list] = []
+    resource_cells: list[list[int]] = []
+    obstacle_cells: list[list[int]] = []
     for obj in state.objects:
         if obj.kind == "CORE":
             if obj.controlled:
                 core = [obj.position[0], obj.position[1]]
+            else:
+                enemy_cores.append([obj.position[0], obj.position[1], obj.owner_username])
         elif obj.kind == "UNIT":
+            unit_type = getattr(obj.unit_type, "value", None) or str(obj.unit_type)
             units += 1
-            if not obj.controlled:
+            if obj.controlled:
+                controlled_by_type[unit_type] = controlled_by_type.get(unit_type, 0) + 1
+            else:
                 visible_enemies += 1
+            units_seen.append(
+                [
+                    str(obj.id),
+                    unit_type,
+                    int(obj.controlled),
+                    obj.position[0],
+                    obj.position[1],
+                    obj.hp,
+                ]
+            )
+        elif obj.kind in ("RESOURCE", "OBSTACLE"):
+            target = resource_cells if obj.kind == "RESOURCE" else obstacle_cells
+            target.extend([int(pos[0]), int(pos[1])] for pos in obj.positions)
+    status = getattr(state, "status", None)
+    status_value = getattr(status, "value", None) if status is not None else None
     return {
         "event": "tick_summary",
         "tick": tick,
+        "status": status_value,
         "resources": state.resources,
         "population": state.population,
         "core": core,
         "units": units,
+        "controlled_by_type": controlled_by_type,
         "visible_enemies": visible_enemies,
+        # telemetry-v2：状态消息体积/解析耗时/上 tick 决策耗时（fork 同源）。
+        "state_bytes": state_bytes,
+        "parse_ms": round(parse_ms, 3) if parse_ms is not None else None,
+        "prev_decision_ms": round(prev_decision_ms, 3) if prev_decision_ms is not None else None,
+        # python-mapping-telemetry-v1：测绘字段（与 turn.py 解析同源）。
+        "resource_cells": resource_cells,
+        "obstacle_cells": obstacle_cells,
+        "units_seen": units_seen,
+        "enemy_cores": enemy_cores,
     }
 
 
@@ -316,6 +367,51 @@ def _identity_event(base_url: str) -> dict:
     return event
 
 
+def _probe_module_memory(module, exact_name: str):
+    """探测模块级记忆 API（无 construct → 无 instance 的模块级 decide 对手，
+    如 tactic：bot.memory.WORLD_MEMORY 单例）。
+
+    ``__import__("bot.strategy")`` 只返回顶层包 ``bot``（WORLD_MEMORY 不在其
+    命名空间），所以用 importlib 取精确模块再探测。返回
+    (module, attr_name, memory)：memory 需提供导出 API（to_dict）；无可用
+    API 返回 None。
+    """
+    candidates = [module]
+    try:
+        exact = importlib.import_module(exact_name)
+        if exact is not module:
+            candidates.append(exact)
+    except Exception:  # noqa: BLE001 —— 精确模块拿不到就用顶层包继续探测。
+        pass
+    for candidate in candidates:
+        for attr_name in ("WORLD_MEMORY", "MEMORY"):
+            memory = getattr(candidate, attr_name, None)
+            if memory is not None and callable(getattr(memory, "to_dict", None)):
+                return candidate, attr_name, memory
+    return None
+
+
+def _restore_module_memory(holder, state: dict) -> None:
+    """把槽状态灌回模块级记忆对象（就地优先）。
+
+    注意：模块级 decide（如 tactic 的 strategy.decide）在 import 时已把
+    WORLD_MEMORY 绑进自身命名空间——from_dict 重建 + setattr 对新对象无效，
+    必须就地更新（MemoryMap.load_dict）。
+    """
+    memory = holder[2]
+    load_dict = getattr(memory, "load_dict", None)
+    if callable(load_dict):
+        load_dict(state)
+        return
+    from_dict = getattr(type(memory), "from_dict", None)
+    if callable(from_dict):
+        setattr(holder[0], holder[1], from_dict(state))
+        return
+    raise ValueError(
+        f"module memory {holder[1]!r} exposes to_dict but no load_dict/from_dict"
+    )
+
+
 def _build_agent(args, config: dict):
     """按注册表条目构建对手运行时：返回 (decide, persist, ready_label)。
 
@@ -353,42 +449,57 @@ def _build_agent(args, config: dict):
     # 1) 整实例 pickle（arena-evolve 的 Pathfinder.goal_ok 存了 lambda——
     #    大概率不可 pickle，探测一次定案，避免每 tick 重复失败）；
     # 2) 退而求其次：duck-type 找 instance.strategy.mem（Memory.to_dict）+
-    #    strategy.load_memory(dict) 的内部 memory 持久化 API。
+    #    strategy.load_memory(dict) 的内部 memory 持久化 API；
+    # 3) 模块级 decide 对手（无 construct → 无 instance，如 tactic）：
+    #    duck-type 探测模块级记忆单例（bot.memory.WORLD_MEMORY，to_dict/
+    #    load_dict 导出 API）——instance 路径的 fallback。
     instance_pickleable = False
     memory_snapshot = None
     memory_restore = None
-    if slot == "process-memory" and instance is not None:
-        try:
-            pickle.dumps(dict(instance.__dict__))
-            instance_pickleable = True
-        except Exception:  # noqa: BLE001 —— 不可 pickle 走 memory 状态落盘。
-            pass
-        if not instance_pickleable:
-            for holder in (getattr(instance, "strategy", None), instance):
-                mem = getattr(holder, "mem", None)
-                if (
-                    mem is not None
-                    and callable(getattr(mem, "to_dict", None))
-                    and callable(getattr(holder, "load_memory", None))
-                ):
-                    def memory_snapshot():
-                        # 延迟取 holder.mem：restore 经 load_memory 会替换 mem
-                        # 为新建的 Memory 实例，绑定探测时的旧对象会丢恢复的记忆。
-                        current = getattr(holder, "mem", None)
-                        return current.to_dict() if current is not None else {}
-                    memory_restore = holder.load_memory
-                    break
+    module_memory_holder = None
+    if slot == "process-memory":
+        if instance is not None:
+            try:
+                pickle.dumps(dict(instance.__dict__))
+                instance_pickleable = True
+            except Exception:  # noqa: BLE001 —— 不可 pickle 走 memory 状态落盘。
+                pass
+            if not instance_pickleable:
+                for holder in (getattr(instance, "strategy", None), instance):
+                    mem = getattr(holder, "mem", None)
+                    if (
+                        mem is not None
+                        and callable(getattr(mem, "to_dict", None))
+                        and callable(getattr(holder, "load_memory", None))
+                    ):
+                        def memory_snapshot():
+                            # 延迟取 holder.mem：restore 经 load_memory 会替换 mem
+                            # 为新建的 Memory 实例，绑定探测时的旧对象会丢恢复的记忆。
+                            current = getattr(holder, "mem", None)
+                            return current.to_dict() if current is not None else {}
+                        memory_restore = holder.load_memory
+                        break
+        else:
+            module_memory_holder = _probe_module_memory(module, config["module"])
 
     # 槽恢复
-    if slot in ("pickle", "process-memory") and instance is not None and args.state_slot is not None and args.state_slot.exists():
+    can_restore = (
+        instance is not None
+        or memory_restore is not None
+        or module_memory_holder is not None
+    )
+    if slot in ("pickle", "process-memory") and can_restore and args.state_slot is not None and args.state_slot.exists():
         try:
             with open(args.state_slot, "rb") as slot_file:
                 payload = pickle.load(slot_file)
             if slot == "process-memory" and isinstance(payload, dict) and payload.get("__arena_slot_kind__") == "memory":
-                if memory_restore is None:
+                if memory_restore is not None:
+                    memory_restore(payload["state"])
+                elif module_memory_holder is not None:
+                    _restore_module_memory(module_memory_holder, payload["state"])
+                else:
                     raise ValueError("slot is a memory snapshot but agent exposes no load_memory API")
-                memory_restore(payload["state"])
-            elif isinstance(payload, dict) and (slot == "pickle" or instance_pickleable):
+            elif isinstance(payload, dict) and instance is not None and (slot == "pickle" or instance_pickleable):
                 instance.__dict__.update(payload)
             else:
                 raise ValueError("unrecognized slot payload")
@@ -456,8 +567,8 @@ def _build_agent(args, config: dict):
             if slot == "pickle" and instance is not None:
                 with open(args.state_slot, "wb") as slot_file:
                     pickle.dump(dict(instance.__dict__), slot_file)
-            elif slot == "process-memory" and instance is not None:
-                if instance_pickleable:
+            elif slot == "process-memory":
+                if instance is not None and instance_pickleable:
                     with open(args.state_slot, "wb") as slot_file:
                         pickle.dump(dict(instance.__dict__), slot_file)
                 elif memory_snapshot is not None:
@@ -466,8 +577,19 @@ def _build_agent(args, config: dict):
                             {"__arena_slot_kind__": "memory", "state": memory_snapshot()},
                             slot_file,
                         )
+                elif module_memory_holder is not None:
+                    # 模块级记忆（tactic：WORLD_MEMORY.to_dict）——同格式槽。
+                    with open(args.state_slot, "wb") as slot_file:
+                        pickle.dump(
+                            {
+                                "__arena_slot_kind__": "memory",
+                                "state": module_memory_holder[2].to_dict(),
+                            },
+                            slot_file,
+                        )
                 elif not no_persist_warned[0]:
-                    # 如实报告：实例不可 pickle 且无 memory API → 记忆无法持久化。
+                    # 如实报告（instance 与模块级路径都覆盖）：实例不可 pickle
+                    # 且无任何 memory 导出 API → 记忆无法持久化，不静默。
                     print(
                         f"bridge state slot: agent={args.agent} exposes no pickle-able "
                         "state or memory API — memory cannot be persisted",
@@ -499,6 +621,9 @@ def _serve_lines(args, decide, persist, telemetry) -> int:
     timing_stats = {"ticks": 0, "bytes": 0.0, "parse": 0.0, "validate": 0.0,
                     "decide": 0.0, "dump": 0.0, "persist": 0.0}
     startup = time.perf_counter() - _PROCESS_STARTED_AT
+    # 上一 tick 决策耗时（telemetry-v2 prev_decision_ms；首个 tick 为 None，
+    # 与 fork SDK _active_turn.decision_ms 首 tick 为 None 语义一致）。
+    prev_decide_ms: float | None = None
 
     try:
         for line_number, line in enumerate(sys.stdin, start=1):
@@ -517,7 +642,17 @@ def _serve_lines(args, decide, persist, telemetry) -> int:
                 state = PlayerState.model_validate(message["state"])
                 t2 = time.perf_counter()
                 # 遥测旁路：每处理一行 state 上报 tick_summary（不参与决策语义）。
-                telemetry.emit(_tick_summary(int(message["tick"]), state))
+                # parse_ms 覆盖 decode+validate（fork 的 parse_stream_message 同源）；
+                # state_bytes = 输入行 UTF-8 体积（fork raw_message 同源）。
+                telemetry.emit(
+                    _tick_summary(
+                        int(message["tick"]),
+                        state,
+                        state_bytes=len(line.encode("utf-8")),
+                        parse_ms=(t2 - t0) * 1000.0,
+                        prev_decision_ms=prev_decide_ms,
+                    )
+                )
                 turn = Turn(
                     tick=int(message["tick"]),
                     state=state,
@@ -525,6 +660,7 @@ def _serve_lines(args, decide, persist, telemetry) -> int:
                 )
                 decide(turn)
                 t3 = time.perf_counter()
+                prev_decide_ms = (t3 - t2) * 1000.0
                 # 注意：SDK 的 Turn.plan 是 property（返回 CommandPlan），非方法。
                 plan = turn.plan
                 # mode="json"：UUID key/Position 转 JSON 原生类型。
@@ -594,8 +730,6 @@ def main() -> int:
         default="farmer",
         help="python-agents.json 注册名（farmer/core，或自定义条目）",
     )
-    parser.add_argument("--farmer-repo", type=Path, default=DEFAULT_FARMER_REPO)
-    parser.add_argument("--core-repo", type=Path, default=DEFAULT_CORE_REPO)
     parser.add_argument("--sdk-repo", type=Path, default=DEFAULT_SDK_REPO)
     parser.add_argument("--worker-target", type=int, default=12)
     parser.add_argument("--beacon-policy", default="retreat")
@@ -616,7 +750,7 @@ def main() -> int:
         type=Path,
         default=None,
         help="对手记忆槽路径：pickle（farmer 型）/ 原子 JSON（core 型）/ "
-        "process-memory 磁盘镜像（arena-evolve 型）；启动恢复、决策后存回",
+        "process-memory 磁盘镜像（arena-evolve/tactic 型）；启动恢复、决策后存回",
     )
     parser.add_argument(
         "--slot-every",

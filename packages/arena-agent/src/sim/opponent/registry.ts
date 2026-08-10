@@ -122,7 +122,6 @@ export function opponentEntry(
     desc: opts.desc ?? spec.desc,
     build: () => {
       const decider = new PersistentSubprocessDecider({
-        farmerRepoDir: FARMER_REPO,
         sdkRepoDir: SDK_REPO,
         farmerPath: join(FARMER_REPO, "arena_farmer.py"),
         stateSlot: join(slotDir, `slot-${seed}-${randomUUID()}.pkl`),
