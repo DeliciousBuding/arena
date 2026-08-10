@@ -28,7 +28,7 @@ function CollapsiblePanel({ id, title, children, className = "" }: { id: string;
             <span className="sec-title">{title}</span><span className="sec-chev">{open ? <ChevronDown className="sec-chev-ico" /> : <ChevronRight className="sec-chev-ico" />}</span>
           </h3>
         </CollapsibleTrigger>
-        <CollapsibleContent className="sec-body">{children}</CollapsibleContent>
+        <CollapsibleContent forceMount className="sec-body">{children}</CollapsibleContent>
       </section>
     </Collapsible>
   );
