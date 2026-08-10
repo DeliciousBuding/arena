@@ -605,6 +605,7 @@ export class SafetyPlanner {
     this.blockadeLockedSince.delete(unitId);
     this.scoutEvadeState.delete(unitId);
     this.lastWorkerPos.delete(unitId);
+    this.workerPositionTrail.delete(unitId);
     const cooldownUntilTick = currentTick === undefined ? null : currentTick + WORKER_LIVENESS_RECOVERY_TICKS;
     if (cooldownUntilTick !== null) this.workerLivenessRecoveryUntil.set(unitId, cooldownUntilTick);
     const clearedMoveFailures = this.world.clearUnitMoveFailures(unitId);
@@ -677,6 +678,11 @@ export class SafetyPlanner {
   private harvestMemStuck = new Map<string, number>();
   /** 上 tick worker 位置（记忆矿卡死检测：位置未变 = 未推进）。 */
   private lastWorkerPos = new Map<string, Position>();
+  /** Pattern 1（soft_obstacles_from_trail，竞品 waaiging arena-hero-tactic
+   *  pathing.py:383-406）：worker 近期位置轨迹（最后 6 tick）。检测到振荡
+   *  （≤3 唯一位置 over trail）时把轨迹格变软障碍，逼寻路离开循环区域——
+   *  防恢复后 re-oscillation。当前格永不被封；全封时回退不困死 worker。 */
+  private workerPositionTrail = new Map<string, Position[]>();
   /** C7 修复（2026-08-10）：军事单位卡死连续 tick 计数（capacity_wait 不产生
    *  UNIT_MOVE_FAILED → moveFailedStreak 盲区 → 军事单位无限 WAIT）。
    *  用 lastWorkerPos（实际存所有单位位置）检测位置未变，连续 ≥3 tick
@@ -1992,6 +1998,18 @@ export class SafetyPlanner {
 
     for (const unit of state.units) this.lastWorkerPos.set(unit.id, unit.position);
 
+    // Pattern 1（soft_obstacles_from_trail）：记录每个单位近期位置轨迹。
+    // decideWorker 消费——检测到振荡（≤3 唯一位置 over last 6 tick）时
+    // 把轨迹格变软障碍逼寻路离开循环区域。全单位记录（worker+vanguard+
+    // ranger），消费方目前只 decideWorker；军事单位走 decideVanguard/
+    // decideRanger，未来可扩展。
+    for (const unit of state.units) {
+      const trail = this.workerPositionTrail.get(unit.id) ?? [];
+      trail.push(unit.position);
+      if (trail.length > 6) trail.shift();
+      this.workerPositionTrail.set(unit.id, trail);
+    }
+
     // cargo-rescue-v1（W6，2026-08-09，cargo 被堵检测）：满载 worker 的 cargo
     // 连续 N tick 不变 = 被堵（无法卸货——入口满/Core 迁移中/路径被堵）。
     // 比较当前 cargo 与上 tick 记录：不变 → 推进 stuckSince；变化（卸货成功）
@@ -2171,6 +2189,9 @@ export class SafetyPlanner {
       }
       for (const unitId of this.conflictBackoffUntil.keys()) {
         if (!aliveUnits.has(unitId)) this.conflictBackoffUntil.delete(unitId);
+      }
+      for (const unitId of this.workerPositionTrail.keys()) {
+        if (!aliveUnits.has(unitId)) this.workerPositionTrail.delete(unitId);
       }
     }
     }
@@ -2394,7 +2415,36 @@ export class SafetyPlanner {
   ): void {
     const home = state.core?.position ?? null;
     const memory = this.world.unitMemory(unit.id, this.workerPatrolDirection(index, home));
-    const movementObstacles = this.world.movementObstacles(unit.id, obstacles);
+    // Pattern 1（soft_obstacles_from_trail，竞品 waaiging arena-hero-tactic
+    // pathing.py:383-406）：worker 近期轨迹格变软障碍——检测到振荡（≤3
+    // 唯一位置 over last 6 tick）时把轨迹中非当前格加入障碍集，逼寻路
+    // 离开循环区域。当前格永不被封。全封时回退（不困死 worker）。防
+    // 恢复后 re-oscillation（t1 实证：worker [-562,-111]/[-563,-111] 横跳
+    // 25+ tick，egressExit 评分已防大部分，此为兜底）。
+    let movementObstacles = this.world.movementObstacles(unit.id, obstacles);
+    const trail = this.workerPositionTrail.get(unit.id) ?? [];
+    if (trail.length >= 4) {
+      const recentTrail = trail.slice(-6);
+      const uniquePositions = new Set(recentTrail.map((pos) => cellKey(pos)));
+      if (uniquePositions.size <= 3) {
+        const softObstacles = new Set(movementObstacles);
+        for (const pos of recentTrail) {
+          if (!samePosition(pos, unit.position)) {
+            softObstacles.add(cellKey(pos));
+          }
+        }
+        // 仅当 worker 仍有至少一个可走邻居时才应用（防全封困死）
+        let hasValidNeighbor = false;
+        for (const [deltaX, deltaY] of [[0, -1], [1, 0], [0, 1], [-1, 0]] as const) {
+          const neighborKey = cellKey([unit.position[0] + deltaX, unit.position[1] + deltaY]);
+          if (!softObstacles.has(neighborKey)) {
+            hasValidNeighbor = true;
+            break;
+          }
+        }
+        if (hasValidNeighbor) movementObstacles = softObstacles;
+      }
+    }
     const maxPatrolRadius = this.resourceAssignmentMaxDistanceFromCore(state);
 
     if (unit.cargo > 0) {
