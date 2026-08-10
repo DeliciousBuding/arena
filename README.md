@@ -1,6 +1,6 @@
 # Arena Hero Dev Lab
 
-为 [Arena Hero](https://doc.arenahero.io/zh-Hans/) Agent 开发打造的开源工具链：**确定性模拟器、多策略混战评估、实时可视化面板**。
+为 [Arena Hero](https://doc.arenahero.io/zh-Hans/) Agent 开发准备的开源项目：**确定性模拟器、多策略混战评估、实时可视化面板**。
 
 模拟器按官方规则实现并与官方 SDK 对齐验证；混战评估把多套社区 Agent 与自定义策略放进同一张地图自由对抗；面板实时展示各实例的决策与地图状态。
 
@@ -10,7 +10,7 @@
 
 - 按官方 v0.14 规则实现（动态单位价格、护盾/HP、资源刷新等），与官方 Python SDK 对齐验证
 - 本地高频跑局，不用等真实游戏 tick，支持对局回放复盘
-- 附带离线数据集、校准与评估工具链
+- 附带离线数据集、校准与评估工具
 
 ### 2. 多 Agent 混战评估（`packages/arena-agent`）
 
