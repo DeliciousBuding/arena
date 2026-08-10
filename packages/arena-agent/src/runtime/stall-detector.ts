@@ -159,7 +159,21 @@ export class StallDetector {
       this.lastCargoFingerprint = obs.cargoWorkerFingerprint;
     }
     results.cargo_blocked =
-      obs.workerCargoTotal > 0 && obs.coreResourceDelta === 0 && !cargoMoved;
+      obs.workerCargoTotal > 0 &&
+      obs.coreResourceDelta === 0 &&
+      !cargoMoved &&
+      // 审计 SD2（2026-08-10）：Core MOVING 期间满载 worker 持货待命是
+      // 预期行为（GAP 3.2 同语义），不报 cargo_blocked——迁移窗口的
+      // 恢复动作（focusRegion=null）与根因无关，白转一轮。
+      obs.coreState !== "MOVING";
+
+    // 审计 SD5（2026-08-10）：迁移/产兵是基础设施故障，与开局探索阶段无关
+    // ——从 warmup 门控中豁免（warmup 内也检测；cargo_blocked 同）。开局
+    // 核心被占产不出兵是真实问题，不应被 warmup 掩盖。
+    const failed = obs.failedEventCounts ?? {};
+    const failedCount = (type: string): number => failed[type] ?? 0;
+    results.migration_stall = failedCount("CORE_MOVE_START_FAILED") > 0;
+    results.spawn_stall = failedCount("CORE_SPAWN_FAILED") > 0;
 
     if (obs.tick < this.warmupTicks) {
       return results;
@@ -191,8 +205,6 @@ export class StallDetector {
     // 2026-08-10 新增 4 模式：与 noProduction 解耦（经济正常也报），数据源
     // 是结算侧 failedEventCounts（undefined = 调用方未提供，不判定）。阈值同
     // thresholdTicks（连续命中即报，rising-edge 只发一次）。
-    const failed = obs.failedEventCounts ?? {};
-    const failedCount = (type: string): number => failed[type] ?? 0;
     const militaryCount = obs.militaryCount ?? 0;
     const shotHit = obs.shotHitCount ?? 0;
     // 军事互堵：军事单位 MOVE_FAILED ≥ ceil(military/2) 且无战斗进展（无命中
@@ -209,10 +221,6 @@ export class StallDetector {
     const shotMissed = failedCount("SHOT_MISSED");
     results.shot_missed_spiral =
       shotMissed > 0 && shotHit * 3 < shotMissed;
-    // 迁移卡死：CORE_MOVE_START_FAILED（任何原因——TERRAIN_BLOCKED/CELL_UNIT_LIMIT）。
-    results.migration_stall = failedCount("CORE_MOVE_START_FAILED") > 0;
-    // 产兵饿死：CORE_SPAWN_FAILED（核心格被占/资源不足）。
-    results.spawn_stall = failedCount("CORE_SPAWN_FAILED") > 0;
     return results;
   }
 

@@ -90,6 +90,11 @@ export interface DecisionTraceRecord {
   /** 信标遥测（2026-08-08）：官方协议坐标全员公开——每 tick 记录真实位置/
    *  状态/携带者，面板与审计可实时核实信标动向（"信标逼近"真伪即刻可查）。 */
   readonly beacon?: BeaconTrace;
+  /** GAP 1.3 遥测（审计 fc1e4d3f 2026-08-10）：渐进冷却升级累计计数——
+   *  死矿格反复失败触发 96/192/384 tick 冷却升级的次数（跨 tick 只增）。
+   *  此前升级逻辑存在但无遥测（decision.jsonl 查不到 96/192/384），
+   *  无法验证死矿压制是否生效。 */
+  readonly failedCooldownEscalationCount?: number;
 }
 
 /** 信标逐 tick 快照（position 永远公开；status/carrierId 仅信标格可见时非空）。 */
