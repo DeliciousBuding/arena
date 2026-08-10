@@ -295,7 +295,11 @@ interface BenchMatch {
   readonly rank: Readonly<Record<string, number>>;
   readonly perPlayer: Readonly<Record<string, MatchPlayerData>>;
   /** 击杀时序事件（tick 升序；v3.1，向后兼容——旧数据无此字段）。 */
-  readonly killEvents?: readonly { readonly tick: number; readonly destroyedBy: readonly string[] }[];
+  readonly killEvents?: readonly {
+    readonly tick: number;
+    readonly destroyedBy: readonly string[];
+    readonly victim?: string;
+  }[];
 }
 
 /** 每场景×条目跨 seeds 聚合指标（设计 §4）。 */
@@ -610,6 +614,12 @@ interface WorkerMatchFile {
   readonly winner: string | null;
   readonly rank: Readonly<Record<string, number>>;
   readonly perPlayer: Readonly<Record<string, MatchPlayerData>>;
+  /** 击杀时序事件（v3.1；worker 序列化必须带上，否则主进程读回时丢失）。 */
+  readonly killEvents?: readonly {
+    readonly tick: number;
+    readonly destroyedBy: readonly string[];
+    readonly victim?: string;
+  }[];
   /** 单场耗时（ms）。 */
   readonly elapsedMs: number;
 }
@@ -679,6 +689,7 @@ function runWorkerProcess(): number {
       winner: match.winner,
       rank: match.rank,
       perPlayer: match.perPlayer,
+      ...(match.killEvents === undefined ? {} : { killEvents: match.killEvents }),
       elapsedMs: Date.now() - startedAt,
     };
     atomicWriteJson(join(invocation.outDir, workerResultFileName(invocation.scenario, invocation.seed)), file);
@@ -756,6 +767,7 @@ function runOneWorkerMatch(job: { readonly scenario: string; readonly seed: numb
           winner: raw.winner,
           rank: raw.rank,
           perPlayer: raw.perPlayer,
+          ...(raw.killEvents === undefined ? {} : { killEvents: raw.killEvents }),
         });
       } catch (error) {
         rejectPromise(new Error(`结果 JSON 读取失败：${error instanceof Error ? error.message : String(error)}`));
