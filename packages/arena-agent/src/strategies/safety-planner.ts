@@ -1584,6 +1584,25 @@ export class SafetyPlanner {
     return core;
   }
 
+  /** fog-of-war shooting gate（2026-08-10）：检查射击线中间格是否全部已观测。
+   *  lineBlocked 只查障碍集——不在障碍集中的格被当作空地，但"从未进入友方
+   *  视野的迷雾格"也不在障碍集中 → 误判可射击 → 引擎知道是障碍 → SHOT_MISSED。
+   *  此方法对射击线每个中间格查 isCellObserved，任一未观测（迷雾）→ true（阻断）。
+   *  t1 实证：543 SHOT_MISSED / 65 SHOT_HIT（10.7% 命中率），根因之一即迷雾盲射。 */
+  private shootingLineObscured(from: Position, to: Position): boolean {
+    const dx = to[0] - from[0];
+    const dy = to[1] - from[1];
+    const steps = Math.max(Math.abs(dx), Math.abs(dy));
+    if (steps <= 1) return false;
+    const sx = dx === 0 ? 0 : dx / steps;
+    const sy = dy === 0 ? 0 : dy / steps;
+    if (!Number.isInteger(sx) || !Number.isInteger(sy)) return true;
+    for (let i = 1; i < steps; i += 1) {
+      if (!this.world.isCellObserved([from[0] + sx * i, from[1] + sy * i])) return true;
+    }
+    return false;
+  }
+
   /** _vacate_core_for_logistics egress 评分（Pattern 2, 2026-08-10，竞品
    *  `_vacate_core_for_logistics` :3417-3444 对照）：Core 格被占时让位 worker
    *  的出口选择——不仅看"非障碍"，还看 onward_open（候选格四邻开放数，防进
@@ -3977,7 +3996,7 @@ export class SafetyPlanner {
     // Defensive mode prioritizes the nearest threat first (a Vanguard one cell
     // from sweeping us outranks a Worker three cells away), then same value
     // ranks by type (workers first = economy damage), then raw id (determinism).
-    const inRange = enemies.filter((enemy) => canShoot(unit.position, enemy.position, obstacles));
+    const inRange = enemies.filter((enemy) => canShoot(unit.position, enemy.position, obstacles) && !this.shootingLineObscured(unit.position, enemy.position));
     // 协同火力：后决策 Ranger 不再给“本 Tick 已被预计打死”的 Unit 继续补枪。
     // Core 的 shield 未出现在 VisibleEntity，不能仅用 hp 判断致死，因此 Core 始终
     // 保留为合法火力目标。若所有在射程 Unit 都已覆盖，转入下方预测射击/机动。
@@ -4035,6 +4054,7 @@ export class SafetyPlanner {
         // 终点格障碍，且 shoot_cell 提前 return 把游侠钉在原地不走位）。
         !obstacles.has(cellKey(predicted)) &&
         canShoot(unit.position, predicted, obstacles) &&
+        !this.shootingLineObscured(unit.position, predicted) &&
         !samePosition(predicted, nearest.position)
       ) {
         set(unit, { type: "SHOOT", targetId: null, expectedCell: predicted }, "shoot_cell");
