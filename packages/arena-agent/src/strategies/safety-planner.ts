@@ -707,11 +707,6 @@ export class SafetyPlanner {
   private detachedReturnUntil = new Map<string, number>();
   /** 远端军事回援状态（unitId → 回援截止 tick；remoteReinforce 候选）。 */
   private reinforceUntil = new Map<string, number>();
-  /** 军事打野沿环扫描状态（unitId → 当前环已扫八分点数 + 上次到达 tick）：
-   *  2026-08-07 攻坚发现修复——旧版"单点到达即进环"在 8 方位点之间留缝，
-   *  敌 Core 恰在缝里（t1 敌 Core 距 Core ~15 格、角度 -62°，NE/NW 环线差 8 格）
-   *  → 军事永不出视野接敌。改沿环扫描（到达八分点后 direction+1 扫圆周，
-   *  扫满 8 点进下一环）+ 时间预算（同一目标 >SCAVENGE_HOLD_TICKS 未到达强制换向）。 */
   /** 敌情狩猎清扫状态（2026-08-07）：huntArriveAt = 单位进入某基地清扫圈的起始
    *  tick（unitId → {key, tick}）；huntSweptAt = 基地已清扫 tick（key → tick，
    *  目标 lastSeenTick > sweptAt 视为"清扫后重新发现"，恢复狩猎）。 */
@@ -3263,6 +3258,11 @@ export class SafetyPlanner {
     const militaryObstacles = state.core === null
       ? movementObstacles
       : new Set([...movementObstacles, cellKey(state.core.position)]);
+    // GAP 5.1 fix（2026-08-10）：C7 军事卡死 spread——checkMilitaryStuckSpread
+    // 定义后从未被调用（dead code）→ 军事单位 capacity_wait 无限循环无恢复。
+    // 在所有决策分支之前调用：streak ≥ MILITARY_STUCK_TICKS(3) 且无邻接敌时
+    // 强制 spread 到相邻空格，打断 WAIT 死循环。
+    if (this.checkMilitaryStuckSpread(unit, state, militaryObstacles, enemies, set)) return;
     // 核心通道清障（core-clearance-v1）：homeCell 四邻全堵时历史行为回退到核心
     // 格（占死卸货通道）——coreClearance 下回退到外圈守位点，军事绝不落核心格。
     // ring 疏散（2026-08-08，t2 卸货通道死锁实证）：核心格被 worker 占用（空载
@@ -3950,6 +3950,8 @@ export class SafetyPlanner {
     const militaryObstacles = state.core === null
       ? movementObstacles
       : new Set([...movementObstacles, cellKey(state.core.position)]);
+    // GAP 5.1 fix（2026-08-10）：C7 军事卡死 spread——与 decideVanguard 同。
+    if (this.checkMilitaryStuckSpread(unit, state, militaryObstacles, enemies, set)) return;
     // 核心通道清障（core-clearance-v1）：homeCell 四邻全堵时历史行为回退到核心
     // 格（占死卸货通道）——coreClearance 下回退到外圈守位点，军事绝不落核心格。
     const approachTarget = state.core === null
