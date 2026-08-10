@@ -2,10 +2,10 @@
 
 > **状态：已冻结（v1.0.1）。** E1/E2（Python/TS 回放器）与 E3（差分比较器）的输出/输入协议。
 > 修改契约必须先更新本文件并通知所有消费方（E1/E2/E3 + 2A fixture manifest）。
-> 背景与完整规划见 `../../docs/archives/history-2026-08-03/architecture-review-gpt-2026-08-02.md` 切片 2。
+> 背景：E1/E2（Python/TS 回放器）与 E3（差分比较器）的输出/输入协议，见下方各节。
 > v1.0.1 勘误：hash 魔法字符串 "none" → null；UUID 描述澄清；"逐字节一致"改为 canonicalization 语义；记录句法示例修正。
 > 机器可验证 Schema：`contracts/differential/record-v1.schema.json`、`manifest-v1.schema.json`（**契约的机器部分，人工文档只作说明**）。
-> 当前定位：这是 **2026-08-02 冻结的 legacy 迁移 fixture**，用于继续保护 reducer/state/metadata/协议兼容性；它不再要求后续已上线的 TS 策略逐 MOVE 复刻退役 Python planner。已知策略差异只能通过带 `dataset_id/tenant_id/segment_id/tick` 范围和非空 reason 的有界白名单放行。
+> 当前定位：这是 **2026-08-02 冻结的 legacy 迁移 fixture**，用于保护 reducer/state/metadata/协议兼容性；它不要求当前策略逐 MOVE 复刻旧 planner。已知策略差异只能通过带 `dataset_id/tenant_id/segment_id/tick` 范围和非空 reason 的有界白名单放行。
 
 ## 每 Tick 输出结构（JSONL，一行一个 Tick）
 
@@ -13,8 +13,8 @@
 {
   "protocol_version": 1,
   "dataset_id": "burnin-20260802-a",
-  "tenant_id": "t1",
-  "segment_id": "t1-001",
+  "tenant_id": "demo-001",
+  "segment_id": "demo-001",
   "tick": 40123,
   "input_sha256": "sha256:325a40c00e40ad07a592b535d27130266017000fe0216372961a99bbb808b3fd",
   "config_hash": "sha256:1f6b2c0d4e8a9b3c5d7e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c",
@@ -92,6 +92,6 @@
 ## 与资源效率评测的边界（职责分离）
 
 - Differential Record v1 **只用于冻结迁移证据的兼容性保护**：state/metadata/协议仍要求严格一致；当前策略的路径与收益正确性不由 legacy Python 决定。
-- 当前策略语义由 deterministic 单测 + Digital Twin 校准/soak 证明，生产晋级由严格 live burn-in 证明；策略效果评测见独立的 Efficiency Trace v1。
+- 当前策略语义由 deterministic 单测 + Digital Twin 校准/soak 证明，晋级由严格 live burn-in 证明；策略效果评测见独立的 Efficiency Trace v1。
 - 反事实警告：固定历史 raw-state 序列由历史真实行动产生，不能用来评价不同计划的长期收益（拿 MOVE RIGHT 的结果评估 MOVE LEFT 的历史是反事实污染）。
 

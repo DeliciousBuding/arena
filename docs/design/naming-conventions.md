@@ -1,8 +1,8 @@
 # 命名规范与术语表（arena-ts）
 
-状态：约定 + 现状固化（2026-08-08，任务书 H）。只记录约定与消歧，不改代码。
+状态：约定 + 现状固化（2026-08-08，命名规范核验）。只记录约定与消歧，不改代码。
 权威清单：`docs/design/variant-inventory.md`（变体库存，唯一权威）。
-改名计划：见根仓 `docs/design/project-org-plan-20260808.md` 轨道三（命名规范）。
+改名属破坏性变更（需同步注册表、运行时配置与文档），按变更管理流程单独执行。
 
 ## 1. 命名约定
 
@@ -13,7 +13,7 @@
 - 显式写扩展名：源码内 import 一律带 `.ts` 扩展（TypeScript NodeNext 显式导入约定），
   如 `import type { SafetyPlannerConfig } from "./safety-planner.ts";`。
 - `scripts/` 与 `packages/*/scripts/` 新脚本统一用 `.ts`（`npx tsx` 直接执行）。
-  `.mts` 是历史残留（main 工作树 72 个，全部位于 `packages/arena-agent/scripts/`，
+  `.mts` 是历史残留（当前 72 个，全部位于 `packages/arena-agent/scripts/`，
   对比 `.ts` 469 个），**新脚本禁止写 `.mts`**；存量 `.mts` 不迁移不改名（避免
   噪音 diff），新文件一律 `.ts`。
 
@@ -21,7 +21,7 @@
 
 - 注册表 `variant-registry.ts` 中的变体 id 一律 `kebab-case-v1` 后缀，
   如 `threat-recall-v1`、`population-ceiling-35-v1`。
-- 生产配置 `runtime/configs/*.json` 的 `variants` 数组直接引用该 id（声明式启用）。
+- 部署配置 `runtime/configs/*.json` 的 `variants` 数组直接引用该 id（声明式启用）。
 
 ### 1.3 配置 flag：camelCase
 
@@ -80,7 +80,7 @@
 | 词 | 含义 | 文件位置 | 建议用法 |
 |----|------|----------|----------|
 | `homeCell()` | 函数：Core 附近守位/回仓的候选格（历史四邻轮转，全堵返回 null） | `packages/arena-agent/src/strategies/safety-planner-helpers.ts` L190 `export function homeCell(core: Position, obstacles, index = 0)` | 写"homeCell()（守位格函数）"；是**函数**不是目录 |
-| `baseDir` | 数据目录：租户配置字段/运行时解析出的 runtime 根目录 | `packages/arena-agent/src/app/runtime-config.ts` L121（config 字段）；`app/tenant-supervisor.ts` L211 `resolveTenantBaseDir(this.dataRoot, config.baseDir)` | 写"baseDir（数据目录）"；与 homeCell 完全无关 |
+| `baseDir` | 数据目录：tenant 配置字段/运行时解析出的 runtime 根目录 | `packages/arena-agent/src/app/runtime-config.ts`（config 字段） | 写"baseDir（数据目录）"；与 homeCell 完全无关 |
 
 ### 2.6 `bridge` — 三处（都叫 bridge，功能完全不同）
 
@@ -94,8 +94,8 @@
 
 现状：变体 id 与对应 flag 名不同词干（历史命名漂移）。**id 与 flag 的配对以
 `variant-registry.ts` 注册表为唯一事实**，改 flag 名需同步注册表与 safety-planner
-接口。已登记，改名计划见根仓 `docs/design/project-org-plan-20260808.md` 轨道三
-（§3 命名规范，含"改名（破坏性，需同步线上 configs）还是文档声明"的决策项）。
+接口。已登记；改名属破坏性变更（需同步注册表、运行时配置与文档），按变更管理
+流程单独执行。
 
 | 变体 id | 注册 flag | 注册行号 | 说明 |
 |---------|-----------|----------|------|
@@ -106,15 +106,14 @@
 | `harvest-memory-mine-v1` | `harvestMemoryMine` | variant-registry.ts L176 | id 与 flag 基本一致，属可接受近似（保留记录） |
 
 注：`military-frontier-scavenge-v1` / `militaryScavengeFrontier` 词序相反是 5 对中
-唯一 id↔flag 语义倒置的，优先对齐。其余 4 对为词干不一致，按 project-org-plan
-轨道三统一处理（对齐改名或文档声明 + 注册表显式配对兜底）。
+唯一 id↔flag 语义倒置的，优先对齐。其余 4 对为词干不一致，以文档声明 + 注册表
+显式配对兜底（或按变更流程统一改名）。
 
 ## 4. 使用纪律
 
 - 新变体：id 起 `kebab-case-v1` 名，flag 起 camelCase 名，**两者词干尽量一致**；
   注册进 `variant-registry.ts` 的 `VARIANT_SAFETY_CONFIG`（safety 侧必注册，
-  空覆盖也要注册——缺注册 = 生产重启 fail-fast）与需要时
+  空覆盖也要注册——缺注册 = 配置加载 fail-fast）与需要时
   `DETERMINISTIC_VARIANT_CONFIG`。
 - 写文档引用概念时带文件上下文（见 §2 建议用法列），避免裸用多义词。
-- 存量命名（`.mts`、5 对不一致、矿记忆四名）不做无计划改动，一律走
-  project-org-plan-20260808 轨道三的改名批次。
+- 存量命名（`.mts`、5 对不一致、矿记忆四名）不做无计划改动；改名走统一变更流程。

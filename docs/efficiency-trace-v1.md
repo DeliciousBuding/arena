@@ -1,7 +1,7 @@
 # Efficiency Trace v1 — 资源效率评测（概念冻结 2026-08-02）
 
 > **职责边界**：本协议只用于**策略效果评测**（哪个计划能获得更多资源）；迁移一致性（TS 是否忠实替代 Python）归 `docs/differential-record-v1.md`。两者严格分离，效率字段不得塞进 Differential Record。
-> **终极目标**：攒 Core 资源 → 兑换公益站注册码（30/50 资源；容量 = max(10, 人口×5)）。
+> **终极目标**：评价策略的资源获取效率（目标阈值可配置；容量 = max(10, 人口×5)）。
 
 ## 为什么不能拿 raw-state 直接比效率
 
@@ -24,7 +24,7 @@
 
 ```json
 {
-  "tenant_id": "t1",
+  "tenant_id": "demo-001",
   "tick": 40123,
   "strategy_id": "safety-v1",
   "experiment_id": "exp-a",

@@ -94,4 +94,4 @@ command-center   实时可视化面板
 
 ## License
 
-各包许可证见包内 `LICENSE` 文件（`arena-hero-ts` 为 Apache-2.0）。
+本项目采用 [Apache-2.0](LICENSE)。`packages/arena-hero-ts` 亦为 Apache-2.0。

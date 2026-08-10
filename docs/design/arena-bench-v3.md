@@ -1,8 +1,7 @@
 # arena-bench v3 评测设计（2026-08-09）
 
-取代 v2（`arena-bench-v2.md`）。v3 = 审计报告
-（`docs/analysis/bench-fairness-audit-2026-08-09.md`）14 条建议的首轮落地。
-R1 收口（2026-08-09）：变体三接线 + 对照组主榜外置 + 探针证据 + v2-vs-v3 重算。
+取代 v2（`arena-bench-v2.md`）。v3 = 评测公平性审计 14 条建议的首轮落地。
+R1（2026-08-09）：变体三接线 + 对照组主榜外置 + 探针证据 + v2-vs-v3 重算。
 
 ## 1. 与 v2 的差异（判定/场景/条目/运行）
 
@@ -36,8 +35,7 @@ R1 收口（2026-08-09）：变体三接线 + 对照组主榜外置 + 探针证�
 
 - 社区默认 5：farmer/core/waaiging/tactic/arena-evolve（不变）。
 - 变体 3（全部经 `opponentEntry(spec, seed, {env})` 传 ARENA_CFG_*）：
-  - **farmer-eco**：`ARENA_CFG_WORKER_TARGET=8`（默认 12→8，纯经济对照；任务书
-    指定值，SDK 层探针验证有效）。
+  - **farmer-eco**：`ARENA_CFG_WORKER_TARGET=8`（默认 12→8，纯经济对照；SDK 层探针验证有效）。
   - **core-mil**：`ARENA_CFG_TARGET=20 + ARENA_CFG_MODE=harvest`（默认 target=30
     提前收经济——mode 无 military 值，用 target 缩短发育期；decide_kwargs 覆盖
     通道 SDK 层验证有效）。
@@ -49,8 +47,8 @@ R1 收口（2026-08-09）：变体三接线 + 对照组主榜外置 + 探针证�
   （reference/official/arena-hero-python，registry.ts SDK_REPO），其无
   `config_overrides` 模块，ImportError 被 try/except 吞掉 → env 注入 no-op
   （2 玩家 300 tick × seed1/2 固定 id/slot 对局：变体带 env vs 不带 env 逐字段
-  Δ=0）。修复 = 桥改用 SDK fork（arena-hero-python-telemetry）或补官方 SDK
-  模块——**R2 桥接线遗留**（PROGRESS "桥接 decide_kwargs 合并前置"）。
+  Δ=0）。修复 = 桥改用 SDK fork（arena-hero-sdk-py）或补官方 SDK
+  模块——**R2 桥接线遗留**（"桥接 decide_kwargs 合并前置"）。
 
 ## 4. 场景（v3）
 
@@ -78,7 +76,7 @@ buildScenario 后处理（改 scenario JSON terrain.resources：center-race 减�
 
 ## 6. 探针证据与重算（R1，2026-08-09）
 
-**SDK 层键验证**（probe_tool.py replay，任务书允许的现有探针方式；合成 120 tick
+**SDK 层键验证**（probe_tool.py replay，现有探针方式；合成 120 tick
 发育弧线，基线 vs 注入 plan 差异 tick 数）：
 | 键 | 差异 tick | 结论 |
 |---|---|---|
@@ -114,7 +112,7 @@ farmer-eco 系下降）；② kill 权重 20%→30%、survival 常量项→econo
 ## 7. 遗留（v3 未落地项）
 
 - **桥端 SDK 配置通道**：bridge 导入官方 SDK（无 config_overrides）→ env 注入
-  no-op；变体在真局中仍与基座同构。R2 桥接线（PROGRESS 遗留）完成后真局生效。
+  no-op；变体在真局中仍与基座同构。R2 桥接线（"桥接 decide_kwargs 合并前置"）完成后真局生效。
 - 击杀归属修复（累计伤害占比 ≥20% 记 0.5/1 杀）——触结算语义，v3 保留 v2 归属，
   聚合层注释（审计 §6.3）。
 - 定时红队/中性单位场景——引擎暂不支持，ffa-defense-pressure 用资源枯竭降级（§6.6）。
