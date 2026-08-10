@@ -125,5 +125,4 @@ explicit MANUAL action > explicit AGENT action > WAIT
 - [Command API](api-commands.md): plan JSON, actions, idempotency, and limits.
 - [Resolution results](api-resolution-results.md): every `event_type` and reason.
 - [Errors and recovery](api-errors.md): HTTP codes and retry decisions.
-- OpenAPI / AsyncAPI（官方契约，源在 `reference/arena-hero-doc/static/`）：
-  [openapi.yaml](../../reference/arena-hero-doc/static/openapi.yaml) / [asyncapi.yaml](../../reference/arena-hero-doc/static/asyncapi.yaml)；arena-ts wire 差异以本页与共享 schema 为准。
+- OpenAPI / AsyncAPI 官方契约由上游文档站提供；arena-ts wire 差异以本页与共享 schema 为准。

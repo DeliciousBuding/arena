@@ -62,8 +62,8 @@ replaces the one before it.
 }
 ```
 
-If you want machine-readable definitions, use the
-[AsyncAPI schema](../../reference/arena-hero-doc/static/asyncapi.yaml)（官方契约；arena-ts wire 差异以本页为准）。
+If you want machine-readable definitions, use the official AsyncAPI schema from the
+upstream documentation site（官方契约；arena-ts wire 差异以本页为准）。
 
 ## PlayerState {#playerstate}
 
