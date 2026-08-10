@@ -368,7 +368,79 @@ async function killStrays() {
   return finalPids !== null;
 }
 
-/** stall 检查：outcome 超龄 / decision 停摆 / economy 停摆（独立脚本判定）。 */
+/** 读 JSONL 尾部最多 maxRows 行（损坏行跳过；文件缺失/不可读 = []）。 */
+function readJsonlTail(path, maxRows) {
+  try {
+    const lines = readFileSync(path, "utf8").split(/\r?\n/).filter((line) => line.trim().length > 0);
+    const rows = [];
+    for (const line of lines.slice(-maxRows)) {
+      try {
+        rows.push(JSON.parse(line));
+      } catch {
+        // 损坏行跳过（与 bash grep 的容错一致）
+      }
+    }
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
+/** 决策停摆（check-decision-stall.sh 的 Node 移植，2026-08-10：git bash 从
+ *  watchdog 调用启动挂死（实测单次 >30s），8 次调用拖垮看护轮询 → 原生
+ *  Node 判定，豁免规则逐条对齐 bash 版）。返回 true = 停摆。 */
+export function decisionStall(dataRoot, tenant) {
+  const rows = readJsonlTail(join(dataRoot, "runtime", tenant, "telemetry", "decision.jsonl"), 120);
+  if (rows.length === 0) return false; // 无遥测 = 新 run 宽限
+  const active = rows.some((row) => (row.agentActionCount ?? 0) > 0 || (row.moveCount ?? 0) > 0);
+  if (active) return false;
+  // 0 人口豁免：全租户无单位时 intentCounts 为空（{}），0 动作合法
+  const intentRows = rows.filter((row) => "intentCounts" in row);
+  if (intentRows.length > 0 && intentRows.every((row) => row.intentCounts !== null && typeof row.intentCounts === "object" && Object.keys(row.intentCounts).length === 0)) {
+    return false;
+  }
+  // 低人口发育期豁免（worker<3 = 发育爬坡，重启无效）
+  const outcomes = readJsonlTail(join(dataRoot, "runtime", tenant, "telemetry", "outcome.jsonl"), 5);
+  const lastWorkers = outcomes.length > 0 ? outcomes[outcomes.length - 1].workerCount : null;
+  if (typeof lastWorkers === "number" && lastWorkers < 3) return false;
+  // 死区/贫矿探矿豁免：有探矿意图 + 视野 40 行全 0 可见资源 = 地理性停滞
+  const hasGo = rows.some((row) => Number(row.intentCounts?.GO_RESOURCE) >= 1);
+  const visRows = readJsonlTail(join(dataRoot, "runtime", tenant, "telemetry", "outcome.jsonl"), 40);
+  if (hasGo && visRows.length > 0 && visRows.every((row) => row.visibleResourceCellCount === 0)) {
+    return false;
+  }
+  return true;
+}
+
+/** 经济停摆（check-economy-stall.sh 的 Node 移植，2026-08-10，同上动机）：
+ *  max(workersWithCargo)>=2 且 0 卸货且 delta==0 且无容量锁/迁移 = 满载冻结。
+ *  返回 true = 停摆。 */
+export function economyStall(dataRoot, tenant) {
+  const rows = readJsonlTail(join(dataRoot, "runtime", tenant, "telemetry", "outcome.jsonl"), 60);
+  if (rows.length === 0) return false;
+  const maxCargo = rows.reduce((max, row) => Math.max(max, row.workersWithCargo ?? 0), 0);
+  // 新 run 成熟度宽限：当前 processRunId 行数 <30 = 重启后恢复期，不判停摆
+  const lastRunId = rows[rows.length - 1].processRunId ?? null;
+  if (lastRunId !== null) {
+    const runRows = rows.filter((row) => row.processRunId === lastRunId).length;
+    if (runRows < 30) return false;
+  }
+  let deposits = 0;
+  let locked = 0;
+  let coreMoving = 0;
+  let delta = 0;
+  for (const row of rows) {
+    const raw = JSON.stringify(row);
+    if (raw.includes("DEPOSIT_SUCCEEDED")) deposits += 1;
+    if (raw.includes('"reasonCode":"CORE_RESOURCE_FULL"') || raw.includes('"reasonCode":"CORE_MOVING"') || raw.includes('"reasonCode":"CORE_NOT_PRESENT"')) locked += 1;
+    if (row.coreState === "MOVING") coreMoving += 1;
+    delta += row.coreResourceDelta ?? 0;
+  }
+  return maxCargo >= 2 && deposits === 0 && delta === 0 && locked === 0 && coreMoving === 0;
+}
+
+/** stall 检查：outcome 超龄 / decision 停摆 / economy 停摆（Node 原生判定，
+ *  bash 版脚本已退役——2026-08-10 git bash 启动挂死拖垮看护轮询）。 */
 function stalledTenant() {
   for (const tenant of TENANTS) {
     const outcomePath = join(RUNTIME_ROOT, tenant, "telemetry", "outcome.jsonl");
@@ -391,20 +463,7 @@ function stalledTenant() {
       return tenant;
     }
 
-    // 决策停摆（0 动作）与经济停摆（满载不卸货）用既有脚本判定（保持同一套阈值）
-    for (const script of ["check-decision-stall.sh", "check-economy-stall.sh"]) {
-      try {
-        const out = execFileSync("bash", [join(REPO, "scripts", script), DATA_ROOT, tenant], {
-          encoding: "utf8",
-          shell: false,
-          stdio: ["ignore", "pipe", "ignore"],
-          timeout: 15_000,
-        }).trim();
-        if (out.startsWith("STALL:")) return tenant;
-      } catch {
-        // 脚本不可用 = 跳过该检查（与旧版 2>/dev/null 一致）
-      }
-    }
+    if (decisionStall(DATA_ROOT, tenant) || economyStall(DATA_ROOT, tenant)) return tenant;
   }
   return null;
 }
@@ -531,3 +590,4 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
     process.exit(1);
   });
 }
+
