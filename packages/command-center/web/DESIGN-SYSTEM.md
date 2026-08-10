@@ -134,18 +134,25 @@ roving tablist + 方向键 + Tab/TabPanel 语义关联。激活 = `data-[state=a
 边界是**设计决策**，不是欠债——边界两侧各有归属，不要为"全量原语化"把领域
 widget 塞进 Badge/Card 而牺牲信息架构。
 
-### 7.1 原语采用矩阵
+### 7.1 原语采用矩阵（2026-08-10 收口校正：此前版本矩阵含虚假完成声明，
+现按磁盘实态重写——Button/Badge/Toaster 层已真实落地；Tabs/Collapsible/
+ToggleGroup 结构层**未做**，手写版本仍在使用，列入待办）
 
 | 原语 | 采用位置 | 替代的手写模式 |
 |---|---|---|
-| `Button` | TopBar(3) · Sidebar(viewGlobal/viewFit/cmd-toggle/cmd-clear) · IntelPanel(refresh) · RedeemPanel(3) · SituationPanel(refresh) · RedeemCard(兑换) | legacy `.btn`/`.btn.primary`/`.btn.ghost` 全块已删 |
-| `Badge` | TopBar(`#refreshBadge`/`#healthChip`) · RedeemCard(stock ok/low/out) | `#topbar .badge`/`.stock.*` 已删 |
-| `Tabs`(Radix) | RightPanel 主 tab · IntelPanel 子 tab · StreamPane 主 tab | 手写 `role=tab`+`onKeyDown`（29→2 处，剩 Sidebar 租户卡领域 widget） |
-| `Collapsible`(Radix) | Sidebar 4 个分区（图层/租户视图/操作/快捷） | 手写 `h3[role=button]`（无键盘焦点语义，已修 a11y） |
-| `ToggleGroup`(Radix) | IntelPanel 过滤 · StreamPane 事迹类别+星级 | 手写 `.chip[aria-pressed]` |
+| `Button` | TopBar(3: intel/redeem/theme) · Sidebar(4: viewGlobal/viewFit/cmd-toggle/cmd-clear) · IntelPanel(refresh) · RedeemPanel(3) · SituationPanel(refresh+sit-focus) · RedeemCard(兑换) | legacy `.btn`/`.btn.primary`/`.btn.ghost` 组件内已零使用；style.css `.btn*` 规则保留待删（契约 §5 step5） |
+| `Badge` | TopBar(`#refreshBadge`/`#healthChip`) · RedeemCard(stock ok/low/out) | `#topbar .badge*`/`.stock.*` 组件内已零使用；style.css 规则保留待删（契约 §5 step5） |
+| `Tabs`(Radix) | **未采用（待办）** | RightPanel/IntelPanel/StreamPane 仍用手写 `role=tab`+`.active`；Radix Tabs 需同步 style.css `.rp-tab`/`.intel-tabs`/`.tabs` 规则到 `data-state`，属独立批次 |
+| `Collapsible`(Radix) | **未采用（待办）** | Sidebar CollapsiblePanel 仍用手写 `h3[role=button]`+`aria-expanded`（已配 Lucide chevron）；Radix Collapsible 需协调 `.panel-title`/`.sec-body` CSS |
+| `ToggleGroup`(Radix) | **未采用（待办）** | IntelPanel 过滤/StreamPane 事迹筛选仍用手写 `.chip[aria-pressed]` |
 | `Toaster`(Sonner) | App.tsx 挂载 | `#uiToast` DOM 契约保留（引擎画布 toast），Sonner 接管组件级 |
 | `Skeleton` | 原语就绪（自包含 `.ui-skeleton::after` shimmer） | Sidebar 加载卡保留"容器单次扫光+透明线条"复合模式（领域决策，见 §7.3） |
 | `Card`/`Separator`/`Tooltip` | 原语就绪，待未来独立加载块/分隔/键盘可达提示 | 暂未采用（领域 widget 用手写卡容器，Tooltip 暂用原生 `title`） |
+
+**待办（tier 2，结构层）**：Radix Tabs（RightPanel/IntelPanel/StreamPane）、
+Radix Collapsible（Sidebar）、Radix ToggleGroup（IntelPanel/StreamPane）。
+这些是 a11y 行为升级，需按迁移契约 §5 step1-2 保留旧选择器 + `data-state` 续连，
+并同步 style.css 激活态规则（`.active` → `[data-state=active]`）。做完再更新本矩阵。
 
 ### 7.2 常量 SSOT（DRY 收口 2026-08-10）
 
