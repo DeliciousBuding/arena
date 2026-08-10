@@ -1,130 +1,84 @@
-# Arena
+# Arena Hero Dev Lab
 
-本仓是 Arena Hero 当前**唯一生产实现线**：TS 安全自主运行时、确定性策略和 Digital Twin。
-`arena-rs` Rust 赛马线已于 2026-08-07 退役为只读参考，不再承担 live、采集或 watchdog。
-目标不是堆一层平台，而是在单写者、硬截止、部分可观测和不可信 Provider 条件下稳定运行。
-真实数据采集统一由本线负责：**t1/t2/t3/t4 全部由 arena-ts 单写**。
+为 [Arena Hero](https://doc.arenahero.io/zh-Hans/) Agent 开发打造的开源工具链：**确定性模拟器、多策略混战评估、实时可视化面板**。
 
-> 正式运行链只有 `arena-hero-ts → arena-agent → SDK submit`。Pi 只能提交候选，永远不持有游戏提交权；Python 实时 runtime 已退役。
+模拟器按官方规则实现并与官方 SDK 对齐验证；混战评估把多套社区 Agent 与自定义策略放进同一张地图自由对抗；面板实时展示各实例的决策与地图状态。
 
-## 社区
+## 三大组件
 
-本项目认可并支持 [LINUX DO](https://linux.do/) 开源社区：
+### 1. 环境模拟器（`packages/arena-agent`）
 
-- 游戏官方发布帖：https://linux.do/t/topic/2703804
-- 社区开源 Agent 对照（本项目大混战评估参考）：https://linux.do/t/topic/2721042 · https://linux.do/t/topic/2703873 · https://linux.do/t/topic/2715054 · https://linux.do/t/topic/2726683 · https://linux.do/t/topic/2723397
+- 按官方 v0.14 规则实现（动态单位价格、护盾/HP、资源刷新等），与官方 Python SDK 对齐验证
+- 本地高频跑局，不用等真实游戏 tick，支持对局回放复盘
+- 附带离线数据集、校准与评估工具链
 
-## 当前状态
+### 2. 多 Agent 混战评估（`packages/arena-agent`）
 
-已完成：
+- 多套策略同图同规则自由混战（FFA），输出多维统计评估
+- 内置基因进化搜索（GA），自动迭代搜索最优策略参数
+- 支持真实数据与模拟数据的对照评估
 
-- TS SDK、wire/domain schema、Golden fixture 与协议门禁；
-- DecisionLease、Coordinator、Arbiter、Validator 与确定性 fallback；
-- DeterministicPlanner 经济闭环，历史有界真机窗口合计 400/400 accepted；
-- Pi `createAgentSession` 原生嵌入，builtin 关闭，只开放 `arena_plan` / `arena_map`；
-- Provider circuit breaker：`closed → open → half-open`，失败时快速退回 deterministic/safety；
-- 单租户 manifest、single-writer lock、runtime/decision/outcome/pi JSONL；
-- 原生 `TenantSupervisor`：全量 preflight、部分启动回收、lock-backed readiness、端口预占、IPC 优雅关闭与跨平台 process-tree 清理；
-- 只读 Debug API：`/health`、`/ready`、`/tenants`、有界 `/events` 与 `/state`；
-- 原生服务器基线：systemd cgroup、不可变 release、外置 config/runtime、shadow 有界自恢复、live 禁止自动重启、有限 JSONL 轮转；
-- Digital Twin 与首份 Runtime-Golden 数据集。
+### 3. 实时可视化面板（`packages/command-center`）
 
-已进一步完成（2026-08-05/06）：
+- 实时全局地图渲染
+- 多实例（账号）状态一览
+- 实时事件流与对局回放（支持拖拽进度）
+- 深色 / 浅色主题
 
-- **决策指挥状态机五层闭环**（policy discipline → StallRecovery 自愈 → 执行层防呆 maxFocusDistance=32 → 模拟级验证 → KPI）：生产 t1 事故链（远点 focus → 经济冻结）根因修复，生产 KPI 全 0（stall_warning 0 / stall_recovery 0 / policy_discipline 0）；
-- **死锁攻坚闭环**（v0.2.3→v0.2.9）：守家锚点/SPAWN 解锁/资源满让位/敌格绕行/半径受限 BFS/敌方 CORE 并入障碍/fail-safe 不横跳——生产验证经济循环恢复；
-- **低频 MacroPolicy 策略层**（LLM 战略 + deterministic 执行）：normalize-first 修复后生产 0 error，prompt 约束落地（militaryRatio 0.3-0.4 拐点、workerTarget 8 平衡区）；
-- **模拟器真实性校准**：refill cadence 校准=65；calibration 大样本（1700+ cases/租户）7 次回放**零确定性误差**——模拟器对真实服务器行为无硬差异；
-- **TS 版本回滚演练**已完成（逃生通道须用同部署形态 commit sha 镜像）；
-- **外部参考对照**：榜二（arena-hero-agent）威胁状态机/Core 迁移/Ranger 优先级对照落地或阴性记录，对照线完结；官方规则源（arena-hero-doc）纳入追踪（官方 v0.13 vs 我们服务器实测 v0.11）。
+## 快速开始
 
-代码门禁已经通过 Windows 与 Linux Node 24；生产长期验收剩余项：t1/t2/t3/t4 分级 soak、Provider shadow 故障注入、combat/Core migration/Beacon/respawn 专项 Runtime-Golden。
-
-## 原生边界
-
-```text
-Arena stream
-  → arena-hero-ts (wire / WebSocket / Turn / submit)
-  → arena-agent   (state / planner / lease / validator / telemetry)
-  → Pi optional   (candidate only; no submit capability)
-```
-
-- 一个租户一个 OS 进程、一个 writer lock；
-- Supervisor 只管理进程生命周期，不复制租户业务状态；
-- 子进程通过 Node IPC 自行清理，超时后才强杀整棵进程树；
-- live writer 不自动重启：跨进程幂等恢复完成前，自动拉起可能造成同 Tick 重复提交；
-- Debug API 只读，不提供绕过 Coordinator/Validator 的控制接口；
-- 没有真实收益证据时，生产保持 deterministic。
-
-## 常用命令
+需要 Node.js ≥ 20 与 pnpm ≥ 10：
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm -r check
 pnpm -r test
-pnpm run schema:check
-pnpm run replay:ts
 ```
 
-单租户：
+跑一个模拟对局（30 tick）：
 
 ```bash
-npx tsx packages/arena-agent/src/cli/run-tenant.ts \
-  --config=../data/runtime/configs/t1.json --doctor
-
-npx tsx packages/arena-agent/src/cli/run-tenant.ts \
-  --config=../data/runtime/configs/t1.json --mode=deterministic --shadow
+npx tsx packages/arena-agent/src/cli/run-sim.ts episode \
+  --scenario packages/arena-agent/scripts/scenarios/core-evade.json \
+  --ticks 30
 ```
 
-多租户 Supervisor（只观察）：
+多策略混战（AB 对照）：
 
 ```bash
-npm run arena:supervisor -- \
-  --configs=t1,t2,t3,t4 --mode=deterministic --shadow --port=8120
+npx tsx packages/arena-agent/src/cli/run-sim.ts ab \
+  --scenario packages/arena-agent/scripts/scenarios/core-evade.json \
+  --planners deterministic,safety --seeds 1,2,3 --ticks 30
 ```
 
-> 运行配置默认放在共享数据层 `../data/runtime/configs/`，运行产物写入
-> `../data/runtime/`；token 值放 `.env` / `.env.local` / `~/.secrets/arena.env`。
-
-## 共享数据根
-
-`ARENA_DATA_ROOT` 默认是仓库同级的 `../data`。路径优先级保持显式：
-
-1. CLI `--data-root`；
-2. 环境变量 `ARENA_DATA_ROOT`；
-3. 内置默认 `<repo>/../data`。
-
-Supervisor 的 `--config-dir` / `ARENA_CONFIG_DIR` 和
-`--runtime-dir` / `ARENA_RUNTIME_DIR` 仍是更具体的覆盖项；未提供时分别使用
-`<dataRoot>/runtime/configs` 与 `<dataRoot>/runtime`。租户配置中的相对
-`baseDir` 从 data root 解析，因此标准值 `runtime` 对应共享运行目录。
-
-离线模拟器遵循相同 data-root 优先级，默认输出到
-`<dataRoot>/runs/sim`。`--output` 只能填写 data root 下的相对
-`runs/sim[/subdir]`，绝对路径、`..` 和 symlink/junction 逃逸都会拒绝；测试使用独立临时 data root，不接触真实共享数据。
-
-`--record-calibration` 只旁路记录 accepted plan、相邻 raw state 与 receipt；
-不在线构建模型或派生训练数据。Runtime-Golden 校准与分析只通过离线模拟器命令执行。
-
-只有取得明确真机授权、doctor 通过并确认无第二 writer 后，才可增加 `--live` 和有界 `--live-ticks=N`。
-
-## 观测
+启动可视化面板（本地开发）：
 
 ```bash
-curl http://127.0.0.1:8120/health
-curl http://127.0.0.1:8120/ready
-curl http://127.0.0.1:8120/tenants
-curl 'http://127.0.0.1:8120/events?n=50'
-curl 'http://127.0.0.1:8120/state?tenant=t1&stream=runtime'
+node packages/command-center/scripts/start-cc.ts
 ```
 
-`/health` 证明 Supervisor 活着；`/ready` 只有在每个 child PID 与对应 single-writer lock PID 持续一致时返回 200。
+更多命令见 `packages/arena-agent/src/cli/run-sim.ts` 的 `--help`。
 
-## 证据边界
+## 架构概览
 
-- Pi t1 shadow 30 Tick：27 candidate、2 soft deadline、1 cold-start error、216 valid actions、0 invalid；这不是 hybrid/live 生产验收。
-- Runtime-Golden 首份数据集：3 cases，已触发的 known deterministic events 6/6；主要覆盖 movement/economy/visibility。
-- combat、Core migration、Beacon、respawn 已有实现、micro-Golden 和 invariant 测试，但仍需专项真机触发数据。
-- `INCONCLUSIVE` 不能写成 `MATCH`，单个漂亮窗口不能写成长期收益。
+```text
+arena-hero-ts    官方协议 SDK（wire / turn / submit）
+arena-agent      决策运行时 + 模拟器 + 混战评估
+command-center   实时可视化面板
+```
 
-共享权威进度见 [`../docs/progress/MASTER.md`](../docs/progress/MASTER.md)，本地运维见 [`../docs/ops/supervisor-runbook.md`](../docs/ops/supervisor-runbook.md)，服务器部署见 [`../docs/ops/server-deployment.md`](../docs/ops/server-deployment.md)。
+## 生态与参考
+
+本项目参考了 LINUX DO 社区的多套开源 Agent 实现（用于混战评估对照），感谢各位作者：
+
+- [Waaiging 的三模式 Agent](https://linux.do/t/topic/2721042)
+- [Drew-Z 的无人值守 Agent](https://linux.do/t/topic/2703873)
+- [VelvetEvening 的双策略](https://linux.do/t/topic/2715054)
+- [feixingwawa 的战术客户端](https://linux.do/t/topic/2726683)
+- [Torther 的进化框架](https://linux.do/t/topic/2723397)
+
+游戏官方：[Arena Hero](https://app.arenahero.io/) · [官方文档](https://doc.arenahero.io/zh-Hans/) · [LINUX DO 发布帖](https://linux.do/t/topic/2703804)
+
+## License
+
+各包许可证见包内 `LICENSE` 文件（`arena-hero-ts` 为 Apache-2.0）。
