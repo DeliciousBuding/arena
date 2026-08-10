@@ -82,6 +82,7 @@ const READY_URL = `http://127.0.0.1:${PORT}/ready`;
 const SHUTDOWN_URL = `http://127.0.0.1:${PORT}/shutdown`;
 const RESTART_URL = `http://127.0.0.1:${PORT}/restart`;
 const MAINTENANCE_LEASE = join(RUNTIME_ROOT, "maintenance.lease");
+const WATCHDOG_LOCK = join(RUNTIME_ROOT, "watchdog.lock");
 const TENANTS = CONFIG?.watchdog?.tenants ?? ["t1", "t2", "t3", "t4"];
 /** outcome JSONL 超过该秒数未更新 = stall（与旧版一致）。 */
 const STALL_MAX_AGE_S = envNumber("ARENA_WATCHDOG_STALL_MAX_AGE_S", CONFIG?.watchdog?.stallMaxAgeS ?? 600);
@@ -191,6 +192,41 @@ function log(line) {
 function logEvent(type, fields = {}) {
   rotateLog(LOG);
   appendFileSync(LOG, `${JSON.stringify({ type, ts: new Date().toISOString(), ...fields })}\n`);
+}
+
+/** 实例互斥（2026-08-10：恢复流程 60-90s 跨分钟，计划任务实例重叠 → 后
+ *  实例把前实例刚拉起的 supervisor 又优雅关停 → 无限重启循环。pid 锁：
+ *  已有存活实例 = 直接退出；崩溃残留（pid 不存在）= 接管）。 */
+function acquireWatchdogLock() {
+  try {
+    if (existsSync(WATCHDOG_LOCK)) {
+      const pid = Number(readFileSync(WATCHDOG_LOCK, "utf8").trim());
+      if (Number.isInteger(pid) && pid > 0) {
+        let alive = false;
+        try {
+          const out = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], {
+            encoding: "utf8", shell: false, timeout: 5000,
+          });
+          alive = out.includes(`"${pid}"`);
+        } catch {
+          alive = false;
+        }
+        if (alive) return false;
+      }
+    }
+    writeFileSync(WATCHDOG_LOCK, String(process.pid));
+    return true;
+  } catch {
+    return true; // 锁不可用不阻塞看护（保守）
+  }
+}
+
+function releaseWatchdogLock() {
+  try {
+    rmSync(WATCHDOG_LOCK, { force: true });
+  } catch {
+    // 清理失败不阻塞（残留由下次 acquire 的 pid 存活检查接管）
+  }
 }
 
 /** 维护租约：第一行 = 过期 epoch；有效期内不拉起生产。 */
@@ -494,6 +530,18 @@ function restartSupervisor() {
  *  整体重启——supervisor 内部 auto-respawn（10 次 + 指数退避）自愈，stall
  *  检测（outcome >600s / 决策停摆）作整体兜底。 */
 async function main() {
+  if (!acquireWatchdogLock()) {
+    logEvent("watchdog_skipped", { reason: "another watchdog instance running (mutex)" });
+    return;
+  }
+  try {
+    await mainUnlocked();
+  } finally {
+    releaseWatchdogLock();
+  }
+}
+
+async function mainUnlocked() {
   const lease = leaseActive();
   if (lease.active) return;
 
