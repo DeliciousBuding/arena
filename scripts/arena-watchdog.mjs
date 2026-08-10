@@ -46,7 +46,9 @@ const PID_PROBE_TIMEOUT_MS = 30_000;
  *  配置同目录，gitignored；data 未跟踪）。缺失 = 纯内置默认（向后兼容
  *  旧行为零变化）。2026-08-10 配置化：消灭 watchdog/supervisor 双默认漂移
  *  ——SUPERVISOR_ARGS 由配置生成，单一事实源。 */
-const DEFAULT_DATA_ROOT = "ARENA_REPO_ROOT/data";
+const DEFAULT_DATA_ROOT = process.env.ARENA_REPO_ROOT
+  ? join(process.env.ARENA_REPO_ROOT, "data")
+  : "D:/Code/Projects/arena/data";
 const DEFAULT_PORT = 8120;
 const ENV = process.env;
 
@@ -389,9 +391,9 @@ async function killStrays() {
     if (pids.length === 0) return true;
     for (const pid of pids) {
       try {
-        execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { shell: false });
+        execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { shell: false, timeout: 10_000 });
       } catch {
-        // 进程可能已退出
+        // 进程可能已退出 / 拒绝访问（超时兜底：不阻塞恢复流程）
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 3000));
