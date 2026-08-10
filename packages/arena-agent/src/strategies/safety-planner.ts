@@ -3741,17 +3741,23 @@ export class SafetyPlanner {
       }
       // 激进：主动前压。attackPriority 决定攻坚目标（v0.9 拆 Core 掠夺资源 vs
       // 断敌经济）；无特攻目标时追击最近可见敌人。不再因靠近自家 Core 而留守。
+      // GAP 5.2 fix（2026-08-10，t1 生产实证 tick 83782）：无可见敌人时 target
+      // 回退到守家锚点 approachTarget（homeCell/coreGuardFallback），**不再以
+      // 自家 Core 格为目标**——旧版 `?? state.core?.position` 让 16+ Vanguard
+      // 全体向自家 Core 格前压（Core 格容量 2 被占 → stepBlocked →
+      // vanguard_pressure_spread 互堵振荡），守家/打野全停、经济无人测绘。
       const attackPriority = this.effectivePolicy?.attackPriority ?? null;
       let target: Position | null = null;
       if (attackPriority === "workers") {
         const enemyWorker = enemies.find((enemy) => enemy.kind === "UNIT" && enemy.unitType === "WORKER");
-        target = enemyWorker?.position ?? nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+        target = enemyWorker?.position ?? nearestEnemy(enemies, unit.position)?.position ?? null;
       } else if (attackPriority === "core") {
         const enemyCore = enemies.find((enemy) => enemy.kind === "CORE");
-        target = enemyCore?.position ?? nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+        target = enemyCore?.position ?? nearestEnemy(enemies, unit.position)?.position ?? null;
       } else {
-        target = nearestEnemy(enemies, unit.position)?.position ?? state.core?.position ?? null;
+        target = nearestEnemy(enemies, unit.position)?.position ?? null;
       }
+      if (target === null) target = approachTarget;
       // B5 远端突击组局部响应（detachedSquadResponse 候选，竞品对照）：
       // 敌**非目标**战斗单位进入 5 格响应半径 = 突击组被拦截——释放旧任务、
       // 回 Core 守位至少 8 tick（防抖动记忆：8 tick 内敌消失也继续返回）。
@@ -3814,9 +3820,13 @@ export class SafetyPlanner {
             }
           }
         }
-        if (direction !== null) set(unit, { type: "MOVE", direction }, intent);
+        if (direction !== null) { set(unit, { type: "MOVE", direction }, intent); return; }
       }
-      return;
+      // GAP 5.2（2026-08-10）：有可见敌人时保持原行为（目标格不可达/已到达 →
+      // 原地待命）；无可见敌人时不再无条件 return——单位已到达守家锚点 →
+      // fall through 到下方守家/治疗/回防逻辑（heal 轮换、ring_clear、
+      // home 锚点），保持完整守家姿态而非钉死在 pressure 分支空转。
+      if (enemies.length > 0) return;
     }
 
     // B8 守卫轮换治疗（guardHealRotation 候选）：defensive 守卫受伤（HP 过半
