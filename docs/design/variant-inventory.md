@@ -1,6 +1,6 @@
 # 变体库存（variant inventory，唯一权威清单）
 
-状态：2026-08-08（任务书 H）。数据全部实读，无编造。
+状态：2026-08-08（命名规范核验）。数据全部实读，无编造。
 
 ## 0. 数据口径（抽查对照依据）
 
@@ -111,7 +111,7 @@ vanguard-heavy-v1 L307、worker-mission-v1 L318、lean-spend-v1 L358。
 `clear-path-v1`、`beacon-grab-v1`、`bounded-raid-v1`、`ranger-memory-shot-v1`、
 `threat-breakout-v1`、`population-ceiling-30-v1`。
 
-> 注：任务书 H 预期清单含 `core-evade-v1`，但实读 t2.json 的 variants 数组**包含**
+> 注：核验预期清单含 `core-evade-v1`，但实读 t2.json 的 variants 数组**包含**
 > `core-evade-v1`（t2 同时启用 core-evade-persist-v1 / core-evade-ttr-v1），故
 > core-evade-v1 不算"无租户启用"。本表以实读为准。
 
