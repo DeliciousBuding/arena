@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useEngine, getEngine } from "../lib/bridge";
 import { TENANT_COLORS } from "@/engine/tactical";
 
@@ -313,8 +314,8 @@ function ViewSwitch() {
         ))}
       </div>
       <div className="view-switch">
-        <button id="viewGlobal" className={`btn${global ? " active" : ""}`} type="button" onClick={() => getEngine()?.exitSolo()}>全局联盟</button>
-        <button id="viewFit" className="btn" type="button" onClick={() => { const e = getEngine(); if (e) { const s = e.getState(); s.soloTenant ? e.fitSolo(s.soloTenant) : e.fitView(); } }}>适应视口</button>
+        <Button id="viewGlobal" variant={global ? "primary" : "default"} size="sm" onClick={() => getEngine()?.exitSolo()}>全局联盟</Button>
+        <Button id="viewFit" variant="default" size="sm" onClick={() => { const e = getEngine(); if (e) { const s = e.getState(); s.soloTenant ? e.fitSolo(s.soloTenant) : e.fitView(); } }}>适应视口</Button>
       </div>
     </>
   );
@@ -357,9 +358,10 @@ function CommandStatusPanel() {
     <CollapsiblePanel id="cmd" className="cmd-panel" title={<><span className="sec-title-inline">人类指挥 · HUMAN COMMAND</span>{total > 0 ? <span className="cmd-total mono" title="全联盟人类指令总数">{total}</span> : null}</>}>
       <div className="cmd-toggle-row">
         <span className="cmd-toggle-label">{anyOverride ? "接管中 · 命令优先于 agent" : "已交还 agent 全权"}</span>
-        <button
-          type="button"
-          className={`btn cmd-toggle-btn${anyOverride ? " active" : ""}`}
+        <Button
+          className={`cmd-toggle-btn${anyOverride ? " active" : ""}`}
+          variant={anyOverride ? "primary" : "default"}
+          size="sm"
           title={anyOverride ? "一键交还 agent 全权（清空人类指令）" : "启用人类最高控制权"}
           onClick={async () => {
             const nextMode = anyOverride ? "disabled" : "override";
@@ -370,7 +372,7 @@ function CommandStatusPanel() {
             }
             setTimeout(() => window.location.reload(), 400);
           }}
-        >{anyOverride ? "交还 Agent" : "人类接管"}</button>
+        >{anyOverride ? "交还 Agent" : "人类接管"}</Button>
       </div>
       <ul className="cmd-list">
         {TENANTS.map((t) => {
@@ -391,12 +393,12 @@ function CommandStatusPanel() {
                 {done > 0 ? <b className="done">✓{done}</b> : null}
                 {n === 0 ? <span className="dim">—</span> : null}
               </span>
-              <button type="button" className="btn cmd-clear" title={`清空 ${t.toUpperCase()} 人类指令`} disabled={n === 0}
+              <Button variant="ghost" size="sm" className="cmd-clear" title={`清空 ${t.toUpperCase()} 人类指令`} disabled={n === 0}
                 onClick={async () => {
                   if (!window.confirm(`确认清空 ${t.toUpperCase()} 全部人类指令（${n} 条）并交还该租户 agent 全权？`)) return;
                   await ccPostJson("/api/command/clear", { tenant: t });
                   setTimeout(() => window.location.reload(), 300);
-                }}>清空</button>
+                }}>清空</Button>
             </li>
           );
         })}
