@@ -129,6 +129,13 @@ const ECONOMIC_INTENTS = new Set([
   // 事件触发 recoverWorker。旧版在 intentionalWait 豁免 + 不在
   // ECONOMIC_INTENTS → 无任何恢复路径（C7 只覆盖军事单位）。
   "capacity_wait:DEPOSIT",
+  // 审计 WL2（2026-08-10）：planner 对 capacity 被拒的 MOVE 生成
+  // capacity_wait:${intent}——economicIntent 的精确匹配 + startsWith
+  // 只覆盖了 capacity_wait:go_harvest，漏掉 capacity_wait:GO_RESOURCE
+  // 与 capacity_wait:return_home → 这两类卡住的 worker 只走 idle_wait
+  // （8 tick）恢复，不触发 economic_no_progress（6 tick，更精准）。
+  "capacity_wait:GO_RESOURCE",
+  "capacity_wait:return_home",
 ]);
 
 /** 有意等待：这些等待是协议/战术语义，不应被 generic idle detector 打断。 */

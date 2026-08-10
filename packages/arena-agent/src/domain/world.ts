@@ -402,6 +402,14 @@ export class World {
       this.chunkMemory.clear();
       this.beaconHistory.length = 0;
       this.coreHuntMemory.clear();
+      // 审计 W5（2026-08-10）：世界重置时残留 Map 未清——extendedFailedCooldowns /
+      // resourceFailCounts / coreWatch / coreHuntMissingCount / enemyCoreForceRecords
+      // 跨重置泄漏（旧 tick 系数的冷却覆盖 + 旧敌情记忆在全新世界里失真）。
+      this.extendedFailedCooldowns.clear();
+      this.resourceFailCounts.clear();
+      this.coreWatch.clear();
+      this.coreHuntMissingCount.clear();
+      this.enemyCoreForceRecords.clear();
       this.worldResetCount += 1;
       this.lastWorldResetTick = state.tick;
     }
@@ -461,6 +469,10 @@ export class World {
       // 现在 visible = refill 了，旧失败不计——否则刚刷新就因旧 3 次计数
       // 仍在 96 tick 冷却中被跳过。
       this.resourceFailCounts.delete(cell);
+      // 审计 W3（2026-08-10）：extendedFailedCooldowns 同步重置——旧版只清
+      // resourceFailCounts，分级冷却覆盖残留 → 矿 refill 后仍被 96/192/384
+      // 冷却压制（语义错误），且 Map 无界增长（泄漏）。
+      this.extendedFailedCooldowns.delete(cell);
     }
     for (const [cell, memory] of this.resourceMemory) {
       if (visibleResources.has(cell)) continue;
@@ -662,6 +674,34 @@ export class World {
       if (memory.state !== "visible" && memory.seeded !== true && state.tick - memory.lastSeenTick > RESOURCE_MEMORY_TTL_TICKS) {
         this.resourceMemory.delete(cell);
         this.failedCells.delete(cell);
+        // 审计 W3（2026-08-10）：TTL 过期同步清失败计数与分级冷却——
+        // 记忆删除后计数/冷却残留 = 无界增长 + 幽灵冷却（格子重新出现时
+        // 被旧 96/192/384 tick 覆盖压制）。
+        this.resourceFailCounts.delete(cell);
+        this.extendedFailedCooldowns.delete(cell);
+      }
+    }
+
+    // 审计 W5（2026-08-10）：敌情记忆常规 TTL 清理——enemyMemory / coreWatch /
+    // enemyCoreForceRecords 只有"读取时 maxAge 过滤"没有"写入侧删除"，
+    // 长局每个目击过的敌单位 id / 近核观察 / 敌核兵力记录永久残留（无界
+    // 增长）。读取过滤仍生效，这里只删远超战术窗口的条目（保守 TTL，
+    // 不影响 6/12/60/2000 tick 战术记忆窗口）。
+    const ENEMY_MEMORY_MAX_AGE = 2000; // 与 CORE_HUNT_STICKY_TICKS 同量级
+    for (const [enemyId, memory] of this.enemyMemory) {
+      if (state.tick - memory.lastSeenTick > ENEMY_MEMORY_MAX_AGE) {
+        this.enemyMemory.delete(enemyId);
+        this.coreWatch.delete(enemyId);
+      }
+    }
+    for (const [watchId, watch] of this.coreWatch) {
+      if (state.tick - watch.lastSeenTick > CORE_WATCH_TTL * 4) {
+        this.coreWatch.delete(watchId);
+      }
+    }
+    for (const [key, record] of this.enemyCoreForceRecords) {
+      if (state.tick - record.lastSeenTick > ENEMY_MEMORY_MAX_AGE) {
+        this.enemyCoreForceRecords.delete(key);
       }
     }
 
