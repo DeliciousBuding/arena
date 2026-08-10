@@ -12,7 +12,7 @@ import type { UnitType } from "./enums.ts";
 export const TELEMETRY_ENDPOINT_ENV = "ARENA_HERO_TELEMETRY_ENDPOINT";
 export const TELEMETRY_TENANT_ENV = "ARENA_HERO_TENANT";
 export const TELEMETRY_MODE_ENV = "ARENA_HERO_MODE";
-export const SDK_VERSION = "0.2.9-telemetry.1";
+export const SDK_VERSION = "0.2.9-telemetry.3";
 
 const FLUSH_INTERVAL_MS = 5000;
 const FLUSH_BATCH_SIZE = 20;
@@ -48,6 +48,15 @@ export interface TelemetryEvent {
   readonly units_seen?: readonly (readonly [string, UnitType, 0 | 1, number, number, number])[];
   /** [x, y, owner_username]，controlled=false 的 CORE。 */
   readonly enemy_cores?: readonly (readonly [number, number, string])[];
+  /** 我方单位构成（telemetry-v3，2026-08-10）：controlled UNIT 按类型计数
+   *  {WORKER/VANGUARD/RANGER: n}，command-center 台账落 vanguards/rangers 列。 */
+  readonly controlled_by_type?: Readonly<Partial<Record<UnitType, number>>>;
+  /** 状态消息体积（UTF-8 字节，telemetry-v2，2026-08-09；缺省 null）。 */
+  readonly state_bytes?: number | null;
+  /** 状态消息解析耗时（ms，telemetry-v2；缺省 null）。 */
+  readonly parse_ms?: number | null;
+  /** 上一 tick 决策耗时（ms）：Turn 创建 → 首次读取 plan/submit（telemetry-v2；缺省 null）。 */
+  readonly prev_decision_ms?: number | null;
   readonly api_key_tail?: string;
   readonly base_url?: string;
   readonly sdk_version?: string;
@@ -144,10 +153,26 @@ export function identityEvent(
 }
 
 /** 每 tick PlayerState 摘要（与 Python fork 同构，含测绘字段；
- *  载荷契约见 python-mapping-telemetry-v1 §2.1）。 */
+ *  载荷契约见 python-mapping-telemetry-v1 §2.1 + telemetry-v2/v3）。
+ *  ``timing`` 为可选（telemetry-v2）：缺省时计时字段置 null，不改变既有调用。 */
+export interface TickTiming {
+  /** 状态消息体积（UTF-8 字节）。 */
+  readonly stateBytes?: number;
+  /** 状态消息解析耗时（ms）。 */
+  readonly parseMs?: number;
+  /** 上一 tick 决策耗时（ms，Turn 创建 → 首次读取 plan/submit）。 */
+  readonly prevDecisionMs?: number;
+}
+
+/** 与 Python fork round(x, 3) 对齐的毫秒精度。 */
+function roundMs(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
 export function tickSummary(
   tick: number,
   state: PlayerState,
+  timing: TickTiming = {},
 ): Omit<TelemetryEvent, "tenant" | "instance" | "ts"> {
   const controlledCore = state.objects.find(
     (o): o is Extract<typeof o, { kind: "CORE" }> =>
@@ -161,6 +186,13 @@ export function tickSummary(
   const enemyCores = state.objects
     .filter((o): o is Extract<typeof o, { kind: "CORE" }> => o.kind === "CORE" && !o.controlled)
     .map((c) => [c.position[0], c.position[1], c.owner_username] as const);
+  // 我方单位构成（telemetry-v3）：controlled UNIT 按类型计数，与 Python fork
+  // _materialize 同源（u.unit_type 即 WORKER/VANGUARD/RANGER 字面量）。
+  const controlledByType: Partial<Record<UnitType, number>> = {};
+  for (const unit of units) {
+    if (!unit.controlled) continue;
+    controlledByType[unit.unit_type] = (controlledByType[unit.unit_type] ?? 0) + 1;
+  }
   return {
     event: "tick_summary",
     tick,
@@ -170,6 +202,10 @@ export function tickSummary(
     core: controlledCore ? [...controlledCore.position] as [number, number] : null,
     units: units.length,
     visible_enemies: units.filter((u) => !u.controlled).length,
+    controlled_by_type: controlledByType,
+    state_bytes: timing.stateBytes ?? null,
+    parse_ms: timing.parseMs !== undefined ? roundMs(timing.parseMs) : null,
+    prev_decision_ms: timing.prevDecisionMs !== undefined ? roundMs(timing.prevDecisionMs) : null,
     resource_cells: terrainCells("RESOURCE"),
     obstacle_cells: terrainCells("OBSTACLE"),
     units_seen: units.map(

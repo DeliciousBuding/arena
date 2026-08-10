@@ -275,7 +275,15 @@ export class ArenaHeroClient {
             if (raw === null) {
               break;
             }
-            yield this._materialize(parseStreamMessage(raw));
+            // 遥测旁路（telemetry-v2）：状态消息体积 + 解析耗时随 tick_summary
+            // 上报；不参与决策语义，纯计时零侵入。
+            const parseStarted = performance.now();
+            const parsed = parseStreamMessage(raw);
+            const parseMs = performance.now() - parseStarted;
+            yield this._materialize(parsed, {
+              stateBytes: Buffer.byteLength(raw, "utf8"),
+              parseMs,
+            });
           }
           const code = this._closeCode;
           if (code === 1000) {
@@ -509,7 +517,10 @@ export class ArenaHeroClient {
     return null;
   }
 
-  private _materialize(message: Tick | PlayerState | Received): GameEvent {
+  private _materialize(
+    message: Tick | PlayerState | Received,
+    timing: { readonly stateBytes?: number; readonly parseMs?: number } = {},
+  ): GameEvent {
     if (isTick(message)) {
       // Tick envelope
       if (this._currentTick !== message.tick) {
@@ -533,10 +544,18 @@ export class ArenaHeroClient {
     if (this._currentTick === null) {
       throw new ProtocolError("state arrived before tick");
     }
+    // 决策耗时（telemetry-v2）：上一 tick 的 Turn 创建 → plan 读取/submit。
+    const prevDecisionMs = this._activeTurn?.decisionMs ?? null;
     if (this._activeTurn !== null) {
       this._activeTurn._seal();
     }
-    this._telemetry.emit(tickSummary(this._currentTick, message));
+    this._telemetry.emit(
+      tickSummary(this._currentTick, message, {
+        stateBytes: timing.stateBytes,
+        parseMs: timing.parseMs,
+        prevDecisionMs: prevDecisionMs ?? undefined,
+      }),
+    );
     const turn = new Turn(
       this._currentTick,
       message,

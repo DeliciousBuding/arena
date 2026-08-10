@@ -110,6 +110,21 @@ test("submit 提交当前排队计划", async () => {
   });
 });
 
+test("decisionMs 决策计时（telemetry-v2）：首次读 plan 前为 null，之后为 ms", async () => {
+  const turn = new Turn(4, makeState([workerView, coreView]), async () => {
+    return { accepted: true, tick: 4, source: "AGENT", received_at: "2026-08-02T12:00:00Z" };
+  });
+  assert.equal(turn.decisionMs, null);
+  (turn.unit(workerView.id) as Worker).harvest();
+  void turn.plan;
+  assert.ok(turn.decisionMs !== null && turn.decisionMs >= 0);
+  const first = turn.decisionMs;
+  // 只记首次：后续读取不刷新
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  void turn.plan;
+  assert.equal(turn.decisionMs, first);
+});
+
 test("replace 用外部计划整体替换排队计划（编排层决策注入）", async () => {
   let submitted: unknown = null;
   const turn = new Turn(4, makeState([workerView, coreView]), async (plan) => {

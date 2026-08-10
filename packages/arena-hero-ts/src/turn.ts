@@ -279,12 +279,17 @@ export class Turn {
   private readonly builder: PlanBuilder;
   private readonly submitter: Submitter;
   private readonly unitsById: ReadonlyMap<string, Unit>;
+  // 决策计时（telemetry-v2）：Turn 创建 → 首次读取 plan/submit 的耗时，
+  // 与 Python fork turn.py 的 _created_at/_decision_ms 语义一致。
+  private readonly createdAtMs: number;
+  private decisionMsValue: number | null = null;
 
   constructor(tick: number, state: PlayerState, submitter: Submitter) {
     this.tick = tick;
     this.state = state;
     this.submitter = submitter;
     this.builder = new PlanBuilder(tick);
+    this.createdAtMs = performance.now();
 
     const units: Unit[] = [];
     const workers: Worker[] = [];
@@ -363,7 +368,17 @@ export class Turn {
 
   /** 当前排队等待提交的完整计划。 */
   get plan(): CommandPlan {
+    // 首次读取记录决策耗时（telemetry-v2：Turn 创建 → plan 成形，ms）。
+    if (this.decisionMsValue === null) {
+      this.decisionMsValue = performance.now() - this.createdAtMs;
+    }
     return this.builder.build();
+  }
+
+  /** 本次决策耗时（ms）：Turn 创建 → 首次读取 ``plan``/``submit``。
+   *  plan 尚未读取时返回 null。只读、无副作用——遥测字段，不参与决策。 */
+  get decisionMs(): number | null {
+    return this.decisionMsValue;
   }
 
   unit(unitId: string): Unit {

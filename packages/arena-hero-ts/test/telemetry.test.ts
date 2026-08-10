@@ -104,3 +104,35 @@ test("tickSummary 无测绘对象时输出空数组", () => {
   assert.deepEqual(summary.enemy_cores, []);
   assert.equal(summary.core, null);
 });
+
+test("tickSummary v3：controlled_by_type 我方单位构成（与 Python fork 同构）", () => {
+  const summary = tickSummary(79570, fixtureState());
+  assert.deepEqual(summary.controlled_by_type, { WORKER: 1 });
+});
+
+test("tickSummary v3：无我方单位时输出空对象", () => {
+  const state = fixtureState();
+  state.objects = [
+    { kind: "UNIT", id: "u2", controlled: false, position: [6, 6], hp: 50, unit_type: "RANGER", cargo: null },
+  ];
+  const summary = tickSummary(79570, state);
+  assert.deepEqual(summary.controlled_by_type, {});
+});
+
+test("tickSummary v2：timing 字段与 Python fork round(x,3) 对齐；缺省为 null", () => {
+  const summary = tickSummary(79570, fixtureState(), {
+    stateBytes: 2048,
+    parseMs: 0.123456,
+    prevDecisionMs: 1.234567,
+  });
+  assert.equal(summary.state_bytes, 2048);
+  assert.equal(summary.parse_ms, 0.123);
+  assert.equal(summary.prev_decision_ms, 1.235);
+});
+
+test("tickSummary v2：不传 timing 时计时字段为 null（向后兼容）", () => {
+  const summary = tickSummary(79570, fixtureState());
+  assert.equal(summary.state_bytes, null);
+  assert.equal(summary.parse_ms, null);
+  assert.equal(summary.prev_decision_ms, null);
+});

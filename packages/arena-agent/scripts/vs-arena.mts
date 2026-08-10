@@ -51,6 +51,7 @@ import {
   type EvidenceSummary,
 } from "../src/sim/opponent/evidence.ts";
 import { formatWinRateCI, mean } from "../src/sim/opponent/stats.ts";
+import { validatePythonAgents } from "./check-python-agents.mjs";
 import {
   makeSurveyScenario,
   pickWindow,
@@ -151,6 +152,20 @@ if (versionErrors.length > 0) {
   console.error("my-versions.json 校验失败：");
   for (const error of versionErrors) console.error(`  - ${error}`);
   process.exit(1);
+}
+
+/** python-agents.json 契约校验（fail-fast，2026-08-10）：对局前确认内置
+ *  Python 对手的 repo/module/construct/decide/slot 声明仍成立——条目声明
+ *  靠人工维护，跑前校验防静默跑坏对手（如模块改名/签名变更）。
+ *  只读 + 子进程校验，不触碰生产 live 路径（registry 仅被 sim 侧 import）。 */
+const pythonAgentsCheck = validatePythonAgents({ quiet: true });
+if (!pythonAgentsCheck.ok) {
+  console.error("python-agents.json 契约校验失败：");
+  for (const error of pythonAgentsCheck.errors) console.error(`  - ${error}`);
+  process.exit(1);
+}
+for (const warn of pythonAgentsCheck.warns) {
+  console.warn(`[python-agents] ${warn}`);
 }
 
 /** 战绩可比窗口校验（M2）：当前 manifest 的 rulesVersion vs 注册条目记录的
