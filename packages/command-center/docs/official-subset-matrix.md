@@ -2,7 +2,7 @@
 
 > 目标：确保本地面板（command-center）是官方 Web 的**完整功能子集**——官方能做的
 > 指挥操作与全局观察，这里都能做；官方美术素材直接复用。本文件逐项对照
-> `D:\Code\Projects\arena\reference\arena-hero-web`（官方 React 前端），
+> `reference/arena-hero-web`（官方 React 前端），
 > 状态标注：✅ 已移植 / ◐ 部分 / ⛔ 本地面板不适用（设计取舍，附原因）。
 > 判定标准：以当前代码为证（文件/行号或回归断言），不凭印象。
 

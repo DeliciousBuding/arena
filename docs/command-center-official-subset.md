@@ -2,7 +2,7 @@
 
 > 目标硬性要求：**官方 arena-hero-web 是我们这边的完整子集**——官方 web 能做的
 > 指挥操作与大地图展示，本指挥面板都具备（或为官方超集）。
-> 本文档逐项对照 `D:\Code\Projects\arena\reference\arena-hero-web\src`，
+> 本文档逐项对照 `reference/arena-hero-web\src`，
 > 记录覆盖状态与证据；实现主体：`packages/command-center/web/src/engine/mapEngine.ts`
 > + React 组件（`web/src/components/*`）+ server（`packages/command-center/lib/*`）。
 
