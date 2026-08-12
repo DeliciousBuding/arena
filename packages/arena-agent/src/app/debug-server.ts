@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { TenantSupervisor } from "./tenant-supervisor.ts";
+import type { PythonTenantStatus } from "./python-tenant-manager.ts";
 import { rotatedJsonlPaths } from "../telemetry/jsonl-writer.ts";
 
 const MAX_TAIL_BYTES = 256 * 1024;
@@ -23,6 +24,10 @@ export interface AllianceStrategyDebugControl {
 export interface DebugServerOptions {
   readonly repoRoot: string;
   readonly supervisor: TenantSupervisor;
+  /** python 第三方租户状态（2026-08-10 统一管理；未启用 = undefined）。 */
+  readonly pythonTenantStatus?: () => PythonTenantStatus[];
+  /** python 单租户重启（耗尽恢复；未启用 = undefined）。 */
+  readonly pythonTenantRestart?: (tenantId: string) => boolean;
   /** Optional tokenless Alliance Director shadow view. Read-only observability only. */
   readonly allianceDirectorView?: () => unknown;
   /** Strategic profile control only; applies at Director replan boundaries and never owns Arena actions. */
@@ -107,7 +112,44 @@ export class DebugServer {
     }
     if (path === "/ready") {
       const ready = this.options.supervisor.isReady();
-      this.json(res, ready ? 200 : 503, { ready, tenants: this.options.supervisor.status() });
+      this.json(res, ready ? 200 : 503, {
+        ready,
+        respawnLimit: this.options.supervisor.respawnLimit,
+        tenants: this.options.supervisor.status(),
+        pythonTenants: this.options.pythonTenantStatus?.() ?? [],
+      });
+      return;
+    }
+    if (path === "/metrics") {
+      // 综合指标（2026-08-10 增加）：supervisor uptime + 每租户存活/重启/就绪
+      // 时间戳（含 python 租户）。看护/面板消费；无认证（只读）。
+      const now = Date.now();
+      const pythonTenants = this.options.pythonTenantStatus?.() ?? [];
+      this.json(res, 200, {
+        uptimeS: Math.round(process.uptime()),
+        respawnLimit: this.options.supervisor.respawnLimit,
+        tenants: this.options.supervisor.status().map((tenant) => ({
+          tenantId: tenant.tenantId,
+          alive: tenant.alive,
+          ready: tenant.ready,
+          lifecycle: tenant.lifecycle,
+          pid: tenant.pid,
+          exitCode: tenant.exitCode,
+          respawnCount: tenant.respawnCount,
+          uptimeS: tenant.spawnedAt === null ? null : Math.round((now - tenant.spawnedAt) / 1000),
+          lastReadyAt: tenant.lastReadyAt,
+        })),
+        pythonTenants: pythonTenants.map((tenant) => ({
+          tenantId: tenant.tenantId,
+          alive: tenant.alive,
+          lifecycle: tenant.lifecycle,
+          pid: tenant.pid,
+          exitCode: tenant.exitCode,
+          respawnCount: tenant.respawnCount,
+          lastHeartbeatAt: tenant.lastHeartbeatAt,
+          uptimeS: tenant.spawnedAt === null ? null : Math.round((now - tenant.spawnedAt) / 1000),
+        })),
+      });
       return;
     }
     if (path === "/tenants") {
@@ -231,6 +273,31 @@ export class DebugServer {
     }
     if (path === "/shutdown") {
       this.json(res, 405, { error: "method not allowed; use POST /shutdown" });
+      return;
+    }
+    if (path === "/restart" && req.method === "POST") {
+      // 单租户重启（2026-08-10，watchdog 耗尽恢复用）：terminate 现有 child
+      // → 重置 respawnCount → 重建。watchdog 检测到某租户 respawn 耗尽后调
+      // 此端点，避免单租户故障整体重启拖垮四租户。需 x-arena-token。
+      if (!this.requireToken(req, res)) return;
+      const tenantParam = urlObj.searchParams.get("tenant");
+      if (tenantParam === null || tenantParam.length === 0) {
+        this.json(res, 400, { error: "missing ?tenant=<id>" });
+        return;
+      }
+      try {
+        let restarted = await this.options.supervisor.restartTenant(tenantParam);
+        if (!restarted && this.options.pythonTenantRestart !== undefined) {
+          restarted = this.options.pythonTenantRestart(tenantParam); // python 租户转发
+        }
+        this.json(res, restarted ? 202 : 404, restarted ? { restarted: true, tenant: tenantParam } : { error: `unknown tenant: ${tenantParam}` });
+      } catch (error) {
+        this.json(res, 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (path === "/restart") {
+      this.json(res, 405, { error: "method not allowed; use POST /restart?tenant=<id>" });
       return;
     }
     this.json(res, 404, { error: `unknown path: ${path}` });

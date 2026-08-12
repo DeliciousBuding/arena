@@ -1,8 +1,11 @@
 /** Multi-tenant process supervisor CLI. Debug port is bound before any child spawn. */
 
 import { parseArgs } from "node:util";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { TenantSupervisor } from "../app/tenant-supervisor.ts";
 import { DebugServer } from "../app/debug-server.ts";
+import { PythonTenantRegistry, type PythonAgentSpec } from "../app/python-tenant-manager.ts";
 import { loadDotEnv } from "../app/dotenv.ts";
 import { resolveArenaDataRoot } from "../app/data-root.ts";
 import { createCentralAllianceShadowRuntime, type CentralAllianceShadowRuntime } from "../alliance/runtime/central-shadow-runtime.ts";
@@ -24,7 +27,29 @@ const ENV_DEFAULTS = {
   "shutdown-timeout-ms": "ARENA_SHUTDOWN_TIMEOUT_MS",
   port: "ARENA_DEBUG_PORT",
   "debug-host": "ARENA_DEBUG_HOST",
+  "respawn-limit": "ARENA_RESPAWN_LIMIT",
+  "respawn-delay-ms": "ARENA_RESPAWN_DELAY_MS",
 } as const;
+
+/** 读 python 租户配置（2026-08-10 统一管理）：<dataRoot>/runtime/configs/
+ *  supervisor.config.json 的 pythonAgents 数组；缺失 = []（零行为变化）。
+ *  损坏配置 = 拒绝启动（python 租户配置错误不能静默吞掉）。 */
+function loadPythonAgentSpecs(dataRoot: string): PythonAgentSpec[] {
+  const configPath = join(dataRoot, "runtime", "configs", "supervisor.config.json");
+  if (!existsSync(configPath)) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch (error) {
+    throw new Error(`invalid supervisor config ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const pythonAgents = (parsed as { pythonAgents?: unknown })?.pythonAgents;
+  if (pythonAgents === undefined) return [];
+  if (!Array.isArray(pythonAgents)) {
+    throw new Error(`invalid supervisor config ${configPath}: pythonAgents must be an array`);
+  }
+  return pythonAgents as PythonAgentSpec[];
+}
 
 async function main(): Promise<void> {
   const { values } = parseArgs({
@@ -50,6 +75,8 @@ async function main(): Promise<void> {
       "shutdown-timeout-ms": { type: "string" },
       port: { type: "string" },
       "debug-host": { type: "string" },
+      "respawn-limit": { type: "string" },
+      "respawn-delay-ms": { type: "string" },
     },
   });
 
@@ -124,6 +151,8 @@ async function main(): Promise<void> {
 
   const shutdownTimeoutMs = parseInteger(option("shutdown-timeout-ms"), 8000, 1, "--shutdown-timeout-ms");
   const port = parseInteger(option("port"), 8120, 0, "--port");
+  const respawnLimit = parseInteger(option("respawn-limit"), 10, 1, "--respawn-limit");
+  const respawnDelayMs = parseInteger(option("respawn-delay-ms"), 5000, 100, "--respawn-delay-ms");
   let centralAlliance: CentralAllianceShadowRuntime | null = null;
   const supervisor = new TenantSupervisor({
     repoRoot,
@@ -133,6 +162,8 @@ async function main(): Promise<void> {
     configs: configNames,
     tenantArgs,
     shutdownTimeoutMs,
+    respawnLimit,
+    respawnDelayMs,
     onChildMessage: (tenantId, message) => centralAlliance?.onChildMessage(tenantId, message),
     onEvent: (event) => {
       console.log(`[supervisor] ${event.at} ${event.type} ${event.tenantId}${event.detail ? `: ${event.detail}` : ""}`);
@@ -143,9 +174,19 @@ async function main(): Promise<void> {
     error: "Alliance strategic runtime is not initialized",
     strategy: { available: false, mode: "ASSIST_ONLY", actionOwnership: "none" },
   });
+  // python 第三方租户统一管理（2026-08-10）：supervisor.config.json
+  // pythonAgents 段驱动；空 = 不管理任何 python 租户（零行为变化）。
+  const pythonAgentSpecs = loadPythonAgentSpecs(dataRoot);
+  const pythonRegistry = new PythonTenantRegistry(pythonAgentSpecs, {
+    onEvent: (tenantId, type, detail, pid) => {
+      console.log(`[supervisor] python ${type} ${tenantId}${detail ? `: ${detail}` : ""}${pid !== undefined ? ` pid=${pid}` : ""}`);
+    },
+  });
   const debugServer = new DebugServer({
     repoRoot,
     supervisor,
+    pythonTenantStatus: pythonAgentSpecs.length > 0 ? () => pythonRegistry.status() : undefined,
+    pythonTenantRestart: pythonAgentSpecs.length > 0 ? (tenantId) => pythonRegistry.restartTenant(tenantId) : undefined,
     allianceDirectorView: () => centralAlliance?.view() ?? {
       enabled: false, mode: "ASSIST_ONLY", actionOwnership: "none", available: false,
     },
@@ -213,6 +254,10 @@ async function main(): Promise<void> {
 
   try {
     await supervisor.start();
+    if (pythonAgentSpecs.length > 0) {
+      pythonRegistry.start();
+      console.log(`[supervisor] python tenants managed: ${pythonAgentSpecs.map((spec) => spec.tenantId).join(",")}`);
+    }
     const outcome = await Promise.race([
       supervisor.waitForAllExited().then(() => "children_exited" as const),
       signalPromise,
@@ -221,6 +266,7 @@ async function main(): Promise<void> {
       console.log(`[supervisor] received ${outcome}, shutting down all tenants`);
       await supervisor.shutdown();
     }
+    await pythonRegistry.stop();
     const failed = supervisor.status().some((status) => status.lifecycle === "failed" || status.exitCode !== 0);
     process.exitCode = failed ? 1 : 0;
   } catch (error) {

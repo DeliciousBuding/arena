@@ -47,7 +47,7 @@ test("W30：文本级 sha256: 前缀值不脱敏；无前缀裸 64 位 hex 仍�
 });
 
 test("W30：真实 secret 仍脱敏——sk- / ghp_ / ≥32 位随机 token", () => {
-  const sk = "sk-abcdefghijklmnopqrstuvwxyz123456";
+  const sk = "sk-test-fixture-key-0001";
   const ghp = "ghp_abcdefghijklmnopqrstuvwxyz123456";
   const randomToken = "AbCdEf0123456789AbCdEf0123456789"; // 32 位无连字符
   assert.equal(sanitizeText(sk), "[REDACTED]", "sk- 前缀凭据必须整体替换");
@@ -59,13 +59,13 @@ test("W30 反向验证：secret 形态不因白名单/前缀规则外溢而漏�
   // 若实现把"64 位串整体"或"任何长串"误判为 hash，此测试立即转红
   const sneaky = {
     runId: "abcdefghijklmnopqrstuvwxyzABCDEFG", // 33 位随机串（无 key 名提示）
-    submitError: `upstream rejected sk-abcdefghijklmnopqrstuvwxyz123456 sha256:${SHA256_64}`,
+    submitError: `upstream rejected sk-test-fixture-key-0001 sha256:${SHA256_64}`,
     nested: { note: "ghp_abcdefghijklmnopqrstuvwxyz123456" },
   };
   const sanitized = sanitizeValue(sneaky) as typeof sneaky;
   assert.equal(sanitized.runId, "[REDACTED]", "非 hash 字段的 ≥32 位串必须脱敏");
   assert.ok(
-    !sanitized.submitError.includes("sk-abcdefghijklmnopqrstuvwxyz123456"),
+    !sanitized.submitError.includes("sk-test-fixture-key-0001"),
     "错误文本内嵌 sk- 凭据必须脱敏",
   );
   assert.ok(
@@ -83,7 +83,7 @@ test("W30：JsonlWriter 落盘——hash 保留原文、同记录 secret 仍脱�
   const writer = new JsonlWriter(path);
   writer.write(runtimeTrace({
     tick: 1000,
-    runId: "sk-abcdefghijklmnop123456",
+    runId: "sk-test-fixture-key-0002",
     deadlineOutcome: "candidate",
     agentLatencyMs: 100,
     selectionLatencyMs: 150,
@@ -99,5 +99,5 @@ test("W30：JsonlWriter 落盘——hash 保留原文、同记录 secret 仍脱�
   assert.equal(parsed.configHash, `sha256:${SHA256_64}`, "落盘 configHash 保留原文");
   assert.equal(parsed.strategyHash, `sha256:${SHA256_64}`, "落盘 strategyHash 保留原文");
   assert.equal(parsed.runId, "[REDACTED]", "同记录 secret 形态仍脱敏");
-  assert.ok(!line.includes("sk-abcdefghijklmnop123456"), "凭据不得落盘");
+  assert.ok(!line.includes("sk-test-fixture-key-0002"), "凭据不得落盘");
 });

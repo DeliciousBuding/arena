@@ -31,6 +31,6 @@ SKIP_ARENA_SECRET_CHECK=1 git commit
 ## 设计说明
 
 - **内容检查只扫暂存新增行**（`git diff --cached` 的 `+` 行），历史既有内容不误报
-- **`test/` 目录自动豁免内容检查**：测试 fixture 故意包含假密钥（如 `sk-abcdefghijklmnop123456`）；文件名检查不豁免
+- **`test/` 目录自动豁免内容检查**：测试 fixture 故意包含假密钥（如 `sk-test-fixture-key-0002`）；文件名检查不豁免
 - 规则改动：编辑 `scripts/hooks/pre-commit` 后重跑 `install-hooks.sh` 即可生效
 - 历史清理：本仓库曾用 `git filter-repo` 清除过 reflog 旧链（本机路径/QQ 邮箱），hook 是防止再次发生的前置闸门

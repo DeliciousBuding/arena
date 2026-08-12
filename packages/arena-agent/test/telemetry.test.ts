@@ -168,7 +168,7 @@ test("JsonlWriter rejects invalid rotation policy", () => {
 test("脱敏：API key/Authorization/token/长随机串全部替换为 [REDACTED]", () => {
   const dirty: RuntimeTraceRecord = runtimeTrace({
     ...RT,
-    runId: "sk-abcdefghijklmnop123456",
+    runId: "sk-test-fixture-key-0002",
   });
   const text = sanitizeText('Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456, key="sk-1234567890abcdef", ARENA_HERO_API_KEY_1=supersecrettoken1234567890123456');
   assert.ok(!text.includes("Bearer"), "Bearer token 必须脱敏");
